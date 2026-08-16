@@ -82,8 +82,8 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> TypedPointerValue<'ctx, T, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
-        self.ptr.into_erased()
+    pub fn as_erased(self) -> Value<'ctx, B> {
+        self.ptr.as_erased()
     }
 }
 
@@ -102,7 +102,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
     /// Attach a pointee schema. This is an *assertion*, not a checked
     /// conversion -- opaque pointers carry nothing to check against. A
     /// mis-assertion is exactly as unchecked as passing the wrong type
-    /// to `build_load(ty, ptr, ..)` today: the emitted IR reads a
+    /// to `load(ty, ptr, ..)` today: the emitted IR reads a
     /// different type than the slot was written with, which is *legal*
     /// IR under opaque pointers -- neither llvmkit's verifier nor
     /// upstream's can see through a `ptr`, so nothing downstream flags

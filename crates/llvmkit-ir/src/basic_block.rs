@@ -5,18 +5,18 @@
 //!
 //! A basic block lives in the value arena under the basic-block
 //! category, with type [`LabelType`](crate::LabelType). It owns
-//! a list of instruction value-ids, mutated through the [`IRBuilder`]
+//! a list of instruction value-ids, mutated through the [`IrBuilder`]
 //! and other future helpers via interior mutability so the same
 //! `&'ctx Module<B, Unverified>` borrow can be passed around freely.
 //!
 //! ## Return-marker propagation
 //!
 //! [`BasicBlock<'ctx, R>`] inherits its parent function's
-//! [`ReturnMarker`]. When the IRBuilder positions itself inside a
-//! block, the marker propagates to the builder so its `build_ret`
+//! [`ReturnMarker`]. When the IrBuilder positions itself inside a
+//! block, the marker propagates to the builder so its `ret`
 //! is statically typed.
 //!
-//! [`IRBuilder`]: crate::ir_builder::IRBuilder
+//! [`IrBuilder`]: crate::ir_builder::IrBuilder
 
 use super::asm_writer::SlotTracker;
 use super::block_params::{BlockParams, BlockParamsDyn};
@@ -26,7 +26,7 @@ use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::{IRBuilder, Positioned};
+use super::ir_builder::{IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
@@ -34,6 +34,7 @@ use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, V
 use super::value_id::BlockId;
 use super::value_id::ViewIn;
 use super::{DebugLoc, IrError, IrResult, Type};
+use crate::Branded;
 use core::cell::{Cell, RefCell};
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
@@ -53,9 +54,9 @@ pub(super) struct BasicBlockData {
     pub(super) instructions: RefCell<Vec<ValueSlot>>,
     /// How many **block parameters** this block was created with, in the
     /// Swift-SIL / MLIR sense: the count declared by
-    /// [`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params),
+    /// [`IrBuilder::append_block_with_params`](crate::IrBuilder::append_block_with_params),
     /// its naming twin, or the typed
-    /// [`append_block_typed`](crate::IRBuilder::append_block_typed). Zero for
+    /// [`append_block_typed`](crate::IrBuilder::append_block_typed). Zero for
     /// every other block — a plain `append_basic_block`, a parsed `.ll` block,
     /// an auto-SSA block, a pass-created block — even when such a block
     /// carries leading phis, because those phis are seeded through their own
@@ -90,15 +91,15 @@ impl BasicBlockData {
 /// `ty` field carries that label type's id without allocating.
 ///
 /// The `R: ReturnMarker` parameter pins the parent function's return
-/// shape at the type level so a typed [`IRBuilder`]
-/// positioned inside the block can keep its compile-time `build_ret`
+/// shape at the type level so a typed [`IrBuilder`]
+/// positioned inside the block can keep its compile-time `ret`
 /// invariant.
 ///
 /// The `Term: BlockTerminationState` parameter (default [`Unterminated`])
 /// distinguishes blocks that still accept appended instructions from
 /// blocks whose terminator has been emitted. The termination marker is
-/// enforced at [`crate::IRBuilder::position_at_end`], which only accepts
-/// an [`Unterminated`] block; once a terminator-emitting `build_*`
+/// enforced at [`crate::IrBuilder::position_at_end`], which only accepts
+/// an [`Unterminated`] block; once a terminator-emitting the emitters
 /// consumes the builder, the returned handle names the same block with
 /// `Term = Terminated`. `BasicBlock` is intentionally linear (`!Copy` /
 /// `!Clone`) so retaining an old unterminated insertion capability cannot
@@ -154,12 +155,12 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params:
 
 /// Copyable, borrowing *view* of a basic block — the handle a
 /// [`BlockId`] resolves to through
-/// [`Module::view`](crate::Module::view) / [`IRBuilder::view`](crate::IRBuilder::view).
+/// [`Module::view`](crate::Module::view) / [`IrBuilder::view`](crate::IrBuilder::view).
 ///
 /// Unlike [`BasicBlock`], this is not an insertion capability: it can name a
 /// branch target or PHI predecessor, but it cannot be passed to
-/// [`IRBuilder::position_at_end`](crate::IRBuilder::position_at_end) — use the
-/// checked [`IRBuilder::position_at_end_dyn`](crate::IRBuilder::position_at_end_dyn)
+/// [`IrBuilder::position_at_end`](crate::IrBuilder::position_at_end) — use the
+/// checked [`IrBuilder::position_at_end_dyn`](crate::IrBuilder::position_at_end_dyn)
 /// with a [`BlockId`] for that.
 ///
 /// Since 0.0.4 this is the ephemeral read view, not the stored currency:
@@ -429,21 +430,23 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
 ///
 /// Constructed by [`BasicBlockLabel::call`] (or, ergonomically,
 /// [`BasicBlock::call`]) on a **typed** label/block — one produced by
-/// [`IRBuilder::append_block_typed`](crate::IRBuilder::append_block_typed). The
+/// [`IrBuilder::append_block_typed`](crate::IrBuilder::append_block_typed). The
 /// argument tuple is checked against `Params` at **compile time** through the
 /// [`CallArgs<Params>`](crate::CallArgs) bound on `.call()`: a wrong arity has
 /// no `CallArgs` impl and a wrong-typed position fails its per-position
 /// [`IntoCallArg`](crate::IntoCallArg) bound, so a mismatched edge does not
-/// compile — the same machinery that guards typed `build_call`.
+/// compile — the same machinery that guards typed `call`.
 ///
 /// The arguments are lowered eagerly at construction (the typed label carries
 /// its owning module), so `.call()` stays infallible and ergonomic. Any
 /// *value-level* lowering failure — the fallibility [`CallArgs::lower`] carries,
 /// e.g. a cross-module constant — is captured and re-surfaced when the bundle
 /// is consumed by
-/// [`IRBuilder::build_br_call`](crate::IRBuilder::build_br_call) /
-/// [`IRBuilder::build_cond_br_call`](crate::IRBuilder::build_cond_br_call),
+/// [`IrBuilder::br_call`](crate::IrBuilder::br_call) /
+/// [`IrBuilder::cond_br_call`](crate::IrBuilder::cond_br_call),
 /// where a `?` is already expected.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct BlockCall<R: ReturnMarker, B: ModuleBrand, Params: BlockParams = BlockParamsDyn> {
     target: BlockId<R, B, Params>,
     /// The edge's block-arguments lowered to arena value-ids in declaration
@@ -462,13 +465,13 @@ where
 {
     /// Bundle this typed branch target with the block-arguments that seed its
     /// leading head-phis, forming a [`BlockCall`] edge for
-    /// [`IRBuilder::build_br_call`](crate::IRBuilder::build_br_call) /
-    /// [`IRBuilder::build_cond_br_call`](crate::IRBuilder::build_cond_br_call).
+    /// [`IrBuilder::br_call`](crate::IrBuilder::br_call) /
+    /// [`IrBuilder::cond_br_call`](crate::IrBuilder::cond_br_call).
     ///
     /// `args` must be an argument tuple matching this block's `Params` schema:
     /// the [`CallArgs<'ctx, Params, B>`](crate::CallArgs) bound makes a wrong
     /// arity or a wrong-typed position a **compile** error, reusing the exact
-    /// machinery of a typed `build_call`. The values are lowered here (this
+    /// machinery of a typed `call`. The values are lowered here (this
     /// label carries its module), so `.call()` is infallible; a value-level
     /// lowering failure is deferred into the returned [`BlockCall`] and surfaces
     /// when the branch builder consumes it.
@@ -509,12 +512,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     BasicBlock<'ctx, R, Unterminated, B, Params>
 {
     /// Positioned builder at the end of this block. `bb.builder()` is
-    /// exactly [`IRBuilder::at_end(bb)`](crate::IRBuilder::at_end) — the
+    /// exactly [`IrBuilder::at_end(bb)`](crate::IrBuilder::at_end) — the
     /// return marker `R` is inferred from the block, so no turbofish is
     /// needed. Reads better when `bb` is already in hand.
     #[inline]
-    pub fn builder(self) -> IRBuilder<'ctx, 'ctx, B, ConstantFolder, Positioned, R> {
-        IRBuilder::at_end(self)
+    pub fn builder(self) -> IrBuilder<'ctx, 'ctx, B, ConstantFolder, Positioned, R> {
+        IrBuilder::at_end(self)
     }
 }
 
@@ -564,7 +567,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// PHI-predecessor currency a caller stores and passes around, minted with
     /// [`id`](Self::id); [`BasicBlockLabel`] is the ephemeral view, reached
     /// publicly through [`Module::view`](crate::Module::view) /
-    /// [`IRBuilder::view`](crate::IRBuilder::view) like every other handle.
+    /// [`IrBuilder::view`](crate::IrBuilder::view) like every other handle.
     /// In-crate this stays the cheap way to get a label from a block that
     /// already carries its module.
     ///
@@ -648,7 +651,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Re-tag the block-parameter marker, keeping the return-shape and
     /// termination markers. Crate-internal: only the typed constructor
-    /// [`crate::IRBuilder::append_block_typed`] stamps a freshly appended
+    /// [`crate::IrBuilder::append_block_typed`] stamps a freshly appended
     /// block with the `Params` schema whose head-phis it just built.
     #[inline]
     pub(crate) fn retag_params<P2: BlockParams>(self) -> BasicBlock<'ctx, R, Term, B, P2> {
@@ -732,10 +735,18 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Iterate read-only instruction views in program order.
+    ///
+    /// The `use<..>` bound keeps `&self` *out* of the returned opaque type.
+    /// The iterator owns its ids and a copied [`ModuleRef`], so it borrows
+    /// nothing from the receiver — without the bound, edition 2024 would
+    /// capture the `&self` lifetime anyway and reject
+    /// `blocks.flat_map(|block| block.instructions())`.
     pub fn instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + DoubleEndedIterator + FusedIterator
-    {
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, R, Term, B, Params> {
         let module = self.module;
         let ids = self.instruction_ids();
         ids.into_iter()
@@ -755,9 +766,23 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Successor block ids of this block's terminator, preserving duplicate CFG edges.
-    /// Returns an empty list for unterminated blocks and terminators without successors.
-    pub fn successors(&self) -> Vec<BlockId<Dyn, B>> {
-        crate::cfg::block_successors(&self.as_dyn())
+    /// Yields nothing for unterminated blocks and terminators without successors.
+    ///
+    /// A snapshot, not a borrow: the terminator's destination list lives behind
+    /// a [`RefCell`], so the ids are read out once and the iterator owns them —
+    /// holding the iterator can never conflict with an edit. The `use<..>`
+    /// bound keeps `&self` out of the returned opaque type for the same reason
+    /// it does on [`instructions`](Self::instructions).
+    pub fn successors(
+        &self,
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, R, Term, B, Params> {
+        let tag = self.module.id();
+        crate::cfg::successor_ids(&self.as_dyn())
+            .into_iter()
+            .map(move |slot| BlockId::<Dyn, B>::from_raw(tag, slot))
     }
 
     /// Append an instruction value-id to the block. Crate-internal:
@@ -853,9 +878,9 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Record that this block was created with `count` **block parameters**.
     /// Crate-internal: only the three block-parameter constructors
-    /// ([`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params),
-    /// [`append_block_with_named_params`](crate::IRBuilder::append_block_with_named_params),
-    /// [`append_block_typed`](crate::IRBuilder::append_block_typed)) call it,
+    /// ([`IrBuilder::append_block_with_params`](crate::IrBuilder::append_block_with_params),
+    /// [`append_block_with_named_params`](crate::IrBuilder::append_block_with_named_params),
+    /// [`append_block_typed`](crate::IrBuilder::append_block_typed)) call it,
     /// right after materialising that many head-phis.
     ///
     /// The count is what makes "is this a parameterised block?" a single
@@ -896,7 +921,7 @@ fn block_data<'ctx, B: ModuleBrand>(
 ///
 /// Single source of truth for "how many parameters does this block have":
 /// shared by the block-argument seeding path
-/// (`IRBuilder::add_block_args`) and by [`require_no_block_parameters`],
+/// (`IrBuilder::add_block_args`) and by [`require_no_block_parameters`],
 /// so the arity a `_with_args` builder checks against and the arity a plain
 /// branch is rejected for cannot drift apart.
 pub(crate) fn block_parameter_phis<'ctx, B: ModuleBrand>(
@@ -921,10 +946,10 @@ pub(crate) fn block_parameter_phis<'ctx, B: ModuleBrand>(
 /// Reject an edge that carries **no** block arguments into a block created
 /// *with* block parameters.
 ///
-/// This is the guard on the plain terminator builders — `build_br`,
-/// `build_cond_br`, `build_switch`/`build_switch_dyn`'s default target and
+/// This is the guard on the plain terminator builders — `br`,
+/// `cond_br`, `switch`/`switch_dyn`'s default target and
 /// [`SwitchInst::add_case`](crate::SwitchInst::add_case), both edges of every
-/// `build_invoke*`, `build_callbr*`'s default and indirect destinations, and
+/// `invoke*`, `callbr*`'s default and indirect destinations, and
 /// [`IndirectBrInst::add_destination`](crate::IndirectBrInst::add_destination).
 /// Branching
 /// into a parameterised block without arguments adds no incomings, so the
@@ -1178,7 +1203,7 @@ mod tests {
     fn erased_block_value_narrows_to_dyn_params_label() {
         let m = crate::module_new!("bp-slice1-narrow").expect("fresh module");
         let void_ty = m.void_type().as_type();
-        let fn_ty = m.fn_type_no_params(void_ty, false);
+        let fn_ty = m.function_type_no_parameters(void_ty);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let bb = m.view(f).append_basic_block(&m, "entry");
 
@@ -1197,7 +1222,7 @@ mod tests {
     fn label_to_erased_round_trips_to_dyn_params() {
         let m = crate::module_new!("bp-slice1-roundtrip").expect("fresh module");
         let void_ty = m.void_type().as_type();
-        let fn_ty = m.fn_type_no_params(void_ty, false);
+        let fn_ty = m.function_type_no_parameters(void_ty);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let bb = m.view(f).append_basic_block(&m, "entry");
         let label = bb.label();
@@ -1213,7 +1238,7 @@ mod tests {
     #[test]
     fn non_block_value_is_rejected() {
         let m = crate::module_new!("bp-slice1-reject").expect("fresh module");
-        let v = m.i32_type().const_zero().into_erased();
+        let v = m.i32_type().const_zero().as_erased();
         let narrowed: IrResult<BasicBlockLabel<'_, Dyn, _, BlockParamsDyn>> = v.try_into();
         assert!(
             narrowed.is_err(),

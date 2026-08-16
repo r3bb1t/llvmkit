@@ -23,7 +23,9 @@ use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value::{
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
+};
 use super::value_id::GlobalId;
 use crate::Branded;
 
@@ -31,6 +33,76 @@ use super::constants::ConstantIntValue;
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use core::cell::{Cell, RefCell};
+
+// --------------------------------------------------------------------------
+// Code model and sanitizer metadata
+// --------------------------------------------------------------------------
+
+/// Per-global code model. Mirrors `enum CodeModel::Model`
+/// (`llvm/Support/CodeGen.h`), as `GlobalVariable::setCodeModel` stores it.
+///
+/// Distinct from [`crate::module_flags::ModuleFlagKey::CodeModel`], which
+/// merely *names* the `"Code Model"` module flag; these are its values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CodeModel {
+    Tiny,
+    Small,
+    Kernel,
+    Medium,
+    Large,
+}
+
+impl CodeModel {
+    /// The `.ll` spelling, as `AssemblyWriter::printGlobal` writes it inside
+    /// `code_model "..."`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Tiny => "tiny",
+            Self::Small => "small",
+            Self::Kernel => "kernel",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+
+    /// Read a spelling back. Mirrors the chain in
+    /// `LLParser::parseOptionalCodeModel`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "tiny" => Self::Tiny,
+            "small" => Self::Small,
+            "kernel" => Self::Kernel,
+            "medium" => Self::Medium,
+            "large" => Self::Large,
+            _ => return None,
+        })
+    }
+}
+
+impl core::fmt::Display for CodeModel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The sanitizer opt-outs and opt-ins a global may carry. Mirrors
+/// `GlobalValue::SanitizerMetadata` (`llvm/IR/GlobalValue.h`).
+///
+/// Upstream keeps a presence bit on the `GlobalValue` and the payload in a
+/// side table on the context, with a documented dangling-reference hazard its
+/// by-value setter exists to dodge. That shape is a C++ allocation artifact,
+/// not semantics, so here it is one honest `Option<SanitizerMetadata>` on the
+/// global (annex A13). Every field is a storage bool — the flag *is* the
+/// datum — so the selector-bool rule does not apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct SanitizerMetadata {
+    pub no_address: bool,
+    pub no_hwaddress: bool,
+    pub memtag: bool,
+    pub is_dyn_init: bool,
+}
 
 // --------------------------------------------------------------------------
 // Storage payload
@@ -62,6 +134,8 @@ pub(super) struct GlobalVariableData {
     /// Comdat name (no leading `$`). The actual `ComdatData` lives in
     /// the owning module's comdat storage.
     pub(super) comdat: RefCell<Option<String>>,
+    pub(super) code_model: Cell<Option<CodeModel>>,
+    pub(super) sanitizer_metadata: Cell<Option<SanitizerMetadata>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
@@ -101,7 +175,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -322,13 +396,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
                 got: constant.ty().kind_label(),
             });
         }
+        self.retarget_initializer_use(Some(constant.id));
         self.data().initializer.set(Some(constant.id));
         Ok(())
     }
 
     /// Clear the initializer.
     pub fn clear_initializer(self, _module: &'ctx Module<B, Unverified>) {
+        self.retarget_initializer_use(None);
         self.data().initializer.set(None);
+    }
+
+    /// Keep the initializer's reverse use edge in step with the cell.
+    fn retarget_initializer_use(self, new: Option<ValueSlot>) {
+        self.module.module().context().retarget_global_field_use(
+            self.id,
+            GlobalFieldKind::Initializer,
+            self.data().initializer.get(),
+            new,
+        );
     }
 
     /// Linkage. Mirrors `GlobalValue::getLinkage`.
@@ -448,6 +534,52 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self.data().partition.borrow().clone()
     }
 
+    /// The per-global code model, if one is set. Mirrors
+    /// `GlobalVariable::getCodeModel`.
+    pub fn code_model(self) -> Option<CodeModel> {
+        self.data().code_model.get()
+    }
+
+    /// Set the code model. Mirrors `GlobalVariable::setCodeModel`.
+    pub fn set_code_model(self, _module: &'ctx Module<B, Unverified>, model: CodeModel) {
+        self.data().code_model.set(Some(model));
+    }
+
+    /// Clear the code model.
+    pub fn clear_code_model(self, _module: &'ctx Module<B, Unverified>) {
+        self.data().code_model.set(None);
+    }
+
+    /// The sanitizer metadata, if any. Mirrors
+    /// `GlobalValue::getSanitizerMetadata` paired with
+    /// `hasSanitizerMetadata` — upstream needs both because the payload lives
+    /// in a context side table; the `Option` is the same question asked once.
+    pub fn sanitizer_metadata(self) -> Option<SanitizerMetadata> {
+        self.data().sanitizer_metadata.get()
+    }
+
+    /// Set the sanitizer metadata. Mirrors
+    /// `GlobalValue::setSanitizerMetadata`.
+    pub fn set_sanitizer_metadata(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        metadata: SanitizerMetadata,
+    ) {
+        self.data().sanitizer_metadata.set(Some(metadata));
+    }
+
+    /// Drop the sanitizer metadata. Mirrors
+    /// `GlobalValue::removeSanitizerMetadata`.
+    pub fn clear_sanitizer_metadata(self, _module: &'ctx Module<B, Unverified>) {
+        self.data().sanitizer_metadata.set(None);
+    }
+
+    /// Whether the global is memory-tagged. Mirrors
+    /// `GlobalValue::isTagged`.
+    pub fn is_tagged(self) -> bool {
+        self.sanitizer_metadata().is_some_and(|m| m.memtag)
+    }
+
     /// Set the partition. Mirrors
     /// `GlobalValue::setPartition`.
     pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
@@ -465,14 +597,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Toggle the `externally_initialized` marker. Mirrors
     /// `GlobalVariable::setExternallyInitialized`.
     #[inline]
-    pub fn set_externally_initialized(self, _module: &'ctx Module<B, Unverified>, value: bool) {
-        self.data().externally_initialized.set(value);
+    pub fn set_externally_initialized(self, _module: &'ctx Module<B, Unverified>) {
+        self.data().externally_initialized.set(true);
+    }
+
+    /// Clearing twin of
+    /// [`set_externally_initialized`](Self::set_externally_initialized).
+    #[inline]
+    pub fn clear_externally_initialized(self, _module: &'ctx Module<B, Unverified>) {
+        self.data().externally_initialized.set(false);
     }
 
     /// Comdat reference, if attached. Mirrors `GlobalValue::getComdat`.
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
         let name = self.data().comdat.borrow().clone()?;
-        self.module.module().get_comdat::<B>(&name)
+        self.module.module().comdat::<B>(&name)
     }
 
     /// Attach a comdat. The comdat must already exist in the owning module
@@ -526,11 +665,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B>
     /// Print the full definition line `@name = <linkage> global <type>
     /// <init>, ...`, exactly as it appears in module output. Matches the
     /// module-level sibling handles [`GlobalAlias`](crate::GlobalAlias) and
-    /// [`GlobalIFunc`](crate::GlobalIFunc), which likewise print their
+    /// [`GlobalIfunc`](crate::GlobalIfunc), which likewise print their
     /// definition rather than their operand form.
     ///
     /// To print the global the way it appears as an instruction operand
-    /// (`ptr @name`), go through [`GlobalVariable::into_erased`] instead.
+    /// (`ptr @name`), go through [`GlobalVariable::as_erased`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_global(f, *self)
     }
@@ -539,8 +678,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B>
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalVariable<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        GlobalVariable::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        GlobalVariable::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(GlobalVariable);
@@ -558,7 +697,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalVariable<'ctx, B> {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
     fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
@@ -579,7 +718,7 @@ impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalVariable<'_, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(g: GlobalVariable<'ctx, B>) -> Self {
-        g.into_erased()
+        g.as_erased()
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Constant<'ctx, B> {
@@ -619,6 +758,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ct
 ///
 /// Constructed by
 /// [`Module::global_builder`](Module::global_builder).
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
@@ -667,19 +808,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     }
 
     /// Mark as `constant` (vs `global`). Mirrors
-    /// `GlobalVariable::setConstant`.
-    pub fn constant(mut self, value: bool) -> Self {
-        self.is_constant = value;
+    /// `GlobalVariable::setConstant`. Default is a mutable `global`.
+    #[must_use]
+    pub fn constant(mut self) -> Self {
+        self.is_constant = true;
         self
     }
 
     /// Address space. Mirrors the `AddressSpace` ctor argument.
+    #[must_use]
     pub fn address_space(mut self, addrspace: u32) -> Self {
         self.address_space = addrspace;
         self
     }
 
     /// Linkage. Mirrors the `Linkage` ctor argument.
+    #[must_use]
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
@@ -687,12 +831,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
     /// `GlobalValue::setDSOLocal`.
+    #[must_use]
     pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
         self.dso_locality = dso;
         self
     }
 
     /// Visibility. Mirrors `GlobalValue::setVisibility`.
+    #[must_use]
     pub fn visibility(mut self, vis: Visibility) -> Self {
         self.visibility = vis;
         self
@@ -700,6 +846,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// DLL storage class. Mirrors
     /// `GlobalValue::setDLLStorageClass`.
+    #[must_use]
     pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
         self.dll_storage_class = cls;
         self
@@ -707,6 +854,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Thread-local mode. Mirrors
     /// `GlobalVariable::setThreadLocalMode`.
+    #[must_use]
     pub fn thread_local_mode(mut self, tlm: ThreadLocalMode) -> Self {
         self.thread_local_mode = tlm;
         self
@@ -714,12 +862,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Unnamed-addr marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
+    #[must_use]
     pub fn unnamed_addr(mut self, value: UnnamedAddr) -> Self {
         self.unnamed_addr = value;
         self
     }
 
     /// Alignment. Mirrors `GlobalValue::setAlignment`.
+    #[must_use]
     pub fn align(mut self, align: MaybeAlign) -> Self {
         self.align = align;
         self
@@ -745,15 +895,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Attach a comdat. The branded [`ComdatRef`] parameter statically ties the
     /// comdat to the builder's module.
+    #[must_use]
     pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
         self.comdat = Some(comdat.name().to_owned());
         self
     }
 
     /// Mark as `externally_initialized`. Mirrors
-    /// `GlobalVariable::setExternallyInitialized`.
-    pub fn externally_initialized(mut self, value: bool) -> Self {
-        self.externally_initialized = value;
+    /// `GlobalVariable::setExternallyInitialized`. Default off.
+    #[must_use]
+    pub fn externally_initialized(mut self) -> Self {
+        self.externally_initialized = true;
         self
     }
 
@@ -819,6 +971,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             section: RefCell::new(section),
             partition: RefCell::new(partition),
             comdat: RefCell::new(comdat),
+            code_model: Cell::new(None),
+            sanitizer_metadata: Cell::new(None),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
         };
         (name, data, initializer, address_space, value_type)

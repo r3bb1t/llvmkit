@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `llvmkit_ir::Instruction<'_, _, _>: TryFrom<llvmkit_ir::Value<'_, DynBrand>>` is not satisfied
-  --> tests/compile_fail/value_cannot_mint_instruction_lifecycle.rs:19:74
+  --> tests/compile_fail/value_cannot_mint_instruction_lifecycle.rs:19:72
    |
-19 |     let _inst: llvmkit_ir::Instruction<_, _> = b.view(add).into_erased().try_into().unwrap();
-   |                                                                          ^^^^^^^^ the trait `From<llvmkit_ir::Value<'_, DynBrand>>` is not implemented for `llvmkit_ir::Instruction<'_, _, _>`
+19 |     let _inst: llvmkit_ir::Instruction<_, _> = b.view(add).as_erased().try_into().unwrap();
+   |                                                                        ^^^^^^^^ the trait `From<llvmkit_ir::Value<'_, DynBrand>>` is not implemented for `llvmkit_ir::Instruction<'_, _, _>`
    |
    = note: required for `llvmkit_ir::Value<'_, DynBrand>` to implement `Into<llvmkit_ir::Instruction<'_, _, _>>`
    = note: required for `llvmkit_ir::Instruction<'_, _, _>` to implement `TryFrom<llvmkit_ir::Value<'_, DynBrand>>`

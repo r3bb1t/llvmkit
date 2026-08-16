@@ -2,8 +2,8 @@
 //!
 //! Maps a previously-extracted identifier byte slice to the corresponding
 //! [`Token`]. Returns `None` when the slice is not a known keyword (the lexer
-//! treats that case as "must be a label or an error", per `LexIdentifier`'s
-//! tail in `LLLexer.cpp:1066-1074`).
+//! treats that case as "must be a `cc<tail>` rewind or an error", per
+//! `LLLexer::LexIdentifier`'s tail).
 //!
 //! Special-case handlers that *cannot* live in this table because they need a
 //! borrowed payload from the source buffer (or carry numeric data) are
@@ -17,11 +17,16 @@
 //! * `GNU` / `Apple` / `None` / `Default` — `NameTableKind`.
 //! * `Binary` / `Decimal` / `Rational` — `FixedPointKind`.
 //! * `[us]0x[0-9A-Fa-f]+` — APSInt-style hex literal.
-//! * `cc<digits>` rewind — emit `kw_cc` and roll back the cursor.
+//! * `cc<tail>` rewind — emit `kw_cc` and roll back the cursor.
 //!
-//! TODO(tablegen): the attribute keyword list is hand-mirrored from
-//! `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/IR/Attributes.td`
-//! (LLVM 22.1.4). Replace with a build-time tablegen port in a later revision.
+//! The attribute keyword list is hand-mirrored from LLVM 22.1.4's
+//! `include/llvm/IR/Attributes.td`, where upstream `#include`s the generated
+//! `Attributes.inc` instead. So is every other family here — which is what
+//! `crates/llvmkit-asmparser/tests/lexer_token_drift.rs` exists to check: it
+//! reads the vendored `LLLexer.cpp` and `Attributes.td` and diffs both
+//! directions against this table. Nothing may be added below without a
+//! matching upstream entry, or an entry in that test's
+//! `NON_UPSTREAM_KEYWORDS` naming why not.
 
 use super::{Keyword, Opcode, PrimitiveTy, Token};
 
@@ -43,7 +48,7 @@ pub(super) fn classify_word(word: &[u8]) -> Option<Token<'static>> {
         // ── Type keywords (TYPEKEYWORD) ──
         b"void" => ty(Ty::Void),
         b"half" => ty(Ty::Half),
-        b"bfloat" => ty(Ty::BFloat),
+        b"bfloat" => ty(Ty::Bfloat),
         b"float" => ty(Ty::Float),
         b"double" => ty(Ty::Double),
         b"x86_fp80" => ty(Ty::X86Fp80),
@@ -57,45 +62,45 @@ pub(super) fn classify_word(word: &[u8]) -> Option<Token<'static>> {
         b"ptr" => ty(Ty::Ptr),
 
         // ── Instruction keywords (INSTKEYWORD) ──
-        b"fneg" => op(Op::FNeg),
+        b"fneg" => op(Op::Fneg),
         b"add" => op(Op::Add),
-        b"fadd" => op(Op::FAdd),
+        b"fadd" => op(Op::Fadd),
         b"sub" => op(Op::Sub),
-        b"fsub" => op(Op::FSub),
+        b"fsub" => op(Op::Fsub),
         b"mul" => op(Op::Mul),
-        b"fmul" => op(Op::FMul),
-        b"udiv" => op(Op::UDiv),
-        b"sdiv" => op(Op::SDiv),
-        b"fdiv" => op(Op::FDiv),
-        b"urem" => op(Op::URem),
-        b"srem" => op(Op::SRem),
-        b"frem" => op(Op::FRem),
+        b"fmul" => op(Op::Fmul),
+        b"udiv" => op(Op::Udiv),
+        b"sdiv" => op(Op::Sdiv),
+        b"fdiv" => op(Op::Fdiv),
+        b"urem" => op(Op::Urem),
+        b"srem" => op(Op::Srem),
+        b"frem" => op(Op::Frem),
         b"shl" => op(Op::Shl),
-        b"lshr" => op(Op::LShr),
-        b"ashr" => op(Op::AShr),
+        b"lshr" => op(Op::Lshr),
+        b"ashr" => op(Op::Ashr),
         b"and" => op(Op::And),
         b"or" => op(Op::Or),
         b"xor" => op(Op::Xor),
-        b"icmp" => op(Op::ICmp),
-        b"fcmp" => op(Op::FCmp),
+        b"icmp" => op(Op::Icmp),
+        b"fcmp" => op(Op::Fcmp),
         b"phi" => op(Op::Phi),
         b"call" => op(Op::Call),
         b"trunc" => op(Op::Trunc),
-        b"zext" => op(Op::ZExt),
-        b"sext" => op(Op::SExt),
-        b"fptrunc" => op(Op::FPTrunc),
-        b"fpext" => op(Op::FPExt),
-        b"uitofp" => op(Op::UIToFP),
-        b"sitofp" => op(Op::SIToFP),
-        b"fptoui" => op(Op::FPToUI),
-        b"fptosi" => op(Op::FPToSI),
+        b"zext" => op(Op::Zext),
+        b"sext" => op(Op::Sext),
+        b"fptrunc" => op(Op::FpTrunc),
+        b"fpext" => op(Op::FpExt),
+        b"uitofp" => op(Op::UiToFp),
+        b"sitofp" => op(Op::SiToFp),
+        b"fptoui" => op(Op::FpToUi),
+        b"fptosi" => op(Op::FpToSi),
         b"inttoptr" => op(Op::IntToPtr),
         b"ptrtoaddr" => op(Op::PtrToAddr),
         b"ptrtoint" => op(Op::PtrToInt),
         b"bitcast" => op(Op::BitCast),
         b"addrspacecast" => op(Op::AddrSpaceCast),
         b"select" => op(Op::Select),
-        b"va_arg" => op(Op::VAArg),
+        b"va_arg" => op(Op::VaArg),
         b"ret" => op(Op::Ret),
         b"br" => op(Op::Br),
         b"switch" => op(Op::Switch),
@@ -108,7 +113,7 @@ pub(super) fn classify_word(word: &[u8]) -> Option<Token<'static>> {
         b"load" => op(Op::Load),
         b"store" => op(Op::Store),
         b"cmpxchg" => op(Op::AtomicCmpXchg),
-        b"atomicrmw" => op(Op::AtomicRMW),
+        b"atomicrmw" => op(Op::AtomicRmw),
         b"fence" => op(Op::Fence),
         b"getelementptr" => op(Op::GetElementPtr),
         b"extractelement" => op(Op::ExtractElement),
@@ -498,7 +503,8 @@ pub(super) fn classify_word(word: &[u8]) -> Option<Token<'static>> {
         b"catch" => kw(Catch),
         b"filter" => kw(Filter),
 
-        // ── Summary index keywords (LLLexer.cpp:788-877) ──
+        // ── Summary index keywords (the `// Summary index keywords.` block of
+        // `LLLexer::LexIdentifier`) ──
         b"path" => kw(Path),
         b"hash" => kw(Hash_),
         b"gv" => kw(Gv),
@@ -538,21 +544,21 @@ pub(super) fn classify_word(word: &[u8]) -> Option<Token<'static>> {
         b"critical" => kw(Critical),
         b"relbf" => kw(Relbf),
         b"variable" => kw(Variable),
-        b"vTableFuncs" => kw(VTableFuncs),
+        b"vTableFuncs" => kw(VtableFuncs),
         b"virtFunc" => kw(VirtFunc),
         b"aliasee" => kw(Aliasee),
         b"refs" => kw(Refs),
         b"typeIdInfo" => kw(TypeIdInfo),
         b"typeTests" => kw(TypeTests),
-        b"typeTestAssumeVCalls" => kw(TypeTestAssumeVCalls),
-        b"typeCheckedLoadVCalls" => kw(TypeCheckedLoadVCalls),
-        b"typeTestAssumeConstVCalls" => kw(TypeTestAssumeConstVCalls),
-        b"typeCheckedLoadConstVCalls" => kw(TypeCheckedLoadConstVCalls),
-        b"vFuncId" => kw(VFuncId),
+        b"typeTestAssumeVCalls" => kw(TypeTestAssumeVcalls),
+        b"typeCheckedLoadVCalls" => kw(TypeCheckedLoadVcalls),
+        b"typeTestAssumeConstVCalls" => kw(TypeTestAssumeConstVcalls),
+        b"typeCheckedLoadConstVCalls" => kw(TypeCheckedLoadConstVcalls),
+        b"vFuncId" => kw(VfuncId),
         b"offset" => kw(Offset),
         b"args" => kw(Args),
         b"typeid" => kw(Typeid),
-        b"typeidCompatibleVTable" => kw(TypeidCompatibleVTable),
+        b"typeidCompatibleVTable" => kw(TypeidCompatibleVtable),
         b"summary" => kw(Summary),
         b"typeTestRes" => kw(TypeTestRes),
         b"kind" => kw(Kind),

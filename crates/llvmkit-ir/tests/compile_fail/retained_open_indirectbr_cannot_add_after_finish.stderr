@@ -1,7 +1,7 @@
 error[E0382]: use of moved value: `ibr`
   --> tests/compile_fail/retained_open_indirectbr_cannot_add_after_finish.rs:26:13
    |
-23 |     let (_sealed, ibr) = b.build_indirectbr(addr, "").unwrap();
+23 |     let (_sealed, ibr) = b.indirectbr(addr, "").unwrap();
    |                   --- move occurs because `ibr` has type `IndirectBrInst<'_, Open, DynBrand>`, which does not implement the `Copy` trait
 24 |
 25 |     let _closed = ibr.finish();

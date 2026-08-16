@@ -99,6 +99,36 @@ fn uwtable_kind_grammar() {
     assert!(printed.contains("uwtable"), "{printed}");
 }
 
+/// Ports `test/Assembler/uwtable-1.ll` and `test/Assembler/uwtable-2.ll`
+/// verbatim — both files are a run of declarations whose last line is the one
+/// that fails, so the accepted spellings above them are part of each fixture.
+///
+/// `uwtable-1.ll`'s trigger is `unsync`, a word matching no keyword. It was
+/// unreachable while llvmkit's lexer failed on such a word instead of handing
+/// the parser an error token, so `expected unwind table kind` — which
+/// `LLParser::parseFnAttributeValuePairs` writes in its `kw_uwtable` arm — had
+/// no fixture behind it.
+#[test]
+fn uwtable_fixtures_match_upstream_text() {
+    assert_eq!(
+        parse_dynamic(
+            "declare void @f0() uwtable\n\
+             declare void @f1() uwtable(sync)\n\
+             declare void @f2() uwtable(async)\n\
+             declare void @f3() uwtable(unsync)\n",
+        )
+        .expect_err("uwtable-1.ll")
+        .to_string(),
+        "expected unwind table kind"
+    );
+    assert_eq!(
+        parse_dynamic("declare void @f() uwtable(sync x\n")
+            .expect_err("uwtable-2.ll")
+            .to_string(),
+        "expected ')'"
+    );
+}
+
 // -- parameter attributes ----------------------------------------------------
 
 #[test]
@@ -128,34 +158,92 @@ fn parameter_attributes_previously_missing() {
     }
 }
 
+/// `captures(none)` prints back as itself, not as `nocapture`.
+///
+/// This test used to assert the opposite half too — that any component other
+/// than `none` must *fail* to parse — which pinned llvmkit's limitation
+/// rather than upstream's behaviour. The full grammar is now modelled, so the
+/// full component set is covered by `captures_components_round_trip` and the
+/// half that asserted a gap is gone.
 #[test]
-fn captures_none_maps_to_the_modeled_form() {
-    // `captures(none)` is LLVM 21+'s spelling of the fact llvmkit models as
-    // `nocapture`; accepting it must not silently drop the fact.
+fn captures_none_round_trips_as_itself() {
     let m = parse_dynamic("define void @f(ptr captures(none) %p) { ret void }\n")
         .expect("captures(none)");
     let printed = format!("{m}");
-    assert!(
-        printed.contains("nocapture") || printed.contains("captures(none)"),
-        "capture fact dropped: {printed}"
-    );
+    assert!(printed.contains("captures(none)"), "{printed}");
+    assert!(!printed.contains("nocapture"), "{printed}");
     parse_dynamic(printed.as_str()).expect("round-trip");
-
-    // Other components are a pinpointed error, never a silent drop.
-    let Err(err) = parse_dynamic("define void @f(ptr captures(address) %p) { ret void }\n") else {
-        panic!("unsupported captures component must not parse");
-    };
-    assert!(format!("{err}").contains("captures"), "{err}");
 }
 
+/// `test/Bitcode/attributes.ll`'s `@f23` writes
+/// `define void @f23() alignstack(4)` inline and CHECKs
+/// `attributes #13 = { alignstack=4 }`, so it pins both halves of the group
+/// spelling at once. Only the *parse* half is portable today: llvmkit's
+/// printer emits function attributes inline on the header and never forms an
+/// attribute group, so the CHECK line cannot be produced from that input.
+/// The printer gap is recorded in `docs/future-work.md`; this asserts the
+/// half that holds, and the group spelling itself is covered by
+/// `attribute_group_equals_grammar_round_trips` from group-carrying input.
 #[test]
-fn alignstack_paren_form_round_trips() {
-    parse_print_reparse(
-        "alignstack",
-        "define void @f() #0 { ret void }
-attributes #0 = { alignstack(16) }
-",
-        "alignstack(16)",
+fn inline_alignstack_parses_and_round_trips() {
+    let m = parse_dynamic("define void @f23() alignstack(4) {\n  ret void\n}\n")
+        .expect("inline alignstack(4) parses");
+    let printed = format!("{m}");
+    assert!(printed.contains("alignstack(4)"), "{printed}");
+    parse_dynamic(printed.as_str()).expect("round-trip");
+}
+
+/// The four kinds whose group spelling differs, each written in the form its
+/// context requires and printed back in the other. Anchored on
+/// `Attribute::getAsString`'s `InAttrGrp` arms and `parseEnumAttribute`'s
+/// `InAttrGroup` branches; only `alignstack` has an upstream fixture.
+#[test]
+fn attribute_group_equals_grammar_round_trips() {
+    for (group_body, printed) in [
+        ("align = 8", "align=8"),
+        ("alignstack = 16", "alignstack=16"),
+    ] {
+        let src =
+            format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {group_body} }}\n");
+        let m = parse_dynamic(src.as_str()).unwrap_or_else(|e| panic!("{group_body}: {e}"));
+        let out = format!("{m}");
+        assert!(out.contains(printed), "{group_body}:\n{out}");
+        parse_dynamic(out.as_str()).unwrap_or_else(|e| panic!("{group_body} round-trip: {e}"));
+    }
+
+    // `dereferenceable` is `[ParamAttr, RetAttr]`, so inside a group it parses
+    // and *then* trips the position check — the group spelling is reachable
+    // only through the printer, from a parameter attribute.
+    let m = parse_dynamic("define void @f(ptr dereferenceable(8) %p) { ret void }\n")
+        .expect("parameter dereferenceable(8)");
+    assert!(format!("{m}").contains("dereferenceable(8)"), "{m}");
+}
+
+/// `parseEnumAttribute`'s two `InAttrGroup` branches reject the inline
+/// spelling, and `parseOptionalAlignment` / `parseOptionalStackAlignment`
+/// reject the equals spelling outside a group.
+#[test]
+fn attribute_group_equals_grammar_is_context_exclusive() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("wrong-context alignment spelling is rejected")
+            .to_string()
+    }
+
+    // Paren / bare forms are not the group grammar.
+    assert_eq!(
+        parse_err("define void @f() #0 { ret void }\nattributes #0 = { align 8 }\n"),
+        "expected '=' here"
+    );
+    assert_eq!(
+        parse_err("define void @f() #0 { ret void }\nattributes #0 = { alignstack(16) }\n"),
+        "expected '=' here"
+    );
+    // And the equals form is not the inline grammar: `alignstack` demands a
+    // paren, so the `=` is where the `(` should be.
+    assert_eq!(
+        parse_err("define void @f() alignstack = 16 {\n  ret void\n}\n"),
+        "expected '('"
     );
 }
 
@@ -220,30 +308,48 @@ fn dso_specifiers_on_global_objects() {
 }
 
 #[test]
-fn dso_local_ifunc_parses_and_prints() {
-    // Ifuncs parse and print the specifier; full round-trip is blocked by a
-    // pre-existing, dso-independent gap (below).
-    let m = parse_dynamic("declare ptr @r()\n@i = dso_local ifunc i32 (i32), ptr @r\n")
-        .expect("dso_local ifunc");
-    let printed = format!("{m}");
-    assert!(printed.contains("dso_local ifunc"), "{printed}");
+fn dso_local_ifunc_round_trips() {
+    parse_print_reparse(
+        "dso_local ifunc",
+        "declare ptr @r()\n@i = dso_local ifunc i32 (i32), ptr @r\n",
+        "dso_local ifunc",
+    );
 }
 
-/// Pre-existing gap, pinned so it cannot be forgotten: the printer emits
-/// ifuncs before function declarations, and the parser cannot forward-reference
-/// an ifunc resolver, so a printed module with an ifunc whose resolver is a
-/// declared function does not re-parse. Nothing to do with attributes — the
-/// snippet below contains none. Recorded in `docs/future-work.md`; when the
-/// parser learns deferred alias/ifunc targets, this test flips to asserting
-/// the round-trip and the ifunc case above joins the matrix.
+/// Aliases and ifuncs may name a target declared later in the file — which is
+/// exactly what the printer produces, since it emits them before function
+/// declarations. A forward target becomes a null placeholder patched at end of
+/// module (the mechanism `personality` already used for the same ordering
+/// problem), so printed modules round-trip. A target that is never defined at
+/// all must still be an error.
 #[test]
-fn known_gap_ifunc_forward_resolver_round_trip() {
-    let m = parse_dynamic("declare ptr @r()\n@i = ifunc i32 (i32), ptr @r\n").expect("parse");
-    let printed = format!("{m}");
-    let Err(err) = parse_dynamic(printed.as_str()) else {
-        panic!("if this now round-trips, delete this test and un-gap the matrix");
+fn alias_and_ifunc_forward_targets() {
+    parse_print_reparse(
+        "ifunc forward resolver",
+        "declare ptr @r()\n@i = ifunc i32 (i32), ptr @r\n",
+        "ifunc",
+    );
+    parse_print_reparse(
+        "alias forward target",
+        "@a = alias i32, ptr @t\n@t = global i32 0\n",
+        "alias",
+    );
+    parse_print_reparse(
+        "alias to later function",
+        "@a = alias i32 (i32), ptr @f\ndefine i32 @f(i32 %x) { ret i32 %x }\n",
+        "alias",
+    );
+    // Backward references keep working.
+    parse_print_reparse(
+        "alias backward target",
+        "@t = global i32 0\n@a = alias i32, ptr @t\n",
+        "alias",
+    );
+
+    let Err(err) = parse_dynamic("@a = alias i32, ptr @nope\n") else {
+        panic!("a target that is never defined must not parse");
     };
-    assert!(format!("{err}").contains('r'), "{err}");
+    assert!(format!("{err}").contains("nope"), "{err}");
 }
 
 // -- whole-program shapes: what clang actually emits -------------------------
@@ -337,11 +443,715 @@ entry:
   ret void
 }
 "#;
-    // `dead_on_unwind` may or may not be modeled; strip to the M0 target set.
-    let src = src.replace("dead_on_unwind ", "");
-    let m = parse_dynamic(src.as_str()).expect("byval/sret C shape parses");
+    let m = parse_dynamic(src).expect("byval/sret C shape parses");
     let printed = format!("{m}");
     assert!(printed.contains("byval(%struct.Point)"), "{printed}");
     assert!(printed.contains("sret(%struct.Point)"), "{printed}");
+    assert!(printed.contains("dead_on_unwind"), "{printed}");
     parse_dynamic(printed.as_str()).expect("round-trip");
+}
+
+/// `captures(...)` in full: the `CaptureComponents` lattice, the `ret:`
+/// sublocation, and `operator<<(raw_ostream &, CaptureInfo)`'s printing —
+/// which is what `Attribute::getAsString` emits for this attribute, parens
+/// and keyword included.
+///
+/// The printed forms are the ones `test/Assembler/captures.ll` pins. Note
+/// `captures(address, ret: none)`: a `ret:` bucket that differs from the
+/// other bucket is always printed, even when it is empty, while a missing
+/// `ret:` means the two buckets are *equal*, not that the return captures
+/// nothing.
+#[test]
+fn captures_components_round_trip() {
+    for (spelled, printed) in [
+        ("captures(none)", "captures(none)"),
+        ("captures(address)", "captures(address)"),
+        ("captures(address_is_null)", "captures(address_is_null)"),
+        (
+            "captures(address, provenance)",
+            "captures(address, provenance)",
+        ),
+        (
+            "captures(address, read_provenance)",
+            "captures(address, read_provenance)",
+        ),
+        // `ret:` may appear first, or later, and swallows everything after it.
+        (
+            "captures(ret: address, provenance)",
+            "captures(ret: address, provenance)",
+        ),
+        (
+            "captures(address_is_null, ret: address, provenance)",
+            "captures(address_is_null, ret: address, provenance)",
+        ),
+        // The `none` guard is per bucket, so this is legal.
+        (
+            "captures(address, ret: none)",
+            "captures(address, ret: none)",
+        ),
+        // Components accumulate with `|=`, so a repeat collapses.
+        ("captures(address, address)", "captures(address)"),
+        // `address` subsumes `address_is_null` — the lattice, not four flags.
+        ("captures(address_is_null, address)", "captures(address)"),
+    ] {
+        parse_print_reparse(
+            spelled,
+            &format!("define void @f(ptr {spelled} %p) {{ ret void }}\n"),
+            printed,
+        );
+    }
+}
+
+/// `parseCapturesAttr`'s own diagnostics.
+#[test]
+fn captures_diagnostics_match_upstream_text() {
+    fn parse_err(spelled: &str) -> String {
+        parse_dynamic(format!("define void @f(ptr {spelled} %p) {{ ret void }}\n"))
+            .expect_err("captures attribute is rejected")
+            .to_string()
+    }
+
+    assert_eq!(
+        parse_err("captures(ret: address, ret: provenance)"),
+        "duplicate 'ret' location"
+    );
+    assert_eq!(
+        parse_err("captures(address, none)"),
+        "cannot use 'none' with other component"
+    );
+    assert_eq!(
+        parse_err("captures(none, address)"),
+        "cannot use 'none' with other component"
+    );
+    // The `invalid-component.ll` split of `test/Assembler/captures-errors.ll`,
+    // reachable since a word matching no keyword became `Token::Error` rather
+    // than a lexer failure.
+    assert_eq!(
+        parse_err("captures(foo)"),
+        "expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'"
+    );
+    // `captures()` is not an empty set: the loop demands a component first.
+    // No upstream split writes it; the arm is upstream's.
+    assert_eq!(
+        parse_err("captures()"),
+        "expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'"
+    );
+    assert_eq!(parse_err("captures(address"), "expected ',' or ')'");
+    assert_eq!(parse_err("captures(ret address)"), "expected ':'");
+}
+
+/// `range(iN lo, hi)` accepts three shapes worth pinning: an ordinary range,
+/// the one legal degenerate form `range(i8 0, 0)` — legal precisely because
+/// the empty-set check exempts zero, which is why
+/// `test/Assembler/range-attribute-invalid-range.ll` writes `1, 1` and not
+/// `0, 0` — and a **wrapped** range with `lower > upper`, which
+/// `test/Verifier/range-attr.ll` pins as parsing cleanly (its complaint is
+/// about the annotated value's type, not the range).
+#[test]
+fn range_attribute_shapes_round_trip() {
+    for spelled in [
+        "range(i8 0, 64)",
+        "range(i8 -1, 0)",
+        "range(i8 0, 0)",
+        "range(i8 1, 0)",
+    ] {
+        parse_print_reparse(
+            spelled,
+            &format!("define void @f(i8 {spelled} %a) {{ ret void }}\n"),
+            spelled,
+        );
+    }
+}
+
+/// `LLParser::parseRangeAttr`'s seven diagnostics, verbatim.
+///
+/// Two are ported fixtures: `test/Assembler/range-attribute-invalid-range.ll`
+/// (`range(i8 1, 1)`) and `test/Assembler/range-attribute-invalid-type.ll`
+/// (`range(<4 x i32> 0, 0)`, which pins that `Type::isIntegerTy` is false for
+/// a *vector* of integers).
+///
+/// `integer is too large for the bit width of specified type` has **no**
+/// upstream fixture — nothing in the tree emits it — so its three cases are
+/// derived from the `ParseAPSInt` lambda together with
+/// `APSInt::APSInt(StringRef)` and `LLLexer::lexIdentifier`'s `[us]0x` rule.
+/// The third is the subtle one: an all-zero hex literal keeps its full
+/// syntactic width, because the active-bit trim is guarded by `activeBits > 0`.
+#[test]
+fn range_diagnostics_match_upstream_text() {
+    fn parse_err(spelled: &str) -> String {
+        parse_dynamic(format!("define void @f(i8 {spelled} %a) {{ ret void }}\n"))
+            .expect_err("range attribute is rejected")
+            .to_string()
+    }
+
+    assert_eq!(parse_err("range i8 0, 4"), "expected '('");
+    assert_eq!(
+        parse_err("range(<4 x i32> 0, 0)"),
+        "the range must have integer type!"
+    );
+    assert_eq!(parse_err("range(i8 1.5, 4)"), "expected integer");
+    assert_eq!(parse_err("range(i8 0 4)"), "expected ','");
+    assert_eq!(
+        parse_err("range(i8 1, 1)"),
+        "the range represent the empty set but limits aren't 0!"
+    );
+    assert_eq!(parse_err("range(i8 0, 4 %a)"), "expected ')'");
+
+    for spelled in [
+        // 300 needs nine active bits.
+        "range(i8 300, 0)",
+        // -255 needs nine significant bits, and llvmkit used to accept this
+        // and silently wrap the bound to 1.
+        "range(i8 -255, 0)",
+        // Eighteen zero digits: no active bits, so no trim, so 72 bits wide.
+        "range(i8 u0x000000000000000000, 1)",
+    ] {
+        assert_eq!(
+            parse_err(spelled),
+            "integer is too large for the bit width of specified type",
+            "{spelled}"
+        );
+    }
+}
+
+/// Ports the `@initializes` function of `test/Bitcode/attributes.ll`, whose
+/// `; CHECK: define void @initializes(ptr initializes((-4, 0), (4, 8)) %a)`
+/// is the only fixture in the tree that pins this attribute's printed form.
+/// It fixes the `, ` between ranges and inside each range, the absence of a
+/// space after the keyword, and signed rendering of a negative bound.
+#[test]
+fn initializes_round_trips() {
+    parse_print_reparse(
+        "initializes",
+        "define void @initializes(ptr initializes((-4, 0), (4, 8)) %a) {\n  ret void\n}\n",
+        "initializes((-4, 0), (4, 8))",
+    );
+}
+
+/// Ports all ten splits of `test/Assembler/initializes-attribute-invalid.ll`,
+/// each asserting the exact text its `FileCheck` prefix pins.
+///
+/// Two of them are subtler than they look: `initializes()` fails on the
+/// **inner** `(` — the outer one was already consumed and the do-loop demands
+/// at least one range — and `initializes((0, 4) (8, 12))` reports a missing
+/// `)` rather than a missing `,`, because the list separator is read with
+/// `EatIfPresent` and its absence simply ends the loop.
+#[test]
+fn initializes_diagnostics_match_upstream_text() {
+    fn parse_err(spelled: &str) -> String {
+        parse_dynamic(format!(
+            "define void @foo(ptr {spelled} %a) {{\n  ret void\n}}\n"
+        ))
+        .expect_err("initializes attribute is rejected")
+        .to_string()
+    }
+
+    // OUTER-LEFT
+    assert_eq!(parse_err("initializes 0, 4"), "expected '('");
+    // INNER-LEFT
+    assert_eq!(parse_err("initializes(0, 4"), "expected '('");
+    // INNER-RIGHT
+    assert_eq!(parse_err("initializes((0, 4"), "expected ')'");
+    // OUTER-RIGHT
+    assert_eq!(parse_err("initializes((0, 4)"), "expected ')'");
+    // INTEGER
+    assert_eq!(parse_err("initializes((0.5, 4))"), "expected integer");
+    // LOWER-EQUAL-UPPER
+    assert_eq!(
+        parse_err("initializes((4, 4))"),
+        "the range should not represent the full or empty set!"
+    );
+    // INNER-COMMA
+    assert_eq!(parse_err("initializes((0 4))"), "expected ','");
+    // OUTER-COMMA
+    assert_eq!(parse_err("initializes((0, 4) (8, 12))"), "expected ')'");
+    // EMPTY1
+    assert_eq!(parse_err("initializes()"), "expected '('");
+    // EMPTY2
+    assert_eq!(parse_err("initializes(())"), "expected integer");
+}
+
+/// Ports all five splits of `test/Verifier/initializes-attr.ll`.
+///
+/// The file is misfiled upstream: every case is rejected by `llvm-as`'s
+/// *parser*, through `ConstantRangeList::getConstantRangeList`, and never
+/// reaches the verifier — which is why they are asserted here as parse
+/// errors. `overlapping1` is the one that matters most: `(0, 4), (4, 8)`
+/// merely *touch*, and `isOrderedRanges` compares with `sle`, so adjacency
+/// is rejected too.
+#[test]
+fn initializes_range_list_invariants_match_upstream_text() {
+    fn parse_err(spelled: &str) -> String {
+        parse_dynamic(format!(
+            "define void @foo(ptr {spelled} %a) {{\n  ret void\n}}\n"
+        ))
+        .expect_err("initializes range list is rejected")
+        .to_string()
+    }
+
+    for spelled in [
+        // lower_greater_than_upper1
+        "initializes((4, 0))",
+        // lower_greater_than_upper2
+        "initializes((0, 4), (8, 6))",
+        // descending_order
+        "initializes((8, 12), (0, 4))",
+        // overlapping1 — adjacency, not overlap
+        "initializes((0, 4), (4, 8))",
+        // overlapping2
+        "initializes((0, 4), (2, 8))",
+    ] {
+        assert_eq!(
+            parse_err(spelled),
+            "Invalid (unordered or overlapping) range list",
+            "{spelled}"
+        );
+    }
+}
+
+/// The three position diagnostics, from `Attribute::canUseAsFnAttr` and its
+/// two siblings as `parseFnAttributeValuePairs` and
+/// `parseOptionalParamOrReturnAttrs` ask them.
+///
+/// `align` is the exemption upstream calls out by name: it is
+/// `[ParamAttr, RetAttr]` in `Attributes.td`, yet the function loop accepts it
+/// anyway — "as a hack, we allow function alignment to be initially parsed as
+/// an attribute … and later moved to the alignment field."
+#[test]
+fn attributes_are_rejected_outside_their_declared_positions() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("attribute is in the wrong position")
+            .to_string()
+    }
+
+    // `noalias` is `[ParamAttr, RetAttr]`, never a function attribute.
+    assert_eq!(
+        parse_err("define void @f() #0 { ret void }\nattributes #0 = { noalias }\n"),
+        "this attribute does not apply to functions"
+    );
+    // `alwaysinline` is `[FnAttr]` only.
+    assert_eq!(
+        parse_err("define void @f(ptr alwaysinline %p) { ret void }\n"),
+        "this attribute does not apply to parameters"
+    );
+    assert_eq!(
+        parse_err("define alwaysinline ptr @f() { ret ptr null }\n"),
+        "this attribute does not apply to return values"
+    );
+    // `byval` is `[ParamAttr]`: legal on a parameter, not on a return value.
+    assert_eq!(
+        parse_err("%s = type { i32 }\ndefine byval(%s) ptr @f() { ret ptr null }\n"),
+        "this attribute does not apply to return values"
+    );
+
+    // The `align` hack, both spellings — `align` is `[ParamAttr, RetAttr]`
+    // yet the function loop accepts it anyway, which is the exemption
+    // upstream calls out by name.
+    parse_print_reparse(
+        "align in an attribute group",
+        "define void @f() #0 { ret void }\nattributes #0 = { align = 8 }\n",
+        "align=8",
+    );
+    parse_print_reparse(
+        "align on a parameter",
+        "define void @f(ptr align 8 %p) { ret void }\n",
+        "align 8",
+    );
+}
+
+/// The value checks `parseOptionalAlignment`, `parseOptionalStackAlignment`
+/// and `parseOptionalDerefAttrBytes` run, none of which llvmkit had.
+///
+/// Two anchoring details are contractual: `AlignLoc` is captured *before* the
+/// optional paren, so it is the same token as `ParenLoc` and `align(3)`
+/// reports under the `(`; and the non-power-of-two test runs before the
+/// maximum test, so `align 3` is never "huge".
+///
+/// `test/Assembler/align-param-attr-error{0,1,2}.ll` and `align-inst-*.ll`
+/// pin these for the instruction and parameter paths.
+#[test]
+fn alignment_value_checks_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("bad alignment is rejected")
+            .to_string()
+    }
+
+    assert_eq!(
+        parse_err("define void @f(ptr align 3 %p) { ret void }\n"),
+        "alignment is not a power of two"
+    );
+    assert_eq!(
+        parse_err("define void @f(ptr align 0 %p) { ret void }\n"),
+        "alignment is not a power of two"
+    );
+    // `Value::MaximumAlignment` is `1 << 32`, so `1 << 33` is the first
+    // rejected power of two. llvmkit accepted this silently.
+    assert_eq!(
+        parse_err("@g = global i8 0, align 8589934592\n"),
+        "huge alignments are not supported yet"
+    );
+    // `1 << 32` itself is legal.
+    parse_dynamic("@g = global i8 0, align 4294967296\n").expect("the maximum is inclusive");
+
+    assert_eq!(
+        parse_err("define void @f() alignstack(3) {\n  ret void\n}\n"),
+        "stack alignment is not a power of two"
+    );
+    assert_eq!(
+        parse_err("define void @f(ptr dereferenceable(0) %p) { ret void }\n"),
+        "dereferenceable bytes must be non-zero"
+    );
+    assert_eq!(
+        parse_err("define void @f(ptr dereferenceable_or_null(0) %p) { ret void }\n"),
+        "dereferenceable bytes must be non-zero"
+    );
+}
+
+/// Every `[FnAttr]` attribute with an argument must parse on a *function
+/// header*, not only inside an attribute group.
+///
+/// Upstream has one attribute-list production for both, entered from
+/// `parseFunctionHeader` without any lookahead gate. llvmkit gates the header
+/// path on `is_attr_start`, so a keyword missing from that predicate makes
+/// the whole list invisible — the attribute is not rejected, it is never
+/// looked for, and the failure surfaces as `expected '{' to open function
+/// body`. Every one of these is ordinary `clang` output.
+#[test]
+fn argument_carrying_attributes_parse_on_a_function_header() {
+    for spelled in [
+        "uwtable",
+        "uwtable(sync)",
+        "allocsize(0)",
+        "allocsize(0, 1)",
+        "vscale_range(1, 16)",
+        "allockind(\"alloc\")",
+        "memory(read)",
+        "alignstack(16)",
+        "nocallback",
+    ] {
+        let src = format!("define void @f() {spelled} {{\n  ret void\n}}\n");
+        parse_dynamic(src.as_str())
+            .unwrap_or_else(|e| panic!("{spelled} on a function header: {e}\n{src}"));
+    }
+}
+
+/// Ports all eleven splits of `test/Assembler/byref-parse-error-*.ll`, which
+/// pin `LLParser::parseRequiredTypeAttr`'s two bare texts: `expected '('` when
+/// the parenthesis is missing, and `parseType`'s own `expected type` when what
+/// follows it is not one.
+///
+/// Seven of these were recorded as unportable — "they turn on a type llvmkit's
+/// `parse_type` rejects with a different message". That was wrong: they were
+/// blocked by the same lexer layering as the rest of this wave, and every one
+/// answers upstream's text (and upstream's column) now.
+#[test]
+fn byref_parse_errors_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("malformed byref is rejected")
+            .to_string()
+    }
+
+    for (split, src, expected) in [
+        (
+            0,
+            "define void @test_byref(ptr byref) {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            1,
+            "define void @test_byref(ptr byref() {\n  ret void\n}\n",
+            "expected type",
+        ),
+        (
+            2,
+            "define void @test_byref(ptr byref()) {\n  ret void\n}\n",
+            "expected type",
+        ),
+        (
+            3,
+            "define void @test_byref(ptr byref(-1)) {\n  ret void\n}\n",
+            "expected type",
+        ),
+        (
+            4,
+            "define void @test_byref(ptr byref(0)) {\n  ret void\n}\n",
+            "expected type",
+        ),
+        // -5 and -6: the same check in return position.
+        (
+            5,
+            "define byref ptr @test_byref() {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            6,
+            "define byref 8 ptr @test_byref() {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            7,
+            "define byref(8) ptr @test_byref() {\n  ret void\n}\n",
+            "expected type",
+        ),
+        // -8 to -10: and in function-attribute position.
+        (
+            8,
+            "define void @test_byref() byref {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            9,
+            "define void @test_byref() byref=4 {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            10,
+            "define void @test_byref() byref(4) {\n  ret void\n}\n",
+            "expected type",
+        ),
+    ] {
+        assert_eq!(parse_err(src), expected, "byref-parse-error-{split}.ll");
+    }
+}
+
+/// Ports `test/Assembler/align-param-attr-error{0,2}.ll` and
+/// `test/Assembler/allockind-missing.ll` and `invalid-attrgrp.ll`.
+///
+/// `align-param-attr-error1.ll` is not ported: its CHECK is
+/// `expected '{' in function body`, which is the function-body frame's
+/// message and still reads `expected '{' to open function body` here — that
+/// belongs with the function-header wave, not this one.
+#[test]
+fn attribute_argument_fixtures_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("malformed attribute argument is rejected")
+            .to_string()
+    }
+
+    // align-param-attr-error0.ll
+    assert_eq!(
+        parse_err("define void @missing_rparen(ptr align(4 %ptr) {\n  ret void\n}\n"),
+        "expected ')'"
+    );
+    // align-param-attr-error2.ll — `parseUInt64`'s message, not a bespoke one.
+    assert_eq!(
+        parse_err("define void @missing_value(ptr align () %ptr) {\n  ret void\n}\n"),
+        "expected integer"
+    );
+    // allockind-missing.ll
+    assert_eq!(
+        parse_err("declare void @f0() allockind()\n"),
+        "expected allockind value"
+    );
+    // invalid-attrgrp.ll
+    assert_eq!(parse_err("attributes\n"), "expected attribute group id");
+}
+
+/// `parseUInt32`'s second message, which llvmkit collapsed into the first by
+/// parsing straight into a `u32`. It is why the group form is *stricter* than
+/// the inline one: `attributes #0 = { align = 4294967296 }` is rejected while
+/// `align 4294967296` is accepted, because only the group form goes through
+/// `parseUInt32`.
+///
+/// No upstream fixture pins it; anchored on `LLParser::parseUInt32`.
+#[test]
+fn a_uint32_field_reports_its_own_overflow() {
+    let err =
+        parse_dynamic("define void @f() #0 { ret void }\nattributes #0 = { align = 4294967296 }\n")
+            .expect_err("a 33-bit align value does not fit parseUInt32")
+            .to_string();
+    assert_eq!(err, "expected 32-bit integer (too large)");
+
+    parse_dynamic("@g = global i8 0, align 4294967296\n")
+        .expect("the inline form reads a full uint64");
+}
+
+/// `parseUnnamedAttrGrp` and its loop's own diagnostics.
+///
+/// `unterminated attribute group` fires for any token that is not an
+/// attribute. No upstream `.ll` pins it — a grep of `test/` for the string
+/// returns nothing — so the four triggers are llvmkit's, anchored on
+/// `LLParser::parseFnAttributeValuePairs`'s `Attr == Attribute::None` arm: a
+/// type keyword, an integer, a misspelled keyword, and end-of-file. The
+/// misspelled one is the shape upstream's own lexer produces (a silent
+/// `lltok::Error`), and was unreachable until llvmkit's lexer stopped failing
+/// on such a word.
+///
+/// `cannot have an attribute group reference in an attribute group` is
+/// non-fatal upstream (it keeps parsing and accumulates); llvmkit reports the
+/// first and stops, the same choice already recorded for the position
+/// diagnostics.
+#[test]
+fn attribute_group_diagnostics_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("malformed attribute group is rejected")
+            .to_string()
+    }
+
+    assert_eq!(
+        parse_err("attributes #0 = { i32 }\n"),
+        "unterminated attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { 42 }\n"),
+        "unterminated attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { nounwindd }\n"),
+        "unterminated attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { nounwind\n"),
+        "unterminated attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { #1 }\n"),
+        "cannot have an attribute group reference in an attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { }\n"),
+        "attribute group has no attributes"
+    );
+    // `alignstack = 0` is well defined and adds no attribute, so a group
+    // holding only it is empty — `MaybeAlign(0)` carries nothing.
+    assert_eq!(
+        parse_err("attributes #0 = { alignstack = 0 }\n"),
+        "attribute group has no attributes"
+    );
+    assert_eq!(
+        parse_err("attributes 0 = { nounwind }\n"),
+        "expected attribute group id"
+    );
+    assert_eq!(
+        parse_err("attributes #0 { nounwind }\n"),
+        "expected '=' here"
+    );
+    assert_eq!(parse_err("attributes #0 = nounwind\n"), "expected '{' here");
+    assert_eq!(
+        parse_err("define void @f() uwtable(none) {\n  ret void\n}\n"),
+        "expected unwind table kind"
+    );
+}
+
+/// The three attributes whose argument needed a grammar of its own. Each
+/// asserts the spelling `Attribute::getAsString` produces — note that all
+/// three write their comma with no following space, and that `vscale_range`
+/// always prints two arguments, using `0` for an unbounded maximum.
+#[test]
+fn the_argument_carrying_function_attributes_round_trip() {
+    for (spelled, printed) in [
+        ("allocsize(0)", "allocsize(0)"),
+        ("allocsize(0, 1)", "allocsize(0,1)"),
+        ("vscale_range(1, 16)", "vscale_range(1,16)"),
+        // A missing maximum defaults to the *minimum*, not to unbounded.
+        ("vscale_range(4)", "vscale_range(4,4)"),
+        ("allockind(\"alloc\")", "allockind(\"alloc\")"),
+        ("allockind(\"alloc,zeroed\")", "allockind(\"alloc,zeroed\")"),
+        // `getAsString` emits the kinds in declaration order, whatever order
+        // the source wrote them in.
+        ("allockind(\"zeroed,alloc\")", "allockind(\"alloc,zeroed\")"),
+    ] {
+        parse_print_reparse(
+            spelled,
+            &format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {spelled} }}\n"),
+            printed,
+        );
+    }
+}
+
+/// `preallocated(T)` is a `TypeAttr`, so it takes the same production as
+/// `byval` / `sret` / `elementtype`. Its `Attributes.td` def declares *both*
+/// `FnAttr` and `ParamAttr` — the only type attribute that does — so both
+/// positions are asserted.
+#[test]
+fn preallocated_is_a_type_attribute_in_both_positions() {
+    parse_print_reparse(
+        "preallocated param",
+        "%s = type { i32 }\ndefine void @f(ptr preallocated(%s) %p) { ret void }\n",
+        "preallocated(%s)",
+    );
+    parse_print_reparse(
+        "preallocated fn",
+        "%s = type { i32 }\ndefine void @f() #0 { ret void }\nattributes #0 = { preallocated(%s) }\n",
+        "preallocated(%s)",
+    );
+}
+
+/// The thirty-nine plain enum attributes wired in one sweep: every remaining
+/// `EnumAttr` in `Attributes.td` that the lexer already tokenised and
+/// `attr_kind_for_keyword` — upstream's `tokenToAttribute` — did not know.
+/// Each is probed in the position its `.td` def declares.
+///
+/// `test/Bitcode/attributes.ll` is the upstream fixture that exercises these;
+/// its RUN line is `llvm-as | llvm-dis | FileCheck`, a pure assembler
+/// round-trip, which is the same three assertions `parse_print_reparse`
+/// makes. It lives under `test/Bitcode` only because that is where LLVM keeps
+/// its full-attribute-surface round-trip.
+#[test]
+fn every_remaining_plain_enum_attribute_round_trips() {
+    const FUNCTION_ATTRIBUTES: &[&str] = &[
+        "builtin",
+        "coro_elide_safe",
+        "disable_sanitizer_instrumentation",
+        "coro_only_destroy_when_complete",
+        "fn_ret_thunk_extern",
+        "hybrid_patchable",
+        "jumptable",
+        "naked",
+        "nobuiltin",
+        "nocf_check",
+        "nodivergencesource",
+        "noimplicitfloat",
+        "noprofile",
+        "noredzone",
+        "nosanitize_bounds",
+        "nosanitize_coverage",
+        "null_pointer_is_valid",
+        "optdebug",
+        "optforfuzzing",
+        "presplitcoroutine",
+        "returns_twice",
+        "safestack",
+        "sanitize_alloc_token",
+        "sanitize_hwaddress",
+        "sanitize_memory",
+        "sanitize_memtag",
+        "sanitize_numerical_stability",
+        "sanitize_realtime",
+        "sanitize_realtime_blocking",
+        "sanitize_thread",
+        "sanitize_type",
+        "shadowcallstack",
+        "skipprofile",
+        "speculative_load_hardening",
+    ];
+    const PARAMETER_ATTRIBUTES: &[&str] = &[
+        "allocalign",
+        "allocptr",
+        "dead_on_return",
+        "dead_on_unwind",
+        "noext",
+        "swiftasync",
+        "swifterror",
+    ];
+
+    for keyword in FUNCTION_ATTRIBUTES {
+        parse_print_reparse(
+            keyword,
+            &format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {keyword} }}\n"),
+            keyword,
+        );
+    }
+    for keyword in PARAMETER_ATTRIBUTES {
+        parse_print_reparse(
+            keyword,
+            &format!("define void @f(ptr {keyword} %p) {{ ret void }}\n"),
+            keyword,
+        );
+    }
 }

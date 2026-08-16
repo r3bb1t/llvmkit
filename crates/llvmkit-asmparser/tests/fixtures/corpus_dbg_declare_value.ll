@@ -9,5 +9,6 @@ entry:
 !1 = !DILocalVariable(name: "x", scope: !0, type: !5)
 !2 = !DILocation(line: 1, column: 17, scope: !0)
 !3 = !DISubroutineType(types: !{null, !5})
-!4 = !DICompileUnit(language: DW_LANG_C11, producer: "llvmkit")
+!4 = distinct !DICompileUnit(language: DW_LANG_C11, file: !6, producer: "llvmkit")
 !5 = !DIBasicType(name: "double", size: 64, encoding: DW_ATE_float)
+!6 = !DIFile(filename: "test.c", directory: "/tmp")

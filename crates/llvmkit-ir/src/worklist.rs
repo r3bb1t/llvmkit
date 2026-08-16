@@ -140,7 +140,7 @@ impl<B: ModuleBrand> Worklist<B> {
 #[cfg(test)]
 mod tests {
     use super::Worklist;
-    use crate::{FunctionView, IRBuilder, IntValue, IrError, Linkage, NoFolder};
+    use crate::{FunctionView, IntValue, IrBuilder, IrError, Linkage, NoFolder};
 
     // Build `f(i32 %x)` with three dead adds; return their ids + the module ref.
     // Helper closes over `m` so tests can pop against a live module.
@@ -148,16 +148,16 @@ mod tests {
     fn push_dedups_and_pop_is_lifo() -> Result<(), IrError> {
         let m = crate::module_new!("wl-basic")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let a = b.build_int_add(x, 1_i32, "a")?;
-        let c = b.build_int_add(x, 2_i32, "c")?;
-        b.build_ret(x)?;
+        let a = b.int_add(x, 1_i32, "a")?;
+        let c = b.int_add(x, 2_i32, "c")?;
+        b.ret(x)?;
 
-        let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
+        let (a_id, c_id) = (m.view(a).as_erased().id(), m.view(c).as_erased().id());
         let module = m.module_ref();
 
         let mut wl = Worklist::new();
@@ -183,15 +183,15 @@ mod tests {
     fn remove_pulls_from_stack_and_set() -> Result<(), IrError> {
         let m = crate::module_new!("wl-remove")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let a = b.build_int_add(x, 1_i32, "a")?;
-        let c = b.build_int_add(x, 2_i32, "c")?;
-        b.build_ret(x)?;
-        let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
+        let a = b.int_add(x, 1_i32, "a")?;
+        let c = b.int_add(x, 2_i32, "c")?;
+        b.ret(x)?;
+        let (a_id, c_id) = (m.view(a).as_erased().id(), m.view(c).as_erased().id());
         let module = m.module_ref();
 
         let mut wl = Worklist::new();
@@ -212,19 +212,19 @@ mod tests {
     fn pop_skips_non_instruction_id_without_panicking() -> Result<(), IrError> {
         let m = crate::module_new!("wl-non-inst")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let a = b.build_int_add(x, 1_i32, "a")?;
-        b.build_ret(x)?;
+        let a = b.int_add(x, 1_i32, "a")?;
+        b.ret(x)?;
 
         // A constant operand id — the kind of id the erase cascade pushes.
-        let const_id = i32_ty.const_int(1_i32).into_erased().id();
+        let const_id = i32_ty.const_int(1_i32).as_erased().id();
         // A parameter id — likewise not an instruction (`x` is param 0).
-        let param_id = x.into_erased().id();
-        let a_id = m.view(a).into_erased().id();
+        let param_id = x.as_erased().id();
+        let a_id = m.view(a).as_erased().id();
         let module = m.module_ref();
 
         let mut wl = Worklist::new();
@@ -257,15 +257,15 @@ mod tests {
     fn pop_skips_terminator_id() -> Result<(), IrError> {
         let m = crate::module_new!("wl-term")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let a = b.build_int_add(x, 1_i32, "a")?;
-        b.build_ret(x)?;
+        let a = b.int_add(x, 1_i32, "a")?;
+        b.ret(x)?;
 
-        let a_id = m.view(a).into_erased().id();
+        let a_id = m.view(a).as_erased().id();
         // The `ret` terminator is the block's last instruction; reach it the
         // same way `pass_context`'s tests do, then take its storable id.
         let ret_id = FunctionView::from(m.view(f))

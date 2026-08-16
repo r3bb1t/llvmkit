@@ -1,4 +1,4 @@
-//! End-to-end Phase A3 + Phase D-lite + Phase C `build_trunc` demo.
+//! End-to-end Phase A3 + Phase D-lite + Phase C `trunc` demo.
 //!
 //! Builds the equivalent of:
 //!
@@ -35,7 +35,7 @@
 //! ```
 
 use llvmkit_ir::{
-    AttrKind, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, UnnamedAddr, module_new,
+    AttrKind, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand, UnnamedAddr, module_new,
 };
 
 pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
@@ -43,7 +43,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i64_ty = m.i64_type();
 
     // ---- `add`: 4 i64 inputs (rax/rbx/rcx/rdx), returns i32. ----
-    let add_sig = m.fn_type(
+    let add_sig = m.function_type(
         i32_ty,
         [
             i64_ty.as_type(),
@@ -51,7 +51,6 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
             i64_ty.as_type(),
             i64_ty.as_type(),
         ],
-        false,
     );
     let add_fn = m
         .function_builder::<i32, _>("add", add_sig)
@@ -64,7 +63,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         .build()?;
 
     let entry = m.view(add_fn).append_basic_block(m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
 
     let rax: IntValue<'_, i64, _> = m.view(add_fn).param(0)?.try_into()?;
     let rbx: IntValue<'_, i64, _> = m.view(add_fn).param(1)?.try_into()?;
@@ -74,15 +73,15 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // arriving as typed `i64` values.
     let _rdx: IntValue<'_, i64, _> = m.view(add_fn).param(3)?.try_into()?;
 
-    let t0 = b.build_trunc(rax, i32_ty, "")?;
-    let t1 = b.build_trunc(rbx, i32_ty, "")?;
-    let t2 = b.build_trunc(rcx, i32_ty, "")?;
-    let s1 = b.build_int_add(t0, t1, "add1")?;
-    let s2 = b.build_int_add(s1, t2, "add2")?;
-    b.build_ret(s2)?;
+    let t0 = b.trunc(rax, i32_ty, "")?;
+    let t1 = b.trunc(rbx, i32_ty, "")?;
+    let t2 = b.trunc(rcx, i32_ty, "")?;
+    let s1 = b.int_add(t0, t1, "add1")?;
+    let s2 = b.int_add(s1, t2, "add2")?;
+    b.ret(s2)?;
 
     // ---- `main`: no params, returns i32, ret-attr `noundef`. ----
-    let main_sig = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let main_sig = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let main_fn = m
         .function_builder::<i32, _>("main", main_sig)
         .linkage(Linkage::External)
@@ -90,10 +89,10 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         .return_attribute(AttrKind::NoUndef)
         .build()?;
     let entry = m.view(main_fn).append_basic_block(m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let one = i32_ty.const_int(1_i32);
-    let one_v = IntValue::<i32, _>::try_from(one.into_erased())?;
-    b.build_ret(one_v)?;
+    let one_v = IntValue::<i32, _>::try_from(one.as_erased())?;
+    b.ret(one_v)?;
 
     Ok(())
 }

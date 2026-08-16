@@ -4,13 +4,13 @@
 //! `redirect_successor`) build a `switch`-fed
 //! merge whose phi collects an incoming from a `switch` case edge — which the
 //! block-argument authoring surface (`append_block_with_params` +
-//! `build_*_with_args`) physically cannot express — so they keep the raw
-//! `build_int_phi`/`add_incoming` API and run from inside the crate. They are
+//! `*_with_args`) physically cannot express — so they keep the raw
+//! `int_phi`/`add_incoming` API and run from inside the crate. They are
 //! kept verbatim from their integration-test origin (only the `llvmkit_ir::`
 //! paths are rewritten to `crate::`).
 
 use crate::{
-    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult,
+    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IntValue, IrBuilder, IrError, IrResult,
     Linkage, Module, ModuleBrand, ReshapeCfg, ValueId, run_function_pass,
 };
 
@@ -108,7 +108,7 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
 ) -> SwitchMergeBuild<B> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let dflt = m.view(f).append_basic_block(m, "dflt");
@@ -121,31 +121,31 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
     let merge_lbl = merge.id();
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let e = b.build_int_add(a, 7_i32, "e")?;
-    let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
+    let e = b.int_add(a, 7_i32, "e")?;
+    let (_sealed, sw) = b.switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), merge_lbl)?
         .add_case(i32_ty.const_int(1_u32), other_lbl)?
         .finish();
 
     // dflt: %d = add %a, 9 ; br merge
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let d = b.build_int_add(a, 9_i32, "d")?;
-    b.build_br(merge_lbl)?;
+    let d = b.int_add(a, 9_i32, "d")?;
+    b.br(merge_lbl)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
+    b.ret(i32_ty.const_int(0_u32))?;
 
     // merge: %p = phi i32 [ %e, entry ], [ %d, dflt ] ; ret %p
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(merge);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(merge);
     let p = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(e, entry_lbl)?
         .add_incoming(d, dflt_lbl)?;
-    b.build_ret(p.as_int_value())?;
+    b.ret(p.as_int_value())?;
 
     Ok((f, dflt_lbl, other_lbl, merge_lbl))
 }
@@ -200,8 +200,7 @@ fn edit_switch_rejects_non_switch_from() -> Result<(), IrError> {
         to: merge_dyn,
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("edit_switch must reject a non-switch `from`");
+        .expect_err("edit_switch must reject a non-switch `from`");
     assert!(
         matches!(err, IrError::InvalidOperation { .. }),
         "expected InvalidOperation for a non-switch `from`, got: {err:?}"
@@ -224,8 +223,7 @@ fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
         to: dflt_dyn,
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("remove_successor must reject dropping the switch default edge");
+        .expect_err("remove_successor must reject dropping the switch default edge");
     assert!(
         matches!(err, IrError::InvalidOperation { .. }),
         "expected InvalidOperation for the switch default edge, got: {err:?}"
@@ -254,8 +252,7 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
         phi_values: vec![],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("redirect_successor must reject a `new_to` already reached by `from`");
+        .expect_err("redirect_successor must reject a `new_to` already reached by `from`");
     assert!(
         matches!(err, IrError::InvalidOperation { .. }),
         "expected InvalidOperation when `from` already reaches `new_to`, got: {err:?}"
@@ -287,7 +284,7 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
 ) -> SwitchDefaultParallelBuild<B> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let mid = m.view(f).append_basic_block(m, "mid");
@@ -300,32 +297,32 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     let new_lbl = new.id();
 
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let e = b.build_int_add(a, 7_i32, "e")?;
-    let (_sealed, sw) = b.build_switch_dyn(a, shared_lbl, "")?;
+    let e = b.int_add(a, 7_i32, "e")?;
+    let (_sealed, sw) = b.switch_dyn(a, shared_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), shared_lbl)?
         .add_case(i32_ty.const_int(1_u32), mid_lbl)?
         .finish();
 
     // mid: %mv = add %a, 3 ; br shared
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(mid);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(mid);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let mv = b.build_int_add(a, 3_i32, "mv")?;
-    b.build_br(shared_lbl)?;
+    let mv = b.int_add(a, 3_i32, "mv")?;
+    b.br(shared_lbl)?;
 
     // shared: %p = phi i32 [ %e, entry ] (default), [ %e, entry ] (case 0), [ %mv, mid ] ; ret %p
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(shared);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(shared);
     let p = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(e, entry_lbl)?
         .add_incoming(e, entry_lbl)?
         .add_incoming(mv, mid_lbl)?;
-    b.build_ret(p.as_int_value())?;
+    b.ret(p.as_int_value())?;
 
     // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
+    b.ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, shared_lbl, new_lbl))
 }

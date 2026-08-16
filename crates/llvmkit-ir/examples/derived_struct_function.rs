@@ -1,4 +1,4 @@
-use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, NoFolder, module_new};
+use llvmkit_ir::{IrBuilder, IrError, IrStruct, Linkage, NoFolder, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -44,7 +44,7 @@ fn main() -> Result<(), IrError> {
             Linkage::External,
         )?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let (placement,) = m.view(f).params();
 
         let normal_position = placement.normal_position(&b)?;
@@ -62,7 +62,7 @@ fn main() -> Result<(), IrError> {
             rebuilt_rect,
             "placement",
         )?;
-        b.build_ret(rebuilt)?;
+        b.ret(rebuilt)?;
 
         format!("{m}")
     };

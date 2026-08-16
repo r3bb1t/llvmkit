@@ -1,15 +1,534 @@
 # Parser corpus fixtures.
-# Format: <fixture>.ll | <upstream citation> | expect=<expected fixture> | status=<pass|xfail-parse|xfail-verify>
+#
+# Format: <fixture>.ll | <upstream citation> | <option>...
+#
+# Options:
+#   status=pass         upstream's RUN line accepts it: must parse, verify, and
+#                       print/re-parse/print to the same bytes twice.
+#   status=reject       upstream runs `not llvm-as` / `not opt` over it: the
+#                       parse must fail.
+#   status=xfail-parse  llvmkit gap: upstream accepts it, llvmkit does not parse
+#                       it yet. Accounted for in docs/fixture-coverage.md.
+#   status=xfail-verify llvmkit gap: parses, but does not verify.
+#   error=<text>        `reject` only. Upstream's FileCheck diagnostic text; the
+#                       rendered message must contain it, FileCheck's own rule.
+#   loc=<line>:<col>    `reject` only. Upstream's `<stdin>:LINE:COL:` pin.
+#   expect=<fixture>    golden print to compare against.
+#
+# Fixtures under upstream/assembler-corpus/ are byte-for-byte copies of
+# llvm/test/Assembler/*.ll. A row citing `split-file part <p>` is the exact
+# split-file output for one part of a multi-part container -- the text
+# upstream's own RUN line hands to llvm-as.
 facade_minimal.ll | unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString) | status=pass
 corpus_flags_minimal.ll | test/Assembler/flags.ll | expect=corpus_flags_minimal.expected.ll | status=pass
 corpus_dbg_declare_value.ll | test/Assembler/dbg_declare_value.ll | expect=corpus_dbg_declare_value.expected.ll | status=pass
 corpus_dbg_record_after_terminator_invalid.ll | test/Assembler/dbg-record-invalid-0.ll | status=xfail-parse
 
-# Upstream fixtures checked in now, but expected-failing until the parser grows
-# same-function forward blockaddress and ordinary forward-global resolution in
-# constant expressions.
+# Upstream fixtures checked in now, but expected-failing.
+# return_self_bad.ll is a *negative* fixture: its CHECK line pins
+# `constant expression type mismatch`, which needs W4's convertValIDToValue.
 upstream/vscale-round-trip/const_shufflevector.ll | test/Bitcode/vscale-round-trip.ll::const_shufflevector / const_shufflevector_ex | status=pass
-upstream/blockaddress-addrspace/return_self_good.ll | test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll | status=xfail-parse
+upstream/blockaddress-addrspace/return_self_good.ll | test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll | status=pass
 upstream/blockaddress-addrspace/return_self_bad.ll | test/Bitcode/blockaddress-addrspace.ll::return-self-bad.ll | status=xfail-parse
+upstream/blockaddress-addrspace/global_fwddecl_good.ll | test/Bitcode/blockaddress-addrspace.ll::global-fwddecl-good.ll | status=pass
+upstream/pr119818.ll | test/Assembler/pr119818.ll | status=pass
 upstream/2004-11-28-InvalidTypeCrash.ll | test/Assembler/2004-11-28-InvalidTypeCrash.ll | status=xfail-parse
-upstream/2010-02-05-FunctionLocalMetadataBecomesNull/global_forward_gep.ll | test/Assembler/2010-02-05-FunctionLocalMetadataBecomesNull.ll global forward GEP excerpt | status=xfail-parse
+upstream/2010-02-05-FunctionLocalMetadataBecomesNull/global_forward_gep.ll | test/Assembler/2010-02-05-FunctionLocalMetadataBecomesNull.ll global forward GEP excerpt | status=pass
+
+# ---------------------------------------------------------------------------
+# llvm/test/Assembler, whole directory. Generated from the measured
+# classification recorded in docs/fixture-coverage.md; every fixture that file
+# marks `ported` has its row here, and every one it marks `blocked-model` or
+# `N/A` deliberately does not.
+# ---------------------------------------------------------------------------
+upstream/assembler-corpus/2002-03-08-NameCollision.ll | test/Assembler/2002-03-08-NameCollision.ll | status=pass
+upstream/assembler-corpus/2002-03-08-NameCollision2.ll | test/Assembler/2002-03-08-NameCollision2.ll | status=pass
+upstream/assembler-corpus/2002-04-07-HexFloatConstants.ll | test/Assembler/2002-04-07-HexFloatConstants.ll | status=pass
+upstream/assembler-corpus/2002-04-07-InfConstant.ll | test/Assembler/2002-04-07-InfConstant.ll | status=pass
+upstream/assembler-corpus/2002-04-29-NameBinding.ll | test/Assembler/2002-04-29-NameBinding.ll | status=pass
+upstream/assembler-corpus/2002-05-02-InvalidForwardRef.ll | test/Assembler/2002-05-02-InvalidForwardRef.ll | status=pass
+upstream/assembler-corpus/2002-07-14-OpaqueType.ll | test/Assembler/2002-07-14-OpaqueType.ll | status=pass
+upstream/assembler-corpus/2002-07-25-QuoteInString.ll | test/Assembler/2002-07-25-QuoteInString.ll | status=pass
+upstream/assembler-corpus/2002-07-25-ReturnPtrFunction.ll | test/Assembler/2002-07-25-ReturnPtrFunction.ll | status=pass
+upstream/assembler-corpus/2002-07-31-SlashInString.ll | test/Assembler/2002-07-31-SlashInString.ll | status=pass
+upstream/assembler-corpus/2002-08-15-CastAmbiguity.ll | test/Assembler/2002-08-15-CastAmbiguity.ll | status=pass
+upstream/assembler-corpus/2002-08-15-ConstantExprProblem.ll | test/Assembler/2002-08-15-ConstantExprProblem.ll | status=pass
+upstream/assembler-corpus/2002-08-15-UnresolvedGlobalReference.ll | test/Assembler/2002-08-15-UnresolvedGlobalReference.ll | status=pass
+upstream/assembler-corpus/2002-08-16-ConstExprInlined.ll | test/Assembler/2002-08-16-ConstExprInlined.ll | status=pass
+upstream/assembler-corpus/2002-08-19-BytecodeReader.ll | test/Assembler/2002-08-19-BytecodeReader.ll | status=pass
+upstream/assembler-corpus/2002-08-22-DominanceProblem.ll | test/Assembler/2002-08-22-DominanceProblem.ll | status=pass
+upstream/assembler-corpus/2002-10-08-LargeArrayPerformance.ll | test/Assembler/2002-10-08-LargeArrayPerformance.ll | status=pass
+upstream/assembler-corpus/2002-10-13-ConstantEncodingProblem.ll | test/Assembler/2002-10-13-ConstantEncodingProblem.ll | status=pass
+upstream/assembler-corpus/2002-12-15-GlobalResolve.ll | test/Assembler/2002-12-15-GlobalResolve.ll | status=pass
+upstream/assembler-corpus/2003-01-30-UnsignedString.ll | test/Assembler/2003-01-30-UnsignedString.ll | status=pass
+upstream/assembler-corpus/2003-04-15-ConstantInitAssertion.ll | test/Assembler/2003-04-15-ConstantInitAssertion.ll | status=reject | error=struct initializer doesn't match struct element type
+upstream/assembler-corpus/2003-04-25-UnresolvedGlobalReference.ll | test/Assembler/2003-04-25-UnresolvedGlobalReference.ll | status=pass
+upstream/assembler-corpus/2003-05-03-BytecodeReaderProblem.ll | test/Assembler/2003-05-03-BytecodeReaderProblem.ll | status=pass
+upstream/assembler-corpus/2003-05-12-MinIntProblem.ll | test/Assembler/2003-05-12-MinIntProblem.ll | status=pass
+upstream/assembler-corpus/2003-05-15-SwitchBug.ll | test/Assembler/2003-05-15-SwitchBug.ll | status=pass
+upstream/assembler-corpus/2003-05-21-ConstantShiftExpr.ll | test/Assembler/2003-05-21-ConstantShiftExpr.ll | status=pass
+upstream/assembler-corpus/2003-05-21-EmptyStructTest.ll | test/Assembler/2003-05-21-EmptyStructTest.ll | status=pass
+upstream/assembler-corpus/2003-05-21-MalformedStructCrash.ll | test/Assembler/2003-05-21-MalformedStructCrash.ll | status=reject | error=initializer with struct type has wrong # elements
+upstream/assembler-corpus/2003-08-20-ConstantExprGEP-Fold.ll | test/Assembler/2003-08-20-ConstantExprGEP-Fold.ll | status=pass
+upstream/assembler-corpus/2003-08-21-ConstantExprCast-Fold.ll | test/Assembler/2003-08-21-ConstantExprCast-Fold.ll | status=pass
+upstream/assembler-corpus/2003-11-11-ImplicitRename.ll | test/Assembler/2003-11-11-ImplicitRename.ll | status=reject
+upstream/assembler-corpus/2003-11-12-ConstantExprCast.ll | test/Assembler/2003-11-12-ConstantExprCast.ll | status=pass
+upstream/assembler-corpus/2003-11-24-SymbolTableCrash.ll | test/Assembler/2003-11-24-SymbolTableCrash.ll | status=reject | error=multiple definition of local value named 'tmp.1'
+upstream/assembler-corpus/2004-01-11-getelementptrfolding.ll | test/Assembler/2004-01-11-getelementptrfolding.ll | status=pass
+upstream/assembler-corpus/2004-01-20-MaxLongLong.ll | test/Assembler/2004-01-20-MaxLongLong.ll | status=pass
+upstream/assembler-corpus/2004-02-01-NegativeZero.ll | test/Assembler/2004-02-01-NegativeZero.ll | status=pass
+upstream/assembler-corpus/2004-03-30-UnclosedFunctionCrash.ll | test/Assembler/2004-03-30-UnclosedFunctionCrash.ll | status=reject | error=found end of file when expecting more instructions
+upstream/assembler-corpus/2004-04-04-GetElementPtrIndexTypes.ll | test/Assembler/2004-04-04-GetElementPtrIndexTypes.ll | status=pass
+upstream/assembler-corpus/2004-10-22-BCWriterUndefBug.ll | test/Assembler/2004-10-22-BCWriterUndefBug.ll | status=pass
+upstream/assembler-corpus/2004-11-28-InvalidTypeCrash.ll | test/Assembler/2004-11-28-InvalidTypeCrash.ll | status=reject | error=invalid type for null constant
+upstream/assembler-corpus/2005-01-03-FPConstantDisassembly.ll | test/Assembler/2005-01-03-FPConstantDisassembly.ll | status=pass
+upstream/assembler-corpus/2005-01-31-CallingAggregateFunction.ll | test/Assembler/2005-01-31-CallingAggregateFunction.ll | status=pass
+upstream/assembler-corpus/2005-05-05-OpaqueUndefValues.ll | test/Assembler/2005-05-05-OpaqueUndefValues.ll | status=reject | error=invalid type for undef constant
+upstream/assembler-corpus/2005-12-21-ZeroInitVector.ll | test/Assembler/2005-12-21-ZeroInitVector.ll | status=pass
+upstream/assembler-corpus/2006-09-28-CrashOnInvalid.ll | test/Assembler/2006-09-28-CrashOnInvalid.ll | status=reject | error=floating point constant invalid for type
+upstream/assembler-corpus/2006-12-09-Cast-To-Bool.ll | test/Assembler/2006-12-09-Cast-To-Bool.ll | status=pass
+upstream/assembler-corpus/2007-01-02-Undefined-Arg-Type.ll | test/Assembler/2007-01-02-Undefined-Arg-Type.ll | status=reject | error=invalid type for function argument
+upstream/assembler-corpus/2007-01-05-Cmp-ConstExpr.ll | test/Assembler/2007-01-05-Cmp-ConstExpr.ll | status=pass
+upstream/assembler-corpus/2007-01-16-CrashOnBadCast2.ll | test/Assembler/2007-01-16-CrashOnBadCast2.ll | status=reject | error=invalid cast opcode for cast from 'i64' to 'ptr'
+upstream/assembler-corpus/2007-03-18-InvalidNumberedVar.ll | test/Assembler/2007-03-18-InvalidNumberedVar.ll | status=reject | error='%0' defined with type 'i1'
+upstream/assembler-corpus/2007-03-19-NegValue.ll | test/Assembler/2007-03-19-NegValue.ll | status=pass
+upstream/assembler-corpus/2007-04-20-AlignedLoad.ll | test/Assembler/2007-04-20-AlignedLoad.ll | status=pass
+upstream/assembler-corpus/2007-04-20-AlignedStore.ll | test/Assembler/2007-04-20-AlignedStore.ll | status=pass
+upstream/assembler-corpus/2007-05-21-Escape.ll | test/Assembler/2007-05-21-Escape.ll | status=pass
+upstream/assembler-corpus/2007-07-19-ParamAttrAmbiguity.ll | test/Assembler/2007-07-19-ParamAttrAmbiguity.ll | status=pass
+upstream/assembler-corpus/2007-08-06-AliasInvalid.ll | test/Assembler/2007-08-06-AliasInvalid.ll | status=reject | error=expected top-level entity
+upstream/assembler-corpus/2007-09-10-AliasFwdRef.ll | test/Assembler/2007-09-10-AliasFwdRef.ll | status=pass
+upstream/assembler-corpus/2007-09-29-GC.ll | test/Assembler/2007-09-29-GC.ll | status=pass
+upstream/assembler-corpus/2007-11-26-AttributeOverload.ll | test/Assembler/2007-11-26-AttributeOverload.ll | status=reject
+upstream/assembler-corpus/2007-12-11-AddressSpaces.ll | test/Assembler/2007-12-11-AddressSpaces.ll | status=pass
+upstream/assembler-corpus/2008-01-11-VarargAttrs.ll | test/Assembler/2008-01-11-VarargAttrs.ll | status=pass
+upstream/assembler-corpus/2008-02-18-IntPointerCrash.ll | test/Assembler/2008-02-18-IntPointerCrash.ll | status=reject | error=integer constant must have integer type
+upstream/assembler-corpus/2008-07-10-APInt.ll | test/Assembler/2008-07-10-APInt.ll | status=pass
+upstream/assembler-corpus/2008-09-02-FunctionNotes.ll | test/Assembler/2008-09-02-FunctionNotes.ll | status=pass
+upstream/assembler-corpus/2008-09-29-RetAttr.ll | test/Assembler/2008-09-29-RetAttr.ll | status=pass
+upstream/assembler-corpus/2008-10-14-QuoteInName.ll | test/Assembler/2008-10-14-QuoteInName.ll | status=pass
+upstream/assembler-corpus/2009-02-01-UnnamedForwardRef.ll | test/Assembler/2009-02-01-UnnamedForwardRef.ll | status=pass
+upstream/assembler-corpus/2009-02-28-CastOpc.ll | test/Assembler/2009-02-28-CastOpc.ll | status=pass
+upstream/assembler-corpus/2009-02-28-StripOpaqueName.ll | test/Assembler/2009-02-28-StripOpaqueName.ll | status=pass
+upstream/assembler-corpus/2009-07-24-ZeroArgGEP.ll | test/Assembler/2009-07-24-ZeroArgGEP.ll | status=pass
+upstream/assembler-corpus/ConstantExprFold.ll | test/Assembler/ConstantExprFold.ll | status=pass
+upstream/assembler-corpus/ConstantExprFoldCast.ll | test/Assembler/ConstantExprFoldCast.ll | status=pass
+upstream/assembler-corpus/ConstantExprFoldSelect.ll | test/Assembler/ConstantExprFoldSelect.ll | status=pass
+upstream/assembler-corpus/DIGlobalVariableExpression.ll | test/Assembler/DIGlobalVariableExpression.ll | status=pass
+upstream/assembler-corpus/aarch64-intrinsics-attributes.ll | test/Assembler/aarch64-intrinsics-attributes.ll | status=pass
+upstream/assembler-corpus/absolute_symbol.ll | test/Assembler/absolute_symbol.ll | status=pass
+upstream/assembler-corpus/aggregate-constant-values.ll | test/Assembler/aggregate-constant-values.ll | status=pass
+upstream/assembler-corpus/aggregate-return-single-value.ll | test/Assembler/aggregate-return-single-value.ll | status=pass
+upstream/assembler-corpus/align-inst-alloca.ll | test/Assembler/align-inst-alloca.ll | status=reject
+upstream/assembler-corpus/align-inst-load.ll | test/Assembler/align-inst-load.ll | status=reject
+upstream/assembler-corpus/align-inst-store.ll | test/Assembler/align-inst-store.ll | status=reject
+upstream/assembler-corpus/align-inst.ll | test/Assembler/align-inst.ll | status=pass
+upstream/assembler-corpus/align-param-attr-error0.ll | test/Assembler/align-param-attr-error0.ll | status=reject | loc=5:38 | error=expected ')'
+upstream/assembler-corpus/align-param-attr-error1.ll | test/Assembler/align-param-attr-error1.ll | status=reject | loc=5:42 | error=expected '{' in function body
+upstream/assembler-corpus/align-param-attr-error2.ll | test/Assembler/align-param-attr-error2.ll | status=reject | loc=5:39 | error=expected integer
+upstream/assembler-corpus/align-param-attr-format.ll | test/Assembler/align-param-attr-format.ll | status=pass
+upstream/assembler-corpus/alignstack.ll | test/Assembler/alignstack.ll | status=pass
+upstream/assembler-corpus/alloca-addrspace-elems.ll | test/Assembler/alloca-addrspace-elems.ll | status=pass
+upstream/assembler-corpus/alloca-addrspace-parse-error-0.ll | test/Assembler/alloca-addrspace-parse-error-0.ll | status=reject | error=expected metadata after comma
+upstream/assembler-corpus/alloca-addrspace-parse-error-1.ll | test/Assembler/alloca-addrspace-parse-error-1.ll | status=reject | error=expected metadata after comma
+upstream/assembler-corpus/alloca-addrspace0.ll | test/Assembler/alloca-addrspace0.ll | status=pass
+upstream/assembler-corpus/alloca-invalid-type-2.ll | test/Assembler/alloca-invalid-type-2.ll | status=reject | error=invalid type for alloca
+upstream/assembler-corpus/alloca-invalid-type.ll | test/Assembler/alloca-invalid-type.ll | status=reject | error=invalid type for alloca
+upstream/assembler-corpus/alloca-size-one.ll | test/Assembler/alloca-size-one.ll | status=pass
+upstream/assembler-corpus/allockind-missing.ll | test/Assembler/allockind-missing.ll | status=reject | error=expected allockind value
+upstream/assembler-corpus/allockind.ll | test/Assembler/allockind.ll | status=reject | error=unknown allockind fjord
+upstream/assembler-corpus/amdgcn-intrinsic-attributes.ll | test/Assembler/amdgcn-intrinsic-attributes.ll | status=pass
+upstream/assembler-corpus/amdgpu-cs-chain-cc.ll | test/Assembler/amdgpu-cs-chain-cc.ll | status=pass
+upstream/assembler-corpus/asm-path-writer.ll | test/Assembler/asm-path-writer.ll | status=pass
+upstream/assembler-corpus/associated-metadata.ll | test/Assembler/associated-metadata.ll | status=pass
+upstream/assembler-corpus/atomic.ll | test/Assembler/atomic.ll | status=pass
+upstream/assembler-corpus/atomicrmw.ll | test/Assembler/atomicrmw.ll | status=pass
+upstream/assembler-corpus/bcwrap.ll | test/Assembler/bcwrap.ll | status=pass
+upstream/assembler-corpus/bfloat.ll | test/Assembler/bfloat.ll | status=pass
+upstream/assembler-corpus/block-labels.ll | test/Assembler/block-labels.ll | status=pass
+upstream/assembler-corpus/br-single-destination.ll | test/Assembler/br-single-destination.ll | status=pass
+upstream/assembler-corpus/byref-parse-error-0.ll | test/Assembler/byref-parse-error-0.ll | status=reject | loc=4:34 | error=expected '('
+upstream/assembler-corpus/byref-parse-error-1.ll | test/Assembler/byref-parse-error-1.ll | status=reject | loc=4:35 | error=expected type
+upstream/assembler-corpus/byref-parse-error-10.ll | test/Assembler/byref-parse-error-10.ll | status=reject | loc=4:33 | error=expected type
+upstream/assembler-corpus/byref-parse-error-2.ll | test/Assembler/byref-parse-error-2.ll | status=reject | loc=4:35 | error=expected type
+upstream/assembler-corpus/byref-parse-error-3.ll | test/Assembler/byref-parse-error-3.ll | status=reject | loc=4:35 | error=expected type
+upstream/assembler-corpus/byref-parse-error-4.ll | test/Assembler/byref-parse-error-4.ll | status=reject | loc=4:35 | error=expected type
+upstream/assembler-corpus/byref-parse-error-5.ll | test/Assembler/byref-parse-error-5.ll | status=reject | loc=4:14 | error=expected '('
+upstream/assembler-corpus/byref-parse-error-6.ll | test/Assembler/byref-parse-error-6.ll | status=reject | loc=4:14 | error=expected '('
+upstream/assembler-corpus/byref-parse-error-7.ll | test/Assembler/byref-parse-error-7.ll | status=reject | loc=4:14 | error=expected type
+upstream/assembler-corpus/byref-parse-error-8.ll | test/Assembler/byref-parse-error-8.ll | status=reject | loc=4:33 | error=expected '('
+upstream/assembler-corpus/byref-parse-error-9.ll | test/Assembler/byref-parse-error-9.ll | status=reject | loc=4:32 | error=expected '('
+upstream/assembler-corpus/byval-parse-error0.ll | test/Assembler/byval-parse-error0.ll | status=reject | loc=4:34 | error=expected '('
+upstream/assembler-corpus/byval-type-attr.ll | test/Assembler/byval-type-attr.ll | status=pass
+upstream/assembler-corpus/c-style-comment.ll | test/Assembler/c-style-comment.ll | status=pass
+upstream/assembler-corpus/call-arg-is-callee.ll | test/Assembler/call-arg-is-callee.ll | status=pass
+upstream/assembler-corpus/callbr.ll | test/Assembler/callbr.ll | status=pass
+upstream/assembler-corpus/callee-type-metadata.ll | test/Assembler/callee-type-metadata.ll | status=pass
+upstream/assembler-corpus/captures-errors/duplicate-ret.ll | test/Assembler/captures-errors.ll split-file part duplicate-ret.ll | status=reject | error=duplicate 'ret' location
+upstream/assembler-corpus/captures-errors/invalid-component.ll | test/Assembler/captures-errors.ll split-file part invalid-component.ll | status=reject | error=expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'
+upstream/assembler-corpus/captures-errors/missing-colon.ll | test/Assembler/captures-errors.ll split-file part missing-colon.ll | status=reject | error=expected ':'
+upstream/assembler-corpus/captures-errors/missing-lparen.ll | test/Assembler/captures-errors.ll split-file part missing-lparen.ll | status=reject | error=expected '('
+upstream/assembler-corpus/captures-errors/missing-rparen-none.ll | test/Assembler/captures-errors.ll split-file part missing-rparen-none.ll | status=reject | error=expected ',' or ')'
+upstream/assembler-corpus/captures-errors/missing-rparen.ll | test/Assembler/captures-errors.ll split-file part missing-rparen.ll | status=reject | error=expected ',' or ')'
+upstream/assembler-corpus/captures-errors/none-after.ll | test/Assembler/captures-errors.ll split-file part none-after.ll | status=reject | error=cannot use 'none' with other component
+upstream/assembler-corpus/captures-errors/none-before.ll | test/Assembler/captures-errors.ll split-file part none-before.ll | status=reject | error=cannot use 'none' with other component
+upstream/assembler-corpus/captures.ll | test/Assembler/captures.ll | status=pass
+upstream/assembler-corpus/cmpxchg-ordering-2.ll | test/Assembler/cmpxchg-ordering-2.ll | status=reject | error=invalid cmpxchg failure ordering
+upstream/assembler-corpus/cmpxchg-ordering-3.ll | test/Assembler/cmpxchg-ordering-3.ll | status=reject | error=invalid cmpxchg failure ordering
+upstream/assembler-corpus/cmpxchg-ordering-4.ll | test/Assembler/cmpxchg-ordering-4.ll | status=reject | error=invalid cmpxchg failure ordering
+upstream/assembler-corpus/cmpxchg-ordering.ll | test/Assembler/cmpxchg-ordering.ll | status=reject | error=invalid cmpxchg success ordering
+upstream/assembler-corpus/comment.ll | test/Assembler/comment.ll | status=pass
+upstream/assembler-corpus/constant-getelementptr-scalable_pointee.ll | test/Assembler/constant-getelementptr-scalable_pointee.ll | status=reject | error=invalid base element for constant getelementptr
+upstream/assembler-corpus/constant-splat-diagnostics/not_a_constant.ll | test/Assembler/constant-splat-diagnostics.ll split-file part not_a_constant.ll | status=reject | error=expected instruction opcode
+upstream/assembler-corpus/constant-splat-diagnostics/not_a_sclar.ll | test/Assembler/constant-splat-diagnostics.ll split-file part not_a_sclar.ll | status=reject | error=constant expression type mismatch: got type '<1 x i32>' but expected 'i32'
+upstream/assembler-corpus/constant-splat-diagnostics/not_a_vector.ll | test/Assembler/constant-splat-diagnostics.ll split-file part not_a_vector.ll | status=reject | error=vector constant must have vector type
+upstream/assembler-corpus/constant-splat-diagnostics/wrong_explicit_type.ll | test/Assembler/constant-splat-diagnostics.ll split-file part wrong_explicit_type.ll | status=reject | error=constant expression type mismatch: got type 'i8' but expected 'i32'
+upstream/assembler-corpus/constant-splat-diagnostics/wrong_implicit_type.ll | test/Assembler/constant-splat-diagnostics.ll split-file part wrong_implicit_type.ll | status=reject | error=constant expression type mismatch: got type 'i8' but expected 'i32'
+upstream/assembler-corpus/constant-splat.ll | test/Assembler/constant-splat.ll | status=pass
+upstream/assembler-corpus/convergence-control.ll | test/Assembler/convergence-control.ll | status=pass
+upstream/assembler-corpus/datalayout-alloca-addrspace.ll | test/Assembler/datalayout-alloca-addrspace.ll | status=pass
+upstream/assembler-corpus/datalayout-anypointersize.ll | test/Assembler/datalayout-anypointersize.ll | status=pass
+upstream/assembler-corpus/datalayout-program-addrspace.ll | test/Assembler/datalayout-program-addrspace.ll | status=pass
+upstream/assembler-corpus/dbg-record-invalid-0.ll | test/Assembler/dbg-record-invalid-0.ll | status=reject | loc=14:1 | error=expected instruction opcode
+upstream/assembler-corpus/dbg-record-invalid-1.ll | test/Assembler/dbg-record-invalid-1.ll | status=reject | loc=11:8 | error=llvm.dbg intrinsic should not appear in a module using non-intrinsic debug info
+upstream/assembler-corpus/dbg-record-invalid-2.ll | test/Assembler/dbg-record-invalid-2.ll | status=reject | loc=10:24 | error=expected '!' here
+upstream/assembler-corpus/dbg-record-invalid-3.ll | test/Assembler/dbg-record-invalid-3.ll | status=reject | loc=11:5 | error=debug record should not appear in a module containing debug info intrinsics
+upstream/assembler-corpus/dbg-record-invalid-4.ll | test/Assembler/dbg-record-invalid-4.ll | status=reject | loc=10:6 | error=expected debug record type here
+upstream/assembler-corpus/dbg-record-invalid-5.ll | test/Assembler/dbg-record-invalid-5.ll | status=reject | loc=11:1 | error=expected instruction opcode
+upstream/assembler-corpus/dbg-record-invalid-6.ll | test/Assembler/dbg-record-invalid-6.ll | status=reject | loc=10:46 | error=expected '!' here
+upstream/assembler-corpus/dbg-record-invalid-7.ll | test/Assembler/dbg-record-invalid-7.ll | status=reject | loc=10:44 | error=Expected ',' here
+upstream/assembler-corpus/dbg-record-invalid-8.ll | test/Assembler/dbg-record-invalid-8.ll | status=reject | loc=10:50 | error=Expected ',' here
+upstream/assembler-corpus/dicompileunit-conflicting-language-fields.ll | test/Assembler/dicompileunit-conflicting-language-fields.ll | status=reject | loc=4:15 | error=can only specify one of 'language' and 'sourceLanguageName' on !DICompileUnit
+upstream/assembler-corpus/dicompileunit-invalid-language-version/dw_lang_with_version.ll | test/Assembler/dicompileunit-invalid-language-version.ll split-file part dw_lang_with_version.ll | status=reject | error='sourceLanguageVersion' requires an associated 'sourceLanguageName' on !DICompileUnit
+upstream/assembler-corpus/dicompileunit-invalid-language-version/negative.ll | test/Assembler/dicompileunit-invalid-language-version.ll split-file part negative.ll | status=reject | error=expected unsigned integer
+upstream/assembler-corpus/dicompileunit-invalid-language-version/overflow.ll | test/Assembler/dicompileunit-invalid-language-version.ll split-file part overflow.ll | status=reject | error=value for 'sourceLanguageVersion' too large, limit is 4294967295
+upstream/assembler-corpus/dicompileunit-invalid-language-version/version_without_name.ll | test/Assembler/dicompileunit-invalid-language-version.ll split-file part version_without_name.ll | status=reject | error=missing one of 'language' or 'sourceLanguageName', required for !DICompileUnit
+upstream/assembler-corpus/dicompileunit-invalid-language/invalid_dw_lang.ll | test/Assembler/dicompileunit-invalid-language.ll split-file part invalid_dw_lang.ll | status=reject | error=invalid DWARF language 'DW_LANG_blah'
+upstream/assembler-corpus/dicompileunit-invalid-language/invalid_dw_lname.ll | test/Assembler/dicompileunit-invalid-language.ll split-file part invalid_dw_lname.ll | status=reject | error=invalid DWARF source language name 'DW_LNAME_blah'
+upstream/assembler-corpus/dicompileunit.ll | test/Assembler/dicompileunit.ll | status=pass
+upstream/assembler-corpus/dicompositetype-members.ll | test/Assembler/dicompositetype-members.ll | status=pass
+upstream/assembler-corpus/diexpression.ll | test/Assembler/diexpression.ll | status=pass
+upstream/assembler-corpus/dimodule.ll | test/Assembler/dimodule.ll | status=pass
+upstream/assembler-corpus/dinamespace.ll | test/Assembler/dinamespace.ll | status=pass
+upstream/assembler-corpus/diobjcproperty.ll | test/Assembler/diobjcproperty.ll | status=pass
+upstream/assembler-corpus/distinct-mdnode.ll | test/Assembler/distinct-mdnode.ll | status=pass
+upstream/assembler-corpus/disubrange-empty-array.ll | test/Assembler/disubrange-empty-array.ll | status=pass
+upstream/assembler-corpus/disubroutinetype.ll | test/Assembler/disubroutinetype.ll | status=pass
+upstream/assembler-corpus/ditype-large-values.ll | test/Assembler/ditype-large-values.ll | status=pass
+upstream/assembler-corpus/dll-storage-class-local-linkage/internal_alias_dllexport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part internal_alias_dllexport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/internal_alias_dllimport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part internal_alias_dllimport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/internal_function_dllexport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part internal_function_dllexport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/internal_function_dllimport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part internal_function_dllimport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/internal_variable_dllexport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part internal_variable_dllexport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/internal_variable_dllimport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part internal_variable_dllimport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/private_alias_dllexport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part private_alias_dllexport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/private_alias_dllimport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part private_alias_dllimport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/private_function_dllexport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part private_function_dllexport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/private_function_dllimport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part private_function_dllimport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/private_variable_dllexport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part private_variable_dllexport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dll-storage-class-local-linkage/private_variable_dllimport.ll | test/Assembler/dll-storage-class-local-linkage.ll split-file part private_variable_dllimport.ll | status=reject | error=symbol with local linkage cannot have a DLL storage class
+upstream/assembler-corpus/dllimport-dsolocal-diag.ll | test/Assembler/dllimport-dsolocal-diag.ll | status=reject | error=dso_location and DLL-StorageClass mismatch
+upstream/assembler-corpus/dso_local_equivalent.ll | test/Assembler/dso_local_equivalent.ll | status=pass
+upstream/assembler-corpus/externally-initialized.ll | test/Assembler/externally-initialized.ll | status=pass
+upstream/assembler-corpus/extractvalue-invalid-idx.ll | test/Assembler/extractvalue-invalid-idx.ll | status=reject | error=invalid indices for extractvalue
+upstream/assembler-corpus/extractvalue-no-idx.ll | test/Assembler/extractvalue-no-idx.ll | status=reject | error=expected index
+upstream/assembler-corpus/fp-intrinsics-attr.ll | test/Assembler/fp-intrinsics-attr.ll | status=pass
+upstream/assembler-corpus/function-operand-uselistorder.ll | test/Assembler/function-operand-uselistorder.ll | status=pass
+upstream/assembler-corpus/getelementptr_invalid_ptr.ll | test/Assembler/getelementptr_invalid_ptr.ll | status=reject | error=base of getelementptr must be a pointer
+upstream/assembler-corpus/getelementptr_struct.ll | test/Assembler/getelementptr_struct.ll | status=reject | error=invalid getelementptr indices
+upstream/assembler-corpus/getelementptr_vec_ce.ll | test/Assembler/getelementptr_vec_ce.ll | status=pass
+upstream/assembler-corpus/getelementptr_vec_ce2.ll | test/Assembler/getelementptr_vec_ce2.ll | status=reject | error=getelementptr vector index has a wrong number of elements
+upstream/assembler-corpus/getelementptr_vec_idx4.ll | test/Assembler/getelementptr_vec_idx4.ll | status=reject | error=getelementptr vector index has a wrong number of elements
+upstream/assembler-corpus/getelementptr_vec_struct.ll | test/Assembler/getelementptr_vec_struct.ll | status=reject | error=invalid getelementptr indices
+upstream/assembler-corpus/getelementptr_vscale_struct.ll | test/Assembler/getelementptr_vscale_struct.ll | status=reject | error=invalid getelementptr indices
+upstream/assembler-corpus/global-addrspace-forwardref.ll | test/Assembler/global-addrspace-forwardref.ll | status=pass
+upstream/assembler-corpus/gv-invalid-type.ll | test/Assembler/gv-invalid-type.ll | status=reject | error=invalid type for global variable
+upstream/assembler-corpus/half-constprop.ll | test/Assembler/half-constprop.ll | status=pass
+upstream/assembler-corpus/half-conv.ll | test/Assembler/half-conv.ll | status=pass
+upstream/assembler-corpus/half.ll | test/Assembler/half.ll | status=pass
+upstream/assembler-corpus/hex-float-overflow/bfloat.ll | test/Assembler/hex-float-overflow.ll split-file part bfloat.ll | status=reject | error=hexadecimal constant too large for bfloat (16-bit)
+upstream/assembler-corpus/hex-float-overflow/half.ll | test/Assembler/hex-float-overflow.ll split-file part half.ll | status=reject | error=hexadecimal constant too large for half (16-bit)
+upstream/assembler-corpus/huge-array.ll | test/Assembler/huge-array.ll | status=pass
+upstream/assembler-corpus/ifunc-asm.ll | test/Assembler/ifunc-asm.ll | status=pass
+upstream/assembler-corpus/ifunc-dsolocal.ll | test/Assembler/ifunc-dsolocal.ll | status=pass
+upstream/assembler-corpus/ifunc-stripPointerCastsAndAliases.ll | test/Assembler/ifunc-stripPointerCastsAndAliases.ll | status=pass
+upstream/assembler-corpus/implicit-intrinsic-declaration-invalid2.ll | test/Assembler/implicit-intrinsic-declaration-invalid2.ll | status=reject | error=intrinsic can only be used as callee
+upstream/assembler-corpus/inalloca-parse-error0.ll | test/Assembler/inalloca-parse-error0.ll | status=reject | loc=4:40 | error=expected '('
+upstream/assembler-corpus/inalloca.ll | test/Assembler/inalloca.ll | status=pass
+upstream/assembler-corpus/incomplete-ir-declarations.ll | test/Assembler/incomplete-ir-declarations.ll | status=pass | config=allow-incomplete-ir
+upstream/assembler-corpus/incomplete-ir-metadata-unsupported.ll | test/Assembler/incomplete-ir-metadata-unsupported.ll | status=reject | error=use of undefined metadata '!1' | config=allow-incomplete-ir
+upstream/assembler-corpus/incorrect-tdep-attrs-parsing.ll | test/Assembler/incorrect-tdep-attrs-parsing.ll | status=pass
+upstream/assembler-corpus/initializes-attribute-invalid/empty1.ll | test/Assembler/initializes-attribute-invalid.ll split-file part empty1.ll | status=reject | error=expected '('
+upstream/assembler-corpus/initializes-attribute-invalid/empty2.ll | test/Assembler/initializes-attribute-invalid.ll split-file part empty2.ll | status=reject | error=expected integer
+upstream/assembler-corpus/initializes-attribute-invalid/inner_comma.ll | test/Assembler/initializes-attribute-invalid.ll split-file part inner_comma.ll | status=reject | error=expected ','
+upstream/assembler-corpus/initializes-attribute-invalid/inner_left_parenthesis.ll | test/Assembler/initializes-attribute-invalid.ll split-file part inner_left_parenthesis.ll | status=reject | error=expected '('
+upstream/assembler-corpus/initializes-attribute-invalid/inner_right_parenthesis.ll | test/Assembler/initializes-attribute-invalid.ll split-file part inner_right_parenthesis.ll | status=reject | error=expected ')'
+upstream/assembler-corpus/initializes-attribute-invalid/integer.ll | test/Assembler/initializes-attribute-invalid.ll split-file part integer.ll | status=reject | error=expected integer
+upstream/assembler-corpus/initializes-attribute-invalid/lower_equal_upper.ll | test/Assembler/initializes-attribute-invalid.ll split-file part lower_equal_upper.ll | status=reject | error=the range should not represent the full or empty set!
+upstream/assembler-corpus/initializes-attribute-invalid/outer_comma.ll | test/Assembler/initializes-attribute-invalid.ll split-file part outer_comma.ll | status=reject | error=expected ')'
+upstream/assembler-corpus/initializes-attribute-invalid/outer_left_parenthesis.ll | test/Assembler/initializes-attribute-invalid.ll split-file part outer_left_parenthesis.ll | status=reject | error=expected '('
+upstream/assembler-corpus/initializes-attribute-invalid/outer_right_parenthesis.ll | test/Assembler/initializes-attribute-invalid.ll split-file part outer_right_parenthesis.ll | status=reject | error=expected ')'
+upstream/assembler-corpus/inline-asm-constraint-error/cannot-be-struct.ll | test/Assembler/inline-asm-constraint-error.ll split-file part cannot-be-struct.ll | status=reject | error=inline asm with one output cannot return struct
+upstream/assembler-corpus/inline-asm-constraint-error/incorrect-arg-num.ll | test/Assembler/inline-asm-constraint-error.ll split-file part incorrect-arg-num.ll | status=reject | error=number of input constraints does not match number of parameters
+upstream/assembler-corpus/inline-asm-constraint-error/incorrect-struct-elements.ll | test/Assembler/inline-asm-constraint-error.ll split-file part incorrect-struct-elements.ll | status=reject | error=number of output constraints does not match number of return struct elements
+upstream/assembler-corpus/inline-asm-constraint-error/input-after-clobber.ll | test/Assembler/inline-asm-constraint-error.ll split-file part input-after-clobber.ll | status=reject | error=input constraint occurs after clobber constraint
+upstream/assembler-corpus/inline-asm-constraint-error/input-before-output.ll | test/Assembler/inline-asm-constraint-error.ll split-file part input-before-output.ll | status=reject | error=output constraint occurs after input, clobber or label constraint
+upstream/assembler-corpus/inline-asm-constraint-error/label-after-clobber.ll | test/Assembler/inline-asm-constraint-error.ll split-file part label-after-clobber.ll | status=reject | error=label constraint occurs after clobber constraint
+upstream/assembler-corpus/inline-asm-constraint-error/must-return-void.ll | test/Assembler/inline-asm-constraint-error.ll split-file part must-return-void.ll | status=reject | error=inline asm without outputs must return void
+upstream/assembler-corpus/inline-asm-constraint-error/output-after-label.ll | test/Assembler/inline-asm-constraint-error.ll split-file part output-after-label.ll | status=reject | error=output constraint occurs after input, clobber or label constraint
+upstream/assembler-corpus/inline-asm-constraint-error/parse-fail.ll | test/Assembler/inline-asm-constraint-error.ll split-file part parse-fail.ll | status=reject | error=failed to parse constraints
+upstream/assembler-corpus/inrange-errors/end-not-larger-start.ll | test/Assembler/inrange-errors.ll split-file part end-not-larger-start.ll | status=reject | error=expected end to be larger than start
+upstream/assembler-corpus/inrange-errors/parse-error-1.ll | test/Assembler/inrange-errors.ll split-file part parse-error-1.ll | status=reject | error=expected integer
+upstream/assembler-corpus/inrange-errors/parse-error-2.ll | test/Assembler/inrange-errors.ll split-file part parse-error-2.ll | status=reject | error=expected ','
+upstream/assembler-corpus/inrange-errors/parse-error-3.ll | test/Assembler/inrange-errors.ll split-file part parse-error-3.ll | status=reject | error=expected integer
+upstream/assembler-corpus/inrange-errors/parse-error-4.ll | test/Assembler/inrange-errors.ll split-file part parse-error-4.ll | status=reject | error=expected ')'
+upstream/assembler-corpus/insertextractvalue.ll | test/Assembler/insertextractvalue.ll | status=pass
+upstream/assembler-corpus/insertvalue-invalid-idx.ll | test/Assembler/insertvalue-invalid-idx.ll | status=reject | error=invalid indices for insertvalue
+upstream/assembler-corpus/insertvalue-invalid-type.ll | test/Assembler/insertvalue-invalid-type.ll | status=reject | error=insertvalue operand and field disagree in type: 'ptr' instead of 'i32'
+upstream/assembler-corpus/internal-hidden-alias.ll | test/Assembler/internal-hidden-alias.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/internal-hidden-function.ll | test/Assembler/internal-hidden-function.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/internal-hidden-variable.ll | test/Assembler/internal-hidden-variable.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/internal-protected-alias.ll | test/Assembler/internal-protected-alias.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/internal-protected-function.ll | test/Assembler/internal-protected-function.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/internal-protected-variable.ll | test/Assembler/internal-protected-variable.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/invalid-addrspace.ll | test/Assembler/invalid-addrspace.ll | status=reject | error=invalid address space, must be a 24-bit integer
+upstream/assembler-corpus/invalid-atomicrmw-add-must-be-integer-type.ll | test/Assembler/invalid-atomicrmw-add-must-be-integer-type.ll | status=reject | error=atomicrmw add operand must be an integer
+upstream/assembler-corpus/invalid-atomicrmw-fadd-must-be-fp-type.ll | test/Assembler/invalid-atomicrmw-fadd-must-be-fp-type.ll | status=reject | error=atomicrmw fadd operand must be a floating point type
+upstream/assembler-corpus/invalid-atomicrmw-fsub-must-be-fp-type.ll | test/Assembler/invalid-atomicrmw-fsub-must-be-fp-type.ll | status=reject | error=atomicrmw fsub operand must be a floating point type
+upstream/assembler-corpus/invalid-atomicrmw-scalable/scalable_fp_vector_atomicrmw_fadd.ll | test/Assembler/invalid-atomicrmw-scalable.ll split-file part scalable_fp_vector_atomicrmw_fadd.ll | status=reject | error=atomicrmw operand may not be scalable
+upstream/assembler-corpus/invalid-atomicrmw-scalable/scalable_fp_vector_atomicrmw_xchg.ll | test/Assembler/invalid-atomicrmw-scalable.ll split-file part scalable_fp_vector_atomicrmw_xchg.ll | status=reject | error=atomicrmw operand may not be scalable
+upstream/assembler-corpus/invalid-atomicrmw-scalable/scalable_int_vector_atomicrmw_add.ll | test/Assembler/invalid-atomicrmw-scalable.ll split-file part scalable_int_vector_atomicrmw_add.ll | status=reject | error=atomicrmw operand may not be scalable
+upstream/assembler-corpus/invalid-atomicrmw-scalable/scalable_int_vector_atomicrmw_xchg.ll | test/Assembler/invalid-atomicrmw-scalable.ll split-file part scalable_int_vector_atomicrmw_xchg.ll | status=reject | error=atomicrmw operand may not be scalable
+upstream/assembler-corpus/invalid-atomicrmw-scalable/scalable_ptr_vector_atomicrmw_xchg.ll | test/Assembler/invalid-atomicrmw-scalable.ll split-file part scalable_ptr_vector_atomicrmw_xchg.ll | status=reject | error=atomicrmw operand may not be scalable
+upstream/assembler-corpus/invalid-atomicrmw-xchg-fp-vector.ll | test/Assembler/invalid-atomicrmw-xchg-fp-vector.ll | status=reject | error=atomicrmw xchg operand must be an integer, floating point, or pointer type
+upstream/assembler-corpus/invalid-attrgrp.ll | test/Assembler/invalid-attrgrp.ll | status=reject | error=expected attribute group id
+upstream/assembler-corpus/invalid-byval-type2.ll | test/Assembler/invalid-byval-type2.ll | status=reject | error=void type only allowed for function results
+upstream/assembler-corpus/invalid-c-style-comment0.ll | test/Assembler/invalid-c-style-comment0.ll | status=reject | error=unterminated comment
+upstream/assembler-corpus/invalid-c-style-comment1.ll | test/Assembler/invalid-c-style-comment1.ll | status=reject | error=redefinition of global '@B'
+upstream/assembler-corpus/invalid-c-style-comment2.ll | test/Assembler/invalid-c-style-comment2.ll | status=reject | error=expected top-level entity
+upstream/assembler-corpus/invalid-c-style-comment3.ll | test/Assembler/invalid-c-style-comment3.ll | status=reject | error=unterminated comment
+upstream/assembler-corpus/invalid-comdat.ll | test/Assembler/invalid-comdat.ll | status=reject | error=use of undefined comdat '$v'
+upstream/assembler-corpus/invalid-comdat2.ll | test/Assembler/invalid-comdat2.ll | status=reject | error=redefinition of comdat '$v'
+upstream/assembler-corpus/invalid-datalayout-override.ll | test/Assembler/invalid-datalayout-override.ll | status=reject | error=address space must be a 24-bit integer
+upstream/assembler-corpus/invalid-debug-info-version.ll | test/Assembler/invalid-debug-info-version.ll | status=pass
+upstream/assembler-corpus/invalid-dicompileunit-language-bad.ll | test/Assembler/invalid-dicompileunit-language-bad.ll | status=reject | loc=4:40 | error=invalid DWARF language 'DW_LANG_NoSuchLanguage'
+upstream/assembler-corpus/invalid-dicompileunit-missing-language.ll | test/Assembler/invalid-dicompileunit-missing-language.ll | status=reject | loc=4:15 | error=missing one of 'language' or 'sourceLanguageName', required for !DICompileUnit
+upstream/assembler-corpus/invalid-dicompileunit-null-file.ll | test/Assembler/invalid-dicompileunit-null-file.ll | status=reject | loc=4:36 | error='file' cannot be null
+upstream/assembler-corpus/invalid-dicompileunit-uniqued.ll | test/Assembler/invalid-dicompileunit-uniqued.ll | status=reject | loc=4:6 | error=missing 'distinct', required for !DICompileUnit
+upstream/assembler-corpus/invalid-dicompositetype-missing-tag.ll | test/Assembler/invalid-dicompositetype-missing-tag.ll | status=reject | error=missing required field 'tag'
+upstream/assembler-corpus/invalid-diderivedtype-missing-basetype.ll | test/Assembler/invalid-diderivedtype-missing-basetype.ll | status=reject | error=missing required field 'baseType'
+upstream/assembler-corpus/invalid-diderivedtype-missing-tag.ll | test/Assembler/invalid-diderivedtype-missing-tag.ll | status=reject | error=missing required field 'tag'
+upstream/assembler-corpus/invalid-dienumerator-missing-name.ll | test/Assembler/invalid-dienumerator-missing-name.ll | status=reject | error=missing required field 'name'
+upstream/assembler-corpus/invalid-dienumerator-missing-value.ll | test/Assembler/invalid-dienumerator-missing-value.ll | status=reject | error=missing required field 'value'
+upstream/assembler-corpus/invalid-diexpression-large.ll | test/Assembler/invalid-diexpression-large.ll | status=reject | loc=7:20 | error=element too large, limit is 18446744073709551615
+upstream/assembler-corpus/invalid-difile-missing-directory.ll | test/Assembler/invalid-difile-missing-directory.ll | status=reject | error=missing required field 'directory'
+upstream/assembler-corpus/invalid-difile-missing-filename.ll | test/Assembler/invalid-difile-missing-filename.ll | status=reject | error=missing required field 'filename'
+upstream/assembler-corpus/invalid-diflag-bad.ll | test/Assembler/invalid-diflag-bad.ll | status=reject | loc=4:27 | error=invalid debug info flag 'DIFlagUnknown'
+upstream/assembler-corpus/invalid-diglobalvariable-empty-name.ll | test/Assembler/invalid-diglobalvariable-empty-name.ll | status=reject | loc=4:30 | error='name' cannot be empty
+upstream/assembler-corpus/invalid-diimportedentity-missing-scope.ll | test/Assembler/invalid-diimportedentity-missing-scope.ll | status=reject | error=missing required field 'scope'
+upstream/assembler-corpus/invalid-diimportedentity-missing-tag.ll | test/Assembler/invalid-diimportedentity-missing-tag.ll | status=reject | error=missing required field 'tag'
+upstream/assembler-corpus/invalid-dilexicalblock-missing-scope.ll | test/Assembler/invalid-dilexicalblock-missing-scope.ll | status=reject | error=missing required field 'scope'
+upstream/assembler-corpus/invalid-dilexicalblock-null-scope.ll | test/Assembler/invalid-dilexicalblock-null-scope.ll | status=reject | loc=4:29 | error='scope' cannot be null
+upstream/assembler-corpus/invalid-dilexicalblockfile-missing-discriminator.ll | test/Assembler/invalid-dilexicalblockfile-missing-discriminator.ll | status=reject | error=missing required field 'discriminator'
+upstream/assembler-corpus/invalid-dilexicalblockfile-missing-scope.ll | test/Assembler/invalid-dilexicalblockfile-missing-scope.ll | status=reject | error=missing required field 'scope'
+upstream/assembler-corpus/invalid-dilexicalblockfile-null-scope.ll | test/Assembler/invalid-dilexicalblockfile-null-scope.ll | status=reject | loc=4:33 | error='scope' cannot be null
+upstream/assembler-corpus/invalid-dilocalvariable-arg-large.ll | test/Assembler/invalid-dilocalvariable-arg-large.ll | status=reject | loc=6:40 | error=value for 'arg' too large, limit is 65535
+upstream/assembler-corpus/invalid-dilocalvariable-arg-negative.ll | test/Assembler/invalid-dilocalvariable-arg-negative.ll | status=reject | error=expected unsigned integer
+upstream/assembler-corpus/invalid-dilocalvariable-missing-scope.ll | test/Assembler/invalid-dilocalvariable-missing-scope.ll | status=reject | loc=4:23 | error=missing required field 'scope'
+upstream/assembler-corpus/invalid-dilocalvariable-null-scope.ll | test/Assembler/invalid-dilocalvariable-null-scope.ll | status=reject | loc=4:30 | error='scope' cannot be null
+upstream/assembler-corpus/invalid-dilocation-field-bad.ll | test/Assembler/invalid-dilocation-field-bad.ll | status=reject | loc=4:18 | error=invalid field 'bad'
+upstream/assembler-corpus/invalid-dilocation-field-twice.ll | test/Assembler/invalid-dilocation-field-twice.ll | status=reject | loc=6:38 | error=field 'line' cannot be specified more than once
+upstream/assembler-corpus/invalid-dilocation-missing-scope-2.ll | test/Assembler/invalid-dilocation-missing-scope-2.ll | status=reject | loc=4:25 | error=missing required field 'scope'
+upstream/assembler-corpus/invalid-dilocation-missing-scope.ll | test/Assembler/invalid-dilocation-missing-scope.ll | status=reject | loc=4:18 | error=missing required field 'scope'
+upstream/assembler-corpus/invalid-dilocation-null-scope.ll | test/Assembler/invalid-dilocation-null-scope.ll | status=reject | loc=4:25 | error='scope' cannot be null
+upstream/assembler-corpus/invalid-dilocation-overflow-column.ll | test/Assembler/invalid-dilocation-overflow-column.ll | status=reject | loc=9:26 | error=value for 'column' too large, limit is 65535
+upstream/assembler-corpus/invalid-dilocation-overflow-line.ll | test/Assembler/invalid-dilocation-overflow-line.ll | status=reject | loc=9:24 | error=value for 'line' too large, limit is 4294967295
+upstream/assembler-corpus/invalid-dinamespace-missing-namespace.ll | test/Assembler/invalid-dinamespace-missing-namespace.ll | status=reject | error=missing required field 'scope'
+upstream/assembler-corpus/invalid-disubprogram-uniqued-definition.ll | test/Assembler/invalid-disubprogram-uniqued-definition.ll | status=reject | loc=4:6 | error=missing 'distinct', required for !DISubprogram that is a Definition
+upstream/assembler-corpus/invalid-disubroutinetype-missing-types.ll | test/Assembler/invalid-disubroutinetype-missing-types.ll | status=reject | error=missing required field 'types'
+upstream/assembler-corpus/invalid-ditemplatetypeparameter-missing-type.ll | test/Assembler/invalid-ditemplatetypeparameter-missing-type.ll | status=reject | error=missing required field 'type'
+upstream/assembler-corpus/invalid-ditemplatevalueparameter-missing-value.ll | test/Assembler/invalid-ditemplatevalueparameter-missing-value.ll | status=reject | error=missing required field 'value'
+upstream/assembler-corpus/invalid-generic-debug-node-tag-bad.ll | test/Assembler/invalid-generic-debug-node-tag-bad.ll | status=reject | loc=4:26 | error=invalid DWARF tag 'DW_TAG_badtag'
+upstream/assembler-corpus/invalid-generic-debug-node-tag-missing.ll | test/Assembler/invalid-generic-debug-node-tag-missing.ll | status=reject | loc=4:44 | error=missing required field 'tag'
+upstream/assembler-corpus/invalid-gep-missing-explicit-type.ll | test/Assembler/invalid-gep-missing-explicit-type.ll | status=reject | loc=4:26 | error=expected comma after getelementptr's type
+upstream/assembler-corpus/invalid-hexint.ll | test/Assembler/invalid-hexint.ll | status=reject | error=expected value token
+upstream/assembler-corpus/invalid-immarg2.ll | test/Assembler/invalid-immarg2.ll | status=reject | error=this attribute does not apply to functions
+upstream/assembler-corpus/invalid-immarg3.ll | test/Assembler/invalid-immarg3.ll | status=reject | error=this attribute does not apply to return values
+upstream/assembler-corpus/invalid-inline-constraint.ll | test/Assembler/invalid-inline-constraint.ll | status=reject | error=failed to parse constraints
+upstream/assembler-corpus/invalid-inttype.ll | test/Assembler/invalid-inttype.ll | status=reject | error=bitwidth for integer type out of range
+upstream/assembler-corpus/invalid-label.ll | test/Assembler/invalid-label.ll | status=reject | error=invalid type for function argument
+upstream/assembler-corpus/invalid-landingpad.ll | test/Assembler/invalid-landingpad.ll | status=reject | error='filter' clause has an invalid type
+upstream/assembler-corpus/invalid-load-missing-explicit-type.ll | test/Assembler/invalid-load-missing-explicit-type.ll | status=reject | loc=4:17 | error=expected comma after load's type
+upstream/assembler-corpus/invalid-mdnode-badref.ll | test/Assembler/invalid-mdnode-badref.ll | status=reject | error=use of undefined metadata '!1'
+upstream/assembler-corpus/invalid-mdnode-vector.ll | test/Assembler/invalid-mdnode-vector.ll | status=reject | error=expected '{' here
+upstream/assembler-corpus/invalid-mdnode-vector2.ll | test/Assembler/invalid-mdnode-vector2.ll | status=reject | error=expected metadata operand
+upstream/assembler-corpus/invalid-metadata-attachment-has-type.ll | test/Assembler/invalid-metadata-attachment-has-type.ll | status=reject | error=invalid metadata-value-metadata roundtrip
+upstream/assembler-corpus/invalid-metadata-has-type.ll | test/Assembler/invalid-metadata-has-type.ll | status=reject | error=unexpected type in metadata definition
+upstream/assembler-corpus/invalid-name.ll | test/Assembler/invalid-name.ll | status=reject | error=NUL character is not allowed in names
+upstream/assembler-corpus/invalid-name2.ll | test/Assembler/invalid-name2.ll | status=reject | error=NUL character is not allowed in names
+upstream/assembler-corpus/invalid-opaque-ptr-addrspace.ll | test/Assembler/invalid-opaque-ptr-addrspace.ll | status=reject | error=ptr* is invalid - use ptr instead
+upstream/assembler-corpus/invalid-opaque-ptr-double-addrspace.ll | test/Assembler/invalid-opaque-ptr-double-addrspace.ll | status=reject | error=expected top-level entity
+upstream/assembler-corpus/invalid-opaque-ptr.ll | test/Assembler/invalid-opaque-ptr.ll | status=reject | error=ptr* is invalid - use ptr instead
+upstream/assembler-corpus/invalid-ptrauth-const1.ll | test/Assembler/invalid-ptrauth-const1.ll | status=reject | error=constant ptrauth base pointer must be a pointer
+upstream/assembler-corpus/invalid-ptrauth-const2.ll | test/Assembler/invalid-ptrauth-const2.ll | status=reject | error=constant ptrauth key must be i32 constant
+upstream/assembler-corpus/invalid-ptrauth-const3.ll | test/Assembler/invalid-ptrauth-const3.ll | status=reject | error=constant ptrauth address discriminator must be a pointer
+upstream/assembler-corpus/invalid-ptrauth-const4.ll | test/Assembler/invalid-ptrauth-const4.ll | status=reject | error=constant ptrauth integer discriminator must be i64 constant
+upstream/assembler-corpus/invalid-ptrauth-const5.ll | test/Assembler/invalid-ptrauth-const5.ll | status=reject | error=constant ptrauth integer discriminator must be i64 constant
+upstream/assembler-corpus/invalid-ptrauth-const6.ll | test/Assembler/invalid-ptrauth-const6.ll | status=reject | error=constant ptrauth deactivation symbol must be a pointer
+upstream/assembler-corpus/invalid-safestack-param.ll | test/Assembler/invalid-safestack-param.ll | status=reject | error=this attribute does not apply to parameters
+upstream/assembler-corpus/invalid-safestack-return.ll | test/Assembler/invalid-safestack-return.ll | status=reject | error=this attribute does not apply to return values
+upstream/assembler-corpus/invalid-specialized-mdnode.ll | test/Assembler/invalid-specialized-mdnode.ll | status=reject | loc=4:6 | error=expected metadata type
+upstream/assembler-corpus/invalid-target-type-mixed.ll | test/Assembler/invalid-target-type-mixed.ll | status=reject | error=expected uint32 param
+upstream/assembler-corpus/invalid-untyped-metadata.ll | test/Assembler/invalid-untyped-metadata.ll | status=reject | error=invalid type for inline asm constraint string
+upstream/assembler-corpus/invalid-uselistorder-function-between-blocks.ll | test/Assembler/invalid-uselistorder-function-between-blocks.ll | status=reject | error=expected uselistorder directive
+upstream/assembler-corpus/invalid-uselistorder-function-missing-named.ll | test/Assembler/invalid-uselistorder-function-missing-named.ll | status=reject | error=value has no uses
+upstream/assembler-corpus/invalid-uselistorder-function-missing-numbered.ll | test/Assembler/invalid-uselistorder-function-missing-numbered.ll | status=reject | error=value has no uses
+upstream/assembler-corpus/invalid-uselistorder-global-missing.ll | test/Assembler/invalid-uselistorder-global-missing.ll | status=reject | error=value has no uses
+upstream/assembler-corpus/invalid-uselistorder-indexes-duplicated.ll | test/Assembler/invalid-uselistorder-indexes-duplicated.ll | status=reject | error=expected distinct uselistorder indexes in range [0, size)
+upstream/assembler-corpus/invalid-uselistorder-indexes-empty.ll | test/Assembler/invalid-uselistorder-indexes-empty.ll | status=reject | error=value has no uses
+upstream/assembler-corpus/invalid-uselistorder-indexes-one.ll | test/Assembler/invalid-uselistorder-indexes-one.ll | status=reject | error=value only has one use
+upstream/assembler-corpus/invalid-uselistorder-indexes-ordered.ll | test/Assembler/invalid-uselistorder-indexes-ordered.ll | status=reject | error=expected uselistorder indexes to change the order
+upstream/assembler-corpus/invalid-uselistorder-indexes-range.ll | test/Assembler/invalid-uselistorder-indexes-range.ll | status=reject | error=expected distinct uselistorder indexes in range [0, size)
+upstream/assembler-corpus/invalid-uselistorder-indexes-toofew.ll | test/Assembler/invalid-uselistorder-indexes-toofew.ll | status=reject | error=wrong number of indexes, expected 3
+upstream/assembler-corpus/invalid-uselistorder-indexes-toomany.ll | test/Assembler/invalid-uselistorder-indexes-toomany.ll | status=reject | error=wrong number of indexes, expected 2
+upstream/assembler-corpus/invalid-uselistorder-type.ll | test/Assembler/invalid-uselistorder-type.ll | status=reject | error='%x' defined with type 'i32' but expected 'float'
+upstream/assembler-corpus/invalid-uselistorder_bb-missing-bb.ll | test/Assembler/invalid-uselistorder_bb-missing-bb.ll | status=reject | error=invalid basic block in uselistorder_bb
+upstream/assembler-corpus/invalid-uselistorder_bb-missing-body.ll | test/Assembler/invalid-uselistorder_bb-missing-body.ll | status=reject | error=invalid declaration in uselistorder_bb
+upstream/assembler-corpus/invalid-uselistorder_bb-missing-func.ll | test/Assembler/invalid-uselistorder_bb-missing-func.ll | status=reject | error=invalid function forward reference in uselistorder_bb
+upstream/assembler-corpus/invalid-uselistorder_bb-not-bb.ll | test/Assembler/invalid-uselistorder_bb-not-bb.ll | status=reject | error=expected basic block in uselistorder_bb
+upstream/assembler-corpus/invalid-uselistorder_bb-not-func.ll | test/Assembler/invalid-uselistorder_bb-not-func.ll | status=reject | error=expected function name in uselistorder_bb
+upstream/assembler-corpus/invalid-uselistorder_bb-numbered.ll | test/Assembler/invalid-uselistorder_bb-numbered.ll | status=reject | error=invalid numeric label in uselistorder_bb
+upstream/assembler-corpus/invalid_cast4.ll | test/Assembler/invalid_cast4.ll | status=reject | error=invalid cast opcode for cast from 'i64' to 'i64'
+upstream/assembler-corpus/large-comdat.ll | test/Assembler/large-comdat.ll | status=pass
+upstream/assembler-corpus/local-unnamed-addr.ll | test/Assembler/local-unnamed-addr.ll | status=pass
+upstream/assembler-corpus/lround.ll | test/Assembler/lround.ll | status=pass
+upstream/assembler-corpus/masked-load-store-intrinsics-attributes.ll | test/Assembler/masked-load-store-intrinsics-attributes.ll | status=pass
+upstream/assembler-corpus/max-inttype.ll | test/Assembler/max-inttype.ll | status=pass
+upstream/assembler-corpus/memory-attribute-errors/default-after-loc.ll | test/Assembler/memory-attribute-errors.ll split-file part default-after-loc.ll | status=reject | error=default access kind must be specified first
+upstream/assembler-corpus/memory-attribute-errors/empty.ll | test/Assembler/memory-attribute-errors.ll split-file part empty.ll | status=reject | error=expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)
+upstream/assembler-corpus/memory-attribute-errors/invalid-access-kind.ll | test/Assembler/memory-attribute-errors.ll split-file part invalid-access-kind.ll | status=reject | error=expected access kind (none, read, write, readwrite)
+upstream/assembler-corpus/memory-attribute-errors/invalid-kind.ll | test/Assembler/memory-attribute-errors.ll split-file part invalid-kind.ll | status=reject | error=expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)
+upstream/assembler-corpus/memory-attribute-errors/missing-args.ll | test/Assembler/memory-attribute-errors.ll split-file part missing-args.ll | status=reject | error=expected '('
+upstream/assembler-corpus/memory-attribute-errors/missing-colon.ll | test/Assembler/memory-attribute-errors.ll split-file part missing-colon.ll | status=reject | error=expected ':' after location
+upstream/assembler-corpus/memory-attribute-errors/other.ll | test/Assembler/memory-attribute-errors.ll split-file part other.ll | status=reject | error=expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)
+upstream/assembler-corpus/memory-attribute-errors/unterminated.ll | test/Assembler/memory-attribute-errors.ll split-file part unterminated.ll | status=reject | error=unterminated memory attribute
+upstream/assembler-corpus/memory-attribute.ll | test/Assembler/memory-attribute.ll | status=pass
+upstream/assembler-corpus/metadata-annotations.ll | test/Assembler/metadata-annotations.ll | status=pass
+upstream/assembler-corpus/metadata-decl.ll | test/Assembler/metadata-decl.ll | status=pass
+upstream/assembler-corpus/metadata-null-operands.ll | test/Assembler/metadata-null-operands.ll | status=pass
+upstream/assembler-corpus/missing-tbaa.ll | test/Assembler/missing-tbaa.ll | status=reject | error=use of undefined metadata '!1'
+upstream/assembler-corpus/multi-mod-disassemble.ll | test/Assembler/multi-mod-disassemble.ll | status=pass
+upstream/assembler-corpus/multi-summary-disassemble.ll | test/Assembler/multi-summary-disassemble.ll | status=pass
+upstream/assembler-corpus/mustprogress-parse-error-0.ll | test/Assembler/mustprogress-parse-error-0.ll | status=reject | error=this attribute does not apply to parameters
+upstream/assembler-corpus/mustprogress-parse-error-1.ll | test/Assembler/mustprogress-parse-error-1.ll | status=reject | error=this attribute does not apply to return values
+upstream/assembler-corpus/mustprogress-parse-error-2.ll | test/Assembler/mustprogress-parse-error-2.ll | status=reject | error=expected '{' in function body
+upstream/assembler-corpus/musttail-invalid-1.ll | test/Assembler/musttail-invalid-1.ll | status=reject | error=unexpected ellipsis in argument list for musttail call in non-varargs function
+upstream/assembler-corpus/musttail-invalid-2.ll | test/Assembler/musttail-invalid-2.ll | status=reject | error=expected '...' at end of argument list for musttail call in varargs function
+upstream/assembler-corpus/musttail.ll | test/Assembler/musttail.ll | status=pass
+upstream/assembler-corpus/mutually-recursive-types.ll | test/Assembler/mutually-recursive-types.ll | status=reject | error=identified structure type 'rt3' is recursive
+upstream/assembler-corpus/no-mdstring-upgrades.ll | test/Assembler/no-mdstring-upgrades.ll | status=pass
+upstream/assembler-corpus/noalias-addrspace-md.ll | test/Assembler/noalias-addrspace-md.ll | status=pass
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_0_noparens.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_0_noparens.ll | status=reject | error=expected '('
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_1_noparens.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_1_noparens.ll | status=reject | error=expected '('
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_closeparen.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_closeparen.ll | status=reject | error=expected '('
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_name_follows_int.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_name_follows_int.ll | status=reject | error=expected ')'
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_name_plus_int.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_name_plus_int.ll | status=reject | error=expected nofpclass test mask
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_nan_noparens.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_nan_noparens.ll | status=reject | error=expected '('
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_nnan_noparens.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_nnan_noparens.ll | status=reject | error=expected '('
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_only_keyword.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_only_keyword.ll | status=reject | error=expected '('
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_two_numbers.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_two_numbers.ll | status=reject | error=expected ')'
+upstream/assembler-corpus/nofpclass-invalid/nofpclass_two_numbers_bar.ll | test/Assembler/nofpclass-invalid.ll split-file part nofpclass_two_numbers_bar.ll | status=reject | error=expected ')'
+upstream/assembler-corpus/nofpclass.ll | test/Assembler/nofpclass.ll | status=pass
+upstream/assembler-corpus/non-global-value-max-name-size-2.ll | test/Assembler/non-global-value-max-name-size-2.ll | status=pass
+upstream/assembler-corpus/numbered-values.ll | test/Assembler/numbered-values.ll | status=pass
+upstream/assembler-corpus/opaque-ptr-cmpxchg.ll | test/Assembler/opaque-ptr-cmpxchg.ll | status=reject | error=compare value and new value type do not match
+upstream/assembler-corpus/opaque-ptr-invalid-forward-ref-2.ll | test/Assembler/opaque-ptr-invalid-forward-ref-2.ll | status=reject | error=forward reference and definition of global have different types
+upstream/assembler-corpus/opaque-ptr-struct-types.ll | test/Assembler/opaque-ptr-struct-types.ll | status=pass
+upstream/assembler-corpus/phi-first-class-type.ll | test/Assembler/phi-first-class-type.ll | status=reject | error=phi node must have first class type
+upstream/assembler-corpus/pr119818.ll | test/Assembler/pr119818.ll | status=pass
+upstream/assembler-corpus/private-hidden-alias.ll | test/Assembler/private-hidden-alias.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/private-hidden-function.ll | test/Assembler/private-hidden-function.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/private-hidden-variable.ll | test/Assembler/private-hidden-variable.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/private-protected-alias.ll | test/Assembler/private-protected-alias.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/private-protected-function.ll | test/Assembler/private-protected-function.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/private-protected-variable.ll | test/Assembler/private-protected-variable.ll | status=reject | error=symbol with local linkage must have default visibility
+upstream/assembler-corpus/ptrauth-const.ll | test/Assembler/ptrauth-const.ll | status=pass
+upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/dst_not_int.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part dst_not_int.ll | status=reject | error=invalid cast opcode for cast from 'ptr' to 'float'
+upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/dst_not_int_vec.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part dst_not_int_vec.ll | status=reject | error=invalid cast opcode for cast from '<2 x ptr>' to '<2 x float>'
+upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/src_no_vec_dst_vec.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part src_no_vec_dst_vec.ll | status=reject | error=invalid cast opcode for cast from 'ptr' to '<2 x i64>'
+upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/src_not_ptr.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part src_not_ptr.ll | status=reject | error=invalid cast opcode for cast from 'i32' to 'i64'
+upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/src_not_ptr_vec.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part src_not_ptr_vec.ll | status=reject | error=invalid cast opcode for cast from '<2 x i32>' to '<2 x i64>'
+upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/src_vec_dst_no_vec.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part src_vec_dst_no_vec.ll | status=reject | error=invalid cast opcode for cast from '<2 x ptr>' to 'i64'
+upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/vec_dst_fewer_elems.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part vec_dst_fewer_elems.ll | status=reject | error=invalid cast opcode for cast from '<4 x ptr>' to '<2 x i64>'
+upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/vec_src_fewer_elems.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part vec_src_fewer_elems.ll | status=reject | error=invalid cast opcode for cast from '<2 x ptr>' to '<4 x i64>'
+upstream/assembler-corpus/ptrtoaddr.ll | test/Assembler/ptrtoaddr.ll | status=pass
+upstream/assembler-corpus/range-attribute-invalid-range.ll | test/Assembler/range-attribute-invalid-range.ll | status=reject | error=the range represent the empty set but limits aren't 0!
+upstream/assembler-corpus/range-attribute-invalid-type.ll | test/Assembler/range-attribute-invalid-type.ll | status=reject | error=the range must have integer type!
+upstream/assembler-corpus/range.ll | test/Assembler/range.ll | status=pass
+upstream/assembler-corpus/riscv_vls_cc.ll | test/Assembler/riscv_vls_cc.ll | status=pass
+upstream/assembler-corpus/scalable-vector-struct.ll | test/Assembler/scalable-vector-struct.ll | status=pass
+upstream/assembler-corpus/select.ll | test/Assembler/select.ll | status=pass
+upstream/assembler-corpus/short-hexpair.ll | test/Assembler/short-hexpair.ll | status=pass
+upstream/assembler-corpus/skip-value-numbers-invalid/arg_smaller_id.ll | test/Assembler/skip-value-numbers-invalid.ll split-file part arg_smaller_id.ll | status=reject | error=argument expected to be numbered '%11' or greater
+upstream/assembler-corpus/skip-value-numbers-invalid/block_smaller_id.ll | test/Assembler/skip-value-numbers-invalid.ll split-file part block_smaller_id.ll | status=reject | error=label expected to be numbered '11' or greater
+upstream/assembler-corpus/skip-value-numbers-invalid/function_smaller_id.ll | test/Assembler/skip-value-numbers-invalid.ll split-file part function_smaller_id.ll | status=reject | error=function expected to be numbered '@11' or greater
+upstream/assembler-corpus/skip-value-numbers-invalid/global_smaller_id.ll | test/Assembler/skip-value-numbers-invalid.ll split-file part global_smaller_id.ll | status=reject | error=global expected to be numbered '@11' or greater
+upstream/assembler-corpus/skip-value-numbers-invalid/instr_smaller_id.ll | test/Assembler/skip-value-numbers-invalid.ll split-file part instr_smaller_id.ll | status=reject | error=instruction expected to be numbered '%11' or greater
+upstream/assembler-corpus/skip-value-numbers.ll | test/Assembler/skip-value-numbers.ll | status=pass
+upstream/assembler-corpus/source-filename-backslash.ll | test/Assembler/source-filename-backslash.ll | status=pass
+upstream/assembler-corpus/source-filename.ll | test/Assembler/source-filename.ll | status=pass
+upstream/assembler-corpus/sret-parse-error0.ll | test/Assembler/sret-parse-error0.ll | status=reject | loc=4:32 | error=expected '('
+upstream/assembler-corpus/sret-type-attr.ll | test/Assembler/sret-type-attr.ll | status=pass
+upstream/assembler-corpus/summary-flags.ll | test/Assembler/summary-flags.ll | status=pass
+upstream/assembler-corpus/summary-flags2.ll | test/Assembler/summary-flags2.ll | status=pass
+upstream/assembler-corpus/symbolic-addrspace-datalayout/invalid-name.ll | test/Assembler/symbolic-addrspace-datalayout.ll split-file part invalid-name.ll | status=reject | error=invalid symbolic addrspace 'global3'
+upstream/assembler-corpus/symbolic-addrspace/alloca-in-other-as.ll | test/Assembler/symbolic-addrspace.ll split-file part alloca-in-other-as.ll | status=pass
+upstream/assembler-corpus/symbolic-addrspace/bad-multiple-valid-chars.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-multiple-valid-chars.ll | status=reject | error=invalid symbolic addrspace 'AG'
+upstream/assembler-corpus/symbolic-addrspace/bad-not-string.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-not-string.ll | status=reject | error=expected integer or string constant
+upstream/assembler-corpus/symbolic-addrspace/bad-number-in-quotes.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-number-in-quotes.ll | status=reject | error=invalid symbolic addrspace '10'
+upstream/assembler-corpus/symbolic-addrspace/bad-unknown-char.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-unknown-char.ll | status=reject | error=invalid symbolic addrspace 'D'
+upstream/assembler-corpus/symbolic-addrspace/bad-using-at-symbol.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-using-at-symbol.ll | status=reject | error=expected integer or string constant
+upstream/assembler-corpus/target-type-mangled.ll | test/Assembler/target-type-mangled.ll | status=pass
+upstream/assembler-corpus/target-type-param-errors/aarch64-svcount.ll | test/Assembler/target-type-param-errors.ll split-file part aarch64-svcount.ll | status=reject | error=target extension type aarch64.svcount should have no parameters
+upstream/assembler-corpus/target-type-param-errors/amdgcn-named-barrier.ll | test/Assembler/target-type-param-errors.ll split-file part amdgcn-named-barrier.ll | status=reject | error=target extension type amdgcn.named.barrier should have no type parameters and one integer parameter
+upstream/assembler-corpus/target-type-param-errors/riscv-vector-tuple.ll | test/Assembler/target-type-param-errors.ll split-file part riscv-vector-tuple.ll | status=reject | error=target extension type riscv.vector.tuple should have one type parameter and one integer parameter
+upstream/assembler-corpus/target-type-params.ll | test/Assembler/target-type-params.ll | status=pass
+upstream/assembler-corpus/target-type-properties/zeroinit-error.ll | test/Assembler/target-type-properties.ll split-file part zeroinit-error.ll | status=reject | error=invalid type for null constant
+upstream/assembler-corpus/target-types.ll | test/Assembler/target-types.ll | status=pass
+upstream/assembler-corpus/thinlto-bad-summary1.ll | test/Assembler/thinlto-bad-summary1.ll | status=reject | error=Expected 'gv', 'module', 'typeid', 'flags' or 'blockcount' at the start of summary entry
+upstream/assembler-corpus/thinlto-bad-summary2.ll | test/Assembler/thinlto-bad-summary2.ll | status=reject | error=expected '(' at start of summary entry
+upstream/assembler-corpus/thinlto-bad-summary3.ll | test/Assembler/thinlto-bad-summary3.ll | status=reject | error=found end of file while parsing summary entry
+upstream/assembler-corpus/thinlto-blockcount-summary.ll | test/Assembler/thinlto-blockcount-summary.ll | status=pass
+upstream/assembler-corpus/thinlto-flags-summary.ll | test/Assembler/thinlto-flags-summary.ll | status=pass
+upstream/assembler-corpus/thinlto-memprof-summary.ll | test/Assembler/thinlto-memprof-summary.ll | status=pass
+upstream/assembler-corpus/thinlto-multiple-summaries-for-guid.ll | test/Assembler/thinlto-multiple-summaries-for-guid.ll | status=pass
+upstream/assembler-corpus/thinlto-summary-visibility.ll | test/Assembler/thinlto-summary-visibility.ll | status=pass
+upstream/assembler-corpus/tls-models.ll | test/Assembler/tls-models.ll | status=pass
+upstream/assembler-corpus/unnamed-addr.ll | test/Assembler/unnamed-addr.ll | status=pass
+upstream/assembler-corpus/unnamed-alias.ll | test/Assembler/unnamed-alias.ll | status=pass
+upstream/assembler-corpus/unnamed-comdat.ll | test/Assembler/unnamed-comdat.ll | status=reject | error=comdat cannot be unnamed
+upstream/assembler-corpus/unnamed.ll | test/Assembler/unnamed.ll | status=pass
+upstream/assembler-corpus/unsized-recursive-type.ll | test/Assembler/unsized-recursive-type.ll | status=reject | error=identified structure type 'myTy' is recursive
+upstream/assembler-corpus/unsupported-constexprs/extractvalue.ll | test/Assembler/unsupported-constexprs.ll split-file part extractvalue.ll | status=reject | error=extractvalue constexprs are no longer supported
+upstream/assembler-corpus/unsupported-constexprs/insertvalue.ll | test/Assembler/unsupported-constexprs.ll split-file part insertvalue.ll | status=reject | error=insertvalue constexprs are no longer supported
+upstream/assembler-corpus/uselistorder_bb.ll | test/Assembler/uselistorder_bb.ll | status=pass
+upstream/assembler-corpus/uselistorder_global.ll | test/Assembler/uselistorder_global.ll | status=pass
+upstream/assembler-corpus/uwtable-1.ll | test/Assembler/uwtable-1.ll | status=reject | error=expected unwind table kind
+upstream/assembler-corpus/uwtable-2.ll | test/Assembler/uwtable-2.ll | status=reject | error=expected ')'
+upstream/assembler-corpus/vbool-cmp.ll | test/Assembler/vbool-cmp.ll | status=pass
+upstream/assembler-corpus/vector-select.ll | test/Assembler/vector-select.ll | status=pass
+upstream/assembler-corpus/vector-shift.ll | test/Assembler/vector-shift.ll | status=pass
+upstream/assembler-corpus/x86_intrcc.ll | test/Assembler/x86_intrcc.ll | status=pass
+upstream/assembler-corpus/zero-input-phi.ll | test/Assembler/zero-input-phi.ll | status=pass
+upstream/assembler-corpus/DIMacroFile.ll | test/Assembler/DIMacroFile.ll | status=pass
+upstream/assembler-corpus/dbg-checksum.ll | test/Assembler/dbg-checksum.ll | status=pass
+upstream/assembler-corpus/debug-info.ll | test/Assembler/debug-info.ll | status=pass
+upstream/assembler-corpus/debug-variant-discriminator.ll | test/Assembler/debug-variant-discriminator.ll | status=pass
+upstream/assembler-corpus/difile-empty-source.ll | test/Assembler/difile-empty-source.ll | status=pass
+upstream/assembler-corpus/diglobalvariable.ll | test/Assembler/diglobalvariable.ll | status=pass
+upstream/assembler-corpus/diimportedentity.ll | test/Assembler/diimportedentity.ll | status=pass
+upstream/assembler-corpus/dilexicalblock.ll | test/Assembler/dilexicalblock.ll | status=pass
+upstream/assembler-corpus/dilocalvariable-arg-large.ll | test/Assembler/dilocalvariable-arg-large.ll | status=pass
+upstream/assembler-corpus/dilocalvariable.ll | test/Assembler/dilocalvariable.ll | status=pass
+upstream/assembler-corpus/dilocation.ll | test/Assembler/dilocation.ll | status=pass
+upstream/assembler-corpus/disubprogram.ll | test/Assembler/disubprogram.ll | status=pass

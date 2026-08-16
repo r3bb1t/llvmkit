@@ -25,23 +25,26 @@ use std::collections::HashMap;
 use super::atomic_ordering::AtomicOrdering;
 use super::attributes::{AttrKind, AttributeStorage, AttributeStored};
 use super::basic_block::BasicBlock;
-use super::block_state::BlockTerminationState;
+use super::block_state::{BlockTerminationState, Terminated};
 use super::comdat::ComdatRef;
-use super::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
+use super::constant::{
+    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
+};
+use super::constant_range::ConstantRange;
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
-use super::global_ifunc::GlobalIFunc;
+use super::global_ifunc::GlobalIfunc;
 use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::inline_asm::{AsmDialect, InlineAsmData};
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchReturnInstData, CatchSwitchInstData, CleanupReturnInstData, ExtractElementInstData,
-    ExtractValueInstData, FCmpInstData, FNegInstData, FenceInstData, FreezeInstData, GepInstData,
+    ExtractValueInstData, FcmpInstData, FenceInstData, FnegInstData, FreezeInstData, GepInstData,
     IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData,
     LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleData, OperandBundleTag,
-    POISON_MASK_ELEM, ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData,
-    SwitchInstData, TailCallKind, VAArgInstData,
+    ResumeInstData, SelectInstData, ShuffleMaskElem, ShuffleVectorInstData, StoreInstData,
+    SwitchInstData, TailCallKind, VaArgInstData,
 };
 use super::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
@@ -54,13 +57,18 @@ use super::metadata::{
     DebugMetadataOperand, DebugRecord, MetadataAttachmentSet, MetadataKind, MetadataSlot,
     MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
 };
-use super::module::{
-    DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
+use super::module::{DynBrand, ModuleBrand, ModuleCore, ModuleView};
+use super::module_summary_index::{
+    AliasSummary, ConstantVirtualCall, FunctionSummary, GlobalValueSummary, GlobalValueSummaryInfo,
+    GlobalVariableSummary, Guid, Hotness, ModuleSummaryIndex, REGULAR_LTO_MODULE_NAME,
+    SummaryIndexSlots, SummaryKind, TypeIdInfo, TypeIdOffsetVtableInfo, TypeIdSummary,
+    TypeTestResolution, VirtualFunctionId, WholeProgramDevirtByArgKind, WholeProgramDevirtKind,
+    WholeProgramDevirtResolution,
 };
 use super::sync_scope::SyncScope;
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
-use super::{ApInt, ApIntSignedness, AttrIndex};
+use super::{ApInt, AttrIndex, Signedness};
 
 // --------------------------------------------------------------------------
 // SlotTracker
@@ -134,38 +142,38 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
         | InstructionKindData::Mul(_)
-        | InstructionKindData::UDiv(_)
-        | InstructionKindData::SDiv(_)
-        | InstructionKindData::URem(_)
-        | InstructionKindData::SRem(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
         | InstructionKindData::Shl(_)
-        | InstructionKindData::LShr(_)
-        | InstructionKindData::AShr(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
         | InstructionKindData::And(_)
         | InstructionKindData::Or(_)
         | InstructionKindData::Xor(_)
-        | InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
-        | InstructionKindData::FCmp(_)
+        | InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
+        | InstructionKindData::Fcmp(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Gep(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Cast(_)
-        | InstructionKindData::ICmp(_)
-        | InstructionKindData::FNeg(_)
+        | InstructionKindData::Icmp(_)
+        | InstructionKindData::Fneg(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::ExtractValue(_)
         | InstructionKindData::InsertValue(_)
         | InstructionKindData::ExtractElement(_)
         | InstructionKindData::InsertElement(_)
         | InstructionKindData::ShuffleVector(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Phi(_) => true,
         InstructionKindData::Fence(_) => false,
         InstructionKindData::Ret(_)
@@ -190,7 +198,7 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
 fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx>(
     inst: &InstructionView<'ctx, B>,
 ) -> &'ctx InstructionKindData {
-    match &inst.into_erased().data().kind {
+    match &inst.as_erased().data().kind {
         ValueKindData::Instruction(i) => &i.kind,
         _ => unreachable!("Instruction handle invariant: kind is Instruction"),
     }
@@ -237,7 +245,7 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
         },
         ValueKindData::GlobalVariable(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_) => fmt_global_value_ref(f, v),
+        | ValueKindData::GlobalIfunc(_) => fmt_global_value_ref(f, v),
         ValueKindData::Constant(c) => fmt_constant(f, v, c),
         // `MetadataAsValue` delegates to the metadata printer. MDStrings
         // print inline as `!"..."`; MDNodes print as their numbered slot.
@@ -266,43 +274,379 @@ fn fmt_indexes(f: &mut fmt::Formatter<'_>, indexes: &[u32]) -> fmt::Result {
     f.write_str(" }")
 }
 
+// --------------------------------------------------------------------------
+// Use-list order prediction
+//
+// `AsmWriter.cpp` stores no `uselistorder` directives. When a caller asks for
+// `ShouldPreserveUseListOrder` it *derives* them: `orderModule` numbers every
+// value the writer will serialize, and `predictValueUseListOrder` then asks,
+// per value, what shuffle turns the use-list order a re-parse would rebuild
+// into the order the module actually has. Deriving rather than replaying is
+// what lets a module built by hand — not only one parsed from `.ll` — print
+// directives at all.
+// --------------------------------------------------------------------------
+
+/// One derived directive: the value it names and the shuffle that restores
+/// its use-list order. Mirrors an entry of `AsmWriter.cpp`'s `UseListOrderMap`
+/// inner `MapVector`.
+struct UseListOrderDirective {
+    value: ValueSlot,
+    shuffle: Vec<u32>,
+}
+
+/// `AsmWriter.cpp`'s file-local `OrderMap`. A `MapVector` upstream, so both
+/// the ids and the insertion order carry weight.
+#[derive(Default)]
+struct OrderMap {
+    ids: HashMap<ValueSlot, usize>,
+    order: Vec<ValueSlot>,
+}
+
+impl OrderMap {
+    /// `OM.lookup(V)`. Upstream's `DenseMap` answers `0` for an absent value
+    /// and real ids start at `1`, so zero means "will not be serialized" —
+    /// a distinction `predictValueUseListOrder` relies on.
+    fn lookup(&self, value: ValueSlot) -> usize {
+        self.ids.get(&value).copied().unwrap_or(0)
+    }
+}
+
+/// `isa<GlobalValue>`. llvmkit gives each global object its own value kind
+/// rather than making it a `Constant` subclass, and additionally interns a
+/// pointer-typed `GlobalValueRef` constant that stands for `@name` in a
+/// constant expression — both answer yes.
+fn is_global_value(kind: &ValueKindData) -> bool {
+    matches!(
+        kind,
+        ValueKindData::Function(_)
+            | ValueKindData::GlobalAlias(_)
+            | ValueKindData::GlobalIfunc(_)
+            | ValueKindData::GlobalVariable(_)
+            | ValueKindData::Constant(ConstantData::GlobalValueRef { .. })
+    )
+}
+
+/// `isa<ConstantData>` — asked of a slot rather than of a handle.
+fn slot_is_constant_data(m: &ModuleCore, value: ValueSlot) -> bool {
+    let ty = m.context().value_data(value).ty;
+    Constant::try_from(Value::<DynBrand>::from_parts(value, m, ty))
+        .is_ok_and(Constant::is_constant_data)
+}
+
+/// Mirrors `AsmWriter.cpp`'s `orderValue`.
+fn order_value(m: &ModuleCore, value: ValueSlot, om: &mut OrderMap) {
+    if om.lookup(value) != 0 {
+        return;
+    }
+    if let ValueKindData::Constant(data) = &m.context().value_data(value).kind {
+        if slot_is_constant_data(m, value) {
+            return;
+        }
+        // `C->getNumOperands() && !isa<GlobalValue>(C)`. A `GlobalValueRef`
+        // is llvmkit's `isa<GlobalValue>` case and carries one operand, so
+        // it has to be excluded here rather than falling out of an empty
+        // operand list.
+        if !is_global_value(&m.context().value_data(value).kind) {
+            data.for_each_operand(|operand| {
+                let kind = &m.context().value_data(operand).kind;
+                if !matches!(kind, ValueKindData::BasicBlock(_)) && !is_global_value(kind) {
+                    order_value(m, operand, om);
+                }
+            });
+        }
+    }
+    // Deliberately re-read the size here, exactly as upstream's comment
+    // insists: inserting changes it, and that is what makes the ids dense.
+    let id = om.order.len() + 1;
+    om.ids.insert(value, id);
+    om.order.push(value);
+}
+
+/// `orderModule`'s `OrderConstantValue` lambda: only a constant or an inline
+/// asm blob reached from an operand position gets numbered.
+fn order_constant_value(m: &ModuleCore, value: ValueSlot, om: &mut OrderMap) {
+    let kind = &m.context().value_data(value).kind;
+    if matches!(
+        kind,
+        ValueKindData::Constant(_) | ValueKindData::InlineAsm(_)
+    ) || is_global_value(kind)
+    {
+        order_value(m, value, om);
+    }
+}
+
+/// `skipMetadataWrapper` — unwrap a `MetadataAsValue` holding a
+/// `ValueAsMetadata`, leaving anything else alone.
+fn skip_metadata_wrapper(m: &ModuleCore, value: ValueSlot) -> ValueSlot {
+    let ValueKindData::MetadataAsValue(node) = m.context().value_data(value).kind else {
+        return value;
+    };
+    let store = m.metadata_store();
+    match store.nodes().get(node.0) {
+        Some(MetadataKind::Constant(wrapped)) => wrapped.slot(),
+        _ => value,
+    }
+}
+
+/// Mirrors `AsmWriter.cpp`'s `orderModule`. The walk order *is* the numbering,
+/// so every loop below sits exactly where upstream's does.
+fn order_module(m: &ModuleCore) -> OrderMap {
+    let mut om = OrderMap::default();
+
+    for global in m.iter_globals::<DynBrand>() {
+        if let Some(initializer) = global.initializer()
+            && !is_global_value(&m.context().value_data(initializer.as_erased().slot()).kind)
+        {
+            order_value(m, initializer.as_erased().slot(), &mut om);
+        }
+        order_value(m, global.as_erased().slot(), &mut om);
+    }
+    for alias in m.iter_aliases::<DynBrand>() {
+        let aliasee = alias.aliasee().as_erased().slot();
+        if !is_global_value(&m.context().value_data(aliasee).kind) {
+            order_value(m, aliasee, &mut om);
+        }
+        order_value(m, alias.as_erased().slot(), &mut om);
+    }
+    for ifunc in m.iter_ifuncs::<DynBrand>() {
+        let resolver = ifunc.resolver().as_erased().slot();
+        if !is_global_value(&m.context().value_data(resolver).kind) {
+            order_value(m, resolver, &mut om);
+        }
+        order_value(m, ifunc.as_erased().slot(), &mut om);
+    }
+
+    for function in m.iter_functions::<DynBrand>() {
+        // `for (const Use &U : F.operands())` — a `Function`'s hung-off
+        // operands are personality, prefix and prologue, in that order
+        // (`Function::setHungOffOperand<0..2>`).
+        let operands = [
+            function.personality_fn().map(|v| v.as_erased().slot()),
+            function.prefix_data().map(|v| v.as_erased().slot()),
+            function.prologue_data().map(|v| v.as_erased().slot()),
+        ];
+        for operand in operands.into_iter().flatten() {
+            if !is_global_value(&m.context().value_data(operand).kind) {
+                order_value(m, operand, &mut om);
+            }
+        }
+        order_value(m, function.as_erased().slot(), &mut om);
+        // `F.isDeclaration()` — llvmkit spells it as an empty block list, the
+        // same test `printFunction` uses to choose `declare` over `define`.
+        if function.basic_blocks().count() == 0 {
+            continue;
+        }
+        for argument in function.params() {
+            order_value(m, IsValue::slot(argument), &mut om);
+        }
+        for block in function.basic_blocks() {
+            order_value(m, block.slot(), &mut om);
+            for instruction in block.instructions() {
+                // Debug records sit outside the `Value` hierarchy, so any
+                // constant they name is reachable only through them —
+                // upstream's `OrderConstantFromMetadata` over the record's
+                // location (and, for a `#dbg_assign`, its address).
+                for record in instruction.debug_records_stored().iter() {
+                    record.for_each_value(|value| order_constant_value(m, value, &mut om));
+                }
+                for operand in inst_kind_data(&instruction).operand_ids() {
+                    let operand = skip_metadata_wrapper(m, operand);
+                    let kind = &m.context().value_data(operand).kind;
+                    let orderable = (matches!(kind, ValueKindData::Constant(_))
+                        && !is_global_value(kind))
+                        || matches!(kind, ValueKindData::InlineAsm(_));
+                    if orderable {
+                        order_value(m, operand, &mut om);
+                    }
+                }
+                order_value(m, instruction.slot(), &mut om);
+            }
+        }
+    }
+    om
+}
+
+/// Mirrors `AsmWriter.cpp`'s `predictValueUseListOrder`. An empty result means
+/// "no directive needed" — either the order is already what a re-parse would
+/// rebuild, or too few of the users survive into the output to state one.
+fn predict_value_use_list_order(
+    m: &ModuleCore,
+    value: ValueSlot,
+    id: usize,
+    om: &OrderMap,
+) -> Vec<u32> {
+    // `for (const Use &U : V->uses()) if (OM.lookup(U.getUser()))`. Only the
+    // edges upstream models as `Use`s take part — see
+    // `ValueUse::is_operand_use`.
+    let mut list: Vec<(ValueSlot, usize)> = Vec::new();
+    for user in m.context().value_data(value).operand_users() {
+        if om.lookup(user) != 0 {
+            let position = list.len();
+            list.push((user, position));
+        }
+    }
+    if list.len() < 2 {
+        return Vec::new();
+    }
+
+    // "When referencing a value before its declaration, a temporary value is
+    // created, which will later be RAUWed with the actual value. This reverses
+    // the use list." — the reversal `ValueData::prepend_moved_uses` reproduces.
+    let gets_reversed = !matches!(
+        m.context().value_data(value).kind,
+        ValueKindData::BasicBlock(_)
+    );
+    let id = match m.context().value_data(value).kind {
+        ValueKindData::Constant(ConstantData::BlockAddress { block, .. }) => om.lookup(block),
+        _ => id,
+    };
+
+    // `llvm::sort` under upstream's comparator. The operand-number tie-break
+    // for two uses by the *same* user has no llvmkit counterpart — its use
+    // list holds one indistinguishable edge per reference — so those compare
+    // equal and a stable sort leaves them where they are. Recorded in
+    // `docs/future-work.md`.
+    list.sort_by(|left, right| {
+        let left_id = om.lookup(left.0);
+        let right_id = om.lookup(right.0);
+        let left_first = if left_id < right_id {
+            gets_reversed && right_id <= id
+        } else if right_id < left_id {
+            !(gets_reversed && left_id <= id)
+        } else {
+            false
+        };
+        let right_first = if right_id < left_id {
+            gets_reversed && left_id <= id
+        } else if left_id < right_id {
+            !(gets_reversed && right_id <= id)
+        } else {
+            false
+        };
+        match (left_first, right_first) {
+            (true, false) => core::cmp::Ordering::Less,
+            (false, true) => core::cmp::Ordering::Greater,
+            _ => core::cmp::Ordering::Equal,
+        }
+    });
+
+    // `if (llvm::is_sorted(List, llvm::less_second())) return {};`
+    if list.windows(2).all(|pair| pair[0].1 <= pair[1].1) {
+        return Vec::new();
+    }
+    list.into_iter()
+        .map(|(_, position)| u32::try_from(position).unwrap_or(u32::MAX))
+        .collect()
+}
+
+/// `BasicBlock::getParent` on a slot.
+fn block_parent_function(m: &ModuleCore, block: ValueSlot) -> Option<ValueSlot> {
+    match &m.context().value_data(block).kind {
+        ValueKindData::BasicBlock(data) => *data.parent.borrow(),
+        _ => None,
+    }
+}
+
+/// Mirrors `AsmWriter.cpp`'s `predictUseListOrder`. The key is the function a
+/// directive belongs under — `None` for upstream's `nullptr`, i.e. module
+/// level.
+fn predict_use_list_order(
+    m: &ModuleCore,
+) -> HashMap<Option<ValueSlot>, Vec<UseListOrderDirective>> {
+    let om = order_module(m);
+    let mut result: HashMap<Option<ValueSlot>, Vec<UseListOrderDirective>> = HashMap::new();
+    for value in &om.order {
+        let value = *value;
+        let data = m.context().value_data(value);
+        if data.operand_users().len() < 2 {
+            continue;
+        }
+        let shuffle = predict_value_use_list_order(m, value, om.lookup(value), &om);
+        if shuffle.is_empty() {
+            continue;
+        }
+        let parent = match &data.kind {
+            ValueKindData::Instruction(instruction) => {
+                block_parent_function(m, instruction.parent.get())
+            }
+            ValueKindData::Argument { parent_fn, .. } => Some(*parent_fn),
+            ValueKindData::BasicBlock(_) => block_parent_function(m, value),
+            _ => None,
+        };
+        result
+            .entry(parent)
+            .or_default()
+            .push(UseListOrderDirective { value, shuffle });
+    }
+    result
+}
+
+/// Mirrors `AssemblyWriter::printUseListOrder`. `slots` is present exactly
+/// when upstream's `Machine.getFunction()` is non-null, which is what decides
+/// both the two-space indent and the `_bb` spelling.
 fn fmt_use_list_order(
     f: &mut fmt::Formatter<'_>,
     m: &ModuleCore,
-    record: &UseListOrderRecord,
+    directive: &UseListOrderDirective,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
-    let value_ty = record.value_type();
-    write!(f, "uselistorder {} ", Type::<DynBrand>::new(value_ty, m))?;
-    let value = Value::<DynBrand>::from_parts(record.value(), m, value_ty);
-    fmt_operand_ref(f, value, slots)?;
+    let in_function = slots.is_some();
+    if in_function {
+        f.write_str("  ")?;
+    }
+    f.write_str("uselistorder")?;
+    let data = m.context().value_data(directive.value);
+    let block_at_module_level = !in_function && matches!(data.kind, ValueKindData::BasicBlock(_));
+    if block_at_module_level {
+        // `predictUseListOrder` files a block under its parent function, so
+        // this arm is unreachable from a derived directive — upstream's is
+        // too. It is kept because the shape is upstream's and because the
+        // *parser* half (`parseUseListOrderBB`) is reachable from
+        // hand-written `.ll`.
+        let block = BasicBlock::<Dyn, Terminated, DynBrand>::from_parts(
+            directive.value,
+            ModuleView::new(m),
+            data.ty,
+        );
+        let Some(parent_slot) = block_parent_function(m, directive.value) else {
+            unreachable!("a block reached through orderModule always has a parent function")
+        };
+        let parent = FunctionValue::<Dyn, DynBrand>::from_parts_unchecked(parent_slot, m);
+        f.write_str("_bb ")?;
+        fmt_operand_ref(f, parent.as_erased(), None)?;
+        f.write_str(", ")?;
+        let parent_slots = SlotTracker::for_function(parent);
+        fmt_operand_ref(f, block.to_erased(), Some(&parent_slots))?;
+    } else {
+        f.write_str(" ")?;
+        fmt_operand(
+            f,
+            Value::<DynBrand>::from_parts(directive.value, m, data.ty),
+            slots,
+        )?;
+    }
     f.write_str(", ")?;
-    fmt_indexes(f, record.indexes())
+    fmt_indexes(f, &directive.shuffle)
 }
 
-fn fmt_use_list_order_bb(
+/// Mirrors `AssemblyWriter::printUseLists`, including its section comment.
+/// `slots` stands in for upstream's incorporated `SlotTracker`, so passing
+/// `None` is `printUseLists(nullptr)`.
+fn fmt_use_lists(
     f: &mut fmt::Formatter<'_>,
     m: &ModuleCore,
-    record: &UseListOrderBBRecord,
+    directives: Option<&Vec<UseListOrderDirective>>,
+    slots: Option<&SlotTracker>,
 ) -> fmt::Result {
-    let function_id = record.function();
-    let function_data = m.context().value_data(function_id);
-    let function_ty = function_data.ty;
-    let block_ty = m.label_type::<DynBrand>().as_type().id();
-    let function = Value::<DynBrand>::from_parts(function_id, m, function_ty);
-    let block = Value::<DynBrand>::from_parts(record.block(), m, block_ty);
-    let slots = match &function_data.kind {
-        ValueKindData::Function(_) => Some(SlotTracker::for_function(
-            FunctionValue::<Dyn, DynBrand>::from_parts_unchecked(function_id, m),
-        )),
-        _ => None,
+    let Some(directives) = directives else {
+        return Ok(());
     };
-    f.write_str("uselistorder_bb ")?;
-    fmt_operand_ref(f, function, None)?;
-    f.write_str(", ")?;
-    fmt_operand_ref(f, block, slots.as_ref())?;
-    f.write_str(", ")?;
-    fmt_indexes(f, record.indexes())
+    f.write_str("\n; uselistorder directives\n")?;
+    for directive in directives {
+        fmt_use_list_order(f, m, directive, slots)?;
+        f.write_str("\n")?;
+    }
+    Ok(())
 }
 
 /// Print the `asm`-callee body shared by `fmt_operand_ref` and
@@ -352,7 +696,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         }
         ConstantData::Float(bits) => fmt_float_constant(f, host.ty(), *bits),
         ConstantData::PointerNull => f.write_str("null"),
-        ConstantData::BlockAddressPlaceholder => f.write_str("<forward blockaddress>"),
+        ConstantData::ForwardRefPlaceholder => f.write_str("<forward reference>"),
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
@@ -368,10 +712,20 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             f.write_str("blockaddress(")?;
             fmt_operand_ref(f, fval, None)?;
             f.write_str(", ")?;
-            fmt_operand_ref(f, bval, None)?;
+            // An unnamed target block is numbered in the *target function's*
+            // numbering, which is not the tracker in scope — a blockaddress
+            // routinely appears in a module-level initializer, where there is
+            // no function tracker at all. Upstream reaches the same numbering
+            // through `SlotTracker::incorporateFunction`.
+            let block_slots = bval.name().is_none().then(|| {
+                FunctionValue::<Dyn, B>::try_from(fval)
+                    .ok()
+                    .map(SlotTracker::for_function)
+            });
+            fmt_operand_ref(f, bval, block_slots.flatten().as_ref())?;
             f.write_str(")")
         }
-        ConstantData::DSOLocalEquivalent { function } => {
+        ConstantData::DsoLocalEquivalent { function } => {
             let module = host.module.module();
             let fval = Value::<B>::from_parts(
                 *function,
@@ -583,7 +937,7 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
 fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Type<'ctx, B> {
     match &value.data().kind {
         ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
-        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIFunc(_) => value.ty(),
+        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
         _ => value.ty(),
     }
 }
@@ -708,7 +1062,7 @@ fn fmt_float_constant<B: ModuleBrand>(
 ) -> fmt::Result {
     match ty.data() {
         TypeData::Half => write!(f, "0xH{:04X}", low_u16(bits)),
-        TypeData::BFloat => write!(f, "0xR{:04X}", low_u16(bits)),
+        TypeData::Bfloat => write!(f, "0xR{:04X}", low_u16(bits)),
         TypeData::Float => {
             let value = f32::from_bits(low_u32(bits));
             if value.is_finite() && try_write_finite_float_decimal(f, f64::from(value))? {
@@ -735,9 +1089,15 @@ fn fmt_float_constant<B: ModuleBrand>(
             write!(f, "0xL{lo:016X}{hi:016X}")
         }
         TypeData::PpcFp128 => {
+            // Upstream writes the *leading* double first — `AsmWriter.cpp`
+            // prints `getLoBits(64)` then `getHiBits(64)`, and its low word
+            // holds `DoubleAPFloat::Floats[0]`, the leading component. In
+            // llvmkit the pair is stored mirrored (`ap_float.rs::ppc_words`
+            // reads the high word as the leading double), so writing the high
+            // word first is what puts the leading component first.
             let lo = low_u64(bits);
             let hi = low_u64(bits >> 64);
-            write!(f, "0xM{lo:016X}{hi:016X}")
+            write!(f, "0xM{hi:016X}{lo:016X}")
         }
         _ => unreachable!("float-constant ty invariant"),
     }
@@ -797,7 +1157,7 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
 fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<DynBrand>() {
-        if global.into_erased().name().is_none() {
+        if global.as_erased().name().is_none() {
             if global.slot() == id {
                 return Some(next);
             }
@@ -805,7 +1165,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
         }
     }
     for alias in module.iter_aliases::<DynBrand>() {
-        if alias.into_erased().name().is_none() {
+        if alias.as_erased().name().is_none() {
             if alias.slot() == id {
                 return Some(next);
             }
@@ -813,7 +1173,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
         }
     }
     for ifunc in module.iter_ifuncs::<DynBrand>() {
-        if ifunc.into_erased().name().is_none() {
+        if ifunc.as_erased().name().is_none() {
             if ifunc.slot() == id {
                 return Some(next);
             }
@@ -821,7 +1181,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
         }
     }
     for function in module.iter_functions::<DynBrand>() {
-        if function.into_erased().name().is_none() {
+        if function.as_erased().name().is_none() {
             if function.slot() == id {
                 return Some(next);
             }
@@ -890,6 +1250,32 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
     )
 }
 
+/// Whether a uniform vector constant is spelled `splat (…)` rather than as an
+/// element list.
+///
+/// **The two vector kinds answer differently, and only one of them is a
+/// choice.** For a *fixed* vector both spellings are legal, and
+/// `AsmWriter.cpp`'s `writeConstantInternal` picks the shorthand only for
+/// `ConstantInt` and `ConstantFP`; that restriction is mirrored here so printed
+/// output stays byte-identical.
+///
+/// A *scalable* vector has no element-list spelling at all — its lane count is
+/// a minimum, not a count, so a list cannot describe the lanes one for one and
+/// LLVM would reject the text. `splat (…)` is the only form it has, whatever
+/// the element category, so the int/fp restriction must not apply. Upstream
+/// never faces the question: `ConstantVector::get` takes a fixed count, so a
+/// scalable vector constant with an element list cannot exist there. llvmkit
+/// builds one deliberately — it is how a scalable splat is represented, see
+/// `constant_fold::vector_splat_constant` — which is why the printer has to
+/// know the difference.
+fn prints_as_splat<B: ModuleBrand>(module: &ModuleCore, ty: Type<'_, B>, splat: ValueSlot) -> bool {
+    match ty.data() {
+        TypeData::FixedVector { .. } => is_int_or_fp_splat_value(module, splat),
+        TypeData::ScalableVector { .. } => true,
+        _ => false,
+    }
+}
+
 fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     host: Value<'ctx, B>,
@@ -911,11 +1297,8 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
     {
         return f.write_str("zeroinitializer");
     }
-    if matches!(
-        ty.data(),
-        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
-    ) && let Some(splat) = aggregate_splat_id(elem_ids)
-        && is_int_or_fp_splat_value(module.core_ref(), splat)
+    if let Some(splat) = aggregate_splat_id(elem_ids)
+        && prints_as_splat(module.core_ref(), ty, splat)
     {
         let data = module.context().value_data(splat);
         let value = Value::from_parts(splat, module, data.ty);
@@ -923,6 +1306,15 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
         fmt_operand(f, value, None)?;
         return f.write_str(")");
     }
+    // The element-list fallback. A *scalable* vector reaches it only when its
+    // lanes disagree, and that shape has no LLVM spelling at all — so what is
+    // printed here is invalid IR whatever it says. It is printed losslessly
+    // rather than collapsed to a `splat (…)` of the first lane, because
+    // claiming a splat the constant is not would corrupt silently where this
+    // merely fails to re-parse. The real answer is to stop the constant being
+    // constructible; `VectorType::const_vector` deliberately does not require
+    // uniformity today and two tests depend on that, so it is a representation
+    // decision rather than a printer one. See `docs/future-work.md`.
     let (open, close) = match ty.data() {
         TypeData::Array { .. } => ("[", "]"),
         TypeData::Struct(s) => {
@@ -976,22 +1368,22 @@ pub(super) fn fmt_instruction(
         InstructionKindData::Add(b) => fmt_binop(f, "add", inst, b, slots),
         InstructionKindData::Sub(b) => fmt_binop(f, "sub", inst, b, slots),
         InstructionKindData::Mul(b) => fmt_binop(f, "mul", inst, b, slots),
-        InstructionKindData::UDiv(b) => fmt_binop(f, "udiv", inst, b, slots),
-        InstructionKindData::SDiv(b) => fmt_binop(f, "sdiv", inst, b, slots),
-        InstructionKindData::URem(b) => fmt_binop(f, "urem", inst, b, slots),
-        InstructionKindData::SRem(b) => fmt_binop(f, "srem", inst, b, slots),
+        InstructionKindData::Udiv(b) => fmt_binop(f, "udiv", inst, b, slots),
+        InstructionKindData::Sdiv(b) => fmt_binop(f, "sdiv", inst, b, slots),
+        InstructionKindData::Urem(b) => fmt_binop(f, "urem", inst, b, slots),
+        InstructionKindData::Srem(b) => fmt_binop(f, "srem", inst, b, slots),
         InstructionKindData::Shl(b) => fmt_binop(f, "shl", inst, b, slots),
-        InstructionKindData::LShr(b) => fmt_binop(f, "lshr", inst, b, slots),
-        InstructionKindData::AShr(b) => fmt_binop(f, "ashr", inst, b, slots),
+        InstructionKindData::Lshr(b) => fmt_binop(f, "lshr", inst, b, slots),
+        InstructionKindData::Ashr(b) => fmt_binop(f, "ashr", inst, b, slots),
         InstructionKindData::And(b) => fmt_binop(f, "and", inst, b, slots),
         InstructionKindData::Or(b) => fmt_binop(f, "or", inst, b, slots),
         InstructionKindData::Xor(b) => fmt_binop(f, "xor", inst, b, slots),
-        InstructionKindData::FAdd(b) => fmt_binop(f, "fadd", inst, b, slots),
-        InstructionKindData::FSub(b) => fmt_binop(f, "fsub", inst, b, slots),
-        InstructionKindData::FMul(b) => fmt_binop(f, "fmul", inst, b, slots),
-        InstructionKindData::FDiv(b) => fmt_binop(f, "fdiv", inst, b, slots),
-        InstructionKindData::FRem(b) => fmt_binop(f, "frem", inst, b, slots),
-        InstructionKindData::FCmp(c) => fmt_fcmp(f, inst, c, slots),
+        InstructionKindData::Fadd(b) => fmt_binop(f, "fadd", inst, b, slots),
+        InstructionKindData::Fsub(b) => fmt_binop(f, "fsub", inst, b, slots),
+        InstructionKindData::Fmul(b) => fmt_binop(f, "fmul", inst, b, slots),
+        InstructionKindData::Fdiv(b) => fmt_binop(f, "fdiv", inst, b, slots),
+        InstructionKindData::Frem(b) => fmt_binop(f, "frem", inst, b, slots),
+        InstructionKindData::Fcmp(c) => fmt_fcmp(f, inst, c, slots),
         InstructionKindData::Alloca(a) => fmt_alloca(f, inst, a, slots),
         InstructionKindData::Load(l) => fmt_load(f, inst, l, slots),
         InstructionKindData::Store(s) => fmt_store(f, inst, s, slots),
@@ -999,7 +1391,7 @@ pub(super) fn fmt_instruction(
         InstructionKindData::Call(c) => fmt_call(f, inst, c, slots),
         InstructionKindData::Select(s) => fmt_select(f, inst, s, slots),
         InstructionKindData::Cast(c) => fmt_cast(f, inst, c, slots),
-        InstructionKindData::ICmp(c) => fmt_icmp(f, inst, c, slots),
+        InstructionKindData::Icmp(c) => fmt_icmp(f, inst, c, slots),
         InstructionKindData::Phi(p) => fmt_phi(f, inst, p, slots),
         InstructionKindData::Switch(d) => fmt_switch(f, inst, d, slots),
         InstructionKindData::IndirectBr(d) => fmt_indirectbr(f, inst, d, slots),
@@ -1017,9 +1409,9 @@ pub(super) fn fmt_instruction(
         InstructionKindData::CleanupReturn(d) => fmt_cleanupret(f, inst, d, slots),
         InstructionKindData::CatchSwitch(d) => fmt_catchswitch(f, inst, d, slots),
         InstructionKindData::Br(b) => fmt_br(f, inst, b, slots),
-        InstructionKindData::FNeg(u) => fmt_fneg(f, inst, u, slots),
+        InstructionKindData::Fneg(u) => fmt_fneg(f, inst, u, slots),
         InstructionKindData::Freeze(u) => fmt_freeze(f, inst, u, slots),
-        InstructionKindData::VAArg(u) => fmt_va_arg(f, inst, u, slots),
+        InstructionKindData::VaArg(u) => fmt_va_arg(f, inst, u, slots),
         InstructionKindData::ExtractValue(d) => fmt_extract_value(f, inst, d, slots),
         InstructionKindData::InsertValue(d) => fmt_insert_value(f, inst, d, slots),
         InstructionKindData::ExtractElement(d) => fmt_extract_element(f, inst, d, slots),
@@ -1027,7 +1419,7 @@ pub(super) fn fmt_instruction(
         InstructionKindData::ShuffleVector(d) => fmt_shuffle_vector(f, inst, d, slots),
         InstructionKindData::Fence(d) => fmt_fence(f, d),
         InstructionKindData::AtomicCmpXchg(d) => fmt_cmpxchg(f, inst, d, slots),
-        InstructionKindData::AtomicRMW(d) => fmt_atomicrmw(f, inst, d, slots),
+        InstructionKindData::AtomicRmw(d) => fmt_atomicrmw(f, inst, d, slots),
         InstructionKindData::Unreachable(_) => f.write_str("unreachable"),
         InstructionKindData::Ret(r) => fmt_ret(f, inst, r, slots),
     }?;
@@ -1040,6 +1432,7 @@ pub(super) fn fmt_instruction(
         module_view.core_ref(),
         &md,
         &md_slots,
+        ", ",
     )
 }
 
@@ -1088,6 +1481,10 @@ fn fmt_cast(
 ) -> fmt::Result {
     // `<keyword> <src-ty> <src-ref> to <dst-ty>`
     f.write_str(c.kind.keyword())?;
+    // `fptrunc` and `fpext` are the two `FPMathOperator` casts.
+    if !c.fmf.get().is_empty() {
+        write!(f, " {}", c.fmf.get())?;
+    }
     match c.kind {
         CastOpcode::Trunc => {
             if c.nuw.get() {
@@ -1097,7 +1494,7 @@ fn fmt_cast(
                 f.write_str(" nsw")?;
             }
         }
-        CastOpcode::ZExt | CastOpcode::UIToFp if c.nneg.get() => {
+        CastOpcode::Zext | CastOpcode::UiToFp if c.nneg.get() => {
             f.write_str(" nneg")?;
         }
         _ => {}
@@ -1114,7 +1511,7 @@ fn fmt_cast(
 fn fmt_fneg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &FNegInstData,
+    u: &FnegInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `fneg [<fmf>] <ty> <src>` --- mirrors `printInstruction` /
@@ -1149,7 +1546,7 @@ fn fmt_freeze(
 fn fmt_va_arg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &VAArgInstData,
+    u: &VaArgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `va_arg <list-ty> <list-val>, <result-ty>`
@@ -1290,7 +1687,7 @@ fn fmt_shuffle_vector(
 fn print_shuffle_mask<B: ModuleBrand>(
     f: &mut fmt::Formatter<'_>,
     result_ty: Type<'_, B>,
-    mask: &[i32],
+    mask: &[ShuffleMaskElem],
 ) -> fmt::Result {
     // Mirrors `printShuffleMask` in `lib/IR/AsmWriter.cpp`.
     f.write_str(", <")?;
@@ -1298,8 +1695,8 @@ fn print_shuffle_mask<B: ModuleBrand>(
         f.write_str("vscale x ")?;
     }
     write!(f, "{} x i32> ", mask.len())?;
-    let all_zero = !mask.is_empty() && mask.iter().all(|&e| e == 0);
-    let all_poison = !mask.is_empty() && mask.iter().all(|&e| e == POISON_MASK_ELEM);
+    let all_zero = !mask.is_empty() && mask.iter().all(|e| *e == ShuffleMaskElem::Lane(0));
+    let all_poison = !mask.is_empty() && mask.iter().all(|e| *e == ShuffleMaskElem::Poison);
     if all_zero {
         f.write_str("zeroinitializer")?;
     } else if all_poison {
@@ -1311,10 +1708,9 @@ fn print_shuffle_mask<B: ModuleBrand>(
                 f.write_str(", ")?;
             }
             f.write_str("i32 ")?;
-            if e == POISON_MASK_ELEM {
-                f.write_str("poison")?;
-            } else {
-                write!(f, "{e}")?;
+            match e {
+                ShuffleMaskElem::Poison => f.write_str("poison")?,
+                ShuffleMaskElem::Lane(lane) => write!(f, "{lane}")?,
             }
         }
         f.write_str(">")?;
@@ -1390,7 +1786,7 @@ fn fmt_cmpxchg(
 fn fmt_atomicrmw(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &AtomicRMWInstData,
+    d: &AtomicRmwInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
@@ -1447,9 +1843,9 @@ fn fmt_icmp(
     let lhs_data = module.context().value_data(c.lhs.get());
     let lhs = Value::from_parts(c.lhs.get(), module, lhs_data.ty);
     if c.samesign {
-        write!(f, "icmp samesign {} {} ", c.predicate.name(), lhs.ty())?;
+        write!(f, "icmp samesign {} {} ", c.predicate.as_str(), lhs.ty())?;
     } else {
-        write!(f, "icmp {} {} ", c.predicate.name(), lhs.ty())?;
+        write!(f, "icmp {} {} ", c.predicate.as_str(), lhs.ty())?;
     }
     fmt_operand_ref(f, lhs, Some(slots))?;
     f.write_str(", ")?;
@@ -1460,7 +1856,7 @@ fn fmt_icmp(
 fn fmt_fcmp(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    c: &FCmpInstData,
+    c: &FcmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `fcmp [<fmf>] <pred> <ty> <lhs>, <rhs>`. The optional FMF block
@@ -1472,7 +1868,7 @@ fn fmt_fcmp(
     if !c.fmf.is_empty() {
         write!(f, " {}", c.fmf)?;
     }
-    write!(f, " {} {} ", c.predicate.name(), lhs.ty())?;
+    write!(f, " {} {} ", c.predicate.as_str(), lhs.ty())?;
     fmt_operand_ref(f, lhs, Some(slots))?;
     f.write_str(", ")?;
     let rhs_data = module.context().value_data(c.rhs.get());
@@ -1625,7 +2021,15 @@ fn fmt_call(
     if let Some(kw) = c.tail_kind.keyword() {
         write!(f, "{} ", kw)?;
     }
-    f.write_str("call ")?;
+    f.write_str("call")?;
+    // `writeOptimizationInfo` runs straight after the opcode name, so the flags
+    // land between `call` and the calling convention — the same place
+    // `LLParser::parseCall` eats them.
+    let fmf = c.attrs.fast_math_flags_value();
+    if !fmf.is_empty() {
+        write!(f, " {fmf}")?;
+    }
+    f.write_str(" ")?;
     if c.calling_conv != crate::CallingConv::C {
         write!(f, "{} ", c.calling_conv)?;
     }
@@ -1684,14 +2088,14 @@ fn fmt_call(
     // trailing `...` (AsmWriter's CallInst arm:
     // `isMustTailCall() && getParent()->getParent()->isVarArg()`).
     if matches!(c.tail_kind, TailCallKind::MustTail) {
-        let enclosing_varargs =
-            inst.into_erased()
-                .local_parent_function_id()
-                .is_some_and(|fn_id| {
-                    FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
-                        .signature()
-                        .is_var_arg()
-                });
+        let enclosing_varargs = inst
+            .as_erased()
+            .local_parent_function_id()
+            .is_some_and(|fn_id| {
+                FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
+                    .signature()
+                    .is_var_arg()
+            });
         if enclosing_varargs {
             if !c.args.is_empty() {
                 f.write_str(", ")?;
@@ -1825,6 +2229,8 @@ fn constant_int_zext_u128<B: ModuleBrand>(value: Value<'_, B>) -> Option<u128> {
     ApInt::from_words(*bits, words).try_zext_u128()
 }
 
+/// Mirrors `knownBundleName` (`lib/IR/LLVMContext.cpp`), the spelling table
+/// `LLVMContext::LLVMContext` registers for the `OB_*` operand-bundle tags.
 fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
     match tag {
         OperandBundleTag::Deopt => "deopt",
@@ -1838,7 +2244,7 @@ fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
         OperandBundleTag::Kcfi => "kcfi",
         OperandBundleTag::ConvergenceCtrl => "convergencectrl",
         OperandBundleTag::Align => "align",
-        OperandBundleTag::DeactivationSymbol => "deactivation",
+        OperandBundleTag::DeactivationSymbol => "deactivation-symbol",
         OperandBundleTag::Custom(name) => name.as_str(),
     }
 }
@@ -2226,7 +2632,11 @@ fn fmt_phi(
     p: &PhiData,
     slots: &SlotTracker,
 ) -> fmt::Result {
-    write!(f, "phi {} ", inst.ty())?;
+    f.write_str("phi")?;
+    if !p.fmf.get().is_empty() {
+        write!(f, " {}", p.fmf.get())?;
+    }
+    write!(f, " {} ", inst.ty())?;
     let module = inst.module();
     let mut first = true;
     for (vid_cell, bid) in p.incoming.borrow().iter() {
@@ -2381,26 +2791,62 @@ fn fmt_attribute_set<'ctx, B: ModuleBrand + 'ctx>(
     Ok(())
 }
 
+/// Whether an attribute is being printed inside `attributes #N = { … }`.
+/// Mirrors `Attribute::getAsString`'s `InAttrGrp` parameter, which changes the
+/// spelling of exactly four kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttrPrintContext {
+    /// Anywhere an attribute is written inline: `align 8`, `alignstack(8)`.
+    Inline,
+    /// The body of an attribute group: `align=8`, `alignstack=8`. No spaces
+    /// around the `=`.
+    AttributeGroup,
+}
+
 fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     attr: &AttributeStored,
     module: ModuleView<'ctx, B>,
 ) -> fmt::Result {
+    fmt_attribute_stored_in(f, attr, module, AttrPrintContext::Inline)
+}
+
+fn fmt_attribute_stored_in<'ctx, B: ModuleBrand + 'ctx>(
+    f: &mut fmt::Formatter<'_>,
+    attr: &AttributeStored,
+    module: ModuleView<'ctx, B>,
+    context: AttrPrintContext,
+) -> fmt::Result {
+    let in_group = context == AttrPrintContext::AttributeGroup;
     match attr {
         AttributeStored::Enum(k) => f.write_str(k.name()),
+        AttributeStored::Int(AttrKind::Alignment, v) if in_group => write!(f, "align={v}"),
         AttributeStored::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-        AttributeStored::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-        AttributeStored::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+        AttributeStored::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+        AttributeStored::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
+        // `AttrWithBytesToString` covers exactly these three.
+        AttributeStored::Int(
+            k @ (AttrKind::StackAlignment
+            | AttrKind::Dereferenceable
+            | AttrKind::DereferenceableOrNull),
+            v,
+        ) if in_group => write!(f, "{}={v}", k.name()),
         AttributeStored::Int(k, v) => write!(f, "{}({v})", k.name()),
         AttributeStored::Type(k, ty_id) => write!(f, "{}({})", k.name(), Type::new(*ty_id, module)),
         AttributeStored::Range { ty, lower, upper } => write!(
             f,
             "range({} {}, {})",
             Type::new(*ty, module),
-            lower.to_string_radix(10, ApIntSignedness::Signed),
-            upper.to_string_radix(10, ApIntSignedness::Signed)
+            lower.to_string_radix(10, Signedness::Signed),
+            upper.to_string_radix(10, Signedness::Signed)
         ),
         AttributeStored::Memory(effects) => write!(f, "{effects}"),
+        AttributeStored::NoFpClass(_)
+        | AttributeStored::AllocSize { .. }
+        | AttributeStored::VScaleRange { .. }
+        | AttributeStored::AllocKind(_)
+        | AttributeStored::Captures(_)
+        | AttributeStored::Initializes(_) => write!(f, "{attr}"),
         AttributeStored::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
         AttributeStored::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
     }
@@ -2513,6 +2959,17 @@ pub(super) fn fmt_function<B: ModuleBrand>(
     f: &mut fmt::Formatter<'_>,
     func: FunctionValue<'_, Dyn, B>,
 ) -> fmt::Result {
+    fmt_function_with_use_lists(f, func, None)
+}
+
+/// `AssemblyWriter::printFunction`. `use_lists` carries the directives
+/// `predictUseListOrder` filed under this function, present only when the
+/// caller asked to preserve use-list order.
+fn fmt_function_with_use_lists<B: ModuleBrand>(
+    f: &mut fmt::Formatter<'_>,
+    func: FunctionValue<'_, Dyn, B>,
+    use_lists: Option<&Vec<UseListOrderDirective>>,
+) -> fmt::Result {
     let slots = SlotTracker::for_function(func);
     let sig = func.signature();
     let linkage = func.linkage();
@@ -2523,18 +2980,37 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         "define"
     };
     write!(f, "{header}")?;
+    // `printFunction` emits a *declaration*'s metadata attachments directly
+    // after the `declare` keyword — `declare !dbg !0 void @f()` — which is
+    // also the position `LLParser::parseDeclare` reads them from.
+    if header == "declare" {
+        let module_view = func.module();
+        let md = module_view.metadata_store();
+        let md_slots = metadata_slot_map(md.nodes());
+        fmt_metadata_attachments(
+            f,
+            &func.metadata_stored(),
+            module_view.core_ref(),
+            &md,
+            &md_slots,
+            " ",
+        )?;
+    }
     // Print non-default linkage between header and return type.
     let linkage_str = linkage.keyword();
     if !linkage_str.is_empty() {
         write!(f, " {linkage_str}")?;
     }
+    // `printFunction` order: DSO location, then visibility, then DLL storage
+    // class. This is the same order `LLParser::parseOptionalLinkage` reads,
+    // and the pair has to agree for LLVM's own output to round-trip here.
+    if let Some(s) = func.dso_locality().keyword() {
+        write!(f, " {s}")?;
+    }
     if let Some(s) = func.visibility().keyword() {
         write!(f, " {s}")?;
     }
     if let Some(s) = func.dll_storage_class().keyword() {
-        write!(f, " {s}")?;
-    }
-    if let Some(s) = func.dso_locality().keyword() {
         write!(f, " {s}")?;
     }
     if func.calling_conv() != crate::CallingConv::C {
@@ -2548,7 +3024,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         f.write_str(" ")?;
     }
     write!(f, "{} ", sig.return_type())?;
-    fmt_global_value_ref(f, func.into_erased())?;
+    fmt_global_value_ref(f, func.as_erased())?;
     f.write_str("(")?;
     let mut first = true;
     for arg in func.params() {
@@ -2587,7 +3063,15 @@ pub(super) fn fmt_function<B: ModuleBrand>(
     if let Some(kw) = func.unnamed_addr().keyword() {
         write!(f, " {kw}")?;
     }
-    if func.address_space() != 0 {
+    // Mirrors `AssemblyWriter::printFunction`'s `ForcePrintAddressSpace`: the
+    // function's address space is printed when it is non-zero, *and* whenever
+    // the module's program address space is non-zero, so that a file carrying
+    // `target datalayout = "P2"` still re-parses to the same IR. Without the
+    // second half a `define ptr addrspace(0) @f() addrspace(0)` under `P2`
+    // prints without its `addrspace(0)` and re-parses into the program address
+    // space instead. llvmkit has no `!Mod` case: a function always has one.
+    let force_address_space = func.module().data_layout().program_addr_space() != 0;
+    if func.address_space() != 0 || force_address_space {
         write!(f, " addrspace({})", func.address_space())?;
     }
     for group in func.function_attr_groups() {
@@ -2622,17 +3106,22 @@ pub(super) fn fmt_function<B: ModuleBrand>(
     }
     if let Some(prefix) = func.prefix_data() {
         f.write_str(" prefix ")?;
-        fmt_operand(f, prefix.into_erased(), None)?;
+        fmt_operand(f, prefix.as_erased(), None)?;
     }
     if let Some(prologue) = func.prologue_data() {
         f.write_str(" prologue ")?;
-        fmt_operand(f, prologue.into_erased(), None)?;
+        fmt_operand(f, prologue.as_erased(), None)?;
     }
     if let Some(personality) = func.personality_fn() {
         f.write_str(" personality ")?;
-        fmt_operand(f, personality.into_erased(), None)?;
+        fmt_operand(f, personality.as_erased(), None)?;
     }
-    {
+    // A *definition*'s metadata attachments sit here, after the header and
+    // before the `{`. A declaration's were already emitted right after the
+    // `declare` keyword. Both use a space separator, unlike the
+    // comma-separated attachments on globals and instructions
+    // (`AssemblyWriter::printFunction`).
+    if header != "declare" {
         let module_view = func.module();
         let md = module_view.metadata_store();
         let md_slots = metadata_slot_map(md.nodes());
@@ -2642,6 +3131,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
             module_view.core_ref(),
             &md,
             &md_slots,
+            " ",
         )?;
     }
     if header == "declare" {
@@ -2653,11 +3143,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         fmt_basic_block(f, bb, &slots, first_block)?;
         first_block = false;
     }
-    for directive in func.use_list_orders() {
-        f.write_str("  ")?;
-        fmt_use_list_order(f, func.module().core_ref(), &directive, Some(&slots))?;
-        f.write_str("\n")?;
-    }
+    fmt_use_lists(f, func.module().core_ref(), use_lists, Some(&slots))?;
     f.write_str("}\n")
 }
 
@@ -2687,6 +3173,18 @@ fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &ModuleCore
 }
 
 pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Result {
+    fmt_module_with_options(f, m, false)
+}
+
+/// `AssemblyWriter::printModule`. `preserve_use_list_order` is upstream's
+/// `ShouldPreserveUseListOrder` — false for `Module::print`'s default and for
+/// `llvm-dis`, true for `llvm-as` and `opt -S -preserve-ll-uselistorder`.
+pub(super) fn fmt_module_with_options(
+    f: &mut fmt::Formatter<'_>,
+    m: &ModuleCore,
+    preserve_use_list_order: bool,
+) -> fmt::Result {
+    let use_lists = preserve_use_list_order.then(|| predict_use_list_order(m));
     writeln!(f, "; ModuleID = '{}'", m.name())?;
     if let Some(source_filename) = m.source_filename() {
         f.write_str("source_filename = \"")?;
@@ -2753,8 +3251,16 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
             let s = data
                 .as_struct()
                 .expect("iter_named_struct_ids yields only struct ids");
-            let name = s.name.as_ref().expect("named struct must have a name");
-            fmt_llvm_name(f, "%", name)?;
+            // Identified structs print their identity block here; an
+            // anonymous one is numbered rather than named, exactly as
+            // `AsmWriter::printTypeIdentities` does.
+            match s.identity.name() {
+                Some(name) => fmt_llvm_name(f, "%", name)?,
+                None => match m.context().anonymous_identified_struct_number(id) {
+                    Some(number) => write!(f, "%{number}")?,
+                    None => f.write_str("%<unnumbered>")?,
+                },
+            }
             f.write_str(" = type ")?;
             match s.body.borrow().as_ref() {
                 Some(body) => fmt_struct_body(f, body, m)?,
@@ -2797,8 +3303,22 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
             f.write_str("\n")?;
         }
         first = false;
-        fmt_function(f, func)?;
+        fmt_function_with_use_lists(
+            f,
+            func,
+            use_lists
+                .as_ref()
+                .and_then(|lists| lists.get(&Some(func.as_erased().slot()))),
+        )?;
     }
+    // Module-level use-lists sit between the functions and the attribute
+    // groups — `printUseLists(nullptr)` in `printModule`.
+    fmt_use_lists(
+        f,
+        m,
+        use_lists.as_ref().and_then(|lists| lists.get(&None)),
+        None,
+    )?;
     {
         let mut groups = m.attribute_groups();
         groups.sort_by_key(|(slot, _)| *slot);
@@ -2814,7 +3334,19 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
                         if i != 0 {
                             f.write_str(" ")?;
                         }
-                        write!(f, "{attr}")?;
+                        // Not `Display`: `preallocated(T)` is a type attribute
+                        // that `Attributes.td` also declares `FnAttr`, so an
+                        // attribute group can hold one, and printing a type
+                        // needs the module.
+                        //
+                        // `writeAllAttributeGroups` asks for the `InAttrGrp`
+                        // spelling, which is `align=8` and not `align 8`.
+                        fmt_attribute_stored_in(
+                            f,
+                            attr,
+                            ModuleView::<DynBrand>::new(m),
+                            AttrPrintContext::AttributeGroup,
+                        )?;
                     }
                     f.write_str(" ")?;
                 }
@@ -2823,13 +3355,28 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
         }
     }
 
-    for directive in m.iter_use_list_orders() {
-        fmt_use_list_order(f, m, &directive, None)?;
-        f.write_str("\n")?;
-    }
-    for directive in m.iter_use_list_order_bbs() {
-        fmt_use_list_order_bb(f, m, &directive)?;
-        f.write_str("\n")?;
+    // Named metadata, then numbered metadata. Mirrors the tail of
+    // `AssemblyWriter::printModule`, which runs
+    // `for (const NamedMDNode &Node : M->named_metadata()) printNamedMDNode(...)`
+    // *before* `writeAllMDNodes()`, each preceded by a blank line when its
+    // section is non-empty.
+    {
+        let nmd = m.named_metadata_list();
+        if !nmd.is_empty() {
+            let md = m.metadata_store();
+            let slots = metadata_slot_map(md.nodes());
+            f.write_str("\n")?;
+            for node in nmd.iter() {
+                write!(f, "!{} = !{{", node.name_str())?;
+                for (j, op) in node.operands().iter().enumerate() {
+                    if j > 0 {
+                        f.write_str(", ")?;
+                    }
+                    fmt_metadata_operand(f, op.slot(), m, &md, &slots)?;
+                }
+                f.write_str("}\n")?;
+            }
+        }
     }
 
     // Numbered metadata nodes. Mirrors the
@@ -2848,26 +3395,6 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
                     fmt_metadata_node(f, node, m, &md, &slots)?;
                     f.write_str("\n")?;
                 }
-            }
-        }
-    }
-
-    // Named metadata. Mirrors the `for (const NamedMDNode &NMD :
-    // M->named_metadata())` loop in `printModule`.
-    {
-        let nmd = m.named_metadata_list();
-        if !nmd.is_empty() {
-            let md = m.metadata_store();
-            let slots = metadata_slot_map(md.nodes());
-            for node in nmd.iter() {
-                write!(f, "!{} = !{{", node.name())?;
-                for (j, op) in node.operands().iter().enumerate() {
-                    if j > 0 {
-                        f.write_str(", ")?;
-                    }
-                    fmt_metadata_operand(f, op.slot(), m, &md, &slots)?;
-                }
-                f.write_str("}\n")?;
             }
         }
     }
@@ -2916,6 +3443,25 @@ fn fmt_metadata_node(
         MetadataKind::Specialized(node) => {
             fmt_specialized_metadata_node(f, node, module, store, slots)
         }
+        // `AsmWriter::writeDIArgList` — each operand printed as a typed value,
+        // which is what makes the list a `ValueAsMetadata` list rather than a
+        // metadata tuple.
+        MetadataKind::ArgList { arguments } => {
+            f.write_str("!DIArgList(")?;
+            for (position, argument) in arguments.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                let value = Value::<DynBrand>::from_parts(
+                    argument.slot(),
+                    module,
+                    module.context().value_data(argument.slot()).ty,
+                );
+                write!(f, "{} ", value.ty())?;
+                fmt_operand_ref(f, value, None)?;
+            }
+            f.write_str(")")
+        }
         MetadataKind::Constant(id) => {
             let slot = id.slot();
             let data = module.context().value_data(slot);
@@ -2936,6 +3482,20 @@ fn fmt_specialized_metadata_node(
         f.write_str("distinct ")?;
     }
     write!(f, "!{}(", node.kind().name())?;
+    // `DIExpression` prints a positional element list, not `name: value` pairs.
+    // Mirrors `AsmWriter.cpp::writeDIExpression`.
+    if let super::metadata::SpecializedMetadataBody::Expression(operands) = node.body() {
+        for (i, operand) in operands.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            match operand {
+                super::metadata::DwarfExpressionOperand::Operation(name) => f.write_str(name)?,
+                super::metadata::DwarfExpressionOperand::Literal(value) => write!(f, "{value}")?,
+            }
+        }
+        return f.write_str(")");
+    }
     for (i, field) in node.fields().iter().enumerate() {
         if i > 0 {
             f.write_str(", ")?;
@@ -2969,15 +3529,19 @@ fn fmt_specialized_metadata_node(
     f.write_str(")")
 }
 
+/// Mirrors `AssemblyWriter::printMetadataAttachments`, whose `Separator`
+/// argument is `", "` for globals and instructions but `" "` for functions —
+/// `@g = global i32 0, !dbg !0` against `define void @f() !dbg !0 {`.
 fn fmt_metadata_attachments(
     f: &mut fmt::Formatter<'_>,
     attachments: &MetadataAttachmentSet<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    separator: &str,
 ) -> fmt::Result {
     for (kind, id) in attachments.iter() {
-        write!(f, ", !{} ", kind.name())?;
+        write!(f, "{separator}!{} ", kind.name())?;
         fmt_metadata_operand(f, id.slot(), module, store, slots)?;
     }
     Ok(())
@@ -3007,13 +3571,23 @@ fn fmt_metadata_operand(
     }
 }
 
+/// Whether a node is written out where it is used rather than as a `!N`
+/// reference.
+///
+/// Mirrors the head of `WriteAsOperandInternal(raw_ostream&, const Metadata*,
+/// …)`: "Write DIExpressions and DIArgLists inline when used as a value.
+/// Improves readability of debug info intrinsics." A `DIArgList` additionally
+/// *cannot* be spelled as a definition — its operands may be function-local —
+/// so inline is its only form.
 fn is_inline_metadata_node(node: &MetadataKind<StoredBrand>) -> bool {
-    matches!(node, MetadataKind::Null | MetadataKind::Constant(_))
-        || matches!(
-            node,
-            MetadataKind::Specialized(s)
-                if s.kind() == SpecializedMetadataKind::DIExpression
-        )
+    matches!(
+        node,
+        MetadataKind::Null | MetadataKind::Constant(_) | MetadataKind::ArgList { .. }
+    ) || matches!(
+        node,
+        MetadataKind::Specialized(s)
+            if s.kind() == SpecializedMetadataKind::DiExpression
+    )
 }
 
 fn metadata_slot_map(nodes: &[MetadataKind<StoredBrand>]) -> Vec<Option<usize>> {
@@ -3041,7 +3615,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printGlobal` in
     // `lib/IR/AsmWriter.cpp`.
-    fmt_global_value_ref(f, g.into_erased())?;
+    fmt_global_value_ref(f, g.as_erased())?;
     f.write_str(" = ")?;
 
     // `external` keyword in front of decl-only globals with
@@ -3099,7 +3673,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     // Initializer.
     if let Some(init) = g.initializer() {
         f.write_str(" ")?;
-        let v = init.into_erased();
+        let v = init.as_erased();
         fmt_operand_ref(f, v, None)?;
     }
 
@@ -3115,6 +3689,27 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;
         f.write_str("\"")?;
+    }
+
+    // Code model, then sanitizer metadata, then comdat — `printGlobal`'s
+    // order, which is also the order `parseGlobal`'s property loop accepts
+    // them in any of, so only the printed sequence is fixed.
+    if let Some(model) = g.code_model() {
+        write!(f, ", code_model \"{model}\"")?;
+    }
+    if let Some(sanitizer) = g.sanitizer_metadata() {
+        if sanitizer.no_address {
+            f.write_str(", no_sanitize_address")?;
+        }
+        if sanitizer.no_hwaddress {
+            f.write_str(", no_sanitize_hwaddress")?;
+        }
+        if sanitizer.memtag {
+            f.write_str(", sanitize_memtag")?;
+        }
+        if sanitizer.is_dyn_init {
+            f.write_str(", sanitize_address_dyninit")?;
+        }
     }
     if let Some(c) = g.comdat() {
         f.write_str(", comdat")?;
@@ -3139,6 +3734,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         g.module().core_ref(),
         &md,
         &md_slots,
+        ", ",
     )
 }
 
@@ -3146,7 +3742,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     a: GlobalAlias<'ctx, B>,
 ) -> fmt::Result {
-    fmt_global_value_ref(f, a.into_erased())?;
+    fmt_global_value_ref(f, a.as_erased())?;
     f.write_str(" = ")?;
     let linkage_kw = a.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -3175,7 +3771,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("alias ")?;
     write!(f, "{}, ", a.value_type())?;
-    fmt_operand(f, a.aliasee().into_erased(), None)?;
+    fmt_operand(f, a.aliasee().as_erased(), None)?;
     if let Some(partition) = a.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;
@@ -3190,15 +3786,16 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
         a.module().core_ref(),
         &md,
         &md_slots,
+        ", ",
     )?;
     f.write_str("\n")
 }
 
 pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    i: GlobalIFunc<'ctx, B>,
+    i: GlobalIfunc<'ctx, B>,
 ) -> fmt::Result {
-    fmt_global_value_ref(f, i.into_erased())?;
+    fmt_global_value_ref(f, i.as_erased())?;
     f.write_str(" = ")?;
     let linkage_kw = i.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -3215,7 +3812,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("ifunc ")?;
     write!(f, "{}, ", i.value_type())?;
-    fmt_operand(f, i.resolver().into_erased(), None)?;
+    fmt_operand(f, i.resolver().as_erased(), None)?;
     if let Some(partition) = i.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;
@@ -3230,6 +3827,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
         i.module().core_ref(),
         &md,
         &md_slots,
+        ", ",
     )?;
     f.write_str("\n")
 }
@@ -3241,7 +3839,13 @@ fn fmt_select(
     slots: &SlotTracker,
 ) -> fmt::Result {
     let module = inst.module();
-    f.write_str("select ")?;
+    f.write_str("select")?;
+    // `printInstruction` emits the FPMathOperator flags immediately after the
+    // opcode, before the condition operand.
+    if !s.fmf.get().is_empty() {
+        write!(f, " {}", s.fmf.get())?;
+    }
+    f.write_str(" ")?;
     let cd = module.context().value_data(s.cond.get());
     let cv = Value::from_parts(s.cond.get(), module, cd.ty);
     write!(f, "{} ", cv.ty())?;
@@ -3256,4 +3860,632 @@ fn fmt_select(
     let fv = Value::from_parts(s.false_val.get(), module, fd.ty);
     write!(f, "{} ", fv.ty())?;
     fmt_operand_ref(f, fv, Some(slots))
+}
+
+// ---------------------------------------------------------------------------
+// Module summary index
+// ---------------------------------------------------------------------------
+
+/// Writes a `^N` slot reference.
+///
+/// `SlotTracker::getGUIDSlot` and its siblings answer `-1` for an entity the
+/// index does not carry, and `AsmWriter` streams that answer straight into the
+/// `^` form, so a dangling reference prints as `^-1` rather than crashing.
+fn fmt_summary_slot(f: &mut fmt::Formatter<'_>, slot: Option<u32>) -> fmt::Result {
+    match slot {
+        Some(slot) => write!(f, "^{slot}"),
+        None => f.write_str("^-1"),
+    }
+}
+
+/// Mirrors `AssemblyWriter::printTypeTestResolution`.
+fn fmt_type_test_resolution(
+    f: &mut fmt::Formatter<'_>,
+    resolution: &TypeTestResolution,
+) -> fmt::Result {
+    write!(
+        f,
+        "typeTestRes: (kind: {}, sizeM1BitWidth: {}",
+        resolution.kind, resolution.size_minus_one_bit_width
+    )?;
+
+    // These fields are only used when the target cannot store constants in
+    // absolute symbols; upstream prints them only when non-zero.
+    if resolution.align_log2 != 0 {
+        write!(f, ", alignLog2: {}", resolution.align_log2)?;
+    }
+    if resolution.size_minus_one != 0 {
+        write!(f, ", sizeM1: {}", resolution.size_minus_one)?;
+    }
+    if resolution.bit_mask != 0 {
+        write!(f, ", bitMask: {}", resolution.bit_mask)?;
+    }
+    if resolution.inline_bits != 0 {
+        write!(f, ", inlineBits: {}", resolution.inline_bits)?;
+    }
+
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printArgs`.
+fn fmt_summary_args(f: &mut fmt::Formatter<'_>, args: &[u64]) -> fmt::Result {
+    f.write_str("args: (")?;
+    for (position, arg) in args.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{arg}")?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printWPDRes`.
+fn fmt_whole_program_devirt_resolution(
+    f: &mut fmt::Formatter<'_>,
+    resolution: &WholeProgramDevirtResolution,
+) -> fmt::Result {
+    write!(f, "wpdRes: (kind: {}", resolution.kind)?;
+
+    if resolution.kind == WholeProgramDevirtKind::SingleImpl {
+        write!(f, ", singleImplName: \"{}\"", resolution.single_impl_name)?;
+    }
+
+    if !resolution.resolutions_by_argument.is_empty() {
+        f.write_str(", resByArg: (")?;
+        for (position, (args, by_arg)) in resolution.resolutions_by_argument.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            fmt_summary_args(f, args)?;
+            write!(f, ", byArg: (kind: {}", by_arg.kind)?;
+            if matches!(
+                by_arg.kind,
+                WholeProgramDevirtByArgKind::UniformRetVal
+                    | WholeProgramDevirtByArgKind::UniqueRetVal
+            ) {
+                write!(f, ", info: {}", by_arg.info)?;
+            }
+            // Only used when the target cannot store constants in absolute
+            // symbols; upstream prints the pair only when either is non-zero.
+            if by_arg.byte != 0 || by_arg.bit != 0 {
+                write!(f, ", byte: {}, bit: {}", by_arg.byte, by_arg.bit)?;
+            }
+            f.write_str(")")?;
+        }
+        f.write_str(")")?;
+    }
+
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printTypeIdSummary`.
+fn fmt_type_id_summary(f: &mut fmt::Formatter<'_>, summary: &TypeIdSummary) -> fmt::Result {
+    f.write_str(", summary: (")?;
+    fmt_type_test_resolution(f, &summary.type_test_resolution)?;
+    if !summary.whole_program_devirt_resolutions.is_empty() {
+        f.write_str(", wpdResolutions: (")?;
+        for (position, (offset, resolution)) in
+            summary.whole_program_devirt_resolutions.iter().enumerate()
+        {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "(offset: {offset}, ")?;
+            fmt_whole_program_devirt_resolution(f, resolution)?;
+            f.write_str(")")?;
+        }
+        f.write_str(")")?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printTypeIdCompatibleVtableSummary`.
+fn fmt_type_id_compatible_vtable_summary(
+    f: &mut fmt::Formatter<'_>,
+    entries: &[TypeIdOffsetVtableInfo],
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    f.write_str(", summary: (")?;
+    for (position, entry) in entries.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "(offset: {}, ", entry.address_point_offset)?;
+        fmt_summary_slot(f, slots.guid(entry.vtable.guid))?;
+        f.write_str(")")?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printVFuncId`, which falls back to the raw GUID
+/// when the index carries no type identifier for it, and otherwise prints one
+/// entry per type identifier sharing that GUID.
+fn fmt_virtual_function_id(
+    f: &mut fmt::Formatter<'_>,
+    id: &VirtualFunctionId,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    let Some(entries) = index.type_ids().get(&id.guid) else {
+        return write!(f, "vFuncId: (guid: {}, offset: {})", id.guid, id.offset);
+    };
+    for (position, (name, _)) in entries.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        f.write_str("vFuncId: (")?;
+        fmt_summary_slot(f, slots.type_id(name))?;
+        write!(f, ", offset: {})", id.offset)?;
+    }
+    Ok(())
+}
+
+/// Mirrors `AssemblyWriter::printNonConstVCalls`.
+fn fmt_non_const_virtual_calls(
+    f: &mut fmt::Formatter<'_>,
+    calls: &[VirtualFunctionId],
+    tag: &str,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(f, "{tag}: (")?;
+    for (position, id) in calls.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        fmt_virtual_function_id(f, id, index, slots)?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printConstVCalls`.
+fn fmt_const_virtual_calls(
+    f: &mut fmt::Formatter<'_>,
+    calls: &[ConstantVirtualCall],
+    tag: &str,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(f, "{tag}: (")?;
+    for (position, call) in calls.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        f.write_str("(")?;
+        fmt_virtual_function_id(f, &call.virtual_function, index, slots)?;
+        if !call.arguments.is_empty() {
+            f.write_str(", ")?;
+            fmt_summary_args(f, &call.arguments)?;
+        }
+        f.write_str(")")?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printTypeIdInfo`.
+fn fmt_type_id_info(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeIdInfo,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    f.write_str(", typeIdInfo: (")?;
+    let mut written = false;
+
+    if !info.type_tests.is_empty() {
+        written = true;
+        f.write_str("typeTests: (")?;
+        let mut first = true;
+        for guid in &info.type_tests {
+            match index.type_ids().get(guid) {
+                // No type identifier carries this GUID: print it raw.
+                None => {
+                    if !first {
+                        f.write_str(", ")?;
+                    }
+                    first = false;
+                    write!(f, "{guid}")?;
+                }
+                // Print every type identifier that shares this GUID.
+                Some(entries) => {
+                    for (name, _) in entries {
+                        if !first {
+                            f.write_str(", ")?;
+                        }
+                        first = false;
+                        fmt_summary_slot(f, slots.type_id(name))?;
+                    }
+                }
+            }
+        }
+        f.write_str(")")?;
+    }
+    if !info.type_test_assume_vcalls.is_empty() {
+        if written {
+            f.write_str(", ")?;
+        }
+        written = true;
+        fmt_non_const_virtual_calls(
+            f,
+            &info.type_test_assume_vcalls,
+            "typeTestAssumeVCalls",
+            index,
+            slots,
+        )?;
+    }
+    if !info.type_checked_load_vcalls.is_empty() {
+        if written {
+            f.write_str(", ")?;
+        }
+        written = true;
+        fmt_non_const_virtual_calls(
+            f,
+            &info.type_checked_load_vcalls,
+            "typeCheckedLoadVCalls",
+            index,
+            slots,
+        )?;
+    }
+    if !info.type_test_assume_const_vcalls.is_empty() {
+        if written {
+            f.write_str(", ")?;
+        }
+        written = true;
+        fmt_const_virtual_calls(
+            f,
+            &info.type_test_assume_const_vcalls,
+            "typeTestAssumeConstVCalls",
+            index,
+            slots,
+        )?;
+    }
+    if !info.type_checked_load_const_vcalls.is_empty() {
+        if written {
+            f.write_str(", ")?;
+        }
+        fmt_const_virtual_calls(
+            f,
+            &info.type_checked_load_const_vcalls,
+            "typeCheckedLoadConstVCalls",
+            index,
+            slots,
+        )?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors the `PrintRange` lambda in `AssemblyWriter::printFunctionSummary`.
+fn fmt_summary_range(f: &mut fmt::Formatter<'_>, range: &ConstantRange) -> fmt::Result {
+    write!(f, "[{}, {}]", range.signed_min(), range.signed_max())
+}
+
+/// Mirrors `AssemblyWriter::printAliasSummary`.
+fn fmt_alias_summary(
+    f: &mut fmt::Formatter<'_>,
+    summary: &AliasSummary,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    f.write_str(", aliasee: ")?;
+    // A distributed backend's index may omit the aliasee summary; upstream
+    // emits "null" for that case as well as for an explicitly null aliasee.
+    match summary.aliasee {
+        Some(guid) => fmt_summary_slot(f, slots.guid(guid)),
+        None => f.write_str("null"),
+    }
+}
+
+/// Mirrors `AssemblyWriter::printGlobalVarSummary`.
+fn fmt_global_variable_summary(
+    f: &mut fmt::Formatter<'_>,
+    summary: &GlobalVariableSummary,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(
+        f,
+        ", varFlags: (readonly: {}, writeonly: {}, constant: {}",
+        u8::from(summary.variable_flags.maybe_read_only),
+        u8::from(summary.variable_flags.maybe_write_only),
+        u8::from(summary.variable_flags.constant),
+    )?;
+    if !summary.vtable_functions.is_empty() {
+        write!(
+            f,
+            ", vcall_visibility: {}",
+            summary.variable_flags.vcall_visibility.numeric()
+        )?;
+    }
+    f.write_str(")")?;
+
+    if !summary.vtable_functions.is_empty() {
+        f.write_str(", vTableFuncs: (")?;
+        for (position, entry) in summary.vtable_functions.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("(virtFunc: ")?;
+            fmt_summary_slot(f, slots.guid(entry.function.guid))?;
+            write!(f, ", offset: {})", entry.vtable_offset)?;
+        }
+        f.write_str(")")?;
+    }
+    Ok(())
+}
+
+/// Resolves stack-id indices back to the 64-bit ids the index stores, as
+/// `printFunctionSummary` does through `getStackIdAtIndex`.
+fn fmt_stack_ids(
+    f: &mut fmt::Formatter<'_>,
+    indices: &[u32],
+    index: &ModuleSummaryIndex,
+) -> fmt::Result {
+    for (position, stack_id_index) in indices.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        match index.stack_id_at_index(*stack_id_index) {
+            Some(stack_id) => write!(f, "{stack_id}")?,
+            // Upstream asserts the index is in range; a hand-built index that
+            // breaks the invariant prints the index itself rather than crashing.
+            None => write!(f, "{stack_id_index}")?,
+        }
+    }
+    Ok(())
+}
+
+/// Mirrors `AssemblyWriter::printFunctionSummary`.
+fn fmt_function_summary(
+    f: &mut fmt::Formatter<'_>,
+    summary: &FunctionSummary,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(f, ", insts: {}", summary.instruction_count)?;
+    if summary.function_flags.any_flag_set() {
+        write!(f, ", {}", summary.function_flags)?;
+    }
+
+    if !summary.calls.is_empty() {
+        f.write_str(", calls: (")?;
+        for (position, call) in summary.calls.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("(callee: ")?;
+            fmt_summary_slot(f, slots.guid(call.callee.guid))?;
+            if call.hotness != Hotness::Unknown {
+                write!(f, ", hotness: {}", call.hotness)?;
+            } else if let Some(frequency) = call.relative_block_frequency {
+                write!(f, ", relbf: {frequency}")?;
+            }
+            // Flags print as booleans, but only when true, to avoid
+            // unnecessary verbosity and test churn.
+            if call.has_tail_call {
+                f.write_str(", tail: 1")?;
+            }
+            f.write_str(")")?;
+        }
+        f.write_str(")")?;
+    }
+
+    if let Some(info) = &summary.type_id_info {
+        fmt_type_id_info(f, info, index, slots)?;
+    }
+
+    if !summary.allocations.is_empty() {
+        f.write_str(", allocs: (")?;
+        for (position, allocation) in summary.allocations.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("(versions: (")?;
+            for (position, version) in allocation.versions.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{version}")?;
+            }
+            f.write_str("), memProf: (")?;
+            for (position, block) in allocation.memory_info_blocks.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "(type: {}, stackIds: (", block.allocation_type)?;
+                fmt_stack_ids(f, &block.stack_id_indices, index)?;
+                f.write_str("))")?;
+            }
+            f.write_str("))")?;
+        }
+        f.write_str(")")?;
+    }
+
+    if !summary.callsites.is_empty() {
+        f.write_str(", callsites: (")?;
+        for (position, callsite) in summary.callsites.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            match callsite.callee {
+                Some(callee) => {
+                    f.write_str("(callee: ")?;
+                    fmt_summary_slot(f, slots.guid(callee.guid))?;
+                }
+                None => f.write_str("(callee: null")?,
+            }
+            f.write_str(", clones: (")?;
+            for (position, clone) in callsite.clones.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{clone}")?;
+            }
+            f.write_str("), stackIds: (")?;
+            fmt_stack_ids(f, &callsite.stack_id_indices, index)?;
+            f.write_str("))")?;
+        }
+        f.write_str(")")?;
+    }
+
+    if !summary.parameter_accesses.is_empty() {
+        f.write_str(", params: (")?;
+        for (position, access) in summary.parameter_accesses.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "(param: {}, offset: ", access.parameter_number)?;
+            fmt_summary_range(f, &access.use_range)?;
+            if !access.calls.is_empty() {
+                f.write_str(", calls: (")?;
+                for (position, call) in access.calls.iter().enumerate() {
+                    if position != 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str("(callee: ")?;
+                    fmt_summary_slot(f, slots.guid(call.callee.guid))?;
+                    write!(f, ", param: {}, offset: ", call.parameter_number)?;
+                    fmt_summary_range(f, &call.offsets)?;
+                    f.write_str(")")?;
+                }
+                f.write_str(")")?;
+            }
+            f.write_str(")")?;
+        }
+        f.write_str(")")?;
+    }
+
+    Ok(())
+}
+
+/// Mirrors `AssemblyWriter::printSummary`.
+fn fmt_global_value_summary(
+    f: &mut fmt::Formatter<'_>,
+    summary: &GlobalValueSummary,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(f, "{}: (module: ", summary.kind.keyword())?;
+    fmt_summary_slot(f, slots.module_path(&summary.module_path))?;
+    write!(
+        f,
+        ", flags: (linkage: {}, visibility: {}, notEligibleToImport: {}, live: {}, dsoLocal: {}, canAutoHide: {}, importType: {})",
+        summary.flags.linkage.summary_name(),
+        summary.flags.visibility.summary_name(),
+        u8::from(summary.flags.not_eligible_to_import),
+        u8::from(summary.flags.live),
+        u8::from(summary.flags.dso_local),
+        u8::from(summary.flags.can_auto_hide),
+        summary.flags.import_type,
+    )?;
+
+    match &summary.kind {
+        SummaryKind::Alias(alias) => fmt_alias_summary(f, alias, slots)?,
+        SummaryKind::Function(function) => fmt_function_summary(f, function, index, slots)?,
+        SummaryKind::Variable(variable) => fmt_global_variable_summary(f, variable, slots)?,
+    }
+
+    if !summary.references.is_empty() {
+        f.write_str(", refs: (")?;
+        for (position, reference) in summary.references.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(reference.access.prefix())?;
+            fmt_summary_slot(f, slots.guid(reference.guid))?;
+        }
+        f.write_str(")")?;
+    }
+
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printSummaryInfo`.
+fn fmt_summary_info(
+    f: &mut fmt::Formatter<'_>,
+    slot: Option<u32>,
+    guid: Guid,
+    info: &GlobalValueSummaryInfo,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    fmt_summary_slot(f, slot)?;
+    f.write_str(" = gv: (")?;
+    match info.printable_name() {
+        Some(name) => write!(f, "name: \"{name}\"")?,
+        None => write!(f, "guid: {guid}")?,
+    }
+    if !info.summary_list.is_empty() {
+        f.write_str(", summaries: (")?;
+        for (position, summary) in info.summary_list.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            fmt_global_value_summary(f, summary, index, slots)?;
+        }
+        f.write_str(")")?;
+    }
+    f.write_str(")")?;
+    if info.printable_name().is_some() {
+        write!(f, " ; guid = {guid}")?;
+    }
+    writeln!(f)
+}
+
+impl fmt::Display for ModuleSummaryIndex {
+    /// Mirrors `AssemblyWriter::printModuleSummaryIndex`, including its leading
+    /// blank line — the separator from the module body it is printed after.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let slots = self.slots();
+        writeln!(f)?;
+
+        // Module paths, in the sorted order their slots were assigned in.
+        for (path, hash) in self.module_paths() {
+            // An empty module path is the special entry for the regular-LTO
+            // module created during the thin link.
+            let printed = if path.is_empty() {
+                REGULAR_LTO_MODULE_NAME
+            } else {
+                path.as_str()
+            };
+            fmt_summary_slot(f, slots.module_path(path))?;
+            f.write_str(" = module: (path: \"")?;
+            print_escaped_string(f, printed.as_bytes())?;
+            f.write_str("\", hash: (")?;
+            for (position, word) in hash.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{word}")?;
+            }
+            f.write_str("))\n")?;
+        }
+
+        for (guid, info) in self.global_values() {
+            fmt_summary_info(f, slots.guid(*guid), *guid, info, self, &slots)?;
+        }
+
+        for (guid, entries) in self.type_ids() {
+            for (name, summary) in entries {
+                fmt_summary_slot(f, slots.type_id(name))?;
+                write!(f, " = typeid: (name: \"{name}\"")?;
+                fmt_type_id_summary(f, summary)?;
+                writeln!(f, ") ; guid = {guid}")?;
+            }
+        }
+
+        for (name, entries) in self.type_id_compatible_vtables() {
+            let guid = Guid::of_global_identifier(name);
+            fmt_summary_slot(f, slots.type_id_compatible_vtable(name))?;
+            write!(f, " = typeidCompatibleVTable: (name: \"{name}\"")?;
+            fmt_type_id_compatible_vtable_summary(f, entries, &slots)?;
+            writeln!(f, ") ; guid = {guid}")?;
+        }
+
+        // Flags are zero by default and are not emitted when they carry
+        // nothing.
+        let mut trailing_slot = slots.total();
+        if self.flags().raw() != 0 {
+            writeln!(f, "^{trailing_slot} = flags: {}", self.flags().raw())?;
+            trailing_slot += 1;
+        }
+        writeln!(f, "^{trailing_slot} = blockcount: {}", self.block_count())
+    }
 }

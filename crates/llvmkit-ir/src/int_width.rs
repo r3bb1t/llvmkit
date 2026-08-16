@@ -33,6 +33,7 @@
 
 use core::fmt;
 
+use super::ap_int::Signedness;
 use super::constants::ConstantIntValue;
 use super::module::{ModuleBrand, ModuleRef};
 use super::r#type::sealed;
@@ -208,7 +209,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, bool, B> for bool {
         ty: IntType<'ctx, bool, B>,
     ) -> Result<ConstantIntValue<'ctx, bool, B>, Infallible> {
         Ok(ty
-            .const_int_raw(u64::from(self), false)
+            .const_int_raw(u64::from(self), Signedness::Unsigned)
             .unwrap_or_else(|_| unreachable!("bool fits in i1")))
     }
 }
@@ -223,7 +224,7 @@ macro_rules! impl_into_constant_int_signed_exact {
             ) -> Result<ConstantIntValue<'ctx, $rust_ty, B>, Infallible> {
                 let raw = i64::from(self).cast_unsigned();
                 Ok(ty
-                    .const_int_raw(raw, true)
+                    .const_int_raw(raw, Signedness::Signed)
                     .unwrap_or_else(|_| unreachable!("native signed int fits exactly")))
             }
         }
@@ -238,7 +239,7 @@ macro_rules! impl_into_constant_int_unsigned_exact {
                 ty: IntType<'ctx, $marker, B>,
             ) -> Result<ConstantIntValue<'ctx, $marker, B>, Infallible> {
                 Ok(ty
-                    .const_int_raw(u64::from(self), false)
+                    .const_int_raw(u64::from(self), Signedness::Unsigned)
                     .unwrap_or_else(|_| unreachable!("native unsigned int fits exactly")))
             }
         }
@@ -257,7 +258,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i64, B> for i64 {
     ) -> Result<ConstantIntValue<'ctx, i64, B>, Infallible> {
         let raw = self.cast_unsigned();
         Ok(ty
-            .const_int_raw(raw, false)
+            .const_int_raw(raw, Signedness::Unsigned)
             .unwrap_or_else(|_| unreachable!("i64 fits exactly in i64")))
     }
 }
@@ -302,7 +303,7 @@ macro_rules! impl_into_constant_int_signed_widen {
                 -> Result<ConstantIntValue<'ctx, $marker, B>, Infallible>
             {
                 let widened = i64::from(self).cast_unsigned();
-                Ok(ty.const_int_raw(widened, true).unwrap_or_else(|_| {
+                Ok(ty.const_int_raw(widened, Signedness::Signed).unwrap_or_else(|_| {
                     unreachable!("signed Rust int fits losslessly when sign-extending to wider W")
                 }))
             }
@@ -316,7 +317,7 @@ macro_rules! impl_into_constant_int_unsigned_widen {
             fn into_constant_int(self, ty: IntType<'ctx, $marker, B>)
                 -> Result<ConstantIntValue<'ctx, $marker, B>, Infallible>
             {
-                Ok(ty.const_int_raw(u64::from(self), false).unwrap_or_else(|_| {
+                Ok(ty.const_int_raw(u64::from(self), Signedness::Unsigned).unwrap_or_else(|_| {
                     unreachable!("unsigned Rust int fits losslessly when zero-extending to wider W")
                 }))
             }
@@ -382,7 +383,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
             assert!(N >= 1, "Width<N> requires N >= 1");
         }
         Ok(ty
-            .const_int_raw(u64::from(self), false)
+            .const_int_raw(u64::from(self), Signedness::Unsigned)
             .unwrap_or_else(|_| unreachable!("bool fits in Width<N>, N >= 1")))
     }
 }
@@ -408,9 +409,11 @@ macro_rules! impl_into_constant_int_width_signed {
                     );
                 }
                 let widened = i64::from(self).cast_unsigned();
-                Ok(ty.const_int_raw(widened, true).unwrap_or_else(|_| {
-                    unreachable!("signed Rust int fits losslessly in Width<N>")
-                }))
+                Ok(ty
+                    .const_int_raw(widened, Signedness::Signed)
+                    .unwrap_or_else(|_| {
+                        unreachable!("signed Rust int fits losslessly in Width<N>")
+                    }))
             }
         }
     };
@@ -436,7 +439,7 @@ macro_rules! impl_into_constant_int_width_unsigned {
                     );
                 }
                 Ok(ty
-                    .const_int_raw(u64::from(self), false)
+                    .const_int_raw(u64::from(self), Signedness::Unsigned)
                     .unwrap_or_else(|_| {
                         unreachable!("unsigned Rust int fits losslessly in Width<N>")
                     }))
@@ -466,7 +469,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
         // signed interpretation is the identity on the bit pattern.
         let raw = self.cast_unsigned();
         Ok(ty
-            .const_int_raw(raw, true)
+            .const_int_raw(raw, Signedness::Signed)
             .unwrap_or_else(|_| unreachable!("i64 fits in Width<N>, N >= 64")))
     }
 }
@@ -480,7 +483,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
             assert!(N >= 64, "u64 lift to Width<N> requires N >= 64");
         }
         Ok(ty
-            .const_int_raw(self, false)
+            .const_int_raw(self, Signedness::Unsigned)
             .unwrap_or_else(|_| unreachable!("u64 fits in Width<N>, N >= 64")))
     }
 }
@@ -528,7 +531,7 @@ macro_rules! impl_into_constant_int_dyn {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for $rust_ty {
             type Error = IrError;
             fn into_constant_int(self, ty: IntType<'ctx, IntDyn, B>) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
-                ty.const_int_raw(i64::from(self).cast_unsigned(), true)
+                ty.const_int_raw(i64::from(self).cast_unsigned(), Signedness::Signed)
             }
         }
     )+ };
@@ -536,7 +539,7 @@ macro_rules! impl_into_constant_int_dyn {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for $rust_ty {
             type Error = IrError;
             fn into_constant_int(self, ty: IntType<'ctx, IntDyn, B>) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
-                ty.const_int_raw(u64::from(self), false)
+                ty.const_int_raw(u64::from(self), Signedness::Unsigned)
             }
         }
     )+ };
@@ -551,7 +554,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for i64 {
         self,
         ty: IntType<'ctx, IntDyn, B>,
     ) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
-        ty.const_int_raw(self.cast_unsigned(), true)
+        ty.const_int_raw(self.cast_unsigned(), Signedness::Signed)
     }
 }
 impl_into_constant_int_dyn!(unsigned u8, u16, u32, u64);
@@ -561,7 +564,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for bool {
         self,
         ty: IntType<'ctx, IntDyn, B>,
     ) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
-        ty.const_int_raw(u64::from(self), false)
+        ty.const_int_raw(u64::from(self), Signedness::Unsigned)
     }
 }
 
@@ -575,10 +578,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for bool {
 /// macro. Mirrors the runtime check
 /// `IntegerType::getBitWidth() > other.getBitWidth()`
 /// (`DerivedTypes.h`). The trait is the bound used by
-/// [`IRBuilder::build_trunc`](crate::IRBuilder::build_trunc) (where
+/// [`IrBuilder::trunc`](crate::IrBuilder::trunc) (where
 /// `Src: WiderThan<Dst>`) and the inverse on
-/// [`IRBuilder::build_zext`](crate::IRBuilder::build_zext) /
-/// [`build_sext`](crate::IRBuilder::build_sext) (where
+/// [`IrBuilder::zext`](crate::IrBuilder::zext) /
+/// [`sext`](crate::IrBuilder::sext) (where
 /// `Dst: WiderThan<Src>`).
 ///
 /// Signed-only: every `WiderThan` involves two static markers.
@@ -599,7 +602,7 @@ decl_wider_than!(i64: bool, i8, i16, i32);
 decl_wider_than!(i128: bool, i8, i16, i32, i64);
 
 // --------------------------------------------------------------------------
-// IntoIntValue: ergonomic operand input for the IRBuilder
+// IntoIntValue: ergonomic operand input for the IrBuilder
 // --------------------------------------------------------------------------
 
 /// Inputs that can be lifted into an [`IntValue<'ctx, W>`] operand
@@ -664,9 +667,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
 {
     #[inline]
     fn into_int_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
-        Ok(IntValue::<W, B>::from_value_unchecked(
-            IsValue::into_erased(self),
-        ))
+        Ok(IntValue::<W, B>::from_value_unchecked(IsValue::as_erased(
+            self,
+        )))
     }
 }
 
@@ -690,7 +693,7 @@ macro_rules! impl_into_int_value_static {
                 );
                 match self.into_constant_int(ty) {
                     Ok(c) => Ok(IntValue::<$marker, B>::from_value_unchecked(
-                        IsValue::into_erased(c),
+                        IsValue::as_erased(c),
                     )),
                     Err(_) => unreachable!(
                         "IntoConstantInt for static target is infallible per the trait impls"
@@ -725,8 +728,8 @@ impl_into_int_value_static!(u128, i128, i128_type);
 /// Sealed: integer-width markers whose width is known at compile time
 /// AND whose `IntType<'ctx, Self>` can be projected from a
 /// [`Module`](crate::Module) without an extra runtime parameter. Lets the IR
-/// builder accept `b.build_int_phi::<i32, _>("acc")?` instead of
-/// `b.build_int_phi(i32_ty, "acc")?`.
+/// builder accept `b.int_phi::<i32, _>("acc")?` instead of
+/// `b.int_phi(i32_ty, "acc")?`.
 ///
 /// Not implemented for [`IntDyn`] - there is no single "dyn
 /// integer type" in a module; the dyn-flavour builder methods take an
@@ -777,7 +780,7 @@ impl<const N: u32> StaticIntWidth for Width<N> {
 // NOTE: the `impl<const N> IntoIntValue<Width<N>> for <rust scalar>` lifts
 // were removed in the "no silent erasure" strict cut (task #72). A Rust
 // scalar now maps to exactly its own `iN` marker, so `W` in
-// `build_int_add(2i32, 3i32, "n")` infers uniquely with no turbofish; a
+// `int_add(2i32, 3i32, "n")` infers uniquely with no turbofish; a
 // `Width<N>` slot must be fed a typed `IntValue<Width<N>>` /
 // `ConstantIntValue<Width<N>>` (both still lift via the identity/const
 // impls above), not a bare Rust literal.

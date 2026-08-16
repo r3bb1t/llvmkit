@@ -3,20 +3,20 @@
 //! Mirrors the type-level distinction LLVM C++ keeps implicit at the
 //! `Function::getReturnType()` boundary: in C++ you read the return
 //! type at runtime and pattern-match on it; in Rust we encode it in
-//! the type system so the IRBuilder can reject a `build_ret(int_value)`
+//! the type system so the IrBuilder can reject a `ret(int_value)`
 //! against a `void`-returning function at compile time.
 //!
 //! The marker is the bare type the caller already names:
 //!
-//! - `()` — `void` return; the builder exposes only `build_ret_void`.
+//! - `()` — `void` return; the builder exposes only `ret_void`.
 //! - `bool` / `i8` / `i16` / `i32` / `i64` / `i128` / [`crate::IntDyn`]
 //!   — `iN` return for the matching width.
-//! - `f32` / `f64` / [`crate::Half`] / [`crate::BFloat`] /
+//! - `f32` / `f64` / [`crate::Half`] / [`crate::Bfloat`] /
 //!   [`crate::Fp128`] / [`crate::X86Fp80`] / [`crate::PpcFp128`] /
 //!   [`crate::FloatDyn`] — IEEE/non-IEEE float return.
 //! - [`Ptr`] — opaque-pointer return (any address space).
 //! - [`Dyn`] — anything not statically described (struct, vector,
-//!   array, target-ext, parsed IR…). The IRBuilder keeps a runtime
+//!   array, target-ext, parsed IR…). The IrBuilder keeps a runtime
 //!   [`crate::IrError::ReturnTypeMismatch`] check exclusively for
 //!   `Dyn`.
 //!
@@ -25,7 +25,7 @@
 
 use core::fmt;
 
-use super::float_kind::{BFloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::{IntDyn, Width};
 use crate::error::TypeKindLabel;
 use crate::float_kind::FloatKind;
@@ -141,7 +141,7 @@ macro_rules! impl_float_return_marker {
     )+ };
 }
 impl_int_return_marker!(bool, i8, i16, i32, i64, i128, IntDyn);
-impl_float_return_marker!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
+impl_float_return_marker!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 // `Width<N>` participates as a return marker. Const-generic blanket
 // is sound because `Width<N>` doesn't implement `FloatKind`, so no
@@ -159,7 +159,7 @@ impl<const N: u32> ReturnMarker for Width<N> {
 fn float_label_to_kind(label: &'static str) -> TypeKindLabel {
     match label {
         "half" => TypeKindLabel::Half,
-        "bfloat" => TypeKindLabel::BFloat,
+        "bfloat" => TypeKindLabel::Bfloat,
         "float" => TypeKindLabel::Float,
         "double" => TypeKindLabel::Double,
         "x86_fp80" => TypeKindLabel::X86Fp80,

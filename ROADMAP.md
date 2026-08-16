@@ -10,14 +10,14 @@ the public API after a broad reshape.
 
 Shipped today:
 
-- **Owned modules and storable ids — the 0.0.4 handle model, shipped in
+- **Owned modules and storable ids — the id-first handle model, shipped in
   0.0.4.** `Module<B, S>` has no lifetime parameter, owns its storage, and is
   `Send`, so it can be returned from a function, stored in a struct or a `Vec`,
   and moved across a thread boundary. Declarations and value-producing
-  `build_*` calls return a `Copy + Send` **id** (`IntValueId<W, B>`,
+  builder calls return a `Copy + Send` **id** (`IntValueId<W, B>`,
   `FunctionId<R, B>`, `GlobalId<B>`, …) that carries the module's identity
-  without borrowing it; the by-name lookups (`get_global`, `get_alias`,
-  `get_ifunc`, `function_by_name`, `function_by_name_dyn`) return the same
+  without borrowing it; the by-name lookups (`global`, `alias`,
+  `ifunc`, `function`, `function_dyn`) return the same
   currency their `add_*` twins do. Blocks are minted as linear, `!Copy` handles
   instead (`append_basic_block`, `append_block_with_params`), and `.id()` on one
   gives the storable `BlockId`; terminator builders consume the builder and hand
@@ -30,28 +30,43 @@ Shipped today:
   points (`parse_branded::<B>`, `parse_dynamic`, `parse_file_branded::<B>`,
   `parse_file_dynamic`, `parse_into`) that return the owned `Module`.
 - Typed IR model, constants, globals, functions, basic blocks, instructions, verifier, AsmWriter.
-- Schema-typed IR construction: compile-checked calls (`build_call` +
+- Schema-typed IR construction: compile-checked calls (`call` +
   `TypedCallInst`), typed pointers (`TypedPointerValue` + compile-time field
   GEPs), typed folder hooks, and Braun-style auto-SSA (`SsaBuilder`).
 - CFG and dominator-tree queries.
 - Capability-graded module/function passes: a pass declares a
   capability rung and the driver derives preservation and the output module's
   verified-state, so over-claiming what a pass preserves is a compile error.
-- Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`, and
-  `DemandedBitsAnalysis`.
+- Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`,
+  `DemandedBitsAnalysis`, and `PassInstrumentationAnalysis`.
 - Built-in transform passes: worklist-driven `DcePass` and `InstSimplifyPass`
   (fold-to-constant), plus `SimplifyDemandedBitsPass`.
 - LLVM 22.1.4-style `ConstantFolder` for the modeled IR-builder surface plus
   target-independent pure-constant `ConstantFold.cpp` folds for represented
   `ConstantExpr`, integer/float, cast, compare, select, GEP, vector, and
   aggregate cases; DataLayout / TLI-heavy folds stay in analysis-only APIs.
+- **A Rust-API-Guidelines sweep over the whole public surface, shipped in
+  0.0.4.** `IrBuilder` emitters lost the `build_` prefix (`b.int_add`, `ret`,
+  `br`, `call`, `gep`); by-name lookups became bare nouns with `get_` reserved
+  for the `get_or_insert_*` family; enum variants and macro-declared types took
+  strict RFC-430 casing (`Opcode::Icmp`, `CastOpcode::Zext`, `IrBuilder`);
+  read APIs that allocated a `Vec` now return iterators (CFG
+  successors/predecessors, `debug_records`, `attribute_groups`,
+  `module_flags`, …); `LoadBuilder` / `StoreBuilder` / `AllocaBuilder` replaced
+  the combinatorial `*_volatile_with_align` / `*_atomic` flats with one
+  spelling per operation; module flags and named metadata became typed
+  (`ModuleFlagBehavior`, `ModuleFlagKey`, `NamedMetadataId`,
+  `NamedMetadataName`) instead of raw strings and `usize`; `llvmkit-asmparser`
+  grew root re-exports and error messages that no longer embed `{:?}`; and
+  `Debug` / `Hash` / `FromStr` / `#[must_use]` were completed across the
+  family. The TableGen generator also became a real crate with a library API
+  (`llvmkit-tablegen`) rather than a binary inside `llvmkit-ir`.
 
 Hard gaps for replacing more LLVM/Inkwell workflows:
 
-- **Ordinary `clang` output does not parse.** The structural surface is broad —
-  see Milestone 0 for the measured inventory — but ~21 attribute keywords and
-  `dso_local` on globals are missing, and that is enough to reject plain
-  `clang -O0` / `-O2` output. This is the first item on the roadmap.
+- ~~Ordinary `clang` output does not parse.~~ **Closed 2026-07-31** (Milestone
+  0). `clang -O0` / `-O2` output parses, verifies, and round-trips; a guard over
+  the vendored `Attributes.td` keeps the keyword table from drifting again.
 - No runnable pass pipeline. `pass_pipeline.rs` parses
   `"cleanup-lift,instcombine"` into scope-typed data, and nothing consumes it:
   there is no NAME→pass-constructor registry, so a parsed recipe cannot be run
@@ -59,15 +74,21 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
   `InstSimplifyPass`, `SimplifyDemandedBitsPass` — over four analyses
   (`DominatorTreeAnalysis`, `KnownBitsAnalysis`, `DemandedBitsAnalysis`,
   `PassInstrumentationAnalysis`).
-- Roughly a quarter of the public API carries documentation, and no
-  `missing_docs` lint holds the line, so the figure is free to drift.
+- Roughly a quarter of the public API carries documentation. `missing_docs` is
+  denied per-module in seven `llvmkit-ir` modules (`analysis`, `cfg_update`,
+  `error`, `pass_access`, `pass_context`, `pass_manager`, `worklist`), so the
+  ratchet has started — but no crate-level `#![deny(missing_docs)]` holds the
+  line anywhere, so the figure is still free to drift.
 - Constant folding outside the modeled target-independent builder surface is
   still partial: DataLayout / TLI / libcall / load-through-bitcast folds are
   represented only where the analysis APIs implement them, and InstSimplify-
   style nonconstant folds are still future transform work.
-- KnownBits / ValueTracking is still a represented integer, pointer,
-  fixed-vector, and intrinsic-fact subset; LLVM ValueTracking parity remains
-  incomplete.
+- `KnownBits.h` is **complete** (the ledger asserts an empty gap list);
+  `ValueTracking.h` is at **93 of 101 entry points** with eight recorded gaps.
+  The transfer functions underneath remain a represented integer, pointer,
+  fixed-vector, and intrinsic-fact subset — entry-point coverage is not arm
+  coverage, and `computeKnownFPClass` is the clearest case: it counts as one
+  modeled entry point while its opcode dispatch is deliberately partial.
 - No pass-builder or pipeline *execution* engine yet: the named recipes and a
   text parser ship (`pass_pipeline.rs`), but running a parsed pipeline still
   needs a NAME→pass-constructor registry.
@@ -75,8 +96,11 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
 - No alias analysis, MemorySSA, ScalarEvolution, LazyValueInfo, or post-dominance.
 - No bitcode reader/writer.
 - Metadata is parsed in places but instruction metadata propagation and full debug-info modeling are incomplete.
-- Metadata is the one currency the 2.0 id work did not tag. `MetadataSlot` (and
-  the `ValueSlot` inside `DebugMetadataOperand::Value`) is a bare arena index
+- Metadata *nodes* are the one currency the id work did not tag. 0.0.4 closed
+  half of this: named metadata now has `NamedMetadataId<B>`, which carries a
+  `ModuleId` tag and a brand like every other id. Metadata nodes themselves did
+  not follow — `MetadataSlot` (and the `ValueSlot` inside
+  `DebugMetadataOperand::Value`) is still a bare arena index
   carrying neither a `ModuleId` tag nor a brand, so neither half of D7 reaches
   it. An out-of-range slot is rejected
   (`IrError::UnknownMetadataSlot`); an *in-range* slot from another module still
@@ -112,7 +136,7 @@ llvmkit does not need to copy Mergen. The actionable takeaway is that a practica
 
 | Priority | Area | Why it is first-class |
 |---|---|---|
-| P0 | Textual `.ll` parser completeness | Ordinary `clang` / `rustc` output has to parse before anything downstream can matter. Measured 2026-07-27: it does not. |
+| ~~P0~~ | ~~Textual `.ll` parser completeness~~ | **Done 2026-07-31 (Milestone 0).** Ordinary `clang` output parses, verifies, and round-trips; the keyword table is guarded against drift from `Attributes.td`. |
 | P0 | ConstantFold / ConstantFolder parity maintenance and extension | Keep the shipped local simplifier aligned with LLVM as new modeled opcodes, types, and ConstantExpr forms land. |
 | P0 | KnownBits / ValueTracking | Needed for opaque predicates, alignment, bit-mask simplification, flag recovery, indirect-branch reasoning. |
 | P0 | Core scalar cleanup passes | Needed to replace the most common LLVM `O1` / `O2` cleanup wins after lifting. |
@@ -142,37 +166,58 @@ parameter `align(4)` where the grammar everywhere is `align 4`, and
 Both clang-shaped acceptance programs (-O0 and -O2) parse, verify, and
 round-trip in that test file.
 
-Remaining in this milestone: work item 4 (the diagnostics sweep), the
-pre-existing ifunc-forward-resolver round-trip gap (pinned by
-`known_gap_ifunc_forward_resolver_round_trip`; needs deferred alias/ifunc
-targets in the parser), and the durable anti-drift step — generating the
-attribute keyword table from the vendored `Attributes.td` the way upstream's
-lexer does (`LLLexer.cpp:701-704`), which also means vendoring that `.td`
-into the shipped `tablegen/` tree.
+**Milestone 0 is complete.** The three remaining items closed on the same
+date:
 
-### Why this is first
+- **Work item 4, diagnostics.** A declaration-linkage global carrying an
+  initializer reported `expected top-level entity`, blaming the wrong
+  construct; it now names the actual problem. Two messages that read wrong
+  through the `expected {}` frame were fixed alongside.
+- **Deferred alias/ifunc targets.** Aliases and ifuncs resolved their target
+  eagerly, so a printed module whose ifunc resolver was declared later did not
+  re-parse. Forward targets now become a placeholder patched at end of module,
+  reusing the mechanism `personality` already had.
+- **Anti-drift, by guard rather than generation.** `Attributes.td` is vendored
+  under `crates/llvmkit-asmparser/tablegen/` (tracked, unlike `orig_cpp/`) and
+  `attribute_td_drift.rs` asserts every LLVM 22.1.4 attribute is either
+  accepted by the parser in a declared position or named in an explicit
+  `NOT_YET_MODELED` list. Generating the keyword table outright was considered
+  and rejected: llvmkit deliberately models a subset, so generation would force
+  modeling all of it and would mean generating part of the 700-variant
+  `Keyword` enum. The guard gives the same "cannot silently drift" property —
+  verified red-green in both directions — at a fraction of the cost. Growing
+  the modeled set is now a matter of deleting lines from that list, which
+  currently names 42 attributes.
+
+### Why this was first — the 2026-07-27 measurement (historical)
+
+> Everything from here to the end of this milestone is the record of why the
+> work was scheduled and what it consisted of. All of it landed on 2026-07-31;
+> nothing below is open. Kept because the measurement is the evidence for the
+> priority ordering, not because the gaps still exist.
 
 Measured 2026-07-27 by consuming the published crate surface from an external
 test crate: of seven `.ll` shapes a user would realistically hand to llvmkit,
-five parse, verify, and round-trip clean — and the two that fail are plain
-`clang -O0` and `clang -O2` output.
+five parsed, verified, and round-tripped clean — and the two that failed were
+plain `clang -O0` and `clang -O2` output.
 
-The failures are **not structural**. Aggregates, GEP, `switch`, vectors,
+The failures were **not structural**. Aggregates, GEP, `switch`, vectors,
 `invoke` / `landingpad` / `resume` / `personality`, full debug info
 (`DICompileUnit`, `DISubprogram`, `DILocation`, `!dbg` attachments), atomics,
 `cmpxchg`, `atomicrmw`, `fence`, `callbr`, `blockaddress`, `indirectbr`,
 `va_arg`, `musttail`, inline asm, scalable vectors, comdats, aliases, ifuncs,
-and `i128` / `x86_fp80` / `half` / `bfloat` literals all parse today. So does
+and `i128` / `x86_fp80` / `half` / `bfloat` literals already parsed. So did
 every intrinsic name in the vendored table, target-specific ones included.
 
-What fails is a **keyword list**: 15 failures across 88 single-feature probes,
-in three clusters. This is the cheapest large win available — it moves llvmkit
-from "parses IR written for it" to "parses IR clang produced" — and nothing
-else on this roadmap is worth much to an outside user until it lands.
+What failed was a **keyword list**: 15 failures across 88 single-feature
+probes, in three clusters. It was the cheapest large win available — it moved
+llvmkit from "parses IR written for it" to "parses IR clang produced" — and
+nothing else on this roadmap was worth much to an outside user until it landed.
 
-### Work items
+### Work items — all closed 2026-07-31
 
-1. **Function attributes** — accepted inside `attributes #N = { … }`. Missing:
+1. **Function attributes** — accepted inside `attributes #N = { … }`. Was
+   missing:
    `uwtable`, `norecurse`, `hot`, `inlinehint`, `sanitize_address`, `ssp`,
    `sspstrong`, `nonlazybind`, `minsize`.
 
@@ -182,28 +227,28 @@ else on this roadmap is worth much to an outside user until it lands.
    `nocallback`, `strictfp`, `noduplicate`, every `memory(…)` form, and
    string-valued attributes such as `"target-cpu"="x86-64"`.)
 
-2. **Parameter and return attributes.** Missing on parameters: `byval(T)`,
+2. **Parameter and return attributes.** Was missing on parameters: `byval(T)`,
    `sret(T)`, `byref(T)`, `inalloca(T)`, `elementtype(T)`,
    `dereferenceable(N)`, `dereferenceable_or_null(N)`, `inreg`, `nest`,
    `swiftself`, `captures(none)`. Missing on returns: `dereferenceable(N)`.
 
-   `byval` / `sret` are the load-bearing pair: any C source that passes or
-   returns a struct by value produces them, so their absence rejects a large
+   `byval` / `sret` were the load-bearing pair: any C source that passes or
+   returns a struct by value produces them, so their absence rejected a large
    share of ordinary clang output.
 
 3. **Runtime preemption specifiers on globals.** `dso_local` and
-   `dso_preemptable` are accepted on `define` and `declare` but rejected on
+   `dso_preemptable` were accepted on `define` and `declare` but rejected on
    global variables and aliases, including in combination with linkage and
    `unnamed_addr`. Every `clang` invocation that is not `-fPIC` emits
    `@g = dso_local global …`.
 
 4. **Diagnostics for genuinely invalid input.** `@g = external global i32 0`
    (an `external` global carrying an initializer — rejected by `llvm-as` too)
-   reports `expected top-level entity`, pointing at the wrong construct. Once
-   the above land, sweep the error surface so invalid IR names the actual
-   problem.
+   reported `expected top-level entity`, pointing at the wrong construct. The
+   error surface was swept once the above landed, so invalid IR names the
+   actual problem.
 
-### Acceptance criteria
+### Acceptance criteria — all met 2026-07-31
 
 - `clang -O0` and `clang -O2` output for a small C translation unit parses,
   verifies, and round-trips through `format!("{module}")`.
@@ -234,9 +279,15 @@ this surface and fixed the handful of divergences it found — one real bug
 safe-but-not-identical over-precisions and previously-declined folds; a
 whole-branch review confirmed no mis-folds and no over-folds remained. See the
 CHANGELOG ("Constant-folding parity with LLVM 22.1.4") and `docs/future-work.md`
-for the fixes and the deferred/known-divergent points (constant uniquing,
-CHERI-like `ptrtoint`/`ptrtoaddr`, remaining `SymbolicallyEvaluateGEP`
-sub-cases, and a proactive APFloat audit).
+for the fixes. Two of the four points that audit deferred have since closed:
+**constant uniquing** (2026-08-01 — `GlobalValueRef`, `GepOffset`,
+`SymbolDelta`, and `SymbolDeltaPlus` now intern on their structural
+fingerprint, so identity comparison is structural everywhere; the law is pinned
+in `tests/constant_uniquing.rs`) and the **proactive ApFloat / `ApInt`
+bit-exactness audit** (2026-08-01 — both halves complete, fourteen defects
+fixed). Still open and deliberate: CHERI-like `ptrtoint`/`ptrtoaddr` on
+`pointer_size != index_size` layouts, and the remaining
+`SymbolicallyEvaluateGEP` sub-cases, each of which only ever declines a fold.
 
 Represented `ConstantExpr` construction/folding covers the parser-needed
 add/sub/xor, GEP, vector, and cast forms, including upstream vector GEP,
@@ -248,10 +299,12 @@ denormal, load-through-bitcast, and other target/library-dependent folds live in
 
 ### Remaining work
 
-1. **APFloat and unmodeled-surface follow-up**
-   - Close helper-operation gaps needed by future LLVM folding formulas,
-     especially floating-point edge cases around NaNs, signed zero, infinities,
-     rounding modes, and fast-math flags.
+1. **Unmodeled-surface follow-up**
+   - The ApFloat side of this item **closed 2026-08-01**: the bit-exactness
+     audit ported every `APFloatTest.cpp` family covering the seven modeled
+     semantics and fixed the defects it found. What remains here is not
+     ApFloat's own arithmetic but the helper operations a *future* LLVM folding
+     formula may need once new opcodes become represented.
    - Keep conservative no-fold behavior where exact parity is not implemented.
 
 2. **ConstantFold / ConstantExpr extension**
@@ -263,7 +316,7 @@ denormal, load-through-bitcast, and other target/library-dependent folds live in
      not in the all-constant default folder.
 
 3. **Folder trait expansion**
-   - Expand `IRBuilderFolder` hooks as new builder families need folding.
+   - Expand `IrBuilderFolder` hooks as new builder families need folding.
    - Keep `NoFolder` and allow custom folders.
    - Consider a `TargetFolder` only if builder-time DataLayout-dependent folds
      are intentionally exposed; today those folds remain in analysis folding
@@ -386,21 +439,31 @@ The current baseline already includes:
 
 ### Remaining parity work
 
-1. **KnownBits formula parity follow-up**
-   - Replace the remaining conservative/enumerated fallbacks with direct
-     `KnownBits.cpp` ports for facts not listed in the shipped baseline, where
-     representation dependencies now exist and expanded ValueTracking users need
-     additional facts.
-   - Keep LLVM conflict-state behavior (`zero & one` may be non-zero internally)
-     because upstream uses it for intersections and diagnostics.
+> **The ledger is the authority for items 1–2, not this list.**
+> `crates/llvmkit-ir/tests/value_tracking_parity.rs` is symbol-keyed and
+> asserts `modeled + gaps` equals the audited surface, with a recorded reason
+> per gap. This section is prose and drifts; the ledger cannot.
 
-2. **ValueTracking operator parity**
-   - Port remaining `computeKnownBitsFromOperator` arms in upstream order for
-     represented opcodes: and/or/xor refinements, additional call/callee
-     attribute facts beyond the shipped range and `returned` cases, pointer
-     alignment/GEP/cast facts, select edge facts, PHI recurrences,
-     fixed-vector demanded-element facts, freeze poison checks, and additional
-     intrinsic facts not listed in the shipped baseline above.
+1. ~~**KnownBits formula parity follow-up**~~ — **closed 2026-08-01.**
+   `KnownBits.h`'s public surface is fully modeled and `KNOWN_BITS_GAPS` is an
+   empty slice, so a regression or a newly-synced upstream method has to be
+   acknowledged rather than absorbed. LLVM's conflict-state behaviour
+   (`zero & one` may be non-zero internally) is kept, as upstream relies on it
+   for intersections and diagnostics.
+
+2. **ValueTracking operator parity** — **93 of 101 entry points** as of
+   2026-08-04; eight gaps, each with a reason in the ledger. Landed since this
+   list was written: the and/or/xor refinements (including the `and(x, -x)` and
+   `xor(x, x - 1)` idiom arms), select edge facts on both the integer and
+   floating-point sides, PHI recurrences with `matchSimpleRecurrence`, the
+   assumption and dominating-condition arms, pointer/object analysis,
+   speculation safety, and the whole floating-point classification subsystem.
+   Still open: additional call/callee attribute facts beyond the shipped range
+   and `returned` cases, pointer alignment/GEP/cast facts, fixed-vector
+   demanded-element facts, freeze poison checks, additional intrinsic facts, and
+   `computeKnownFPClass`'s remaining dispatch arms — which move no ledger row,
+   since the entry point already counts, and are enumerated in
+   `known_fp_class.rs`'s module header.
 
 3. **Attribute and intrinsic dependencies**
    - Remaining intrinsic work means additional or currently unrepresented
@@ -729,7 +792,7 @@ not exist yet):
 
 Cover APIs commonly used by Rust projects that currently depend on Inkwell for IR generation and optimization setup.
 
-The per-API delta is tracked in [`INKWELL_MIGRATION.md`](INKWELL_MIGRATION.md).
+The per-API delta is tracked in [`docs/inkwell-migration.md`](docs/inkwell-migration.md).
 
 ### Shipped
 
@@ -742,20 +805,41 @@ The per-API delta is tracked in [`INKWELL_MIGRATION.md`](INKWELL_MIGRATION.md).
 >   `ParsedModule` slot mapping, which borrows the module it was parsed from.
 >   Printing is `Display` on `Module` / `ModuleView` (`format!("{module}")`).
 > - **A settled public API.** 0.0.4 stops the churn in the module, handle/id,
->   builder, and pass surfaces. It is *not* a stability promise — the crate is
->   pre-1.0 and every `0.0.x` is mutually incompatible under Cargo's rules.
->   Expect further breaks; expect them to be deliberate and spelled out.
+>   builder, and pass surfaces, and closes it out with a Rust API Guidelines
+>   sweep: no `build_` prefix on emitters, bare-noun lookups with `get_`
+>   reserved for `get_or_insert_*`, RFC-430 casing on every enum variant and
+>   macro-declared type, iterator returns in place of allocated `Vec`s,
+>   `LoadBuilder` / `StoreBuilder` / `AllocaBuilder` in place of the
+>   combinatorial memory-op flats, typed module flags and named-metadata ids,
+>   and completed `Debug` / `Hash` / `FromStr` / `#[must_use]` coverage. It is
+>   *not* a stability promise — the crate is pre-1.0 and every `0.0.x` is
+>   mutually incompatible under Cargo's rules. Expect further breaks; expect
+>   them to be deliberate and spelled out.
+> - **Attribute groups and function / call-site attribute APIs.** Attribute
+>   groups are readable (`Module::attribute_groups`, an iterator) and writable
+>   (`set_attribute_group`), and the call builders take `call_attributes`, with
+>   typed readers for parameter, return, and string-valued attributes. The
+>   modeled keyword set is guarded against upstream drift by
+>   `attribute_td_drift.rs`; what remains is the 42 keywords its
+>   `NOT_YET_MODELED` list still names.
+> - **Intrinsic declaration APIs.** `get_or_insert_intrinsic_declaration`, plus
+>   its `_by_id` and `_by_name` twins. Overloaded-intrinsic *typing* beyond the
+>   represented signature families is still open (Milestone 2).
+> - **Inline asm.** `Module::inline_asm` plus `inline_asm_call` /
+>   `inline_asm_invoke` / `inline_asm_callbr` on the builder; the textual form
+>   parses and round-trips.
 
 ### Work items
 
 - Builder coverage for remaining common LLVM IR operations and intrinsics.
 - Full metadata attachment storage and printing.
 - Debug-info model sufficient to preserve parsed debug metadata conservatively.
-- Inline asm parity where textual IR accepts it.
-- Intrinsic declaration and overloaded intrinsic typing.
-- Attribute groups and function/callsite attribute APIs.
+- The remaining unmodeled attribute keywords (`NOT_YET_MODELED`, 42 today).
+- Overloaded intrinsic typing beyond the represented signature families.
 - Bitcode reader/writer or an explicit bridge plan if bitcode stays out longer.
-- Better error spans and diagnostics for parser/verifier failures.
+- Better error spans for parser/verifier failures. The *message* half landed in
+  0.0.4 — asmparser errors no longer embed `{:?}`-formatted locations and `Io`
+  carries a structured `{ kind, message }` — but spans are still coarse.
 
 ### UX goals
 
@@ -856,6 +940,18 @@ Widen from controlled textual IR to broader LLVM ecosystem compatibility.
 - Bitcode reader/writer.
 - More complete metadata/debug-info round-trip.
 - Broader intrinsic modeling.
+- **AutoUpgrade completeness.** `llvm/lib/IR/AutoUpgrade.cpp`'s module-level,
+  target-independent half landed at LLParser parity W13d as
+  `crates/llvmkit-ir/src/auto_upgrade.rs` (`UpgradeModuleFlags`,
+  `UpgradeSectionAttributes`, `UpgradeTBAANode`). What belongs to this
+  milestone is the remainder: the intrinsic-upgrade framework
+  (`UpgradeIntrinsicFunction` / `UpgradeIntrinsicCall` /
+  `UpgradeCallsToIntrinsic`) with both its generic and its target-specific
+  arms — x86, ARM/AArch64, AMDGPU, NVVM, RISC-V, WebAssembly — plus
+  `UpgradeARCRuntime`, `UpgradeBitCastInst` / `UpgradeBitCastExpr`,
+  `UpgradeInlineAsmString` and `UpgradeDataLayoutString`. `UpgradeDebugInfo`
+  comes with `StripDebugInfo`; `copyModuleAttrToFunctions` comes with a
+  `Triple`. Per-item blockers are in `docs/future-work.md`.
 - Target-library-info-like hooks where transforms need libc semantics.
 - DataLayout parity hardening.
 - `llvm-dis` / `llvm-as` textual parity fixture expansion where external tools are available manually.
@@ -877,8 +973,9 @@ before knowing what `0.1` should mean is a promise this file cannot keep.
 
 ### Stage 1: Folding and ValueTracking foundation — **ships as 0.0.4**
 
-Carries everything this entry planned, plus the id-first handle redesign, which
-was not on the list when the list was written:
+Carries everything this entry planned, plus two things that were not on the
+list when the list was written — the id-first handle redesign, and the Rust API
+Guidelines sweep that followed it:
 
 - ConstantFolder / ConstantFold parity foundation for the modeled IR surface.
 - ValueTracking hardening required by initial cleanup passes.
@@ -889,17 +986,28 @@ was not on the list when the list was written:
   published. Under Cargo's pre-1.0 rules every `0.0.x` is already mutually
   incompatible, so the break needs no wider signal, and a minor bump would
   imply a stability the crate does not yet have.
+- The API-idiomatics sweep: dropped `build_` prefixes, bare-noun lookups,
+  RFC-430 casing, iterator returns, the Load/Store/Alloca builders, typed
+  module flags and `NamedMetadataId`, asmparser root re-exports and honest
+  error messages, and `llvmkit-tablegen` as a crate with a library API. Every
+  item in it is breaking; all of it is spelled out in `CHANGELOG.md`.
 
-### Stage 2: Parser completeness and release hygiene — **the next step**
+### Stage 2: Parser completeness and release hygiene — **parser done; publish remains**
 
 Small, mechanical, and independently checkable against `llvm-as`. It is first
 because every later stage is worth more once real-world IR can get in.
 
-- Milestone 0 in full: the ~21 missing attribute keywords, `dso_local` on
-  globals and aliases, and the probe matrix landed as a test.
+- ~~Milestone 0 in full~~ — **done 2026-07-31**: the attribute keywords,
+  `dso_local` on every global object, `c"..."` constants, deferred alias/ifunc
+  targets, the diagnostics sweep, the probe matrix, and the `Attributes.td`
+  drift guard.
 - The crates.io release checklist below.
-- Optionally start the `missing_docs` ratchet on the small crates, where
-  coverage is already within reach.
+- Continue the `missing_docs` ratchet. It has started, but inside `llvmkit-ir`
+  rather than on the small crates: `analysis`, `cfg_update`, `error`,
+  `pass_access`, `pass_context`, `pass_manager`, and `worklist` each carry a
+  module-level `#![deny(missing_docs)]`. The small crates — `llvmkit-support`,
+  `llvmkit-macros`, `llvmkit-tablegen` — are still the cheapest place to take a
+  crate-level `#![deny(missing_docs)]` all the way.
 
 ### Stage 3: Lifting cleanup pipeline
 
@@ -956,23 +1064,37 @@ because every later stage is worth more once real-world IR can get in.
 
 ## Release checklist (crates.io)
 
-State as of 2026-07-27, verified with `cargo package --workspace`: all five
-crates package and verify from their own tarballs, metadata is complete
+0.0.3 is the last release on crates.io; 0.0.4 is the next one, and this is its
+checklist. State as of 2026-07-27, verified with `cargo package --workspace`:
+every member packages and verifies from its own tarball, metadata is complete
 (description, license, repository, homepage, `rust-version`, keywords,
 categories), sizes are far inside the limit, and no `todo!()` / `unimplemented!()`
-remains in library source. Publishing works today. What is left:
+remains in library source. Publishing works today.
+
+The workspace has **six** members as of 0.0.4 — `llvmkit`, `llvmkit-support`,
+`llvmkit-asmparser`, `llvmkit-ir`, `llvmkit-macros`, and `llvmkit-tablegen`.
+`llvmkit-tablegen` was split out of `llvmkit-ir` during the 0.0.4 cycle, so
+0.0.4 is its **first** publication; the other five are already on crates.io
+through 0.0.3. What is left:
 
 - [x] Ship the license text inside every `.crate`. `LICENSE` lived only at the
       workspace root, and Cargo auto-includes a license file only from the
-      *package* directory, so all five tarballs went out with the `license`
+      *package* directory, so the published tarballs went out with the `license`
       field set and no license text in them — a real defect for a derivative
       work of the LLVM Project, since Apache-2.0 section 4(a) requires
       recipients of a distribution to receive a copy. Each package directory now
-      carries a verbatim copy, and CI compares all five against the root.
-- [ ] Add a `README.md` for `llvmkit-macros`, the one member without one; its
-      crates.io page is otherwise blank.
+      carries a verbatim copy, and CI compares all six against the root.
+- [x] Add a `README.md` for `llvmkit-macros`, the one member without one; its
+      crates.io page is otherwise blank. **Done 2026-07-31.**
+- [x] Add a `README.md` for `llvmkit-tablegen`. Splitting it out of
+      `llvmkit-ir` re-opened the problem the item above closed: it was the one
+      member with no `README.md`, so its crates.io page would have been blank on
+      the very release that first publishes it. **Done 2026-08-07** — every
+      workspace member now ships one.
 - [ ] Add `[package.metadata.docs.rs]` so docs.rs builds are pinned and
-      deterministic rather than default-feature guesses.
+      deterministic rather than default-feature guesses. `llvmkit` and
+      `llvmkit-ir` both declare a `default = ["macros"]` feature now, so
+      "default-feature guess" is no longer a hypothetical.
 - [ ] Add a `cargo package --workspace` step to CI. It is the gate that proves
       the published artifact builds, and nothing in CI covers it today.
 - [ ] Give `[0.0.4]` a date in `CHANGELOG.md` and collapse the two
@@ -982,14 +1104,36 @@ remains in library source. Publishing works today. What is left:
       docs.rs reader.
 - [ ] Tag the release. The repository currently carries no tags at all.
 
-Publish order is `llvmkit-support` and `llvmkit-macros`, then `llvmkit-ir`,
-then `llvmkit-asmparser`, then `llvmkit`.
+Publish order is `llvmkit-support`, `llvmkit-macros` and `llvmkit-tablegen`,
+then `llvmkit-ir`, then `llvmkit-asmparser`, then `llvmkit`.
+
+That order follows the actual graph, which is worth writing down because it is
+not the one people assume:
+
+| Crate | Depends on (within the workspace) |
+|---|---|
+| `llvmkit-support` | — |
+| `llvmkit-macros` | — |
+| `llvmkit-tablegen` | — |
+| `llvmkit-ir` | `llvmkit-macros`; `llvmkit-tablegen` as a **build**-dependency |
+| `llvmkit-asmparser` | `llvmkit-macros`, `llvmkit-support`, `llvmkit-ir` |
+| `llvmkit` | `llvmkit-support`, `llvmkit-asmparser`, `llvmkit-ir` |
+
+Note that `llvmkit-ir` does **not** depend on `llvmkit-support`: spans are the
+parser's currency, so `llvmkit-support` enters the graph at `llvmkit-asmparser`.
+The three leaves are interchangeable among themselves; only their position
+before `llvmkit-ir` matters.
+
+`llvmkit-tablegen` is a **build-dependency** of `llvmkit-ir`, so it has to be on
+crates.io before `llvmkit-ir` can build from the registry at all — a build
+dependency is not optional the way a dev-dependency is. It carries the vendored
+`.td` tree, so it is also the crate that ships the 2.2 MiB.
 
 ### On the vendored TableGen
 
-`llvmkit-ir` ships 2.2 MiB of LLVM 22.1.4 `.td` files and expands them in
-`build.rs` into roughly 217k lines of intrinsic tables. Both obvious
-"optimizations" were measured on 2026-07-27 and rejected:
+`llvmkit-tablegen` ships 2.2 MiB of LLVM 22.1.4 `.td` files, and `llvmkit-ir`'s
+`build.rs` calls it to expand them into roughly 217k lines of intrinsic tables.
+Both obvious "optimizations" were measured on 2026-07-27 and rejected:
 
 - *Pre-generating and committing the expansion* would replace 2.2 MiB of input
   with a 13 MB generated file in git and in every tarball, to save the ~2 s the
@@ -1018,7 +1162,7 @@ out of scope — what is out of scope for the project is code generation, target
 backends, linking / object emission, and any dependency on `llvm-sys`,
 `inkwell`, or `libLLVM`.
 
-Keeping the surface wrappable was a standing constraint on the 2.0 redesign,
+Keeping the surface wrappable was a standing constraint on the 0.0.4 redesign,
 which is why the shape already fits: nothing is reachable only from inside a
 closure (`module_new!` / `Module::branded::<B>` / `Module::dynamic` all return
 an owned module), no lifetime appears in a storable type (every id is

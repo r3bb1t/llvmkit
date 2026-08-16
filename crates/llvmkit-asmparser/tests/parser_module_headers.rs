@@ -16,6 +16,65 @@ fn parse_module(src: &str) -> String {
     format!("{module}")
 }
 
+/// The `dso_local` / visibility / DLL-storage clause run parses and reprints
+/// in `LLParser::parseOptionalLinkage`'s order, which is also the order
+/// `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printFunction` emits
+/// (`printDSOLocation`, then `printVisibility`, then `printDLLStorageClass`).
+///
+/// **No upstream fixture combines `dso_local` with a visibility keyword** —
+/// `test/Assembler` covers each clause alone — so this is llvmkit-specific,
+/// with `printFunction` as the anchor for what the order must be. It is a
+/// regression lock: llvmkit read visibility *before* dso-locality until
+/// 0.0.5, and its own writer emitted that same wrong order, so llvmkit
+/// round-tripped itself while rejecting `define dso_local hidden void @f()`
+/// — the spelling `llvm-as` produces.
+#[test]
+fn dso_local_precedes_visibility_and_dll_storage() {
+    for src in [
+        "define dso_local hidden void @f() { ret void }\n",
+        "declare dso_local protected void @g()\n",
+        "define dso_preemptable dllexport void @h() { ret void }\n",
+        "@v = dso_local hidden global i32 0\n",
+    ] {
+        let printed = parse_module(src);
+        let header = src.trim_end().trim_end_matches(" { ret void }");
+        assert!(
+            printed.contains(header),
+            "expected `{header}` in printed module, got:\n{printed}"
+        );
+    }
+}
+
+/// `LLParser::parseOptionalComdat`'s bare form: `comdat` with no parenthesised
+/// name borrows the symbol's own name. llvmkit rejected it on globals with
+/// `expected explicit comdat($name)` and, on functions, silently built a
+/// comdat named `""`.
+///
+/// `test/Assembler` covers only the failing case
+/// (`unnamed-comdat.ll`, ported in `parser_diagnostics.rs`), so the accepting
+/// half is anchored on `parseOptionalComdat` itself (D11).
+#[test]
+fn bare_comdat_borrows_the_symbols_own_name() {
+    let printed = parse_module("$v = comdat any\n@v = global i32 0, comdat\n");
+    assert!(printed.contains("@v = global i32 0, comdat"), "{printed}");
+
+    let printed = parse_module("$f = comdat any\ndefine void @f() comdat {\n  ret void\n}\n");
+    assert!(printed.contains("define void @f() comdat"), "{printed}");
+}
+
+/// `LLParser::parseDeclare` collects metadata attachments written *before*
+/// the header and applies them to the function once it exists. llvmkit went
+/// straight to linkage, so `declare !dbg !0 void @f()` did not parse at all.
+/// `define` has no such prefix form — its attachments follow the header.
+#[test]
+fn declare_accepts_metadata_before_the_header() {
+    let printed = parse_module(
+        "declare !dbg !0 void @f()\n\
+         !0 = distinct !DISubprogram(name: \"f\", spFlags: DISPFlagDefinition)\n",
+    );
+    assert!(printed.contains("declare !dbg !0 void @f()"), "{printed}");
+}
+
 /// Mirrors `LLParser.cpp::parseFunctionHeader`: function definitions accept
 /// non-declaration linkage before the return type.
 #[test]
@@ -59,12 +118,8 @@ fn common_function_linkage_is_rejected() {
             .parse_module()
             .expect_err("common function linkage rejected")
     };
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "invalid function linkage type")
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+    assert!(matches!(err, ParseError::Message { .. }));
+    assert_eq!(err.to_string(), "invalid function linkage type");
 }
 
 /// Mirrors `LLParser.cpp::parseUnnamedAttrGroup`: attribute groups are parsed

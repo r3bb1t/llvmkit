@@ -1,5 +1,5 @@
 use core::ops::Not;
-use llvmkit_ir::{ApInt, IrError, KnownBits};
+use llvmkit_ir::{AddSubOperation, ApInt, IrError, KnownBits, OverflowFlags, SdivFlags};
 
 type UnaryBitsFn = fn(&KnownBits) -> KnownBits;
 type UnaryIntFn = fn(&ApInt) -> Option<ApInt>;
@@ -423,7 +423,25 @@ fn add_carry_add_sub_and_borrow_match_upstream_exhaustive() {
                     assert_known_result(
                         "add/sub flags",
                         exact_known(4, outputs),
-                        KnownBits::compute_for_add_sub(add, nsw, nuw, &lhs, &rhs),
+                        KnownBits::compute_for_add_sub(
+                            if add {
+                                AddSubOperation::Add
+                            } else {
+                                AddSubOperation::Sub
+                            },
+                            {
+                                let mut flags = OverflowFlags::new();
+                                if nuw {
+                                    flags = flags.nuw();
+                                }
+                                if nsw {
+                                    flags = flags.nsw();
+                                }
+                                flags
+                            },
+                            &lhs,
+                            &rhs,
+                        ),
                     );
                 }
             }
@@ -654,13 +672,13 @@ fn extended_unary_and_binary_transfers_match_upstream() {
 
     check_binary_exhaustive(
         "sdiv",
-        |lhs, rhs| KnownBits::sdiv_with_exact(lhs, rhs, false),
+        |lhs, rhs| KnownBits::sdiv_with_exact(lhs, rhs, SdivFlags::new()),
         ApInt::checked_sdiv,
         false,
     );
     check_binary_exhaustive(
         "sdiv exact",
-        |lhs, rhs| KnownBits::sdiv_with_exact(lhs, rhs, true),
+        |lhs, rhs| KnownBits::sdiv_with_exact(lhs, rhs, SdivFlags::new().exact()),
         |lhs, rhs| {
             let rem = lhs.checked_srem(rhs)?;
             rem.is_zero().then(|| lhs.checked_sdiv(rhs)).flatten()
@@ -787,4 +805,163 @@ fn ssub_sat_known_negative_overflow_clamps_to_signed_min_without_enumeration() {
     let known = KnownBits::ssub_sat(&lhs, &rhs);
     assert_eq!(known.one_mask(), &sign);
     assert_eq!(known.zero_mask(), &ApInt::signed_max_value(64));
+}
+
+/// Port of `llvm/unittests/Support/KnownBitsTest.cpp::TEST(KnownBitsTest, SignBitUnknown)`.
+///
+/// Upstream mutates `Known.Zero` / `Known.One` in place; llvmkit's masks are
+/// private, so each step rebuilds the same state through
+/// [`KnownBits::from_zero_one`]. The sequence of states and the expected
+/// answer at each one are upstream's, unchanged.
+#[test]
+fn sign_bit_unknown_tracks_either_mask() -> Result<(), IrError> {
+    let width = 2;
+    let mut zero = ApInt::zero(width);
+    let mut one = ApInt::zero(width);
+    let sign_unknown = |zero: &ApInt, one: &ApInt| -> Result<bool, IrError> {
+        Ok(KnownBits::from_zero_one(zero.clone(), one.clone())?.is_sign_unknown())
+    };
+
+    assert!(sign_unknown(&zero, &one)?);
+    zero.set_bit(0);
+    assert!(sign_unknown(&zero, &one)?);
+    zero.set_bit(1);
+    assert!(!sign_unknown(&zero, &one)?);
+    zero.clear_bit(0);
+    assert!(!sign_unknown(&zero, &one)?);
+    zero.clear_bit(1);
+    assert!(sign_unknown(&zero, &one)?);
+
+    one.set_bit(0);
+    assert!(sign_unknown(&zero, &one)?);
+    one.set_bit(1);
+    assert!(!sign_unknown(&zero, &one)?);
+    one.clear_bit(0);
+    assert!(!sign_unknown(&zero, &one)?);
+    one.clear_bit(1);
+    assert!(sign_unknown(&zero, &one)?);
+    Ok(())
+}
+
+/// Mirrors `llvm/include/llvm/Support/KnownBits.h::KnownBits::setAllOnes`,
+/// which is `Zero.clearAllBits(); One.setAllBits();`. `KnownBitsTest.cpp` has
+/// no dedicated fixture for it, so this restates that definition and pins it
+/// as the dual of the already-modeled `setAllZero`.
+#[test]
+fn set_all_ones_makes_every_bit_known_one() {
+    let mut known = KnownBits::unknown(8);
+    known.set_all_ones();
+    assert_eq!(known.zero_mask(), &ApInt::zero(8));
+    assert_eq!(known.one_mask(), &ApInt::all_ones(8));
+    assert!(known.is_all_ones());
+    assert!(!known.has_conflict());
+
+    // Discards prior information, as upstream's clear-then-set does.
+    let mut from_constant = KnownBits::make_constant(ApInt::zero(8));
+    from_constant.set_all_ones();
+    assert_eq!(from_constant.one_mask(), &ApInt::all_ones(8));
+
+    // The dual of set_all_zero, which leaves the mirrored state.
+    let mut zeroed = KnownBits::unknown(8);
+    zeroed.set_all_zero();
+    assert_eq!(zeroed.zero_mask(), &ApInt::all_ones(8));
+    assert_eq!(zeroed.one_mask(), &ApInt::zero(8));
+}
+
+/// Mirrors the defaulted parameter of
+/// `llvm/include/llvm/Support/KnownBits.h::KnownBits::sdiv(LHS, RHS, Exact = false)`:
+/// the two-argument spelling is the three-argument one with `Exact` false,
+/// matching the `udiv` / `udiv_with_exact` pair llvmkit already had.
+#[test]
+fn sdiv_defaults_to_inexact() {
+    let lhs = KnownBits::from_ap_int(ApInt::from_words(8, &[0b0011_0000]));
+    let rhs = KnownBits::from_ap_int(ApInt::from_words(8, &[0b0000_0100]));
+    assert_eq!(
+        KnownBits::sdiv(&lhs, &rhs),
+        KnownBits::sdiv_with_exact(&lhs, &rhs, SdivFlags::new())
+    );
+    assert_eq!(
+        KnownBits::udiv(&lhs, &rhs),
+        KnownBits::udiv_with_exact(&lhs, &rhs, llvmkit_ir::UdivFlags::new())
+    );
+}
+
+/// The two mask-shifting operators, and what separates them from the
+/// same-direction transfer functions.
+///
+/// Ports `KnownBits::operator<<=` / `operator>>=` from
+/// `llvm/include/llvm/Support/KnownBits.h`, whose doc comments are the
+/// specification: "Shift known bits left by ShAmt. Shift in bits are unknown."
+/// The oracle for the distinction is upstream's own caller
+/// `llvm/lib/Target/RISCV/RISCVISelLowering.cpp`, which follows
+/// `Known <<= ShAmt` with `Known.Zero.setLowBits(ShAmt)` and the comment
+/// "the <<= operator left these bits unknown" — so the operator must leave
+/// them unknown where `KnownBits::shl` makes them known-zero.
+#[test]
+fn shift_operators_shift_in_unknown_bits() {
+    // 0b1111_0000, fully known.
+    let known = KnownBits::from_ap_int(ap(8, 0b1111_0000));
+
+    let shifted = &known << 2;
+    // Both masks move left by two. The known ones at bits 4..7 become bits
+    // 6..7 (two shift out of the top); the known zeros at bits 0..3 become
+    // bits 2..5. Bits 0..1 are now clear in *both* masks, i.e. unknown.
+    assert_eq!(shifted.one_mask(), &ap(8, 0b1100_0000));
+    assert_eq!(shifted.zero_mask(), &ap(8, 0b0011_1100));
+    assert!(!shifted.is_known_zero(0), "bit 0 shifted in unknown");
+    assert!(!shifted.is_known_one(0), "bit 0 shifted in unknown");
+
+    // The transfer function for the `shl` instruction knows those bits are
+    // zero. This inequality is the reason the operator has to exist.
+    let via_shl = KnownBits::shl(&known, &KnownBits::make_constant(ap(8, 2)));
+    assert!(
+        via_shl.is_known_zero(0),
+        "shl knows the vacated bits are zero"
+    );
+    assert_ne!(shifted, via_shl);
+
+    let right = &known >> 2;
+    assert_eq!(right.one_mask(), &ap(8, 0b0011_1100));
+    assert_eq!(right.zero_mask(), &ap(8, 0b0000_0011));
+    assert!(!right.is_known_zero(7), "bit 7 shifted in unknown");
+    assert!(!right.is_known_one(7), "bit 7 shifted in unknown");
+
+    // `operator>>=` is a logical shift of the masks whatever the sign, so a
+    // known-negative value does not replicate its sign bit.
+    let negative = KnownBits::from_ap_int(ap(8, 0b1000_0000));
+    assert!(negative.is_negative());
+    assert!(!(&negative >> 1).is_known_one(7));
+
+    // Shifting by at least the width clears both masks, as APInt's operators
+    // do; the result is fully unknown rather than saturated.
+    assert_eq!(&known << 8, KnownBits::unknown(8));
+    assert_eq!(&known >> 8, KnownBits::unknown(8));
+
+    // The assigning spellings agree with the producing ones.
+    let mut assigned = known.clone();
+    assigned <<= 2;
+    assert_eq!(assigned, shifted);
+    let mut assigned = known.clone();
+    assigned >>= 2;
+    assert_eq!(assigned, right);
+}
+
+/// The bitwise operators agree with the associated functions they delegate to.
+///
+/// Ports `KnownBits::operator&=` / `operator|=` / `operator^=` from
+/// `llvm/include/llvm/Support/KnownBits.h`. llvmkit already carried the
+/// transfer logic as `KnownBits::bitand` / `bitor` / `bitxor`; these are the
+/// operator spellings upstream declares alongside it.
+#[test]
+fn bitwise_operators_match_their_named_forms() {
+    let lhs = kb(8, 0b0000_1111, 0b1111_0000);
+    let rhs = kb(8, 0b0011_0011, 0b1100_1100);
+
+    assert_eq!(&lhs & &rhs, KnownBits::bitand(&lhs, &rhs));
+    assert_eq!(&lhs | &rhs, KnownBits::bitor(&lhs, &rhs));
+    assert_eq!(&lhs ^ &rhs, KnownBits::bitxor(&lhs, &rhs));
+
+    let mut assigned = lhs.clone();
+    assigned &= &rhs;
+    assert_eq!(assigned, KnownBits::bitand(&lhs, &rhs));
 }

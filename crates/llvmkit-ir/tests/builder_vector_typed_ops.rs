@@ -1,5 +1,5 @@
-//! Coverage for the TYPED vector-op builders (`build_vec_int_*`,
-//! `build_vec_extract` / `build_vec_insert` / `build_vec_splat`), which
+//! Coverage for the TYPED vector-op builders (`vector_int_*`,
+//! `vector_extract` / `vector_insert` / `vector_splat`), which
 //! carry the element marker `E` and lane-count marker `L` in the type
 //! system. They lower into the erased builders, so their emitted IR is
 //! byte-for-byte identical to the erased family's — this file locks the
@@ -10,10 +10,10 @@
 //! fixtures (`tests/compile_fail/vec_binop_*` / `vec_insert_wrong_element`);
 //! here we only exercise the well-typed happy path.
 
-use llvmkit_ir::{Dyn, IRBuilder, IntValue, Len, Linkage, VectorValue, module_new};
+use llvmkit_ir::{Dyn, IntValue, IrBuilder, Len, Linkage, VectorValue, module_new};
 
 /// The typed `<2 x i64>` binops emit the same element-wise IR as the erased
-/// `build_int_*_dyn` family (golden strings ported from
+/// `int_*_dyn` family (golden strings ported from
 /// `builder_vector_binop_dyn.rs::vector_binops_emit_elementwise_ir`), but now
 /// a length/element mismatch would be a compile error rather than a verifier
 /// diagnostic.
@@ -21,50 +21,46 @@ use llvmkit_ir::{Dyn, IRBuilder, IntValue, Len, Linkage, VectorValue, module_new
 fn typed_vector_binops_match_dyn_golden() {
     let m = module_new!("vtyped").expect("fresh module");
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let vec_ty = m.vector_type(i64_ty.as_type(), 2);
 
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        [vec_ty.as_type(), vec_ty.as_type()],
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     // Narrow the erased `<2 x i64>` params into the statically typed handle.
     let a: VectorValue<'_, i64, Len<2>, _> = m
         .view(f)
         .param(0)
         .expect("p0")
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("narrow p0");
     let c: VectorValue<'_, i64, Len<2>, _> = m
         .view(f)
         .param(1)
         .expect("p1")
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("narrow p1");
 
     // Both operands are `VectorValue<i64, Len<2>>`; a width/length
     // mismatch here would not compile.
-    let x = b.build_vec_int_xor(a, c, "x").expect("xor vec");
-    let s = b.build_vec_int_add(x, a, "s").expect("add vec");
+    let x = b.vector_int_xor(a, c, "x").expect("xor vec");
+    let s = b.vector_int_add(x, a, "s").expect("add vec");
 
     let two = i64_ty.const_int(2i64);
     let shamt_const = vec_ty
         .const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([two, two])
         .expect("shamt vec");
     let shamt: VectorValue<'_, i64, Len<2>, _> =
-        shamt_const.into_erased().try_into().expect("narrow shamt");
-    let _sh = b.build_vec_int_shl(s, shamt, "sh").expect("shl vec");
+        shamt_const.as_erased().try_into().expect("narrow shamt");
+    let _sh = b.vector_int_shl(s, shamt, "sh").expect("shl vec");
 
-    b.build_ret_void().expect("ret void");
+    b.ret_void().expect("ret void");
 
     let txt = format!("{m}");
     assert!(
@@ -81,7 +77,7 @@ fn typed_vector_binops_match_dyn_golden() {
     );
 }
 
-/// `build_vec_extract` returns the element as its statically typed scalar
+/// `vector_extract` returns the element as its statically typed scalar
 /// handle — for a `<2 x i64>` that is `IntValue<'_, i64>`, inferred from the
 /// vector's element marker with no turbofish. The `let`-binding annotation is
 /// the type assertion: it compiles only if the return type is exactly that.
@@ -89,30 +85,30 @@ fn typed_vector_binops_match_dyn_golden() {
 fn typed_extract_returns_typed_element() {
     let m = module_new!("vextract").expect("fresh module");
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let vec_ty = m.vector_type(i64_ty.as_type(), 2);
 
-    let fn_ty = m.fn_type(i64_ty.as_type(), [vec_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty.as_type(), [vec_ty.as_type()]);
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let a: VectorValue<'_, i64, Len<2>, _> = m
         .view(f)
         .param(0)
         .expect("p0")
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("narrow p0");
 
     // Return type inferred from `a`'s element marker: `IntValue<'_, i64>`.
     let e: IntValue<'_, i64, _> = b
-        .build_vec_extract(a, i64_ty.const_int(0_i64), "e")
+        .vector_extract(a, i64_ty.const_int(0_i64), "e")
         .expect("extract");
     assert_eq!(e.ty(), i64_ty, "extracted element must be i64-typed");
 
-    b.build_ret(e).expect("ret");
+    b.ret(e).expect("ret");
 
     let txt = format!("{m}");
     assert!(
@@ -121,7 +117,7 @@ fn typed_extract_returns_typed_element() {
     );
 }
 
-/// `build_vec_splat` broadcasts an `i32` scalar across a statically-sized
+/// `vector_splat` broadcasts an `i32` scalar across a statically-sized
 /// `<4 x i32>` vector. `E`/`L` are pinned by the result annotation (`E` cannot
 /// be inferred from the scalar — Rust does not invert the `E::Value`
 /// projection); `scalar: E::Value` then checks the scalar is an `IntValue<i32>`.
@@ -130,12 +126,12 @@ fn typed_splat_element_from_scalar_length_free() {
     let m = module_new!("vsplat").expect("fresh module");
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]);
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let scalar: IntValue<'_, i32, _> = m
         .view(f)
@@ -146,10 +142,10 @@ fn typed_splat_element_from_scalar_length_free() {
 
     // Element `i32` and length `Len<4>` come from the result annotation;
     // `scalar: E::Value` then checks the scalar is an `IntValue<i32>`.
-    let sp: VectorValue<'_, i32, Len<4>, _> = b.build_vec_splat(scalar, "sp").expect("splat");
-    let _ = sp.into_erased();
+    let sp: VectorValue<'_, i32, Len<4>, _> = b.vector_splat(scalar, "sp").expect("splat");
+    let _ = sp.as_erased();
 
-    b.build_ret_void().expect("ret void");
+    b.ret_void().expect("ret void");
 
     let txt = format!("{m}");
     assert!(

@@ -24,6 +24,31 @@ pub enum Token<'src> {
     /// End of input.
     Eof,
 
+    /// No token could be formed here. Mirrors `lltok::Error`.
+    ///
+    /// This is a **token**, not a failure: eleven of `LLLexer`'s twenty-one
+    /// `lltok::Error` sites record no message at all, leaving `LLParser` to
+    /// describe the failure from the surrounding production —
+    /// `expected top-level entity`, `expected memory location (argmem, …)`,
+    /// `expected debug record type here`. A lexer that instead failed with
+    /// "unknown keyword 'foo'" would make every one of those messages
+    /// unreachable, which is what llvmkit did until this variant existed.
+    ///
+    /// The cursor is left exactly where `LLLexer` leaves it — one byte past
+    /// `TokStart` at nearly every site — so lexing can continue, and the span
+    /// starts at `TokStart`, which is what `LLLexer::getLoc` reports.
+    ///
+    /// The sites that *do* carry an upstream message (`LLLexer::LexError`
+    /// callers: `unterminated comment`, `end of file in string constant`,
+    /// `NUL character is not allowed in names`,
+    /// `bitwidth for integer type out of range`,
+    /// `hexadecimal constant too large for half (16-bit)`) stay
+    /// [`LexError`](crate::ll_lexer::LexError)s. Upstream keeps them apart the
+    /// same way, through `LLLexer::ErrorPriority`: a lexer message outranks
+    /// the parser's, so it is what a reader sees even though the parser also
+    /// runs its `expected …` arm.
+    Error,
+
     // ── Punctuation ──
     /// `...`
     DotDotDot,
@@ -64,6 +89,15 @@ pub enum Token<'src> {
     // borrowed and only allocate when decoding actually shortens the slice.
     /// `foo:` or `"quoted":`
     LabelStr(Cow<'src, [u8]>),
+    /// `42:` — a fully-numeric label, which is a *number*, not a name.
+    ///
+    /// Upstream keeps `lltok::LabelID` separate from `lltok::LabelStr` for a
+    /// reason `LLParser::parseBasicBlock` makes plain: the two feed different
+    /// `PerFunctionState::defineBB` arguments, `Name` and `NameID`, and only
+    /// the numeric one is checked against the function's value numbering.
+    /// A quoted `"42":` is still a `LabelStr` — `LLLexer::LexQuote` never
+    /// reaches the numeric arm — so the distinction is lexical, not textual.
+    LabelId(u32),
     /// `@foo` or `@"foo"`
     GlobalVar(Cow<'src, [u8]>),
     /// `@42`
@@ -95,7 +129,7 @@ pub enum Token<'src> {
     /// `DW_LNAME_*`
     DwarfSourceLangName(&'src str),
     /// `DW_CC_*`
-    DwarfCC(&'src str),
+    DwarfCc(&'src str),
     /// `DW_OP_*`
     DwarfOp(&'src str),
     /// `DW_MACINFO_*`
@@ -114,10 +148,8 @@ pub enum Token<'src> {
     NameTableKind(&'src str),
     /// `Binary` / `Decimal` / `Rational`.
     FixedPointKind(&'src str),
-    /// `DIFile`, `DILocation`, and sibling specialized metadata node names.
-    SpecializedMetadata(&'src str),
     /// `dbg_*` — payload is the **suffix** (`value`, `declare`, …),
-    /// matching `LLLexer::DBGRECORDTYPEKEYWORD` (LLLexer.cpp:998).
+    /// matching `LLLexer`'s `DBGRECORDTYPEKEYWORD` macro.
     DbgRecordType(&'src str),
 
     // ── Type tokens ──
@@ -132,13 +164,125 @@ pub enum Token<'src> {
     Kw(Keyword),
 }
 
+/// One-phrase description of the token *kind*, for "expected ..." diagnostics.
+///
+/// Mirrors `lltok::Kind`-describing usage in `LLParser.cpp`: upstream embeds
+/// the phrase inline in `tokError("expected X")`, so the phrase is the same
+/// vocabulary a `.ll` author reads in `llvm-as` output. Writing straight to
+/// the formatter keeps a diagnostic from allocating a description it may only
+/// ever discard.
+///
+/// This describes the family, not the lexeme — payload-bearing tokens render
+/// as `global identifier`, not as the identifier itself. The payload is on
+/// the variant for a caller that wants it.
+impl core::fmt::Display for Token<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let text = match self {
+            Token::Eof => "<eof>",
+            Token::Error => "<error>",
+            Token::DotDotDot => "'...'",
+            Token::Equal => "'='",
+            Token::Comma => "','",
+            Token::Star => "'*'",
+            Token::LSquare => "'['",
+            Token::RSquare => "']'",
+            Token::LBrace => "'{'",
+            Token::RBrace => "'}'",
+            Token::Less => "'<'",
+            Token::Greater => "'>'",
+            Token::LParen => "'('",
+            Token::RParen => "')'",
+            Token::Exclaim => "'!'",
+            Token::Bar => "'|'",
+            Token::Colon => "':'",
+            Token::Hash => "'#'",
+            Token::LabelStr(_) | Token::LabelId(_) => "label",
+            Token::GlobalVar(_) | Token::GlobalId(_) => "global identifier",
+            Token::LocalVar(_) | Token::LocalVarId(_) => "local identifier",
+            Token::ComdatVar(_) => "comdat identifier",
+            Token::MetadataVar(_) => "metadata reference",
+            Token::StringConstant(_) => "string constant",
+            Token::AttrGrpId(_) => "attribute group id",
+            Token::SummaryId(_) => "summary id",
+            Token::IntegerLit(_) => "integer constant",
+            Token::FloatLit(_) => "floating-point constant",
+            Token::PrimitiveType(_) => "primitive type",
+            Token::Instruction(_) => "instruction opcode",
+            Token::Kw(k) => return write!(f, "keyword '{}'", keyword_text(*k)),
+            // The DWARF-flavoured tokens are intentionally minimal — they only
+            // appear inside metadata, which the parser does not yet cover.
+            // Naming the family is sufficient for the diagnostics callers
+            // currently see.
+            Token::DwarfTag(_) => "DWARF tag",
+            Token::DwarfAttEncoding(_) => "DWARF attribute encoding",
+            Token::DwarfVirtuality(_) => "DWARF virtuality",
+            Token::DwarfLang(_) => "DWARF language",
+            Token::DwarfSourceLangName(_) => "DWARF source language name",
+            Token::DwarfCc(_) => "DWARF calling convention",
+            Token::DwarfOp(_) => "DWARF operation",
+            Token::DwarfMacinfo(_) => "DWARF macinfo",
+            Token::DwarfEnumKind(_) => "DWARF enum kind",
+            Token::DiFlag(_) => "DI flag",
+            Token::DiSpFlag(_) => "DI subprogram flag",
+            Token::ChecksumKind(_) => "checksum kind",
+            Token::EmissionKind(_) => "emission kind",
+            Token::NameTableKind(_) => "name-table kind",
+            Token::FixedPointKind(_) => "fixed-point kind",
+            Token::DbgRecordType(_) => "dbg record type",
+        };
+        f.write_str(text)
+    }
+}
+
+/// The `.ll` spelling of the keywords a diagnostic can currently name.
+///
+/// Only the keywords the parser reaches by name; other arms fall back to a
+/// generic label rather than claiming a spelling nobody checked. Later
+/// revisions extend the table opportunistically.
+fn keyword_text(k: Keyword) -> &'static str {
+    match k {
+        Keyword::Target => "target",
+        Keyword::Triple => "triple",
+        Keyword::Datalayout => "datalayout",
+        Keyword::SourceFilename => "source_filename",
+        Keyword::Module => "module",
+        Keyword::Asm => "asm",
+        Keyword::Type => "type",
+        Keyword::Declare => "declare",
+        Keyword::Define => "define",
+        Keyword::Global => "global",
+        Keyword::Constant => "constant",
+        Keyword::External => "external",
+        Keyword::Internal => "internal",
+        Keyword::Private => "private",
+        Keyword::Common => "common",
+        Keyword::Addrspace => "addrspace",
+        Keyword::Opaque => "opaque",
+        Keyword::Zeroinitializer => "zeroinitializer",
+        Keyword::Null => "null",
+        Keyword::None => "none",
+        Keyword::Undef => "undef",
+        Keyword::Poison => "poison",
+        Keyword::True => "true",
+        Keyword::False => "false",
+        Keyword::X => "x",
+        _ => "<keyword>",
+    }
+}
+
 /// Type-keyword tokens that resolve to a stateless primitive type.
 ///
-/// Mirrors `TYPEKEYWORD(...)` entries in `LLLexer.cpp` plus the `i[0-9]+`
-/// integer-type fast path. `ptr` is the default-address-space pointer; the
-/// `addrspace(N)` form is parser-level (it composes `Token::Kw(Keyword::Ptr)`
-/// — wait, actually `ptr` is the default. Let me re-read.) — see `LLParser.cpp`
-/// for `addrspace(N)` handling.
+/// Mirrors the `TYPEKEYWORD(...)` entries of `LLLexer::LexIdentifier` plus its
+/// `i[0-9]+` integer-type fast path — the two paths that reach `lltok::Type`.
+/// [`Ptr`](PrimitiveTy::Ptr) is `PointerType::getUnqual`, the
+/// default-address-space pointer; `ptr addrspace(N)` is not a keyword at all,
+/// and `LLParser::parseType` assembles it from this token plus
+/// `kw_addrspace`.
+///
+/// [`WasmExnRef`](PrimitiveTy::WasmExnRef) is the one entry with no upstream
+/// `TYPEKEYWORD` — see divergence 103 in `docs/divergences.md` and
+/// `NON_UPSTREAM_KEYWORDS` in
+/// `crates/llvmkit-asmparser/tests/lexer_token_drift.rs`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum PrimitiveTy {
     Void,
@@ -148,7 +292,7 @@ pub enum PrimitiveTy {
     X86Amx,
     WasmExnRef,
     Half,
-    BFloat,
+    Bfloat,
     Float,
     Double,
     X86Fp80,
@@ -170,7 +314,8 @@ pub enum Sign {
 pub enum NumBase {
     /// Plain decimal integer (`42`, `-1`).
     Dec,
-    /// `s0x...` — explicitly signed APSInt (LLLexer.cpp:1047).
+    /// `s0x...` — explicitly signed APSInt (the
+    /// `[us]0x[0-9A-Fa-f]+` block of `LLLexer::LexIdentifier`).
     HexSigned,
     /// `u0x...` — explicitly unsigned APSInt.
     HexUnsigned,
@@ -182,7 +327,8 @@ pub enum NumBase {
 /// borrowing as `&str` is sound without any UTF-8 round-trip cost.
 ///
 /// For `[us]0x...` forms `sign` is always [`Sign::Pos`] — those forms cannot
-/// carry a leading `-` (LLLexer.cpp:1047-1064).
+/// carry a leading `-` — `LLLexer::LexIdentifier` reaches them only from a
+/// leading `u` or `s`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct IntLit<'src> {
     pub sign: Sign,
@@ -197,7 +343,9 @@ pub struct IntLit<'src> {
 /// destination IR type is known.
 ///
 /// * `Decimal` is the full lexeme including any leading sign, decimal point,
-///   and exponent — it parses as `IEEEdouble` per LLLexer.cpp:1225/1262.
+///   and exponent — it parses as `IEEEdouble`, per the closing
+///   `APFloatVal = APFloat(APFloat::IEEEdouble(), StringRef(...))` of both
+///   `LLLexer::LexDigitOrNegative` and `LLLexer::LexPositive`.
 /// * The `Hex*` variants strip `0x` and (where present) the format marker
 ///   (`K`, `L`, `M`, `H`, `R`); the remaining slice is hex digits only.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -215,7 +363,7 @@ pub enum FpLit<'src> {
     /// `0xH[0-9A-Fa-f]+` — IEEE half (16-bit).
     HexHalf(&'src str),
     /// `0xR[0-9A-Fa-f]+` — bfloat16.
-    HexBFloat(&'src str),
+    HexBfloat(&'src str),
 }
 
 /// Which 16-bit hex floating-point lexeme overflowed. Used in
@@ -223,7 +371,22 @@ pub enum FpLit<'src> {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum HexFpKind {
     Half,
-    BFloat,
+    Bfloat,
+}
+
+impl HexFpKind {
+    /// The type's spelling as `LLLexer` writes it in
+    /// `hexadecimal constant too large for <name> (16-bit)`.
+    ///
+    /// Not the `Debug` rendering: upstream spells these lowercase, and the
+    /// message text is contractual (`test/Assembler` pins it).
+    #[inline]
+    pub const fn upstream_name(self) -> &'static str {
+        match self {
+            HexFpKind::Half => "half",
+            HexFpKind::Bfloat => "bfloat",
+        }
+    }
 }
 
 /// Which quoted-name token kind is currently being lexed. Used in
@@ -237,45 +400,65 @@ pub enum QuotedNameKind {
     Metadata,
 }
 
+impl QuotedNameKind {
+    /// `LLLexer`'s message for hitting EOF inside this quoted name.
+    ///
+    /// Upstream reaches only three spellings across the five kinds, because
+    /// the routines are shared: `LLLexer::LexVar` serves both `@"…"` and
+    /// `%"…"` and says **global** in either case, and `!"…"` is lexed as
+    /// `exclaim` followed by `LLLexer::LexQuote`, so it reports as a string
+    /// constant. The quirk is upstream's and is reproduced deliberately —
+    /// `%"unterminated` really does report `end of file in global variable
+    /// name` from `llvm-as`.
+    #[inline]
+    pub const fn unterminated_message(self) -> &'static str {
+        match self {
+            QuotedNameKind::Global | QuotedNameKind::Local => "end of file in global variable name",
+            QuotedNameKind::Comdat => "end of file in COMDAT variable name",
+            QuotedNameKind::String | QuotedNameKind::Metadata => "end of file in string constant",
+        }
+    }
+}
+
 /// Mirrors `Instruction::Opcode` in `llvm/include/llvm/IR/Instruction.def` for
 /// the set of opcodes that have a `.ll` keyword form.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Opcode {
     // Unary
-    FNeg,
+    Fneg,
     // Binary integer
     Add,
     Sub,
     Mul,
-    UDiv,
-    SDiv,
-    URem,
-    SRem,
+    Udiv,
+    Sdiv,
+    Urem,
+    Srem,
     Shl,
-    LShr,
-    AShr,
+    Lshr,
+    Ashr,
     And,
     Or,
     Xor,
     // Binary float
-    FAdd,
-    FSub,
-    FMul,
-    FDiv,
-    FRem,
+    Fadd,
+    Fsub,
+    Fmul,
+    Fdiv,
+    Frem,
     // Compare
-    ICmp,
-    FCmp,
+    Icmp,
+    Fcmp,
     // Casts
     Trunc,
-    ZExt,
-    SExt,
-    FPTrunc,
-    FPExt,
-    UIToFP,
-    SIToFP,
-    FPToUI,
-    FPToSI,
+    Zext,
+    Sext,
+    FpTrunc,
+    FpExt,
+    UiToFp,
+    SiToFp,
+    FpToUi,
+    FpToSi,
     IntToPtr,
     PtrToAddr,
     PtrToInt,
@@ -285,7 +468,7 @@ pub enum Opcode {
     Phi,
     Call,
     Select,
-    VAArg,
+    VaArg,
     LandingPad,
     // Terminators
     Ret,
@@ -306,7 +489,7 @@ pub enum Opcode {
     Load,
     Store,
     AtomicCmpXchg,
-    AtomicRMW,
+    AtomicRmw,
     Fence,
     GetElementPtr,
     // Vector / aggregate
@@ -320,9 +503,11 @@ pub enum Opcode {
 
 /// Plain (non-instruction, non-type, non-prefix) keywords.
 ///
-/// Every entry mirrors a `KEYWORD(...)` line in `LLLexer.cpp` (lines 543-877)
-/// or an `ATTRIBUTE_ENUM` entry from `Attributes.td` (LLVM 22.1.4 snapshot, see
-/// `keywords.rs`).
+/// Every entry mirrors a `KEYWORD(...)` line of `LLLexer::LexIdentifier` or an
+/// `ATTRIBUTE_ENUM` entry from `Attributes.td` — which upstream splices into
+/// the same block by `#include`-ing the generated `Attributes.inc`. Both
+/// directions are locked by
+/// `crates/llvmkit-asmparser/tests/lexer_token_drift.rs`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Keyword {
     // Booleans / declarations
@@ -712,7 +897,8 @@ pub enum Keyword {
     Catch,
     Filter,
 
-    // ── Summary index keywords (LLLexer.cpp:788-877) ──
+    // ── Summary index keywords (the `// Summary index keywords.` block of
+    // `LLLexer::LexIdentifier`) ──
     Path,
     Hash_, // `hash` — collides with Token::Hash punctuation; renamed enum-side.
     Gv,
@@ -752,21 +938,21 @@ pub enum Keyword {
     Critical,
     Relbf,
     Variable,
-    VTableFuncs,
+    VtableFuncs,
     VirtFunc,
     Aliasee,
     Refs,
     TypeIdInfo,
     TypeTests,
-    TypeTestAssumeVCalls,
-    TypeCheckedLoadVCalls,
-    TypeTestAssumeConstVCalls,
-    TypeCheckedLoadConstVCalls,
-    VFuncId,
+    TypeTestAssumeVcalls,
+    TypeCheckedLoadVcalls,
+    TypeTestAssumeConstVcalls,
+    TypeCheckedLoadConstVcalls,
+    VfuncId,
     Offset,
     Args,
     Typeid,
-    TypeidCompatibleVTable,
+    TypeidCompatibleVtable,
     Summary,
     TypeTestRes,
     Kind,
@@ -803,4 +989,47 @@ pub enum Keyword {
     Versions,
     MemProf,
     Notcold,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// llvmkit-specific (no upstream counterpart): LLVM 22.1.4 has no
+    /// `lltok::describe` to port — `LLParser.cpp` writes each phrase inline
+    /// in its `tokError("expected ...")` calls, so the closest reference is
+    /// that call vocabulary plus the `lltok::Kind` families in `LLToken.h`.
+    /// This pins the phrases llvmkit renders for them: punctuation quotes
+    /// itself, a payload-bearing token names its *family* rather than its
+    /// lexeme, and a keyword the diagnostic table does not spell out falls
+    /// back to `<keyword>` rather than inventing a spelling.
+    #[test]
+    fn token_display_names_the_family() {
+        assert_eq!(Token::Eof.to_string(), "<eof>");
+        assert_eq!(Token::Error.to_string(), "<error>");
+        assert_eq!(Token::Comma.to_string(), "','");
+        assert_eq!(Token::DotDotDot.to_string(), "'...'");
+        assert_eq!(Token::LBrace.to_string(), "'{'");
+        assert_eq!(
+            Token::GlobalVar(Cow::Borrowed(b"foo")).to_string(),
+            "global identifier"
+        );
+        assert_eq!(Token::GlobalId(7).to_string(), "global identifier");
+        assert_eq!(Token::LocalVarId(7).to_string(), "local identifier");
+        assert_eq!(
+            Token::MetadataVar(Cow::Borrowed(b"dbg")).to_string(),
+            "metadata reference"
+        );
+        assert_eq!(
+            Token::PrimitiveType(PrimitiveTy::Void).to_string(),
+            "primitive type"
+        );
+        assert_eq!(
+            Token::Instruction(Opcode::Add).to_string(),
+            "instruction opcode"
+        );
+        assert_eq!(Token::DwarfTag("DW_TAG_member").to_string(), "DWARF tag");
+        assert_eq!(Token::Kw(Keyword::Define).to_string(), "keyword 'define'");
+        assert_eq!(Token::Kw(Keyword::Nuw).to_string(), "keyword '<keyword>'");
+    }
 }

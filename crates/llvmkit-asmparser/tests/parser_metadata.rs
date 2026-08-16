@@ -284,13 +284,16 @@ fn standalone_metadata_tuple_with_inline_dieexpression() {
 }
 
 /// Bare specialized metadata is not a metadata tuple operand.
-/// Mirrors `LLParser::parseMDTuple` rejecting non-metadata tokens.
+///
+/// `parseMetadata` sends anything that is not a `!` to
+/// `parseValueAsMetadata(MD, "expected metadata operand", PFS)`, so the
+/// complaint is about the operand, not about a missing bang. This used to
+/// accept llvmkit's own `'!' in metadata tuple operand` behind an `||`.
 #[test]
 fn standalone_metadata_tuple_bare_dieexpression_is_rejected() {
-    let err = parse_fails(r#"!0 = !{DIExpression()}"#);
-    assert!(
-        err.contains("'!' in metadata tuple operand") || err.contains("metadata tuple operand"),
-        "unexpected error: {err}"
+    assert_eq!(
+        parse_fails(r#"!0 = !{DIExpression()}"#),
+        "expected metadata operand"
     );
 }
 
@@ -416,7 +419,11 @@ define void @f() {
 
 /// Trailing metadata attachments require the metadata sigil before specialized
 /// metadata operands.
-/// Mirrors `LLParser::parseInstructionMetadata` metadata operand parsing.
+///
+/// Mirrors `LLParser::parseMetadataAttachment`, which hands straight to
+/// `parseMDNode`: without a leading `!` the name is not a `MetadataVar`, so the
+/// specialized-node branch is not taken and the fallthrough
+/// `parseToken(lltok::exclaim, "expected '!' here")` is what reports it.
 #[test]
 fn trailing_metadata_bare_dieexpression_is_rejected() {
     let err = parse_fails(
@@ -426,10 +433,7 @@ define void @f() {
 }
 "#,
     );
-    assert!(
-        err.contains("metadata attachment operand") || err.contains("metadata field value"),
-        "unexpected error: {err}"
-    );
+    assert_eq!(err, "expected '!' here");
 }
 
 /// Undefined trailing instruction metadata references are rejected at end of
@@ -586,7 +590,18 @@ fn specialized_metadata_field_inline_dieexpression_round_trips() {
 }
 
 /// A specialized metadata value still requires LLVM's `!` metadata sigil.
-/// Mirrors `LLParser::parseMetadataAsValue` rejecting non-metadata tokens.
+///
+/// Mirrors `LLParser::parseParameterList`, which routes a `metadata`-typed
+/// argument to `parseMetadataAsValue` and so to `parseMetadata`. A bare
+/// `DIExpression` is neither a `MetadataVar` nor a `!`, so the fallthrough
+/// `parseValueAsMetadata(MD, "expected metadata operand", PFS)` takes it — and
+/// that message is the *type* message it hands to `parseType`, which is what
+/// fails on a keyword that names no type.
+///
+/// llvmkit used to answer `expected value token` here, from `parseValID`'s
+/// default arm: the metadata-typed argument never reached
+/// `parseMetadataAsValue` at all, which is the same gap that made
+/// `metadata i32 %a` unparseable.
 #[test]
 fn call_metadata_bare_dieexpression_operand_is_rejected() {
     let err = parse_fails(
@@ -599,10 +614,7 @@ entry:
 }
 "#,
     );
-    assert!(
-        err.contains("constant initializer"),
-        "unexpected error: {err}"
-    );
+    assert_eq!(err, "expected metadata operand");
 }
 
 /// Metadata fields likewise require the leading `!` for specialized metadata.

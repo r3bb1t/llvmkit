@@ -52,10 +52,10 @@ use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn, ArrayLen};
 use super::constants::ConstantIntValue;
 use super::element::{ElemDyn, StaticVecElem, VecElem};
-use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionValue;
 use super::global_alias::GlobalAliasData;
-use super::global_ifunc::GlobalIFuncData;
+use super::global_ifunc::GlobalIfuncData;
 use super::global_variable::GlobalVariableData;
 use super::inline_asm::InlineAsmData;
 use super::int_width::{IntDyn, IntWidth, Width};
@@ -69,7 +69,11 @@ use super::vec_len::{Len, LenDyn, VecLen};
 
 /// Stable index into the value arena. The numeric contents are opaque; callers
 /// may store and pass the handle back to this crate, but cannot construct one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Ordered by arena position, so within one module the order is creation
+/// order. Opaque numerically, but a total order is what lets an id key a
+/// `BTreeMap` and give a pass deterministic iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueSlot(NonZeroUsize);
 
 impl ValueSlot {
@@ -119,9 +123,64 @@ pub(super) struct ValueData {
     /// RAUW / erase.
     ///
     /// Entries may appear more than once if the same user references this value
-    /// in multiple slots (e.g. `add %x, %x`). Order is registration-order for
-    /// determinism.
+    /// in multiple slots (e.g. `add %x, %x`).
+    ///
+    /// **Order is newest-first**, mirroring upstream exactly — see
+    /// [`ValueData::add_use`]. The order is observable: it is what a
+    /// `uselistorder` index vector permutes and what
+    /// `AsmWriter::predictValueUseListOrder` states its shuffle in terms of.
     pub(super) use_list: RefCell<Vec<ValueUse>>,
+}
+
+impl ValueData {
+    /// Register `edge` as a new use of this value.
+    ///
+    /// Mirrors `Value::addUse` (`Value.h`), which forwards to
+    /// `Use::addToList` (`Use.h`): upstream threads its use list through the
+    /// uses themselves and a new one becomes the **head**, so the list reads
+    /// newest-first. llvmkit stores the same sequence rather than appending,
+    /// because the sequence is contractual — `LLParser::sortUseListOrder`
+    /// keys each use by its position in it, and
+    /// `AsmWriter::predictValueUseListOrder` emits a shuffle against it.
+    pub(super) fn add_use(&self, edge: ValueUse) {
+        self.use_list.borrow_mut().insert(0, edge);
+    }
+
+    /// Move `edges` — a head-first snapshot of another value's use list —
+    /// onto the head of this one's.
+    ///
+    /// Mirrors the drain loop in `Value::replaceAllUsesWith`
+    /// (`lib/IR/Value.cpp`), which repeatedly takes the *head* of the old
+    /// list and `Use::set`s it, prepending each in turn to the new list. The
+    /// net effect reverses the moved run — which is exactly the reversal
+    /// `AsmWriter::predictValueUseListOrder` compensates for with its
+    /// `GetsReversed` flag, so reproducing it here is what makes a
+    /// forward-referenced value's printed shuffle match upstream's.
+    /// The use list as upstream's `Value::uses()` reads it: the edges that
+    /// correspond to a `Use`, in use-list order, named by their *user*.
+    ///
+    /// This — not [`Value::num_uses`] — is what `getNumUses`, a
+    /// `uselistorder` index vector, `sortUseListOrder` and
+    /// `predictValueUseListOrder` all count. See
+    /// [`ValueUse::is_operand_use`] for why the two differ.
+    pub(super) fn operand_users(&self) -> Vec<ValueSlot> {
+        self.use_list
+            .borrow()
+            .iter()
+            .filter_map(|edge| edge.user())
+            .collect()
+    }
+
+    pub(super) fn prepend_moved_uses(&self, edges: &[ValueUse]) {
+        if edges.is_empty() {
+            return;
+        }
+        let mut list = self.use_list.borrow_mut();
+        let mut merged = Vec::with_capacity(edges.len() + list.len());
+        merged.extend(edges.iter().rev().copied());
+        merged.append(&mut list);
+        *list = merged;
+    }
 }
 
 /// One reverse use-list edge for a value. Instruction operands, constants,
@@ -132,7 +191,77 @@ pub(super) enum ValueUse {
     Instruction(ValueSlot),
     Constant(ValueSlot),
     Metadata(MetadataSlot),
-    DebugRecord { inst: ValueSlot, record: usize },
+    DebugRecord {
+        inst: ValueSlot,
+        record: usize,
+    },
+    /// A single-slot field of a global object — an initializer, an aliasee, an
+    /// ifunc resolver, or a function's personality / prefix / prologue.
+    ///
+    /// Upstream these are ordinary `Use` edges on a `GlobalValue`, which is a
+    /// `User`. llvmkit stores each as its own `Cell<Option<ValueSlot>>` on the
+    /// owning data struct, so the edge has to name which cell it is; without
+    /// it, RAUW could not find the field and `num_uses` would undercount.
+    GlobalField {
+        owner: ValueSlot,
+        field: GlobalFieldKind,
+    },
+}
+
+impl ValueUse {
+    /// The `User` this edge hangs off, when upstream models the edge as a
+    /// `Use` at all.
+    ///
+    /// llvmkit's use list is deliberately wider than upstream's: a metadata
+    /// node or a debug record keeps a value alive and must be reached by
+    /// RAUW, so each gets an edge. Upstream tracks those through
+    /// `ReplaceableMetadataImpl` instead — a `ValueAsMetadata` creates no
+    /// `Use`, which is exactly why `AsmWriter::orderModule` has to reach
+    /// *through* `MetadataAsValue` wrappers and debug records to find the
+    /// constants hiding behind them. Anything phrased in terms of
+    /// `Value::uses()` therefore sees only the narrower set.
+    pub(super) fn user(self) -> Option<ValueSlot> {
+        match self {
+            ValueUse::Instruction(user) | ValueUse::Constant(user) => Some(user),
+            ValueUse::GlobalField { owner, .. } => Some(owner),
+            ValueUse::Metadata(_) | ValueUse::DebugRecord { .. } => None,
+        }
+    }
+
+    /// Whether this edge is one upstream models as a `Use`. See
+    /// [`Self::user`].
+    pub(super) fn is_operand_use(self) -> bool {
+        self.user().is_some()
+    }
+}
+
+/// Why a `uselistorder` index vector could not be applied to a value's use
+/// list. One variant per `error(...)` arm of `LLParser::sortUseListOrder`;
+/// the `Display` texts are that routine's, byte for byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum UseListOrderError {
+    /// The named value is not used anywhere.
+    #[error("value has no uses")]
+    NoUses,
+    /// Exactly one use — there is no order to state.
+    #[error("value only has one use")]
+    OneUse,
+    /// The vector does not name every use exactly once. `expected` is the
+    /// value's actual use count, which is what upstream's `Twine` renders.
+    #[error("wrong number of indexes, expected {expected}")]
+    WrongIndexCount { expected: usize },
+}
+
+/// Which single-slot field of a global object a [`ValueUse::GlobalField`]
+/// edge points at. One variant per `Cell` that holds a value id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum GlobalFieldKind {
+    Initializer,
+    Aliasee,
+    IfuncResolver,
+    PersonalityFn,
+    PrefixData,
+    PrologueData,
 }
 
 /// Discriminator over the closed value-category set.
@@ -152,7 +281,7 @@ pub(super) enum ValueKindData {
     Function(Box<FunctionData>),
     Instruction(InstructionData),
     GlobalAlias(GlobalAliasData),
-    GlobalIFunc(GlobalIFuncData),
+    GlobalIfunc(GlobalIfuncData),
     GlobalVariable(GlobalVariableData),
     /// A metadata node used in a value context. Mirrors LLVM's
     /// `MetadataAsValue` (`llvm/include/llvm/IR/Metadata.h`): it lets a
@@ -361,7 +490,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             ValueKindData::Constant(_)
             | ValueKindData::Function(_)
             | ValueKindData::GlobalAlias(_)
-            | ValueKindData::GlobalIFunc(_)
+            | ValueKindData::GlobalIfunc(_)
             | ValueKindData::GlobalVariable(_)
             | ValueKindData::MetadataAsValue(_)
             | ValueKindData::InlineAsm(_) => None,
@@ -393,7 +522,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             ValueKindData::Instruction(_) => ValueCategory::Instruction,
             ValueKindData::GlobalVariable(_) => ValueCategory::GlobalVariable,
             ValueKindData::GlobalAlias(_) => ValueCategory::GlobalAlias,
-            ValueKindData::GlobalIFunc(_) => ValueCategory::GlobalIFunc,
+            ValueKindData::GlobalIfunc(_) => ValueCategory::GlobalIfunc,
             ValueKindData::MetadataAsValue(_) => ValueCategory::MetadataAsValue,
             ValueKindData::InlineAsm(_) => ValueCategory::InlineAsm,
         }
@@ -405,9 +534,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// `users()` expect concrete instruction views.
     ///
     /// The list is a snapshot, not a live view: callers may mutate the IR
-    /// (erase, RAUW) without invalidating the iterator. Order is
-    /// registration-order; user ids may appear more than once if the same
-    /// instruction references this value in multiple slots.
+    /// (erase, RAUW) without invalidating the iterator. Order is the use-list
+    /// order — newest-first, as upstream's `Value::uses()` reads — and user
+    /// ids may appear more than once if the same instruction references this
+    /// value in multiple slots.
     pub fn users(
         self,
     ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
@@ -422,9 +552,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             .iter()
             .filter_map(|edge| match edge {
                 ValueUse::Instruction(id) => Some(*id),
-                ValueUse::Constant(_) | ValueUse::Metadata(_) | ValueUse::DebugRecord { .. } => {
-                    None
-                }
+                ValueUse::Constant(_)
+                | ValueUse::Metadata(_)
+                | ValueUse::DebugRecord { .. }
+                | ValueUse::GlobalField { .. } => None,
             })
             .collect();
         snapshot
@@ -454,17 +585,146 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         self.data().use_list.borrow().len()
     }
 
+    /// `true` when this value keeps a use list at all. Mirrors
+    /// `Value::hasUseList` (`Value.h`), spelled there as
+    /// `!isa<ConstantData>(this)`.
+    ///
+    /// `ConstantData` is the operand-less corner of upstream's constant
+    /// hierarchy — `ConstantInt`, `ConstantFP`, `ConstantPointerNull`,
+    /// `ConstantTokenNone`, `ConstantTargetNone`, `UndefValue`,
+    /// `PoisonValue`, `ConstantAggregateZero` and `ConstantDataSequential`.
+    /// Its members are shared by every module in a context, so upstream
+    /// tracks no users for them and a `uselistorder` naming one is a silent
+    /// no-op rather than an error.
+    ///
+    /// llvmkit *does* record uses for these values — one arena per module
+    /// makes that affordable and `num_uses` is the better answer for a
+    /// caller asking who reads a constant. This predicate is therefore about
+    /// upstream's classification, not about whether
+    /// [`Self::users`] will yield anything.
+    #[inline]
+    pub fn has_use_list(self) -> bool {
+        !crate::Constant::try_from(self).is_ok_and(crate::Constant::is_constant_data)
+    }
+
+    /// Sort this value's use list with `compare`. Mirrors
+    /// `Value::sortUseList` (`Value.h`), a stable merge sort over the uses.
+    ///
+    /// Upstream's comparator takes two `Use`s; llvmkit hands it each use's
+    /// **user** instead, which is what upstream's own comparators read —
+    /// `LLParser::sortUseListOrder`'s keys off a side map,
+    /// `AsmWriter::predictValueUseListOrder`'s off `getUser()`, and
+    /// `UseTest`'s off `getUser()->getName()`. The one thing a `Use` offers
+    /// that a user does not is `getOperandNo`, which llvmkit's use list
+    /// cannot answer at all (`docs/divergences.md` D4).
+    ///
+    /// Only the edges upstream models as `Use`s take part; metadata and
+    /// debug-record edges keep their slots. A value with fewer than two of
+    /// them is left alone, as upstream's `!UseList || !UseList->Next` guard
+    /// does.
+    pub fn sort_use_list_by<F>(self, mut compare: F)
+    where
+        F: FnMut(Value<'ctx, B>, Value<'ctx, B>) -> core::cmp::Ordering,
+    {
+        let module = self.module;
+        let user_value = |slot: ValueSlot| {
+            let data = module.value_data(slot);
+            Value::from_parts(slot, module, data.ty)
+        };
+        let mut uses = self.data().use_list.borrow_mut();
+        let positions: Vec<usize> = uses
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| edge.is_operand_use())
+            .map(|(position, _)| position)
+            .collect();
+        if positions.len() < 2 {
+            return;
+        }
+        let mut selected: Vec<ValueUse> =
+            positions.iter().map(|position| uses[*position]).collect();
+        selected.sort_by(|left, right| {
+            match (left.user(), right.user()) {
+                (Some(left), Some(right)) => compare(user_value(left), user_value(right)),
+                // `is_operand_use` filtered the list, so both sides have a
+                // user by construction.
+                _ => core::cmp::Ordering::Equal,
+            }
+        });
+        for (position, edge) in positions.iter().zip(selected) {
+            uses[*position] = edge;
+        }
+    }
+
+    /// Permute this value's use list so that the use currently sitting at
+    /// position `i` moves to index `indexes[i]`. Mirrors
+    /// `LLParser::sortUseListOrder`, whose three `error(...)` arms are the
+    /// three [`UseListOrderError`] variants.
+    ///
+    /// A value with no use list (see [`Self::has_use_list`]) is accepted and
+    /// left alone, exactly as upstream's leading `if (!V->hasUseList())
+    /// return false` does.
+    pub fn sort_use_list(self, indexes: &[u32]) -> Result<(), UseListOrderError> {
+        if !self.has_use_list() {
+            return Ok(());
+        }
+        let mut uses = self.data().use_list.borrow_mut();
+        // Only the edges upstream models as `Use`s take part, and the ones
+        // that do not keep their slots — see [`ValueUse::is_operand_use`].
+        let positions: Vec<usize> = uses
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| edge.is_operand_use())
+            .map(|(position, _)| position)
+            .collect();
+        if positions.is_empty() {
+            return Err(UseListOrderError::NoUses);
+        }
+        // Upstream walks the use list keying each use by its position, and
+        // stops one use *past* what the vector can name — so `walked` is the
+        // count its `NumUses` ends on and `keyed` the size its `Order` map
+        // ends on. Both comparisons below are its own.
+        let keyed = positions.len().min(indexes.len());
+        let walked = positions.len().min(indexes.len().saturating_add(1));
+        if walked < 2 {
+            return Err(UseListOrderError::OneUse);
+        }
+        if keyed != indexes.len() || walked > indexes.len() {
+            return Err(UseListOrderError::WrongIndexCount {
+                expected: positions.len(),
+            });
+        }
+        // `Value::sortUseList` is a stable merge sort under
+        // `Order.lookup(&L) < Order.lookup(&R)`; `sort_by_key` is stable too,
+        // so a duplicated key orders the same way. The parser rejects
+        // duplicates upstream of here regardless.
+        let mut keyed_uses: Vec<(u32, ValueUse)> = indexes
+            .iter()
+            .copied()
+            .zip(positions.iter().map(|position| uses[*position]))
+            .collect();
+        keyed_uses.sort_by_key(|(index, _)| *index);
+        for (position, (_, edge)) in positions.iter().zip(keyed_uses) {
+            uses[*position] = edge;
+        }
+        Ok(())
+    }
+
     /// If this value is a constant integer, its arbitrary-precision value.
     /// Mirrors reading a `ConstantInt`'s `getValue()`; backs the matcher
     /// constant predicates (`m_zero`, `m_all_ones`, `m_ap_int`, ...).
     /// Scalar only — vector splats are not unwrapped here.
-    pub fn as_const_int(self) -> Option<ApInt> {
+    pub fn to_const_int(self) -> Option<ApInt> {
         let constant = Constant::try_from(self).ok()?;
         let int: ConstantIntValue<'_, IntDyn, B> = ConstantIntValue::try_from(constant).ok()?;
         Some(int.ap_int())
     }
 }
 
+/// Which `Value` subclass a handle names. Mirrors the `dyn_cast` ladder
+/// `lib/IR/AsmWriter.cpp` and `Verifier.cpp` walk over `Value`'s subclasses;
+/// llvmkit answers it as data rather than a chain of casts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueCategory {
     Constant,
     Argument,
@@ -473,7 +733,7 @@ pub enum ValueCategory {
     Instruction,
     GlobalVariable,
     GlobalAlias,
-    GlobalIFunc,
+    GlobalIfunc,
     MetadataAsValue,
     InlineAsm,
 }
@@ -488,7 +748,7 @@ impl From<ValueCategory> for ValueCategoryLabel {
             ValueCategory::Instruction => Self::Instruction,
             ValueCategory::GlobalVariable => Self::GlobalVariable,
             ValueCategory::GlobalAlias => Self::GlobalAlias,
-            ValueCategory::GlobalIFunc => Self::GlobalIFunc,
+            ValueCategory::GlobalIfunc => Self::GlobalIfunc,
             ValueCategory::MetadataAsValue => Self::MetadataAsValue,
             ValueCategory::InlineAsm => Self::InlineAsm,
         }
@@ -504,7 +764,7 @@ pub(super) fn category_label_for_kind(kind: &ValueKindData) -> ValueCategoryLabe
         ValueKindData::Instruction(_) => ValueCategoryLabel::Instruction,
         ValueKindData::GlobalVariable(_) => ValueCategoryLabel::GlobalVariable,
         ValueKindData::GlobalAlias(_) => ValueCategoryLabel::GlobalAlias,
-        ValueKindData::GlobalIFunc(_) => ValueCategoryLabel::GlobalIFunc,
+        ValueKindData::GlobalIfunc(_) => ValueCategoryLabel::GlobalIfunc,
         ValueKindData::MetadataAsValue(_) => ValueCategoryLabel::MetadataAsValue,
         ValueKindData::InlineAsm(_) => ValueCategoryLabel::InlineAsm,
     }
@@ -525,14 +785,14 @@ pub(super) mod sealed {
 /// spec, not an extension point.
 pub trait IsValue<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
     /// Widen to the erased [`Value`] handle.
-    fn into_erased(self) -> Value<'ctx, B>;
+    fn as_erased(self) -> Value<'ctx, B>;
 
     /// Opaque arena id of the underlying value. Every handle shares the
     /// id of its erased [`Value`], so `x.slot()` replaces the
-    /// `x.into_erased().id` widen-then-project chain.
+    /// `x.as_erased().id` widen-then-project chain.
     #[inline]
     fn slot(self) -> ValueSlot {
-        self.into_erased().id
+        self.as_erased().id
     }
 }
 
@@ -561,7 +821,7 @@ pub trait HasDebugLoc: sealed::Sealed {
 impl<'ctx, B: ModuleBrand> sealed::Sealed for Value<'ctx, B> {}
 impl<'ctx, B: ModuleBrand> IsValue<'ctx, B> for Value<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B> {
         self
     }
 }
@@ -604,7 +864,7 @@ impl<B: ModuleBrand> HasDebugLoc for Value<'_, B> {
 /// The erased sibling of [`IntoIntValue`](crate::IntoIntValue) /
 /// [`IntoFloatValue`](crate::IntoFloatValue) / [`IntoPointerValue`]: it is the
 /// bound on every builder operand whose declared parameter type is the erased
-/// [`Value`] — `build_store`'s stored value, `build_freeze`'s operand, the
+/// [`Value`] — `store`'s stored value, `freeze`'s operand, the
 /// aggregate/vector element slots, the call-argument lists, and so on. Where
 /// those three *narrow* to a pinned IR type, this one only widens, so it
 /// accepts strictly more:
@@ -644,7 +904,7 @@ pub(crate) mod into_erased_value_sealed {
 }
 
 /// Implement [`IntoErasedValue`] for one or more value **handles**, whose lift
-/// is the infallible [`IsValue::into_erased`] widen (the `module` argument is
+/// is the infallible [`IsValue::as_erased`] widen (the `module` argument is
 /// unused). Optional square-bracketed marker parameters are emitted ahead of
 /// the brand `B`, matching how every handle orders its generics
 /// (`IntValue<'ctx, W, B>`, `ArrayValue<'ctx, E, L, B>`, ...).
@@ -667,7 +927,7 @@ macro_rules! impl_into_erased_value_for_handle {
                 self,
                 _module: $crate::module::ModuleRef<'ctx, B>,
             ) -> $crate::error::IrResult<$crate::value::Value<'ctx, B>> {
-                Ok($crate::value::IsValue::into_erased(self))
+                Ok($crate::value::IsValue::as_erased(self))
             }
         }
     )+ };
@@ -703,7 +963,7 @@ macro_rules! decl_value_handle {
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             /// Widen to the erased [`Value`] handle.
             #[inline]
-            pub fn into_erased(self) -> Value<'ctx, B> {
+            pub fn as_erased(self) -> Value<'ctx, B> {
                 Value { id: self.id, module: self.module, ty: self.ty }
             }
 
@@ -729,7 +989,7 @@ macro_rules! decl_value_handle {
 
             /// Optional textual name.
             pub fn name(self) -> Option<String> {
-                self.into_erased().name()
+                self.as_erased().name()
             }
 
             /// Set the textual name.
@@ -737,33 +997,33 @@ macro_rules! decl_value_handle {
             where
                 Name: Into<String>,
             {
-                self.into_erased().set_name(module_token, name);
+                self.as_erased().set_name(module_token, name);
             }
 
             /// Clear the textual name.
             pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
-                self.into_erased().clear_name(module_token);
+                self.as_erased().clear_name(module_token);
             }
 
             /// Optional debug-location.
             #[inline]
             pub fn debug_loc(self) -> Option<DebugLoc> {
-                self.into_erased().debug_loc()
+                self.as_erased().debug_loc()
             }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for $name<'ctx, B> {
             /// Print the operand form `<type> <ref>`, identical to what the
-            /// erased [`Value`] handle from `into_erased` prints.
+            /// erased [`Value`] handle from `as_erased` prints.
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                fmt::Display::fmt(&Self::into_erased(*self), f)
+                fmt::Display::fmt(&Self::as_erased(*self), f)
             }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for $name<'ctx, B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for $name<'ctx, B> {
             #[inline]
-            fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
+            fn as_erased(self) -> Value<'ctx, B> { Self::as_erased(self) }
         }
         impl_into_erased_value_for_handle!($name);
         impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for $name<'ctx, B> {
@@ -794,7 +1054,7 @@ macro_rules! decl_value_handle {
 
         impl<'ctx, B: ModuleBrand + 'ctx> From<$name<'ctx, B>> for Value<'ctx, B> {
             #[inline]
-            fn from(v: $name<'ctx, B>) -> Self { v.into_erased() }
+            fn from(v: $name<'ctx, B>) -> Self { v.as_erased() }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for $name<'ctx, B> {
@@ -819,7 +1079,7 @@ macro_rules! decl_value_handle {
             type Error = IrError;
             #[inline]
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
             }
         }
 
@@ -829,7 +1089,7 @@ macro_rules! decl_value_handle {
             type Error = IrError;
             #[inline]
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
             }
         }
 
@@ -941,16 +1201,16 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Display
     for ArrayValue<'ctx, E, L, B>
 {
     /// Print the operand form `[N x T] <ref>`, identical to what the erased
-    /// [`Value`] handle from [`ArrayValue::into_erased`] prints.
+    /// [`Value`] handle from [`ArrayValue::as_erased`] prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::into_erased(*self), f)
+        fmt::Display::fmt(&Self::as_erased(*self), f)
     }
 }
 
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -969,23 +1229,23 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.as_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
     /// Erase both markers; preserves the runtime element type / element count.
     #[inline]
@@ -1036,8 +1296,8 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
     for ArrayValue<'ctx, E, L, B>
 {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        Self::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        Self::as_erased(self)
     }
 }
 impl_into_erased_value_for_handle!(ArrayValue[E: VecElem, L: ArrayLen]);
@@ -1081,7 +1341,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx,
 {
     #[inline]
     fn from(v: ArrayValue<'ctx, E, L, B>) -> Self {
-        v.into_erased()
+        v.as_erased()
     }
 }
 
@@ -1114,7 +1374,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -1123,7 +1383,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1204,7 +1464,7 @@ pub struct StructValue<'ctx, B: ModuleBrand> {
 impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1252,7 +1512,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
 
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
 
     /// Set the textual name.
@@ -1260,34 +1520,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.as_erased().clear_name(module_token);
     }
 
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for StructValue<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for StructValue<'ctx, B> {
     /// Print the operand form `{ ... } <ref>`, identical to what the erased
-    /// [`Value`] handle from [`StructValue::into_erased`] prints.
+    /// [`Value`] handle from [`StructValue::as_erased`] prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::into_erased(*self), f)
+        fmt::Display::fmt(&Self::as_erased(*self), f)
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for StructValue<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        Self::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        Self::as_erased(self)
     }
 }
 impl_into_erased_value_for_handle!(StructValue);
@@ -1324,7 +1584,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for StructValue<'ctx, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<StructValue<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: StructValue<'ctx, B>) -> Self {
-        v.into_erased()
+        v.as_erased()
     }
 }
 
@@ -1351,7 +1611,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for StructValue<'ct
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
     }
 }
 
@@ -1359,7 +1619,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for StructValue<'ct
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
     }
 }
 
@@ -1420,9 +1680,9 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Display
     for VectorValue<'ctx, E, L, B>
 {
     /// Print the operand form `<N x T> <ref>`, identical to what the erased
-    /// [`Value`] handle from [`VectorValue::into_erased`] prints.
+    /// [`Value`] handle from [`VectorValue::as_erased`] prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::into_erased(*self), f)
+        fmt::Display::fmt(&Self::as_erased(*self), f)
     }
 }
 
@@ -1458,7 +1718,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L,
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1477,23 +1737,23 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L,
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.as_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
     /// Erase both markers; preserves the runtime element type / lane count.
     #[inline]
@@ -1516,8 +1776,8 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
     for VectorValue<'ctx, E, L, B>
 {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        Self::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        Self::as_erased(self)
     }
 }
 impl_into_erased_value_for_handle!(VectorValue[E: VecElem, L: VecLen]);
@@ -1561,7 +1821,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> From<VectorValue<'ctx, 
 {
     #[inline]
     fn from(v: VectorValue<'ctx, E, L, B>) -> Self {
-        v.into_erased()
+        v.as_erased()
     }
 }
 
@@ -1597,7 +1857,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -1606,7 +1866,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1692,7 +1952,7 @@ decl_value_handle!(
 // IntType / FloatType already imported at top of file.
 
 /// Value whose IR type is `iN`. The `W: IntWidth` marker pins the
-/// bit-width at the type level, so the IRBuilder can reject mismatched
+/// bit-width at the type level, so the IrBuilder can reject mismatched
 /// widths at compile time.
 pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand> {
     pub(super) id: ValueSlot,
@@ -1792,7 +2052,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1819,23 +2079,23 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.as_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
     /// Erase the width marker; preserves the runtime width.
     #[inline]
@@ -1852,17 +2112,17 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> sealed::Sealed for IntValue<'ctx, W, B> {}
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Display for IntValue<'ctx, W, B> {
     /// Print the operand form `i<N> <ref>`, identical to what the erased
-    /// [`Value`] handle from [`IntValue::into_erased`] prints. A constant
+    /// [`Value`] handle from [`IntValue::as_erased`] prints. A constant
     /// operand prints its signed-decimal literal in place of the `<ref>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::into_erased(*self), f)
+        fmt::Display::fmt(&Self::as_erased(*self), f)
     }
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        Self::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        Self::as_erased(self)
     }
 }
 impl_into_erased_value_for_handle!(IntValue[W: IntWidth]);
@@ -1898,7 +2158,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasDebugLoc for IntValue<'ctx, W,
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> From<IntValue<'ctx, W, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: IntValue<'ctx, W, B>) -> Self {
-        v.into_erased()
+        v.as_erased()
     }
 }
 
@@ -1925,14 +2185,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for IntValue<'ctx, 
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for IntValue<'ctx, IntDyn, B> {
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1976,7 +2236,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -1985,7 +2245,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -2002,7 +2262,7 @@ macro_rules! impl_int_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(v: IntValue<'ctx, IntDyn, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> From<IntValue<'ctx, $marker, B>>
@@ -2053,7 +2313,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Constant<'ctx, B>>
@@ -2062,7 +2322,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Instruction<'ctx, Attached, B>>
@@ -2080,7 +2340,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn, B
     type Error = IrError;
     #[inline]
     fn try_from(v: IntValue<'ctx, IntDyn, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> From<IntValue<'ctx, Width<N>, B>>
@@ -2163,7 +2423,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     }
 
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -2187,20 +2447,20 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
         FloatType::new(self.ty, self.module)
     }
     pub fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name);
     }
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.as_erased().clear_name(module_token);
     }
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
     #[inline]
     pub fn as_dyn(self) -> FloatValue<'ctx, FloatDyn, B> {
@@ -2216,16 +2476,16 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> sealed::Sealed for FloatValue<'ctx, K, B> {}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Display for FloatValue<'ctx, K, B> {
     /// Print the operand form `<float-type> <ref>`, identical to what the
-    /// erased [`Value`] handle from [`FloatValue::into_erased`] prints.
+    /// erased [`Value`] handle from [`FloatValue::as_erased`] prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::into_erased(*self), f)
+        fmt::Display::fmt(&Self::as_erased(*self), f)
     }
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FloatValue<'ctx, K, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        Self::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        Self::as_erased(self)
     }
 }
 impl_into_erased_value_for_handle!(FloatValue[K: FloatKind]);
@@ -2257,7 +2517,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasDebugLoc for FloatValue<'ctx,
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> From<FloatValue<'ctx, K, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: FloatValue<'ctx, K, B>) -> Self {
-        v.into_erased()
+        v.as_erased()
     }
 }
 
@@ -2268,7 +2528,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FloatValue<'ctx, F
         if matches!(
             ty.data(),
             TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::X86Fp80
@@ -2292,13 +2552,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FloatValue<'ctx, F
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -2335,7 +2595,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -2343,7 +2603,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -2359,7 +2619,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(v: FloatValue<'ctx, FloatDyn, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> From<FloatValue<'ctx, $marker, B>>
@@ -2373,7 +2633,7 @@ macro_rules! impl_float_value_static_try_from {
     };
 }
 impl_float_value_static_try_from!(Half, Half, Half);
-impl_float_value_static_try_from!(BFloat, BFloat, BFloat);
+impl_float_value_static_try_from!(Bfloat, Bfloat, Bfloat);
 impl_float_value_static_try_from!(f32, Float, Float);
 impl_float_value_static_try_from!(f64, Double, Double);
 impl_float_value_static_try_from!(Fp128, Fp128, Fp128);
@@ -2388,7 +2648,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Value<'ctx, B> {
 }
 
 // --------------------------------------------------------------------------
-// IntoPointerValue: ergonomic operand input for the IRBuilder
+// IntoPointerValue: ergonomic operand input for the IrBuilder
 // --------------------------------------------------------------------------
 
 /// Inputs that can be lifted into a [`PointerValue<'ctx, B>`] operand
@@ -2433,7 +2693,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerN
     #[inline]
     fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
         Ok(PointerValue::from_value_unchecked(
-            crate::value::IsValue::into_erased(self),
+            crate::value::IsValue::as_erased(self),
         ))
     }
 }

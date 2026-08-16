@@ -28,7 +28,7 @@
 //! ```
 
 use llvmkit_ir::{
-    ArrLen, ArrayValue, IRBuilder, IntValue, IrError, Len, Linkage, VectorValue, module_new,
+    ArrLen, ArrayValue, IntValue, IrBuilder, IrError, Len, Linkage, VectorValue, module_new,
 };
 
 fn build() -> Result<(), IrError> {
@@ -42,10 +42,10 @@ fn build() -> Result<(), IrError> {
     // compile-time `const {}` error.
     let v4i32 = m.vector_type_n::<i32, 4>();
 
-    let fn_ty = m.fn_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()], false);
+    let fn_ty = m.function_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()]);
     let vadd = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
     let entry = m.view(vadd).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
 
     // Narrow the erased `<4 x i32>` params into the statically typed handle.
     // `try_into` checks BOTH element (i32) and lane count (4) at run time,
@@ -55,60 +55,60 @@ fn build() -> Result<(), IrError> {
         .view(vadd)
         .param(0)
         .expect("param 0")
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("narrow param 0 to <4 x i32>");
     let c: VectorValue<'_, i32, Len<4>, _> = m
         .view(vadd)
         .param(1)
         .expect("param 1")
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("narrow param 1 to <4 x i32>");
 
-    // Both operands are `VectorValue<i32, Len<4>>`. `build_vec_int_add` pins
+    // Both operands are `VectorValue<i32, Len<4>>`. `vector_int_add` pins
     // both to the SAME `E` and `L`, so a length or element mismatch has no
     // matching impl — a compile error, not a verifier diagnostic. E.g.:
     //   let half: VectorValue<'_, i32, Len<2>> = /* ... */;
-    //   b.build_vec_int_add(a, half, "bad")?;   // E0308: Len<4> vs Len<2>
-    let sum = b.build_vec_int_add(a, c, "sum")?;
+    //   b.vector_int_add(a, half, "bad")?;   // E0308: Len<4> vs Len<2>
+    let sum = b.vector_int_add(a, c, "sum")?;
 
-    // `build_vec_extract` returns the element as its typed scalar handle;
+    // `vector_extract` returns the element as its typed scalar handle;
     // the return type is inferred from the element marker as
     // `IntValue<'_, i32>` — no turbofish needed.
-    let lane0: IntValue<'_, i32, _> = b.build_vec_extract(sum, i32_ty.const_int(0_i32), "lane0")?;
-    b.build_ret(lane0)?;
+    let lane0: IntValue<'_, i32, _> = b.vector_extract(sum, i32_ty.const_int(0_i32), "lane0")?;
+    b.ret(lane0)?;
 
     // ---- Typed arrays: `[4 x i32]` -------------------------------------
     let a4i32 = m.array_type_n::<i32, 4>();
 
-    let fn_ty = m.fn_type(i32_ty.as_type(), [a4i32.as_type()], false);
+    let fn_ty = m.function_type(i32_ty.as_type(), [a4i32.as_type()]);
     let apack = m.add_function_dyn("apack", fn_ty, Linkage::External)?;
     let entry = m.view(apack).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
 
     let arr: ArrayValue<'_, i32, ArrLen<4>, _> = m
         .view(apack)
         .param(0)
         .expect("param 0")
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("narrow param 0 to [4 x i32]");
 
-    // `build_arr_insert` takes an element typed by the array's marker
+    // `array_insert` takes an element typed by the array's marker
     // (`IntValue<i32>`); passing an `IntValue<i64>` or a float would not
     // compile. The result keeps the `i32` / `ArrLen<4>` markers, so it
     // feeds straight back into another typed array op.
     let seven: IntValue<'_, i32, _> = i32_ty
         .const_int(7_i32)
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("i32 constant");
-    let updated: ArrayValue<'_, i32, ArrLen<4>, _> = b.build_arr_insert(arr, seven, 1, "u")?;
+    let updated: ArrayValue<'_, i32, ArrLen<4>, _> = b.array_insert(arr, seven, 1, "u")?;
 
     // Read index 1 back; element type inferred as `IntValue<i32>`.
-    let back: IntValue<'_, i32, _> = b.build_arr_extract(updated, 1, "back")?;
-    b.build_ret(back)?;
+    let back: IntValue<'_, i32, _> = b.array_extract(updated, 1, "back")?;
+    b.ret(back)?;
 
     print!("{m}");
     Ok(())

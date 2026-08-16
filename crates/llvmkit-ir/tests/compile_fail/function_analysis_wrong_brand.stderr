@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `FunctionView<'_, Right>: From<FunctionView<'_, Left>>` is not satisfied
-  --> tests/compile_fail/function_analysis_wrong_brand.rs:36:53
+  --> tests/compile_fail/function_analysis_wrong_brand.rs:36:49
    |
-36 |     let _ = fam.get_result::<DominatorTreeAnalysis, _>(left_function.as_view());
-   |                 ----------                          ^ the trait `From<FunctionView<'_, Left>>` is not implemented for `FunctionView<'_, Right>`
+36 |     let _ = fam.result::<DominatorTreeAnalysis, _>(left_function.as_view());
+   |                 ------                          ^ the trait `From<FunctionView<'_, Left>>` is not implemented for `FunctionView<'_, Right>`
    |                 |
    |                 required by a bound introduced by this call
    |
@@ -15,11 +15,11 @@ help: the trait `From<FunctionView<'_, Left>>` is not implemented for `FunctionV
    | |_____________________________^
    = help: for that trait implementation, expected `FunctionValue<'_, _, Right>`, found `FunctionView<'_, Left>`
    = note: required for `FunctionView<'_, Left>` to implement `Into<FunctionView<'_, Right>>`
-note: required by a bound in `FunctionAnalysisManager::<'ctx, B>::get_result`
+note: required by a bound in `FunctionAnalysisManager::<'ctx, B>::result`
   --> src/analysis.rs
    |
-   |     pub fn get_result<'v, A, F>(&mut self, function: F) -> IrResult<&A::Result>
-   |            ---------- required by a bound in this associated function
+   |     pub fn result<'v, A, F>(&mut self, function: F) -> IrResult<&A::Result>
+   |            ------ required by a bound in this associated function
 ...
    |         F: Into<FunctionView<'v, B>>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `FunctionAnalysisManager::<'ctx, B>::get_result`
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `FunctionAnalysisManager::<'ctx, B>::result`

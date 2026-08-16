@@ -28,18 +28,18 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Mutate instruction metadata on a module already verified, or from a read-only pass | D8, D2 | `Instruction::setMetadata` is a plain non-const method; `verifyModule` is a free function returning a `bool` the caller may ignore, and nothing connects the two | `InstructionView::set_metadata` / `push_debug_record` (and their `Instruction` twins) demand a `&Module<B, Unverified>` token, which a `Verified` module cannot supply and an `Inspect`-rung pass never holds (`E0308`, locked by `tests/compile_fail/verified_module_metadata_is_immutable.rs`) |
 | Metadata node from another module attached, referenced, or looked up | D7 | `MDNode *` records no owning module; the attachment is accepted and surfaces (if at all) as a corrupt dump | The metadata currency is `MetadataId<B>` — brand statically, `ModuleId` tag at run time. Wrong brand is a compile error (`tests/compile_fail/cross_module_metadata_attachment.rs`); wrong module under one brand is `IrError::ForeignMetadataId` at a single arena choke point (`tests/module_ownership.rs`) |
 | Keep a handle to a block or value after its module is gone | D2, D7 | A `BasicBlock *` outliving its `Module` is a dangling pointer, diagnosed at no stage | A module is an owned value, so every borrowing handle (`BasicBlock`, `FunctionValue`, `Value`, every `*View`) carries a `'ctx` borrow of it and cannot escape its scope (`E0597`, locked by `tests/compile_fail/view_cannot_outlive_its_module.rs`). The `.id()` form of the same program compiles — which is why a stale *id* is a run-time rejection while a stale *view* is unconstructible |
-| Return a value from a `void` function, or `ret void` from a value-returning function | D1, D4 | `CreateRet(Value *)` / `CreateRetVoid()` are just methods; mismatch is verifier/runtime state | `IRBuilder<..., R>` exposes return methods according to the function return marker |
+| Return a value from a `void` function, or `ret void` from a value-returning function | D1, D4 | `CreateRet(Value *)` / `CreateRetVoid()` are just methods; mismatch is verifier/runtime state | `IrBuilder<..., R>` exposes return methods according to the function return marker |
 | Read a typed result from a `void` call | D3, D4 | Caller must inspect the call/function type | `CallInst<'ctx, ()>` exposes no typed result accessor |
 | Use an instruction handle after erase | D2 | Raw pointer discipline | Lifecycle methods consume a non-`Copy`, non-`Clone` `Instruction` handle |
 | Recover lifecycle authority from a copyable value, block, or use-list | D2, D9 | Any retained `Instruction *` can be reused for mutation | Copyable rediscovery APIs return `InstructionView`; only builder output, `BlockCursor`, and detached reinsertion produce `Instruction<Attached>` |
-| Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `PhiInst<Open>` / `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators |
-| Misplace a phi, mistype a phi incoming, or give one predecessor two different incoming values | D1, D4 | Builder accepts all three; the verifier later reports `PhiNotAtTop` or the type / predecessor mismatch | `build_*_phi` always insert at the block's PHI head (placement correct by construction); `add_incoming` — the typed path *and* the untyped parser/SSA-builder path — type-checks the incoming and rejects a differing duplicate for one predecessor as `IrError::AmbiguousPhiIncoming`; whole-graph incoming-vs-predecessor completeness stays in `Module::verify()` |
-| Branch carries the wrong number of, or wrong-typed, values for its successor's block parameters | D1, D4 | The successor's head-phis are filled `PHINode`-by-`PHINode`; a miscounted or mistyped incoming is an `assert` / verifier concern | A typed successor label carries a `Params` schema; `head.call(args)` (a `BlockCall`) requires `args: CallArgs<Params>`, so a wrong arity or a wrong-typed block-argument position is a compile error, reusing the typed-`build_call` machinery. The erased `append_block_with_params` / `build_*_with_args` path stays call-site-checked (`IrError::PhiArgArityMismatch` / type mismatch). **The plain-`br` door is shut at run time, not at compile time**: `build_br`/`build_cond_br` still take any `IntoBasicBlockLabel`, whose `BlockId` impl erases `Params`, so a plain branch to a parameterised block still *compiles* — but every plain terminator edge (`br`, `cond_br`, `switch` default and cases, both `invoke` edges, `callbr`, `indirectbr`) now rejects a parameterised target with `IrError::PhiArgArityMismatch` before the terminator is emitted, so the incomplete phi is no longer reachable (§9) |
-| Add a wrong-width case value to a `switch` | D4 | Builder accepts any `ConstantInt *`; a case whose integer width ≠ the condition is caught later by `Verifier::visitSwitchInst` (`"Switch constants must all be same type as switch value!"`) | `build_switch::<W>` pins the condition width `W`, and `SwitchInst::add_case` then carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width case is a compile error; the erased `build_switch_dyn` (`IntDyn`) keeps the same rule as a runtime `IrError::TypeMismatch` check for parsed / SSA-builder input |
-| Jump through a non-pointer `indirectbr` address | D4 | `CreateIndirectBr` accepts any `Value *`; a non-pointer address is caught later by `Verifier::visitIndirectBrInst` (`"Indirectbr operand must have pointer type!"`) | `build_indirectbr`'s address is bound `IntoPointerValue<'ctx, B>`, so a typed non-pointer address is a compile error. There is no erased overload: `IntoPointerValue` has no impl for a bare `Value`, so a parsed address must first be narrowed by `TryFrom` (`ll_parser.rs::parse_indirectbr` does exactly that), which is where the pointer check lands. Either way the rule is out of `Module::verify()` |
+| Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators. Phis carry no such marker — theirs was retired in cycle B (§9); their seal is the `pub(crate)` raw builders instead |
+| Misplace a phi, mistype a phi incoming, or give one predecessor two different incoming values | D1, D4 | Builder accepts all three; the verifier later reports `PhiNotAtTop` or the type / predecessor mismatch | `*_phi` always insert at the block's PHI head (placement correct by construction); `add_incoming` — the typed path *and* the untyped parser/SSA-builder path — type-checks the incoming and rejects a differing duplicate for one predecessor as `IrError::AmbiguousPhiIncoming`; whole-graph incoming-vs-predecessor completeness stays in `Module::verify()` |
+| Branch carries the wrong number of, or wrong-typed, values for its successor's block parameters | D1, D4 | The successor's head-phis are filled `PHINode`-by-`PHINode`; a miscounted or mistyped incoming is an `assert` / verifier concern | A typed successor label carries a `Params` schema; `head.call(args)` (a `BlockCall`) requires `args: CallArgs<Params>`, so a wrong arity or a wrong-typed block-argument position is a compile error, reusing the typed-`call` machinery. The erased `append_block_with_params` / `*_with_args` path stays call-site-checked (`IrError::PhiArgArityMismatch` / type mismatch). **The plain-`br` door is shut at run time, not at compile time**: `br`/`cond_br` still take any `IntoBasicBlockLabel`, whose `BlockId` impl erases `Params`, so a plain branch to a parameterised block still *compiles* — but every plain terminator edge (`br`, `cond_br`, `switch` default and cases, both `invoke` edges, `callbr`, `indirectbr`) now rejects a parameterised target with `IrError::PhiArgArityMismatch` before the terminator is emitted, so the incomplete phi is no longer reachable (§9) |
+| Add a wrong-width case value to a `switch` | D4 | Builder accepts any `ConstantInt *`; a case whose integer width ≠ the condition is caught later by `Verifier::visitSwitchInst` (`"Switch constants must all be same type as switch value!"`) | `switch::<W>` pins the condition width `W`, and `SwitchInst::add_case` then carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width case is a compile error; the erased `switch_dyn` (`IntDyn`) keeps the same rule as a runtime `IrError::TypeMismatch` check for parsed / SSA-builder input |
+| Jump through a non-pointer `indirectbr` address | D4 | `CreateIndirectBr` accepts any `Value *`; a non-pointer address is caught later by `Verifier::visitIndirectBrInst` (`"Indirectbr operand must have pointer type!"`) | `indirectbr`'s address is bound `IntoPointerValue<'ctx, B>`, so a typed non-pointer address is a compile error. There is no erased overload: `IntoPointerValue` has no impl for a bare `Value`, so a parsed address must first be narrowed by `TryFrom` (`ll_parser.rs::parse_indirectbr` does exactly that), which is where the pointer check lands. Either way the rule is out of `Module::verify()` |
 | Make a structurally-invalid CFG edge edit — remove an `invoke`/`callbr` edge or the sole edge of an unconditional `br`, remove a `switch` default, or collapse a `cond_br` twice | D1, D2 | Edge edits are raw pointer manipulation (`setSuccessor` / `removePredecessor` / branch replacement); an edit that orphans a mandatory edge yields malformed IR the verifier catches later, if at all | `FnReshape::edit_terminator` narrows the terminator into a per-kind typed handle (`BrEdit` / `CondBrEdit` / `SwitchEdit` / `InvokeEdit` / `CallBrEdit`) whose method set fixes the legal edits: a removal that would orphan a mandatory edge has no method to spell (`E0599`), and `remove_then` / `remove_else` consume the handle, so a double collapse is use-after-move (`E0382`). Each redirect/remove maintains the successors' phis mechanically, poison-erasing an emptied phi for `BasicBlock::removePredecessor` parity |
-| Insert a wrong-typed element into a vector or aggregate (`insertelement` / `insertvalue`) | D4, D6 | Builder accepts `Value *`; the verifier later reports the element/field type mismatch | `build_vec_insert` / `build_arr_insert` take a value typed by the handle's element marker `E`, so a wrong element type is a compile error (typed handle); the erased `VectorValue<'ctx>` / `ArrayValue<'ctx>` (`Dyn`) path stays verifier-checked as the escape hatch |
-| Elementwise vector binop on mismatched lane count or element type | D4, D6 | Builder accepts two `Value *`; the verifier later reports the operand type mismatch | `build_vec_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` take two `VectorValue<E, Len<N>>` with the *same* `E`,`N`, so a mismatched length or element has no matching impl (compile error, typed handle); the erased `_dyn` / `VectorValue<'ctx>` path stays verifier-checked |
+| Insert a wrong-typed element into a vector or aggregate (`insertelement` / `insertvalue`) | D4, D6 | Builder accepts `Value *`; the verifier later reports the element/field type mismatch | `vector_insert` / `array_insert` take a value typed by the handle's element marker `E`, so a wrong element type is a compile error (typed handle); the erased `VectorValue<'ctx>` / `ArrayValue<'ctx>` (`Dyn`) path stays verifier-checked as the escape hatch |
+| Elementwise vector binop on mismatched lane count or element type | D4, D6 | Builder accepts two `Value *`; the verifier later reports the operand type mismatch | `vector_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` take two `VectorValue<E, Len<N>>` with the *same* `E`,`N`, so a mismatched length or element has no matching impl (compile error, typed handle); the erased `_dyn` / `VectorValue<'ctx>` path stays verifier-checked |
 | `<N x T>` / `[N x T]` length mismatch at a typed vector/array op | D6 | Builder accepts the mis-sized operand; the verifier later reports the length/type mismatch | The length marker (`Len<N>` for vectors, `ArrLen<N>` for arrays) is part of the handle type, so a typed op on a wrong-length value is a compile error; the all-`Dyn` `VectorValue<'ctx>` / `ArrayValue<'ctx>` form narrows via `TryFrom` (`OperandWidthMismatch` / `IrError::ArrayLengthMismatch`) as the escape hatch |
 | Run verified-only analyses after a transform | D8 | Verifier pass convention | A pass pipeline's output is `Module<B, Unverified>` whenever any member mutates (derived from the members' rungs), so verified-only analyses require an explicit `verify()` first |
 | Pass mutates IR but reports everything preserved | D8, D1 | Pass returns a hand-written `PreservedAnalyses`; over-claiming leaves stale analyses that later passes miscompile against, caught only if a verifier/analysis-checker pass is opted in | Preservation is *derived* from the pass's capability rung, so over-claiming is a compile error: a mutating rung's `done()` floor is fixed by the rung, and `Access = Inspect` has no `mutate()` at all |
@@ -63,8 +63,8 @@ is a checked rejection, not a type error. Read every "wrong module is a compile
 error" row below as "wrong *brand* is a compile error; wrong module under the
 same brand is a checked run-time rejection".
 
-**(b) Metadata carries both halves as of the 0.0.4 polish freeze.** Through
-0.0.4 it carried neither: `metadata.rs::MetadataSlot` was a bare `usize`
+**(b) Metadata carries both halves as of the 0.0.4 polish freeze.** Before that
+freeze it carried neither: `metadata.rs::MetadataSlot` was a bare `usize`
 arena index, and the `ValueSlot` inside `DebugMetadataOperand::Value` was
 likewise bare, so there was no `B` for two modules' handles to differ in and no
 tag for an arena boundary to check. An in-range handle minted by module A and
@@ -158,13 +158,21 @@ pub trait ModuleBrand: 'static {}
 
 impl Module<DynBrand, Unverified> {
     // At most one live module per brand; the brand is freed on drop.
-    pub fn branded<B: ModuleBrand>(name: impl Into<String>) -> IrResult<Module<B, Unverified>>;
+    pub fn branded<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    where B: ModuleBrand, N: Into<String>;
     // ...or retired permanently on drop, so no successor can ever claim it.
-    pub fn branded_once<B: ModuleBrand>(name: impl Into<String>) -> IrResult<Module<B, Unverified>>;
+    pub fn branded_once<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    where B: ModuleBrand, N: Into<String>;
     // Registry-exempt: arbitrarily many live at once, separated by the runtime tag alone.
-    pub fn dynamic(name: impl Into<String>) -> Module<DynBrand, Unverified>;
+    pub fn dynamic<N>(name: N) -> Module<DynBrand, Unverified>
+    where N: Into<String>;
 }
 ```
+
+The name parameter is a named generic rather than an `impl Into<String>` argument
+precisely so the brand stays turbofish-able: every call site below spells
+`Module::branded::<Left, _>("left")`, which argument-position `impl Trait` would
+forbid.
 
 `module_new!("name")` wraps `branded` with a brand declared at the macro's
 expansion site, so the brand is unnameable from anywhere else — the ergonomic
@@ -236,7 +244,7 @@ The integer-add builder requires both operands to match the builder's brand `B`,
 and hands back a storable id:
 
 ```rust
-pub fn build_int_add<W, Lhs, Rhs, Name>(
+pub fn int_add<W, Lhs, Rhs, Name>(
     &self,
     lhs: Lhs,
     rhs: Rhs,
@@ -261,9 +269,9 @@ let function = right
     .unwrap()
     .as_function();
 let entry = right.view(function).append_basic_block(&right, "entry");
-let builder = IRBuilder::new_for::<i64>(&right).position_at_end(entry);
+let builder = IrBuilder::new_for::<i64>(&right).position_at_end(entry);
 
-let _ = builder.build_int_add(left_value, left_value, "bad");
+let _ = builder.int_add(left_value, left_value, "bad");
 ```
 
 Result: compile error — `ConstantIntValue<'_, i64, Left>` does not implement
@@ -297,14 +305,14 @@ Check(OpBB->getParent() == BB->getParent(),
 `llvmkit` requires the target block to carry the builder's brand:
 
 ```rust
-pub fn build_br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+pub fn br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
 where
     T: IntoBasicBlockLabel<'ctx, R, B>,
 ```
 
 `IntoBasicBlockLabel<'ctx, R, B>` (`basic_block.rs::IntoBasicBlockLabel`) is the
 *accepting* bound at every branch-target position, and it follows the same
-id/view split as the rest of 2.0:
+id/view split as the rest of the handle model:
 
 - `BlockId<R, B, Params>` is the **storable** currency — `Copy + Send +
   'static`, what a producer hands back and what a struct keeps. Its impl
@@ -326,7 +334,7 @@ resolve and the `BlockId` bullet above is what catches it, at run time.
 
 Note what the trait deliberately does **not** carry: `Params`. Its `BlockId`
 impl calls `BasicBlockLabel::erase_params`, so a parameterised block is an
-ordinary branch target *to the type system* at a plain `build_br`. The parameter
+ordinary branch target *to the type system* at a plain `br`. The parameter
 schema is honoured at compile time by the `BlockCall` edge only; the plain
 builders catch a parameterised target at run time instead, rejecting it with
 `IrError::PhiArgArityMismatch` — see §9.
@@ -347,9 +355,9 @@ let f = right
     .unwrap()
     .as_function();
 let entry = right.view(f).append_basic_block(&right, "entry");
-let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
+let builder = IrBuilder::new_for::<()>(&right).position_at_end(entry);
 
-let _ = builder.build_br(left_target);
+let _ = builder.br(left_target);
 ```
 
 Result: compile error — `` `BasicBlock<'_, (), Unterminated, Left>:
@@ -396,7 +404,7 @@ wiring.
 ```rust
 pub fn add_global<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
 where
-    N: AsRef<str>,
+    N: Into<String>,
     C: IntoConstantValue<'ctx, B>,
 ```
 
@@ -436,7 +444,7 @@ only catch the resulting broken IR later.
 `llvmkit` folders are branded:
 
 ```rust
-pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
+pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
     fn fold_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,
@@ -501,7 +509,6 @@ erasure"* entry; the seam is locked from both sides by
 Bad Rust helper, from `tests/compile_fail/custom_folder_wrong_brand.rs`:
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Foreign;
 impl ModuleBrand for Foreign {}
 
@@ -542,7 +549,7 @@ Positioning only accepts an unterminated block:
 pub fn position_at_end<Params>(
     self,
     bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
-) -> IRBuilder<'m, 'ctx, B, F, Positioned, R>
+) -> IrBuilder<'m, 'ctx, B, F, Positioned, R>
 where
     Params: BlockParams,
 ```
@@ -551,13 +558,13 @@ Terminator builders consume the positioned builder and return a terminated view
 of the insertion block:
 
 ```rust
-pub fn build_ret<V>(self, value: V) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+pub fn ret<V>(self, value: V) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
 where
     V: IntoReturnValue<'ctx, R, B>,
 ```
 
 ```rust
-pub fn build_ret_void(self) -> VoidReturnInst<'ctx, B> {
+pub fn ret_void(self) -> VoidReturnInst<'ctx, B> {
     let inst = self.append_ret(None);
     let bb = self.into_insert_block();
     (bb.retag_termination::<Terminated>(), inst)
@@ -571,7 +578,7 @@ borrowing handles, not ids.)
 Two separate facts close this, and the compile-fail suite locks each:
 
 1. **The builder is consumed.** Every terminator-emitting build takes `self` by
-   value, so a second `build_ret_void()` on the same builder is a use of a moved
+   value, so a second `ret_void()` on the same builder is a use of a moved
    value (`E0382`, `tests/compile_fail/builder_cannot_terminate_twice.rs`).
    Upstream, `IRBuilder` keeps its insertion point after `CreateRetVoid()`, so
    the second call silently appends a second terminator.
@@ -610,7 +617,7 @@ runtime/verifier concern.
 `llvmkit` carries the parent function's return shape in the builder marker `R`:
 
 ```rust
-pub fn build_ret<V>(self, value: V) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+pub fn ret<V>(self, value: V) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
 where
     V: IntoReturnValue<'ctx, R, B>,
 ```
@@ -619,7 +626,7 @@ For a `void` builder, value return is not available through trait resolution; th
 only direct return operation is:
 
 ```rust
-pub fn build_ret_void(self) -> VoidReturnInst<'ctx, B>
+pub fn ret_void(self) -> VoidReturnInst<'ctx, B>
 ```
 
 For typed integer/float/pointer builders, the return value must implement the
@@ -724,7 +731,7 @@ Copyable discovery paths such as `BasicBlock::instructions`,
 `BasicBlock::terminator`, `Value::users`, and per-opcode `as_view` return
 `InstructionView`. The view can inspect, name, and attach metadata, but it has no
 lifecycle methods. The public paths that produce `Instruction<Attached>` are the
-builder result, `BlockCursor::next` over an unsealed block, and detached
+builder result, `BlockCursor::step` over an unsealed block, and detached
 reinsertion.
 
 ## 9. Open/closed views for variable-shape instructions
@@ -751,12 +758,12 @@ shape:
 // The block's parameters ARE its head-phis; the branch carries the incomings.
 let (hdr, params) = builder.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
 let hdr_target = hdr.id();                 // storable, Copy branch target
-// ... then, positioned in each predecessor (`build_br_with_args` takes erased
-// `Value`s, hence the `into_erased()`):
-builder.build_br_with_args(hdr_target, &[m.view(x).into_erased()])?;
+// ... then, positioned in each predecessor (`br_with_args` takes erased
+// `Value`s, hence the `as_erased()`):
+builder.br_with_args(hdr_target, &[m.view(x).as_erased()])?;
 ```
 
-`build_br_with_args` / `build_cond_br_with_args` append the terminator *and* seed
+`br_with_args` / `cond_br_with_args` append the terminator *and* seed
 each successor parameter in one call, arity- and type-checked at the call site
 (`IrError::PhiArgArityMismatch` / `IrError::TypeMismatch`), all-or-nothing.
 The edge and its incomings move together, so *along this path* an incomplete or
@@ -771,8 +778,8 @@ incomplete or desynced phi at `Module::verify()` rather than earlier:
 - **`remove_incoming` is public** (see below) and can empty or desync a phi
   outright; `phi_raw_tests/remove_incoming.rs::remove_incoming_leaves_the_verifier_to_flag_the_missing_edge`
   locks precisely that outcome.
-- **The `#[doc(hidden)] pub` parser contract** (`build_int_phi_dyn`,
-  `build_fp_phi_dyn`, `build_pointer_phi_in_addrspace`, `build_phi_dyn`,
+- **The `#[doc(hidden)] pub` parser contract** (`int_phi_dyn`,
+  `fp_phi_dyn`, `pointer_phi_in_addrspace`, `phi_dyn`,
   `phi_add_incoming_from_value`) is unsupported but reachable from outside the
   crate, and it *is* the bare-phi-then-bolt-edges shape.
 
@@ -780,13 +787,13 @@ The third spelling that used to belong on that list — **a plain `br` to a
 parameterised block** — was closed in `feature-34/polish-freeze`. It still
 *compiles* (the label positions erase `Params`, by design), but every plain
 terminator edge now checks its target before emitting and rejects a
-parameterised one with `IrError::PhiArgArityMismatch`: `build_br`,
-`build_cond_br`, `build_switch` / `build_switch_dyn` and `SwitchInst::add_case`,
-all four `invoke` entry points, `build_callbr*`, and
+parameterised one with `IrError::PhiArgArityMismatch`: `br`,
+`cond_br`, `switch` / `switch_dyn` and `SwitchInst::add_case`,
+all four `invoke` entry points, `callbr*`, and
 `IndirectBrInst::add_destination`. `switch` and `invoke` also gained the
 argument-carrying forms they were designed with and never got
-(`build_switch_with_args` / `build_switch_dyn_with_args`,
-`build_invoke_with_args` / `build_invoke_dyn_with_args`), so every terminator
+(`switch_with_args` / `switch_dyn_with_args`,
+`invoke_with_args` / `invoke_dyn_with_args`), so every terminator
 that can reach a parameterised block either carries its arguments or does not
 build. The guard keys on *block parameters*, not on "the block contains phis",
 so the parser's back-edges, `SsaBuilder`'s unsealed loop headers, and
@@ -806,9 +813,9 @@ lifts the block's *parameter shape* into the type system so those checks move to
 *compile* time. `append_block_typed::<(i32, Ptr), _>(m.view(f), "hdr")` returns
 the block stamped with that schema plus a typed tuple of parameter handles
 (`(IntValue<'_, i32, _>, PointerValue<'_, _>)`). The edge is then bundled
-separately: `hdr.call((a, b))` mints a `BlockCall`, consumed by `build_br_call` /
-`build_cond_br_call`, and `BasicBlockLabel::call` carries a `CallArgs<Params>`
-bound (the same machinery a typed `build_call` uses), so a wrong-arity or
+separately: `hdr.call((a, b))` mints a `BlockCall`, consumed by `br_call` /
+`cond_br_call`, and `BasicBlockLabel::call` carries a `CallArgs<Params>`
+bound (the same machinery a typed `call` uses), so a wrong-arity or
 wrong-typed block-argument is a compile error rather than the erased path's
 call-site `IrError::PhiArgArityMismatch` / type mismatch — locked by
 `tests/compile_fail/block_call_wrong_arity.rs` and
@@ -818,7 +825,7 @@ above stays open. Both surfaces lower to the identical ordinary phis; the schema
 an opt-in, last, defaulted `Params` marker (`BlockParamsDyn` by default), so every
 erased spelling is unchanged. In the same spirit, a `switch`'s condition width and
 an `indirectbr`'s address pointer-ness can be pinned in the type
-(`build_switch::<W>` / the `IntoPointerValue`-bound `build_indirectbr`), so a
+(`switch::<W>` / the `IntoPointerValue`-bound `indirectbr`), so a
 wrong-width case or a non-pointer jump address is a compile error too — see the
 summary table above.
 
@@ -826,8 +833,9 @@ Underneath, the incremental editing window still exists — the `PhiInst` handle
 *type* and its read accessors stay public (a `_dyn` builder returns the matching
 `PhiInstId`, which views back into one, and rediscovery yields it), but
 *authoring through it* is off the supported surface: the marker-form
-`build_*_phi` builders and the `add_incoming` mutator are `pub(crate)` — a hard
-`E0624` — and the few entry points the separate parser crate needs are
+`*_phi` builders and the `add_incoming` mutator are `pub(crate)` — a hard
+compiler seal, and the `E0599` above is what an outside caller naming one
+actually gets — and the few entry points the separate parser crate needs are
 `#[doc(hidden)] pub` "internal contract" items. Be exact about the difference:
 `pub(crate)` is a compiler-enforced seal, `#[doc(hidden)] pub` is a convention
 an external caller can ignore. So the visibility keeps a phi unobservable
@@ -878,10 +886,10 @@ view. Rediscovery through `InstructionKind` / `TerminatorKind` also returns clos
 variants, so it cannot reopen a finalized variable-arity instruction.
 
 The closed views are still fully inspectable: each variable-arity terminator
-exposes a reader for its entries — `SwitchInst::cases()` yields
+exposes an iterator over its entries — `SwitchInst::cases()` yields
 `(case_value, target)` pairs, and `IndirectBrInst::destinations()`,
 `LandingPadInst::clauses()`, and `CatchSwitchInst::handlers()` yield their
-respective lists. Reading the entries never risks reopening the instruction.
+respective entries. Reading the entries never risks reopening the instruction.
 
 ## 10. Verification state is part of module type
 
@@ -910,11 +918,11 @@ is that a mutator takes a `&Module<B, Unverified>` capability token, which
 is nothing left to hand one, so the re-verify obligation is enforced by the type
 checker rather than by a convention. This holds across the IR-shaped mutators —
 every `set_*` on `FunctionValue`, `GlobalVariable`, `GlobalAlias`,
-`GlobalIFunc`, and `Instruction`/`InstructionView`, plus `set_name` and the
+`GlobalIfunc`, and `Instruction`/`InstructionView`, plus `set_name` and the
 whole instruction lifecycle (`erase_from_parent`, `replace_all_uses_with`).
 
 `ComdatRef::set_selection_kind` was the last escape and now takes the token too.
-It was reachable because `Module::get_comdat` is state-generic, so a `Verified`
+It was reachable because `Module::comdat` is state-generic, so a `Verified`
 module hands out a `ComdatRef` — and the selection kind is printed
 (`$name = comdat <kind>`), so rewriting it changed verified IR. (The pass-API
 leg was never open: `ModuleView::comdats()` yields `ComdatView`, which has
@@ -931,8 +939,8 @@ an escape:
   friends mutate a local numeric value, not module storage.
 - **`ModuleCore` internals** — crate-private; the public `Module` wrappers over
   them either take the token or live in the `Unverified` impl.
-- **Builders** (`ir_builder.rs`) — an `IRBuilder` can only be positioned on an
-  unverified module, so the token is upstream of every `build_*`.
+- **Builders** (`ir_builder.rs`) — an `IrBuilder` can only be positioned on an
+  unverified module, so the token is upstream of every builder emitter.
 - **Variable-arity terminator handles** — `IndirectBrInst::add_destination`,
   `LandingPadInst::set_cleanup`, `CatchSwitchInst::add_handler` are gated on the
   `term_open_state::Open` typestate instead. `Open` is a unit struct with a
@@ -1238,9 +1246,10 @@ narrowing accessor is always sound and there is no integer-flavored handle whose
 
 Where a single-opcode `match` is too fine, grouped views recover the C++
 `dyn_cast<BinaryOperator>` / `dyn_cast<CmpInst>` ergonomics without losing the
-opcode: `InstructionKind::as_binary_op()` exposes `lhs`/`rhs`/`opcode`/`nuw`/
-`nsw`/`exact`/`is_commutative` across all eighteen arithmetic opcodes, and
-`as_cmp()` exposes `lhs`/`rhs` and a unified `CmpPredicate` over `icmp`/`fcmp`.
+opcode: `InstructionKind::as_binary_op()` exposes `lhs` / `rhs` / `opcode` /
+`has_no_unsigned_wrap` / `has_no_signed_wrap` / `is_exact` / `is_commutative`
+across all eighteen arithmetic opcodes, and `as_cmp()` exposes `lhs` / `rhs`
+and a unified `CmpPredicate` over `icmp` / `fcmp`.
 The flag overlays `OverflowingBinaryOperator` (add/sub/mul/shl) and
 `PossiblyExactOperator` (udiv/sdiv/lshr/ashr) mirror LLVM's `Operator.h` split.
 
@@ -1260,16 +1269,18 @@ type system. Runtime verification still owns:
   against the variable's, for every marker;
 - dominance and cross-block SSA use checks;
 - phi-incoming completeness against the *complete* CFG predecessor set — the
-  whole-graph check, and **not only for parsed input**. Wave 1 moved the *local*
-  phi facts earlier (placement is correct by construction; `add_incoming` checks
+  whole-graph check, and **not only for parsed input**. The *local* phi facts
+  moved earlier (placement is correct by construction; `add_incoming` checks
   the incoming value's type and rejects a differing duplicate for one
   predecessor; the `.ll` parser runs `check_function_phi_coherence` at
   end-of-function parse once all predecessors are known; and `split_block`
-  maintains its successors' phi incomings itself). But a plain `build_br` /
-  `build_cond_br` into a block that has parameters seeds nothing and is not
-  arity-checked, so builder-constructed IR reaches `verifier.rs::check_phi` the
-  same way parsed IR does. `Module::verify()` is the gate here, not a backstop —
-  see §9;
+  maintains its successors' phi incomings itself), and the polish freeze shut
+  the plain-branch door as well: every plain terminator edge now rejects a
+  *parameterised* target with `IrError::PhiArgArityMismatch` before emitting.
+  What is left for `Module::verify()` is the whole-graph coherence itself — a
+  phi authored through the `#[doc(hidden)]` parser contract, or emptied /
+  desynced by the public `remove_incoming`, still reaches
+  `verifier.rs::check_phi` the same way parsed IR does — see §9;
 - complete terminator and reachability invariants after parser/pass mutation;
 - data-layout-dependent size/alignment rules;
 - verifier rules for attributes, globals, atomics, calls, EH pads, and metadata
@@ -1296,11 +1307,11 @@ emits, so they are documented here rather than left to surprise a diff:
   `IRBuilder::CreateCall` leaves every new call site at `ccc` even when the
   callee declares `fastcc`; making them agree is the frontend's job
   (`CallBase::setCallingConv`), and a mismatch is undefined behavior at run
-  time. llvmkit's call builders (`build_call`, `build_varargs_call`,
+  time. llvmkit's call builders (`call`, `varargs_call`,
   `call_builder`, `typed_call_builder`) instead default the call site to the
   callee's own convention, so the same construction sequence against a
   `fastcc` callee prints `call fastcc ...` where upstream prints `call ...`.
-  To override, pass a `CallSiteConfig` to `build_call_with_config` (its
+  To override, pass a `CallSiteConfig` to `call_with_config` (its
   `CallSiteConfig::new` starts at `CallingConv::C`, so a bare config *is* the
   upstream default), or set `.calling_conv(..)` on the fluent `call_builder` /
   `typed_call_builder`. Parsed IR is unaffected: the parser stores exactly the
@@ -1309,9 +1320,12 @@ emits, so they are documented here rather than left to surprise a diff:
 ## Proof in the repository
 
 The compile-fail suite locks these guarantees with `trybuild`. As of 0.0.4 it
-registers **83 fixtures — 82 `t.compile_fail` plus 1 `t.pass` — and the baseline
-is 0 failures**. All of them live in `crates/llvmkit-ir/tests/compile_fail/` and
-are registered in `crates/llvmkit-ir/tests/typestate_compile_fail.rs`.
+registers **87 fixtures — 86 `t.compile_fail` plus 1 `t.pass` — and the baseline
+is 0 failures** on the pinned toolchain (`cargo +1.96.0`; a newer rustc rewords
+diagnostics and produces `.stderr` mismatches that are not regressions). All of
+them live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in
+`crates/llvmkit-ir/tests/typestate_compile_fail.rs`, which is the count's
+source of truth — `CLAUDE.md` tracks the same figure.
 
 The sketch below is **abridged and regrouped by section of this page** — it is
 not the file's registration order, and the grouping comments are this page's,
@@ -1350,7 +1364,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/raw_phi_builder_is_unnameable.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
-    /* 60-odd further fixtures omitted; see the file for the full list */
+    /* 67 further fixtures omitted; see the file for the full list */
 }
 ```
 

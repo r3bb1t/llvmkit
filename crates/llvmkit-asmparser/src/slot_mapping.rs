@@ -17,14 +17,24 @@
 //! };
 //! ```
 //!
-//! The Rust port keeps the same shape, with two adjustments:
+//! The Rust port keeps all four upstream slots and adds one, with two
+//! spelling adjustments:
 //!
 //! - `GlobalValue *` becomes the typed [`GlobalRef`] enum so callers don't
 //!   have to dyn-cast back to a concrete handle (Doctrine D3: erased forms
 //!   are explicitly opt-in).
-//! - The `MetadataNodes` slot is intentionally omitted until the metadata
-//!   subsystem ships in `llvmkit-ir`.
-//!   Adding it now would be an empty stub.
+//! - `MetadataNodes` is [`SlotMapping::metadata_nodes`], a
+//!   [`NumberedValues<MetadataId<B>>`](NumberedValues) rather than upstream's
+//!   `std::map<unsigned, TrackingMDNodeRef>`: llvmkit resolves a metadata
+//!   forward reference by reserve-then-fill on a stable [`MetadataId`], so
+//!   there is no temporary node for a tracking reference to follow.
+//! - [`SlotMapping::attribute_groups`] has no upstream counterpart.
+//!   `LLParser::NumberedAttrBuilders` is not published through
+//!   `SlotMapping`, because upstream merges every `#N` into its objects in
+//!   `validateEndOfModule` and then discards the numbering; llvmkit keeps the
+//!   groups (`docs/divergences.md` D9) and therefore has to hand them back so
+//!   a follow-on `parse_constant_value` / `parse_type` call sees the same
+//!   table.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -32,7 +42,7 @@ use std::collections::HashMap;
 use llvmkit_macros::Branded;
 
 use llvmkit_ir::{
-    Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, MetadataId, ModuleBrand, Type,
+    Dyn, FunctionValue, GlobalAlias, GlobalIfunc, GlobalVariable, MetadataId, ModuleBrand, Type,
     attributes::AttributeStorage,
 };
 
@@ -52,7 +62,7 @@ pub enum GlobalRef<'ctx, B: ModuleBrand> {
     /// Module-level alias — `@x = alias ...`.
     Alias(GlobalAlias<'ctx, B>),
     /// Module-level indirect function — `@x = ifunc ...`.
-    IFunc(GlobalIFunc<'ctx, B>),
+    Ifunc(GlobalIfunc<'ctx, B>),
 }
 
 impl<'ctx, B: ModuleBrand> From<FunctionValue<'ctx, Dyn, B>> for GlobalRef<'ctx, B> {
@@ -76,10 +86,10 @@ impl<'ctx, B: ModuleBrand> From<GlobalAlias<'ctx, B>> for GlobalRef<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand> From<GlobalIFunc<'ctx, B>> for GlobalRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand> From<GlobalIfunc<'ctx, B>> for GlobalRef<'ctx, B> {
     #[inline]
-    fn from(v: GlobalIFunc<'ctx, B>) -> Self {
-        GlobalRef::IFunc(v)
+    fn from(v: GlobalIfunc<'ctx, B>) -> Self {
+        GlobalRef::Ifunc(v)
     }
 }
 
@@ -143,7 +153,7 @@ mod tests {
     #[test]
     fn fresh_mapping_is_empty() {
         let m: SlotMapping<'_, DynBrand> = SlotMapping::new();
-        assert_eq!(m.global_values.get_next(), 0);
+        assert_eq!(m.global_values.next_unused_id(), 0);
         assert!(m.global_values.is_empty());
         assert!(m.named_types.is_empty());
         assert!(m.numbered_types.is_empty());
@@ -168,7 +178,7 @@ mod tests {
             .add(0, GlobalRef::Variable(m.view(g)))
             .expect("first slot");
 
-        assert_eq!(mapping.global_values.get_next(), 1);
+        assert_eq!(mapping.global_values.next_unused_id(), 1);
         match mapping.global_values.get(0) {
             Some(GlobalRef::Variable(stored)) => assert_eq!(*stored, m.view(g)),
             other => panic!("unexpected entry: {other:?}"),

@@ -4,10 +4,10 @@
 //!
 //! example: locks output of `examples/cpu_state_add.rs`. Closest upstream
 //! functional pattern: `unittests/IR/IRBuilderTest.cpp` (multi-instruction
-//! function building via IRBuilder).
+//! function building via IrBuilder).
 //!
 //! The example exercises every Phase A3 + Phase D-lite + Phase C
-//! `build_trunc` deliverable in one place. If this test ever diverges
+//! `trunc` deliverable in one place. If this test ever diverges
 //! from the example, one of them is wrong.
 
 use llvmkit_ir::module_new;
@@ -17,7 +17,7 @@ mod example;
 
 /// example: locks `examples/cpu_state_add.rs` output byte-for-byte.
 /// Closest upstream functional reference: `unittests/IR/IRBuilderTest.cpp`
-/// (trunc + add + ret IRBuilder patterns).
+/// (trunc + add + ret IrBuilder patterns).
 #[test]
 fn cpu_state_add_matches_priorities_section_byte_for_byte() {
     let m = module_new!("cpu_state_add").expect("fresh module");

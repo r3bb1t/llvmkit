@@ -1,6 +1,6 @@
 use llvmkit_ir::{
-    Align, Analyses, AtomicLoadConfig, AtomicOrdering, DcePass, Dyn, IRBuilder, InstSimplifyPass,
-    IntPredicate, IntValue, IrError, Linkage, NoFolder, PointerValue, SyncScope, Value, module_new,
+    Align, Analyses, AtomicOrdering, DcePass, Dyn, InstSimplifyPass, IntPredicate, IntValue,
+    IrBuilder, IrError, Linkage, NoFolder, PointerValue, SyncScope, Value, module_new,
     run_function_pass,
 };
 
@@ -11,13 +11,13 @@ use llvmkit_ir::{
 fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
     let m = module_new!("instsimplify-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let sum =
-        b.build_int_add::<i32, _, _, _>(i32_ty.const_int(40_u32), i32_ty.const_int(2_u32), "sum")?;
-    b.build_ret(sum)?;
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(40_u32), i32_ty.const_int(2_u32), "sum")?;
+    b.ret(sum)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -53,16 +53,15 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
 fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> {
     let m = module_new!("instsimplify-user-cascade")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     // %a = add i32 1, 2  (used only by %b)
-    let a =
-        b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "a")?;
+    let a = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "a")?;
     // %b = add i32 %a, 10  (used only by the return) — depends on %a.
-    let bb = b.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(10_u32), "b")?;
-    b.build_ret(bb)?;
+    let bb = b.int_add::<i32, _, _, _>(a, i32_ty.const_int(10_u32), "b")?;
+    b.ret(bb)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -96,19 +95,16 @@ fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> 
 fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrError> {
     let m = module_new!("dce-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let slot = b.build_alloca(i32_ty, "slot")?;
-    b.build_store(i32_ty.const_int(7_u32), slot)?;
-    let dead0 = b.build_int_add::<i32, _, _, _>(
-        i32_ty.const_int(10_u32),
-        i32_ty.const_int(20_u32),
-        "dead0",
-    )?;
-    let _dead1 = b.build_int_mul::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
-    b.build_ret_void()?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let slot = b.alloca(i32_ty, "slot")?;
+    b.store(i32_ty.const_int(7_u32), slot)?;
+    let dead0 =
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(10_u32), i32_ty.const_int(20_u32), "dead0")?;
+    let _dead1 = b.int_mul::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
+    b.ret_void()?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -133,19 +129,16 @@ fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrErro
 fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
     let m = module_new!("scalar-cleanup")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let folded = b.build_int_add::<i32, _, _, _>(
-        i32_ty.const_int(40_u32),
-        i32_ty.const_int(2_u32),
-        "folded",
-    )?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let folded =
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(40_u32), i32_ty.const_int(2_u32), "folded")?;
     let dead0 =
-        b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "dead0")?;
-    let _dead1 = b.build_int_mul::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
-    b.build_ret(folded)?;
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "dead0")?;
+    let _dead1 = b.int_mul::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
+    b.ret(folded)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -174,16 +167,16 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
     let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
     m.view(weak).set_linkage(&m, Linkage::WeakAny);
     let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let weak_ptr = PointerValue::try_from(m.view(weak).as_global_constant_ptr().into_erased())?;
-    let strong_ptr = PointerValue::try_from(m.view(strong).as_global_constant_ptr().into_erased())?;
-    let w = IntValue::try_from(b.view(b.build_load(i32_ty.as_type(), weak_ptr, "w")?))?;
-    let s = IntValue::try_from(b.view(b.build_load(i32_ty.as_type(), strong_ptr, "s")?))?;
-    let sum = b.build_int_add::<i32, _, _, _>(w, s, "sum")?;
-    b.build_ret(sum)?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let weak_ptr = PointerValue::try_from(m.view(weak).as_global_constant_ptr().as_erased())?;
+    let strong_ptr = PointerValue::try_from(m.view(strong).as_global_constant_ptr().as_erased())?;
+    let w = IntValue::try_from(b.view(b.load(i32_ty.as_type(), weak_ptr, "w")?))?;
+    let s = IntValue::try_from(b.view(b.load(i32_ty.as_type(), strong_ptr, "s")?))?;
+    let sum = b.int_add::<i32, _, _, _>(w, s, "sum")?;
+    b.ret(sum)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -206,25 +199,32 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
 /// Matches `wouldInstructionBeTriviallyDead` via `LoadInst::isUnordered`: an
 /// unused unordered atomic load has no memory-ordering side effects and is
 /// removed, while an ordered (monotonic) atomic load and a volatile load are
-/// kept.
+/// kept. The three loads are constructed through the
+/// [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), IrError> {
     let m = module_new!("dce-loads")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let unordered =
-        AtomicLoadConfig::new(AtomicOrdering::Unordered, SyncScope::System, Align::new(4)?);
-    let _u = b.build_int_load_atomic::<i32, _, _>(p, unordered, "u")?;
-    let monotonic =
-        AtomicLoadConfig::new(AtomicOrdering::Monotonic, SyncScope::System, Align::new(4)?);
-    let _mo = b.build_int_load_atomic::<i32, _, _>(p, monotonic, "mo")?;
-    let _v = b.build_load_volatile(i32_ty, p, "v")?;
-    b.build_ret_void()?;
+    let _u = b
+        .load_from(p)
+        .atomic(AtomicOrdering::Unordered)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4)?)
+        .int::<i32>("u")?;
+    let _mo = b
+        .load_from(p)
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4)?)
+        .int::<i32>("mo")?;
+    let _v = b.load_from(p).volatile().erased(i32_ty, "v")?;
+    b.ret_void()?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -254,21 +254,21 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type().as_type();
-    let sink_ty = m.fn_type_no_params(void_ty, false);
+    let sink_ty = m.function_type_no_parameters(void_ty);
     let sink = m.add_function_dyn("sink", sink_ty, Linkage::External)?;
-    let fn_ty = m.fn_type(void_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    b.build_store(i32_ty.const_int(1_u32), p)?;
-    b.build_fence(
+    b.store(i32_ty.const_int(1_u32), p)?;
+    b.fence(
         AtomicOrdering::SequentiallyConsistent,
         SyncScope::System,
         "",
     )?;
-    b.build_call_dyn::<Dyn, _, _, _, _>(sink, Vec::<Value<'_, _>>::new(), "")?;
-    b.build_ret_void()?;
+    b.call_dyn::<Dyn, _, _, _, _>(sink, Vec::<Value<'_, _>>::new(), "")?;
+    b.ret_void()?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -286,20 +286,25 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
 /// but is not trivially dead (its ordering is a side effect), so it is RAUW'd
 /// but kept; without upstream's use-empty guard the restart loop re-folded it
 /// forever. Mirrors `InstSimplifyPass::runImpl` only simplifying use-having
-/// instructions.
+/// instructions. The load is constructed through the
+/// [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), IrError> {
     let m = module_new!("is-atomic")?;
     let i32_ty = m.i32_type();
     let g = m.add_global_constant("g", i32_ty.const_int(7_i32))?;
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let gp = PointerValue::try_from(m.view(g).as_global_constant_ptr().into_erased())?;
-    let cfg = AtomicLoadConfig::new(AtomicOrdering::Monotonic, SyncScope::System, Align::new(4)?);
-    let s = b.build_int_load_atomic::<i32, _, _>(gp, cfg, "s")?;
-    b.build_ret(s)?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let gp = PointerValue::try_from(m.view(g).as_global_constant_ptr().as_erased())?;
+    let s = b
+        .load_from(gp)
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4)?)
+        .int::<i32>("s")?;
+    b.ret(s)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -329,13 +334,13 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
 fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
     let m = module_new!("is-uniform-join")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let l = m.view(f).append_basic_block(&m, "l");
     let r = m.view(f).append_basic_block(&m, "r");
     // m(%p: i32): the merge head-phi param carries the joined value.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
     let l_label = l.id();
     let r_label = r.id();
@@ -345,19 +350,19 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
     let c: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     // entry: cond_br -> l, r
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, c, 0_i32, "cond")?;
-    b.build_cond_br(cond, l_label, r_label)?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, c, 0_i32, "cond")?;
+    b.cond_br(cond, l_label, r_label)?;
     // l: br m(%c)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(l);
-    b.build_br_with_args(join_label, &[c.into_erased()])?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
+    b.br_with_args(join_label, &[c.as_erased()])?;
     // r: br m(%c)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(r);
-    b.build_br_with_args(join_label, &[c.into_erased()])?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
+    b.br_with_args(join_label, &[c.as_erased()])?;
     // m: ret %p (the head-phi param merges %c down both edges -> uniform)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    b.build_ret(p)?;
+    b.ret(p)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -387,11 +392,11 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
 fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
     let m = module_new!("is-selfref-loop")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     // loop(%p: i32): the loop-header head-phi param is the loop-carried value.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (loop_bb, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "loop")?;
     let exit = m.view(f).append_basic_block(&m, "exit");
     let loop_label = loop_bb.id();
@@ -401,17 +406,17 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
     let v0: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     // entry: br loop(%v0)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.build_br_with_args(loop_label, &[v0.into_erased()])?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    b.br_with_args(loop_label, &[v0.as_erased()])?;
     // loop: body; cond_br exit / loop(%p). The self-edge carries the loop
     // param itself back, reproducing `[ %v0, %entry ], [ %p, %loop ]`.
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(loop_bb);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(loop_bb);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, p, 0_i32, "cond")?;
-    b.build_cond_br_with_args(cond, exit_label, &[], loop_label, &[params[0]])?;
+    let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, p, 0_i32, "cond")?;
+    b.cond_br_with_args(cond, exit_label, &[], loop_label, &[params[0]])?;
     // exit: ret %p (the loop param dominates exit)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(exit);
-    b.build_ret(p)?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(exit);
+    b.ret(p)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -439,13 +444,13 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
 fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
     let m = module_new!("is-nonuniform-join")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let l = m.view(f).append_basic_block(&m, "l");
     let r = m.view(f).append_basic_block(&m, "r");
     // m(%p: i32): merge head-phi param.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
     let l_label = l.id();
     let r_label = r.id();
@@ -456,19 +461,19 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bparam: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "cond")?;
-    b.build_cond_br(cond, l_label, r_label)?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "cond")?;
+    b.cond_br(cond, l_label, r_label)?;
     // l: br m(%a)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(l);
-    b.build_br_with_args(join_label, &[a.into_erased()])?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
+    b.br_with_args(join_label, &[a.as_erased()])?;
     // r: br m(%b)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(r);
-    b.build_br_with_args(join_label, &[bparam.into_erased()])?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
+    b.br_with_args(join_label, &[bparam.as_erased()])?;
     // m: ret %p -- distinct incomings %a / %b keep the phi non-uniform.
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    b.build_ret(p)?;
+    b.ret(p)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -493,13 +498,13 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
 fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
     let m = module_new!("is-cascade")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let l = m.view(f).append_basic_block(&m, "l");
     let r = m.view(f).append_basic_block(&m, "r");
     // m(%p: i32): merge head-phi param; constant 3 down both edges -> uniform.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
     let l_label = l.id();
     let r_label = r.id();
@@ -507,20 +512,20 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
 
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, x, 0_i32, "cond")?;
-    b.build_cond_br(cond, l_label, r_label)?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, x, 0_i32, "cond")?;
+    b.cond_br(cond, l_label, r_label)?;
     // l: br m(3)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(l);
-    b.build_br_with_args(join_label, &[i32_ty.const_int(3_i32).into_erased()])?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
+    b.br_with_args(join_label, &[i32_ty.const_int(3_i32).as_erased()])?;
     // r: br m(3)
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(r);
-    b.build_br_with_args(join_label, &[i32_ty.const_int(3_i32).into_erased()])?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
+    b.br_with_args(join_label, &[i32_ty.const_int(3_i32).as_erased()])?;
     // m: %q = add %p, 4 ; ret %q -- the user reads the head-phi param.
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    let q = b.build_int_add::<i32, _, _, _>(p, 4_i32, "q")?;
-    b.build_ret(q)?;
+    let q = b.int_add::<i32, _, _, _>(p, 4_i32, "q")?;
+    b.ret(q)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();

@@ -10,12 +10,12 @@ reached, correct as of its date and not maintained afterwards.
 |---|---|
 | [Type Safety: llvmkit vs. LLVM C++](type-safety-vs-llvm.md) | The main technical reference. Maps LLVM C++ failure modes to the llvmkit type that forecloses each one, with worked "bad program" samples, the Doctrine IDs (D1–D11), and — importantly — where a guarantee is a *compile* error versus a `verify()` check. |
 | [`IrStruct` derive macro](ir-struct-derive.md) | User guide for `#[derive(IrStruct)]`: generated wrappers, `StructFields<S>`, the helper attributes, and the struct shapes it rejects. |
+| [Migrating from inkwell](inkwell-migration.md) | Per-API delta against the [`inkwell`](https://crates.io/crates/inkwell) crate: the three structural differences, then a row-by-row mapping of inkwell's spelling to llvmkit's. Read this before porting an existing codebase. |
 | [Future work](future-work.md) | The live backlog: known gaps, deferred items, and the reasoning behind each deferral. Several rustdoc comments in `crates/` point here for *why* a hole is still open. |
 
 Start with the repository [`README.md`](../README.md) for the quick tour and
 [`CHANGELOG.md`](../CHANGELOG.md) for the 0.0.4 migration — each break is spelled
-out under the cycle that made it. Coming from `inkwell`, read
-[`INKWELL_MIGRATION.md`](../INKWELL_MIGRATION.md).
+out under the cycle that made it.
 
 ## Design records
 

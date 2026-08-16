@@ -247,6 +247,22 @@ fn fence_round_trips() {
     );
 }
 
+/// llvmkit-specific: a source-level `syncscope("system")` names an ordinary
+/// scope distinct from the default and must survive a parse/print round
+/// trip. `LLVMContext::LLVMContext` (`lib/IR/LLVMContext.cpp`) seeds
+/// `getOrInsertSyncScopeID` with only `"singlethread"` and the *empty*
+/// string (the canonical `SyncScope::System` name), so upstream registers
+/// `"system"` as a fresh named scope and prints it back; llvmkit collapsed
+/// it to the qualifier-free default until this test. No upstream `.ll`
+/// fixture locks the spelling — the seeding is the anchor (D11).
+#[test]
+fn fence_syncscope_system_round_trips() {
+    let text = parse_fixture(
+        b"define void @f() {\n  fence syncscope(\"system\") seq_cst\n  ret void\n}\n",
+    );
+    assert_check_lines(&text, &["fence syncscope(\"system\") seq_cst"]);
+}
+
 /// `cmpxchg` opaque-pointer case from `test/Assembler/opaque-ptr.ll`.
 #[test]
 fn cmpxchg_round_trips() {

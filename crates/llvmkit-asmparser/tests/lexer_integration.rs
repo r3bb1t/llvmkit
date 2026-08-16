@@ -82,9 +82,15 @@ fn snapshot_landmark_tokens() {
     assert_eq!(toks.last(), Some(&Token::RBrace));
 }
 
-/// llvmkit-specific: validates `LexError::UnterminatedString` propagation via
-/// `?`. Closest upstream reference: `lib/AsmParser/LLLexer.cpp::LLLexer::LexQuote`
-/// emitting a `Tag::Error` token on missing terminator.
+/// llvmkit-specific (**no upstream counterpart** — LLVM has no `LLLexer` unit
+/// tests): validates `LexError::UnterminatedString` propagation via `?`.
+///
+/// Closest upstream reference: `lib/AsmParser/LLLexer.cpp::ReadString`, which
+/// calls `LexError("end of file in string constant")` *and* returns
+/// `lltok::Error`. That pairing is why this stays a `LexError` and not a
+/// [`Token::Error`](llvmkit_asmparser::ll_token::Token::Error): upstream's
+/// `ErrorPriority::Lexer` outranks whatever the parser would have said, so the
+/// lexer's message is the one a reader sees.
 #[test]
 fn lex_error_propagates_via_question_mark() -> Result<(), LexError> {
     // Two valid tokens, then an unterminated string. `?` walks through the

@@ -82,7 +82,7 @@ pub(crate) enum TypeData {
     // ---- Primitive / sized-but-childless ----
     Void,
     Half,
-    BFloat,
+    Bfloat,
     Float,
     Double,
     X86Fp80,
@@ -217,15 +217,47 @@ impl TypeData {
     }
 }
 
-/// Payload for any struct type — both literal and named.
+/// Payload for any struct type — literal or identified.
 ///
-/// `name = None` distinguishes literal structs (whose `body` is set at
-/// creation and never changes) from identified ones (whose body may be
-/// filled in later via `set_struct_body`, and is `None` while opaque).
+/// [`StructIdentity`] is the discriminator, not the name: a literal struct's
+/// `body` is set at creation and never changes, while an identified struct's
+/// may be filled in later via `set_struct_body` and is `None` while opaque.
 #[derive(Debug)]
 pub(crate) struct StructTypeData {
-    pub(crate) name: Option<String>,
+    pub(crate) identity: StructIdentity,
     pub(crate) body: RefCell<Option<StructBody>>,
+}
+
+/// Which of LLVM's two struct-identity regimes a struct type belongs to.
+///
+/// Mirrors the `StructType::get` / `StructType::create` split. A *literal*
+/// struct is structurally uniqued: `{i32}` written twice is one type. An
+/// *identified* struct never unifies — `%a = type {i32}` and `%b = type {i32}`
+/// are distinct, and so are `%0 = type {i32}` and `%1 = type {i32}`.
+///
+/// The name is not the discriminator. llvmkit used to spell literal-ness as
+/// `name.is_none()`, which cannot represent an *anonymous identified* struct
+/// — exactly what `%0 = type {i32}` is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum StructIdentity {
+    Literal,
+    Identified { name: Option<String> },
+}
+
+impl StructIdentity {
+    /// The declared name, for an identified struct that has one.
+    #[inline]
+    pub(crate) fn name(&self) -> Option<&str> {
+        match self {
+            Self::Literal => None,
+            Self::Identified { name } => name.as_deref(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_literal(&self) -> bool {
+        matches!(self, Self::Literal)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -394,7 +426,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         match self.data() {
             TypeData::Void => TypeKind::Void,
             TypeData::Half => TypeKind::Half,
-            TypeData::BFloat => TypeKind::BFloat,
+            TypeData::Bfloat => TypeKind::Bfloat,
             TypeData::Float => TypeKind::Float,
             TypeData::Double => TypeKind::Double,
             TypeData::X86Fp80 => TypeKind::X86Fp80,
@@ -424,7 +456,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         match self.data() {
             TypeData::Void => TypeKindLabel::Void,
             TypeData::Half => TypeKindLabel::Half,
-            TypeData::BFloat => TypeKindLabel::BFloat,
+            TypeData::Bfloat => TypeKindLabel::Bfloat,
             TypeData::Float => TypeKindLabel::Float,
             TypeData::Double => TypeKindLabel::Double,
             TypeData::X86Fp80 => TypeKindLabel::X86Fp80,
@@ -512,7 +544,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         matches!(
             self.data(),
             TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::Fp128
@@ -522,6 +554,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// Mirrors `isFloatingPointTy`.
     pub fn is_floating_point(self) -> bool {
         self.is_ieee_like_fp() || matches!(self.data(), TypeData::X86Fp80 | TypeData::PpcFp128)
+    }
+
+    /// Mirrors `isFPOrFPVectorTy` — a floating-point type, or a fixed or
+    /// scalable vector whose element is one.
+    ///
+    /// This is the predicate that decides whether an instruction is an
+    /// `FPMathOperator`, and therefore whether it may carry fast-math flags:
+    /// `LLParser::parseInstruction` tests it before applying flags to a
+    /// `select` or a `phi`.
+    pub fn is_float_or_float_vector(self) -> bool {
+        match self.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                Type::new(*elem, self.module).is_floating_point()
+            }
+            _ => self.is_floating_point(),
+        }
     }
 
     /// Mirrors `isAggregateType`. Vectors are first-class but not
@@ -540,10 +588,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             || self.is_target_ext()
     }
 
-    /// Mirrors `isSized`. Composite types recurse; opaque named structs
-    /// remain unsized until their body is filled.
+    /// Mirrors `Type::isSized` together with `StructType::isSized`. Composite
+    /// types recurse; opaque named structs remain unsized until their body is
+    /// filled; a struct holding a scalable vector is unsized unless *every*
+    /// element is that same scalable vector.
+    ///
+    /// Upstream's `Visited` set is an optional parameter that most callers
+    /// leave null; `LLParser`'s `getelementptr` paths are among the few that
+    /// supply one. llvmkit always threads it. On every constructible type the
+    /// answer is identical — `StructType::checkBody` already rejects a body
+    /// that reaches its own struct, so no cycle exists to find — but a
+    /// predicate that recurses on its input should not rely on a guard in
+    /// another file staying complete, and house law forbids the stack
+    /// overflow that would follow if it ever did not.
     pub fn is_sized(self) -> bool {
-        is_sized(self.module.module(), self.id)
+        is_sized(self.module.module(), self.id, &mut Vec::new())
+    }
+
+    /// Mirrors `Type::isScalableTy`: whether this type *is* or *contains* a
+    /// scalable vector, counting a target extension type whose layout type is
+    /// one (`Type::isScalableTargetExtTy`).
+    ///
+    /// Distinct from `VectorType::is_scalable`, which asks only whether *that*
+    /// vector is scalable. This walks array elements and struct bodies, so
+    /// `[4 x { <vscale x 2 x i32> }]` answers `true`.
+    pub fn is_scalable(self) -> bool {
+        is_scalable(self.module.module(), self.id, &mut Vec::new())
     }
 
     /// Mirrors `Type::isFirstClassType`: every `TypeID` *except*
@@ -555,6 +625,148 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             _ => true,
         }
     }
+
+    // ---- Scalar / vector projection (`Type.h`) ----
+
+    /// The element type of a vector, or `self` for anything else.
+    /// Mirrors `Type::getScalarType`.
+    pub fn scalar_type(self) -> Self {
+        match self.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                Type::new(*elem, self.module)
+            }
+            _ => self,
+        }
+    }
+
+    /// Element count of a vector — the *minimum* count for a scalable one, as
+    /// `ElementCount` carries it. `None` for a non-vector.
+    ///
+    /// Comparing two of these also settles scalar-versus-vector agreement,
+    /// which is how `CastInst::castIsValid` avoids a separate arm for it.
+    pub fn vector_element_count(self) -> Option<u32> {
+        match self.data() {
+            TypeData::FixedVector { n, .. } => Some(*n),
+            TypeData::ScalableVector { min, .. } => Some(*min),
+            _ => None,
+        }
+    }
+
+    /// Bit width of this type's *scalar* type, or 0 where LLVM has no answer.
+    /// Mirrors `Type::getScalarSizeInBits`, whose zero return is the "not a
+    /// sized primitive" signal the cast table relies on.
+    pub fn scalar_size_in_bits(self) -> u32 {
+        self.scalar_type().primitive_size_in_bits()
+    }
+
+    /// Mirrors `Type::getPrimitiveSizeInBits`: the bit width of a primitive
+    /// or vector of primitives, and 0 for everything else. A scalable vector
+    /// reports its minimum width, matching upstream's `TypeSize` in the
+    /// contexts the parser uses this for.
+    pub fn primitive_size_in_bits(self) -> u32 {
+        match self.data() {
+            TypeData::Half | TypeData::Bfloat => 16,
+            TypeData::Float => 32,
+            TypeData::Double => 64,
+            TypeData::X86Fp80 => 80,
+            TypeData::Fp128 | TypeData::PpcFp128 => 128,
+            TypeData::X86Amx => 8192,
+            TypeData::Integer { bits } => *bits,
+            TypeData::FixedVector { elem, n } => Type::new(*elem, self.module)
+                .primitive_size_in_bits()
+                .saturating_mul(*n),
+            TypeData::ScalableVector { elem, min } => Type::new(*elem, self.module)
+                .primitive_size_in_bits()
+                .saturating_mul(*min),
+            _ => 0,
+        }
+    }
+
+    /// Mirrors `Type::isIntOrIntVectorTy`.
+    pub fn is_int_or_int_vector(self) -> bool {
+        self.scalar_type().is_integer()
+    }
+
+    /// Mirrors `Type::isPtrOrPtrVectorTy`.
+    pub fn is_ptr_or_ptr_vector(self) -> bool {
+        self.scalar_type().is_pointer()
+    }
+
+    /// Address space of a pointer type, or `None` if this is not one.
+    /// Mirrors `PointerType::getAddressSpace` with the null check folded in
+    /// (design law 3: the `dyn_cast` plus null test becomes an `Option`).
+    pub fn pointer_address_space(self) -> Option<u32> {
+        match self.data() {
+            TypeData::Pointer { addr_space } => Some(*addr_space),
+            TypeData::TypedPointer { addr_space, .. } => Some(*addr_space),
+            _ => None,
+        }
+    }
+
+    // ---- Element / shape validity (`Type.cpp`) ----
+    //
+    // Deny-lists, not allow-lists, except for vectors — reproduced in that
+    // shape so a type kind added later keeps upstream's default answer.
+
+    /// Mirrors `StructType::isValidElementType`.
+    pub fn is_valid_struct_element(self) -> bool {
+        !matches!(
+            self.data(),
+            TypeData::Void
+                | TypeData::Label
+                | TypeData::Metadata
+                | TypeData::Function { .. }
+                | TypeData::Token
+        )
+    }
+
+    /// Mirrors `ArrayType::isValidElementType`, which additionally denies
+    /// `x86_amx` where the struct predicate does not.
+    pub fn is_valid_array_element(self) -> bool {
+        self.is_valid_struct_element() && !matches!(self.data(), TypeData::X86Amx)
+    }
+
+    /// Mirrors `VectorType::isValidElementType` — the one *allow*-list in the
+    /// family: integers, floats, pointers, and target extension types that
+    /// declare `CanBeVectorElement`.
+    pub fn is_valid_vector_element(self) -> bool {
+        match self.data() {
+            TypeData::Integer { .. } | TypeData::Pointer { .. } | TypeData::TypedPointer { .. } => {
+                true
+            }
+            TypeData::TargetExt(_) => crate::derived_types::TargetExtType::try_from(self)
+                .is_ok_and(|t| {
+                    t.has_property(crate::derived_types::TargetExtProperty::CanBeVectorElement)
+                }),
+            _ => self.is_floating_point(),
+        }
+    }
+
+    /// Mirrors `PointerType::isValidElementType`. Only reachable through
+    /// legacy typed-pointer syntax; opaque `ptr` has no element type.
+    pub fn is_valid_pointer_element(self) -> bool {
+        !matches!(
+            self.data(),
+            TypeData::Void
+                | TypeData::Label
+                | TypeData::Metadata
+                | TypeData::Token
+                | TypeData::X86Amx
+        )
+    }
+
+    /// Mirrors `FunctionType::isValidReturnType`.
+    pub fn is_valid_function_return(self) -> bool {
+        !matches!(
+            self.data(),
+            TypeData::Function { .. } | TypeData::Label | TypeData::Metadata
+        )
+    }
+
+    /// Mirrors `FunctionType::isValidArgumentType`.
+    pub fn is_valid_function_argument(self) -> bool {
+        self.is_first_class() && !self.is_label()
+    }
 }
 
 /// Public discriminator for analysis-mode pattern matching.
@@ -563,7 +775,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 pub enum TypeKind {
     Void,
     Half,
-    BFloat,
+    Bfloat,
     Float,
     Double,
     X86Fp80,
@@ -597,7 +809,7 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
         match self.data() {
             TypeData::Void => f.write_str("void"),
             TypeData::Half => f.write_str("half"),
-            TypeData::BFloat => f.write_str("bfloat"),
+            TypeData::Bfloat => f.write_str("bfloat"),
             TypeData::Float => f.write_str("float"),
             TypeData::Double => f.write_str("double"),
             TypeData::X86Fp80 => f.write_str("x86_fp80"),
@@ -644,8 +856,27 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
                 write!(f, "<vscale x {min} x {}>", Type::new(*elem, self.module))
             }
             TypeData::Struct(s) => {
-                if let Some(name) = &s.name {
-                    return write!(f, "%{name}");
+                // An identified struct prints as its *reference*, never as its
+                // body: `%name`, or `%N` for an anonymous one, whose number is
+                // its position among the module's anonymous identified structs
+                // (`TypePrinting::NumberedTypes`). Only a literal struct spells
+                // its body inline.
+                match &s.identity {
+                    StructIdentity::Identified { name: Some(name) } => {
+                        return write!(f, "%{name}");
+                    }
+                    StructIdentity::Identified { name: None } => {
+                        return match self
+                            .module
+                            .module()
+                            .context()
+                            .anonymous_identified_struct_number(self.id)
+                        {
+                            Some(number) => write!(f, "%{number}"),
+                            None => f.write_str("%<unnumbered>"),
+                        };
+                    }
+                    StructIdentity::Literal => {}
                 }
                 let body = s.body.borrow();
                 let body = body.as_ref().expect("literal struct must have body");
@@ -700,7 +931,7 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
 // Helpers
 // --------------------------------------------------------------------------
 
-fn is_sized(module: &ModuleCore, id: TypeSlot) -> bool {
+fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
     let data = module.context().type_data(id);
     match data {
         TypeData::Void
@@ -710,7 +941,7 @@ fn is_sized(module: &ModuleCore, id: TypeSlot) -> bool {
         | TypeData::WasmExnRef
         | TypeData::Function { .. } => false,
         TypeData::Half
-        | TypeData::BFloat
+        | TypeData::Bfloat
         | TypeData::Float
         | TypeData::Double
         | TypeData::X86Fp80
@@ -722,12 +953,85 @@ fn is_sized(module: &ModuleCore, id: TypeSlot) -> bool {
         | TypeData::TypedPointer { .. } => true,
         TypeData::Array { elem, .. }
         | TypeData::FixedVector { elem, .. }
-        | TypeData::ScalableVector { elem, .. } => is_sized(module, *elem),
-        TypeData::Struct(s) => match s.body.borrow().as_ref() {
-            None => false,
-            Some(body) => body.elements.iter().all(|e| is_sized(module, *e)),
-        },
-        TypeData::TargetExt(_) => true,
+        | TypeData::ScalableVector { elem, .. } => is_sized(module, *elem, visited),
+        // `Type::isSizedDerivedType` asks the *layout* type, so an extension
+        // with no layout — upstream's `void` default, llvmkit's `None` — is
+        // unsized rather than trivially sized.
+        TypeData::TargetExt(_) => crate::data_layout::target_ext_layout_type(module, id)
+            .is_some_and(|layout| is_sized(module, layout, visited)),
+        TypeData::Struct(_) => struct_is_sized(module, id, visited),
+    }
+}
+
+/// Mirrors `StructType::isSized`: an opaque body is unsized, a cycle answers
+/// `false`, and an element that is or contains a scalable vector makes the
+/// struct unsized — unless the body is homogeneously that scalable vector,
+/// which upstream special-cases before the loop.
+fn struct_is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+    let TypeData::Struct(data) = module.context().type_data(id) else {
+        return false;
+    };
+    let borrowed = data.body.borrow();
+    let Some(body) = borrowed.as_ref() else {
+        return false;
+    };
+    if visited.contains(&id) {
+        return false;
+    }
+    visited.push(id);
+    if contains_homogeneous_scalable_vector_types(module, &body.elements) {
+        return true;
+    }
+    body.elements.iter().all(|elem| {
+        // Upstream asks `isScalableTy()` with a *fresh* visited set here.
+        !is_scalable(module, *elem, &mut Vec::new()) && is_sized(module, *elem, visited)
+    })
+}
+
+/// Mirrors `StructType::containsHomogeneousScalableVectorTypes`: a non-empty
+/// body whose first element is a scalable vector and whose elements are all
+/// the same type. Types are uniqued, so `all_equal` is slot equality.
+fn contains_homogeneous_scalable_vector_types(module: &ModuleCore, elements: &[TypeSlot]) -> bool {
+    let Some(first) = elements.first() else {
+        return false;
+    };
+    if !matches!(
+        module.context().type_data(*first),
+        TypeData::ScalableVector { .. }
+    ) {
+        return false;
+    }
+    elements.iter().all(|elem| elem == first)
+}
+
+/// Mirrors `Type::isScalableTy` and `StructType::isScalableTy`, including
+/// `Type::isScalableTargetExtTy`. Note that upstream does *not* recurse
+/// through a fixed vector's element type here — a fixed vector of scalable
+/// vectors is unrepresentable — so neither does this.
+fn is_scalable(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+    match module.context().type_data(id) {
+        TypeData::Array { elem, .. } => is_scalable(module, *elem, visited),
+        TypeData::Struct(data) => {
+            if visited.contains(&id) {
+                return false;
+            }
+            visited.push(id);
+            let borrowed = data.body.borrow();
+            borrowed.as_ref().is_some_and(|body| {
+                body.elements
+                    .iter()
+                    .any(|elem| is_scalable(module, *elem, visited))
+            })
+        }
+        TypeData::ScalableVector { .. } => true,
+        TypeData::TargetExt(_) => crate::data_layout::target_ext_layout_type(module, id)
+            .is_some_and(|layout| {
+                matches!(
+                    module.context().type_data(layout),
+                    TypeData::ScalableVector { .. }
+                )
+            }),
+        _ => false,
     }
 }
 

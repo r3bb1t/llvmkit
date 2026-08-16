@@ -35,7 +35,7 @@ impl<B: ModuleBrand> FunctionPass<B> for DcePass {
         // the rung's CFG-preserved floor otherwise.
         let patch = cx.mutate();
         let scope = patch.worklist();
-        while let Some(inst) = scope.next() {
+        while let Some(inst) = scope.step() {
             if is_trivially_dead(&inst.as_view()) {
                 patch.erase(&inst); // auto-pushes operand-defs, self-removes
             }
@@ -62,9 +62,9 @@ pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(
             InstructionKind::Store(_)
             | InstructionKind::Fence(_)
             | InstructionKind::AtomicCmpXchg(_)
-            | InstructionKind::AtomicRMW(_)
+            | InstructionKind::AtomicRmw(_)
             | InstructionKind::Call(_)
-            | InstructionKind::VAArg(_)
+            | InstructionKind::VaArg(_)
             | InstructionKind::LandingPad(_)
             | InstructionKind::CleanupPad(_)
             | InstructionKind::CatchPad(_),

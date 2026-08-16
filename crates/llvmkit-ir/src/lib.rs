@@ -41,7 +41,7 @@
 //!
 //! # Where to look
 //!
-//! - [`Module`] + [`IRBuilder`] — build and print IR (the crate README has a
+//! - [`Module`] + [`IrBuilder`] — build and print IR (the crate README has a
 //!   guided tour of the builder and typed-handle surface).
 //! - [`pass_manager`] — author and run passes (start here for passes).
 //! - [`pass_access`] — the capability rungs and the derived verified-state lattice.
@@ -61,10 +61,12 @@ pub mod ap_int;
 pub mod argument;
 pub mod array_len;
 pub mod asm_writer;
+pub mod assumptions;
 pub mod atomic_ordering;
 pub mod atomicrmw_binop;
 pub mod attribute_mask;
 pub mod attributes;
+pub mod auto_upgrade;
 pub mod basic_block;
 pub mod block_params;
 pub mod block_state;
@@ -77,6 +79,7 @@ pub mod constant;
 pub mod constant_fold;
 pub mod constant_folding;
 pub mod constant_range;
+pub mod constant_range_list;
 pub mod constants;
 pub mod data_layout;
 pub mod dce;
@@ -85,17 +88,22 @@ pub mod demanded_bits;
 pub mod denormal_mode;
 pub mod derived_types;
 pub mod dominator_tree;
+pub mod dwarf;
 pub mod element;
 pub mod error;
 pub mod float_kind;
 pub mod fmf;
+pub mod fp_class;
+pub mod fp_predicate;
 pub mod function;
 pub mod function_signature;
+pub mod gc_strategy;
 pub mod gep_no_wrap_flags;
 pub mod global_alias;
 pub mod global_ifunc;
 pub mod global_value;
 pub mod global_variable;
+pub mod implied_conditions;
 pub mod inline_asm;
 pub mod inst_simplify;
 pub mod instr_types;
@@ -107,11 +115,15 @@ pub mod intrinsics;
 pub mod ir_builder;
 pub mod iter;
 pub mod known_bits;
+pub mod known_fp_class;
 pub(crate) mod llvm_context;
 pub mod marker;
 pub mod matchers;
+pub mod md5;
 pub mod metadata;
 pub mod module;
+pub mod module_flags;
+pub mod module_summary_index;
 pub mod named_md_node;
 pub mod operator;
 pub mod optimization_level;
@@ -123,6 +135,9 @@ pub mod pass_pipeline;
 pub(crate) mod phi_check;
 #[cfg(test)]
 mod phi_raw_tests;
+pub mod pointer_analysis;
+pub mod select_pattern;
+pub mod speculation;
 pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
@@ -139,13 +154,14 @@ pub mod value_id;
 pub mod value_symbol_table;
 pub mod value_tracking;
 pub mod vec_len;
+pub mod vector_utils;
 pub mod verifier;
 pub mod worklist;
 
 pub mod unnamed_addr;
 pub use analysis::{
     AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, AnalysisKeyId, AnalysisSelector,
-    AnalysisSetKeyId, CFGAnalyses, CfgIncremental, FunctionAnalysis, FunctionAnalysisInvalidator,
+    AnalysisSetKeyId, CfgAnalyses, CfgIncremental, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisList, FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy,
     FunctionAnalysisResult, Idx0, Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis,
     ModuleAnalysisInvalidator, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult,
@@ -154,16 +170,17 @@ pub use analysis::{
 };
 pub use ap_float::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
-    ApFloatSign, ApFloatStatus, Exactness, LosesInfo, NanPayload, RoundingMode,
+    ApFloatSign, ApFloatStatus, BinaryExponent, Exactness, LosesInfo, NanPayload, RoundingMode,
 };
-pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntSignedness, ApIntTruncation};
+pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntTruncation, Signedness};
 pub use argument::Argument;
 pub use atomic_ordering::AtomicOrdering;
-pub use atomicrmw_binop::AtomicRMWBinOp;
+pub use atomicrmw_binop::AtomicRmwBinOp;
 pub use attribute_mask::AttributeMask;
 pub use attributes::{
-    AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage, MemoryEffects,
-    MemoryLocation, ModRefInfo,
+    AllocFnKind, AttrIndex, AttrKind, Attribute, AttributeList, AttributePositions, AttributeSet,
+    AttributeStorage, CaptureComponents, CaptureInfo, MemoryEffects, MemoryLocation, ModRefInfo,
+    StrBoolAttrKind,
 };
 pub use basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel};
 pub use block_params::{BlockParams, BlockParamsDyn};
@@ -171,11 +188,11 @@ pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cfg_update::{CfgEdge, CfgUpdate};
-pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
+pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate, PredicateWithSameSign};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{
-    BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
-    ConstantGepFlags, IntoConstantValue, IsConstant, OverflowingConstantExprFlags,
+    Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantGepFlags,
+    ForwardRefValue, IntoConstantValue, IsConstant, OverflowingConstantExprFlags,
 };
 pub use constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
@@ -197,10 +214,13 @@ pub use constant_folding::{
     is_constant_offset_from_global, lossless_inv_cast, lossless_signed_trunc,
     lossless_unsigned_trunc,
 };
-pub use constant_range::ConstantRange;
+pub use constant_range::{
+    ConstantRange, EquivalentIcmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
+};
+pub use constant_range_list::ConstantRangeList;
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
-    ConstantPointerNull, PoisonValue, UndefValue,
+    ConstantPointerNull, PoisonValue, UndefValue, float_value_is_valid_for_type,
 };
 pub use data_layout::{
     DataLayout, FunctionPtrAlignType, ManglingMode, PointerSpec, PrimitiveSpec, StructLayoutInfo,
@@ -227,56 +247,63 @@ pub use function_signature::{
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
-pub use global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
+pub use global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
 pub use global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
-pub use global_variable::{GlobalBuilder, GlobalVariable};
-pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
+pub use global_variable::{CodeModel, GlobalBuilder, GlobalVariable, SanitizerMetadata};
+pub use inline_asm::{
+    AsmDialect, ConstraintInfo, ConstraintKind, ConstraintParseError, InlineAsm, InlineAsmOptions,
+    InlineAsmVerifyError, SubConstraint, parse_constraints, verify_inline_asm,
+};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
-    AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig,
-    AtomicRMWFlags, AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags,
-    LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags,
-    ShlFlags, SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
+    AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
+    CallAttributeData, CastOpcode, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags, LshrFlags,
+    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SdivFlags, ShlFlags,
+    ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode,
+    ZextFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
     TerminatorKind,
 };
 pub use instructions::{
-    AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
+    AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AshrInst, AtomicCmpXchgInst, AtomicRmwInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
     CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
-    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
-    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
-    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
-    ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
-    ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst,
-    UIToFpInst, URemInst, UnreachableInst, VAArgInst, XorInst, ZExtInst,
+    FaddInst, FcmpInst, FdivInst, FenceInst, FmulInst, FnegInst, FpExtInst, FpPhiInst, FpToSiInst,
+    FpToUiInst, FpTruncInst, FreezeInst, FremInst, FsubInst, GepInst, IcmpInst, IndirectBrInst,
+    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LandingPadInst, LoadInst,
+    LshrInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
+    ResumeInst, RetInst, SdivInst, SelectInst, SextInst, ShlInst, ShuffleVectorInst, SiToFpInst,
+    SremInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UdivInst, UiToFpInst,
+    UnreachableInst, UremInst, VaArgInst, XorInst, ZextInst,
 };
+pub use instructions::{cast_is_valid, indexed_aggregate_type, indexed_gep_type};
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
     BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution,
     descriptor_for_callee, resolve_intrinsic_name,
 };
 pub use ir_builder::constant_folder::ConstantFolder;
-pub use ir_builder::folder::IRBuilderFolder;
+pub use ir_builder::folder::IrBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
-    BuilderPositionState, CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned,
-    SelectArm, SelectNarrow, Unpositioned,
+    AllocaBuilder, BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder,
+    LoadBuilder, Positioned, SelectArm, SelectNarrow, StoreBuilder, Unpositioned,
 };
-pub use known_bits::KnownBits;
+pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
-    MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,
-    MetadataKind, SpecializedMetadataKind, SpecializedMetadataNode,
+    DwarfExpressionOperand, MetadataAttachmentKind, MetadataAttachmentSet, MetadataField,
+    MetadataFieldKind, MetadataFieldValue, MetadataId, MetadataKind, SpecializedMetadataBody,
+    SpecializedMetadataField, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
-    ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,
-    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
-    UseListOrderRecord, Verified,
+    ComdatView, DynBrand, GlobalAliasView, GlobalIfuncView, GlobalVariableView, Module,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, PreservedUseListOrder, Unverified, Verified,
 };
+pub use module_flags::{ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey};
+pub use named_md_node::{NamedMetadataId, NamedMetadataName};
 pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
@@ -339,34 +366,102 @@ pub use r#use::Use;
 pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
-    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot,
-    VectorValue,
+    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, UseListOrderError, Value,
+    ValueCategory, ValueSlot, VectorValue,
 };
 pub use value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
-    FreezeInstId, FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
+    AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
+    FreezeInstId, FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, IntValueId, IntrinsicInstId,
     OtherPhiInstId, PhiInstId, PointerPhiInstId, PointerValueId, TypedCallInstId, TypedFunctionId,
-    TypedVarArgsFunctionId, VAArgInstId, ValueId, ViewIn,
+    TypedVarArgsFunctionId, VaArgInstId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 
 pub use align::{Align, MaybeAlign};
 pub use float_kind::{
-    BFloat, FloatDyn, FloatKind, FloatWiderThan, Fp128, Half, IntoConstantFloat, IntoFloatValue,
+    Bfloat, FloatDyn, FloatKind, FloatWiderThan, Fp128, Half, IntoConstantFloat, IntoFloatValue,
     PpcFp128, StaticFloatKind, X86Fp80,
 };
 // `f32`/`f64` are std types — no re-export needed.
+pub use fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
+pub use fp_predicate::{
+    ImpliedFpClasses, fcmp_implies_class, fcmp_implies_class_of_class,
+    fcmp_implies_class_of_constant, fcmp_to_class_test, fcmp_to_class_test_of_constant,
+};
+pub use known_fp_class::{
+    adjust_known_fp_class_for_select_arm, can_ignore_sign_bit_of_nan, can_ignore_sign_bit_of_zero,
+    cannot_be_negative_zero, cannot_be_ordered_less_than_zero, compute_known_fp_class,
+    compute_known_fp_class_all, compute_known_fp_class_with_flags, compute_known_fp_sign_bit,
+    is_known_never_infinity, is_known_never_infinity_or_nan, is_known_never_nan,
+};
+pub use value_tracking::analyze_known_bits_from_and_xor_or;
 
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
+pub use assumptions::{
+    Assumption, AssumptionCache, AssumptionSource, DomConditionCache,
+    find_values_affected_by_condition, is_valid_assume_for_context, will_not_free_between,
+};
 pub use element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
+pub use implied_conditions::{
+    is_implied_by_dom_condition, is_implied_by_dom_condition_decomposed, is_implied_condition,
+    is_implied_condition_decomposed,
+};
 pub use int_width::{
     IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
 };
+pub use pointer_analysis::{
+    BytewiseValue, ConstantDataArraySlice, MAX_LOOKUP_SEARCH_DEPTH,
+    argument_aliasing_to_returned_pointer, constant_data_array_info, constant_string_info,
+    find_alloca_for_value, find_inserted_value, is_bytewise_value,
+    is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
+    only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
+    pointer_base_with_constant_offset, string_length, underlying_object,
+    underlying_object_aggressive, underlying_objects, underlying_objects_for_code_gen,
+};
+pub use select_pattern::{
+    MinMaxIntrinsic, MinMaxOperation, SelectPatternFlavor, SelectPatternMatch,
+    SelectPatternNanBehavior, SelectPatternResult, can_convert_to_min_or_max_intrinsic,
+    match_decomposed_select_pattern, match_select_pattern, select_pattern,
+};
+pub use speculation::{
+    DEFAULT_TRANSFER_SCAN_LIMIT, SpeculationOptions, block_transfers_execution_to_successor,
+    instructions_transfer_execution_to_successor, intrinsic_propagates_poison,
+    is_assume_like_intrinsic, is_guaranteed_to_execute_for_every_iteration,
+    is_guaranteed_to_transfer_execution_to_successor, is_not_cross_lane_operation,
+    is_safe_to_speculatively_execute, is_safe_to_speculatively_execute_with_opcode,
+    is_safe_to_speculatively_execute_with_variable_replaced, may_have_non_def_use_dependency,
+    must_execute_ub_if_poison_on_path_to, must_trigger_ub, program_undefined_if_poison,
+    program_undefined_if_undef_or_poison,
+};
 pub use value_tracking::{
-    KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,
-    compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, known_bits_from_operator,
+    CondContext, KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH,
+    ValueTrackingQuery, adjust_known_bits_for_select_arm, can_create_poison,
+    can_create_undef_or_poison, collect_possible_values, compute_constant_range,
+    compute_constant_range_including_known_bits, compute_known_bits,
+    compute_known_bits_from_context, compute_max_significant_bits, compute_num_sign_bits,
+    compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
+    compute_overflow_for_signed_sub, compute_overflow_for_unsigned_add,
+    compute_overflow_for_unsigned_mul, compute_overflow_for_unsigned_sub, have_no_common_bits_set,
+    implies_poison, is_known_inversion, is_known_negation, is_known_negative, is_known_non_equal,
+    is_known_non_negative, is_known_non_zero, is_known_not_poison, is_known_not_undef,
+    is_known_not_undef_or_poison, is_known_one, is_known_positive, is_known_to_be_a_power_of_two,
+    is_known_zero, is_only_used_in_zero_comparison, is_only_used_in_zero_equality_comparison,
+    is_sign_bit_check, known_bits_from_operator, masked_value_is_zero, propagates_poison,
+    strip_null_test,
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
+pub use vector_utils::{
+    MaskedSlide, ShuffleSource, create_interleave_mask, create_replicated_mask,
+    create_sequential_mask, create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor,
+    find_scalar_element, horizontal_demanded_elements_for_first_operand,
+    interleave_intrinsic_factor, is_splat_value, is_trivially_scalarizable,
+    is_trivially_vectorizable, is_vector_intrinsic_with_struct_return_overload_at_field,
+    mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
+    mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
+    possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,
+    shuffle_mask_with_widest_elements, splat_index, splat_value, widen_shuffle_mask_elements,
+    widen_shuffle_mask_elements_in_pairs,
+};
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 
 #[cfg(feature = "macros")]

@@ -1,7 +1,8 @@
 use llvmkit_ir::{
-    AnyTypeEnum, AttrIndex, AttrKind, Attribute, BinaryIntrinsic, Dyn, IRBuilder, IntValue,
-    IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, IrError, LifetimeIntrinsic, Linkage,
-    MemIntrinsic, PointerValue, Type, module_new, resolve_intrinsic_name,
+    AnyTypeEnum, AttrIndex, AttrKind, Attribute, BinaryIntrinsic, Dyn, IntValue,
+    IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, IrBuilder, IrError,
+    LifetimeIntrinsic, Linkage, MemIntrinsic, PointerValue, Type, module_new,
+    resolve_intrinsic_name,
 };
 
 /// Mirrors `llvm/lib/IR/Intrinsics.cpp::Intrinsic::lookupIntrinsicID` for
@@ -154,7 +155,7 @@ fn generated_overloaded_float_signature_decodes() -> Result<(), IrError> {
 #[test]
 fn generated_truncated_floating_vector_signature_decodes() -> Result<(), IrError> {
     let m = module_new!("intrinsic-generated-float-trunc")?;
-    let f32_vec = m.vector_type(m.f32_type().as_type(), 4, false).as_type();
+    let f32_vec = m.vector_type(m.f32_type().as_type(), 4).as_type();
     let vmulls = IntrinsicId::lookup("llvm.arm.neon.vmulls.v4f32").expect("vmulls intrinsic");
 
     assert_eq!(
@@ -172,19 +173,19 @@ fn binary_intrinsic_mapping_is_narrow() {
     let umax = IntrinsicId::lookup("llvm.umax.i32").expect("umax intrinsic");
     assert_eq!(
         BinaryIntrinsic::from_intrinsic_id(umax),
-        Some(BinaryIntrinsic::UMax)
+        Some(BinaryIntrinsic::Umax)
     );
 
     let fshl = IntrinsicId::lookup("llvm.fshl.i32").expect("fshl intrinsic");
     assert_eq!(
         BinaryIntrinsic::from_intrinsic_id(fshl),
-        Some(BinaryIntrinsic::FShl)
+        Some(BinaryIntrinsic::Fshl)
     );
 
     let expect = IntrinsicId::lookup("llvm.expect.i32").expect("expect intrinsic");
     assert_eq!(BinaryIntrinsic::from_intrinsic_id(expect), None);
     assert_eq!(expect.as_binary_intrinsic(), None);
-    assert_eq!(fshl.as_binary_intrinsic(), Some(BinaryIntrinsic::FShl));
+    assert_eq!(fshl.as_binary_intrinsic(), Some(BinaryIntrinsic::Fshl));
     assert_eq!(
         BinaryIntrinsic::from_intrinsic_name("llvm.umax.notatype"),
         None
@@ -217,16 +218,12 @@ fn verifier_rejects_nonconstant_immarg_operand() -> Result<(), IrError> {
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let caller_ty = m.fn_type(
-        void_ty.as_type(),
-        [i32_ty.as_type(), i1_ty.as_type()],
-        false,
-    );
+    let caller_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), i1_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
     let abs = m.get_or_insert_intrinsic_declaration(&descriptor)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let is_poison: IntValue<'_, bool, _> = m.view(caller).param(1)?.try_into()?;
     b.call_builder(m.view(abs))
@@ -234,7 +231,7 @@ fn verifier_rejects_nonconstant_immarg_operand() -> Result<(), IrError> {
         .arg(is_poison)
         .name("abs")
         .build()?;
-    b.build_ret_void()?;
+    b.ret_void()?;
 
     let err = m
         .verify_borrowed()
@@ -255,10 +252,10 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
-    let caller_ty = m.fn_type(i32_ty.as_type(), [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let view = b
         .intrinsic_call_builder(&descriptor)?
@@ -270,7 +267,7 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
     assert_eq!(view.intrinsic_id(), IntrinsicId::ABS);
     assert_eq!(view.descriptor()?, descriptor);
     let ret: IntValue<'_, i32, _> = view.return_value().expect("abs returns value").try_into()?;
-    b.build_ret(ret)?;
+    b.ret(ret)?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -287,24 +284,23 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
         IntrinsicId::MEMCPY,
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
     )?;
-    let caller_ty = m.fn_type(
+    let caller_ty = m.function_type(
         m.void_type().as_type(),
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
-        false,
     );
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let dst: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
     let src: PointerValue<'_, _> = m.view(caller).param(1)?.try_into()?;
     let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
-    let view = b.build_intrinsic_call(
+    let view = b.intrinsic_call(
         &descriptor,
         &[
-            dst.into_erased(),
-            src.into_erased(),
-            len.into_erased(),
-            i1_ty.const_int(false).into_erased(),
+            dst.as_erased(),
+            src.as_erased(),
+            len.as_erased(),
+            i1_ty.const_int(false).as_erased(),
         ],
         "",
     )?;
@@ -313,7 +309,7 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
     let mem = MemIntrinsic::try_from_intrinsic(view)?;
     assert_eq!(mem.inner().intrinsic_id(), IntrinsicId::MEMCPY);
     assert!(LifetimeIntrinsic::try_from_intrinsic(view).is_err());
-    b.build_ret_void()?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -327,14 +323,13 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
     let i1_ty = m.bool_type();
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let caller_ty = m.fn_type(
+    let caller_ty = m.function_type(
         m.void_type().as_type(),
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
-        false,
     );
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let dst: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
     let src: PointerValue<'_, _> = m.view(caller).param(1)?.try_into()?;
     let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
@@ -345,13 +340,13 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
         memcpy_inline,
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
     )?;
-    let memcpy = b.build_intrinsic_call(
+    let memcpy = b.intrinsic_call(
         &memcpy_descriptor,
         &[
-            dst.into_erased(),
-            src.into_erased(),
-            len.into_erased(),
-            i1_ty.const_int(false).into_erased(),
+            dst.as_erased(),
+            src.as_erased(),
+            len.as_erased(),
+            i1_ty.const_int(false).as_erased(),
         ],
         "",
     )?;
@@ -361,19 +356,19 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
         IntrinsicId::lookup("llvm.memset.inline.p0.i64").expect("memset.inline intrinsic");
     let memset_descriptor =
         IntrinsicDescriptor::new(memset_inline, [ptr_ty.as_type(), i64_ty.as_type()])?;
-    let memset = b.build_intrinsic_call(
+    let memset = b.intrinsic_call(
         &memset_descriptor,
         &[
-            dst.into_erased(),
-            i8_ty.const_int(0_i8).into_erased(),
-            len.into_erased(),
-            i1_ty.const_int(false).into_erased(),
+            dst.as_erased(),
+            i8_ty.const_int(0_i8).as_erased(),
+            len.as_erased(),
+            i1_ty.const_int(false).as_erased(),
         ],
         "",
     )?;
     assert!(MemIntrinsic::try_from_intrinsic(b.view(memset)).is_ok());
 
-    b.build_ret_void()?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -385,18 +380,18 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
     let m = module_new!("intrinsic-lifetime-wrapper")?;
     let ptr_ty = m.ptr_type(0);
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::LIFETIME_START, [ptr_ty.as_type()])?;
-    let caller_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
+    let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
-    let view = b.build_intrinsic_call(&descriptor, &[ptr.into_erased()], "")?;
+    let view = b.intrinsic_call(&descriptor, &[ptr.as_erased()], "")?;
 
     let view = b.view(view);
     let lifetime = LifetimeIntrinsic::try_from_intrinsic(view)?;
     assert_eq!(lifetime.inner().intrinsic_id(), IntrinsicId::LIFETIME_START);
     assert!(MemIntrinsic::try_from_intrinsic(view).is_err());
-    b.build_ret_void()?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -408,13 +403,13 @@ fn descriptor_call_builder_rejects_wrong_argument_count() -> Result<(), IrError>
     let m = module_new!("intrinsic-call-arity")?;
     let i32_ty = m.i32_type();
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
-    let caller_ty = m.fn_type(i32_ty.as_type(), [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
-        .build_intrinsic_call(&descriptor, &[x.into_erased()], "bad")
+        .intrinsic_call(&descriptor, &[x.as_erased()], "bad")
         .expect_err("missing immarg is rejected before call emission");
     assert!(
         matches!(err, IrError::IntrinsicSignatureMismatch { .. }),
@@ -491,13 +486,10 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
     assert_eq!(matched, descriptor);
 
     let element = m
-        .struct_type(
-            [
-                m.vector_type(m.f32_type().as_type(), 4, false).as_type(),
-                m.vector_type(m.i32_type().as_type(), 4, false).as_type(),
-            ],
-            false,
-        )
+        .struct_type([
+            m.vector_type(m.f32_type().as_type(), 4).as_type(),
+            m.vector_type(m.i32_type().as_type(), 4).as_type(),
+        ])
         .as_type();
     let raw_buffer = m
         .target_ext_type("dx.RawBuffer", [element], [0, 0])
@@ -510,7 +502,7 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
         m.intrinsic_descriptor_from_signature(raw_name, raw_descriptor.function_type(&m)?)?;
     assert_eq!(raw_matched, raw_descriptor);
 
-    let layout_struct = m.named_struct("__cblayout_d").as_type();
+    let layout_struct = m.get_or_insert_named_struct("__cblayout_d").as_type();
     let layout = m
         .target_ext_type("dx.Layout", [layout_struct], [16, 0, 4, 8, 12])
         .as_type();
@@ -535,13 +527,9 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
 #[test]
 fn function_and_named_struct_mangled_overload_suffix_round_trips() -> Result<(), IrError> {
     let m = module_new!("intrinsic-function-struct-overload")?;
-    let point = m.named_struct("Point").as_type();
+    let point = m.get_or_insert_named_struct("Point").as_type();
     let fn_overload = m
-        .fn_type(
-            m.i32_type().as_type(),
-            [point, m.ptr_type(0).as_type()],
-            true,
-        )
+        .variadic_function_type(m.i32_type().as_type(), [point, m.ptr_type(0).as_type()])
         .as_type();
     let name = "llvm.dx.resource.handlefrombinding.f_i32s_Pointsp0varargf";
     let id = IntrinsicId::lookup(name).expect("dx function overload intrinsic");
@@ -557,8 +545,8 @@ fn function_and_named_struct_mangled_overload_suffix_round_trips() -> Result<(),
 #[test]
 fn vector_pointer_overloads_reject_shape_and_lane_mismatches() -> Result<(), IrError> {
     let m = module_new!("intrinsic-vector-pointer-overloads")?;
-    let value_vec = m.vector_type(m.i32_type().as_type(), 4, false).as_type();
-    let ptr_vec = m.vector_type(m.ptr_type(0).as_type(), 4, false).as_type();
+    let value_vec = m.vector_type(m.i32_type().as_type(), 4).as_type();
+    let ptr_vec = m.vector_type(m.ptr_type(0).as_type(), 4).as_type();
     let id = IntrinsicId::lookup("llvm.masked.gather.v4i32.v4p0").expect("masked gather intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [value_vec, ptr_vec])?;
     let name = descriptor.mangled_name()?;
@@ -577,7 +565,7 @@ fn vector_pointer_overloads_reject_shape_and_lane_mismatches() -> Result<(), IrE
             id,
             [
                 value_vec,
-                m.vector_type(m.ptr_type(0).as_type(), 2, false).as_type(),
+                m.vector_type(m.ptr_type(0).as_type(), 2).as_type(),
             ],
         )
         .is_err()
@@ -592,7 +580,7 @@ fn vector_pointer_overloads_reject_shape_and_lane_mismatches() -> Result<(), IrE
 #[test]
 fn vector_element_overloads_reject_scalar_descriptors() -> Result<(), IrError> {
     let m = module_new!("intrinsic-vector-element-overloads")?;
-    let vec = m.vector_type(m.f32_type().as_type(), 4, false).as_type();
+    let vec = m.vector_type(m.f32_type().as_type(), 4).as_type();
     let id = IntrinsicId::lookup("llvm.spv.length").expect("spv length intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [vec])?;
     assert_eq!(
@@ -610,7 +598,7 @@ fn vector_element_overloads_reject_scalar_descriptors() -> Result<(), IrError> {
 #[test]
 fn same_vec_width_nested_vector_element_signature_matches() -> Result<(), IrError> {
     let m = module_new!("intrinsic-same-vec-width-vector-element")?;
-    let vec = m.vector_type(m.f32_type().as_type(), 4, false).as_type();
+    let vec = m.vector_type(m.f32_type().as_type(), 4).as_type();
     let id = IntrinsicId::lookup("llvm.spv.fdot.v4f32").expect("spv fdot intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [vec])?;
     let fn_ty = descriptor.function_type(&m)?;
@@ -635,17 +623,17 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
     let id = IntrinsicId::lookup("llvm.nvvm.tensormap.replace.fill.mode")
         .expect("nvvm tensormap replace fill mode intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [ptr_ty.as_type()])?;
-    let caller_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
+    let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
-    b.build_intrinsic_call(
+    b.intrinsic_call(
         &descriptor,
-        &[ptr.into_erased(), i32_ty.const_int(1_i32).into_erased()],
+        &[ptr.as_erased(), i32_ty.const_int(1_i32).as_erased()],
         "",
     )?;
-    b.build_ret_void()?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(

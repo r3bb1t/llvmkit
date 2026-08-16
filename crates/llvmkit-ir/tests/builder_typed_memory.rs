@@ -17,7 +17,7 @@ struct CpuState {
 /// pointers carry no compile-time pointee in C++ IRBuilder either).
 /// Asserts the D3 requirement directly -- the typed `alloca`/`store`/
 /// `load` overlay must print byte-identical IR to the erased path
-/// (`build_alloca` + `build_store` + `build_int_load`), anchored on the
+/// (`alloca` + `store` + `int_load`), anchored on the
 /// same alloca/load/store forms as `tests/medium_builder_int.rs`.
 #[test]
 fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult<()> {
@@ -27,10 +27,10 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = m.view(f).builder(&m).position_at_end(entry);
         let (x,) = m.view(f).params();
-        let slot = b.build_typed_alloca::<i32, _>("slot")?;
-        b.build_typed_store(x, slot)?;
-        let v = b.build_typed_load(slot, "v")?; // IntValue<'_, i32, _> -- no try_into
-        b.build_ret(v)?;
+        let slot = b.typed_alloca::<i32, _>("slot")?;
+        b.typed_store(x, slot)?;
+        let v = b.typed_load(slot, "v")?; // IntValue<'_, i32, _> -- no try_into
+        b.ret(v)?;
         format!("{m}")
     };
     let erased = {
@@ -39,18 +39,18 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = m.view(f).builder(&m).position_at_end(entry);
         let (x,) = m.view(f).params();
-        let slot = b.build_alloca(m.i32_type(), "slot")?;
-        b.build_store(x, slot)?;
-        let v = b.build_int_load::<i32, _, _>(slot, "v")?;
-        b.build_ret(v)?;
+        let slot = b.alloca(m.i32_type(), "slot")?;
+        b.store(x, slot)?;
+        let v = b.int_load::<i32, _, _>(slot, "v")?;
+        b.ret(v)?;
         format!("{m}")
     };
     assert_eq!(typed, erased, "typed overlay must not change printed IR");
     Ok(())
 }
 
-/// Example-lock: `build_field_gep::<S, I>` is llvmkit-specific compile-time
-/// field projection over opaque pointers (LLVM's own `IRBuilder` narrows
+/// Example-lock: `field_gep::<S, I>` is llvmkit-specific compile-time
+/// field projection over opaque pointers (LLVM's own `IrBuilder` narrows
 /// `CreateStructGEP`'s result type only at runtime). Print form is anchored
 /// on `test/Assembler/getelementptr.ll`'s positive struct-GEP print form,
 /// shared with `tests/builder_gep.rs::struct_gep`'s exact `getelementptr
@@ -71,10 +71,10 @@ fn field_gep_projects_field_type_at_compile_time() -> IrResult<()> {
     let f = m.add_typed_function::<i64, (), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = m.view(f).builder(&m).position_at_end(entry);
-    let cpu = b.build_typed_alloca::<CpuState, _>("cpu")?;
-    let pc_ptr = b.build_field_gep::<CpuState, 1, _>(cpu, "pc.ptr")?; // TypedPointerValue<i64>
-    let pc = b.build_typed_load(pc_ptr, "pc")?; // IntValue<'_, i64, _>
-    b.build_ret(pc)?;
+    let cpu = b.typed_alloca::<CpuState, _>("cpu")?;
+    let pc_ptr = b.field_gep::<CpuState, 1, _>(cpu, "pc.ptr")?; // TypedPointerValue<i64>
+    let pc = b.typed_load(pc_ptr, "pc")?; // IntValue<'_, i64, _>
+    b.ret(pc)?;
     let printed = format!("{m}");
     assert!(
         printed.contains("getelementptr inbounds nuw %CpuState, ptr %cpu, i32 0, i32 1"),

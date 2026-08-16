@@ -39,7 +39,8 @@ jobs:
       - name: Check per-package licenses match the root
         run: |
           for dir in llvmkit crates/llvmkit-support crates/llvmkit-asmparser \
-                     crates/llvmkit-ir crates/llvmkit-macros; do
+                     crates/llvmkit-ir crates/llvmkit-macros \
+                     crates/llvmkit-tablegen; do
             cmp LICENSE "$dir/LICENSE" \
               || { echo "::error::$dir/LICENSE differs from the root LICENSE"; exit 1; }
           done

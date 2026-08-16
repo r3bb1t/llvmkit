@@ -26,6 +26,8 @@
 //!   helpers; reachable through [`DataLayout::mangling_mode`]).
 
 use core::fmt;
+use core::iter::FusedIterator;
+use core::str::FromStr;
 
 use crate::align::{Align, MaybeAlign};
 use crate::error::{IrError, IrResult};
@@ -238,7 +240,7 @@ pub enum ManglingMode {
     /// `m:m` -- MIPS mangling.
     Mips,
     /// `m:a` -- XCOFF mangling.
-    XCoff,
+    Xcoff,
 }
 
 impl ManglingMode {
@@ -253,7 +255,7 @@ impl ManglingMode {
             Self::WinCoffX86 => Some("x"),
             Self::Goff => Some("l"),
             Self::Mips => Some("m"),
-            Self::XCoff => Some("a"),
+            Self::Xcoff => Some("a"),
         }
     }
 }
@@ -273,7 +275,11 @@ impl ManglingMode {
 /// The layout is cheap to clone and round-trips through
 /// [`Display`](fmt::Display): every parsed [`DataLayout`] re-emits a
 /// canonical (deterministically-ordered) version of its specs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Hash` alongside `Eq` because a layout is a natural cache key — target
+/// size/alignment queries are pure functions of it, and every spec list is
+/// stored in a canonical order, so two layouts that compare equal hash equal.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DataLayout {
     big_endian: bool,
     alloca_addr_space: u32,
@@ -455,15 +461,24 @@ impl DataLayout {
         self.legal_int_widths.iter().copied().max().unwrap_or(0)
     }
 
-    /// Mirrors `DataLayout::getNonStandardAddressSpaces`. Returns the
+    /// Mirrors `DataLayout::getNonStandardAddressSpaces`. Yields the
     /// address spaces with an explicit pointer spec (every spec
-    /// except `0`).
-    pub fn non_standard_address_spaces(&self) -> Vec<u32> {
+    /// except `0`), in spec order.
+    ///
+    /// Borrows the layout — a [`DataLayout`] has no interior mutability, so
+    /// nothing has to be copied out. No [`ExactSizeIterator`]: the length is a
+    /// *filtered* count, unknowable without walking the specs, and a `len()`
+    /// that walks would be a lie about cost. Use `.count()` when the number is
+    /// what you want.
+    ///
+    /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
+    pub fn non_standard_address_spaces(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = u32> + FusedIterator + Clone + '_ {
         self.pointer_specs
             .iter()
             .filter(|s| s.address_space() != 0)
             .map(PointerSpec::address_space)
-            .collect()
     }
 
     /// Mirrors `DataLayout::getStructPrefAlignment` (the protected
@@ -480,14 +495,20 @@ impl DataLayout {
         self.struct_abi_align
     }
 
-    /// Mirrors `DataLayout::getNonIntegralAddressSpaces` (returns
-    /// every address space marked by `ni:<as>...`).
-    pub fn non_integral_address_spaces(&self) -> Vec<u32> {
+    /// Mirrors `DataLayout::getNonIntegralAddressSpaces` (yields
+    /// every address space marked by `ni:<as>...`, in spec order).
+    ///
+    /// Borrowing and filtering, so no [`ExactSizeIterator`]; see
+    /// [`non_standard_address_spaces`](Self::non_standard_address_spaces).
+    ///
+    /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
+    pub fn non_integral_address_spaces(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = u32> + FusedIterator + Clone + '_ {
         self.pointer_specs
             .iter()
             .filter(|s| s.is_non_integral())
             .map(PointerSpec::address_space)
-            .collect()
     }
 
     /// Mirrors `DataLayout::isNonIntegralAddressSpace`.
@@ -664,7 +685,7 @@ impl DataLayout {
             }
             TypeData::Struct(_) => self.struct_layout_inner(module, id).size_in_bits(),
             TypeData::Integer { bits } => u64::from(*bits),
-            TypeData::Half | TypeData::BFloat => 16,
+            TypeData::Half | TypeData::Bfloat => 16,
             TypeData::Float => 32,
             TypeData::Double => 64,
             TypeData::PpcFp128 | TypeData::Fp128 => 128,
@@ -743,14 +764,14 @@ impl DataLayout {
         match module.context().type_data(id) {
             TypeData::Integer { bits } => self.integer_alignment(*bits, abi_or_pref),
             TypeData::Half
-            | TypeData::BFloat
+            | TypeData::Bfloat
             | TypeData::Float
             | TypeData::Double
             | TypeData::Fp128
             | TypeData::PpcFp128
             | TypeData::X86Fp80 => {
                 let bit_width = match module.context().type_data(id) {
-                    TypeData::Half | TypeData::BFloat => 16,
+                    TypeData::Half | TypeData::Bfloat => 16,
                     TypeData::Float => 32,
                     TypeData::Double => 64,
                     TypeData::Fp128 | TypeData::PpcFp128 | TypeData::X86Fp80 => 128,
@@ -962,12 +983,16 @@ pub struct StructLayoutInfo {
 
 impl StructLayoutInfo {
     /// Construct computed struct-layout information.
-    pub fn new(
+    pub fn new<Offsets>(
         size_bytes: u64,
         alignment: Align,
         is_padded: bool,
-        member_offsets: Vec<u64>,
-    ) -> Self {
+        member_offsets: Offsets,
+    ) -> Self
+    where
+        Offsets: Into<Vec<u64>>,
+    {
+        let member_offsets = member_offsets.into();
         Self {
             size_bytes,
             alignment,
@@ -1045,6 +1070,21 @@ impl StructLayoutInfo {
 impl fmt::Display for DataLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.string_representation)
+    }
+}
+
+impl FromStr for DataLayout {
+    type Err = IrError;
+
+    /// Delegates to [`DataLayout::parse`], which stays the named entry point
+    /// (it is the mirror of `static Expected<DataLayout>
+    /// DataLayout::parse(StringRef)`, and it takes `impl AsRef<str>`).
+    /// `FromStr` exists so `"e-p:64:64".parse()` and `str::parse` in generic
+    /// code work; the error is still [`IrError::InvalidDataLayout`], naming
+    /// the specific parse failure rather than a bare "invalid keyword".
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -1213,7 +1253,7 @@ impl DataLayout {
                     b'm' => ManglingMode::Mips,
                     b'w' => ManglingMode::WinCoff,
                     b'x' => ManglingMode::WinCoffX86,
-                    b'a' => ManglingMode::XCoff,
+                    b'a' => ManglingMode::Xcoff,
                     _ => return Err(invalid("unknown mangling mode".into())),
                 };
                 Ok(())
@@ -1489,7 +1529,7 @@ fn parse_addr_space_and_name(s: &str) -> IrResult<(u32, String)> {
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
-fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Option<TypeSlot> {
+pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Option<TypeSlot> {
     let data = module.context().type_data(id);
     let TypeData::TargetExt(ext) = data else {
         return None;

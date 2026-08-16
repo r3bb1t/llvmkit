@@ -37,6 +37,13 @@ fn assert_parse_print_parse_stable(text: &str) {
     assert_eq!(reparsed, text);
 }
 
+/// Assert the fixture is rejected with upstream's message, **rendered**.
+///
+/// Comparing `err.to_string()` rather than a variant's payload field is the
+/// point: the `FileCheck` line in each upstream fixture pins the text a user
+/// sees, so that is what has to match. Matching a field instead let
+/// `ParseError::Expected`'s `expected ` prefix silently prepend itself to
+/// messages that upstream prints bare.
 fn assert_parse_error(src: &[u8], expected_message: &str) {
     let err = {
         let module = Module::dynamic("parser_constants_error");
@@ -45,10 +52,7 @@ fn assert_parse_error(src: &[u8], expected_message: &str) {
             .parse_module()
             .expect_err("fixture is rejected")
     };
-    match err {
-        ParseError::Expected { expected, .. } => assert_eq!(expected, expected_message),
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert_eq!(err.to_string(), expected_message);
 }
 
 /// Exact struct aggregate store from `test/Assembler/aggregate-constant-values.ll`.
@@ -174,24 +178,33 @@ fn constant_expr_fold_cast_fixture_matches_upstream() {
     assert!(text.contains("@K = global ptr @J"), "{text}");
 }
 
-/// Exact vector-select folding excerpt from
-/// `test/Assembler/ConstantExprFoldSelect.ll` lines 5-9.
+/// `test/Assembler/ConstantExprFoldSelect.ll` body, parsed rather than
+/// optimized: an all-constant `select` survives the parser as an
+/// instruction.
+///
+/// The fixture's own RUN line is `opt -S -passes=instsimplify`, so the
+/// folding its CHECK line expects is a **pass** result, not a parse result —
+/// `LLParser::parseSelect` ends in an unconditional `SelectInst::Create`.
+/// This test used to assert the folded vector from a bare parse, which made
+/// llvmkit's parser do in one step what upstream splits across two; the
+/// folding half is covered directly through the API in
+/// `llvmkit-ir/tests/constant_fold.rs`.
+///
+/// LLVM 22 also removed `select` constexprs outright, so there is no
+/// constant form for a parser-side fold to produce.
 #[test]
-fn constant_expr_fold_select_vector_fixture_matches_upstream() {
+fn constant_select_survives_parsing_as_an_instruction() {
     const FIXTURE: &[u8] = include_bytes!(
         "fixtures/upstream/ConstantExprFoldSelect/constant_expr_fold_select_vector_fixture_matches_upstream.ll"
     );
 
-    let text = parse_and_render(
-        "constant_expr_fold_select_vector_fixture_matches_upstream",
-        FIXTURE,
-    );
+    let text = parse_and_render("constant_select_survives_parsing", FIXTURE);
     assert_parse_print_parse_stable(&text);
+    assert!(text.contains("%s = select <4 x i1>"), "{text}");
     assert!(
-        text.contains("<i16 undef, i16 -2, i16 -3, i16 4>"),
+        !text.contains("<i16 undef, i16 -2, i16 -3, i16 4>"),
         "{text}"
     );
-    assert!(!text.contains("select <4 x i1>"), "{text}");
 }
 
 /// Direct port of `LLParser::parseValID`'s general
@@ -345,10 +358,9 @@ fn no_cfi_round_trips() {
 #[test]
 fn token_none_round_trips() {
     let module = module_new!("parser_constants_none").expect("fresh module");
-    let parsed =
-        parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
-            .expect("token none parses");
-    assert_eq!(format!("{}", parsed.into_erased()), "token none");
+    let parsed = parser::parse_constant_value(b"none", &module, module.token_type().as_type())
+        .expect("token none parses");
+    assert_eq!(format!("{}", parsed.as_erased()), "token none");
 }
 
 /// Exact `ptrtoaddr` constant expression from `test/Assembler/ptrtoaddr.ll`.
@@ -428,15 +440,11 @@ fn unsupported_constant_expr_opcodes_are_rejected() {
             .expect("lexer primes")
             .parse_module()
             .expect_err("unsupported constexpr is rejected");
-        match err {
-            ParseError::Expected { expected, .. } => {
-                assert_eq!(
-                    expected,
-                    format!("{opcode} constexprs are no longer supported")
-                );
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert!(matches!(err, ParseError::Message { .. }));
+        assert_eq!(
+            err.to_string(),
+            format!("{opcode} constexprs are no longer supported")
+        );
     }
 }
 
@@ -493,16 +501,200 @@ fn constant_expr_gep_rejects_scalable_vector_pointee() {
     assert_parse_error(FIXTURE, "invalid base element for constant getelementptr");
 }
 
+/// Exact negative constant-GEP fixture from
+/// `test/Assembler/getelementptr_vec_ce2.ll`: two vector indices whose lane
+/// counts disagree. The first vector index is what fixes the width, so the
+/// second one is the offender even though the base pointer is a scalar —
+/// `LLParser::parseValID`'s "GEPWidth may have been unknown" comment.
+#[test]
+fn constant_expr_gep_rejects_disagreeing_vector_index_widths() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/getelementptr-vec/getelementptr_vec_ce2.ll");
+
+    assert_parse_error(
+        FIXTURE,
+        "getelementptr vector index has a wrong number of elements",
+    );
+}
+
+/// No upstream `.ll` pins these three in their *constant-expression* form —
+/// `test/Assembler/getelementptr_struct.ll` and friends are all instruction
+/// GEPs — so this anchors the guards by symbol instead:
+/// `LLParser::parseValID`'s `getelementptr` arm, in the order it runs them.
+///
+/// The order is the point. A struct that holds a scalable vector is both
+/// unsized and unsupported as a constant-GEP base, and upstream reports it
+/// unsized; make the body homogeneous and `StructType::isSized`'s
+/// `containsHomogeneousScalableVectorTypes` exception makes it sized, so the
+/// *next* check — `ConstantExpr::isSupportedGetElementPtr` — is the one that
+/// fires.
+#[test]
+fn constant_expr_gep_checks_run_in_upstream_order() {
+    assert_parse_error(
+        b"%opaque = type opaque\n\
+          @g = external global i8\n\
+          @p = global ptr getelementptr (%opaque, ptr @g, i32 0)\n",
+        "base element of getelementptr must be sized",
+    );
+    assert_parse_error(
+        b"%mixed = type { <vscale x 2 x i32>, i32 }\n\
+          @g = external global i8\n\
+          @p = global ptr getelementptr (%mixed, ptr @g, i32 0)\n",
+        "base element of getelementptr must be sized",
+    );
+    assert_parse_error(
+        b"%homogeneous = type { <vscale x 2 x i32>, <vscale x 2 x i32> }\n\
+          @g = external global i8\n\
+          @p = global ptr getelementptr (%homogeneous, ptr @g, i32 0)\n",
+        "invalid base element for constant getelementptr",
+    );
+}
+
+/// `GetElementPtrInst::getIndexedType` returning null, reached from
+/// `LLParser::parseValID` rather than `parseGetElementPtr`. The shape is
+/// `test/Verifier/2002-11-05-GetelementptrPointers.ll`'s — indexing *into* a
+/// pointer held inside a struct — written as a constant expression, which
+/// upstream's test tree does not cover.
+#[test]
+fn constant_expr_gep_rejects_indices_that_do_not_index_the_source() {
+    assert_parse_error(
+        b"@g = external global i8\n\
+          @p = global ptr getelementptr ({ i32, ptr }, ptr @g, i32 0, i32 1, i32 0)\n",
+        "invalid getelementptr indices",
+    );
+}
+
+/// `LLParser::parseGlobalValueVector`'s empty-list early return: a closing
+/// paren yields no operands rather than a diagnostic of its own, so the
+/// `Elts.size() == 0` half of upstream's base-pointer check is what reports.
+#[test]
+fn constant_expr_gep_with_no_operands_reports_the_missing_base() {
+    assert_parse_error(
+        b"@p = global ptr getelementptr (i8, )\n",
+        "base of getelementptr must be a pointer",
+    );
+}
+
+/// `LLParser::parseConstantValue`'s tail switches on `ValID::Kind` and accepts
+/// a fixed set; everything outside it is `expected a constant value`. The
+/// message was unreachable while llvmkit's standalone entry point converted
+/// whatever `parseValID` returned, which also made it accept `@g` — a
+/// `t_GlobalName`, and not in upstream's set.
+///
+/// `null` is the one kind handled outside the conversion: upstream takes
+/// `Constant::getNullValue(Ty)` directly, so at a non-pointer type it is that
+/// type's zero rather than `null must be a pointer type`.
+///
+/// No upstream `.ll` pins any of this — `parseStandaloneConstantValue` is a
+/// C++ entry point with no textual test — so the guards are anchored by
+/// symbol.
+#[test]
+fn a_standalone_constant_value_accepts_only_upstreams_kinds() {
+    let module = module_new!("parser_constants_standalone").expect("fresh module");
+    let i32_ty = module.i32_type().as_type();
+
+    let parsed = parser::parse_constant_value(b"7", &module, i32_ty).expect("an integer parses");
+    assert_eq!(format!("{}", parsed.as_erased()), "i32 7");
+
+    // `t_Null` at a non-pointer type is `getNullValue`, not a diagnostic.
+    let parsed = parser::parse_constant_value(b"null", &module, i32_ty).expect("null parses");
+    assert_eq!(format!("{}", parsed.as_erased()), "i32 0");
+
+    // `t_GlobalName` is not in the accepted set, so the kind switch rejects it
+    // before anything tries to resolve the name.
+    let err = parser::parse_constant_value(b"@g", &module, module.ptr_type(0).as_type())
+        .expect_err("a global name is not a constant value here");
+    assert_eq!(err.to_string(), "expected a constant value");
+
+    // Nor is `t_EmptyArray`, at any type.
+    let empty_array = module.array_type(module.i32_type(), 0).as_type();
+    let err = parser::parse_constant_value(b"[]", &module, empty_array)
+        .expect_err("an empty array is not a constant value here");
+    assert_eq!(err.to_string(), "expected a constant value");
+}
+
+/// Every split of `test/Assembler/constant-splat-diagnostics.ll`, each
+/// asserting its own `FileCheck` line. Four pin `convertValIDToValue`'s
+/// `t_ConstantSplat` arm; the fifth pins the instruction dispatch, because
+/// `splat` is a constant form and never an opcode.
+#[test]
+fn constant_splat_diagnostics_match_upstream_text() {
+    const SPLITS: &[(&str, &[u8], &str)] = &[
+        (
+            "not_a_scalar",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/not_a_sclar.ll"),
+            "constant expression type mismatch: got type '<1 x i32>' but expected 'i32'",
+        ),
+        (
+            "not_a_vector",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/not_a_vector.ll"),
+            "vector constant must have vector type",
+        ),
+        (
+            "wrong_explicit_type",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/wrong_explicit_type.ll"),
+            "constant expression type mismatch: got type 'i8' but expected 'i32'",
+        ),
+        (
+            "wrong_implicit_type",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/wrong_implicit_type.ll"),
+            "constant expression type mismatch: got type 'i8' but expected 'i32'",
+        ),
+        (
+            "not_a_constant",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/not_a_constant.ll"),
+            "expected instruction opcode",
+        ),
+    ];
+
+    for (name, fixture, expected) in SPLITS {
+        let module = Module::dynamic(*name);
+        let err = Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("split is rejected");
+        assert_eq!(err.to_string(), *expected, "split {name}");
+    }
+}
+
+/// `c"..."` is type-free upstream: `ConstantDataArray::getString` always
+/// builds `[N x i8]`, and agreement with the demanded type is
+/// `convertValIDToValue`'s job. Deriving the array type from the *expected*
+/// type instead accepted this silently. No upstream `.ll` pins it, so the
+/// guard is anchored by symbol.
+#[test]
+fn a_c_string_is_always_an_i8_array() {
+    assert_parse_error(
+        b"@g = global [4 x i32] c\"abcd\"
+",
+        "constant expression type mismatch: got type '[4 x i8]' but expected '[4 x i32]'",
+    );
+}
+
+/// `LLParser::parseValID`'s `kw_dso_local_equivalent` arm rejects a referent
+/// whose value type is not a function type. Upstream's only
+/// `dso_local_equivalent` fixture is the positive round-trip
+/// `test/Assembler/dso_local_equivalent.ll`, so this anchors the guard by
+/// symbol; the text is upstream's.
+#[test]
+fn dso_local_equivalent_requires_a_function_referent() {
+    assert_parse_error(
+        b"@g = global i32 0
+@p = global ptr dso_local_equivalent @g
+",
+        "expected a function, alias to function, or ifunc in dso_local_equivalent",
+    );
+}
+
 /// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`
 /// and `Constants.cpp::ConstantTargetNone::get`: `none` is token-only in the
 /// shipped parser subset.
 #[test]
 fn none_is_token_only() {
     let module = module_new!("parser_constants_none_token").expect("fresh module");
-    let parsed =
-        parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
-            .expect("token none parses");
-    assert_eq!(format!("{}", parsed.into_erased()), "token none");
+    let parsed = parser::parse_constant_value(b"none", &module, module.token_type().as_type())
+        .expect("token none parses");
+    assert_eq!(format!("{}", parsed.as_erased()), "token none");
 
     let target_ty = module
         .target_ext_type(
@@ -511,14 +703,10 @@ fn none_is_token_only() {
             Vec::<u32>::new(),
         )
         .as_type();
-    let err = parser::parse_constant_value(b"none", &module, target_ty, None)
+    let err = parser::parse_constant_value(b"none", &module, target_ty)
         .expect_err("target-extension none is rejected");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "invalid type for none constant")
-        }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert!(matches!(err, ParseError::Message { .. }));
+    assert_eq!(err.to_string(), "invalid type for none constant");
 }
 
 /// llvmkit-specific subset of `test/Assembler/target-types.ll` and
@@ -534,10 +722,10 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
             Vec::<u32>::new(),
         )
         .as_type();
-    let zero = parser::parse_constant_value(b"zeroinitializer", &module, zero_ty, None)
+    let zero = parser::parse_constant_value(b"zeroinitializer", &module, zero_ty)
         .expect("zero-initializable target extension parses");
     assert_eq!(
-        format!("{}", zero.into_erased()),
+        format!("{}", zero.as_erased()),
         "target(\"spirv.foo\") zeroinitializer"
     );
 
@@ -548,7 +736,7 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
             Vec::<u32>::new(),
         )
         .as_type();
-    let err = parser::parse_constant_value(b"zeroinitializer", &module, image_ty, None)
+    let err = parser::parse_constant_value(b"zeroinitializer", &module, image_ty)
         .expect_err("non-zero-initializable target extension is rejected");
     match err {
         ParseError::Expected { expected, .. } => {
@@ -668,6 +856,56 @@ fn nested_forward_blockaddress_resolves_later_signature() {
     assert_parse_print_parse_stable(&text);
 }
 
+/// A `blockaddress` naming the function it appears in resolves through that
+/// function's own state — upstream's `BlockAddressPFS` route in
+/// `LLParser::parseValID`'s `kw_blockaddress` arm — even when the label is
+/// below the reference.
+///
+/// The IR shape is `test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll`
+/// with its address spaces dropped; that fixture itself is still blocked on
+/// the *program* address space (`target datalayout = "P2"` reaching a function
+/// that declares none), which is W3 work.
+#[test]
+fn same_function_forward_blockaddress_resolves_by_name() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/blockaddress-self/self_named_label.ll");
+
+    let text = parse_and_render("same_function_forward_blockaddress_by_name", FIXTURE);
+    assert_check_lines(&text, &["ret ptr blockaddress(@take_self_named, %L3)"]);
+    assert_parse_print_parse_stable(&text);
+}
+
+/// The same rule for a *numbered* label, which is the half that could never
+/// have worked: llvmkit stringified the slot id and looked for a block
+/// literally named `"2"`, and no unnamed block is. Upstream keeps the two
+/// spellings apart as `ValID::t_LocalID` / `t_LocalName` precisely because
+/// they resolve through different tables.
+///
+/// No upstream `.ll` fixture isolates this; the rule is
+/// `PerFunctionState::getBB(unsigned)` reached through `BlockAddressPFS`.
+#[test]
+fn same_function_forward_blockaddress_resolves_by_number() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/blockaddress-self/self_numbered_label.ll");
+
+    let text = parse_and_render("same_function_forward_blockaddress_by_number", FIXTURE);
+    assert_check_lines(&text, &["ret ptr blockaddress(@take_self_numbered, %2)"]);
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Once a function's body is closed its label numbering is gone, so a numeric
+/// label can no longer be looked up. Mirrors the `else` arm of
+/// `LLParser::parseValID`'s `kw_blockaddress` block lookup, whose wording this
+/// pins. A *named* label stays resolvable, because names survive in the
+/// function's value symbol table.
+#[test]
+fn numeric_blockaddress_label_after_the_function_is_defined_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-self/numeric_label_after_definition.ll"),
+        "cannot take address of numeric label after the function is defined",
+    );
+}
+
 /// Direct port of `LLParser::parseValID`'s forward `dso_local_equivalent` /
 /// `no_cfi` placeholder resolution.
 #[test]
@@ -768,6 +1006,146 @@ fn nested_forward_dso_and_no_cfi_resolve_later_signature() {
     );
     assert_eq!(text.matches("declare void @f()").count(), 0);
     assert_parse_print_parse_stable(&text);
+}
+
+/// Exact `global-fwddecl-good.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`: a *global initializer* may name a
+/// block in a function that has not been seen yet, and the placeholder takes
+/// the address space of the demanded type (`FwdDeclAS = ExpectedTy->
+/// getPointerAddressSpace()` in `LLParser::parseValID`'s `kw_blockaddress`
+/// arm).
+#[test]
+fn global_initializer_forward_blockaddress_takes_the_demanded_address_space() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/global_fwddecl_good.ll");
+
+    let text = parse_and_render("global_fwddecl_good", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@global = constant ptr addrspace(2) blockaddress(@fwddecl_in_prog_as, %bb)"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Exact `global-fwddecl-bad.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`, whose CHECK line pins the
+/// wording. A *forward* `blockaddress` is retired by
+/// `PerFunctionState::resolveForwardRefBlockAddresses` through
+/// `checkValidVariableType`, not by `convertValIDToValue` — so the sentence is
+/// `'bb' defined with type … but expected …`, quoting the label with no `%`.
+#[test]
+fn global_initializer_forward_blockaddress_address_space_mismatch_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/global_fwddecl_bad.ll"),
+        "'bb' defined with type 'ptr addrspace(1)' but expected 'ptr addrspace(2)'",
+    );
+}
+
+/// Exact `global-use-bad.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`: with the function already
+/// defined the `blockaddress` types itself, so the disagreement is
+/// `convertValIDToValue`'s `t_Constant` arm instead.
+#[test]
+fn global_initializer_blockaddress_address_space_mismatch_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/global_use_bad.ll"),
+        "constant expression type mismatch: got type 'ptr addrspace(1)' but expected 'ptr addrspace(2)'",
+    );
+}
+
+/// Exact `bad-type-not-ptr.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`. The check lives inside
+/// `kw_blockaddress`'s `if (!F)` branch, because only there does the demanded
+/// type have to supply an address space.
+#[test]
+fn a_non_pointer_type_for_a_forward_blockaddress_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/bad_type_not_ptr.ll"),
+        "type of blockaddress must be a pointer and not 'i8'",
+    );
+}
+
+/// Exact `bad-type-not-i8-ptr.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`: the function is never defined, so
+/// the placeholder survives to `validateEndOfModule`'s
+/// `ForwardRefBlockAddresses` guard.
+#[test]
+fn a_global_initializer_blockaddress_naming_an_undefined_function_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/bad_type_not_i8_ptr.ll"),
+        "expected function name in blockaddress",
+    );
+}
+
+/// Exact module from `test/Assembler/pr119818.ll`: a global initializer whose
+/// aggregate names two blocks of a function defined later, one of them by
+/// *number*. Only `PerFunctionState::resolveForwardRefBlockAddresses` can
+/// resolve `%0`, since the numbering exists solely while that body is open.
+#[test]
+fn global_initializer_forward_blockaddress_resolves_a_numbered_label() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/pr119818.ll");
+
+    let text = parse_and_render("pr119818", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "@vm_exec_core.insns_address_table = internal constant [2 x ptr] \
+             [ptr blockaddress(@vm_exec_core, %0), ptr blockaddress(@vm_exec_core, %block)], align 16",
+        ],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Exact `undefined_func.ll` case from
+/// `test/CodeGen/X86/dso_local_equivalent_errors.ll`, whose CHECK line pins the
+/// wording of `validateEndOfModule`'s `ResolveForwardRefDSOLocalEquivalents`.
+#[test]
+fn dso_local_equivalent_naming_an_undefined_function_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/dso_local_equivalent_errors/undefined_func.ll"),
+        "unknown function 'undefined_func' referenced by dso_local_equivalent",
+    );
+}
+
+/// Exact `invalid_arg.ll` case from
+/// `test/CodeGen/X86/dso_local_equivalent_errors.ll`. `@glob` is defined
+/// *after* the reference, so the referent is a forward reference at the use
+/// and the value-type check is the one
+/// `ResolveForwardRefDSOLocalEquivalents` makes, not `parseValID`'s.
+#[test]
+fn a_forward_dso_local_equivalent_referent_must_still_be_a_function() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/dso_local_equivalent_errors/invalid_arg.ll"),
+        "expected a function, alias to function, or ifunc in dso_local_equivalent",
+    );
+}
+
+/// `ResolveForwardRefDSOLocalEquivalents` interpolates `GVRef.StrVal` into its
+/// message whatever the `ValID`'s kind, and a `t_GlobalID` leaves that string
+/// empty — so the numbered spelling really does report an empty name. No
+/// upstream `.ll` covers it; the quirk is anchored at the lambda itself.
+#[test]
+fn a_numbered_dso_local_equivalent_referent_reports_an_empty_name() {
+    assert_parse_error(
+        b"@p = global ptr dso_local_equivalent @0
+",
+        "unknown function '' referenced by dso_local_equivalent",
+    );
+}
+
+/// `no_cfi` has no forward-reference map of its own: `parseValID`'s
+/// `kw_no_cfi` arm only sets `ValID::NoCFI`, and `convertValIDToValue` resolves
+/// the operand with `getGlobalVal` like any other `@name`. So an operand that
+/// is never defined is reported by `validateEndOfModule`'s `ForwardRefVals`
+/// guard, in that guard's words. No upstream `.ll` isolates it; the rule is
+/// anchored at those two symbols.
+#[test]
+fn no_cfi_naming_an_undefined_global_is_rejected() {
+    assert_parse_error(
+        b"@p = global ptr no_cfi @never
+",
+        "use of undefined value '@never'",
+    );
 }
 
 /// Exact `LLParser::parseValID` `kw_splat` accepted shape plus

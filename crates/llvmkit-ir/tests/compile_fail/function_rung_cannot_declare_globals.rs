@@ -18,7 +18,7 @@
 //! `none()` (nothing preserved), so there is nothing left for a declaration to
 //! falsify. The narrowing costs a pass author nothing: types come from
 //! `patch.module()`, a positioned builder from `patch.builder_at(ip)`, and
-//! instruction construction from `IRBuilder::at_end(bb)`.
+//! instruction construction from `IrBuilder::at_end(bb)`.
 //!
 //! Primary error: `error[E0624]: method `module_mut` is private`.
 

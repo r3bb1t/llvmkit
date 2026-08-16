@@ -24,7 +24,7 @@
 //! `build_*_phi` builders, which are crate-internal (block arguments are the
 //! public phi-authoring surface).
 
-use crate::{Dyn, IRBuilder, InstructionKind, InstructionView, IrError, Linkage, VerifierRule};
+use crate::{Dyn, InstructionKind, InstructionView, IrBuilder, IrError, Linkage, VerifierRule};
 
 /// Three predecessors, three incomings; removing index 0 backfills it from the
 /// **end**, exactly as upstream's `removeIncomingValue` does. The printed phi
@@ -34,7 +34,7 @@ use crate::{Dyn, IRBuilder, InstructionKind, InstructionView, IrError, Linkage, 
 fn remove_incoming_backfills_from_the_end_like_upstream() -> Result<(), IrError> {
     let m = crate::module_new!("phi_remove_swap")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a = m.view(f).append_basic_block(&m, "a");
     let b_bb = m.view(f).append_basic_block(&m, "b");
@@ -43,22 +43,22 @@ fn remove_incoming_backfills_from_the_end_like_upstream() -> Result<(), IrError>
     let (a_lbl, b_lbl, c_lbl, join_lbl) = (a.id(), b_bb.id(), c.id(), join.id());
 
     for pred in [a, b_bb, c] {
-        IRBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(pred)
-            .build_br(join_lbl)?;
+            .br(join_lbl)?;
     }
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?
         .add_incoming(2_i32, b_lbl)?
         .add_incoming(3_i32, c_lbl)?;
-    bld.build_ret(phi.as_int_value())?;
+    bld.ret(phi.as_int_value())?;
 
     // Drop `[ 1, %a ]`, the entry at index 0.
     let removed = phi.remove_incoming(&m, 0)?;
-    assert_eq!(removed, i32_ty.const_int(1_i32).into_erased());
+    assert_eq!(removed, i32_ty.const_int(1_i32).as_erased());
     assert_eq!(phi.incoming_count(), 2);
 
     // Upstream backfills from the tail: `[ 3, %c ]` now sits at index 0.
@@ -78,23 +78,23 @@ fn remove_incoming_backfills_from_the_end_like_upstream() -> Result<(), IrError>
 fn remove_incoming_deregisters_one_use_of_the_removed_value() -> Result<(), IrError> {
     let m = crate::module_new!("phi_remove_uses")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a = m.view(f).append_basic_block(&m, "a");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, join_lbl) = (a.id(), join.id());
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
-        .build_br(join_lbl)?;
+        .br(join_lbl)?;
 
     // `7` interns to one constant, so both edges from `%a` are the same
     // SSA value: two use-list entries for one value.
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(7_i32, a_lbl)?
         .add_incoming(7_i32, a_lbl)?;
-    let seven = i32_ty.const_int(7_i32).into_erased();
+    let seven = i32_ty.const_int(7_i32).as_erased();
     assert_eq!(seven.num_uses(), 2);
 
     phi.remove_incoming(&m, 0)?;
@@ -113,18 +113,18 @@ fn remove_incoming_deregisters_one_use_of_the_removed_value() -> Result<(), IrEr
 fn remove_incoming_rejects_an_out_of_range_index() -> Result<(), IrError> {
     let m = crate::module_new!("phi_remove_oob")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a = m.view(f).append_basic_block(&m, "a");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, join_lbl) = (a.id(), join.id());
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
-        .build_br(join_lbl)?;
+        .br(join_lbl)?;
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?;
 
     let err = phi.remove_incoming(&m, 1).expect_err("index 1 of 1 is oob");
@@ -150,24 +150,24 @@ fn remove_incoming_rejects_an_out_of_range_index() -> Result<(), IrError> {
 fn remove_incoming_leaves_the_verifier_to_flag_the_missing_edge() -> Result<(), IrError> {
     let m = crate::module_new!("phi_remove_verify")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a = m.view(f).append_basic_block(&m, "a");
     let b_bb = m.view(f).append_basic_block(&m, "b");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, b_lbl, join_lbl) = (a.id(), b_bb.id(), join.id());
     for pred in [a, b_bb] {
-        IRBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(pred)
-            .build_br(join_lbl)?;
+            .br(join_lbl)?;
     }
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?
         .add_incoming(2_i32, b_lbl)?;
-    bld.build_ret(phi.as_int_value())?;
+    bld.ret(phi.as_int_value())?;
     m.verify_borrowed()?;
 
     phi.remove_incoming(&m, 1)?;
@@ -191,20 +191,20 @@ fn remove_incoming_leaves_the_verifier_to_flag_the_missing_edge() -> Result<(), 
 fn remove_incoming_never_deletes_an_emptied_phi() -> Result<(), IrError> {
     let m = crate::module_new!("phi_remove_empty")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a = m.view(f).append_basic_block(&m, "a");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, join_lbl) = (a.id(), join.id());
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
-        .build_br(join_lbl)?;
+        .br(join_lbl)?;
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?;
-    bld.build_ret(phi.as_int_value())?;
+    bld.ret(phi.as_int_value())?;
 
     phi.remove_incoming(&m, 0)?;
     assert_eq!(phi.incoming_count(), 0);
@@ -231,26 +231,26 @@ fn remove_incoming_through_phi_kind_covers_every_flavour() -> Result<(), IrError
     let i32_ty = m.i32_type();
     let f64_ty = m.f64_type();
     let ptr_ty = m.ptr_type(0);
-    let vec_ty = m.vector_type(i32_ty, 2, false);
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let vec_ty = m.vector_type(i32_ty, 2);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a = m.view(f).append_basic_block(&m, "a");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, join_lbl) = (a.id(), join.id());
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
-        .build_br(join_lbl)?;
+        .br(join_lbl)?;
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
-    let fp = bld.build_fp_phi_dyn(f64_ty.as_dyn(), "fp")?;
-    let pp = bld.build_pointer_phi_in_addrspace(ptr_ty, "pp")?;
-    let vp = bld.build_phi_dyn(vec_ty.as_type(), "vp")?;
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let fp = bld.fp_phi_dyn(f64_ty.as_dyn(), "fp")?;
+    let pp = bld.pointer_phi_in_addrspace(ptr_ty, "pp")?;
+    let vp = bld.phi_dyn(vec_ty.as_type(), "vp")?;
     for (phi, ty) in [
         (bld.view(fp).to_erased(), f64_ty.as_type()),
         (bld.view(pp).to_erased(), ptr_ty.as_type()),
         (bld.view(vp).to_erased(), vec_ty.as_type()),
     ] {
-        bld.phi_add_incoming_from_value(phi, ty.get_poison(), a_lbl)?;
+        bld.phi_add_incoming_from_value(phi, ty.poison(), a_lbl)?;
     }
 
     // Rediscover each phi and remove its single incoming through `PhiKind`.

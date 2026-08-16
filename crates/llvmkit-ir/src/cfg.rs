@@ -107,32 +107,61 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
     /// A block that does not resolve in this CFG's module — a foreign
     /// [`BlockId`] — has no successors here, exactly as a block absent from the
     /// snapshot does.
-    pub fn successors<R, Block>(&self, block: Block) -> Vec<BlockId<Dyn, B>>
+    ///
+    /// The iterator *borrows* the snapshot rather than copying out of it: a
+    /// [`FunctionCfg`] owns its adjacency lists outright (no interior
+    /// mutability), so the successor slots can be read straight off the stored
+    /// slice. The absent-block and foreign-block cases resolve to the empty
+    /// slice, which is why one expression covers all three.
+    pub fn successors<R, Block>(
+        &self,
+        block: Block,
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + '_
     where
         R: ReturnMarker,
         Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let module: ModuleRef<'ctx, B> = self.function.module().into();
-        let Ok(block) = block.into_basic_block_label(module) else {
-            return Vec::new();
-        };
-        ids_to_ids(module, self.successors.get(&block.slot()))
+        self.adjacent(&self.successors, block)
     }
 
     /// Predecessors of `block`, preserving duplicate incoming edges.
     ///
-    /// A foreign [`BlockId`] has no predecessors here; see
-    /// [`successors`](Self::successors).
-    pub fn predecessors<R, Block>(&self, block: Block) -> Vec<BlockId<Dyn, B>>
+    /// A foreign [`BlockId`] has no predecessors here, and the result borrows
+    /// the snapshot; see [`successors`](Self::successors).
+    pub fn predecessors<R, Block>(
+        &self,
+        block: Block,
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + '_
+    where
+        R: ReturnMarker,
+        Block: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        self.adjacent(&self.predecessors, block)
+    }
+
+    /// Shared body of [`successors`](Self::successors) and
+    /// [`predecessors`](Self::predecessors): resolve `block` against this
+    /// CFG's module, then hand back the stored adjacency slice retagged as
+    /// ids. An unresolvable or absent block yields the empty slice.
+    fn adjacent<'cfg, R, Block>(
+        &'cfg self,
+        table: &'cfg HashMap<ValueSlot, Vec<ValueSlot>>,
+        block: Block,
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'cfg
     where
         R: ReturnMarker,
         Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module: ModuleRef<'ctx, B> = self.function.module().into();
-        let Ok(block) = block.into_basic_block_label(module) else {
-            return Vec::new();
-        };
-        ids_to_ids(module, self.predecessors.get(&block.slot()))
+        let tag = module.id();
+        let slots: &'cfg [ValueSlot] = block
+            .into_basic_block_label(module)
+            .ok()
+            .and_then(|block| table.get(&block.slot()))
+            .map_or(&[], Vec::as_slice);
+        slots
+            .iter()
+            .map(move |slot| BlockId::<Dyn, B>::from_raw(tag, *slot))
     }
 
     /// Directed edges in function block order and terminator successor order.
@@ -152,20 +181,10 @@ where
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
-    let module = block.module_ref();
-    let dyn_block = block.as_dyn();
-    let ids = successor_ids(&dyn_block);
-    ids_to_ids(module, Some(&ids))
-}
-
-fn ids_to_ids<'ctx, B: ModuleBrand + 'ctx>(
-    module: ModuleRef<'ctx, B>,
-    ids: Option<&Vec<ValueSlot>>,
-) -> Vec<BlockId<Dyn, B>> {
-    let tag = module.id();
-    ids.into_iter()
-        .flat_map(|ids| ids.iter().copied())
-        .map(|id| BlockId::<Dyn, B>::from_raw(tag, id))
+    let tag = block.module_ref().id();
+    successor_ids(&block.as_dyn())
+        .into_iter()
+        .map(|slot| BlockId::<Dyn, B>::from_raw(tag, slot))
         .collect()
 }
 
@@ -223,22 +242,22 @@ pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueSlot> {
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
         | InstructionKindData::Mul(_)
-        | InstructionKindData::UDiv(_)
-        | InstructionKindData::SDiv(_)
-        | InstructionKindData::URem(_)
-        | InstructionKindData::SRem(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
         | InstructionKindData::Shl(_)
-        | InstructionKindData::LShr(_)
-        | InstructionKindData::AShr(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
         | InstructionKindData::And(_)
         | InstructionKindData::Or(_)
         | InstructionKindData::Xor(_)
-        | InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
-        | InstructionKindData::FCmp(_)
+        | InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
+        | InstructionKindData::Fcmp(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Store(_)
@@ -246,11 +265,11 @@ pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueSlot> {
         | InstructionKindData::Call(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Cast(_)
-        | InstructionKindData::ICmp(_)
+        | InstructionKindData::Icmp(_)
         | InstructionKindData::Phi(_)
-        | InstructionKindData::FNeg(_)
+        | InstructionKindData::Fneg(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::ExtractValue(_)
         | InstructionKindData::InsertValue(_)
         | InstructionKindData::ExtractElement(_)
@@ -258,7 +277,7 @@ pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueSlot> {
         | InstructionKindData::ShuffleVector(_)
         | InstructionKindData::Fence(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::LandingPad(_)
         | InstructionKindData::CleanupPad(_)
         | InstructionKindData::CatchPad(_) => Vec::new(),

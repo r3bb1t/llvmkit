@@ -12,18 +12,26 @@ without linking against `libLLVM`; bitcode support is still ahead.
 
 Tracking **LLVM 22.1.4** (`llvmorg-22.1.4`, released 2026-04-21).
 
+> **The crates.io badge above shows 0.0.3, which is the last published
+> release. The list below describes 0.0.4, which is unreleased** — so
+> `cargo add llvmkit` today gets the older closure-scoped API
+> (`Module::with_new`), not the owned modules and storable ids described here.
+> Track `master` for the 0.0.4 surface. The project is pre-1.0 and, under
+> Cargo's pre-1.0 rules, every `0.0.x` is mutually incompatible; see
+> [ROADMAP.md](ROADMAP.md) for the release sequence.
+
 Shipped today:
 
 - **Owned modules and storable ids** — the 0.0.4 handle model. `Module<B, S>`
   has no lifetime parameter, owns its storage, and is `Send`, so it can be
   returned, stored in a struct, collected into a `Vec`, and moved between
-  threads. Declarations and value-producing `build_*` calls return a
+  threads. Declarations and value-producing builder calls return a
   `Copy + Send` **id** (`IntValueId<W, B>`, `FunctionId<R, B>`, `GlobalId<B>`,
   …) that carries the module's identity without borrowing it. Blocks are
   minted as linear, `!Copy` handles instead (`append_basic_block` returns a
   `BasicBlock<..>`, `append_block_with_params` a `BlockWithParams<..>`);
   calling `.id()` on one gives the storable `BlockId<R, B, Params>`.
-  Terminator builders (`build_br`, `build_cond_br`, `build_ret`, …) consume
+  Terminator builders (`br`, `cond_br`, `ret`, …) consume
   the builder and hand back the terminated block alongside the new
   instruction, not an id. The borrowing handles themselves are minted per
   operation from `m.view(id)` / `m.try_view(id)`. A module's identity is the
@@ -35,7 +43,7 @@ Shipped today:
 - **`.ll` lexer** — done. `llvmkit-asmparser` ports
   `llvm/lib/AsmParser/LLLexer.cpp` and borrows directly from the source slice,
   allocating only when escape decoding actually changes bytes.
-- **`.ll` parser** — done for the constructive subset. Parses module-level
+- **`.ll` parser** — parses ordinary compiler output. Parses module-level
   directives (target datalayout/triple, module asm, type definitions, globals,
   function declarations and definitions), all instruction opcodes, metadata
   (standalone numbered nodes, named metadata, instruction trailing attachments),
@@ -43,12 +51,18 @@ Shipped today:
   zeroinitializer, global/function references, and represented `ConstantExpr`
   forms for parser-needed opcodes, including upstream vector GEP, bitcast, cast,
   and select folding fixtures). Round-trip tested via `format!("{module}")`.
-  **Not yet ordinary `clang` output:** roughly 21 attribute keywords are
-  missing — `byval(T)` and `sret(T)` among them — and `dso_local` is accepted on
-  `define` / `declare` but not on globals, which is enough to reject a plain
-  `clang -O0` or `-O2` dump. The structure around them parses; see
-  [Milestone 0](ROADMAP.md#milestone-0-textual-ll-parser-completeness) for the
-  measured inventory. Closing it is the next thing on the roadmap.
+  Attribute coverage spans the function, parameter, and return attributes real
+  compiler output uses — the typed `byval(T)` / `sret(T)` family, `uwtable`'s
+  kind grammar, both `dereferenceable` forms — plus `dso_local` on every global
+  object and `c"..."` string constants. **`clang -O0` and `-O2` output parses,
+  verifies, and round-trips**, asserted on whole programs in
+  `tests/parser_attribute_matrix.rs`. Companion guards parse the vendored
+  upstream sources and fail CI on drift: `tests/attribute_td_drift.rs` against
+  `Attributes.td` (its `NOT_YET_MODELED` list is empty — every attribute LLVM
+  22.1.4 declares is accepted in every position it declares), and
+  `tests/lexer_token_drift.rs` against `LLLexer.cpp` and `LLToken.h`, which
+  diffs the whole keyword and token vocabulary in both directions. Not yet
+  modeled: bitcode.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
   layout, target triple, module asm directives, and LLVM-style function-local
@@ -80,11 +94,27 @@ Shipped today:
   the bundled `Analyses` manager, `PreservedAnalyses`,
   `PassInstrumentationCallbacks`, and the `#[function_pass]` / `#[module_pass]`
   authoring macros. See [Built-in Analyses and Custom Passes](#built-in-analyses-and-custom-passes).
-- **KnownBits / ValueTracking subset** — shipped for represented integer,
-  pointer, fixed-vector, and intrinsic facts; full LLVM parity is not claimed.
-  The surface includes `KnownBits`, `compute_known_bits`,
-  `KnownBitsAnalysis`, `ValueTrackingQuery`, recursion budgeting,
-  dominator-tree hooks, and a reusable per-analysis cache.
+- **KnownBits — complete.** `KnownBits.h`'s public surface is fully modeled,
+  compiler-verified: the parity ledger
+  (`crates/llvmkit-ir/tests/value_tracking_parity.rs`) asserts an *empty* gap
+  list, so a regression or a newly-synced upstream method has to be
+  acknowledged rather than absorbed.
+- **ValueTracking — 93 of 101 entry points**, tracked symbol-by-symbol in the
+  same ledger, which asserts that modeled plus gaps equals the audited surface
+  so a symbol cannot be silently neither. Beyond `compute_known_bits` itself
+  (with `KnownBitsAnalysis`, `ValueTrackingQuery`, recursion budgeting,
+  dominator-tree hooks and a reusable per-analysis cache) this covers the
+  select-pattern vocabulary and matching (`select_pattern.rs`), pointer and
+  object analysis (`pointer_analysis.rs`), speculation safety and UB
+  reachability (`speculation.rs`), `@llvm.assume` with its dominating-condition
+  cache (`assumptions.rs`, `implied_conditions.rs`), and floating-point
+  classification — the `FPClassTest` / `KnownFPClass` lattice (`fp_class.rs`),
+  `computeKnownFPClass` and its predicates (`known_fp_class.rs`), and
+  `fcmpImpliesClass` (`fp_predicate.rs`). `computeKnownFPClass`'s opcode
+  dispatch is deliberately partial; its module header names every arm that is
+  not yet consulted, and an unconsulted arm only ever weakens an answer.
+  The remaining eight gaps each carry a recorded reason —
+  see [`docs/future-work.md`](docs/future-work.md).
 - **Represented intrinsic signatures and facts** — shipped for the modeled
   `llvm.*` signature families listed in `ROADMAP.md`: `assume`; integer or
   fixed-vector overloads of `abs`, bit permutations, counts, funnel shifts,
@@ -119,15 +149,18 @@ Not shipped yet:
 - **Full metadata / attribute surface beyond the represented range,
   `absolute_symbol`, debug/use-list, and `returned` facts**
 - **Bitcode reader / writer**
-- **Full KnownBits / ValueTracking / DemandedBits / SimplifyDemandedBits
-  parity** — the parity ledger remains open for remaining `KnownBits.cpp`
-  formulas, `ValueTracking.cpp` operator arms, demanded-bit rules, and
+- **Full ValueTracking / DemandedBits / SimplifyDemandedBits parity** — the
+  ledger is closed for `KnownBits.h` and open for the eight remaining
+  `ValueTracking.h` entry points, some `ValueTracking.cpp` operator arms
+  (notably `computeKnownFPClass`'s dispatch), demanded-bit rules, and
   `InstCombineSimplifyDemanded` transforms.
 - **Additional or currently unrepresented `llvm.*` intrinsic IDs, signatures,
   and facts** — new IDs and verifier signatures must land before analysis facts
   are added.
 - **Full built-in optimization transform library and pipeline builders**
-  (`PassBuilder`, loop PM, CGSCC PM, legacy PM, textual pipelines)
+  (`PassBuilder`, loop PM, CGSCC PM, legacy PM, *runnable* textual pipelines —
+  `pass_pipeline.rs` parses a pipeline string into typed, data-only recipe
+  values, but there is no NAME → constructor registry, so nothing can run one)
 
 Out of scope:
 
@@ -153,17 +186,17 @@ while let Some(tok) = lex.next() {
 Build IR programmatically:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let (lhs, rhs) = m.view(f).params();
-    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.ret(sum)?;
 
     print!("{m}");
     Ok(())
@@ -181,33 +214,33 @@ LLVM signature directly from the alias.
 
 ### Typed calls
 
-`IRBuilder::build_call` takes a `TypedFunctionValue` callee and an argument
+`IrBuilder::call` takes a `TypedFunctionValue` callee and an argument
 tuple typed against its parameter schema. Wrong arity, a wrong-typed argument,
 or misusing a void call's result are all compile errors instead of runtime
 `IrError`s or verifier failures, and the result narrows to the callee's real
 return type with no `try_into`:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build_typed_call() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
     let entry = m.view(callee).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let (lhs, rhs) = m.view(callee).params();
-    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.ret(sum)?;
 
     let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let (x, y) = m.view(caller).params();
 
-    // `build_call` hands back a storable `TypedCallInstId`; `b.view(..)` reaches
+    // `call` hands back a storable `TypedCallInstId`; `b.view(..)` reaches
     // the handle, whose `result()` is already `IntValue<i32>` -- no `try_into`.
-    let call = b.build_call(m.view(callee), (x, y), "r")?;
-    b.build_ret(b.view(call).result())?;
+    let call = b.call(m.view(callee), (x, y), "r")?;
+    b.ret(b.view(call).result())?;
 
     print!("{m}");
     Ok(())
@@ -216,13 +249,13 @@ fn build_typed_call() -> Result<(), IrError> {
 
 A callee whose signature is only known at runtime (parsed IR, an `extern`
 declaration built from user input) keeps using the `_dyn` counterparts —
-`build_call_dyn`, `build_indirect_call_dyn`, `build_invoke_dyn` — which take a
+`call_dyn`, `indirect_call_dyn`, `invoke_dyn` — which take a
 plain `FunctionValue` and an iterable of pre-widened `Value`s, and reject a
 wrong argument count or type with `IrError::CallArgumentCountMismatch` /
 `CallArgumentTypeMismatch` at build time rather than deferring to the verifier.
-`build_indirect_call::<Sig>` derives the callee's function type from a Rust
-function-pointer schema `Sig` instead of taking it by hand; `build_varargs_call`
-lowers a fixed, schema-typed prefix the same way `build_call` does and appends
+`indirect_call::<Sig>` derives the callee's function type from a Rust
+function-pointer schema `Sig` instead of taking it by hand; `varargs_call`
+lowers a fixed, schema-typed prefix the same way `call` does and appends
 an erased `...` tail, matching LLVM's own no-static-check contract on variadic
 arguments.
 
@@ -231,7 +264,7 @@ generated `<Struct>Value<'ctx, B>` wrapper in IR, and call field
 accessors/builders instead of indexing aggregates manually:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrStruct, Linkage, module_new};
+use llvmkit_ir::{IrBuilder, IrStruct, Linkage, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -256,7 +289,7 @@ type Normalize = fn(WindowPlacement) -> WindowPlacement;
 let m = module_new!("window")?;
 let f = m.add_typed_function_of::<Normalize, _>("normalize", Linkage::External)?;
 let entry = m.view(f).append_basic_block(&m, "entry");
-let b = IRBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
+let b = IrBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
 let (placement,) = m.view(f).params();
 // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
 // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
@@ -283,11 +316,11 @@ Detailed macro docs: [IrStruct derive macro](docs/ir-struct-derive.md).
 schema on top of a plain opaque `ptr` value -- it is Rust-side bookkeeping
 only, so printed IR is byte-identical to the erased path. `PointerValue::with_pointee::<T>()`
 attaches the schema as an explicit, documented assertion (exactly as
-powerful as passing a type to `build_load` today; a mis-assertion produces
+powerful as passing a type to `load` today; a mis-assertion produces
 wrong IR that the verifier catches, never memory-unsafe behavior).
-`build_typed_alloca::<T>`, `build_typed_load`, and `build_typed_store` skip
+`typed_alloca::<T>`, `typed_load`, and `typed_store` skip
 the runtime type-narrowing that the erased path needs, and
-`build_field_gep::<S, I>` projects the field type at compile time straight
+`field_gep::<S, I>` projects the field type at compile time straight
 from a `#[derive(IrStruct)]` schema -- an out-of-range field index is a
 missing trait impl, not a runtime bounds check.
 
@@ -304,27 +337,27 @@ land in; it narrows to the typed form with `TryFrom`, which checks both element
 and length.
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Len, Linkage, VectorValue, module_new};
+use llvmkit_ir::{IrBuilder, IrError, Len, Linkage, VectorValue, module_new};
 
 fn typed_vec() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
-    let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
+    let fn_ty = m.function_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()]);
     let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
 
     // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
-    let a: VectorValue<'_, i32, Len<4>> =
-        m.view(f).param(0).unwrap().into_erased().try_into().unwrap();
-    let c: VectorValue<'_, i32, Len<4>> =
-        m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
+    let a: VectorValue<'_, i32, Len<4>, _> =
+        m.view(f).param(0).unwrap().as_erased().try_into().unwrap();
+    let c: VectorValue<'_, i32, Len<4>, _> =
+        m.view(f).param(1).unwrap().as_erased().try_into().unwrap();
 
     // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
-    let sum = b.build_vec_int_add(a, c, "sum")?;
+    let sum = b.vector_int_add(a, c, "sum")?;
     // Extract returns the element as its typed scalar handle -- `IntValue<i32>`, inferred.
-    let lane0 = b.build_vec_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
-    b.build_ret(lane0)?;
+    let lane0 = b.vector_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
+    b.ret(lane0)?;
     Ok(())
 }
 ```
@@ -335,7 +368,7 @@ The full runnable version (vectors and arrays) is
 ### Auto-SSA: typed local variables instead of manual phi wiring
 
 `SsaBuilder` (`crates/llvmkit-ir/src/ssa_builder.rs`) sits on top of the
-typed `IRBuilder` and implements Braun et al.'s 2013 on-the-fly SSA
+typed `IrBuilder` and implements Braun et al.'s 2013 on-the-fly SSA
 construction algorithm (the same family of technique Cranelift's
 `FunctionBuilder` uses). Instead of pre-declaring phi nodes and patching
 their incoming edges by hand, you declare a typed variable once and then
@@ -363,19 +396,19 @@ let (loop_bb, params) = bwp.append_block_with_named_params(
 let loop_label = loop_bb.id();       // storable `BlockId` — the branch currency
 
 // entry: enter the loop carrying the initial values `[ acc = 1, i = %n ]`.
-b.build_cond_br_with_args(is_zero, base_label, &[], loop_label,
-    &[i32_ty.const_int(1_i32).into_erased(), n.into_erased()])?;
+b.cond_br_with_args(is_zero, base_label, &[], loop_label,
+    &[i32_ty.const_int(1_i32).as_erased(), n.as_erased()])?;
 
 // loop: read the header params, compute, re-enter carrying the back-edge values.
 let acc: IntValue<'_, i32, _> = params[0].try_into()?;
 let i: IntValue<'_, i32, _> = params[1].try_into()?;
-let next_acc = b.build_int_mul(acc, i, "next_acc")?;
-let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
-b.build_cond_br_with_args(done, exit_label, &[], loop_label,
-    &[m.view(next_acc).into_erased(), m.view(next_i).into_erased()])?;
+let next_acc = b.int_mul(acc, i, "next_acc")?;
+let next_i = b.int_sub(i, 1_i32, "next_i")?;
+b.cond_br_with_args(done, exit_label, &[], loop_label,
+    &[m.view(next_acc).as_erased(), m.view(next_i).as_erased()])?;
 ```
 
-(The raw `build_int_phi` / `add_incoming` pair that predates block parameters is
+(The raw `int_phi` / `add_incoming` pair that predates block parameters is
 `pub(crate)` and cannot be called from outside the crate — that is deliberate,
 and a compile-fail fixture pins it. Block parameters and `SsaBuilder` are the
 two public ways to author a phi; `FnReshape::insert_phi` is the third, for
@@ -394,8 +427,8 @@ b.def_int_var(i_var, n)?;
 // loop block:
 let i = b.use_int_var(i_var)?;
 let acc = b.use_int_var(acc_var)?;
-let next_acc = b.ins()?.build_int_mul(acc, i, "next_acc")?;
-let next_i = b.ins()?.build_int_sub(i, 1_i32, "next_i")?;
+let next_acc = b.ins()?.int_mul(acc, i, "next_acc")?;
+let next_i = b.ins()?.int_sub(i, 1_i32, "next_i")?;
 b.def_int_var(acc_var, next_acc)?;
 b.def_int_var(i_var, next_i)?;
 b.seal_block(loop_bb)?; // completes both phis from the now-known predecessor set
@@ -439,7 +472,7 @@ reach codegen through upstream LLVM, and `llvmkit` when the task is IR
 construction / analysis and compile-time misuse safety matters more than
 having `libLLVM`'s full backend behind it.
 
-Migrating an existing inkwell codebase? [INKWELL_MIGRATION.md](INKWELL_MIGRATION.md)
+Migrating an existing inkwell codebase? [docs/inkwell-migration.md](docs/inkwell-migration.md)
 is a side-by-side guide: the API mapping table, the three structural differences
 to read first (no `Context` lifetime, owned modules, ids rather than handles),
 and the ledger of what each migration buys you at compile time.
@@ -483,7 +516,7 @@ and no runtime check to reach. Upstream accepts each of these as `Value *` and
 reports them from `Verifier.cpp`, later, if verification runs at all. The
 mapping from each upstream verifier message to the llvmkit type that forecloses
 it is tabulated in [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md),
-and 82 compile-fail fixtures lock the guarantees.
+and 86 compile-fail fixtures lock the guarantees.
 
 **3. Verification is a typestate, not a function you must remember to call.**
 `Module::verify(self)` consumes `Module<B, Unverified>` and returns
@@ -594,12 +627,12 @@ what keeps the deliberately-erased case sound instead of undefined.
 
 ### Instruction lifecycle safety
 
-`Instruction<'ctx, state::Attached>` is the lifecycle authority for erase,
+`Instruction<'ctx, state::Attached, B>` is the lifecycle authority for erase,
 detach, move, and RAUW operations. Those methods consume the handle, so a used
 lifecycle capability cannot be reused. Copyable discovery APIs return
 `InstructionView` instead: blocks, value use-lists, and per-opcode handles expose
 read-only inspection without minting a new mutation handle. Cursor-driven
-mutation uses `BlockCursor::next` on an unterminated block.
+mutation uses `BlockCursor::step` on an unterminated block.
 
 Run the examples:
 
@@ -611,14 +644,16 @@ cargo run -p llvmkit-asmparser --example lex_file -- crates/llvmkit-asmparser/ex
 cargo run -p llvmkit-ir --example build_add_function
 cargo run -p llvmkit-ir --example cpu_state_add
 cargo run -p llvmkit-ir --example factorial
+cargo run -p llvmkit-ir --example factorial_auto_ssa
 cargo run -p llvmkit-ir --example concurrent_counter
 cargo run -p llvmkit-ir --example derived_struct_function
 
 # Typed vectors and arrays: length/element mismatches become compile errors
 cargo run -p llvmkit-ir --example typed_vector_array
 
-# Build IR, run a built-in analysis, and register custom passes
+# Build IR, run a built-in analysis, and drive custom passes
 cargo run -p llvmkit-ir --example pass_manager_demo
+cargo run -p llvmkit-ir --example authored_pass
 ```
 
 ## Built-in Analyses and Custom Passes
@@ -759,19 +794,24 @@ impl EntryReachable {
 }
 ```
 
-expands to exactly this hand-written impl — the `<'ctx, B>` header, the
-associated-item block, and the `run` lifetimes are all supplied for you:
+expands to exactly this hand-written impl — the `<B>` header, the
+associated-item block, and `run`'s higher-ranked `'m` / `'ctx` regions and their
+where-clause are all supplied for you:
 
 ```rust
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for EntryReachable {
+impl<B: ModuleBrand> FunctionPass<B> for EntryReachable {
     type Access = Inspect;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "entry-reachable";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport> { /* body */ }
+        cx: FnCx<'m, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    { /* body */ }
 }
 ```
 
@@ -862,6 +902,7 @@ section) for the scoped-out items.
     ├── llvmkit-support/             # Span, Spanned<T>, SourceMap
     ├── llvmkit-asmparser/           # Lexer + .ll parser
     ├── llvmkit-macros/              # IrStruct derive, #[function_pass]/#[module_pass]
+    ├── llvmkit-tablegen/            # TableGen front end + intrinsic emitter
     └── llvmkit-ir/                  # Typed IR model, builder, verifier, passes
 ```
 
@@ -951,7 +992,7 @@ locks.
 - [LLVM Project](https://llvm.org/)
 - [LLVM Language Reference](https://llvm.org/docs/LangRef.html)
 - [Using the New Pass Manager](https://llvm.org/docs/NewPassManager.html)
-- [Writing an LLVM New PM Pass](https://releases.llvm.org/21.1.0/docs/WritingAnLLVMNewPMPass.html)
+- [Writing an LLVM New PM Pass](https://releases.llvm.org/22.1.0/docs/WritingAnLLVMNewPMPass.html)
 - [LLVM 22.1.4 release](https://github.com/llvm/llvm-project/releases/tag/llvmorg-22.1.4)
 
 ## License

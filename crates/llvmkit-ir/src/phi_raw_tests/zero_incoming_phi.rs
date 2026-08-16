@@ -14,7 +14,7 @@
 //! in-crate home.
 
 use crate::{
-    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult,
+    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IntValue, IrBuilder, IrError, IrResult,
     Linkage, Module, ModuleBrand, ReshapeCfg, VerifierRule, run_function_pass,
 };
 
@@ -104,7 +104,7 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
 ) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let to = m.view(f).append_basic_block(m, "to");
@@ -115,23 +115,23 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     let other_lbl = other.id();
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let x = b.build_int_add(a, 7_i32, "x")?;
-    let c = b.build_icmp_slt(a, 5_i32, "c")?;
-    b.build_cond_br(c, to_lbl, other_lbl)?;
+    let x = b.int_add(a, 7_i32, "x")?;
+    let c = b.icmp_slt(a, 5_i32, "c")?;
+    b.cond_br(c, to_lbl, other_lbl)?;
 
     // to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(to);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(to);
     let p = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_lbl)?;
-    let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
-    b.build_ret(u)?;
+    let u = b.int_add(p.as_int_value(), 1_i32, "u")?;
+    b.ret(u)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
+    b.ret(i32_ty.const_int(0_u32))?;
 
     Ok((f, to_lbl))
 }
@@ -193,7 +193,7 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
 ) -> IrResult<RedirectFixture<'ctx, B>> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let old_to = m.view(f).append_basic_block(m, "old_to");
@@ -206,27 +206,27 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     let new_to_lbl = new_to.id();
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let x = b.build_int_add(a, 7_i32, "x")?;
-    let c = b.build_icmp_slt(a, 5_i32, "c")?;
-    b.build_cond_br(c, old_to_lbl, other_lbl)?;
+    let x = b.int_add(a, 7_i32, "x")?;
+    let c = b.icmp_slt(a, 5_i32, "c")?;
+    b.cond_br(c, old_to_lbl, other_lbl)?;
 
     // old_to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old_to);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(old_to);
     let p = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_lbl)?;
-    let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
-    b.build_ret(u)?;
+    let u = b.int_add(p.as_int_value(), 1_i32, "u")?;
+    b.ret(u)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
+    b.ret(i32_ty.const_int(0_u32))?;
 
     // new_to: ret 1  (no leading phi -> redirect's `phi_values` slice is empty)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new_to);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new_to);
+    b.ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, old_to_lbl, new_to_lbl))
 }
@@ -298,20 +298,20 @@ fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
     let m = crate::module_new!("zero_incoming_reachable")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = m.view(f).append_basic_block(&m, "b");
     let b_label = b.id();
 
     // entry: br b   (so `b` is reachable from entry)
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    bld.build_br(b_label)?;
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    bld.br(b_label)?;
 
     // b: %p = phi i32   (no add_incoming) ; ret 0
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(b);
-    let _p = bld.view(bld.build_int_phi::<i32, _>("p")?);
-    bld.build_ret(i32_ty.const_int(0_u32))?;
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(b);
+    let _p = bld.view(bld.int_phi::<i32, _>("p")?);
+    bld.ret(i32_ty.const_int(0_u32))?;
 
     let err = m
         .verify_borrowed()
@@ -339,20 +339,20 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
 fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
     let m = crate::module_new!("zero_incoming_unreachable")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     // `u` has no edge into it — unreachable from entry.
     let u = m.view(f).append_basic_block(&m, "u");
 
     // entry: ret 0
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    bld.build_ret(i32_ty.const_int(0_u32))?;
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    bld.ret(i32_ty.const_int(0_u32))?;
 
     // u: %q = phi i32   (no add_incoming) ; ret 0
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(u);
-    let _q = bld.view(bld.build_int_phi::<i32, _>("q")?);
-    bld.build_ret(i32_ty.const_int(0_u32))?;
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(u);
+    let _q = bld.view(bld.int_phi::<i32, _>("q")?);
+    bld.ret(i32_ty.const_int(0_u32))?;
 
     m.verify_borrowed()
         .expect("a zero-incoming phi in an unreachable block is not this rule's concern");

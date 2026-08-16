@@ -25,8 +25,8 @@
 //! has no id layer to make the claim about.
 
 use llvmkit_ir::{
-    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass, IRBuilder, IntPredicate,
-    IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, Unverified, module_new,
+    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass, IntPredicate, IntValue,
+    IrBuilder, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, Unverified, module_new,
 };
 
 /// Everything the fixture hands back: the function plus the four block ids a
@@ -52,7 +52,7 @@ struct Fixture<B: ModuleBrand> {
 /// exactly a block replace-all-uses of `old` by `new`.
 fn build<'ctx, B: ModuleBrand + 'ctx>(m: &'ctx Module<B, Unverified>) -> IrResult<Fixture<B>> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let function = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
     let entry = m.view(function).append_basic_block(m, "entry");
@@ -64,19 +64,19 @@ fn build<'ctx, B: ModuleBrand + 'ctx>(m: &'ctx Module<B, Unverified>) -> IrResul
     // Capture the ids up front — this is the client's side map.
     let (left_id, right_id, old_id, new_id) = (left.id(), right.id(), old.id(), new.id());
 
-    let bo = IRBuilder::new_for::<Dyn>(m).position_at_end(old);
-    bo.build_ret(i32_ty.const_int(3_i32))?;
-    let bn = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
-    bn.build_ret(i32_ty.const_int(7_i32))?;
-    let bl = IRBuilder::new_for::<Dyn>(m).position_at_end(left);
-    bl.build_br(old_id)?;
-    let br = IRBuilder::new_for::<Dyn>(m).position_at_end(right);
-    br.build_br(old_id)?;
+    let bo = IrBuilder::new_for::<Dyn>(m).position_at_end(old);
+    bo.ret(i32_ty.const_int(3_i32))?;
+    let bn = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
+    bn.ret(i32_ty.const_int(7_i32))?;
+    let bl = IrBuilder::new_for::<Dyn>(m).position_at_end(left);
+    bl.br(old_id)?;
+    let br = IrBuilder::new_for::<Dyn>(m).position_at_end(right);
+    br.br(old_id)?;
 
-    let be = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let be = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(function).param(0)?.try_into()?;
-    let c = be.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "c")?;
-    be.build_cond_br(c, left_id, right_id)?;
+    let c = be.int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "c")?;
+    be.cond_br(c, left_id, right_id)?;
 
     Ok(Fixture {
         function,

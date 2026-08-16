@@ -54,6 +54,24 @@ impl AttributeMask {
                 Attribute::Memory(_) => {
                     self.enum_kinds.insert(AttrKind::Memory);
                 }
+                Attribute::NoFpClass(_) => {
+                    self.enum_kinds.insert(AttrKind::NoFpClass);
+                }
+                Attribute::AllocSize { .. } => {
+                    self.enum_kinds.insert(AttrKind::AllocSize);
+                }
+                Attribute::VScaleRange { .. } => {
+                    self.enum_kinds.insert(AttrKind::VscaleRange);
+                }
+                Attribute::AllocKind(_) => {
+                    self.enum_kinds.insert(AttrKind::AllocKind);
+                }
+                Attribute::Captures(_) => {
+                    self.enum_kinds.insert(AttrKind::Captures);
+                }
+                Attribute::Initializes(_) => {
+                    self.enum_kinds.insert(AttrKind::Initializes);
+                }
                 Attribute::String { key, .. } => {
                     self.target_dep_attrs.insert(key.clone());
                 }
@@ -80,6 +98,12 @@ impl AttributeMask {
             }
             Attribute::Range { .. } => self.contains_kind(AttrKind::Range),
             Attribute::Memory(_) => self.contains_kind(AttrKind::Memory),
+            Attribute::NoFpClass(_) => self.contains_kind(AttrKind::NoFpClass),
+            Attribute::AllocSize { .. } => self.contains_kind(AttrKind::AllocSize),
+            Attribute::VScaleRange { .. } => self.contains_kind(AttrKind::VscaleRange),
+            Attribute::AllocKind(_) => self.contains_kind(AttrKind::AllocKind),
+            Attribute::Captures(_) => self.contains_kind(AttrKind::Captures),
+            Attribute::Initializes(_) => self.contains_kind(AttrKind::Initializes),
             Attribute::String { key, .. } => self.contains_string(key),
         }
     }

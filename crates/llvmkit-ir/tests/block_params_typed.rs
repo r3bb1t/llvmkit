@@ -2,11 +2,11 @@
 //! a [`FunctionParamList`]-shaped parameter tuple is stamped with that tuple as
 //! its `Params` marker and hands back *typed* parameter handles sourced from the
 //! block's leading head-phis — the block-argument analog of a typed function's
-//! `params()`. The erased [`IRBuilder::append_block_with_params`] keeps
+//! `params()`. The erased [`IrBuilder::append_block_with_params`] keeps
 //! producing the parameter-erased `Vec<Value>` form, unchanged.
 
 use llvmkit_ir::{
-    BasicBlock, BasicBlockLabel, BlockId, BlockParamsDyn, IRBuilder, IntValue, IrError, Linkage,
+    BasicBlock, BasicBlockLabel, BlockId, BlockParamsDyn, IntValue, IrBuilder, IrError, Linkage,
     PointerValue, Ptr, Unterminated, Value, module_new,
 };
 
@@ -25,7 +25,7 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
 
-    let b = IRBuilder::new_for::<()>(&m);
+    let b = IrBuilder::new_for::<()>(&m);
 
     // Compile-time assertion: the returned block is stamped with the
     // `(i32, Ptr)` schema and the values are that schema's typed handles.
@@ -36,8 +36,8 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
 
     // Runtime: each handle's IR type matches its schema position, and both
     // are sourced from the freshly built head-phis.
-    assert_eq!(p0.into_erased().ty(), i32_ty.as_type());
-    assert_eq!(p1.into_erased().ty(), ptr_ty.as_type());
+    assert_eq!(p0.as_erased().ty(), i32_ty.as_type());
+    assert_eq!(p1.as_erased().ty(), ptr_ty.as_type());
 
     // Compile-time assertion: the typed block's id threads `Params`, so a
     // typed branch target keeps its `(i32, Ptr)` promise, and viewing it
@@ -59,7 +59,7 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
 }
 
 /// The typed constructor is additive: the erased
-/// [`IRBuilder::append_block_with_params`] still returns the parameter-erased
+/// [`IrBuilder::append_block_with_params`] still returns the parameter-erased
 /// block (`Params` defaulting to [`BlockParamsDyn`]) paired with a
 /// `Vec<Value>` of untyped head-phi results — unchanged by this slice.
 #[test]
@@ -70,7 +70,7 @@ fn append_block_with_params_stays_erased() -> Result<(), IrError> {
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
 
-    let b = IRBuilder::new_for::<()>(&m);
+    let b = IrBuilder::new_for::<()>(&m);
 
     // Compile-time assertion: the erased sibling yields a `BlockParamsDyn`
     // block and an untyped `Vec<Value>`, exactly as before.
@@ -95,7 +95,7 @@ fn append_block_typed_unit_params() -> Result<(), IrError> {
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
 
-    let b = IRBuilder::new_for::<()>(&m);
+    let b = IrBuilder::new_for::<()>(&m);
 
     let (head, ()): (BasicBlock<'_, (), Unterminated, _, ()>, ()) =
         b.append_block_typed::<(), _>(m.view(f), "head")?;

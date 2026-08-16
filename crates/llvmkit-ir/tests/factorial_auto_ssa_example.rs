@@ -6,12 +6,12 @@
 //!
 //! example: locks output of `examples/factorial_auto_ssa.rs`. Closest
 //! upstream functional pattern: `unittests/IR/IRBuilderTest.cpp`
-//! (recursive / looped function building via IRBuilder) -- same
+//! (recursive / looped function building via IrBuilder) -- same
 //! reference `tests/factorial_example.rs` cites, since this is the same
 //! IR built through a different construction path.
 //!
 //! This is the flagship D11 example-lock: [`SsaBuilder`]'s Braun
-//! on-the-fly SSA engine and the manual `build_int_phi`/`add_incoming`
+//! on-the-fly SSA engine and the manual `int_phi`/`add_incoming`
 //! construction in `examples/factorial.rs` print IDENTICAL `.ll` for the
 //! same factorial loop. The expected string below is DUPLICATED from
 //! `tests/factorial_example.rs::factorial_example_emits_locked_ir`

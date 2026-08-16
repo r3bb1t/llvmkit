@@ -7,6 +7,3997 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+> **These entries will also ship as 0.0.4.** crates.io has 0.0.3, so nothing
+> below the `[0.0.4]` heading further down has shipped either — that section
+> covers the id-first redesign (cycles A–E) specifically, and this one covers
+> everything since. Two "unreleased" headings is an artifact of work continuing
+> past the 0.0.4 freeze, not two pending releases; they collapse into one entry
+> when the tag is cut.
+>
+> Every entry *below* the API idiomatics program predates its renames and keeps
+> the spellings those cycles actually shipped (`IRBuilder`,
+> `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
+> mapping to today's names; no earlier entry was rewritten to hide the change.
+
+### The parity ledger and every doc count are re-derived from the tree (LLParser parity W14d)
+
+Documentation and measurement only — no crate source changed, so there is no
+API or behavioural delta in this entry.
+
+- **Changed: `UPSTREAM.md`'s header carries a real recount**, which its own
+  warning block had been demanding since Wave 11. At this commit: **2508
+  `#[test]` functions** (2503 distinct names), **2077 rows**, **2180 distinct
+  tests with provenance**, **323 with none**, and **zero rows naming a test that
+  no longer exists**. The count agrees with the gate, which reports 2508 passed
+  across 214 test binaries.
+
+- **Changed: the recount expands group rows.** Through Wave 11 the audit matched
+  rows by looking for a `path.rs::name` reference, which skipped the 19 rows
+  covering a whole file or a named run (`(whole file)`, `(all seven)`,
+  `` `a` … `z` ``, `` `*_display_and_from_str_round_trip` ``). Those are real
+  provenance. Counting the old way at this commit gives 2037 covered / 466
+  unrowed, so **143 of the 146-row improvement is the counting fix, not new
+  rows** — the header says so rather than letting the number flatter the work.
+
+- **Changed: `CLAUDE.md`'s suite figures**, `2435 tests, 212 binaries` ->
+  `2508 tests, 214 binaries`, and its `UPSTREAM.md` summary to match the
+  recount. The trybuild figure it carries was re-derived and is unchanged: 87
+  registered fixtures (86 `compile_fail` + 1 `pass`), all 87 present on disk,
+  none unregistered.
+
+- **Added: `docs/future-work.md` records what Wave 14 leaves** — of the 516
+  exact `LLParser.cpp` message literals, 466 are covered and 50 are not, of
+  which **4 are `N/A`** (no reachable trigger) and **46 are real gaps**, each
+  classified with upstream's function and channel.
+
+- **Recorded: `-non-global-value-max-name-size` is a divergence, not a missing
+  string.** `NonGlobalValueMaxNameSize` is `cl::init(1024)` in `lib/IR/Function.cpp`,
+  not off, so LLVM truncates and then rejects a function-local name longer than
+  1024 characters where llvmkit accepts it. `getVal`'s `name is too long …`
+  fires only after that rename, so it cannot be reached until llvmkit's
+  function-local symbol table grows a name cap.
+
+- **Corrected: the program's recorded parity numbers were measured with a broken
+  tool.** The ledger generator's llvmkit-side extractor was a regex over
+  `"..."`, which desynchronizes permanently at the first lone `"` inside a `//`
+  comment — llvmkit has one in `ll_parser.rs` — and it harvested only
+  `#[error("…")]` from `llvmkit-ir`, missing the ptrauth checks that carry text
+  in a `message:` field. Both are fixed, and a template column now credits the
+  34 upstream literals llvmkit renders through one interpolated message
+  (`{opcode} constexprs are no longer supported` and two others) — and, applied
+  to the lexer section, takes `LLLexer.cpp` to **11 of 11 covered**. The
+  consequence is that the recorded "411 present / 105 missing" was never right:
+  Wave 11 re-measures at 412/104 and Waves 12-13 at 427/89, where the old tool
+  reported 335 — a 76-message "regression" that never happened.
+
+### `llvm/test/Assembler` is classified end to end, and 491 fixtures move into the corpus (LLParser parity W14c)
+
+- **Added: `docs/fixture-coverage.md`**, a per-fixture classification of all 500
+  `llvm/test/Assembler/*.ll` fixtures into `ported` (397), `blocked-model` (102,
+  each naming one of 21 catalogued gaps) or `N/A` (1). It is measured, not
+  asserted: every fixture was parsed, verified, printed, re-parsed and
+  re-printed, and every negative was matched against its own `FileCheck` lines
+  under FileCheck's substring rule, with the fixture's real check prefixes and
+  `[[@LINE±N]]` resolved. The 21 `split-file` containers are split the way
+  `llvm/utils/split-file` splits them, giving 624 units rather than 500 files.
+
+- **Changed: `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`
+  grows from 11 rows to 502**, adding 491 byte-for-byte copies of upstream
+  fixtures (or of one `split-file` part). 307 are negatives that must be
+  rejected — 302 of them pinning upstream's own diagnostic text and 52 also
+  pinning its `<stdin>:LINE:COL:`. 192 (up from 8) are positives that must
+  parse, verify and round-trip.
+
+- **Changed: `parser_corpus.rs`** gains a `reject` status with `error=` and
+  `loc=` pins, a `config=allow-incomplete-ir` option mapping to
+  `ParserConfig::allow_incomplete_ir`, and a **round-trip stability** assertion
+  on every `pass` row: printing the module, re-parsing the print and printing
+  again must reproduce the first print byte for byte.
+
+- **Fixed (breaking, printer): named metadata now prints *before* numbered
+  metadata**, as `AssemblyWriter::printModule` does — it runs its
+  `M->named_metadata()` loop ahead of `writeAllMDNodes()`. llvmkit had the two
+  sections the other way round, which was also why 12 upstream debug-info
+  fixtures printed text that re-parsed to different metadata numbering.
+
+- **Fixed (breaking, printer): a function's `addrspace(...)` is printed whenever
+  the module's program address space is non-zero**, matching
+  `printFunction`'s `ForcePrintAddressSpace`. Printing `define ptr
+  addrspace(0) @f() addrspace(0)` under `target datalayout = "P2"` used to drop
+  the `addrspace(0)`, so the printed module re-parsed into the program address
+  space instead — a silent miscompile of the text form.
+
+### The keyword and token tables are diffed against `LLLexer.cpp`, and locked (LLParser parity W14b)
+
+- **Added: `crates/llvmkit-asmparser/tests/lexer_token_drift.rs`**, the fifth
+  drift guard, and the first to cover the lexer's own tables rather than one
+  vocabulary they carry. `lib/AsmParser/LLLexer.cpp` and
+  `include/llvm/AsmParser/LLToken.h` are now vendored under
+  `crates/llvmkit-asmparser/tablegen/llvm-22.1.4/`, and the test reads their
+  `KEYWORD` / `TYPEKEYWORD` / `INSTKEYWORD` / `DWKEYWORD` /
+  `DBGRECORDTYPEKEYWORD` macro tables, the six hand-written tails (`DIFlag`,
+  `DISPFlag`, `CSK_`, emission kind, name-table kind, fixed-point kind) and
+  the punctuation arms of `LLLexer::LexToken`. Every spelling is probed
+  through the public `Lexer`,
+  so a word routed to the *wrong* family fails as loudly as a missing one; the
+  backward direction is closed against an explicit `NON_UPSTREAM_KEYWORDS`
+  list, and the `lltok::Kind` enum itself is checked entry by entry.
+
+- **Removed (breaking): `Token::SpecializedMetadata`.** It had no `lltok`
+  counterpart and carried a hand-written list of eighteen of the thirty-two
+  `DI*` node names — a second, stale keyword table nothing cross-checked.
+  `!DIFile` was never lexed through it (`LLLexer::LexExclaim` makes that a
+  `MetadataVar`, and so does llvmkit), so the variant only ever fired on a
+  *bare* `DIFile`, which upstream lexes as `lltok::Error`. It now does here too.
+
+- **Added (breaking): `Token::LabelId(u32)`, a port of `lltok::LabelID`.**
+  llvmkit had no numeric-label token, so `42:` and `"42":` were both
+  `Token::LabelStr` and the parser rebuilt the distinction downstream by
+  re-testing the label text for digits and peeking at the source byte under
+  its span. The consequence was live: `4294967296:` built a basic block
+  *named* `4294967296` and printed it back as `"4294967296":`, where `llvm-as`
+  reports `invalid value number (too large)`. It now reports that too, and a
+  label wider than 64 bits reports `constant bigger than 64 bits detected` —
+  which gives `LexError::IntegerOverflow64` its first construction site.
+
+- **Fixed: the `cc` rewind fires where `LLLexer`'s does.** `LexIdentifier`'s
+  `// If this is "cc1234", return this as just "cc".` case tests the two source
+  bytes, so any otherwise-unknown word opening `cc` becomes `kw_cc` plus its
+  tail; llvmkit required the tail be all digits, making `ccfoo` a lex error
+  here and a calling convention there.
+
+- **Recorded: `exnref` is an llvmkit extension** (`docs/divergences.md` 103).
+  It is the one spelling the two keyword tables disagree on. LLVM 22.1.4 has no
+  `exnref` type keyword, no `Type::TypeID` for it and no `IIT_VT<exnref>`;
+  llvmkit models the type so the WebAssembly exception intrinsics get
+  well-formed signatures, and the keyword exists so that printed output
+  re-parses. Removing the keyword alone would open a print-but-not-parse hole,
+  so it stays, listed and argued for rather than silent.
+
+### The lexer stops writing diagnostics the parser is supposed to write (LLParser parity W14a)
+
+- **Added: `Token::Error`, a port of `lltok::Error`.** `LLLexer` produces one
+  at twenty-one places, and records no message at eleven of them; `LLParser`
+  answers those from the production it was in the middle of. llvmkit's lexer
+  instead failed outright with a message of its own, so every one of upstream's
+  was unreachable behind a misspelled word.
+
+- **Removed (breaking): `LexError::UnknownToken`, `LexError::StraySlash` and
+  the whole `UnknownTokenReason` enum.** The seven diagnostics they carried —
+  `no token starts with '?'`, `expected a comdat name after '$'`,
+  `'.' is a token only as part of '...'`,
+  `expected '.' in the '+'-prefixed floating-point literal`,
+  `expected hexadecimal digits after '0xK'`,
+  `expected '*' after '/' to start block comment` and
+  `unknown keyword 'nocalback'` — had no upstream counterpart and displaced
+  the ones that do. Those sites now yield `Ok(Token::Error)` with `LLLexer`'s
+  own cursor position (`TokStart+1`, or `TokStart+3` after a bad `[us]0x`
+  prefix, or `TokStart+2` after a `/` with no `*`). `LexError` is now exactly
+  the set of `LLLexer::LexError` call sites — the failures upstream *does*
+  write a message for, and ranks above the parser's via
+  `LLLexer::ErrorPriority`.
+
+- **Changed: eighteen upstream fixtures that could not be ported are now
+  ported.** All eight splits of `test/Assembler/memory-attribute-errors.ll`
+  (was five), all eleven `byref-parse-error-*.ll` (was four),
+  `invalid-inline-constraint.ll`, `uwtable-1.ll`, `uwtable-2.ll`, the
+  `invalid-component` split of `captures-errors.ll`,
+  `invalid-c-style-comment2.ll`, `invalid-specialized-mdnode.ll`,
+  `invalid-hexint.ll`, and `dbg-record-invalid-4.ll` — which now asserts
+  upstream's `expected debug record type here` instead of llvmkit's
+  `unknown keyword 'dbg_invalid'`. `invalid-c-style-comment{1,3}.ll` land
+  alongside them: they were never blocked, only unported, and the family
+  reads better whole.
+
+- **Added: a metadata field now names its own family when nothing usable
+  follows the colon.** `parse_metadata_field_value` takes the declared
+  `MetadataFieldKind` and reports what that field's `LLParser::parseMDField`
+  overload reports: `expected emission kind`, `expected nameTable kind`,
+  `expected fixed-point kind`, `expected DWARF tag`, `expected DWARF type
+  attribute encoding`, `expected DWARF virtuality code`, `expected DWARF
+  language`, `expected DWARF source language name`, `expected DWARF calling
+  convention` and `expected DWARF macinfo type` — ten strings llvmkit could
+  not produce at all before, where it said `expected metadata field value`.
+  No upstream `.ll` covers them (`test/Assembler` writes only the `invalid …`
+  triggers), so they are rule-anchored on the overloads. What each field
+  *accepts* is unchanged; `docs/divergences.md` entry 34 carries that half.
+
+- **Changed: all three `ParseError::Lex`-to-`Expected` rewrites deleted.** They
+  existed because the lexer failed where upstream hands over a token, and each
+  displaced a message.
+  - `valid shufflevector mask element` is gone — `LLParser::parseShuffleVector`
+    re-words nothing, so a bad mask element is `expected value token` from
+    `parseValID`.
+  - `parse_type`'s trailing-garbage remap is gone; the `expected end of string`
+    it produced now comes from `require_eof`, which is where `llvm::parseType`
+    gets it.
+  - `parse_constant_value`'s is gone too, and that one was also mis-wording a
+    real failure: `parse_constant_value("42 \"unterminated", …)` answered
+    `expected end of string`, burying the lexer's
+    `end of file in string constant`. Upstream's `ErrorPriority` says the
+    opposite — `parseStandaloneConstantValue`'s `expected end of string` is a
+    *parser* diagnostic and is dropped in favour of the lexer's — so the
+    lexer's message is now what surfaces.
+
+### AutoUpgrade — the module-level half (LLParser parity W13d)
+
+- **Added: `llvmkit_ir::auto_upgrade`, a port of `llvm/lib/IR/AutoUpgrade.cpp`.**
+  It lives in `llvmkit-ir` rather than the parser crate because that is upstream's
+  own layering — `AutoUpgrade.cpp` is `lib/IR`, reached from both the textual
+  parser and (upstream) the bitcode reader. Three entry points ship:
+  `upgrade_module_flags` (`llvm::UpgradeModuleFlags`),
+  `upgrade_section_attributes` (`llvm::UpgradeSectionAttributes`) and
+  `upgrade_tbaa_node` (`llvm::UpgradeTBAANode`).
+
+- **Changed: parsing a module now upgrades it, at upstream's own call sites.**
+  `Parser::parse_module` runs the three upgrades from
+  `LLParser::validateEndOfModule`'s positions, so legacy input is modernised the
+  way `llvm-as` modernises it: `PIC Level` moves from `Error`/`Max` to `Min` and
+  `PIE Level` from `Error` to `Max`; `branch-target-enforcement` and
+  `sign-return-address*` move from `Error` to `Min`;
+  `Objective-C Image Info Section` loses the spaces around its commas;
+  `amdgpu_code_object_version` is renamed `amdhsa_code_object_version`;
+  `Objective-C Garbage Collection` narrows from `i32` to `i8` and, when its high
+  bits are set, emits the three `Swift * Version` flags; a module with
+  `Objective-C Image Info Version` and no `Objective-C Class Properties` gains
+  one. A `__DATA, __objc_catlist, ...` section name is rewritten to
+  `__DATA,__objc_catlist,...`. A scalar-format `!tbaa` tag becomes the
+  struct-path-aware form. Modules that carry none of these are byte-identical to
+  before.
+
+- **Added: `LLParser::InstsWithTBAATag`.** The parser now records every
+  instruction that took a `!tbaa` attachment, which is what the `UpgradeTBAANode`
+  loop drains — the same list upstream fills in `parseInstructionMetadata`.
+
+- **Known divergence, recorded not worked around:** llvmkit's printer numbers
+  every metadata node in the arena rather than walking reachability the way
+  `SlotTracker::processModule` does, so a flag tuple that `UpgradeModuleFlags`
+  replaces still prints as an unreferenced `!N`. The output re-parses but is not
+  byte-identical to `llvm-dis`. `docs/divergences.md` entry 99 has the fix.
+
+- Six of `validateEndOfModule`'s nine `AutoUpgrade.h` call sites remain — the
+  intrinsic trio, `UpgradeDebugInfo`, `UpgradeNVVMAnnotations` and
+  `copyModuleAttrToFunctions` — each with a named blocker in
+  `docs/future-work.md`. The target-specific intrinsic rewrite bodies stay a
+  separate milestone.
+
+### Parser configuration and the entry-point surface (LLParser parity W13c)
+
+- **Added: `ParserConfig`, and a `_with_config` twin for every entry point that
+  reads a whole module.** It carries `LLParser::Run`'s two parameters —
+  `upgrade_debug_info` and `data_layout_callback` — plus the
+  `-allow-incomplete-ir` option `LLParser.cpp` reads off the command line.
+  `ParserConfig::DEFAULT` is what `parseAssembly` passes, so every existing
+  entry point behaves exactly as before. New: `parse_into_with_config`,
+  `parse_dynamic_with_config`, `parse_branded_with_config`,
+  `parse_assembly_with_config`, `parse_assembly_file_with_config`,
+  `parse_assembly_with_index_and_config`,
+  `parse_assembly_with_context_and_config`, and
+  `Parser::parse_module_with_config`.
+
+- **Added: `LLParser::parseTargetDefinitions` as a leading pre-pass, which is
+  what makes the data-layout callback possible.** The file's layout string is
+  now held *tentative* across the whole leading run of `target` /
+  `source_filename` entities, so the callback is offered the target triple
+  beside it — even one declared below the layout line — and can replace the
+  string before `DataLayout::parse` sees it. A layout string this build cannot
+  parse is therefore importable. Recorded in `docs/divergences.md` D15: llvmkit
+  still accepts a `target` entity *after* other entities, which upstream rejects,
+  and such a late one bypasses the callback.
+
+- **Added: `allow_incomplete_ir` synthesises declarations for leftover forward
+  references**, porting `validateEndOfModule`'s `GetCommonFunctionType` — a
+  function at the one signature every call site used, an `i8` global otherwise.
+  Off by default, as `cl::init(false)` is. Two of upstream's three tolerances
+  are not implemented and say so in the rustdoc: `dropUnknownMetadataReferences`
+  (`docs/divergences.md` D13) and the relaxed TBAA assertion, which has no
+  counterpart because `AutoUpgrade` is not ported. `upgrade_debug_info` likewise
+  selects nothing yet, for the same reason (D11).
+
+- **Fixed!: `AsmParserContext` is filled from real token spans.** It used to be
+  reconstructed *after* the parse by a line-scanning heuristic that grepped the
+  source for `"define "`, `"@name("` and `"}"`, gave every instruction the whole
+  line it sat on, and gave every block of a function the same end position.
+  Two definitions on one line were indistinguishable, and a function whose name
+  appeared in another `define` line could take that line's range. The parser now
+  records at the three sites `LLParser` records at — `parseDefine` for a
+  function, `parseBasicBlock` for a block and for each instruction — each range
+  running from the construct's first token to `LLLexer::PrevTokEnd`.
+  `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest,
+  ParserObjectLocations)` now ports exactly, expected columns included.
+
+- **Changed!: `ParsedModule` gained a `parser_context` field.** It is upstream's
+  third out-parameter, and it travels with the slot mapping and the summary
+  index for the same reason they do — all three borrow the module they were
+  parsed against. `Parser::with_context` lost its unused
+  `&mut AsmParserContext` parameter, which no caller could have named.
+
+- **Fixed: `SlotMapping`'s doc comment claimed `metadata_nodes` was omitted.**
+  The field has existed since the metadata subsystem landed; the prose now
+  describes it, and the `attribute_groups` field that has no upstream
+  counterpart.
+
+- **Recorded, not invented:** `Can't read textual IR with a Context that
+  discards named Values` is structurally unreachable here — llvmkit has no
+  discard-names mode for the guard to read (`docs/divergences.md` D10). Two new
+  findings that surfaced while porting `incomplete-ir-declarations.ll` are
+  recorded rather than fixed: llvmkit splits upstream's single `ForwardRefVals`
+  across two maps, so a name whose call sites disagree keeps its first signature
+  and a different leftover is reported (D12); and a `declare` prints its
+  parameter names where `AssemblyWriter::printFunction` prints only types (D14).
+
+### End of module (LLParser parity W13a, W13b)
+
+- **Changed: the end-of-module checks run in `LLParser::validateEndOfModule`'s
+  order.** Which error a module with two unrelated defects reports is
+  observable, and llvmkit ran the steps in an order of its own — metadata
+  second, blockaddresses fourth, comdats eighth. A module with an undefined
+  comdat *and* an undefined metadata node reported the metadata where upstream
+  reports the comdat.
+
+- **Fixed: a global initializer is parsed inline, like `parseGlobal` does.**
+  llvmkit used to scan an initializer for `blockaddress`, `dso_local_equivalent`
+  or `no_cfi`, skip it, and re-parse it from raw source at end of module through
+  a *fresh* parser — so any forward reference the re-parse recorded was dropped
+  with that parser. Consequences, all now gone: a `blockaddress` naming a
+  function that was never defined parsed **successfully** and printed
+  `@g = global ptr <forward reference>`; a `blockaddress` naming a *numbered*
+  label of a later function (`test/Assembler/pr119818.ll`) was rejected outright,
+  because by re-parse time that function's numbering no longer existed; and
+  every leftover guard was preempted by whatever the re-parse reported first.
+
+- **Fixed: a forward `dso_local_equivalent` is deferred, as upstream defers it.**
+  `parseValID`'s `kw_dso_local_equivalent` arm records into
+  `ForwardRefDSOLocalEquivalentIDs` / `…Names` and `validateEndOfModule` drains
+  them, ids before names. llvmkit resolved eagerly and answered
+  `use of undefined global '@f'`; it now answers upstream's
+  `unknown function '<name>' referenced by dso_local_equivalent` and
+  `expected a function, alias to function, or ifunc in dso_local_equivalent`,
+  in upstream's position. Upstream's quirk is reproduced: the *numbered*
+  spelling leaves `ValID::StrVal` empty, so the message really does read
+  `unknown function '' referenced by dso_local_equivalent`.
+
+- **Fixed: a forward `blockaddress` whose type disagrees is reported in
+  `checkValidVariableType`'s words.** Upstream retires a *deferred*
+  blockaddress through `PerFunctionState::resolveForwardRefBlockAddresses`,
+  which says `'bb' defined with type 'ptr addrspace(1)' but expected
+  'ptr addrspace(2)'` at the *label*. llvmkit reported
+  `constant expression type mismatch` there — which is the right sentence only
+  for the *same-function* form, where upstream builds the constant at once and
+  `convertValIDToValue` compares it.
+
+- **Fixed: `type of blockaddress must be a pointer and not 'i8'`.** Upstream
+  asks this only inside the `if (!F)` branch, where the demanded type has to
+  supply the placeholder's address space; llvmkit asked it unconditionally and
+  in its own words (`expected pointer type for blockaddress`).
+
+### Ordered use-lists and `uselistorder` (LLParser parity W12)
+
+- **Breaking: `Display for Module` no longer emits `uselistorder`
+  directives.** That is `Module::print`'s default — `ShouldPreserveUseListOrder
+  = false`, what `llvm-dis` passes. Ask for them with the new
+  `Module::preserving_use_list_order()`, the `llvm-as` /
+  `opt -S -preserve-ll-uselistorder` behaviour.
+
+- **Breaking: the stored-directive model is gone.** `UseListOrderRecord`,
+  `UseListOrderBbRecord`, `Module::append_use_list_order{,_bb}` and
+  `FunctionValue::append_use_list_order` are deleted. llvmkit used to replay
+  the directives an input carried; it now *derives* them from the actual
+  use-list order, porting `AsmWriter.cpp`'s `orderModule`,
+  `predictValueUseListOrder` and `predictUseListOrder`. A module assembled by
+  hand prints directives just as readily as one parsed from `.ll`.
+
+- **Changed: the use list is newest-first.** `ValueData::add_use` prepends,
+  mirroring `Value::addUse` → `Use::addToList`, and RAUW moves a value's uses
+  onto its replacement *reversed*, mirroring the drain loop in
+  `Value::replaceAllUsesWith`. That reversal is what
+  `predictValueUseListOrder` compensates for with `GetsReversed`, so
+  reproducing it is what makes a forward-referenced value's shuffle match
+  upstream. `Value::users()` iterates in that order.
+
+- **Added: basic blocks carry use edges.** `BranchInst`, `SwitchInst`,
+  `IndirectBrInst`, `InvokeInst`, `CallBrInst`, `CatchSwitchInst`,
+  `CleanupReturnInst` and `CatchReturnInst` all hold their successors as
+  `Use`s upstream, and `BlockAddress`'s operands are `[Function, BasicBlock]`.
+  llvmkit registered none of them, so every block's use list was empty and
+  `uselistorder label %bb` reported `value has no uses`. A phi still uses no
+  block — upstream keeps its incoming blocks out of the use list too.
+
+- **Fixed: a global's uses were counted against an interned wrapper.** llvmkit
+  interns a pointer-typed `GlobalValueRef` to stand for `@g` where a constant
+  is wanted; because it is interned, three aliases of one global shared one
+  node and `num_uses` answered 1 where upstream answers 3. Alias, ifunc
+  resolver, initializer, personality, prefix and prologue edges now register
+  against the global itself.
+
+- **Fixed: `parseValID` no longer rejects a function-local name early.**
+  Upstream records `t_LocalName` / `t_LocalID` unresolved and lets
+  `convertValIDToValue` answer `invalid use of function-local name`; llvmkit
+  rejected at parse time with an invented `expected global constant value`,
+  which shadowed upstream's message and made `parseUseListOrderBB` — which
+  reads both operands with `parseValID(…, nullptr)` precisely so it can
+  inspect `ID.Kind` — impossible to port.
+
+- **Added:** `Value::sort_use_list` (`LLParser::sortUseListOrder`) with its
+  three diagnostics as `UseListOrderError`; `Value::has_use_list`
+  (`Value::hasUseList`) and `Constant::is_constant_data`, so a `uselistorder`
+  naming a `ConstantInt` is the silent no-op upstream makes it.
+
+- **Added: the full `parseUseListOrderIndexes` validation** — the `Offset`,
+  `Max` and `IsOrdered` accumulators and all four of its texts. llvmkit used
+  to accept `{}` and any out-of-range or duplicated vector.
+
+- **Added: `parseUseListOrderBB` proper**, with its six diagnostics, routed
+  through `parseValID` like upstream instead of through hand-written token
+  matching.
+
+- **New:** `docs/divergences.md`, a ledger of the behavioural differences from
+  upstream that are known and still open, with a fix sketch for each.
+
+### Metadata tail
+
+- **Fixed (P0): `metadata i32 %a` did not parse at all.** `parseParameterList`
+  branches on the argument type — a `metadata` parameter takes
+  `parseMetadataAsValue`, not `parseValue` — and llvmkit went straight to
+  `parseValue`, which has no arm for a type-and-value pair. That is the
+  `ValueAsMetadata` form, and it is how **every** old-format debug intrinsic
+  spells its operands: `call void @llvm.dbg.value(metadata i32 %a, metadata
+  !12, metadata !DIExpression())`. Any module produced before the
+  record-based debug format was rejected outright.
+
+- **Added: `DIArgList`.** A new `MetadataKind::ArgList`, because `Metadata.def`
+  declares `DIArgList` as a top-level `HANDLE_METADATA_LEAF` and not as a
+  specialized `DI*` node — which is why the 32-variant
+  `SpecializedMetadataKind` was correctly complete without it. It is uniqued,
+  an empty list is legal, and it may only appear inline: its operands can be
+  function-local, which is why `parseMetadata` special-cases it ahead of
+  `parseSpecializedMDNode` and `parseNamedMetadata` refuses one outright.
+  Its operands register real use edges, all of them.
+
+- **Added: the debug-format intermix guard.** `llvm.dbg intrinsic should not
+  appear in a module using non-intrinsic debug info` and `debug record should
+  not appear in a module containing debug info intrinsics`, at the two sites
+  that set upstream's `SeenNewDbgInfoFormat` / `SeenOldDbgInfoFormat` pair.
+
+- **Added: the field-agreement rules.** The checks that live *below* the
+  `PARSE_MD_FIELDS()` macro in each class's own routine, and are the reason
+  those routines have a body at all beyond the macro: `!DICompileUnit`'s
+  `distinct` requirement plus its three language rules, `!DIFile`'s
+  `'checksumkind' and 'checksum' must be provided together`, `!DIEnumerator`'s
+  `unsigned enumerator with negative value`, and `!DISubprogram`'s definition
+  guard — which reads the *computed* `SPFlags`, so an explicit
+  `spFlags: DISPFlagDefinition` trips it exactly as `isDefinition: true` does.
+
+- **Fixed: llvmkit's own debug-metadata fixtures encoded invalid IR.**
+  Enforcing the `distinct` requirement broke seven tests at once: nineteen
+  `!DICompileUnit` sites across five files were non-`distinct`, and most also
+  omitted `language:` entirely, which upstream rejects too. The fixtures were
+  written against a parser that never checked either. They are corrected to IR
+  upstream accepts, so each test still tests what it meant to.
+
+- **Added: `DW_APPLE_ENUM_KIND_*` and its drift lock.** `DICompositeType`'s
+  `enumKind:` field was unvalidated because the table was unmodelled. It now
+  lives in `llvmkit_ir::dwarf` with a `dwarf_def_drift.rs` case pinning it to
+  the vendored `Dwarf.def` in both directions, and the field reports
+  `expected DWARF enum kind code` / `invalid DWARF enum kind code '...'` as
+  upstream splits them.
+
+- **Fixed: `!DIArgList` printed as a numbered node.** `WriteAsOperandInternal`
+  writes DIExpressions *and* DIArgLists inline when used as a value; llvmkit
+  had only the first, so a `#dbg_value` hoisted its argument list into a `!N =`
+  definition — a spelling `DIArgList` cannot legally have.
+
+- **Fixed: `parseOptionalCommaAlign` was a silent stop, not an error.** After a
+  comma only `align` or trailing metadata may follow a load, store, cmpxchg or
+  atomicrmw, and anything else is `expected metadata or 'align'`. llvmkit
+  backtracked instead. `parseAlloc` deliberately does *not* use that routine —
+  it hand-rolls a nested dispatch because an `addrspace` clause may follow —
+  so alloca keeps the backtracking form and the other four got a strict one.
+  `parseOptionalCommaAddrSpace` gains its own `expected metadata or
+  'addrspace'` the same way.
+
+- **Fixed: ten more label divergences.** `parseDebugRecord`'s four capital-`E`
+  texts, `expected end of metadata node` at all three closing braces,
+  `expected field label here`, `expected metadata type`, `expected '!' here`,
+  `expected signed integer`, and the `parseNamedType` / `parseUnnamedType`
+  pair — where one routine says `after name` for both labels and the other says
+  `after '='` for the second.
+
+- **Corrected a recorded claim: DIExpression operands are still names, not
+  encodings.** `docs/future-work.md` had this divergence marked closed. Reading
+  the code, operands are stored as the spelling as written and neither
+  `DW_OP_*` nor `DW_ATE_*` was validated, so an unknown one round-tripped
+  silently. Both now validate against the `dwarf` tables, and `element too
+  large, limit is 18446744073709551615` is split from `expected unsigned
+  integer` as upstream splits them. Storing encodings — and with it the
+  normalisation that would print `tag: 15` as `DW_TAG_pointer_type` — remains
+  open and is now recorded accurately.
+
+### Module summary index
+
+- **Added: `llvmkit_ir::module_summary_index`, the whole-program `^N` model.**
+  It moves out of `llvmkit-asmparser`, where a summary index was an AST the
+  parser crate both built and printed, and into `llvmkit-ir` beside the rest of
+  the IR — upstream's own layering (`llvm/IR/ModuleSummaryIndex.h`), and the
+  precondition for printing it through the AsmWriter.
+
+  The model is upstream's: `GlobalValueSummary` with a `SummaryKind`
+  discriminator over alias / function / variable, `TypeIdSummary` with its
+  type-test resolution and whole-program-devirtualization map, the memprof
+  allocation and callsite summaries, and the parameter-access ranges.
+
+  **`^N` numbers are not part of it.** `SlotTracker::processIndex` re-derives
+  them when printing — module paths sorted by path string, then global values
+  in ascending GUID order, then compatible-vtable entries by name, then type
+  identifiers by GUID — and `test/Assembler/index-value-order.ll` exists
+  precisely to prove input order is not preserved. The design annex had
+  sketched a `^N`-ordered entry vector; that shape cannot reproduce upstream's
+  bytes, so it is not what shipped.
+
+- **Added: `llvmkit_ir::md5`,** a port of `llvm/Support/MD5.h`. A summary index
+  is keyed by `GlobalValue::getGUIDAssumingExternalLinkage`, which is the low
+  64 bits of the MD5 digest of a value's global identifier, so the hash is not
+  optional. `GlobalValue::getGlobalIdentifier` comes with it, including the
+  source-file-name prefix a local linkage takes.
+
+- **Added: the summary index prints.** `AssemblyWriter::printModuleSummaryIndex`
+  and its eleven helpers are ported into `asm_writer.rs`, so a summary index
+  renders byte-for-byte; the parser crate's hand-written `Display` impls are on
+  their way out with the parser rework.
+
+- **Changed: the summary parser moves into `LLParser`.** llvmkit had a second
+  parser for `^N` entries — its own lexer instance, its own diagnostics, its own
+  entry point — where upstream has one `LLParser` that reads summary entries
+  from the same top-level loop as everything else. That is the W8 finding in a
+  new shape, and the same consequence followed: **a routine transcribed twice
+  diverges twice.** The standalone parser accepted a `module:` entry with no
+  `hash:` clause (upstream's comma is mandatory), took a `typeid:` entry with
+  no `summary:` payload and **discarded** it, and had no notion of a forward
+  `^N`, a GUID, or a slot number.
+
+  `^N` now joins the top-level dispatch, so a file that mixes IR and summary
+  entries parses as one thing. All 43 of upstream's summary parse members are
+  ported, with their ~111 diagnostics.
+
+- **Added: the three parsing modes upstream distinguishes.** `parse_assembly`
+  keeps passing a null index, which is why it *skips* summary entries whole —
+  `skipModuleSummaryEntry`, including its own narrower keyword guard, which
+  rejects `typeidCompatibleVTable` even though the real dispatch accepts it.
+  New `parse_assembly_with_index` mirrors `parseAssemblyWithIndex`, and
+  `parse_summary_index_assembly` now runs the real parser in upstream's
+  null-module mode: `^N` and `source_filename` are read, everything else is
+  lexed past.
+
+- **Added: forward `^N` references and `validateEndOfIndex`.** A summary may
+  reference a `^N` defined later, in a call edge, a ref, an aliasee, a vtable
+  function, a callsite, a parameter access or a type test. Upstream back-patches
+  raw `ValueInfo *` pointers into vectors that stay valid across the move into
+  the summary; llvmkit records the coordinate and comes back to it, which is
+  the one place its shape differs and why the summary is added to the index
+  before the pending references are registered. The verdicts match, including a
+  summary that references its own `^N`. Unresolved ids are
+  `use of undefined summary '^N'` and `use of undefined type id summary '^N'`.
+
+- **Fixed: a summary flag reads the token's signedness, not its sign.**
+  `LLParser::parseFlag` takes `APSInt::getBoolValue` and rejects a *signed*
+  token. `s0x1` is signed and `u0x1` is not, whatever they look like — so
+  checking for a leading `-` accepts `live: s0x1`, which upstream refuses.
+  Found by re-reading the routine against the port, not by a fixture: every
+  flag in `test/Assembler` is spelled `0` or `1`. The same pass caught
+  `typeTestRes`'s `bitMask`, which upstream narrows with a C cast after an
+  assert — so a release build keeps the low eight bits where llvmkit had been
+  saturating.
+
+- **Fixed: five texts the plan expected are asserts, not diagnostics.**
+  `Need a source_filename to compute GUID for local`,
+  `Forward referenced ValueInfo expected to be empty`,
+  `Forward referencing alias already has aliasee`, `Aliasee must be a definition`
+  and `Linkage not optional in summary entry` are all `assert` strings. A
+  release LLVM does not emit them, so `flags: (linkage: <unknown keyword>)`
+  silently reads as `external` — which is now what llvmkit does too, rather
+  than being stricter than the thing it mirrors.
+
+- **Added: `Linkage::is_local` and the two `summary_name` accessors.**
+  `isLocalLinkage` had been spelled inline at its one call site; a summary index
+  needs it too, and `getLinkageName` / `getVisibilityName` spell `external` and
+  `default` out where the `.ll` keyword forms leave them implicit.
+
+### Instruction operands
+
+- **Added: the instruction remainder validates its operands.** 22 of the 27
+  diagnostics across the terminators, aggregates, EH pads and the arithmetic,
+  compare and vector-element families were missing; every rejection came from
+  the builder, in its own words.
+
+  Terminators: `value doesn't match function result type '<T>'`,
+  `branch condition must have 'i1' type`,
+  `switch condition must have integer type`,
+  `duplicate case value in switch`, `case value is not a constant integer`
+  and `indirectbr address must have pointer type`. Two ordering details are
+  upstream's: `parseSwitch` and `parseIndirectBr` demand the `[` *before*
+  checking the condition or address, so a malformed table is reported first.
+
+  Aggregates: `LLParser::parseIndexList` is now one routine, as upstream has
+  it. llvmkit had **two** copies (a third in the GEP path) and both silently
+  produced an *empty* index list, so `extractvalue {i32} %a` with no index
+  parsed — upstream's grammar is `(',' uint32)+` and requires that comma.
+  With it: `expected index`, `extractvalue operand must be aggregate type`,
+  `invalid indices for {extract,insert}value` and
+  `insertvalue operand and field disagree in type`.
+
+  Per-instruction: `phi node must have first class type`,
+  `va_arg requires operand with first class type`,
+  `invalid operand type for instruction`,
+  `instruction requires integer or integer vector operands` (upstream routes
+  `and`/`or`/`xor` through `parseLogical`, whose wording differs from
+  `parseArithmetic`'s), both `expected {i,f}cmp predicate (e.g. …)` texts, and
+  the three `isValidOperands` messages for `extractelement`, `insertelement`
+  and `shufflevector` — each of which covers every way its predicate can
+  fail, where llvmkit had several invented per-operand labels.
+
+  EH: `parseLandingPad`'s clause asymmetry (a `catch` takes a **non**-array
+  constant, a `filter` takes an array one, `clause argument must be a
+  constant` shared), and `expected scope value for
+  {catchswitch,catchpad,cleanuppad}` — a guard all three run immediately
+  after their `within`. Their `'within'` labels were wrong too: upstream says
+  `after`, llvmkit said `in`.
+
+- **Added: `llvmkit_ir::indexed_aggregate_type`**, a port of
+  `ExtractValueInst::getIndexedType`. Two private near-copies of the walk
+  already existed in `ir_builder.rs` and `verifier.rs` with no public entry
+  point; consolidating them is recorded in `docs/future-work.md`.
+
+### Call, invoke and callbr
+
+- **Added: `operand bundle set must not be empty`.** Checked before the `]` is
+  eaten and reported at the `[`, so an *absent* bundle set stays fine while a
+  written-but-empty `[]` is an error. llvmkit accepted `[]`.
+
+- **Changed (breaking): a `callbr`'s indirect-destination list is mandatory,
+  and no comma precedes it.** `parseCallBr` ends its chain with
+  `parseToken(lltok::lsquare, "expected '[' in callbr")`. llvmkit made the
+  whole list optional *and* tolerated a leading comma, so both
+  `callbr void @g() to label %x` and `... to label %x, [...]` parsed. The
+  empty-bracket form `to label %x []` remains legal, which is what upstream
+  actually requires.
+
+- **Changed (breaking): call-site argument agreement is checked by the
+  parser.** llvmkit deferred it to the builder, which answered in its own
+  words (`call argument count mismatch: expected 0, got 1`); upstream carries
+  the same walk *verbatim* in `parseCall`, `parseInvoke` and `parseCallBr`,
+  which is why its three diagnostics each appear three times in
+  `LLParser.cpp`. Now `too many arguments specified`,
+  `argument is not of expected type '<T>'` and
+  `not enough parameters specified for call`, at upstream's anchors — the
+  first two on the offending *argument*, the last on the call itself.
+
+  `Invalid result type for LLVM function` lands with it: the
+  `resolveFunctionType` guard that rejects a bare return type LLVM cannot
+  return. The walk only bites on the explicit-signature form
+  (`call i32 (i32, i32) @f(i32 1)`) — otherwise the signature is *built* from
+  the arguments, so they agree by construction.
+
+  Six existing tests were updated: each already cited upstream's rule in its
+  doc comment and then asserted llvmkit's builder wording, so this is a
+  tightening onto the text they had named all along.
+
+### Memory instructions
+
+- **Added: the instruction-side `getelementptr` validates its base and
+  indices.** `base of getelementptr must be a pointer` (asked of the base's
+  *scalar* type, since a vector of pointers is a legal base),
+  `getelementptr index must be an integer`,
+  `getelementptr vector index has a wrong number of elements`,
+  `base element of getelementptr must be sized`,
+  `getelementptr cannot target structure that contains scalable vector type`
+  and `invalid getelementptr indices` — plus upstream's
+  `expected comma after getelementptr's type` in place of llvmkit's
+  `',' after GEP source type`. The scalable rule differs from the
+  constant-expression arm W4 landed: an instruction asks only whether the
+  source type is a *struct* containing a scalable vector, where
+  `ConstantExpr::isSupportedGetElementPtr` refuses any scalable source.
+
+  The conversion to the builder's scalar shape now happens **after** every
+  check rather than before, so the recorded vector-GEP IR gap costs coverage
+  only where the input is otherwise valid:
+  `getelementptr_vscale_struct.ll` and `getelementptr_vec_struct.ll` both have
+  vector operands llvmkit cannot build and still report upstream's
+  `invalid getelementptr indices`. Ports verbatim with
+  `getelementptr_struct.ll`, `getelementptr_invalid_ptr.ll` and
+  `invalid-gep-missing-explicit-type.ll`.
+
+- **Added: the atomic instructions validate their operands.** All seventeen
+  diagnostics across `parseCmpXchg`, `parseAtomicRMW` and `parseFence` were
+  missing — every rejection came from the builder, in its own words.
+
+  The substantive piece is `atomicrmw`'s **three-way** operand rule, where the
+  operation's own name (`AtomicRMWInst::getOperationName`, the spelling the
+  AsmWriter prints) is part of every message: `xchg` takes an integer,
+  floating-point or pointer; the six FP operations take a floating-point;
+  everything else takes an integer. Its size rule reads
+  `getTypeStoreSizeInBits`, which rounds up to whole bytes — so `i4` is a
+  legal operand and only a non-power-of-two byte count trips
+  `atomicrmw operand must be power-of-two byte-sized integer`.
+
+  `AtomicCmpXchgInst::isValidSuccessOrdering` and `isValidFailureOrdering`
+  are ported with it; both are checked *before* the operand types, which is
+  why llvmkit reached neither.
+
+  Ports verbatim: `invalid-atomicrmw-{add-must-be-integer-type,
+  fadd-must-be-fp-type,fsub-must-be-fp-type,xchg-fp-vector}.ll`, all five
+  splits of `invalid-atomicrmw-scalable.ll`, and all four of
+  `cmpxchg-ordering{,-2,-3,-4}.ll`.
+
+- **Added: `alloca`, `load` and `store` validate their operands.** Twelve of
+  the fourteen diagnostics `parseAlloc`, `parseLoad` and `parseStore` own were
+  missing — llvmkit leaned on *builder* errors where upstream checks at parse
+  time, and had invented four `expected …` labels for the delimiters
+  (`',' between load type and pointer` for upstream's
+  `expected comma after load's type`, and so on). Now present, at upstream's
+  own anchors: `invalid type for alloca`,
+  `element count must have integer type`, `Cannot allocate unsized type`
+  (upstream's capital `C`), `load operand must be a pointer to a first class
+  type`, `atomic load cannot use Release ordering`,
+  `loading unsized types is not allowed`, `store operand must be a pointer`,
+  `store operand must be a first class value`,
+  `atomic store cannot use Acquire ordering` and
+  `storing unsized types is not allowed`.
+
+- **Changed (breaking): an atomic load or store reads its `align` clause
+  optionally.** `parseScopeAndOrdering` is a no-op on a non-atomic op and the
+  alignment is then read the *same* way in both cases, so a missing one is a
+  **diagnostic** — `atomic load must have explicit non-zero alignment` —
+  rather than a parse failure. llvmkit demanded the comma and the alignment
+  structurally, so `load atomic i32, ptr %p seq_cst` answered
+  `expected ',' after atomic ordering`. That shape is also what made the
+  ordering and sizedness checks above unreachable.
+
+  `test/Assembler/alloca-invalid-type.ll`, `alloca-invalid-type-2.ll` and
+  `invalid-load-missing-explicit-type.ll` now port verbatim.
+
+### Function headers
+
+- **Changed (breaking): the header clause chain is a fixed sequence.**
+  `parseFunctionHeader` tries `section`, `partition`, `comdat`, `align`, `gc`,
+  `prefix`, `prologue`, `personality` **once each, in that order**, so the
+  order is contractual: `define void @f() gc "g" section "s" {` is rejected
+  because `section` was looked for before `gc`. llvmkit looped over the
+  clauses instead, accepting any order and any number of repeats.
+
+  Its prerequisite lands with it: `align` is parsed by the *attribute* loop
+  and then moved to the alignment field, which is what makes
+  `align 8 section "s"` legal ("As a hack, we allow function alignment to be
+  initially parsed as an attribute…", upstream's own comment). llvmkit
+  excluded `align` from that loop — invisible while the chain was order-free.
+
+- **Changed (breaking): function metadata is where upstream puts it.** A
+  *declaration*'s attachments are read before the header and a *definition*'s
+  after it, and neither position eats a comma. llvmkit's clause loop had a
+  `MetadataVar` arm and a `Comma` arm, so it accepted
+  `declare void @f() !dbg !0` (no trailing form exists) and
+  `define i32 @f(), !dbg !3 {` (upstream never eats that comma).
+
+- **Added: `'builtin' attribute not valid on function` and
+  `functions with 'sret' argument must return void`.** `builtin` is a real
+  attribute a *call site* may carry, so the rejection lives in the header and
+  is anchored at the attribute's own location — which is why upstream threads
+  `BuiltinLoc` out of `parseFnAttributeValuePairs` at all. The `sret` rule
+  asks parameter 0 only and reports at the return type.
+
+- **Added: `cannot take blockaddress inside a declaration`**, the tail
+  `parseFunctionHeader` reaches only when it is not parsing a definition.
+
+- **Changed (breaking): a function redefinition is an error.** Upstream always
+  creates a fresh `Function` and only reuses a *forward reference*, so a
+  repeated `declare`, a repeated `define`, and a `declare` followed by a
+  `define` are all rejected — `invalid redefinition of function 'f'` when a
+  function already holds the name, `redefinition of function '@f'` when any
+  other named value does. llvmkit reused any function whose signature matched
+  and accepted all three.
+
+- **Added: the function-body frame.** `expected '{' in function body`
+  (llvmkit said `'{' to open function body`),
+  `function body requires at least one basic block` (llvmkit had no such
+  check, so `define void @f() { }` parsed as a body with zero blocks),
+  `found end of file when expecting more instructions`, and
+  `multiple definition of local value named 'x'` — the last a sentence of its
+  own, not the `redefinition of <kind> '<sigil><name>'` shape llvmkit reused,
+  and upstream spells the name without a `%`. `parseFunctionBody`'s two loops
+  are now sequential too: every basic block, then every `uselistorder`
+  directive. With these, `align-param-attr-error1.ll`,
+  `mustprogress-parse-error-2.ll`, `2004-03-30-UnclosedFunctionCrash.ll` and
+  `2003-11-24-SymbolTableCrash.ll` port verbatim.
+
+- **Added: `redefinition of argument '%x'`.** Upstream sets each argument name
+  and notices when the symbol table renamed it; llvmkit installed the names
+  unchecked, so a repeated `%x` silently won.
+
+- **Added: `unable to create block named '<n>'`.** `PerFunctionState::defineBB`
+  reaches a named block through `getVal(Name, LabelTy)`, so blocks and local
+  values share one namespace and a label cannot take an instruction result's
+  name. llvmkit kept blocks in a map of their own and created *both* — a
+  value `%x` and a block `%x` in the same function.
+
+- **Changed: three named-metadata texts, found in passing.**
+  `LLParser::parseNamedMetadata`'s three-`parseToken` chain is
+  `expected '=' here`, `Expected '!' here`, `Expected '{' here` — the last two
+  carrying upstream's capital `E`, a few lines from `parseMDNodeVector`'s
+  *lowercase* `expected '{' here`, so the two spellings cannot be unified.
+  llvmkit had invented all three.
+
+- **Changed (breaking): one `parseArgumentList`, shared by every path that
+  parses an argument list.** llvmkit had three partial hand-written copies —
+  one in `declare`, one in `define`, one in the function-*type* production —
+  and each was missing different rules. They are now one routine, mirroring
+  the one upstream shares between `parseFunctionType` and
+  `parseFunctionHeader`. What that turned up:
+
+  - `invalid type for function argument` (`FunctionType::isValidArgumentType`)
+    reached only the function-type path, so `declare void @f(label)` parsed.
+    `test/Assembler/invalid-label.ll` and
+    `test/Assembler/2007-01-02-Undefined-Arg-Type.ll` now port verbatim; the
+    second is the interesting one, because its argument type is an *opaque*
+    identified struct and `Type::isFirstClassType` answers false for one.
+  - A `declare` **discarded** its `%N` argument numbers — parsed and thrown
+    away — so `parseArgumentList`'s `checkValueID` never ran on that path.
+  - A *numbered* argument in a function type (`%s = type i32 (i32 %0)`) was
+    rejected as a named one. Upstream files `%N` under `UnnamedArgNums`, and
+    only `!Arg.Name.empty()` trips `argument name invalid in function type`,
+    so this is now accepted.
+  - The four invented delimiter texts (`'(' in function declaration`,
+    `'(' in function header`, `')' to close function declaration`,
+    `')' to close function header`) collapse onto upstream's
+    `expected '(' in function argument list` and
+    `expected ')' at end of argument list`.
+
+- **Added: `invalid function return type` on the function header.**
+  `FunctionType::isValidReturnType` rejects a function, label or metadata
+  return at `RetTypeLoc`. llvmkit carried the check on the function *type*
+  production only, so `declare label @f()` parsed.
+
+- **Added: `checkValueID` on a numbered function and a numbered global.**
+  `@N` headers took their number verbatim, and a numbered global's collision
+  reached `NumberedValues::add` and surfaced as llvmkit's own
+  `invalid slot id 5: next unused is 11`. With both wired, all five splits of
+  `test/Assembler/skip-value-numbers-invalid.ll` port — previously three.
+
+- **Changed: the header's check order and diagnostic anchors.** Upstream
+  parses the return **type** inside the same `||` chain as the linkage, so the
+  "Verify that the linkage is ok" switch runs *after* it; llvmkit folded the
+  switch into linkage parsing and ran it before the type was read. The
+  linkage/visibility pair also anchors at `LinkageLoc` here, while the global
+  and alias sites anchor at `NameLoc` — one shared predicate, three call
+  sites, and the caret is not shared. `expected function name` loses the
+  ` after return type` suffix llvmkit had appended.
+
+### Module-level entities
+
+- **Changed: three metadata-operand diagnostics, and one new check.**
+  `expected '{' here` from `parseMDNodeVector` (llvmkit said
+  `expected metadata string or tuple`) — note it is lowercase where
+  `parseNamedMetadata`'s own copy a few lines away is capitalised, and this is
+  the path the fixture pins. `expected metadata operand` from
+  `parseMetadata`'s fallthrough to `parseValueAsMetadata`, where llvmkit
+  complained about a missing `!` instead of about the operand. And
+  `invalid metadata-value-metadata roundtrip`, which llvmkit did not check at
+  all: a `metadata`-typed operand would round-trip metadata through a value
+  and back, and `!{metadata !0}` is the old syntax that hits it.
+
+  With these, `invalid-mdnode-vector.ll`, `invalid-mdnode-vector2.ll`,
+  `invalid-mdnode-badref.ll`, `invalid-metadata-has-type.ll` and
+  `invalid-metadata-attachment-has-type.ll` all port verbatim.
+
+- **Added: an `ifunc` carries the shared prefix clauses and takes metadata
+  attachments.** `parseAliasOrIFunc` reads `dllstorage`, `thread_local` and
+  `unnamed_addr` before it knows whether it has an alias or an ifunc, and
+  applies all three to either — it simply never *prints* them for an ifunc,
+  because `printIFunc` stops after visibility. `GlobalIfunc` stores them now.
+  Separately, its property loop guards the metadata arm with
+  `!IsAlias && MetadataVar`, so `@i = ifunc ..., !dbg !0` is legal and the
+  alias spelling is `unknown alias or ifunc property!`; llvmkit accepted
+  neither.
+
+- **Fixed: `redefinition of global '@x'` was unreachable.** The variant and
+  its rendering existed and were unit-tested, but the collision reached the
+  *builder* first and surfaced as `expected valid global definition: a global
+  named "g" already exists in this module`. The check now runs where upstream
+  runs it, and skips a name that is present only as a forward reference —
+  which that definition satisfies rather than collides with.
+
+- **Fixed: `missing 'distinct', required for !DIAssignID()`.** llvmkit said
+  `expected 'distinct', ...`. Its test called `parse_err` and discarded the
+  result, so the message its doc comment named was never checked.
+
+- **Added: `parseNamedMetadata`'s two special-cased operands.** A
+  `!DIExpression(...)` may be written inline as a named-metadata operand and
+  now parses; a `!DIArgList(...)` may not, and gets its own
+  `found DIArgList outside of function`. llvmkit's loop accepted only `!N`
+  slot references.
+
+- **Fixed (over-strictness): an `ifunc` linkage is a verifier rule, not a
+  parse rule.** `parseAliasOrIFunc` guards its `isValidLinkage` call with
+  `if (IsAlias && ...)`, so upstream's parser checks *aliases* only and
+  `Verifier::visitGlobalIFunc` carries the ifunc rule. llvmkit rejected it at
+  parse time and again in `GlobalIfuncBuilder::build`, which is stricter than
+  upstream — a divergence in its own right — and made upstream's own message
+  unreachable. Both premature checks are gone; the new
+  `VerifierRule::IfuncInvalidLinkage` carries the text verbatim, bang
+  included. The alias half stays a parse error, as upstream has it.
+
+- **Added: `invalid type for global variable`**, which llvmkit did not check
+  at all. Two halves: a function value type, and
+  `PointerType::isValidElementType` — `label`, `metadata`, `token`, `x86_amx`
+  — since a global's value type is the pointee of its own `ptr`.
+
+- **Changed: a declaration-linkage global takes no initializer, rather than
+  rejecting one.** `if (!HasLinkage || !isValidDeclarationLinkage(Linkage))`
+  guards upstream's `parseGlobalValue` call and there is no lookahead behind
+  it, so `@g = external global i32 0` leaves the `0` unconsumed and it fails
+  at top level. llvmkit peeked ahead and reported an invented
+  `no initializer: a global with 'external' linkage is a declaration` — the
+  same rejection reached by guessing instead of by the rule. The lookahead is
+  deleted.
+
+- **Changed: `void type only allowed for function results`.** llvmkit said
+  `expected non-void type (void only allowed at function results)`, under a
+  test whose doc comment named upstream's wording and called the difference
+  "a structured error". It was neither structured nor upstream's.
+
+- **Fixed: local linkage did not constrain visibility on globals or
+  functions.** `@var = internal hidden global i32 0` and
+  `define internal hidden void @f()` were both accepted;
+  `isValidVisibilityForLinkage` and `isValidDLLStorageClassForLinkage` are
+  asked at three call sites upstream, and llvmkit had them on the *alias* path
+  only. The predicate is now one function the three sites share, and the whole
+  twelve-fixture family
+  `{internal,private}-{hidden,protected}-{alias,function,variable}.ll` is
+  ported.
+
+- **Changed: the property diagnostics carry upstream's text.**
+  `unknown target property`, `unknown global variable property!` and
+  `unknown alias or ifunc property!` — both bangs included — plus
+  `An alias or ifunc must have pointer type`,
+  `Metadata id is already used` (capitalised, like `parseScope`'s and
+  `parseOrdering`'s), and `unexpected type in metadata definition`, which
+  llvmkit had no check for at all: upstream detects `!0 = metadata !{}`, the
+  old syntax, and says so rather than reporting a generic failure. Two of
+  these had been routed through the `Expected` variant, rendering
+  `expected unknown alias or ifunc property` — the word glued onto a message
+  that is not one.
+
+### Global variables
+
+- **Added: `code_model "small"` and the four sanitizer keywords on globals**
+  (`no_sanitize_address`, `no_sanitize_hwaddress`, `sanitize_memtag`,
+  `sanitize_address_dyninit`) — both parsed and printed, so
+  `test/Assembler/globalvariable-attributes.ll`'s `@g5`–`@g14` round-trip.
+  `llvmkit_ir::CodeModel` mirrors `CodeModel::Model` and
+  `SanitizerMetadata` mirrors `GlobalValue::SanitizerMetadata` as one
+  `Option` on the global rather than upstream's presence-bit-plus-side-table,
+  which is a C++ allocation artifact. The sanitizer keywords **accumulate**:
+  `parseSanitizer` merges into what the global already carries, and the
+  printer emits them in its own fixed order, before `comdat` and `align`.
+
+### Calling conventions
+
+- **Fixed: `expected metadata after comma`.** llvmkit said
+  `expected metadata attachment` at `parseInstructionMetadata`'s only
+  diagnostic. Found by porting
+  `test/Assembler/alloca-addrspace-parse-error-{0,1}.ll`, which also pin
+  something easy to miss: a misordered `alloca i32, addrspace(1), align 4`
+  reports through *that* message, not a dedicated one, because the loop
+  demands metadata once a comma has been eaten.
+
+- **Changed: the optional-parser diagnostics carry upstream's text.**
+  `parseScope`'s three messages open with a capital `E` —
+  `Expected '(' in syncscope`, `Expected synchronization scope name`,
+  `Expected ')' in syncscope` — alone among LLParser's diagnostics, and so does
+  `Expected ordering on atomic instruction`. Reproduced as written; the
+  capital is contractual, not a typo to tidy. `parseOrdering` has that one
+  message at every call site, so llvmkit's six per-site labels (`expected
+  fence ordering`, `expected cmpxchg success ordering`, …) are gone — the
+  per-instruction complaints upstream *does* have are validity checks that run
+  after it, not alternative spellings of it. Also
+  `expected localdynamic, initialexec or localexec`,
+  `expected ')' after thread local model` (unhyphenated, as upstream writes
+  it), and `unknown selection kind` for a bad comdat.
+
+- **Fixed: 28 calling conventions parsed as `ccc`.** The parser matched 31
+  keywords while the printer knew 60 — so `spir_kernel`, `ptx_kernel`,
+  `graalcc`, `preserve_nonecc`, `cxx_fast_tlscc`, `x86_intrcc`, the ARM/AArch64
+  sets (including all three `aarch64_sme_preservemost_from_x*`), the AMDGPU
+  additions (`amdgpu_gfx`, the two `cs_chain` forms, `gfx_whole_wave`), the
+  AVR/MSP430 interrupt conventions and the three CHERIoT ones were all read as
+  the default and printed back wrong. Every keyword upstream's
+  `parseOptionalCallingConv` accepts is now accepted, `riscv_vls_cc(<N>)`
+  included, with `unknown RISC-V ABI VLEN` for a width outside the twelve legal
+  ones.
+
+  The lexer already had all 59 keywords and the printer all 60 mnemonics; only
+  the parser's table was short. A new drift lock walks the whole id space and
+  asserts that everything llvmkit can *print* it can *read back*, which is the
+  invariant that was silently false.
+
+- **Changed: `cc <N>` accepts any `u32`.** `CallingConv::from_raw` is now
+  infallible. It used to reject anything above `MaxID` (1023), but that
+  constant bounds the bitcode field — `parseOptionalCallingConv`'s `cc` arm is
+  a bare `parseUInt32(CC)` and the Verifier never mentions it — so `cc 1024`
+  was a parse error llvmkit invented.
+
+### Attributes
+
+- **Added: `initializes((-4, 0), (4, 8))`, and with it `ConstantRangeList`.**
+  The last attribute in `Attributes.td` that llvmkit did not model. The new
+  `llvmkit_ir::ConstantRangeList` ports
+  `llvm/include/llvm/IR/ConstantRangeList.h` — the ordering invariant
+  (`isOrderedRanges`), the checked constructor (`getConstantRangeList`), the
+  merging `insert`, and `print`. Note that the invariant rejects ranges that
+  merely *touch*: `initializes((0, 4), (4, 8))` is an error, because the
+  ordering test is `sle`. All eight of `LLParser::parseInitializesAttr`'s
+  diagnostics are reachable, including
+  `Invalid (unordered or overlapping) range list`. With this, **every
+  attribute LLVM 22.1.4 declares is accepted in every position it declares**
+  — the drift guard's `NOT_YET_MODELED` list is empty.
+
+- **Changed: `parseUInt32` / `parseUInt64` speak upstream's texts.** Every one
+  of upstream's ~25 call sites reports the same `expected integer`; llvmkit
+  passed a bespoke label per site (`expected alignment (bytes)`,
+  `expected uselistorder index`, …), so all 25 diverged. `parseUInt32`'s
+  second message, `expected 32-bit integer (too large)`, existed nowhere — it
+  had been collapsed into the first by parsing straight into a `u32`. That
+  distinction is load-bearing: it is why `attributes #0 = { align = 4294967296 }`
+  is rejected while the inline `align 4294967296` is accepted.
+
+  One site was wrong to share the helper at all: `parseDIExpressionBody`
+  inspects the token itself and says `expected unsigned integer`. It now does
+  too.
+
+- **Fixed (P0): an argument-carrying attribute on a function header did not
+  parse at all.** `define void @f() uwtable { ret void }` — ordinary `clang`
+  output — failed with `expected '{' to open function body`, and so did
+  `allocsize`, `vscale_range`, `allockind`, `nofpclass`, `dereferenceable`,
+  `captures`, `range`, `initializes` and the six type attributes. llvmkit
+  gates the header attribute list behind a lookahead predicate that had gone
+  out of sync with the list's own arms; upstream enters the list
+  unconditionally. Every test for these attributes had used the
+  `attributes #N = { … }` form, which enters the loop directly, so the header
+  path was untested.
+
+- **Added: the attribute-group `align = N` / `alignstack = N` grammar**, and
+  with it the `InAttrGrp` printing form. `Attribute::getAsString` spells four
+  kinds differently inside a group — `align=8`, `alignstack=8`,
+  `dereferenceable=8`, `dereferenceable_or_null=8` — and
+  `parseEnumAttribute` accepts only the matching grammar in each context, so
+  `attributes #0 = { align 8 }` is now the error upstream gives
+  (`expected '=' here`) and the group prints `align=8`.
+  `test/Bitcode/attributes.ll` pins both halves: it writes `alignstack(4)`
+  inline and checks `alignstack=4` in the group.
+
+- **Added: the alignment and dereferenceable value checks.**
+  `alignment is not a power of two`, `huge alignments are not supported yet`
+  (the maximum is `1 << 32`, inclusive), `stack alignment is not a power of
+  two`, and `dereferenceable bytes must be non-zero` — none of which existed.
+  `@g = global i8 0, align 8589934592` used to be accepted silently, and
+  `align 3` reported an invented `expected alignment must be non-zero power of
+  two, got 3`. Also `expected unwind table kind`,
+  `unterminated attribute group`, and
+  `cannot have an attribute group reference in an attribute group`, plus the
+  `attributes` group's own `expected '=' here` / `expected '{' here` /
+  `expected end of attribute group` texts and the anchor fix that puts
+  `attribute group has no attributes` on the `attributes` keyword.
+
+- **Fixed: legacy memory keywords now intersect instead of accumulating.**
+  `upgradeMemoryAttr` runs `ME &= MemoryEffects::X()` over one accumulator
+  that starts at `unknown()` and is emitted once after the whole attribute
+  list. llvmkit added one `memory(...)` attribute per keyword, so
+  `declare void @f() readonly writeonly` printed
+  `memory(read) memory(write)` — two attributes of a kind LLVM can only hold
+  one of — where upstream gives `memory(none)`. `MemoryEffects` gains
+  `BitAnd` / `BitAndAssign` (ports of `MemoryEffectsBase::operator&`), and
+  `AttributeStorage::set` ports `addAttributeImpl`'s replace-by-kind branch,
+  which is also what makes a legacy keyword discard an explicit `memory(...)`
+  from the same list in either source order — `memory(none) readonly` and
+  `readonly memory(none)` are both `memory(read)`.
+
+- **Changed: `range(T lo, hi)` reaches 1:1 with `parseRangeAttr`.** All seven
+  of its diagnostics now carry upstream's exact text —
+  `the range must have integer type!` (anchored at the *first* token of the
+  type, and false for a vector of integers),
+  `the range represent the empty set but limits aren't 0!` (checked before
+  the closing `)`, reproducing upstream's own ungrammatical wording), and the
+  bare `expected '('` / `','` / `')'` / `expected integer` forms in place of
+  llvmkit's embellished ones. Three inputs change verdict with the token-width
+  model below: `range(i8 -255, 0)` and an all-zero
+  `range(i8 u0x000000000000000000, 1)` were silently accepted (the first
+  wrapping its bound to 1) and are now rejected as too large; `range(i8 1, 0)`
+  — a *wrapped* range — parses cleanly, as `test/Verifier/range-attr.ll`
+  requires.
+
+- **Changed (behavioural): an integer literal now carries the width the token
+  needs, not the width its context wants.** Two consequences, both upstream's:
+  `s0x0F` is **−1**, because `LLLexer` truncates a `[us]0x` literal to its
+  active bits *before* the prefix decides the signedness (llvmkit read `+15`,
+  a wrong value rather than a missing error); and `i8 300` is now accepted as
+  `44`, because `convertValIDToValue` applies `extOrTrunc` and not a checked
+  widening (llvmkit refused it as an overflow). The token width is also what
+  makes `range`'s
+  `integer is too large for the bit width of specified type` askable at all,
+  so that diagnostic lands here rather than with the rest of `range`.
+
+- **Added: `captures(...)` in full.** llvmkit accepted only `captures(none)`
+  and mapped it to `nocapture`; every other component was a hand-written
+  refusal. `CaptureComponents` and `CaptureInfo` port
+  `llvm/Support/ModRef.h`, including the fact that these are a **lattice, not
+  four flags** — `ADDRESS` literally contains `ADDRESS_IS_NULL`'s bit, so
+  "captures the address but not its nullness" is unrepresentable rather than
+  merely invalid. The `ret:` sublocation parses at any position, once, and
+  swallows every later component; a missing `ret:` means the two buckets are
+  *equal*, not that the return captures nothing. `captures(none)` now prints
+  as itself instead of `nocapture`.
+
+- **Added: an attribute written in the wrong position is now rejected.**
+  `AttrKind::positions` ports the `[FnAttr]` / `[ParamAttr]` / `[RetAttr]`
+  lists from `Attributes.td`, and `can_use_as_fn_attr` and its two siblings
+  read it, so `this attribute does not apply to functions` / `to parameters` /
+  `to return values` all fire where upstream fires them. `align` keeps the
+  exemption upstream calls out by name — the function loop accepts it despite
+  the `.td`, because it is later moved to the alignment field.
+
+- **Added: `allocsize`, `vscale_range` and `allockind`**, the three attributes
+  whose argument needed a grammar. With them come upstream's diagnostics —
+  `'allocsize' indices can't refer to the same parameter`,
+  `unknown allockind <word>`, and `expected allockind value` — and a new
+  `AllocFnKind` flag type mirroring `llvm/IR/Attributes.h`.
+
+  Upstream packs each of these into a single `uint64_t` and reserves a
+  sentinel in it for "absent" (`-1` for `allocsize`'s element count, `0` for
+  `vscale_range`'s maximum). llvmkit stores them as named fields with an
+  `Option`, so the sentinel exists only where it is printed. Note that
+  `vscale_range(4)` means `vscale_range(4,4)`, not an unbounded maximum —
+  upstream defaults a missing maximum to the minimum.
+
+- **Added: `preallocated(T)`**, the one type attribute `Attributes.td`
+  declares in both function and parameter position. It takes the same
+  production as `byval` / `sret`.
+
+- **Fixed (`llvmkit-ir`): printing an attribute *group* could panic.** The
+  group printer used the module-less `Display`, whose type-attribute arm is
+  `unreachable!("typed attributes need a module context to print")`. Nothing
+  reached it while no type attribute was accepted in function position;
+  `preallocated` in an `attributes #0 = { … }` group does. The group printer
+  now takes the module-aware path the parameter printer already used.
+
+- **Added: thirty-nine attributes the parser did not accept.** Every remaining
+  plain `EnumAttr` in `Attributes.td` — `naked`, `nobuiltin`, `returns_twice`,
+  the eight `sanitize_*` kinds, the coroutine and hot-patch flags,
+  `swifterror`, `noext`, `dead_on_return`, and the rest. The lexer already
+  tokenised all of them and `llvmkit-ir` already had most of the kinds; the
+  gap was `attr_kind_for_keyword`, upstream's `tokenToAttribute`, so each one
+  parsed as "not an attribute" and quietly ended whatever list it appeared in.
+  Fourteen new `AttrKind` variants come with them, named after their upstream
+  `Attributes.td` defs.
+
+- **Fixed (test): the attribute drift guard could not read its own source.**
+  It exists so a new upstream attribute fails CI, and its reader was wrong
+  twice over: it worked line by line, so it missed every `def` upstream wraps
+  across lines, and it required `def Name : Kind<…>` with spaces around the
+  colon, so it also missed the three written `def Name: Kind<…>`. Six
+  attributes were affected — three invisible, three probed in no position at
+  all, which passes vacuously. Fixing both surfaced four real gaps:
+  `speculative_load_hardening`, `disable_sanitizer_instrumentation`,
+  `allocalign` (which needed a new `AttrKind`), and `allockind`, which needs a
+  grammar and is listed as such.
+
+### Constants must agree with the type asked for
+
+- **Breaking (parser): `parse_constant_value` accepts only the `ValID` kinds
+  upstream's `parseConstantValue` accepts.** It used to convert whatever
+  `parseValID` returned, which meant it took `@g` and `[]` — neither is in
+  upstream's set. Both now report `expected a constant value`, previously
+  unreachable. `null` keeps its special handling: upstream takes
+  `Constant::getNullValue(Ty)` directly, so at a non-pointer type it is that
+  type's zero rather than `null must be a pointer type`.
+
+- **Breaking (parser): floating-point literals go through `double`, as
+  upstream's lexer does.** `LLLexer` has no type information, so it reads every
+  decimal literal at `IEEEdouble` and `convertValIDToValue` narrows afterwards;
+  llvmkit read the literal straight at the demanded type's semantics. Three
+  consequences, all upstream's: a decimal at `half` or `bfloat` is legal only
+  when it survives the double round-trip exactly (`floating point constant
+  invalid for type` otherwise, where llvmkit used to round silently to a
+  *different* value); `fp128`, `x86_fp80` and `ppc_fp128` have no decimal
+  spelling at all and now say so with `floating point constant does not have
+  type 'T'`, previously unreachable; and a signalling NaN survives the
+  narrowing, which quiets it, by being rebuilt afterwards.
+
+- **Added (`llvmkit-ir`): `float_value_is_valid_for_type`**, a port of
+  `ConstantFP::isValueValidForType`.
+
+- **Fixed (parser): aggregate constants no longer parse *from* the type they
+  are checked against.** `[...]`, `<...>`, `<{...}>` and `{...}` were selected
+  by the demanded type and built directly at it, where upstream builds them
+  from their own elements and lets `convertValIDToValue` compare. Two checks
+  were unreachable as a result and are new:
+  `packed'ness of initializer and type don't match`, and the bare
+  `constant expression type mismatch` for a struct initializer at a non-struct
+  type. `[]` at a zero-length array now materialises `poison`, matching
+  upstream's `t_EmptyArray` arm, rather than a zero-length array constant.
+
+- **Fixed (parser): `c"..."` is always an `[N x i8]` array.** llvmkit derived
+  the array type from the *expected* type, so `@g = global [4 x i32] c"abcd"`
+  was silently accepted and built a `[4 x i32]`. Upstream's
+  `ConstantDataArray::getString` always builds `[N x i8]` and leaves agreement
+  to `convertValIDToValue`, which now reports
+  `constant expression type mismatch: got type '[4 x i8]' but expected
+  '[4 x i32]'`.
+
+- **Fixed (parser): the two `splat` conversion diagnostics.**
+  `vector constant must have vector type` and
+  `constant expression type mismatch: got type 'A' but expected 'B'` replace a
+  single `expected vector type for splat constant` covering both.
+
+- **Fixed (parser): `expected value token`** replaces `expected constant
+  initializer` in `LLParser::parseValID`'s default arm, and
+  `expected a function, alias to function, or ifunc in dso_local_equivalent`
+  is new — the rule existed only as a builder error wrapped in
+  `expected dso_local_equivalent: ...`.
+
+- **Added (`llvmkit-ir`): inline-asm constraint strings are parsed and
+  verified.** `parse_constraints` and `verify_inline_asm` port
+  `InlineAsm::ParseConstraints` and the static `InlineAsm::verify`, with
+  `ConstraintInfo` / `SubConstraint` / `ConstraintKind` as the model. All nine
+  of `verify`'s messages are now reachable from the parser, byte for byte;
+  the constraint string used to be stored and never looked at. This closes the
+  recorded future-work item "inline-asm constraints are never parsed".
+
+- **Fixed (parser): three inline-asm texts, and inline asm as a value.**
+  `expected string constant`, `expected comma in inline asm expression` and
+  `expected constraint string` replace llvmkit wordings; `asm` outside a call
+  callee reports `invalid type for inline asm constraint string` instead of
+  `expected supported constant/value form`.
+
+- **Fixed (parser): `%res = callbr ...` parses.** `callbr` was dispatched only
+  when it opened the line, so a `callbr` binding a result was rejected as an
+  unsupported opcode.
+
+- **Fixed (parser + `llvmkit-ir`): the two inline-asm label rules moved to the
+  verifier**, where `Verifier::verifyInlineAsmCall` puts them. The parser
+  rejected both with invented wordings, shadowing the ordinary-call rule
+  llvmkit's verifier already carried with upstream's exact text; the `callbr`
+  twin, `Number of label constraints does not match number of callbr dests`,
+  is new.
+
+- **Fixed (`llvmkit-ir`): `label_constraint_count` counts parsed constraints**
+  rather than occurrences of `!`, which also matched a `!` inside a `{...}`
+  register name.
+
+- **Fixed (parser): `getelementptr` constant expressions run upstream's
+  checks, in upstream's order.** `invalid getelementptr indices` is new —
+  llvmkit's constant-expression path never asked
+  `GetElementPtrInst::getIndexedType`, though its instruction path and
+  verifier both did. `base element of getelementptr must be sized` and
+  `invalid base element for constant getelementptr` were checked in the wrong
+  order and, for the scalable case, at the wrong moment (right after the
+  source type parsed, before the operand list). Order is behaviour here: a
+  struct holding a scalable vector satisfies neither check, and upstream
+  reports it unsized.
+
+- **Fixed (`llvmkit-ir`): `Type::is_sized` follows `StructType::isSized`.**
+  A struct holding a scalable vector is now unsized unless its body is
+  homogeneously that vector (`containsHomogeneousScalableVectorTypes`), and a
+  target extension type defers to its layout type instead of answering `true`
+  unconditionally.
+
+- **Added (`llvmkit-ir`): `Type::is_scalable` and `indexed_gep_type`**, ports
+  of `Type::isScalableTy` (including `isScalableTargetExtTy`) and
+  `GetElementPtrInst::getIndexedType`. Three private near-copies of the
+  scalable-vector walk — in `constants.rs`, the constant folder and the
+  parser — collapse onto the first; each was missing at least one of the
+  target-extension arm, the array recursion, or the cycle guard.
+
+- **Fixed (`llvmkit-ir`): a struct index may be a vector splat.**
+  `StructType::indexValid` accepts a `<N x i32>` index whose lanes agree and
+  reads it through `getSplatValue`; llvmkit required a scalar `i32`, which
+  rejected `getelementptr({ i8 }, <2 x ptr> undef, <2 x i64> …, <2 x i32>
+  zeroinitializer)` — upstream's own `ConstantExprFold.ll`.
+
+- **Fixed (parser): `parseGlobalValueVector`'s two early returns.** A closing
+  bracket now yields an empty operand list rather than a diagnostic from the
+  first element parse, and `inrange` ends the list for the caller to handle.
+
+- **Breaking (`llvmkit-ir`): `IrError::RecursiveStructBody { name }`** replaces
+  `InvalidOperation { message: "recursive struct body" }`, and renders
+  `StructType::checkBody`'s own text — `identified structure type '<name>' is
+  recursive` — which `parseStructDefinition` prints verbatim.
+
+- **Fixed (parser): eight aggregate-initializer diagnostics.**
+  `constant vector must not be empty` (llvmkit accepted `<>`),
+  `vector elements must have integer, pointer or floating point type`,
+  the numbered element-agreement messages `vector element #N is not of type
+  'T` / `array element #N ...` — reproduced with upstream's own unbalanced
+  quote, since diagnostic text is contractual — `invalid array element type`,
+  `invalid empty array initializer` (`[]` is legal only at a zero-length
+  array type), `initializer with struct type has wrong # elements`, and
+  `element N of struct initializer doesn't match struct element type`. All
+  previously surfaced as llvmkit builder errors wrapped in
+  `expected valid <kind> constant: …`, or not at all.
+
+- **Fixed (parser): six `convertValIDToValue` diagnostics.**
+  `functions are not values, refer to them as pointers` (the guard before any
+  `ValID` arm runs), `invalid use of function-local name`, `integer constant
+  must have integer type`, `floating point constant invalid for type`,
+  `null must be a pointer type`, and the first-class guard the `undef` /
+  `poison` / `zeroinitializer` arms share — which llvmkit had no equivalent
+  of, so `undef` at an opaque struct type was accepted. The rest were llvmkit
+  wordings rendered as `expected <production>`.
+
+- **Fixed (`llvmkit-ir` + parser): `invalid cast opcode for cast from 'A' to
+  'B'`.** `CastInst::castIsValid` is ported onto `cast_is_valid`, and the
+  constant-expression cast path asks it. llvmkit asked a different question
+  entirely — whether the cast's destination matched the *initializer's* type —
+  which upstream never asks; that agreement belongs to `convertValIDToValue`
+  and is checked there. `test/Assembler/invalid_cast4.ll` is ported.
+
+- **Added (`llvmkit-ir`): seven `Type` predicates from `Type.h`** —
+  `scalar_type`, `scalar_size_in_bits`, `primitive_size_in_bits`,
+  `vector_element_count`, `is_int_or_int_vector`, `is_ptr_or_ptr_vector`,
+  `pointer_address_space`. Several existed as private duplicates in five
+  different modules; these are the public ones `cast_is_valid` and the
+  verifier can share.
+
+Fifth wave of the `LLParser` parity program.
+
+- **Fixed (parser): `constant expression type mismatch: got type 'A' but
+  expected 'B'`.** A parsed constant carries its own type and nothing checked
+  it against the context's — the `ValID::t_Constant` arm of
+  `convertValIDToValue`. `blockaddress` is the usual way to reach it, since
+  its type comes from the *function's* address space rather than the
+  surrounding expression, which is exactly what
+  `test/Bitcode/blockaddress-addrspace.ll`'s negative half tests. Both halves
+  of that fixture now behave as upstream.
+
+### Type identity: `%0 = type {i32}` and `%1 = type {i32}` are two types
+
+Fourth wave of the `LLParser` parity program. LLVM has two struct-identity
+regimes — *literal* structs are structurally uniqued, *identified* ones never
+unify — and llvmkit spelled the difference as `name.is_none()`. That cannot
+represent an **anonymous identified** struct, which is exactly what a numbered
+type definition is.
+
+- **Breaking (`llvmkit-ir`): struct identity is explicit.** `StructTypeData`
+  carries a `StructIdentity` (`Literal` / `Identified { name }`) instead of an
+  `Option<String>` name, and `Module::anonymous_identified_struct()` mirrors
+  `StructType::create(Context)` with no name. The printer numbers an anonymous
+  identified struct by its position among the module's anonymous ones, as
+  `TypePrinting::NumberedTypes` does.
+
+- **Fixed (`llvmkit-ir` + parser): element and shape validity.** The six
+  `isValidElementType` / `isValidReturnType` / `isValidArgumentType`
+  predicates from `llvm/lib/IR/Type.cpp` are ported onto `Type`, deny-lists
+  reproduced as deny-lists so a type kind added later keeps upstream's default
+  answer — and the vector one as the allow-list it actually is, target
+  extension types' `CanBeVectorElement` included. The parser checks them where
+  upstream checks them, which makes five diagnostics reachable:
+  `zero element vector is illegal`, `size too large for vector`,
+  `invalid vector element type`, `invalid array element type`, and
+  `invalid element type for struct` — the last per element, against that
+  element's own location. `<0 x i32>`, `<2 x {i32}>` and `[2 x label]` were
+  all accepted before.
+
+- **Fixed (parser): function-type validity.** `invalid function return type`
+  and `invalid type for function argument` now fire, and so do
+  `argument name invalid in function type` /
+  `argument attributes invalid in function type` — which exist only because
+  upstream shares `parseArgumentList` between a function *type* and a function
+  *header*, so a name and attributes parse in type position and are rejected
+  afterwards. llvmkit read bare types there, leaving both behind a generic
+  `expected ')'`.
+
+- **Fixed (parser): symbolic and defaulted address spaces.**
+  `addrspace("A")` / `("G")` / `("P")` now resolve through the module's data
+  layout to the alloca, default-globals and program address spaces
+  (`parseOptionalAddrSpace`'s `ParseAddrspaceValue`), with
+  `invalid symbolic addrspace 'X'`, `expected integer or string constant`, and
+  the `isUInt<24>` check `invalid address space, must be a 24-bit integer`.
+  And a function that declares no `addrspace` now takes the **program**
+  address space rather than 0 — upstream's `DefaultAS` parameter, reached
+  through `parseOptionalProgramAddrSpace`, which llvmkit had no equivalent of.
+
+  Together with W2.6's same-function forward `blockaddress`, this clears
+  `test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll`, whose corpus
+  entry moves `xfail-parse` -> `pass`.
+
+- **Fixed (`llvmkit-ir` + parser): target extension type validation.**
+  `TargetExtType::checkParams` is ported — the three named types that
+  constrain their own arity (`aarch64.svcount`, `riscv.vector.tuple`,
+  `amdgcn.named.barrier`) — and the parser surfaces it. A type parameter
+  after an integer one is now `expected uint32 param` rather than a generic
+  complaint, and a type parameter may be `void`, which upstream allows
+  (`AllowVoid=true`) and llvmkit rejected.
+
+- **Fixed (parser): the legacy typed-pointer path parses its pointee.**
+  `parse_type` opened with a lookahead that skipped a `<type> '*'` shape
+  syntactically and lowered it straight to opaque `ptr`, so the pointee type
+  was never built. Every check about it was therefore dead code, and it was
+  also why `%t*` never looked `%t` up. `parse_type` now follows
+  `LLParser::parseType`'s own shape — atom, then a suffix loop — which makes
+  `basic block pointers are invalid`, both spellings of `pointers to void are
+  invalid`, and `pointer to this type is invalid` reachable, and lets an
+  undefined `%t` in `%t*` be reported. Nine now-dead syntax-skipping helpers
+  (186 lines) are deleted.
+
+- **Fixed (parser): `ptr*` is rejected.** It parsed as plain `ptr`. The check
+  now sits where upstream puts it, in the opaque-pointer arm, which only
+  falls through to the suffix loop when a function-type `(` follows.
+
+- **Fixed (parser): numbered types have identity.** `%N = type ...` minted a
+  fresh *literal* struct, so two numbered types with equal bodies silently
+  became one type, and a forward-referenced `%N` could never be the same type
+  as its later definition. Both now work.
+
+- **Fixed (parser): a numbered type may be defined at any slot.** llvmkit
+  required each definition to equal a running frontier and rejected
+  `%5 = type {i32}` as the first one; upstream's `NumberedTypes` is a plain map
+  with no such rule.
+
+- **Fixed (parser): `redefinition of type`, `forward references to non-struct
+  type`, `use of undefined type '%N'` and `use of undefined type named 'x'`.**
+  None were reachable. The type tables kept no forward-reference location — the
+  one bit that drives all four — and a comment asserted that upstream does not
+  diagnose an undefined type at all, which is not so: `validateEndOfModule`
+  has a loop for each spelling. `%t = type opaque` now correctly counts as a
+  definition, so a later `%t = type {i32}` is a redefinition.
+
+### Forward references: use-before-definition, as upstream resolves it
+
+Third wave of the `LLParser` parity program. Upstream mints a typed sentinel
+the first time a name is used and replaces it when the definition arrives
+(`LLParser::getGlobalVal`, `PerFunctionState::getVal` / `setInstName`).
+llvmkit reported `use of undefined value` immediately, rescued only by a
+handful of construct-specific deferral lists. This wave builds the general
+mechanism and retires those lists.
+
+- **Breaking (`llvmkit-ir`): the forward-`blockaddress` placeholder is now the
+  general forward-reference placeholder.** `BlockAddressPlaceholder` is
+  renamed `ForwardRefValue` and `Module::block_address_placeholder` is renamed
+  `Module::forward_ref_value_placeholder`; the payload accepts any first-class
+  type, not only a pointer, because a function-local sentinel carries whatever
+  type its first use demanded — upstream's `new Argument(Ty)`. The handle
+  stays linear: a sentinel is resolved exactly once, so
+  `replace_all_uses_with` consumes it.
+
+- **Breaking (`llvmkit-ir`): `ForwardRefValue::replace_all_uses_with` takes a
+  `Value`, not a `Constant`.** A forward-referenced name is usually defined by
+  an instruction, which is what upstream's `Sentinel->replaceAllUsesWith(Inst)`
+  passes. The underlying walker is correspondingly category-agnostic;
+  replacing a value that a *uniqued constant* embeds still requires a constant
+  replacement, and now says so instead of interning a constant with a
+  non-constant operand.
+
+- **Fixed (`llvmkit-ir`): a global object's single-slot fields are uses.**
+  An initializer, an aliasee, an ifunc resolver and a function's
+  personality / prefix / prologue are ordinary `Use` edges upstream, because
+  `GlobalValue` is a `User`. llvmkit stored each in a bare `Cell` with no
+  reverse edge, so `num_uses` undercounted them and RAUW could not reach
+  them — `@a = global ptr @b` would keep pointing at whatever `@b` used to
+  be. Each of the six now registers a `GlobalField` edge, and both RAUW
+  walkers rewrite the cell.
+
+- **Fixed (parser): a function-local value may be used before it is
+  defined.** `%a = add i32 %b, 1` followed by `%b = add i32 2, 3` is ordinary
+  `.ll`; llvmkit answered `use of undefined value` at the first line. Every
+  local operand now goes through a port of
+  `LLParser::PerFunctionState::getVal`, and every instruction result through a
+  port of `setInstName`. The four construct-specific deferral lists that used
+  to paper over particular cases — phi incomings, `atomicrmw` values — are
+  deleted, along with the `undef` stand-in they parked in the operand
+  meanwhile.
+
+- **Fixed (parser): a `@` symbol may be referenced before it is defined.**
+  `@a = global ptr @b` with `@b` below it is upstream's own
+  `test/Assembler/2009-02-01-UnnamedForwardRef.ll`; llvmkit answered
+  `use of undefined global`. A reference to an unknown `@` name or slot now
+  mints a stand-in at the demanded pointer type
+  (`LLParser::getGlobalVal`), and `validateEndOfModule` retires it against
+  whatever definition arrived. A reference nothing satisfies is
+  `use of undefined value '@x'` — upstream's noun for an unsatisfied *use*
+  is `value`, where a colliding *definition* stays `global`; `SymbolKind`
+  gained a variant rather than smoothing that over.
+
+- **Fixed (parser + printer): `blockaddress` with a numeric label.**
+  llvmkit stringified the slot id and looked for a block literally *named*
+  `"5"` — which no unnamed block is — so `blockaddress(@f, %5)` could never
+  resolve. Upstream keeps the two spellings apart as `ValID::t_LocalID` /
+  `t_LocalName`, and llvmkit now does too. A `blockaddress` naming the
+  function it appears in resolves through that function's own state
+  (upstream's `BlockAddressPFS`), so a label below the reference works; one
+  naming a function whose body has closed reports
+  `cannot take address of numeric label after the function is defined`,
+  because the numbering is gone. Deferred `blockaddress` resolution moved
+  from end-of-module to the target function's close, where its labels are
+  still numbered. The printer half was broken too: it printed the target
+  block without the target *function's* slot numbering, so an unnamed block
+  came out as `%<unnumbered>` and the module could not round-trip.
+
+- **Fixed (parser): a comdat may be used before it is defined**, and
+  redefining one is now an error. Every site ran `get_or_insert_comdat`, so a
+  *use* silently created the comdat and a second `$c = comdat ...` was
+  silently accepted. Ports `LLParser::getComdat` and the
+  `!ForwardRefComdats.erase(Name)` guard in `parseComdat`, adding
+  `use of undefined comdat '$x'` and `redefinition of comdat '$x'`.
+
+- **Fixed (`llvmkit-ir`): a function's address carries the function's own
+  address space.** `FunctionValue::as_global_constant_ptr` hard-coded 0,
+  where `GlobalValue::getType` builds the pointer from the value's own
+  address space.
+
+- **Fixed (`llvmkit-ir`): a `common` global may be initialized with a zero
+  aggregate.** The verifier asked whether the initializer was a zero *scalar*
+  — `Int(0)`, `Float(0)`, `null` — where upstream's
+  `Verifier::visitGlobalVariable` asks `Constant::isNullValue`, which is true
+  of `zeroinitializer` at any type. `common global [10 x %struct] zeroinitializer`
+  is what clang emits, and llvmkit rejected it. The predicate is now one port
+  of `isNullValue`, shared with the shufflevector folder that already had it.
+  Reachable only once forward global references landed: the fixture that
+  exposes it, `test/Assembler/2010-02-05-FunctionLocalMetadataBecomesNull.ll`,
+  had never got past parsing.
+
+- **Fixed (parser): phi incoming values take the general value path.**
+  `parsePHI` reads each incoming with `parseValue`, so `[ @g, %bb ]`,
+  `[ 1.5, %bb ]` and any constant expression are legal there. llvmkit had a
+  hand-rolled token match accepting only locals, integer literals,
+  `zeroinitializer`, `null`, `undef` and `poison`, and it silently rewrote a
+  forward-referenced `undef` incoming to zero at end of function.
+  `phi i32 [ 0, %a ], !dbg !1` also parses now, matching the trailing-metadata
+  rule the index lists already follow.
+
+- **Fixed (parser): three `PerFunctionState` diagnostics that were llvmkit's
+  own wording.** `'%x' defined with type 'T' but expected 'U'` and
+  `'%x' is not a basic block` (`checkValidVariableType`),
+  `instruction forward referenced with type '<T>'` (`setInstName`), and
+  `instructions returning void cannot have a name`. An undefined *label* is
+  now reported as `use of undefined value '%missing'`: upstream keeps blocks
+  in the same `ForwardRefVals` map as values, and `finishFunction` has only
+  the one message. Which name a leftover diagnostic names is upstream's too —
+  the lexicographically smallest, then the smallest slot number.
+
+### Parser accepts IR that `llvm-as` accepts (clause order, pointer compares)
+
+Second wave of the `LLParser` parity program. These are inputs LLVM produces
+and llvmkit rejected.
+
+- **Breaking (parser + printer): `dso_local` now precedes visibility and DLL
+  storage class.** `LLParser::parseOptionalLinkage` reads linkage, then
+  dso-locality, then visibility, then DLL storage; `AsmWriter::printFunction`
+  writes the same order. llvmkit's `declare` / `define` paths read visibility
+  and DLL storage *first*, and its own writer emitted that same wrong order —
+  so llvmkit round-tripped itself while failing to parse `define dso_local
+  hidden void @f()`, the spelling LLVM itself emits. The global path was
+  already correct; all three now share one helper mirroring
+  `parseOptionalLinkage`, which also brings its cross-clause rejection,
+  `dso_location and DLL-StorageClass mismatch`.
+
+- **Fixed (parser): `icmp` accepts pointer operands.** `parseCompare`'s guard
+  is `!isIntOrIntVectorTy() && !isPtrOrPtrVectorTy()`, so `icmp eq ptr %a, %b`
+  is ordinary IR. llvmkit narrowed both operands to `IntValue<IntDyn>` on the
+  scalar path, which no pointer satisfies, and rejected every pointer
+  comparison. Pointers now take the erased path, as vectors already did —
+  `IrBuilder::int_cmp_erased` accepted them all along.
+
+- **Fixed (parser): the two compare-operand diagnostics.** `icmp requires
+  integer operands` and `fcmp requires floating point operands`, reported
+  against the operand type as upstream reports them, replacing builder-error
+  passthrough.
+
+- **Fixed (parser + IR model): fast-math flags on `select`, `phi`, `fptrunc`
+  and `fpext`.** `LLParser::parseInstruction` eats flags for these four
+  keywords before dispatching, then applies them to the result. llvmkit could
+  not parse `select fast`, `fptrunc contract` or `fpext reassoc` at all, and
+  **silently discarded** the flags it did parse on `phi`, so `phi nsz double`
+  round-tripped as a plain `phi`. `SelectInstData`, `PhiData` and `CastOpData`
+  gain an `fmf` slot, the AsmWriter prints it, and new
+  `IrBuilder::select_erased_with_fmf` / `fp_trunc_dyn_with_fmf` /
+  `fp_ext_dyn_with_fmf` plus `set_fast_math_flags` on the phi handles carry it
+  (the plain forms delegate with empty flags, so no existing call site
+  changes). Upstream's two rejections come with them: `fast-math-flags
+  specified for select without floating-point scalar or vector return type`
+  and its `phi` twin.
+
+- **Fixed (parser): the `call` fast-math rejection uses upstream's wording.**
+  Its comment already quoted `fast-math-flags specified for call without
+  floating-point scalar or vector return type` while the code emitted a
+  reworded `expected …` message.
+
+- **New: `Type::is_float_or_float_vector`** — mirrors `isFPOrFPVectorTy`, the
+  predicate that decides whether an instruction is an `FPMathOperator` and may
+  therefore carry fast-math flags.
+
+- **Breaking (parser): numbered slots may skip ahead.** `LLParser::checkValueID`
+  rejects a slot only when it goes *backwards* (`ID < NextID`); a gap is legal
+  and the writer renumbers it away. llvmkit required each numbered instruction,
+  argument and block label to equal the frontier exactly, so it rejected every
+  spelling in `test/Assembler/skip-value-numbers.ll` — `%10 = add i32 1, 2` as
+  a function's first instruction, `define i32 @args(i32 %0, i32 %10, i32 %20)`,
+  and skipped-ahead block labels — all of which `llvm-as` accepts. The five
+  `(kind, prefix)` message forms are upstream's:
+  `instruction expected to be numbered '%11' or greater`, and the `argument`,
+  `label` (deliberately sigil-less), `global` and `function` variants.
+
+  Two llvmkit tests asserted the *opposite* of the fixture they cited —
+  `skip-value-numbers-invalid.ll` rejects going backwards, not skipping ahead.
+  They are replaced by ports of that fixture and of its positive sibling.
+
+- **Fixed (parser): bare `comdat`.** `LLParser::parseOptionalComdat` lets
+  `comdat` with no parenthesised name borrow the symbol's own name. llvmkit
+  rejected the bare form on globals (`expected explicit comdat($name)`) and,
+  on functions, silently built a comdat named `""`. The one case upstream
+  *does* reject — an unnamed symbol, which has no name to borrow — now reports
+  `comdat cannot be unnamed`, ported from
+  `test/Assembler/unnamed-comdat.ll`.
+
+- **Fixed (parser + printer): `declare !dbg !0 void @f()`.**
+  `LLParser::parseDeclare` reads metadata attachments written *before* the
+  header and applies them once the function exists; llvmkit went straight to
+  linkage, so the form did not parse. The printer half was wrong in the same
+  place: `AssemblyWriter::printFunction` emits a declaration's attachments
+  directly after the `declare` keyword and a definition's after the header,
+  both **space**-separated, where llvmkit emitted a comma-separated suffix for
+  both. `fmt_metadata_attachments` now takes the separator, as upstream's
+  `printMetadataAttachments` does — globals and instructions keep `", "`.
+
+- **Breaking (parser): an all-constant `select` stays an instruction.**
+  `LLParser::parseSelect` ends in an unconditional `SelectInst::Create`, and
+  the parser's own builder already uses `NoFolder` — but llvmkit folded a
+  constant `select` away in the parse arm itself, bypassing both. So
+  `%r = select i1 true, i32 5, i32 5` vanished from the printed module, and a
+  trailing `!dbg` on it landed on whatever instruction came before, since the
+  attachment path takes the block's last instruction and a folded select adds
+  none. LLVM 22 removed `select` constexprs outright (llvmkit itself reports
+  `select constexprs are no longer supported`), so there is no constant form
+  for a parser-side fold to produce.
+
+  The test that covered this cited `test/Assembler/ConstantExprFoldSelect.ll`
+  while asserting its `CHECK` line from a bare parse — but that fixture's
+  `RUN` line is `opt -S -passes=instsimplify`, so the folding it checks is a
+  *pass* result. It now asserts what the parser does; the folding half was
+  already covered directly through the API in
+  `llvmkit-ir/tests/constant_fold.rs`.
+
+- **Fixed (parser): an index list stops at a trailing metadata attachment.**
+  `getelementptr i32, ptr %p, i64 1, !dbg !0` did not parse — the index loop
+  ate the comma and tried to read `!dbg` as a type. `extractvalue` and
+  `insertvalue` had the same hole. Upstream breaks out of the loop on a
+  `MetadataVar` (`LLParser::parseIndexList`, and inline in
+  `parseGetElementPtr`); llvmkit now restores the comma for the trailing-
+  metadata handler, the backtrack `parseAlloc`'s equivalent already used.
+  This shape appears in essentially every `clang -g` module.
+
+- **Fixed (parser): `memory(argmem : read)` parses, and its six diagnostics
+  are upstream's.** `LLParser::parseMemoryAttr` puts the lexer in
+  `setIgnoreColonInIdentifiers` mode so the colon is a separator, not a label
+  terminator — whitespace around it is insignificant. llvmkit matched
+  locations by looking for a *label* token instead, which requires the colon
+  glued to the word, so the spaced spelling failed and `expected ':' after
+  location` was unreachable. The routine now mirrors upstream's loop and
+  emits `expected '('`, `expected ':' after location`, `expected memory
+  location (argmem, inaccessiblemem, errnomem) or access kind (none, read,
+  write, readwrite)`, `expected access kind (none, read, write, readwrite)`,
+  `default access kind must be specified first` and `unterminated memory
+  attribute`. Five of the eight splits of
+  `test/Assembler/memory-attribute-errors.ll` are ported; the three that hinge
+  on a misspelled keyword are blocked on llvmkit's lexer reporting
+  `unknown keyword '...'` where upstream defers to the parser, and are
+  recorded against the lexer-parity work.
+
+  That printer fix reaches further than the `declare` form it was written for:
+  llvmkit also emitted `define void @f(double %x), !dbg !0 {` for
+  *definitions*, and the comma spelling appears nowhere in upstream's test
+  suite — `printFunction` writes `define … ) !dbg !0 {`. A checked-in corpus
+  expectation had encoded the wrong form, and is corrected here.
+
+### Parser diagnostics are rendered with upstream's exact wording
+
+First wave of the `LLParser` 1:1 parity program. This one is about what a
+rejection *says*, not which inputs are rejected — with one exception, noted
+last, that a message-parity test uncovered.
+
+- **Breaking (parser): `ParseError::Message` joins `ParseError::Expected`.**
+  Every prose diagnostic used to route through `Expected`, whose `Display` is
+  `expected {expected}`, so llvmkit printed `expected udiv constexprs are no
+  longer supported` where `llvm-as` prints the sentence bare. `Message`
+  renders its text verbatim and is now used by the ~100 sites whose upstream
+  wording does not begin with `expected ` — the removed-constexpr family, the
+  `ptrauth` operand checks, the alias linkage and visibility rules, the
+  `getelementptr` constant-expression checks, and `intrinsic can only be used
+  as callee` among them. Matching on `ParseError::Expected` for one of those
+  now matches `ParseError::Message` instead.
+
+- **Fixed (parser): 21 messages said `expected` twice.** Payloads that already
+  began with `expected ` were rendered by a `Display` that prepends the word
+  again, so `expected '(' in constant ptrauth expression` reached users as
+  `expected expected '(' in constant ptrauth expression`. The redundant prefix
+  is gone from the stored payload; the rendering is unchanged and now correct.
+
+- **Fixed (lexer): seven messages reworded to upstream's text.**
+  `unterminated /* */ block comment` → `unterminated comment`;
+  `invalid value number (does not fit in u32)` → `invalid value number (too
+  large)`; the integer-width message drops the interpolated bounds to match
+  `bitwidth for integer type out of range`; the hex-float overflow messages
+  spell the type lowercase (`half`, `bfloat`) instead of `Debug`-formatting it;
+  and `UnterminatedQuotedName` gains a `Display` covering upstream's three
+  spellings across the five kinds. That last one reproduces an upstream quirk
+  deliberately: `LLLexer::LexVar` serves both `@"…"` and `%"…"`, so an
+  unterminated *local* name really does report `end of file in global variable
+  name`.
+
+  Structured fields are untouched — the width and limit are still on the
+  error for callers that want them, they simply no longer appear in prose that
+  upstream writes without them.
+
+- **Breaking (lexer): `i8388609` and wider are rejected, as upstream rejects
+  them.** `INT_TY_MAX_BITS` read `(1 << 24) - 1` while its doc comment claimed
+  to mirror `IntegerType::MAX_INT_BITS`, which is `1 << 23`. llvmkit therefore
+  accepted integer types up to `i16777215` — `llvm-as` refuses everything above
+  `i8388608`, and `test/Assembler/invalid-inttype.ll` exists to pin exactly
+  that boundary. The parser separately reported the wrong limit in its own
+  message (`(1..=16777215)`) while applying the correct check, so the
+  diagnostic contradicted the rejection that produced it. Both now read the
+  one constant.
+
+- **Tests assert rendered text, not payload fields.** `parse_error.rs`
+  previously documented the opposite policy ("structural identity, not string
+  identity, to keep wording flexibility"), which is what let all of the above
+  hide: every fixture matched a variant's field, so no test could observe the
+  `expected ` prefix that `Display` added afterwards. New
+  `crates/llvmkit-asmparser/tests/parser_diagnostics.rs` ports four upstream
+  negatives whose `FileCheck` lines pin the message text
+  (`invalid-c-style-comment0.ll`, `invalid-inttype.ll`, `hex-float-overflow.ll`,
+  `internal-hidden-alias.ll`), and the existing rejection helpers now compare
+  `err.to_string()`.
+
+### Specialized `DI*` field *values* are validated against upstream's tables
+
+- **Breaking (parser): a `DW_*` / `DIFlag*` / kind spelling upstream does not
+  know is now rejected.** Every enum-ish field was an unchecked string, so
+  llvmkit parsed `tag: DW_TAG_bogus`, `flags: DIFlagBogus`,
+  `checksumkind: CSK_BOGUS` and eleven other families that `llvm-as` refuses.
+  Each now reports upstream's own wording from the matching
+  `LLParser::parseMDField` overload — `invalid DWARF tag '...'`,
+  `invalid debug info flag '...'`, `invalid checksum kind '...'`, and so on.
+
+- **Breaking (parser): range, null, empty and boolean checks.**
+  `value for '<field>' too large, limit is <max>` (the limit is the one the
+  field's declared type carries — `LineField` is `UINT32_MAX`, `ColumnField`
+  `UINT16_MAX`), the signed `too small` twin, `'<field>' cannot be null` for an
+  `MDField(AllowNull=false)`, `'<field>' cannot be empty` for an
+  `MDStringField(EmptyIs::Error)`, and `expected 'true' or 'false'`.
+
+- **`SpecializedMetadataKind::declared_fields` replaces `fields` /
+  `required_fields`.** One table now carries the accepted spelling, the value
+  grammar, and the required flag for all 239 fields across 30 classes, because
+  all three come from the same upstream `VISIT_MD_FIELDS` line and separate
+  tables could drift. New `MetadataFieldKind` (one variant per `parseMDField`
+  overload) and `SpecializedMetadataField`. `required_fields` survives as an
+  iterator over the same table.
+
+  `MetadataFieldKind` is deliberately not `#[non_exhaustive]`: the parser
+  matches on it to pick a validation, and a catch-all arm would let a field
+  kind added by a future LLVM bump parse *unchecked* — reintroducing the exact
+  divergence this closes. Exhaustiveness makes that a compile error instead.
+
+- Fixed before shipping: the `DIFixedPointType` `kind` table was written
+  `Unsigned`/`Signed`/`Rational` and would have **rejected valid IR** —
+  upstream's spellings are `Binary`/`Decimal`/`Rational`. These three families
+  come from C++ enums rather than a `.def`, so `dwarf_def_drift.rs` cannot
+  cover them; a test pins them against the lexer's word lists instead.
+
+- Known residual, recorded rather than papered over: for the three families
+  `LLLexer` matches as exact words (`emissionKind`, `nameTableKind`, fixed-point
+  `kind`), an unknown spelling is rejected by llvmkit's *lexer*, where upstream
+  reaches `expected <kind>` in the parser. Same verdict, different layer.
+
+### The specialized metadata set is complete: all 32 `Metadata.def` leaves
+
+- **Fixed: `!DILexicalBlock(...)` and thirteen sibling classes did not parse.**
+  llvmkit modelled 18 of upstream's 32 `HANDLE_SPECIALIZED_MDNODE_LEAF` entries
+  (`llvm/IR/Metadata.def`); the rest failed with "expected specialized metadata
+  kind". `DILexicalBlock` and `DILexicalBlockFile` appear in essentially every
+  `-g` build, so this was not an exotic gap. Added: `GenericDINode`,
+  `DISubrangeType`, `DIGenericSubrange`, `DIFixedPointType`, `DIStringType`,
+  `DILexicalBlock`, `DILexicalBlockFile`, `DICommonBlock`, `DIMacro`,
+  `DIMacroFile`, `DILabel`, `DIObjCProperty`, `DIImportedEntity`, `DIAssignID`.
+
+- Each carries the accepted- and required-field tables from its
+  `LLParser::parse*` `VISIT_MD_FIELDS` block, so all three field rejections
+  apply to them immediately. The tables were generated from the vendored
+  `LLParser.cpp` rather than hand-typed, then diffed back against it.
+
+- `DIAssignID` gets upstream's one structural rule: `LLParser::parseDIAssignID`
+  rejects a uniqued node before reading the parens, so only
+  `distinct !DIAssignID()` is accepted.
+
+- `SpecializedMetadataKind::ALL` is now 32 entries, pinned against
+  `Metadata.def`'s leaf list by a completeness test.
+
+### `!DIExpression(...)` with a body now parses
+
+- **Fixed: a non-empty `DIExpression` was unparseable.** Only `!DIExpression()`
+  worked; every form clang actually emits — `!DIExpression(DW_OP_deref)`,
+  `!DIExpression(DW_OP_LLVM_fragment, 0, 32)`, `!DIExpression(DW_OP_plus_uconst,
+  8)` — was rejected, because the specialized-node loop demanded `name: value`
+  pairs. `DIExpression` is the one node upstream routes away from
+  `PARSE_MD_FIELDS`, to `parseDIExpressionBody` (`LLParser.cpp`): its body is a
+  positional list. Ported from `test/Assembler/diexpression.ll`.
+
+- **Breaking (`llvmkit-ir`): `SpecializedMetadataNode` gains a body ADT.** New
+  `SpecializedMetadataBody` (`Fields` | `Expression`) and
+  `DwarfExpressionOperand` (`Operation` | `Literal`), with
+  `SpecializedMetadataNode::body` / `expression_operands` /
+  `with_expression_operands`. Two shapes because upstream has two; one enum
+  rather than two vectors keeps "a `DIExpression` carrying named fields"
+  unrepresentable (D1). `fields()` is unchanged for every other kind and now
+  returns an empty slice for a `DIExpression`.
+
+- Operands keep their **source spelling** rather than the `uint64_t` encodings
+  upstream stores via `dwarf::getOperationEncoding`: the `Dwarf.def` tables are
+  still unmodelled, and `AsmWriter.cpp`'s `writeDIExpression` prints a known
+  operation back by name anyway, so the written form is what round-trips. One
+  deliberate divergence follows — an unrecognised `DW_OP_*` round-trips here
+  where upstream rejects it. Recorded in `docs/future-work.md`.
+
+### Specialized `DI*` metadata: fields are validated against their node class
+
+- **Breaking (parser): `!DILocation(lien: 3)` no longer parses.** The
+  specialized-node loop accepted *any* `LabelStr` as a field key, so llvmkit
+  parsed debug metadata that `llvm-as` rejects. It now makes all three
+  rejections `LLParser`'s `PARSE_MD_FIELDS` macro makes (`LLParser.cpp`):
+  `invalid field '<name>'` for a key the class does not declare, `field
+  '<name>' cannot be specified more than once` (from `LLParser::parseMDField`'s
+  `Result.Seen` guard), and `missing required field '<name>'` (`REQUIRE_FIELD`,
+  reported against the closing `)` exactly as upstream does). Three new
+  `ParseError` variants carry the node kind, the field, and the location;
+  `ParseError` is `#[non_exhaustive]`, so the additions are not themselves a
+  break.
+
+- **Added: `SpecializedMetadataKind::fields` / `required_fields` /
+  `accepts_field` / `ALL`.** Each row ports the matching
+  `LLParser::parseDI*`'s `VISIT_MD_FIELDS` block. `DiExpression`'s table is
+  deliberately empty — `LLParser::parseDIExpression` uses no `VISIT_MD_FIELDS`
+  at all, because a `DIExpression` body is a positional `DW_OP_*` list rather
+  than `name: value` pairs.
+
+- **Fixed: `flags:` / `spFlags:` accept a `|`-joined disjunction.**
+  `flags: DIFlagPublic | DIFlagStaticMember` previously failed to parse
+  outright. It is kept as the joined source text, which is byte-for-byte what
+  `AsmWriter.cpp`'s `printDIFlags` emits (`ListSeparator(" | ")`); modelling
+  `DINode::DIFlags` as an actual bitmask stays deferred.
+
+- Four llvmkit-authored test fixtures were invalid IR that only the lax parser
+  had accepted — a `DICompileUnit` without `file:` (three of them, one being a
+  deviation from the upstream fixture it claims to derive from) and two
+  `DIDerivedType` / `DICompositeType` nodes without `tag:`. All corrected.
+
+### API idiomatics program (Rust API Guidelines sweep)
+
+A coordinated set of breaking renames and reshapes bringing the whole public
+surface in line with the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
+(C-CASE, C-GETTER, C-CONV, C-CUSTOM-TYPE, C-ITER, C-BUILDER, ...). Pre-1.0,
+no users: one coherent break instead of a drip.
+
+Executed wave-by-wave, and the bullets below run **in wave order** — the
+program's own narrative, from renaming what things are called (W1–W3) through
+what their signatures promise (W4–W5), what types the API models instead of
+raw scalars (W6–W8), what its reads and constructions hand back (W9–W10), and
+finally the trait floor and the crate surfaces (W11a–W12). Landing order on the
+branch differed, because several waves ran in parallel; each bullet names its
+wave so a commit can be traced back to it.
+
+#### Changed
+
+- **Breaking (W1): strict RFC-430 acronym casing on type names.**
+  `IRBuilder` → `IrBuilder`, `IRBuilderFolder` → `IrBuilderFolder`,
+  `CFGAnalyses` → `CfgAnalyses`, `ICmpInst` → `IcmpInst`, `FCmpInst` →
+  `FcmpInst`, `FNegInst` → `FnegInst`, `VAArgInst` → `VaArgInst`, `ICmpFlags`
+  → `IcmpFlags`, `ZExtFlags` → `ZextFlags`, `UIToFpFlags` → `UiToFpFlags`,
+  and the crate-internal payload/id companions (`FcmpInstData`, `FnegInstData`,
+  `VaArgInstData`, `VaArgInstId`); asmparser's `GVarFlags` becomes
+  `GlobalVariableFlags` (casing + the full-words law). Aligns with the
+  existing `IrError` / `IrResult` / `CfgUpdate` spellings.
+
+- **Breaking (W1b): the same RFC-430 casing, now on enum variants and
+  macro-declared types.** W1 found its targets by grepping declaration
+  keywords, which sees neither `enum` bodies nor types minted inside
+  `decl_binop_handle!` / `decl_cast_handle!` / `decl_value_id!` /
+  `decl_struct_kind!` / `decl_exact_flags!` — so two whole categories survived
+  it. Both are converted now: **258 symbols, 2459 edits.** The opcode and
+  instruction-kind variants (`Opcode::ICmp` → `Icmp`, `CastOpcode::ZExt` →
+  `Zext`, `InstructionKind::AShr` → `Ashr`, `BinaryOpcode::UDiv` → `Udiv`,
+  `FAdd` → `Fadd`, `VAArg` → `VaArg`, `AtomicRMW` → `AtomicRmw`, asmparser's
+  `FPToSI` / `UIToFP` / `FPExt` → `FpToSi` / `UiToFp` / `FpExt`); the intrinsic
+  and `atomicrmw` mnemonics (`SMax` → `Smax`, `USubSat` → `UsubSat`, `BSwap` →
+  `Bswap`, `VScale` → `Vscale`, `FMaximum` → `Fmaximum`, `UIncWrap` →
+  `UincWrap`); attribute, linkage and layout variants (`StrictFP` → `StrictFp`,
+  `UWTable` → `UwTable`, `VScaleRange` → `VscaleRange`, `WeakODR` → `WeakOdr`,
+  `LinkOnceODR` → `LinkOnceOdr`, `XCoff` → `Xcoff`, `ATT` → `Att`);
+  `ConstantData::DSOLocalEquivalent` → `DsoLocalEquivalent`; the 18
+  `SpecializedMetadataKind::DI*` node kinds → `Di*`; and the macro-declared
+  handles, flag structs and markers (`AShrInst` → `AshrInst`, `ZExtInst` →
+  `ZextInst`, `FAddInst` → `FaddInst`, `UDivFlags` → `UdivFlags`,
+  `AtomicRMWInst` / `Data` / `Id` / `Config` / `Flags` / `BinOp` →
+  `AtomicRmw*`, `GlobalIFunc*` → `GlobalIfunc*`, the `BFloat` float-kind marker
+  → `Bfloat`), plus the two analysis-side carriers `EquivalentICmp` →
+  `EquivalentIcmp` (`constant_range.rs`) and `SelectPatternNaNBehavior` →
+  `SelectPatternNanBehavior` (`select_pattern.rs`).
+  Two names also shed an abbreviation, exactly as `GVarFlags` did
+  in W1: `NamedMDNode` → `NamedMetadataNode` (its three sibling types already
+  spell `NamedMetadata` in full) and `UseListOrderBBRecord` →
+  `UseListOrderBbRecord` (matching asmparser's existing `Keyword::UselistorderBb`).
+
+  **Printed IR is byte-identical.** Every `.ll` spelling lives in a string
+  literal, not in a variant name — `SpecializedMetadataKind::DiLocation` still
+  prints `DILocation`, `AtomicRmwBinOp::UincWrap` still prints `uinc_wrap` — so
+  the round-trip corpus and the byte-lock examples are untouched. Deliberately
+  left alone: upstream C++ citations in comments (`AtomicRMWInst`,
+  `Instruction::FPToSI`, `NamedMDNode *`), `.ll` keyword strings,
+  `PunctKind::LBrace`-style Left/Right punctuation names, and
+  `PhiViolation::NotAPredecessor` — in those the second capital opens an
+  ordinary word, not an acronym.
+
+- **Breaking (W2): the `build_` prefix is gone from every `IrBuilder` method.**
+  All 265 emitters lose the C++ `CreateAdd`-heritage prefix: `build_int_add` →
+  `int_add`, `build_ret` → `ret`, `build_br` → `br`, `build_call` → `call`,
+  `build_gep` → `gep`, and so on — call sites now read
+  `b.int_add(lhs, rhs, "sum")?`, and the `IrBuilder` and `SsaBuilder` layers
+  spell their instruction vocabulary identically
+  (`ssa.ins()?.int_mul(a, b, "x")`). Folded-in normalizations: the two
+  `float_neg` stragglers join the `fp_` family as `fp_neg` / `fp_neg_fmf`
+  (the FMF variant also swaps its misleading `_with_flags` suffix for the
+  `_fmf` the rest of the fast-math family uses); the abbreviated `vec_*` /
+  `arr_*` typed vector/array emitters become `vector_*` / `array_*` (full-words
+  law); and the confusing near-duplicate splat pair is resolved as
+  `vector_splat` (typed, was `build_vec_splat`) vs `vector_splat_dyn` (erased,
+  was `build_vector_splat`). Chainable builders keep their `.build()`
+  terminals (C-BUILDER); test function names keep their historical spellings.
+
+- **Breaking (W3): lookups are bare nouns; `get_` is reserved for
+  get-or-insert.** `Module::get_global` → `global`, `get_alias` → `alias`,
+  `get_ifunc` → `ifunc`, `get_comdat` → `comdat`, `function_by_name::<R>` →
+  `function::<R>`, `function_by_name_dyn` → `function_dyn` (C-GETTER). The
+  named-struct pair untangles: the get-or-create former `named_struct`
+  becomes `get_or_insert_named_struct`, freeing `named_struct(name)` for the
+  pure lookup; the bespoke `get_or_set_named_struct_body::<S>` becomes
+  `get_or_insert_struct_of::<S>`. Also de-prefixed: `Type::get_undef`/
+  `get_poison` → `undef`/`poison`; the free functions `splat_value`,
+  `select_pattern`, `underlying_object{,_aggressive,s,s_for_code_gen}`,
+  `constant_data_array_info`, `constant_string_info`, `string_length`;
+  `DemandedBits::{demanded_bits, operand_demanded_bits}`; the analysis
+  managers' `result::<A>` / `cached_result::<A>`; asmparser
+  `NumberedValues::next_unused_id` (was `get_next`);
+  `AttributeStorage::or_default_mut` (was `get_mut_or_default`).
+  The `get_or_insert_*` family keeps its std-consistent names.
+
+- **Breaking (W3 follow-up): `MemoryEffects::get_mod_ref` → `mod_ref`.**
+  One public accessor was missed by the sweep above and surfaced in the
+  documentation audit that followed. It sat beside its own un-prefixed
+  sibling `with_mod_ref`, so the pair read `get_mod_ref` / `with_mod_ref`.
+  Mirrors `MemoryEffectsBase::getModRef` (`ModRef.h`); upstream's camelCase
+  getter becomes a bare-noun Rust accessor, exactly as the other `get_*`
+  methods in this wave did (C-GETTER).
+
+- **Breaking (W3): conversion-name honesty (C-CONV).**
+  `Value::as_const_int` → `to_const_int` (it allocates an `ApInt`);
+  `AtomicOrdering::to_ir_string` and `IntPredicate`/`FloatPredicate::name`
+  unify on `as_str`; the `IsValue` widening accessor and every inherent
+  twin rename `into_erased` → `as_erased`, joining the `as_dyn`/`as_view`
+  family (the operand-lift trait method `into_erased_value` is unchanged);
+  `BlockCursor::next` → `step` (it is deliberately not an `Iterator`; the
+  old name invited `for`-loop attempts that failed confusingly), and
+  `WorklistScope::next` → `step` follows it for the same reason (that one
+  rode along with W5).
+  `set_data_layout` is now the single, infallible setter taking a parsed
+  `DataLayout`; the string-parsing overload is gone — parse explicitly with
+  `DataLayout::parse(...)` (fallibility lives where the failure is).
+
+- **Breaking (W4): signature generics tell the truth about ownership
+  (C-GENERIC).** Names that are stored take `Into<String>` — the
+  `add_global` family (was `AsRef<str>` + a hidden copy), the chainable
+  call-builders' `.name(..)`, `PassPipelineTextName::try_new`; conditional
+  get-or-insert keys stay borrow-generic (`get_or_insert_comdat` is now
+  `AsRef<str>`). `get_or_insert_intrinsic_declaration_by_id` threads
+  `Into<Box<[Type]>>` through (no forced `.to_vec()`);
+  `append_block_with_named_params` takes any
+  `IntoIterator<Item = (Type, impl Into<String>)>` instead of a
+  `&[(Type, &str)]` borrow sandwich; `StructLayoutInfo::new` and
+  `PassPipelineElement::new` accept `Into<Vec<u64>>` / `IntoIterator`.
+  `Module::global_builder` accepts `impl Into<Type>` like its siblings.
+  asmparser: `parse_type`, `parse_type_at_beginning`,
+  `parse_constant_value`, `parse_summary_index_assembly` now take
+  `impl AsRef<[u8]>` like the rest of the entry points; the
+  `slots: Option<&SlotMapping>` mode parameters split into explicit
+  `*_with_slots` twins; the redundant `parse_assembly_string` is gone
+  (`parse_assembly` already accepts `&str`).
+
+- **Breaking (W5): booleans become methods, flag structs, and `Signedness`
+  (C-CUSTOM-TYPE).** Type constructors split instead of taking mode bools:
+  `vector_type(elem, n)` / `scalable_vector_type(elem, n)` (was
+  `vector_type(elem, n, scalable)`), `struct_type(elements)` /
+  `packed_struct_type(elements)`, and — fixing the `fn_` abbreviation too —
+  `function_type(ret, params)` / `variadic_function_type(ret, params)`
+  (+ `_no_parameters` twins; were `fn_type(.., is_var_arg)` /
+  `fn_type_no_params`). Builder toggles are zero-arg: `GlobalBuilder::
+  constant()` / `externally_initialized()` (plus a `set_/clear_` pair on the
+  `GlobalVariable` view), `InlineAsmOptions::side_effects()` /
+  `align_stack()` / `unwind()` (the odd `with_can_unwind(bool)` is gone),
+  `SpecializedMetadataNode::distinct()`, and `SpeculationOptions::
+  without_variable_info()` / `ignoring_ub_implying_attrs()` (upstream's
+  defaults are the defaults; the pair is the clearing side).
+  `is_safe_to_speculatively_execute_with_variable_replaced` takes
+  `SpeculationOptions` instead of a bare bool. `ApIntSignedness` is renamed
+  `Signedness` and replaces every `is_signed` / `sign_extend` /
+  `for_signed` bool (`const_int_raw`, `constant_fold_integer_cast`,
+  `ConstantRange::from_known_bits`, `compute_constant_range{,_including_
+  known_bits}`). `KnownBits` transfer functions take the per-opcode flag
+  structs the crate already ships — `add_with_flags(.., AddFlags)`,
+  `sub_with_flags(.., SubFlags)`, `shl_with_flags(.., ShlFlags,
+  ShiftAmountKnowledge)`, `lshr`/`ashr` with `LShrFlags`/`AShrFlags`,
+  `udiv`/`sdiv_with_exact(.., UDivFlags/SDivFlags)`, and
+  `compute_for_add_sub(AddSubOperation, OverflowFlags, ..)` — which also
+  kills a live footgun: `shl_with_flags` used to take `(nuw, nsw)` in the
+  opposite order from `add_with_flags`'s `(nsw, nuw)`. New public enums:
+  `AddSubOperation`, `ShiftAmountKnowledge` (an analysis-side fact no `.ll`
+  keyword spells, deliberately not part of the IR flag structs).
+
+- **Breaking (W6): `NamedMetadataId<B>` + `NamedMetadataName` replace the raw
+  `usize`/`String` named-metadata surface (D7).**
+  `Module::get_or_insert_named_metadata` mints a module-tagged, branded
+  `NamedMetadataId<B>` instead of a bare list index, and
+  `named_metadata_add_operand` takes that id — a foreign id is
+  `Err(IrError::ForeignNamedMetadataId)` (new variant), replacing the old
+  index's out-of-range `UnknownMetadataSlot` arm (an in-range foreign index
+  used to be undetectable in principle; the tag makes it impossible). New
+  bare-noun lookup `Module::named_metadata(&NamedMetadataName) ->
+  Option<NamedMetadataId<B>>` and clone-out reader
+  `Module::named_metadata_get(id) -> Option<NamedMetadataNode<B>>` (`None`
+  only for a foreign id; the node type is spelled with W1b's full-word name
+  here and below). Node names are the new `#[non_exhaustive]`
+  `NamedMetadataName` enum spelling the well-known upstream set
+  (`llvm.module.flags`, `llvm.dbg.cu`, `llvm.ident`, `llvm.linker.options`,
+  ...) as variants with `Custom(String)` for the open rest;
+  `From<&str>`/`From<String>` keep call sites one-liners.
+  `NamedMetadataNode::new` takes `impl Into<NamedMetadataName>`, `name()` returns
+  `&NamedMetadataName`, and the printed spelling moves to `name_str()`.
+  Printed `.ll` output is unchanged.
+
+- **Breaking (W7): typed module flags — `ModuleFlagBehavior` /
+  `ModuleFlagKey` / `ModuleFlagEntry`, module accessors, and the verifier
+  port (C-CUSTOM-TYPE).** New `module_flags` module mirroring
+  `Module::ModFlagBehavior` (`Module.h`, discriminants 1–8 with
+  `from_raw`/`raw` spelling `isValidModFlagBehavior`'s range check) and a
+  `#[non_exhaustive]` `ModuleFlagKey` naming the 27 well-known keys with
+  their exact `lib/IR/Module.cpp` spellings (`"Dwarf Version"`,
+  `"PIC Level"`, `"wchar_size"`, `"CG Profile"`, ...), `Custom(String)` for
+  the open rest, and `default_behavior()` giving the `Module.cpp` setter
+  pairing (`setPICLevel`→`Min`, `setUwtable`→`Max`, `setCodeModel`→`Error`,
+  `setSDKVersion`→`Warning`, ...; `None` where `Module.cpp` has no setter).
+  `Module` gains `add_module_flag` / `set_module_flag` (append vs
+  replace-in-place, mirroring `addModuleFlag`/`setModuleFlag`),
+  `module_flag(&ModuleFlagKey)`, and `module_flags()` (which shipped here
+  returning `Vec<ModuleFlagEntry>` and became an iterator under W9, below,
+  before any of this was released) — all backed by the `llvm.module.flags` named node
+  as ordinary `!{i32 behavior, !"key", value}` tuples, so printed IR and
+  the round-trip contract are untouched. The breaking half is the verifier:
+  `Verifier::visitModuleFlags` / `visitModuleFlag` /
+  `visitModuleFlagCGProfileEntry` are ported (tuple shape, behavior
+  validity, `MDString` ID, `min`/`max`/`require`/`append` value
+  constraints, ID uniqueness, requirement resolution, the
+  `aarch64-elf-pauthabi-*` pairing, and the `wchar_size` /
+  `Linker Options` / `SemanticInterposition` / `CG Profile` per-key
+  checks), so `verify` now rejects malformed `!llvm.module.flags` it
+  previously accepted — nine new `VerifierRule::ModuleFlag*` variants. One
+  deliberate deviation, documented in the verifier: upstream's `require`
+  comparison is uniqued-pointer identity; llvmkit compares structurally
+  because tuples and integer constants are not yet uniqued.
+
+- **Breaking (W8): ADT leftovers — the fixed metadata kinds close their drift,
+  the `deactivation-symbol` bundle tag is spelled right, and string-attribute
+  reading gets typed (C-CUSTOM-TYPE).** Breaking on two counts, both easy to
+  miss in an otherwise additive wave: `MetadataAttachmentKind` becomes
+  `#[non_exhaustive]`, so an exhaustive downstream `match` on it stops
+  compiling, and one operand-bundle tag's printed spelling changes.
+  `MetadataAttachmentKind` gains the 17 fixed kinds it was missing
+  (`IrrLoop` through `ImplicitRef`, values 24–46 of
+  `FixedMetadataKinds.def`), a `fixed_id()` accessor returning the upstream
+  kind ID, and `#[non_exhaustive]` (like `AttrKind`) so future upstream kinds
+  are additive; a new drift test parses the now-vendored
+  `FixedMetadataKinds.def` so the enum can never silently lag again. The
+  `OB_deactivation_symbol` operand-bundle tag now parses **and prints** as
+  `"deactivation-symbol"` (upstream's `knownBundleName` spelling,
+  `lib/IR/LLVMContext.cpp`) — printed IR changes for that tag, which llvmkit
+  previously misspelled `"deactivation"`. A source-level `syncscope("system")`
+  is preserved as `SyncScope::Named("system")` instead of collapsing to the
+  default: upstream seeds only `"singlethread"` and the empty string (the
+  canonical `System` name), so `"system"` is an ordinary named scope and now
+  round-trips as text. New `gc_strategy` module spells the five built-in GC
+  strategy names from `BuiltinGCs.cpp` as `&str` constants (`ERLANG`, `OCAML`,
+  `SHADOW_STACK`, `STATEPOINT_EXAMPLE`, `CORECLR`) — constants, not an enum,
+  because the upstream registry is designed for out-of-tree collectors;
+  `set_gc` still takes any string. New `#[non_exhaustive]` `StrBoolAttrKind`
+  enum (the 11 `StrBoolAttr` declarations of `Attributes.td`, with
+  `key()`/`from_key()`) and reader
+  `FunctionValue::str_bool_attribute(kind) -> Option<bool>` with upstream's
+  `getValueAsBool` semantics (`Some(value == "true")`, `None` when absent);
+  `Attribute::String { key, value }` construction is unchanged — the
+  string-attribute namespace stays open. The attribute drift test now also
+  locks the `StrBoolAttr` set against the reader enum and pins the
+  `ComplexStrAttr` set to the two `DenormalMode`-typed keys.
+
+- **Breaking (W9): read APIs that allocated a `Vec` return iterators
+  (C-ITER).** `FunctionCfg::successors` / `predecessors`,
+  `BasicBlock::successors`, `Instruction::debug_records` /
+  `InstructionView::debug_records`, `FnReshape::pending_cfg_updates`,
+  `AssumptionCache::assumptions`, `DomConditionCache::conditions_for`, and
+  `DataLayout::non_standard_address_spaces` / `non_integral_address_spaces`
+  no longer build a `Vec` per call. A `for x in …` call site is unaffected; a
+  site that asked a `Vec` question (`.is_empty()`, `.len()`, indexing,
+  comparing against a `vec![…]`) becomes `.next().is_none()`, `.count()`, or
+  `.collect()`. Which of two shapes each one takes follows what the data
+  lives behind: the `FunctionCfg` and `DataLayout` methods **borrow**, since
+  both types own their tables outright with no interior mutability; the rest
+  **snapshot** the `RefCell` they read and hand back an owning iterator,
+  which therefore can never be alive across the next edit — with a `use<..>`
+  bound keeping `&self` out of the opaque type so the result still chains off
+  a borrowed receiver. Three are deliberately **not** `ExactSizeIterator`,
+  because they filter and the count is known only after the walk: both
+  `DataLayout` address-space methods (which are `+ Clone` instead, being
+  borrowing iterators) and `AssumptionCache::assumptions`, which skips slots
+  that no longer resolve as instructions — the llvmkit counterpart of
+  upstream's dead `WeakVH` entries. Also new: `IntoIterator for
+  &AttributeSet` / `&AttributeList` / `&MetadataAttachmentSet`, each yielding
+  exactly what that type's `iter()` does, so `for … in &set` works;
+  `MetadataAttachmentSet::iter` gains the `ExactSizeIterator +
+  DoubleEndedIterator + FusedIterator` bounds its siblings already carried;
+  and `Module::attribute_group(id) -> Option<AttributeStorage>` is the point
+  lookup most callers of `attribute_groups` actually wanted — the verifier
+  and `FunctionValue`'s string-attribute reader use it now instead of
+  deep-cloning the whole table once per query. `Module::attribute_groups`
+  itself, the whole-table read, became an iterator in the same wave.
+  `Module::module_flags` joins them: it shipped one wave earlier than this
+  sweep, so the sweep's list never contained it, and it was the last
+  `Vec`-returning read API on the public surface. It snapshots, like its
+  `RefCell`-backed siblings.
+
+- **Breaking (W10): `LoadBuilder` / `StoreBuilder` / `AllocaBuilder` — one
+  spelling per memory op (C-BUILDER).** `load`, `store` and `alloca` each carry
+  several *orthogonal* optional knobs, and the flat surface had grown one method
+  per combination. Three builders replace those combinations:
+
+  ```rust
+  let n = b.load_from(p).volatile().atomic(AtomicOrdering::Acquire)
+      .align(align).int::<i32>("n")?;
+  b.store_to(v, p).atomic(AtomicOrdering::Release).align(align).build()?;
+  let buf = b.alloca_builder(ty).array(n).align(align).name("buf").build()?;
+  ```
+
+  A `LoadBuilder` ends in a **typed terminal**, so the result shape is still
+  chosen by the caller rather than fixed by the knob spelling (D4 survives the
+  move to a builder): `.int::<W>(name)`, `.fp::<K>(name)`, `.pointer(name)`,
+  `.typed::<T>(name)` (the `TypedPointerValue` schema route) and
+  `.erased(ty, name)`. The marker is each terminal's only generic argument, so
+  `.int::<i32>("n")` needs no placeholder turbofish — which is why the terminals
+  take `name: &str` rather than the `impl AsRef<str>` the flat forms take
+  (explicit generic arguments and `impl Trait` arguments cannot coexist).
+  `StoreBuilder` and `AllocaBuilder` have a single `.build()`;
+  `AllocaBuilder` takes its name through `.name(..)` and carries the
+  `.inalloca()` / `.swifterror()` toggles that were `AllocaFlags`'s job
+  (see W12). All three builder types
+  are `#[must_use]`, which covers the entry method *and* every setter: a chain
+  that forgets its terminal is a warning, not a silent no-op.
+
+  **Retired** — every one of them reachable through a builder:
+  `load_volatile`, `load_volatile_with_align`, `store_volatile`,
+  `store_volatile_with_align`, `int_load_atomic`, `load_atomic`, `store_atomic`,
+  and `alloca_dyn`, whose two `Option` mode-parameters are now `.array(n)` and
+  `.addr_space(n)` — present or absent, rather than passed as `None`. The
+  `AtomicLoadConfig` / `AtomicStoreConfig` bags the atomic forms took are
+  **deleted**: the builder carries that state, and keeping them would leave two
+  public spellings for one instruction. `AtomicCmpXchgConfig` /
+  `AtomicRmwConfig` are untouched — `cmpxchg` and `atomicrmw` are single
+  operations with no orthogonal-knob explosion and keep their config-bag
+  spelling.
+
+  **Kept, unchanged:** the plain flats `load`, `load_with_align`, `int_load`,
+  `int_load_dyn`, `int_load_with_align`, `fp_load`, `fp_load_dyn`,
+  `pointer_load`, `typed_load`, `typed_load_with_align`, `store`,
+  `store_with_align`, `typed_store`, `typed_store_with_align`, `alloca`,
+  `alloca_with_align`, `array_alloca`, `array_alloca_with_align` and
+  `typed_alloca`. The common case does not pay for the general one.
+
+  Two semantics worth stating: `.atomic(ordering)` leaves the sync scope at
+  `SyncScope::System` unless `.sync_scope(..)` is also called, in either chain
+  order; and an atomic load/store with no explicit `.align(..)` is filled with
+  the DataLayout ABI alignment on the way out — never zero, so LangRef's
+  non-zero-alignment requirement holds — which is exactly what upstream's own
+  builder path produces (`computeLoadStoreDefaultAlign` at construction, with
+  `setAtomic` leaving the alignment alone). The retired config bags demanded an
+  `Align` in their constructor; nothing else in the tree enforced it, and no
+  error variant ever described its absence.
+
+- **Breaking (W11a): the std-trait floor — `Debug` everywhere, `Hash`,
+  `FromStr`, `#[must_use]` (C-COMMON-TRAITS).** `Module<B, S>` had no `Debug`
+  at all, so `dbg!(&module)` did not compile and no user struct holding a
+  module could derive `Debug`. It has one now, hand-written as a **summary** —
+  `Module { name, id, functions: N, globals: N, state }` — deliberately *not*
+  forwarding to `Display`, which prints the entire `.ll` file. The typestate
+  is named (`"Verified"` / `"Unverified"`) through a `TypeId` comparison,
+  which is why the impl carries an `S: 'static` bound.
+
+  Seventy more public types across `llvmkit-ir`, `llvmkit-support` and
+  `llvmkit-macros` gained `Debug`, taking a scripted sweep of every
+  `pub struct` / `pub enum` in those crates from 70 missing to **0 of 387**.
+  Derived where it derives cleanly (through `#[derive(Branded)]` wherever a
+  brand or marker parameter is involved, so no spurious `B: Debug` bound
+  appears); hand-written where a field is a closure, a `dyn` trait object, or
+  an associated type with no `Debug` bound — the analysis managers print
+  registered/cached counts, `PassInstrumentationCallbacks` prints per-hook
+  callback counts, the erased pipelines print member counts, `SsaBuilder`
+  prints its function and whether the cursor is positioned,
+  `ValueTrackingQuery` prints which facts the query may use. Every impl that
+  reaches through a `RefCell` uses `try_borrow`, so printing a structure a
+  mutator is holding open degrades to a marker rather than panicking — a
+  `Debug` is what a caller reaches for *while* debugging. `ValueCategory`
+  gained the full `Debug, Clone, Copy, PartialEq, Eq, Hash` set; it had no
+  derives at all.
+
+  `#[must_use]` on the 58 remaining consuming builder methods
+  (`FunctionBuilder` 14, `GlobalBuilder` 11, `ValueTrackingQuery` 9,
+  `GlobalAliasBuilder` 6, the metadata builders 5, `InlineAsmOptions` 4,
+  `GlobalIFuncBuilder` 3, `ConstantExprOptions` 2, plus the pure combinators
+  in `fp_class.rs`, `gep_no_wrap_flags.rs` and `instructions.rs`). The
+  convention already existed on ~50 siblings and was unevenly applied, so
+  `builder.align(a);` used to compile and silently do nothing.
+
+  `IrError` and `DataLayout` gain `Hash` beside the `Eq` they already had:
+  errors de-duplicate in a `HashSet`, and a layout is a natural cache key.
+  New conversions, with each type's `from_raw` / `as_raw` `const fn` kept as
+  the const path: `TryFrom<u8>` for `IntPredicate` / `FloatPredicate`,
+  `From<IntPredicate>` and `From<FloatPredicate>` for `u8`, and
+  `From<CallingConv>` for `u32`. `TryFrom` reports a new
+  `IrError::InvalidDiscriminant { target, value }`.
+
+  **`FromStr` for the keyword types** — thirteen new impls where the crate had
+  two, all with `Err = IrError` and a new
+  `IrError::InvalidKeyword { target, keyword }` (both variants are additive:
+  `IrError` is `#[non_exhaustive]`): `Linkage`, `Visibility`,
+  `DllStorageClass`, `DsoLocality`, `ThreadLocalMode`, `UnnamedAddr`,
+  `SelectionKind`, `AtomicOrdering`, `CallingConv`, `IntPredicate`,
+  `FloatPredicate`, `SyncScope`, and `DataLayout` (which delegates to
+  `DataLayout::parse`, so its error stays the specific `InvalidDataLayout`).
+  Each `from_str` **inverts the type's own spelling table** — searching a new
+  `pub const VARIANTS`, the existing `all()`, or, for `CallingConv`, the whole
+  `0..=MAX` id space — rather than carrying a second table that could drift
+  from `Display`. For the keyword-optional enums, `""` resolves to the default
+  variant, so `parse(display(v)) == v` holds for *every* variant; that
+  identity is locked by a per-type in-file drift-lock test (the
+  `attribute_td_drift.rs` analogue) whose exhaustive `match` makes a new
+  variant a compile error. `SyncScope` is the documented exception: its
+  `Display` prints the `syncscope("…")` wrapper, so its `FromStr` takes a bare
+  scope *name* and is the inverse of `LLVMContext::getOrInsertSyncScopeID`,
+  not of `Display`.
+
+  `llvmkit-support`: `SourceMap` gains `Clone` and a hand-written `Debug` that
+  prints byte and line counts rather than the buffer. `Spanned<T>`'s `Ord` /
+  `PartialOrd` are now **hand-written span-first**; the derived versions
+  compared `value` before `span` (field order), so sorting spanned tokens gave
+  token order rather than source order. `Span` gains `contains(u32)` and
+  `join(Span)`, both `const fn` — the parsers were hand-rolling both.
+
+  `llvmkit-macros`: `#[derive(Branded)]` accepts opt-in `PartialOrd` and `Ord`
+  (field-order lexicographic for structs, declaration-order-then-payload for
+  enums, with the variant rank spelled as a `match` rather than an `as` cast,
+  and the `Ord: Eq + PartialOrd` supertrait chain checked at the attribute).
+  `BlockId` now takes its impls from that derive instead of ~35 lines of
+  hand-written ones, and the `decl_value_id!` family — `ValueId` and its typed
+  siblings — gains the same lexicographic `(ModuleId, slot)` order, with
+  `ModuleId` and `ValueSlot` gaining `PartialOrd`/`Ord` to support it. The
+  point is `BTreeMap` / `BTreeSet` keys: a pass that wants deterministic
+  output needs a total order that does not vary run to run, which a `HashMap`
+  does not give.
+
+  **Also breaking for `.err().expect(…)` callers**: giving the
+  terminator-edit handles a `Debug` newly enables `clippy::err_expect` at such
+  sites, which are now spelled `.expect_err(…)`.
+
+- **Breaking (W11b): `llvmkit-asmparser` exports its own surface, and its
+  errors say what went wrong (C-GOOD-ERR).** The crate root now re-exports
+  every parsing entry point (the `parse_assembly*`, `parse_type*`,
+  `parse_constant_value*` and summary-index families join the owned-module
+  ones) plus the types they speak: `ParseError`, `ParseResult`, `DiagLoc`,
+  `SymbolId`, `SymbolKind`, `ParsedModule`, `SlotMapping`, `GlobalRef`, and
+  `ModuleSummaryIndex`. `ParseError` — the error type of the headline API —
+  was previously only nameable as
+  `llvmkit_asmparser::parse_error::ParseError`, and through the umbrella as
+  `llvmkit::asmparser::parse_error::ParseError`. `Lexer`, `Token` and
+  `Parser` stay module-scoped: they mirror LLVM's `LLLexer` / `LLParser`
+  plumbing, not the surface a caller drives.
+  **User-visible: the rendered error text changed.** Messages no longer
+  splice a `Debug`-formatted location into the prose — `expected type at
+  DiagLoc { span: Span { start: 5, end: 9 }, file: None }` is now
+  `expected type`, and the location is read from `ParseError::loc()`, where
+  a renderer should get it (upstream is the same shape: `LLParser::error`
+  carries its `LocTy` beside the `Twine`). `SymbolKind` gains a `Display`
+  and a `sigil()`, so symbol diagnostics match `LLParser.cpp` word for
+  word — `redefinition of global '@foo'` and `use of undefined metadata
+  '!0'` instead of `redefinition of Global '@foo'` and `use of undefined
+  Metadata '%0'`; `Display for SymbolId` correspondingly prints the bare
+  identity and lets the namespace supply the sigil.
+  `ParseError::Expected::expected` is a `Cow<'static, str>` (nearly every
+  site passes a literal, so the common diagnostic no longer allocates), and
+  `Io(String)` becomes `Io { kind: std::io::ErrorKind, message: String }`,
+  so `NotFound` and `PermissionDenied` are matchable without parsing the
+  message back — `ErrorKind` is `Copy + Eq + Hash`, so the enum keeps its
+  derives. Also: `Token` implements `Display` (replacing the allocating,
+  callerless `ll_parser::describe`, same wording), `Lexer` implements
+  `FusedIterator` with the `next_token`-returns-`Eof`-forever vs
+  `Iterator::next`-returns-`None` contract now documented, and `Parser` has
+  a manual `Debug` printing a cursor summary rather than every slot table it
+  has filled.
+
+- **Breaking (W11c): the umbrella forwards features; `llvmkit-tablegen`
+  becomes a real library.** `llvmkit` gains `[features] default = ["macros"]`
+  forwarding to `llvmkit-ir/macros`; the `llvmkit-ir` dependency is
+  `default-features = false` there and in `llvmkit-asmparser` (which never
+  used the gated re-exports), so the umbrella's feature is the one switch.
+  The umbrella's three module re-exports are `#[doc(inline)]` so docs.rs
+  renders the items. `llvmkit-tablegen` exposes a library API: public
+  `TableGenError` (was the private `GenError`),
+  `generate(llvm_root, generated_file) -> Result<Generated, TableGenError>`
+  with `Generated::inputs()` listing every `.td` file read (for
+  `cargo:rerun-if-changed`), `verify_generated` (the `--check` half as its
+  own function), `vendored_llvm_root()`, and `GENERATED_FILE_NAME`.
+  `table_gen_main()` shrinks to the CLI driver, and the empty-argv `OUT_DIR`
+  build-script inference mode is gone — `llvmkit-ir`'s `build.rs` calls
+  `generate` directly and replays the returned inputs as rerun lines.
+
+- **Breaking (W12): the prose meets the tree, and the carried-forward gaps
+  close.** Three small API items the parallel waves left open, plus the
+  documentation reconciliation the program owed.
+
+  `AllocaFlags` is now `pub(crate)` and no longer re-exported from the crate
+  root. W10's `AllocaBuilder` toggles replaced it as the way *in*, which left
+  a public type reachable from no public signature. The way *out* was the real
+  gap and is now filled: `AllocaInst::is_inalloca()` and
+  `AllocaInst::is_swifterror()` join `allocated_type` / `array_size` / `align`
+  / `addr_space` on the read handle, mirroring `AllocaInst::isUsedWithInAlloca`
+  and `isSwiftError` (`Instructions.h`) — two bool predicates, as upstream
+  spells them, so the flags carrier itself stays internal plumbing.
+
+  `Debug` for the seven builder types in `ir_builder.rs` that W11a's sweep
+  could not reach: `IrBuilder`, `CallBuilder`, `TypedCallBuilder`,
+  `IntrinsicCallBuilder`, `LoadBuilder`, `StoreBuilder`, `AllocaBuilder`. All
+  hand-written — a `derive` would bound the folder parameter `F: Debug`, and a
+  folder is a strategy type with no obligation to be printable, so the folder
+  (and `TypedCallBuilder`'s lowered argument tuple) is reported by type name.
+  `#[must_use]` likewise reaches the setters W11a could not: every consuming
+  setter on `CallBuilder` / `TypedCallBuilder` / `IntrinsicCallBuilder`,
+  `CallSiteConfig::calling_conv` / `attrs`, and
+  `IrBuilder::with_fast_math_flags` / `clear_fast_math_flags`. The three memory
+  builders are `#[must_use]` at the *type*, which already covers their setters
+  and which `clippy::double_must_use` forbids restating.
+
+  `IntoIterator for &NumberedValues<T>` (asmparser) completes W9's set, so
+  `for (id, value) in &values` works alongside `&AttributeSet` /
+  `&AttributeList` / `&MetadataAttachmentSet`; it yields exactly what
+  `NumberedValues::iter` does, in the same unspecified order.
+
+  Documentation: `AGENTS.md`'s Builder-A1 workstream entry described
+  `int_load_atomic` / `load_atomic` / `store_atomic` and the
+  `AtomicLoadConfig` / `AtomicStoreConfig` bags as shipped API — all five were
+  deleted in W10 — and now describes the builders that replaced them, next to
+  a new **builder-entry naming law** (`*_builder()` or a preposition phrase in,
+  `.build()` or a typed terminal out; never `build_*`). `docs/future-work.md`'s
+  "Load/store variant explosion" entry is struck as shipped, the crate READMEs
+  drop `parse_assembly_string`, `BlockCursor::next`, `build_*_phi` and
+  `build_{br,cond_br}_with_args`, and `UPSTREAM.md`'s row prose picks up the
+  W2/W3 renames (its *test* names, as always, are frozen).
+
+#### Removed
+
+Everything in the bullets above that **stopped existing**, rather than being
+renamed — collected here because a rename can be followed mechanically and a
+deletion cannot. Each names the wave that removed it and what replaces it.
+
+- **Breaking:** `parse_assembly_string` (W4). `parse_assembly` already accepts
+  `&str` through its `impl AsRef<[u8]>` parameter.
+- **Breaking:** the `&str`-taking `set_data_layout` overload, and the
+  `set_data_layout_value` name beside it (W3). `set_data_layout` is now the
+  single, infallible setter over a parsed `DataLayout`; parse explicitly with
+  `DataLayout::parse`.
+- **Breaking:** `InlineAsmOptions::with_can_unwind(bool)` and
+  `SpeculationOptions::with_variable_info(bool)` (W5) — replaced by the
+  zero-arg `unwind()` and `without_variable_info()`.
+- **Breaking:** the atomic and volatile memory emitters `load_volatile`,
+  `load_volatile_with_align`, `store_volatile`, `store_volatile_with_align`,
+  `int_load_atomic`, `load_atomic`, `store_atomic` and `alloca_dyn`, together
+  with the `AtomicLoadConfig` / `AtomicStoreConfig` bags they took (W10). All
+  of it is reachable through `load_from` / `store_to` / `alloca_builder`.
+  `AtomicCmpXchgConfig` / `AtomicRmwConfig` are **not** affected.
+- **Breaking:** `AllocaFlags` is `pub(crate)` and no longer re-exported from
+  the crate root (W12), which also removes its `with_inalloca` /
+  `with_swifterror` setters from the public surface. Reading the flags is now
+  `AllocaInst::is_inalloca()` / `is_swifterror()`; setting them is the
+  `AllocaBuilder`.
+- **Breaking:** `ll_parser::describe` (W11b), replaced by `Display for Token`
+  with the same wording.
+- `table_gen_main()`'s empty-argv `OUT_DIR` inference mode (W11c). It was a
+  build-script entry point; build scripts call `generate` directly now.
+
+### `llvmkit-tablegen`: the generator becomes a crate that mirrors LLVM
+
+#### Added
+
+- **`llvmkit-tablegen`**, a new workspace crate holding the TableGen front end
+  and intrinsic emitter, plus the vendored `.td` tree they read. It ships an
+  `llvmkit-tablegen` binary for manual regeneration and `--check`, mirroring
+  `llvm-tblgen`.
+
+#### Changed
+
+- **The generator moved out of `llvmkit-ir`'s build script.** It was
+  `crates/llvmkit-ir/tools/gen_intrinsics.rs`, a 4,197-line file pulled into
+  `build.rs` with `#[path]`. `llvmkit-ir/build.rs` now calls
+  `llvmkit_tablegen::table_gen_main()`, and the vendored tablegen tree moved to
+  `crates/llvmkit-tablegen/tablegen/` so it stays with the generator that reads
+  it.
+
+  Two reasons. **A build script is not a test target**, so the generator's ten
+  `#[test]` functions never ran under `cargo test` — despite each carrying an
+  `UPSTREAM.md` provenance row implying it did. They run now. And the single
+  file mirrored no upstream file, in a project whose organising rule is that it
+  mirrors LLVM's: it is really two subsystems fused.
+
+- **The crate's modules now mirror the upstream files**, on the same rule that
+  makes `llvmkit-ir` mirror `llvm/lib/IR` — one module per `.cpp`, named by
+  snake-casing it:
+
+  | Module | Upstream |
+  |---|---|
+  | `error.rs` | `llvm/lib/TableGen/Error.cpp` |
+  | `tg_lexer.rs` | `llvm/lib/TableGen/TGLexer.cpp` |
+  | `tg_parser.rs` | `llvm/lib/TableGen/TGParser.cpp` |
+  | `record.rs` | `llvm/lib/TableGen/Record.cpp` |
+  | `lib.rs` (driver) | `llvm/lib/TableGen/Main.cpp` |
+  | `main.rs` | `llvm/utils/TableGen/TableGen.cpp` |
+  | `basic/code_gen_intrinsics.rs` | `llvm/utils/TableGen/Basic/CodeGenIntrinsics.cpp` |
+  | `basic/intrinsic_emitter.rs` | `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp` |
+
+  The ten tests moved to the modules they exercise, so six of them no longer
+  sit in a file that does not contain the code under test. Their `UPSTREAM.md`
+  rows moved with them.
+
+  The split is pure code motion: the generated intrinsic tables are
+  **byte-identical** across all 213,000 lines, before and after.
+
+- **Breaking:** `llvmkit-ir`'s `gen-intrinsics` feature and its `gen_intrinsics`
+  binary are gone. The manual entry point is the `llvmkit-tablegen` binary, whose
+  usage text and `--check` message changed to match.
+
+### VectorUtils: the intrinsic classifiers — a recorded blocker that was not real
+
+#### Added
+
+- **`is_trivially_vectorizable`** and **`is_trivially_scalarizable`**, porting
+  the same-named functions. The first is the 71-label table that decides whether
+  an intrinsic's scalar and vector forms are elementwise; the second adds the
+  six `with.overflow` intrinsics on top of it.
+- **`is_vector_intrinsic_with_struct_return_overload_at_field`**, porting
+  `isVectorIntrinsicWithStructReturnOverloadAtField` — `frexp` is overloaded on
+  both struct fields, everything else on the first only.
+- **`interleave_intrinsic_factor`** and **`deinterleave_intrinsic_factor`**,
+  porting `getInterleaveIntrinsicFactor` and `getDeinterleaveIntrinsicFactor`.
+  Upstream returns `0` for "not one of these"; these return `Option<u32>`, so a
+  factor of zero is not spellable.
+
+These take `IntrinsicId`, which has been public all along. **Both parity
+ledgers and `docs/future-work.md` recorded nine functions as blocked on
+"llvmkit has no public intrinsic-id type", and that reason was wrong** —
+`IntrinsicId` is public, generated-backed and spans the whole intrinsic space;
+the `pub(crate)` type is `IntrinsicSemantic`, a convenience enum over a 31-name
+*subset*, and the records conflated the two. All three are corrected in this
+commit rather than left for the next reader to inherit.
+
+The three VectorUtils functions still absent from that group are blocked on
+things that are actually missing, now named precisely:
+`isVectorIntrinsicWithScalarOpAtArg` and
+`isVectorIntrinsicWithOverloadTypeAtArg` read vector-predication operand
+positions out of `llvm/IR/VPIntrinsics.def`, a `.def` file llvmkit does not
+vendor, and `getVectorIntrinsicIDForCall` needs `getIntrinsicForCallSite`'s
+library-function half.
+
+#### Changed
+
+- The classifiers **drop upstream's `TargetTransformInfo` parameter**, which
+  its header sanctions — passing `nullptr` "is appropriate" when no target
+  specific intrinsics will be considered, and the argument gates exactly one
+  branch in each. llvmkit models no target by charter, so the parameter would
+  have nothing to consult. `IntrinsicId::is_target` is what a caller needs to
+  tell the two apart. Each function says this at its site.
+
+### VectorUtils: the mask predicates and constructors — the port closes
+
+#### Added
+
+- **The `<N x i1>` mask predicates** — `mask_is_all_zero_or_undefined`,
+  `mask_is_all_one_or_undefined` and `mask_contains_all_one_or_undefined`. The
+  last one's quantifier is the opposite of its name-alike's, as upstream's is.
+- **The demanded-lane queries** — `possibly_demanded_elements_in_mask` and
+  `horizontal_demanded_elements_for_first_operand`.
+- **The mask constructors** — `create_replicated_mask`,
+  `create_interleave_mask`, `create_stride_mask`, `create_sequential_mask` and
+  `create_unary_mask`.
+- **`masked_slide_pair`**, porting `isMaskedSlidePair`, with `MaskedSlide` and
+  `ShuffleSource` replacing upstream's `(int Src, int Diff)` pairs. Upstream's
+  "unused slot" marker — a `Src` of `-1` beside a `Diff` of `NumElts * 2` that
+  exists only to be asserted against — is `Option`'s absence here.
+- **`Constant::is_all_ones_value`**, porting `Constant::isAllOnesValue`, which
+  the mask predicates need.
+
+**`VectorUtils.cpp` is now ported as far as llvmkit's scope allows**: 20 of its
+37 entry-point names are modeled (21 functions, counting both
+`widenShuffleMaskElts` overloads), and the module header names what blocks each
+of the other 17. *(Superseded within this same unreleased window — the
+intrinsic classifiers above took five more, so the current figure is 25 of 37,
+and one of the blockers recorded here turned out not to exist.)* `tests/vector_utils_parity.rs` holds that claim to account —
+the modeled column is compiler-checked, so a rename cannot quietly falsify it,
+and the two tables must sum to the upstream entry-point count. Two of those are permanent rather than pending —
+`computeMinimumValueSizes` and `processShuffleMasks`, whose callers all live in
+`lib/CodeGen/SelectionDAG` and `lib/Target/{RISCV,X86}` and which split masks
+across physical registers. llvmkit models no target.
+
+#### Changed
+
+- `possibly_demanded_elements_in_mask` is **stronger than upstream's**, in a
+  sound direction, and says so at its site: upstream reaches its element loop
+  only through `dyn_cast<ConstantVector>`, which a `zeroinitializer` is not, so
+  it reports "every lane demanded" for an all-zero mask that demands none.
+  llvmkit stores both spellings as one element list, so the loop runs.
+
+### VectorUtils: the shuffle-mask transforms
+
+#### Added
+
+- **`vector_utils::narrow_shuffle_mask_elements`,
+  `widen_shuffle_mask_elements`, `widen_shuffle_mask_elements_in_pairs`,
+  `scale_shuffle_mask_elements` and `shuffle_mask_with_widest_elements`** —
+  rewriting a shuffle mask for a wider or narrower element type. The two
+  `widenShuffleMaskElts` overloads are separate functions here rather than one
+  name, because they are separate rules: the `_in_pairs` form accepts a pair
+  that is half poison, which the scaled form rejects.
+- Upstream's `BasicTest` fixtures for all of these are ported, plus the
+  `getShuffleDemandedElts` fixture that `shuffle_demanded_elements` shipped
+  without.
+
+#### Known gaps
+
+- The mask transforms take `&[ShuffleMaskElem]`, which spells the **IR** mask
+  alphabet — a lane index or poison. Upstream's take raw `int`s and so also
+  serve SelectionDAG and the X86 backend, whose alphabet extends past `-1`
+  (`SM_SentinelZero` is `-2`); there, "negatives must be equal across a widened
+  group" is stronger than "all poison". Code generation and target backends are
+  out of scope for llvmkit, so this is a permanent narrowing rather than
+  pending work, and it is unobservable on any mask llvmkit can hold. Three
+  upstream assertions have no llvmkit spelling as a result; they are named in
+  `tests/vector_utils_masks.rs`.
+
+### VectorUtils: the splat family, and the vector `select` it needed
+
+#### Added
+
+- **`vector_utils::get_splat_value`, `splat_index`, `is_splat_value` and
+  `find_scalar_element`** — the splat half of
+  `llvm/lib/Analysis/VectorUtils.cpp`. `get_splat_value` names the broadcast
+  scalar; `is_splat_value` answers the weaker "do all lanes agree" question and
+  so sees through binary operators and `select`s that have no single scalar to
+  name. Neither subsumes the other, matching upstream. Twenty-nine fixtures
+  from `VectorUtilsTest.cpp` are ported verbatim, including the two upstream
+  marks `FIXME` and the one it marks `TODO`.
+- **`Constant::aggregate_element`**, porting `Constant::getAggregateElement`,
+  and **`Constant::is_null_value`**, porting `Constant::isNullValue`. Both
+  replace private partial copies that lived in `pointer_analysis`; the
+  `getAggregateElement` copy handled only stored element lists, so
+  `find_inserted_value` now also answers for an `undef` or `poison` aggregate,
+  as upstream does.
+- **`IRBuilder::build_select_erased`** — `select` where the condition may be
+  `<N x i1>` and the arms may be vectors. The typed `build_select` pins the
+  condition to a scalar `i1` and the arms to a `SelectArm` marker, neither of
+  which a vector select can satisfy; this is the same erased split
+  `build_int_binop_erased` and `build_int_cmp_erased` already make. Validated
+  against `SelectInst::areInvalidOperands`.
+
+#### Fixed
+
+- **The `.ll` parser rejected `select` over aggregate arms.** It restricted
+  arms to int/fp/ptr and said so in its own diagnostic ("select arm category
+  supported by this parser"). `LLParser::parseSelect` delegates wholly to
+  `SelectInst::areInvalidOperands`, which names no arm restriction beyond
+  token, so `select i1 %c, { i32, i32 } %a, { i32, i32 } %b` is valid LLVM.
+  Only the token check remains, and it stays *before* constant folding —
+  otherwise two equal token arms would fold away instead of being rejected.
+- **The `.ll` parser rejected every vector `select`.** It validated a
+  `<N x i1>` condition as legal and then unconditionally narrowed the condition
+  to a scalar handle, so `select <2 x i1> %c, <2 x i8> %t, <2 x i8> %f` — plain
+  LLVM that `clang` emits — failed to parse. A scalar `i1` condition over
+  vector arms failed too, for the same reason one level down. Both parse,
+  verify and print byte-identically now. The arm-category restriction the
+  parser announces (int/fp/ptr, scalar or vector) is unchanged: `select` over a
+  struct or array arm is valid LLVM that it still declines.
+
+#### Changed
+
+- `value_tracking`'s private `shuffle_splat_source` moved to
+  `vector_utils::get_splat_value` and gained the constant-vector branch it
+  lacked. Its one caller inside `isGuaranteedNotToBeUndefOrPoison` now spells
+  upstream's `isa<ShuffleVectorInst>(Opr) ? getSplatValue(Opr) : nullptr`
+  directly.
+
+#### Fixed (analysis precision)
+
+- **Both `shufflevector` analysis arms now take upstream's `getSplatValue`
+  fast path**, which `case Instruction::ShuffleVector:` opens with in
+  `computeKnownBits` and in `computeKnownFPClass` alike. The case it buys is a
+  splat mask carrying a poison lane — `<0, poison, 0, 0>`, which `m_ZeroMask`
+  accepts: the demanded-lane path gives up there, because
+  `getShuffleDemandedElts` rejects a demanded poison element, while the splat
+  match reads straight through to the scalar. Known bits and the float class of
+  such a broadcast now match the scalar being broadcast instead of answering
+  "nothing known".
+
+#### Also fixed, in follow-up
+
+- **`Constant::splat_value` gained upstream's constant-*expression* arm** — the
+  `shufflevector`-of-`insertelement` shape `ConstantVector::getSplat` builds.
+  It only ever fires for a *scalable* vector: llvmkit's folder materialises a
+  fixed one into an element list at construction, so the element-list arm
+  answers those first. The two mask representations turned out not to need
+  reconciling — `ConstantExprData`'s `mask` field is vestigial, since
+  `validate_constant_expr_data` rejects a non-empty one for `ShuffleVector` and
+  all 114 construction sites pass empty. The mask is the third operand, and
+  that is what the arm reads.
+#### Fixed, in follow-up
+
+- **A scalable vector of uniform pointers or `undef` printed an element list**,
+  which is not a constant form LLVM has for a scalable type — its lane count is
+  a minimum, so a list cannot describe the lanes one for one, and llvmkit was
+  also implicitly asserting `vscale == 1`. `asm_writer::prints_as_splat` now
+  answers the two vector kinds separately: a **fixed** vector keeps
+  `AsmWriter.cpp`'s `isa<ConstantInt> || isa<ConstantFP>` restriction on the
+  `splat (…)` shorthand, since its element list is an equally legal spelling;
+  a **scalable** vector uses `splat (…)` for any uniform element, because that
+  is the only spelling it has. Output for every constant LLVM can also build is
+  unchanged.
+
+  The cause was in the printer, not the folder — an earlier attempt to guard
+  `constant_fold::vector_splat_constant` broke five tests that depend on
+  llvmkit representing a scalable splat as a uniform element list, and was
+  reverted.
+
+#### Known gaps
+
+- **A non-uniform scalable aggregate still prints an element list**, which LLVM
+  would still reject. That constant should not be constructible at all:
+  `VectorType::const_vector` skips its element-count check for scalable types
+  (correctly — the count means nothing there) and does not require the lanes to
+  agree. Requiring it was tried and reverted, because two tests build such a
+  constant as their *premise* to check the folder declines, so it is a
+  representation-policy decision rather than a patch. See
+  `docs/future-work.md`.
+### Vector floating-point operations
+
+#### Added
+
+- **`IRBuilder::build_fp_binop_erased`, `build_fp_cmp_erased` and
+  `build_fp_neg_erased`** — the floating-point half of the erased builder
+  family, beside the integer `build_int_binop_erased` / `build_int_cmp_erased`
+  and the `build_select_erased` added earlier this cycle. They exist for one
+  reason: llvmkit's typed float handles carry a *scalar* `FloatKind`, so
+  `<N x double>` has no typed handle to route through `IntoFloatValue`.
+  Upstream needs no split — `LLParser::parseArithmetic` and `parseCompare` hand
+  their operands to `BinaryOperator::Create` and `CmpInst::Create`.
+
+#### Fixed
+
+- **The parser could not read any vector floating-point operation.**
+  `fadd <4 x float> %a, %b` answered "float-typed lhs", and so did `fcmp` and
+  `fneg` — all three narrowed operands through the scalar-only path. Fast-math
+  flags are carried through unchanged; `fcmp` is an `FPMathOperator` upstream,
+  so it keeps its flags too. Scalar operators are unaffected.
+
+### ValueTracking: `computeKnownFPClass`'s vector arms
+
+#### Added
+
+- `extractelement`, `insertelement`, `shufflevector`, `extractvalue`,
+  `bitcast` and `phi`, plus the `fma`/`fmuladd` pair and the four reducing
+  min/max intrinsics (`vector.reduce.fmax`/`fmin`/`fmaximum`/`fminimum`).
+  Every one of these previously answered `fcAllFlags`.
+- `KnownFpClass::reset_sign_bit`, porting `KnownFPClass::SignBit.reset()`. The
+  reducing min/max arm needs it: those may return a NaN whose sign is not the
+  one the elements agreed on, so a sign learned from the elements is dropped
+  unless the result is known never to be a NaN.
+
+#### Changed
+
+- `getShuffleDemandedElts` is now a shared `shuffle_demanded_elements` helper
+  rather than logic inlined in `shuffle_vector_known_bits`. The poison-lane
+  rule is subtle enough that two copies would eventually disagree.
+
+Two arms diverge from upstream, in opposite directions, marked at their sites
+and in the module header:
+
+- `shufflevector` is **weaker** in exactly one case. `getSplatValue`'s
+  `m_ZeroMask` accepts `-1` alongside `0`, so upstream reads
+  `<0, poison, 0, 0>` as a splat and answers from the scalar; the demanded-lane
+  path here sees a demanded poison lane and gives up. A clean all-zero mask
+  reaches the same answer either way.
+- `bitcast` can be **stronger**. Upstream calls `computeKnownBits` at
+  `Depth + 1` on the shared budget, so a bitcast reached late in an FP walk
+  learns nothing; llvmkit's known bits starts at zero and gets a full budget.
+  Sound, but a divergence upward, and it costs compile time.
+
+### ValueTracking: `computeKnownFPClass`'s arithmetic arms, and `nofpclass`
+
+#### Added
+
+- `nofpclass(nan inf)` parses, prints and round-trips on parameters and
+  returns, and is off `attribute_td_drift.rs`'s not-yet-modeled list. The
+  payload is the `FpClassTest` it means rather than upstream's raw integer,
+  following `Attribute::Memory(MemoryEffects)`.
+- `computeKnownFPClass` reads it: a call's return `nofpclass` and an argument's
+  parameter `nofpclass` now open the ruled-out set, as
+  `CallBase::getRetNoFPClass` and `Argument::getNoFPClass` do upstream.
+- The arithmetic arms — `fadd`, `fsub`, `fmul`, `fdiv` and `frem`. Previously
+  every one answered `fcAllFlags`. This includes the special cases upstream
+  carries: `fadd x, x` as the canonical `fmul x, 2`, `x * x` through
+  `KnownFPClass::square`, the denormal-mode zero refinements, `x / x` as
+  exactly `1.0` or NaN, and `x % x` as exactly `±0.0` or NaN.
+
+Tests are `ComputeKnownFPClassTest`'s `FAdd`, `FSub`, `FMul` and `FMulNoZero`,
+ported verbatim — which is only possible because `nofpclass` is modeled, since
+upstream builds every operand in them out of it. **`fdiv` and `frem` have no
+upstream unit test**; that is recorded in `known_fp_class.rs`'s header rather
+than papered over with an invented fixture.
+
+### Parser / IR: integer casts over vectors
+
+#### Added
+
+- `trunc` / `zext` / `sext` over fixed and scalable integer vectors now parse,
+  verify, and print. Previously only the scalar spellings worked:
+  `zext <4 x i1> %c to <4 x i32>` failed with "integer-typed cast source".
+- `IRBuilder::build_int_cast_erased`, the third member of the erased builder
+  family alongside `build_int_binop_erased` and `build_int_cmp_erased`. llvmkit's
+  typed integer handles carry a *scalar* width, so `<N x iM>` converts to none of
+  them; the erased path is how the other vector instructions were already built.
+- `IntCastFlags`, the runtime-opcode counterpart of `IntBinOpFlags`: a caller
+  holding a `CastOpcode` it does not know statically cannot choose between
+  `TruncFlags` and `ZExtFlags`, so it supplies all three flags and the builder
+  writes through whichever the opcode reads.
+
+#### Fixed
+
+- The verifier rejected every vector integer cast. Its `trunc`/`zext`/`sext`
+  arm read operand widths through an integer-only accessor, so a vector cast
+  failed with "source type `<4 x i1>` is not integer" even once it parsed. It
+  now compares `Type::getScalarSizeInBits` and checks the vector shapes
+  separately, which is what `CastInst::castIsValid` specifies: both sides
+  vectors of equal element count and scalability, or both scalars, with a
+  strict width change in the opcode's direction.
+
+### ValueTracking: two of the residue — `stripNullTest` and `collectPossibleValues`
+
+#### Added
+
+- `strip_null_test`, porting `llvm::stripNullTest`: given the ceiling-division
+  idiom `(X >> C) or/add zext(X & mask(C) != 0)`, it recovers `X`. The shift
+  carries every bit at or above `C` and the compare folds the bits below it
+  into one flag, so the whole expression is zero exactly when `X` is.
+- `collect_possible_values`, porting `llvm::collectPossibleValues`: the
+  constants a value can take, walking back through `select` and `phi`.
+  Upstream fills a caller-owned set and returns whether the enumeration is
+  complete; here the two are one `Option`, because an incomplete set is
+  precisely what a caller must not act on.
+
+#### Fixed
+
+- `is_known_non_zero` now retries through `strip_null_test`, which is the tail
+  of upstream's `isKnownNonZero`. It answers `true` on the ceiling-division
+  idiom whenever it can answer `true` on the operand — previously it fell
+  through to known bits, which prove nothing there. Its doc comment now also
+  says plainly that the rest of that function is a known-bits approximation of
+  upstream's dedicated walk, not a line-for-line port.
+
+Ledger: **93 of 101 modeled, 8 gaps.**
+
+### ValueTracking: `getInverseMinMaxIntrinsic` across both halves of the family
+
+#### Added
+
+- `MinMaxOperation` — a min/max intrinsic, integer or floating-point. Upstream
+  spells this as an `Intrinsic::ID`, one flat type naming every intrinsic there
+  is, and narrows it with a `switch` whose `default` is `llvm_unreachable`.
+  Here it is the sum of two closed enums that already existed for their own
+  reasons: `MinMaxIntrinsic` (the four integer intrinsics, exactly the range of
+  `getMinMaxIntrinsic`) and `MinMaxKind` (the six floating-point ones, porting
+  `KnownFPClass::MinMaxKind`). The arms are disjoint and together are exactly
+  upstream's ten, so every mapping over the sum is total.
+- `MinMaxOperation::inverse`, porting `llvm::getInverseMinMaxIntrinsic` over
+  its whole domain, and `MinMaxKind::inverse` for the six floating-point arms
+  it delegates to. `MinMaxIntrinsic::inverse`, the integer half, already
+  existed. Also `MinMaxKind::name` and `MinMaxOperation::name`, matching the
+  `MinMaxIntrinsic::name` that was already there.
+
+#### Fixed
+
+- **Breaking:** `can_convert_to_min_or_max_intrinsic` returns
+  `Option<(MinMaxOperation, bool)>` rather than `Option<(MinMaxIntrinsic,
+  bool)>`. It used to answer `None` for the two floating-point flavours, where
+  upstream's switch answers `Intrinsic::maxnum` / `Intrinsic::minnum`; a caller
+  was told "cannot convert" about a `select` that converts fine. Both arms now
+  answer.
+
+  The narrowing, the ledger's gap reason, and `MinMaxIntrinsic::inverse`'s doc
+  comment all rested on one claim — "llvmkit models no floating-point min/max
+  intrinsic" — that was true when tranche 4b wrote it and false from tranche 7a
+  onward, once `MinMaxKind` landed with exactly the six variants upstream
+  inverts. All three are corrected.
+
+Ledger: **91 of 101 modeled, 10 gaps.**
+
+#### Internal
+
+- The parity ledger's `ValueTracking` half now proves what its module header
+  already claimed. `every_modeled_known_bits_row_is_exercised` has read the
+  test file's own source since 2026-08-03 to check that every modeled
+  `KnownBits` row is reached by real code; the `ValueTracking` table had no
+  such tie, and had drifted — `getInverseMinMaxFlavor`, `getMinMaxIntrinsic`,
+  `getMinMaxLimit` and `getMinMaxPred` sat in the modeled column with nothing
+  naming them, and `getSelectPattern`, `SelectPatternResult` and
+  `SelectPatternNaNBehavior` turned out the same way once the new
+  `every_modeled_value_tracking_row_is_exercised` went looking. All seven are
+  exercised now. No API change; this is the ledger holding itself to its own
+  claim.
+
+### ValueTracking: the and/xor/or known-bits idioms
+
+#### Added
+
+- `analyze_known_bits_from_and_xor_or`, porting
+  `llvm::analyzeKnownBitsFromAndXorOr`: the known bits of an `and` / `or` /
+  `xor` given both operands' bits, which upstream exposes so
+  `SimplifyDemandedUseBits` can reuse the reasoning with bits it has already
+  narrowed. `None` for a value that is not one of the three — upstream reaches
+  an `llvm_unreachable` there, which is a caller precondition.
+
+#### Fixed
+
+- The `and` / `or` / `xor` known-bits walk was missing two of upstream's
+  refinements, so it answered weaker than LLVM on both: `and(x, -x)` isolates
+  the lowest set bit (`KnownBits::blsi`, taken from whichever operand has the
+  fewer possible trailing zeros) and `xor(x, x - 1)` masks the low bits
+  (`KnownBits::blsmsk`). Both need a bit already known set, which is upstream's
+  own `HasKnownOne` gate. The odd-operand refinement that was already there is
+  unchanged.
+
+Ledger: **90 of 101 modeled, 11 gaps.**
+
+### ValueTracking: the floating-point select arm and the context arm
+
+#### Added
+
+- `fp_predicate.rs` — `fcmp_implies_class` and `fcmp_to_class_test`, porting
+  `llvm::FloatingPointPredicateUtils` and the generic implementation it
+  instantiates (`GenericFloatingPointPredicateUtils`). Given `fcmp <pred> lhs,
+  rhs`, they answer which classes `lhs` may belong to on each side of the
+  branch. Each comes in three forms, differing in how the right-hand side is
+  supplied: a value, an `ApFloat`, or a class mask. Upstream signals "nothing
+  proved" with a null tested value and both masks wide open; that sentinel is an
+  `Option` here, so a result in hand always carries a real answer.
+- `adjust_known_fp_class_for_select_arm`, porting
+  `llvm::adjustKnownFPClassForSelectArm`, and with it the `select` arm of
+  `compute_known_fp_class`.
+- The context arm of `compute_known_fp_class` — `computeKnownFPClassFromContext`
+  and `computeKnownFPClassFromCond` — reading the same three sources as its
+  known-bits sibling: an injected condition, the dominating branch conditions,
+  and the `@llvm.assume` calls. The caches were already there from tranche 8.
+- Fast-math flags on a `call` now parse and print (`call nsz float
+  @llvm.sqrt.f32(...)`), matching `LLParser::parseCall` and
+  `writeOptimizationInfo`, including upstream's rejection of flags on a call
+  whose return type is not a floating-point scalar or vector. The storage
+  already existed; nothing could reach it.
+
+#### Fixed
+
+- `compute_known_fp_class` took the dynamic denormal mode everywhere, on the
+  premise that llvmkit models no `denormal-fp-math` attribute. It does —
+  `FunctionValue::denormal_mode` — and upstream's own parse maps an *absent*
+  attribute to `ieee`, not to dynamic. Results that depend on the mode
+  (`sqrt`, `log`, `canonicalize`, the min/max family, and every comparison
+  against zero) were weaker than upstream's; they now match.
+- The `sqrt` arm read `nsz` directly. Upstream reads it through `Q.IIQ`, so a
+  query built with `without_instruction_info` must not see it.
+- `compute_known_fp_class` returned early for a value that is not an
+  instruction, before consulting the context. Upstream's `if (!Op) return`
+  comes *after*, so an argument constrained by an assumption or a dominating
+  branch now gets that refinement.
+
+The parity ledger moves `adjustKnownFPClassForSelectArm` to modeled — **89 of
+101, 12 gaps**. `analyzeKnownFPClassFromSelect` stays a gap with a corrected
+reason: it is declared in `ValueTracking.h` and defined nowhere in the LLVM
+tree. The name occurs exactly once across `llvm/`, its own declaration, with no
+definition and no caller, so there is no behaviour to port.
+
+### ValueTracking: floating-point classification (tranche 7b and 7c)
+
+#### Added
+
+- `known_fp_class.rs` — `compute_known_fp_class` over the `fp_class` lattice,
+  porting `llvm::computeKnownFPClass`, in the three overloads that differ in
+  what they take: an interested-classes mask, everything, and a use site's fast
+  math flags.
+- The nine convenience predicates over it: `is_known_never_nan`,
+  `is_known_never_infinity`, `is_known_never_infinity_or_nan`,
+  `cannot_be_negative_zero`, `cannot_be_ordered_less_than_zero`,
+  `compute_known_fp_sign_bit`, and the two `Use`-taking
+  `can_ignore_sign_bit_of_zero` / `can_ignore_sign_bit_of_nan`.
+
+**The dispatch is partial, and the module header names every arm that is
+missing.** Ported: the constant and poison leaves, the fast-math-flag
+refinement, `fneg`, `fpext`, `fptrunc`, `sitofp`, `uitofp`, and the
+`fabs` / `copysign` / `sqrt` / `canonicalize` intrinsics together with the six
+min/max, seven rounding, `exp` and `log` families. Not yet consulted: `select`
+(it needs `adjustKnownFPClassForSelectArm`, still a recorded gap), the
+assumption and dominating-branch arm, the arithmetic and vector arms, and the
+remaining intrinsics. An unported arm leaves `fcAllFlags` — "could be anything"
+— so it weakens an answer and never falsifies one.
+
+`nofpclass` on a call return or parameter has no counterpart: llvmkit's
+attribute model carries no such payload, so `getRetNoFPClass` and
+`getNoFPClass` have nothing to read.
+
+The parity ledger moves nine of the eleven tranche-7 rows, taking it to **88 of
+101 modeled, 13 gaps**. The two that stay are the select-arm pair, whose reason
+is rewritten: the lattice they needed now exists, only the dispatch arm is
+absent.
+
+### The floating-point classification lattice (tranche 7a)
+
+#### Added
+
+- `fp_class.rs` — `FpClassTest`, porting `llvm::FPClassTest`
+  (`llvm/ADT/FloatingPointMode.h`): the ten-bit mask naming every class an IEEE
+  value can fall into, split by sign, with upstream's named unions, the three
+  transforms (`fneg`, `inverse_fabs`, `unknown_sign`), `APFloat::classify`, and
+  the `Display` that ports `operator<<`.
+- `KnownFpClass`, porting `llvm::KnownFPClass`
+  (`llvm/Support/KnownFPClass.h`): that mask paired with a separately tracked
+  sign bit, and every predicate over it —
+  `isKnownNever*`, `cannotBeOrdered*`, `knownNot`, `fneg`, `fabs`, `copysign`,
+  `propagateNaN`, `intersectWith`, `operator|=` and
+  `isKnownNeverLogical{,Neg,Pos}Zero`.
+
+This is the prerequisite for `computeKnownFPClass`, and stands to it as
+`KnownBits` does to `computeKnownBits`. The *operations* on the lattice that
+only `computeKnownFPClass` uses — `fmul`, `sqrt`, `log`, `exp`, `fpext`,
+`roundToIntegral`, `canonicalize`, `minMaxLike`, `propagateDenormal`,
+`propagateCanonicalizingSrc` — are deliberately not here yet: landing them
+without their consumer would be a surface with no caller and no way to test it
+against upstream. The module header records that.
+
+`FpClassTest` is a `u32` newtype, not an `enum`. Upstream's is an `enum` only
+because C++ has no other way to name a bitmask — `LLVM_DECLARE_ENUM_AS_BITMASK`
+is upstream saying so — and `complement` accordingly complements within
+`fcAllFlags` rather than within `u32`. `from_bits` is fallible where `bits` is
+not: a mask read out of `@llvm.is.fpclass` is caller-supplied, and upstream's
+verifier rejects an out-of-range one rather than truncating it.
+
+### ValueTracking: assumptions and implied conditions (tranche 8)
+
+#### Added
+
+- `assumptions.rs` — the `@llvm.assume` slice. `find_values_affected_by_condition`,
+  `is_valid_assume_for_context` and `will_not_free_between` port
+  `ValueTracking.h`'s three entry points; `AssumptionCache` and
+  `DomConditionCache` port `llvm/Analysis/AssumptionCache.h` and
+  `llvm/Analysis/DomConditionCache.h`, which exist only to answer "which
+  assumes / branches mention this value" and are built by calling the first.
+  `Assumption` and `AssumptionSource` are the `ResultElem` pair, with
+  upstream's `ExprResultIdx` sentinel spelled as a variant.
+- `implied_conditions.rs` — `is_implied_condition` and
+  `is_implied_by_dom_condition`, each in both the whole-condition and the
+  decomposed spelling upstream declares, over the full static machinery:
+  `isImpliedCondICmps`, `isImpliedCondFCmps`, `isImpliedCondAndOr`,
+  `isImpliedCondCommonOperandWithCR`, `isImpliedCondOperands`,
+  `isTruePredicate` and `getDomPredecessorCondition`.
+- `compute_known_bits_from_context` and `adjust_known_bits_for_select_arm`,
+  together with the `computeKnownBitsFromCond` / `computeKnownBitsFromICmpCond`
+  / `computeKnownBitsFromCmp` chain they rest on. `compute_known_bits` now runs
+  the context refinement where upstream does — after the operator walk — so
+  every existing known-bits caller gets assumption- and branch-driven facts by
+  attaching them to the query.
+- `ValueTrackingQuery::{with_assumptions, with_dominating_conditions,
+  with_condition_context}` and their accessors, porting `SimplifyQuery`'s `AC`,
+  `DC` and `CC` fields. `CondContext` is the injected-condition vehicle.
+- `PredicateWithSameSign` — upstream's `CmpPredicate` (`CmpPredicate.h`): a
+  predicate plus the `samesign` flag its `icmp` carried, with `matching`,
+  `preferred_signed_predicate`, `drop_same_sign` and
+  `implied_by_matching_comparison` (`ICmpInst::isImpliedByMatchingCmp`).
+  llvmkit's existing `CmpPredicate` stays the flag-less int-or-float union.
+- `IntPredicate::signed_predicate`, porting `ICmpInst::getSignedPredicate`.
+
+#### Fixed
+
+- The integer min/max matcher behind `matchClamp` (tranche 4b) matched only the
+  `select(icmp …)` spelling and accepted its operands in either order.
+  Upstream's `MaxMin_match` also matches a direct `llvm.smin`/`smax`/`umin`/`umax`
+  call, and `m_SMin` — as distinct from `m_c_SMin` — is not commutative. Both
+  are corrected, and the select arm now binds operands in upstream's order (the
+  *compare's*, with the predicate inverted rather than swapped when the true arm
+  is the compare's right-hand side).
+
+Two arms are narrower than upstream, each recorded at its site.
+`computeKnownBitsFromContext`'s operand-bundle alignment refinement needs
+`getKnowledgeFromBundle` (`llvm/Analysis/AssumeBundleQueries.h`), which is not
+ported — `AssumptionCache` still records the bundle indices, so the arm can be
+filled in without re-scanning. `isImpliedCondFCmps`'s constant-versus-constant
+conclusion needs `ConstantFPRange`, which llvmkit does not model. Both omissions
+only leave an answer weaker.
+
+Where upstream builds a `ConstantInt::get(V->getType(), 0)` to feed the two
+`m_NUWTrunc` arms of `isImpliedCondition`, llvmkit passes a bare `ApInt`
+alongside the values instead: minting a constant would mean an analysis editing
+the IR it was asked about. Operand equality follows LLVM's constant uniquing —
+a literal equals a constant value holding the same bits — rather than raw value
+identity.
+
+### ValueTracking: select-pattern matching (tranche 4b)
+
+#### Added
+
+- `match_select_pattern`, `match_decomposed_select_pattern` and
+  `can_convert_to_min_or_max_intrinsic`, completing the `SelectPatternResult`
+  family whose vocabulary landed as tranche 4a. With them the whole static
+  machinery: `matchClamp`, `matchMinMax`, `matchMinMaxOfMinMax`,
+  `matchFastFloatClamp`, `getNotValue`, `lookThroughCast` and `isKnownNonNaN`.
+- `SelectPatternMatch` — what upstream returns through its `Value *&LHS` /
+  `Value *&RHS` / `Instruction::CastOps *CastOp` out-parameters. Upstream's own
+  comment on those, "Assume success. If there's no match, callers should not
+  use these anyway", is why the record sits behind an `Option`: a caller that
+  did not match cannot read operands that were never meaningfully set.
+- `FloatPredicate::{is_ordered, is_unordered, is_equality}` and
+  `IntPredicate::is_equality`, porting the `CmpInst` predicates of the same
+  names.
+
+Three arms are narrower than upstream, each recorded at its site: fast-math
+flags written on the `select` are not read (llvmkit's `select` carries no flag
+word — flags on the `fcmp` are read, which is where they normally sit), and
+`getNotValue` and `lookThroughCastConst` decline the cases that would need a
+*new* constant to be minted, which is a module mutation. `can_convert_to_min_or_max_intrinsic`
+answers `None` for the two floating-point flavours, the same gap already
+recorded against `getInverseMinMaxIntrinsic`.
+
+> Superseded on that last one: the gap was not real. `can_convert_to_min_or_max_intrinsic`
+> now answers for both flavours — see *`getInverseMinMaxIntrinsic` across both
+> halves of the family* at the top of this file.
+
+### ValueTracking: pointer and object analysis (tranche 5)
+
+#### Added
+
+- `pointer_analysis.rs` — a new module for the `getUnderlyingObject` /
+  `findAllocaForValue` / `getConstantDataArrayInfo` slice of
+  `ValueTracking.cpp`. Sixteen entry points: `get_underlying_object`,
+  `get_underlying_object_aggressive`, `get_underlying_objects`,
+  `get_underlying_objects_for_code_gen`, `pointer_base_with_constant_offset`,
+  `find_alloca_for_value`, `only_used_by_lifetime_markers`,
+  `only_used_by_lifetime_markers_or_droppable_instructions`,
+  `argument_aliasing_to_returned_pointer`,
+  `is_intrinsic_returning_pointer_aliasing_argument_without_capturing`,
+  `get_constant_data_array_info`, `get_constant_string_info`,
+  `get_string_length`, `is_bytewise_value`, `find_inserted_value`, and the
+  `ConstantDataArraySlice` those last few read through.
+- `BytewiseValue` — what `isBytewiseValue` found. Upstream returns a `Value *`
+  because it can mint an `i8` constant; minting is a module mutation, so this
+  returns the byte, the "any byte will do" answer, or the `i8` value upstream's
+  first arm hands straight back.
+
+Six of upstream's spellings become `Option` here, each because the `None`
+carries information a `bool` plus an out-parameter does not:
+`getUnderlyingObjectsForCodeGen` (which clears its out-parameter on failure),
+`getConstantDataArrayInfo`, `getConstantStringInfo`, `GetStringLength` (whose
+`0` means "cannot tell", not a length), `findAllocaForValue` (whose two failure
+modes both leave the caller without an alloca), and
+`ConstantDataArraySlice::move` (whose `assert(Delta < Length)` guards a caller
+precondition).
+
+`GetPointerBaseWithConstantOffset` returns the base and offset as a pair rather
+than writing the offset through a reference, so the two cannot drift apart.
+
+#### Changed
+
+- `is_known_not_undef_or_poison` and its siblings now strip pointer casts
+  before the allocated-object test, closing the second of the two arms that
+  were recorded as deferred. A zero-offset `inbounds getelementptr` of an
+  `alloca` is now recognised as the allocated object it points into — which is
+  what upstream's comment on the strip says the strip is *for*, since that GEP
+  would otherwise read as poison-capable. Only the `@llvm.assume` arm remains.
+
+### ValueTracking: speculation safety and UB reachability (tranche 6)
+
+#### Added
+
+- `speculation.rs` — a new module for the `isSafeToSpeculativelyExecute` /
+  `isGuaranteedToTransferExecutionToSuccessor` / `programUndefinedIfPoison`
+  slice of `ValueTracking.cpp`. Thirteen entry points:
+  `is_safe_to_speculatively_execute`,
+  `is_safe_to_speculatively_execute_with_opcode`,
+  `is_safe_to_speculatively_execute_with_variable_replaced`,
+  `is_guaranteed_to_transfer_execution_to_successor` (plus the block and
+  instruction-range forms `block_transfers_execution_to_successor` and
+  `instructions_transfer_execution_to_successor`),
+  `is_guaranteed_to_execute_for_every_iteration`,
+  `may_have_non_def_use_dependency`, `must_trigger_ub`,
+  `must_execute_ub_if_poison_on_path_to`, `program_undefined_if_poison`,
+  `program_undefined_if_undef_or_poison`, `is_assume_like_intrinsic`,
+  `is_not_cross_lane_operation` and `intrinsic_propagates_poison`.
+- `SpeculationOptions` — upstream's two defaulted `bool` parameters
+  (`UseVariableInfo`, `IgnoreUBImplyingAttrs`) as a named record, so a call
+  site says which is which. `Default` reproduces upstream's defaults.
+- `Opcode` and `OpcodeGroup` (`instr_types`), plus `InstructionView::opcode()`.
+  Ports `Instruction::getOpcode` and the `HANDLE_*_INST` families of
+  `Instruction.def` as one closed enum. Without it
+  `isSafeToSpeculativelyExecuteWithOpcode`, whose whole purpose is to run the
+  switch for an opcode other than the instruction's own, could not be ported at
+  all. `UserOp1` / `UserOp2` are absent: `Instruction.def` reserves them for
+  out-of-tree passes and llvmkit has no storage variant that could hold one.
+- `MemoryEffects::does_not_access_memory`, `only_reads_memory` and
+  `only_writes_memory`, porting the `MemoryEffectsBase` predicates of
+  `ModRef.h`.
+- `IntrinsicId::is_speculatable`, `will_return` and `no_free` — the TableGen
+  properties LLVM materialises as function attributes on every intrinsic
+  declaration.
+- `MetadataAttachmentKind::NoUndef`, the `!noundef` attachment
+  (`FixedMetadataKinds.def`'s `MD_noundef`). It previously fell through to
+  `Custom("noundef")`, which is round-trip-correct but invisible to the
+  analysis that reads it.
+
+#### Changed
+
+- `is_known_not_poison` / `is_known_not_undef` / `is_known_not_undef_or_poison`
+  gained four of upstream's arms that were previously recorded as deferred:
+  the `programUndefinedIfUndefOrPoison` walk, the dominating-branch-condition
+  walk, the `shufflevector` splat arm, and `!noundef` / `!dereferenceable` /
+  `!dereferenceable_or_null` on a `load`. The call-return arm also widened from
+  `noundef` alone to the three attributes upstream accepts. Each only adds
+  `true` answers where upstream proves `true`; none can turn a `true` into a
+  `false`. Only the `@llvm.assume` arm and the pointer-cast strip remain, and
+  both are recorded in the parity ledger.
+
+### ValueTracking: the select-pattern vocabulary (tranche 4a)
+
+#### Added
+
+- `select_pattern.rs`: `SelectPatternFlavor`, `SelectPatternNaNBehavior`,
+  `SelectPatternResult`, `get_select_pattern`, and the flavour accessors
+  `min_max_predicate`, `min_max_intrinsic`, `inverse_min_max` and
+  `min_max_limit`.
+- `MinMaxIntrinsic` — the four integer min/max intrinsics as a public enum,
+  because llvmkit's intrinsic semantic is crate-internal and cannot appear in
+  a public signature. It is also exactly the range of upstream's
+  `getMinMaxIntrinsic`, which makes `MinMaxIntrinsic::inverse` **total** where
+  upstream's `getInverseMinMaxIntrinsic` needs an `llvm_unreachable`.
+
+Upstream ends four of these in `llvm_unreachable` on a precondition the caller
+must uphold ("caller must ensure `SPF` is an integer min or max pattern").
+Each returns `Option` here, so the precondition is the `None` and a caller
+cannot read an answer that was never defined.
+
+Matching an actual `select` against these flavours — `matchSelectPattern`,
+`matchDecomposedSelectPattern` and the `matchClamp` / `matchMinMax` /
+`matchMinMaxOfMinMax` machinery behind them — is tranche 4b and stays in the
+gap table. `getInverseMinMaxIntrinsic` is partially modeled: its four integer
+arms are `MinMaxIntrinsic::inverse`, while the six floating-point intrinsics it
+also inverts (`maximum`/`minimum`, `maxnum`/`minnum`, `maximumnum`/`minimumnum`)
+have no counterpart in llvmkit's intrinsic model to map to.
+
+> Superseded: `MinMaxKind` (tranche 7a) turned out to name exactly those six,
+> and the row closed in full — see *`getInverseMinMaxIntrinsic` across both
+> halves of the family* at the top of this file.
+
+
+### KnownBits: the operators
+
+An audit of `KnownBits.h`'s public surface against llvmkit — 99 named members
+plus 7 operators, enumerated by hand — found two genuinely unmodeled:
+`operator<<=` and `operator>>=`.
+
+#### Added
+
+- All seven operators, each as the std trait that spells the same thing:
+  `Shl<u32>` / `ShlAssign<u32>`, `Shr<u32>` / `ShrAssign<u32>`, and
+  `BitAnd`/`BitOr`/`BitXor` with their `*Assign` forms over the existing
+  `bitand`/`bitor`/`bitxor`. `operator==`/`!=` were already covered by the
+  derived `PartialEq`/`Eq`.
+
+  The two shifts are **not** aliases for `KnownBits::shl` / `lshr`. Those are
+  the transfer functions for the shift *instructions* and know the vacated
+  bits are zero; the operators move the masks only, so a shifted-in bit is
+  clear in both masks — the encoding of "unknown". LLVM keeps the same pair
+  and its callers depend on the difference: `RISCVISelLowering.cpp` follows
+  `Known <<= ShAmt` with `Known.Zero.setLowBits(ShAmt)` and the comment "the
+  `<<=` operator left these bits unknown".
+
+#### Fixed
+
+- The parity ledger was missing a row for `getConstant` (modeled all along as
+  `constant`), and listed no operators at all — the grep that built it looked
+  for an identifier before a `(`, which `operator<<=(` does not have. That is
+  how the two missing shifts went unnoticed while
+  `known_bits_public_surface_is_complete` reported the surface closed.
+
+  That test's doc comment now says what it can and cannot prove: it compares
+  two hand-maintained tables and cannot read `KnownBits.h`, which is gitignored
+  and absent in CI, so it detects a *recorded* gap and never an unrecorded one.
+  Closing the surface is a periodic manual enumeration;
+  `KNOWN_BITS_SURFACE_AUDITED` records when it last ran and against what count.
+
+### Parser: vector integer arithmetic and comparison
+
+`and <2 x i32> %a, %b` now parses. It did not before: the parser converted both
+operands to `IntValue`, whose `IntWidth` marker describes a scalar width, so
+every integer binop and `icmp` rejected vector operands. `clang -O2` output was
+unparseable as soon as the vectorizer fired.
+
+#### Added
+
+- `IRBuilder::build_int_binop_erased` — an integer binop on erased operands
+  with a *runtime* opcode, for callers like the `.ll` parser that do not know
+  the opcode statically. Returns an erased `ValueId<B>`, since the result may
+  be a vector.
+- `IRBuilder::build_int_cmp_erased` — `icmp` on erased operands, yielding `i1`
+  or `<N x i1>` to match. `build_int_cmp_with_flags_dyn` cannot serve: its
+  `_dyn` means dynamic *width*, it routes through the scalar-only
+  `IntoIntValue`, and its `IntValueId<bool, B>` result cannot describe a vector.
+- `IntBinOpFlags`, carrying all four integer-binop flags at once, plus
+  `BinaryOpcode::accepted_flags` to drop the ones an opcode cannot express.
+- `build_int_udiv_dyn`, `build_int_sdiv_dyn`, `build_int_urem_dyn`,
+  `build_int_srem_dyn` — the erased family had stopped at the shifts.
+
+#### Changed
+
+- The erased integer-binop path now **validates** operand types instead of
+  leaving it to `verify()`. A caller reaching it has a runtime type in hand and
+  no conversion to bounce off, so `and` on two floats used to build silently.
+- The erased builders now carry flags. They previously built
+  `BinaryOpData::new(..)` with every flag false, so routing the parser through
+  them as-written would have made `add nuw <2 x i32>` print as a plain `add`.
+- `haveNoCommonBitsSet` recognises a vector `not`: `m_AllOnes` matching was
+  scalar-only, so `xor %v, splat (i32 -1)` was not seen as a `not` and the
+  `(A & B) op ~(A | B)` case failed on vectors.
+
+The scalar path is untouched — vectors are routed around the typed handles,
+not through a relaxed version of them.
+
+### ValueTracking: value-level predicates — tranche 1 complete
+
+The predicates that sit directly on known bits. No new types; the tranche was
+listed first in the plan and is now closed.
+
+#### Added
+
+- Sign predicates: `is_known_non_negative`, `is_known_negative`,
+  `is_known_positive`.
+- `masked_value_is_zero`, which takes the mask upstream's `MaskedValueIsZero`
+  takes. The parity ledger previously mapped that name to `is_known_zero`,
+  which takes none; `is_known_zero` and `is_known_one` are now recorded as
+  llvmkit conveniences with no upstream entry point of their own.
+- `is_sign_bit_check`, returning `Option<bool>`. Upstream returns `bool` and
+  writes the polarity through a `bool &TrueIfSigned` out-parameter, so the
+  polarity can be read after a failed classification; here it cannot be.
+- `is_known_to_be_a_power_of_two`, including `isPowerOfTwoRecurrence`.
+- `is_known_non_equal`, with `getInvertibleOperands` and its five helpers.
+- `is_known_negation`, `is_known_inversion`.
+- `is_only_used_in_zero_comparison` and `is_only_used_in_zero_equality_comparison`.
+- `have_no_common_bits_set`, with all six `haveNoCommonBitsSetSpecialCases`
+  patterns, each tried in both operand orders.
+- `is_known_not_undef` and `is_known_not_undef_or_poison`.
+
+#### Changed
+
+- **`is_known_not_poison` is substantially stronger.** It was a placeholder
+  that handled constants and shift operators and answered `false` for
+  everything else; it is now the real `isGuaranteedNotToBeUndefOrPoison` walk —
+  `noundef`/`dereferenceable` parameters, allocated objects, `freeze`, calls
+  with a `noundef` return, and the operand walk under
+  `canCreateUndefOrPoison`. Anything built on it (`implies_poison`, the
+  `freeze` arm of `compute_known_bits`) gets the improvement for free.
+
+Three of the walk's arms are deferred, each only weakening the answer:
+`programUndefinedIfUndefOrPoison` and the dominating branch-condition walk
+that follows it (CFG reachability, tranche 6), the `@llvm.assume` arm
+(tranche 8), and `stripPointerCastsSameRepresentation` before the
+allocated-object test (tranche 5). One arm is a deliberate llvmkit refinement,
+marked at its site: a shift whose amount known bits prove in range is not
+poison, where upstream's `shiftAmountKnownInRange` demands a literal constant.
+
+#### Found
+
+- **The parser cannot read vector integer binops the builder can write.**
+  `and <2 x i32> %a, %b` does not parse: `parse_int_binop` converts both
+  operands to the scalar-only `IntValue` before calling a builder. The
+  type-erased `build_int_*_dyn` family handles vectors fine, so this is a
+  parser routing gap, not a missing capability. It surfaced while porting the
+  third block of upstream's `HaveNoCommonBitsSet` test, which is therefore not
+  ported. Not fixed here — closing it also needs four `_dyn` builders that do
+  not exist yet (`udiv`, `sdiv`, `urem`, `srem`). Recorded in
+  `docs/future-work.md`.
+
+### ValueTracking: constant ranges and overflow prediction (slice 3e) — tranche 3 complete
+
+The consumers `ConstantRange` was ported for.
+
+#### Added
+
+- `compute_constant_range` and `compute_constant_range_including_known_bits`.
+  The two sources are independent — known bits pin bits a range cannot
+  express, a range bounds values the bits cannot — so upstream intersects
+  them, and so does this.
+- All six overflow predicates: `compute_overflow_for_{signed,unsigned}_{add,sub,mul}`.
+  The signed multiply reaches its answer by sign-bit counting rather than
+  ranges (upstream credits *Hacker's Delight*), which is why slice 1's
+  `compute_num_sign_bits` was a prerequisite.
+- Five `ConstantRange` overflow predicates the earlier survey missed:
+  `unsigned_add_may_overflow`, `signed_add_may_overflow`,
+  `unsigned_sub_may_overflow`, `signed_sub_may_overflow`,
+  `unsigned_mul_may_overflow`, plus the shared `OverflowResult`.
+
+  **A correction:** `ConstantRange`'s public surface is **83** methods, not
+  the 78 reported when tranche 3 was planned. These five span two lines in the
+  header, and the extraction used to count them was single-line.
+
+Not ported, each because llvmkit lacks the *input* rather than the reasoning:
+`computeConstantRange`'s `@llvm.assume` refinement (no `AssumptionCache`), its
+select-pattern clamp (no `SelectPatternResult` — tranche 4), and
+`getVScaleRange`, which reads `vscale_range`'s packed `(min, max)` pair while
+llvmkit's attribute payload is a single `u64` and `attribute_td_drift.rs`
+already lists the attribute as not-yet-modeled. Each omission only widens an
+answer.
+
+**Tranche 3 is complete.** `ConstantRange` went from a 223-line seed with 13
+mapped methods to 90 public methods across five slices.
+
+### `ConstantRange` dispatchers and no-wrap variants (slice 3d-vi) — slice 3d complete
+
+#### Added
+
+- `binary_op` and `overflowing_binary_op`, the opcode dispatchers.
+- `intrinsic` and `is_intrinsic_supported`, plus the `RangeIntrinsic` enum.
+- `add_with_no_wrap`, `sub_with_no_wrap`, `multiply_with_no_wrap`, taking a
+  `NoWrapKind` with named `signed` / `unsigned` flags rather than upstream's
+  bitmask, so neither promise can be mistaken for the other at a call site.
+- `smul_fast` — the give-up-rather-than-approximate multiply.
+
+Two places where naming a type removed a run-time check. Upstream's
+`intrinsic` asserts that the id is supported *and* that the flag operands are
+known one-bit constants; `RangeIntrinsic` carries each intrinsic's flag in the
+variant, so both assertions become unrepresentable states and
+`is_intrinsic_supported` is total. Arity is still checked, but answers `None`
+instead of asserting.
+
+`shlWithNoWrap` is **not** ported — it is three sizeable helpers plus a
+dispatcher, no llvmkit caller needs it, and `overflowing_binary_op` sends
+`shl` to the plain `shl`, which is sound and only weaker. Recorded in
+`docs/future-work.md`.
+
+With this, **slice 3d is complete** — all six sub-slices, ~37 methods.
+
+### `ConstantRange` saturating operations and bit counting (slices 3d-iv, 3d-v)
+
+#### Added
+
+- The saturating family: `uadd_sat`, `sadd_sat`, `usub_sat`, `ssub_sat`,
+  `umul_sat`, `smul_sat`, `ushl_sat`, `sshl_sat`. Six of the eight are the
+  same shape — monotone, so the extremes pair up — and share one private
+  frame rather than being written out separately. `smul_sat` needs all four
+  corner products for the same reason `multiply` does, and `sshl_sat` picks
+  each endpoint's shift amount by that endpoint's sign, because shifting a
+  negative value left drives it down.
+- Bit counting: `ctlz`, `cttz`, `ctpop`, with the `zero_is_poison` flag the
+  `llvm.ctlz` / `llvm.cttz` intrinsics carry.
+
+A note for anyone writing tests against the saturating shifts: upstream's
+`ushl_ov` / `sshl_ov` open with `Overflow = ShAmt >= getBitWidth()` *before*
+looking at the value, so `0 ushl_sat 4` at four bits saturates to the maximum
+rather than staying zero. The naive `0 << 4 == 0` reading is wrong, and the
+test oracle says so explicitly.
+
+### `ConstantRange` bitwise operations and shifts (tranche 3, slice 3d-iii)
+
+#### Added
+
+- `binary_and`, `binary_or`, `binary_xor`, `binary_not`.
+- `shl`, `lshr`, `ashr`.
+
+`binary_and` and `binary_or` each intersect two independent approximations —
+what the known bits say, and an interval derived from the ranges' extremes —
+because neither subsumes the other. `binary_or` reuses the AND's lower-bound
+estimator on complemented operands, which is De Morgan applied to the bound
+rather than to the operation.
+
+#### Fixed
+
+- **`ApInt::ashr` filled with zero instead of the sign bit** when the shift
+  amount reached or exceeded the bit width. Upstream's `APInt::ashrInPlace`
+  spells that arm `SExtVAL >> (APINT_BITS_PER_WORD - 1)` — "fill with sign
+  bit" — so a negative value must saturate to all-ones, not zero. The `APInt`
+  overload reaches it via `getLimitedValue(BitWidth)`, so larger amounts
+  saturate the same way.
+
+  `ConstantRange::ashr` surfaced it: the range for `-8 ashr 4` at four bits
+  dropped `-1`. `checked_ashr` keeps its stricter contract and still declines
+  out of range; only the saturating wrapper changed.
+
+### `ConstantRange` division and remainder (tranche 3, slice 3d-ii)
+
+#### Added
+
+- `udiv`, `sdiv`, `urem`, `srem`.
+- `abs`, pulled forward from slice 3d-v because `srem` reasons about the
+  divisor's magnitude.
+
+Two undefined-behaviour cases shape these. Division and remainder by zero is
+UB, so a divisor range that can *only* be zero yields the empty set, and one
+that merely contains zero has the zero skipped when picking the smallest
+divisor. `SignedMin / -1` is UB at the IR level even though `APInt` defines it
+— upstream's `neg / neg` arm computes its bound twice, once dropping `-1` from
+the divisor and once dropping `SignedMin` from the dividend, and llvmkit
+carries that over.
+
+`sdiv` splits both operands by sign and computes the four sign combinations
+separately, since the quotient's sign follows from the operands' and mixing
+them loses precision. The zero that the split drops from the dividend is
+unioned back at the end.
+
+The tests skip exactly the undefined pairings and no others — a range analysis
+is only obliged to cover defined behaviour, but skipping more than that would
+let a wrong answer through.
+
+### `ConstantRange` arithmetic, first group (tranche 3, slice 3d-i)
+
+Slice 3d is ~30 methods across six unrelated families, so it is cut into
+sub-slices the same way tranche 3 was (see `docs/future-work.md`). This is the
+first: the operations `computeOverflowFor*` needs in 3e.
+
+#### Added
+
+- `add`, `sub` — endpoint arithmetic with upstream's wrap detection: a result
+  smaller than either input can only mean the true answer covers everything.
+- `multiply` — computed at double width under both an unsigned and a signed
+  reading, returning the smaller. Multiplication is signedness-independent but
+  the resulting *range* is not, and neither reading dominates.
+- `smax`, `smin`, `umax`, `umin`.
+
+The four min/max functions are near-identical upstream. llvmkit writes the
+body once over a private `MinMaxKind` naming the two axes they differ on
+(signed vs unsigned, min vs max), so they cannot drift apart.
+
+### `ConstantRange` ICmp regions (tranche 3, slice 3c)
+
+#### Added
+
+- `make_allowed_icmp_region` — values that compare true against **some**
+  member of a range (an over-approximation).
+- `make_satisfying_icmp_region` — values that compare true against **every**
+  member (an under-approximation). Derived from the allowed region by
+  De Morgan, as upstream does.
+- `make_exact_icmp_region` — exact, because a single right-hand value makes
+  the two questions above coincide.
+- `make_mask_not_equal_range` — the values satisfying `(v & mask) != c`.
+- `icmp` — true when every pairing across two ranges compares true.
+- `equivalent_icmp_with_offset` / `equivalent_icmp`, porting the two
+  `getEquivalentICmp` overloads. Upstream fills out-parameters and returns a
+  `bool` for "the offset was zero"; llvmkit returns an `EquivalentICmp` struct
+  and an `Option` respectively.
+- `single` and `contains_range`, the one-element constructor and the
+  range-in-range query these needed.
+
+The signedness-flipping helpers are not ported — they exist upstream for
+InstCombine's predicate canonicalization, which llvmkit does not have. Noted
+in `docs/future-work.md`.
+
+### `ConstantRange` set operations (tranche 3, slice 3b)
+
+#### Added
+
+- `intersect_with` / `union_with`, ports of `ConstantRange::intersectWith` and
+  `unionWith` including their full wrapped/non-wrapped case analysis, plus
+  `PreferredRangeType` (`Smallest` / `Unsigned` / `Signed`) — upstream's
+  tie-breaker for when the exact answer needs two disjoint runs and only one
+  `[lower, upper)` can be returned.
+- `inverse`, `difference`, `subtract`, `split_pos_neg`.
+- The width-changing family: `zero_extend`, `sign_extend`, `truncate`,
+  `zext_or_trunc`, `sext_or_trunc`.
+
+Upstream asserts on a width change in the wrong direction
+(`assert(SrcTySize < DstTySize && "Not a value extension")`). llvmkit has no
+runtime asserts in production paths, so `zero_extend`, `sign_extend` and
+`truncate` return `IrError::OperandWidthMismatch` instead; `zext_or_trunc` and
+`sext_or_trunc` are the spellings that accept either direction.
+
+`truncate`'s `NoWrapKind` parameter is spelled as a plain `no_unsigned_wrap:
+bool`, because `TruncInst::NoUnsignedWrap` is the only kind the function reads.
+
+`castOp` is deliberately not ported — see `docs/future-work.md`.
+
+### `ConstantRange` bounds and predicates (tranche 3, slice 3a)
+
+Tranche 3 of the `ValueTracking.h` port is `ConstantRange` itself, which
+llvmkit had only as a 223-line seed — 13 of upstream's 78 public methods. It
+is cut into five slices (see `docs/future-work.md`); this is the first.
+
+#### Added
+
+- Signed bounds: `signed_min`, `signed_max`, `is_sign_wrapped_set`,
+  `is_upper_sign_wrapped`.
+- Membership shape: `single_element`, `single_missing_element`,
+  `is_single_element`, `is_size_strictly_smaller_than`, `is_size_larger_than`.
+- Sign predicates: `is_all_negative`, `is_all_non_negative`,
+  `is_all_positive`. The empty set is vacuously all-negative *and*
+  all-positive, as upstream documents.
+- Width queries: `active_bits`, `min_signed_bits`.
+- `non_empty` — the constructor that reads equal endpoints as the full set,
+  mirroring `getNonEmpty`.
+- `from_known_bits` / `to_known_bits`, bridging `ConstantRange` and
+  `KnownBits` in both directions.
+
+#### Fixed
+
+- **`ConstantRange::new` accepted a range that cannot exist.** Equal endpoints
+  encode the two degenerate sets — all-zero is empty, all-ones is full — so
+  any *other* equal pair describes a range containing nothing while answering
+  `false` to both `is_empty_set` and `is_full_set`, which every predicate
+  downstream reads. Upstream asserts against it in
+  `ConstantRange::ConstantRange`; llvmkit silently built it. The constructor
+  now returns the new `IrError::DegenerateConstantRange`. This is a behaviour
+  change on a constructor that was already fallible.
+
+### ValueTracking: the poison predicates (tranche 2)
+
+Second tranche of the `ValueTracking.h` port. The value-level poison
+reasoning is now modeled; what remains of the family is the CFG walk that
+decides whether poison actually *reaches* undefined behaviour.
+
+#### Added
+
+- `can_create_poison` / `can_create_undef_or_poison` — ports
+  `llvm::canCreatePoison` and `llvm::canCreateUndefOrPoison`, including the
+  `ConsiderFlagsAndMetadata` parameter. An operator carrying `nsw`, `nuw`,
+  `exact`, `disjoint`, `nneg` or a gep no-wrap flag answers true on that
+  basis alone.
+- `propagates_poison` — ports `llvm::propagatesPoison`. Upstream takes a
+  `Use`, which names a user and an operand position together; llvmkit has no
+  `Use` type, so the pair is spelled out as `(user, operand_index)`.
+- `implies_poison` — ports `llvm::impliesPoison`, with upstream's local
+  recursion limit of 2 (not the analysis-wide depth).
+- `is_known_not_poison` — makes the already-internal
+  `isGuaranteedNotToBePoison` public.
+
+Two upstream arms are not ported and each only weakens an answer: the
+`nocreateundeforpoison` function attribute, which llvmkit does not model, so
+some calls answer "can create poison" where upstream would not; and
+`directlyImpliesPoison`'s `extractvalue`-of-`WithOverflowInst` arm, whose
+pattern cannot arise because llvmkit does not model the overflow intrinsics
+as a distinct instruction class.
+
+### ValueTracking: sign-bit counting (tranche 1)
+
+First tranche of the `ValueTracking.h` port. Ports
+`llvm::ComputeNumSignBits` and `llvm::ComputeMaxSignificantBits`
+(`ValueTracking.cpp`) — the number of times a value's sign bit is replicated
+into its high bits, and the signed width that implies.
+
+#### Added
+
+- `compute_num_sign_bits` — ports `ComputeNumSignBitsImpl`'s operator switch:
+  `sext`, `trunc`, `sdiv`/`srem` by a positive constant, `ashr`, `shl`,
+  `and`/`or`/`xor`, `select`, `add`, `sub`, `mul` and `phi`, then the
+  `computeKnownBits` tail that improves on whatever the switch established.
+- `compute_max_significant_bits` — `width - sign_bits + 1`.
+
+Four upstream arms are **not** ported, each falling through to the
+known-bits tail exactly as upstream's own `break` does when its pattern fails
+— weaker, never wrong. They are the vector arms (`BitCast` across element
+widths, `ShuffleVector`, `ExtractElement`), which read
+`getShuffleDemandedElts`; the `shl`-through-`zext` look-through and the
+`select` signed min/max clamp, which need the matcher DSL; and the `abs` /
+`smin` / `smax` intrinsic arms.
+
+Upstream asserts its result is never zero; llvmkit enforces that floor
+instead, so a zero cannot escape into the arithmetic that subtracts from it.
+
+### `KnownBits` models all of `KnownBits.h`
+
+Three operations closed the last of the public-surface gap the parity ledger
+found:
+
+#### Added
+
+- `KnownBits::set_all_ones` — makes every bit known-one, discarding prior
+  information. Mirrors `KnownBits::setAllOnes`, the dual of the existing
+  `set_all_zero`.
+- `KnownBits::is_sign_unknown` — true when the sign bit is not known either
+  way. Mirrors `KnownBits::isSignUnknown`. It reads the masks directly rather
+  than being spelled `!is_negative() && !is_non_negative()`, because those two
+  both answer `false` at width zero, which would wrongly report a value with no
+  sign bit as sign-unknown.
+- `KnownBits::sdiv` — the two-argument spelling, `sdiv_with_exact(.., false)`,
+  matching the `udiv` / `udiv_with_exact` pair. Upstream has one `sdiv` with
+  `Exact` defaulted; Rust has no default arguments, so llvmkit spells both.
+
+The ledger now asserts `KnownBits.h` has no remaining gaps. Two entries it
+previously listed — `flipSignBit` and `remGetLowBits` — were recorded in error:
+both are **private** in `KnownBits.h`, and both already existed in llvmkit as
+module-private helpers.
+
+### The KnownBits / ValueTracking parity ledger is real
+
+`tests/value_tracking_parity.rs` claimed to be the coverage ledger for the
+known-bits surface. Its one test asserted that a `const` array contained the
+same strings it had just been initialised with — it could not fail, and it had
+never recorded any coverage.
+
+It now tabulates the surface: 93 of the 98 `KnownBits.h` operations llvmkit
+models, mapped upstream-name to llvmkit-name, plus the five it does not and
+the reason for each; and the four `ValueTracking.h` entry points modeled
+against the nine families that are absent wholesale. The modeled columns are
+held to the crate by *calling* every entry, so a rename or deletion stops the
+file compiling. The tables are checked for the properties a ledger needs to
+stay readable, and the gap lists record the LLVM release they were derived
+from.
+
+Building it surfaced five `KnownBits` operations with no llvmkit counterpart —
+`setAllOnes`, `flipSignBit`, `isSignUnknown`, `remGetLowBits`, and the
+`sdiv` / `sdiv_with_exact` spelling asymmetry. None is load-bearing for
+anything llvmkit computes today; all five are recorded in
+`docs/future-work.md`.
+
+Because `orig_cpp/` is gitignored, the gap lists cannot be re-derived at test
+time and stay a hand-maintained record — the file says so rather than implying
+otherwise.
+
+### View iterators no longer borrow the view
+
+`function.basic_blocks().flat_map(|block| block.instructions())` — the obvious
+way to walk every instruction in a function — did not compile. It failed with
+E0515, "cannot return value referencing function parameter `block`", and the
+workaround was a nested loop with a labeled break.
+
+The iterator never held anything belonging to the block: it snapshots the
+instruction ids and copies the `ModuleRef`. But edition 2024 captures every
+lifetime in scope in a return-position `impl Trait`, including the `&self` the
+method was called on, so the compiler believed otherwise. The affected returns
+now carry a precise-capturing `use<..>` bound that leaves that lifetime out.
+
+Fixed on `BasicBlock::instructions`, `BasicBlockView::instructions`,
+`PhiInst`/`FpPhiInst`/`PointerPhiInst`/`OtherPhiInst`/`PhiKind::incomings`,
+`SwitchInst::cases`, `IndirectBrInst::destinations`, `LandingPadInst::clauses`,
+`CatchSwitchInst::handlers`, and `FnPatch::body_instructions`.
+
+Iterators that genuinely borrow the receiver are unchanged and still do —
+`AttributeSet::iter` and `AttributeStorage::iter` yield `&Attribute`,
+`Cfg::edges` iterates a borrowed slice, and the `pass_names` family yields
+`&str`. Iterators taking `self` by value (`Module::functions`, `globals`,
+`aliases`, `ifuncs`, `comdats`, `FunctionValue::basic_blocks`, `params`) never
+had the problem.
+
+This is a relaxation: code that compiled before still compiles.
+
+### Known bits reason about loop recurrences
+
+`compute_known_bits` on a `phi` now recognises a simple two-predecessor
+recurrence — `%iv = phi [start, %entry], [%iv.next, %backedge]` where
+`%iv.next` is a binary operator with `%iv` as an operand — and reads facts off
+it, porting the `Instruction::PHI` arm of `computeKnownBitsFromOperator` and
+`matchSimpleRecurrence` (`ValueTracking.cpp`).
+
+A `shl` recurrence keeps the start value's trailing zeros; `lshr`, `udiv` and
+`urem` keep its leading zeros; `ashr` extends its sign bit in both directions;
+and `add`/`sub`/`and`/`or`/`mul` keep the trailing zeros common to the start
+and the step, plus the `nsw` sign facts. `urem` is the one opcode that accepts
+the phi on either side. Previously a phi answered only with the intersection
+over its incoming values, which a loop backedge leaves unknown.
+
+`llvm/test/Analysis/ValueTracking/recurrence-knownbits.ll` is checked in
+verbatim and driven as the test: twelve of its fifteen functions now reproduce
+their CHECK line exactly. The three that do not need InstCombine
+canonicalization rather than more analysis, and are pinned as gaps —
+see `docs/future-work.md`.
+
+#### Added
+
+- `KnownBits::mark_low_bits_zero`, `mark_high_bits_zero` and
+  `mark_high_bits_one`, spelling upstream's `Known.Zero.setLowBits` /
+  `setHighBits` / `Known.One.setHighBits`.
+
+### Constants are uniqued
+
+Four constant kinds were minting a fresh arena node on every request:
+`GlobalValueRef`, `GepOffset`, `SymbolDelta`, and `SymbolDeltaPlus`. Every
+other kind — ints, floats, null, undef, poison, aggregates, expressions,
+block addresses, `dso_local_equivalent`, `no_cfi`, `none`, `ptrauth` — already
+uniqued. The four now key on their structural fingerprint the same way, so
+llvmkit matches LLVM's rule that two structurally equal constants are one
+node.
+
+#### Fixed
+
+- **Identity comparison on constants under-folded.** Folds ported from
+  upstream write `A == B` on two constants because LLVM uniques `Constant*`.
+  Where llvmkit did not unique, those arms were unreachable for
+  independently-built operands and the fold quietly declined — sound (an
+  `==` that says *true* still implies the same value), but weaker than
+  upstream. The affected arms were `ConstantFoldSelectInstruction`'s
+  `V1 == V2`, `fold_phi`'s cross-incoming comparison, `constant_splat_value`,
+  and the pointer-base comparison in `ConstantFoldCompareInstOperands`.
+- **`base_identity` is retired.** It was the workaround that resolved a
+  `GlobalValueRef`/`GepOffset` wrapper down to the underlying global so the
+  pointer-base fold could compare bases at all. With uniquing, the base
+  comparison is plain `==` — exactly upstream's `Stripped0 == Stripped1`.
+
+#### Note
+
+Forward `blockaddress` placeholders are deliberately **not** uniqued. They
+carry no payload, so uniquing would collapse every pending forward reference
+in a module into one node and resolving the first would resolve them all. The
+constructor is named `push_constant_block_address_placeholder`, not `intern_`,
+for that reason.
+
+llvmkit uniques **per module** rather than per context, because a `Module`
+owns its `Context`. Two modules never share a constant node; a foreign id is
+caught by the module tag check rather than silently matching.
+
+### `ApInt` sweep complete; sentinels become sum types
+
+Finishes `llvm/unittests/ADT/APIntTest.cpp`: sixty-seven more ported tests
+covering the wide-division paths, the comparison family, the bit-set and
+bit-clear families, saturating and overflow-flagged arithmetic, and the
+operation families llvmkit had never modeled. The division paths — the least
+covered code in `ap_int.rs` — were already bit-exact.
+
+#### Fixed
+
+- **`ApInt::is_one_bit_set` carried upstream's name over a different meaning.**
+  It answered "bit N is set", where `APInt::isOneBitSet` means "bit N is set
+  **and is the only bit set**". No in-tree caller was wrong — all seventeen
+  wanted plain bit access — but a port of LLVM code calling `isOneBitSet` would
+  have silently accepted values with other bits set. The callers now say
+  `bit()`, and `is_one_bit_set` means what upstream means.
+
+#### Changed (breaking)
+
+- **`ApFloat::ilogb` and `ApFloat::frexp` return `BinaryExponent`, not `i32`.**
+  Upstream reserves three `int` values as markers — `IEK_NaN` is `INT_MIN`,
+  `IEK_Zero` is `INT_MIN + 1`, `IEK_Inf` is `INT_MAX` — so a caller that forgets
+  to test for them does arithmetic on `INT_MIN` and the type system cannot tell
+  that apart from a real exponent. The new sum type has `Finite(i32)`, `Zero`,
+  `Infinity`, and `Nan`, so the exponent exists only where it means something.
+  The `ILOGB_NAN` / `ILOGB_ZERO` / `ILOGB_INF` constants are gone.
+- **`ApInt::log_base2`, `nearest_log_base2`, and `exact_log_base2` return
+  `Option<u32>`** for the same reason: upstream's zero answer is an underflowed
+  `unsigned`, and `exactLogBase2`'s "not a power of two" answer is `-1`.
+
+#### Added
+
+`ApInt` gains the operations the sweep found missing, each ported from its
+upstream definition and covered by that definition's test: `bit` (upstream's
+`operator[]`), `set_bits`, `clear_bits`, `clear_low_bits`, `clear_high_bits`,
+`set_all_bits`, `clear_all_bits`, `flip_all_bits`, `flip_bit`, `rotl`, `rotr`,
+`rotl_by`, `rotr_by`, `lo_bits`, `hi_bits`, `is_splat`, the `log_base2` family,
+`mul_high_signed`, `mul_high_unsigned`, `rounding_udiv`, `rounding_sdiv`, the
+four `avg_*` averages, `abs_diff_signed`, `abs_diff_unsigned`,
+`multiplicative_inverse`, `greatest_common_divisor`,
+`most_significant_different_bit`, `pow`, `scale_bit_mask`, `fshl`, `fshr`, and
+the three carry-less multiplies. Comparison gains four total orderings —
+`unsigned_cmp`, `signed_cmp`, `unsigned_cmp_u64`, `signed_cmp_i64` — which
+answer all sixteen of upstream's comparison overloads, including the ones
+against a machine word that llvmkit previously could not express at all.
+
+### ApFloat audit complete; first `ApInt` sweep
+
+Closes the ApFloat families — `FMA`, `roundToIntegral`, `toInteger` — and
+opens `llvm/unittests/ADT/APIntTest.cpp`, which had never been swept.
+`FMA` and `roundToIntegral` were already bit-exact.
+
+#### Fixed
+
+- **`ApFloat::convert_to_integer` returned zero instead of saturating.** A
+  conversion that cannot fit reports invalid-op *and* fills the destination
+  with the extreme of the target type — the `opInvalidOp` tail of
+  `IEEEFloat::convertToInteger`. A `double` of `32` converted to a 5-bit
+  unsigned now yields `31`, not `0`; a NaN still yields zero, and a negative
+  signed overflow yields the minimum.
+- **`ApInt::is_mask` answered `true` for zero.** It compared the trailing-ones
+  count against the active-bit count, so `0 == 0` made every zero a mask.
+  Upstream requires a non-empty run (`isMask_64` leads with `Value &&`, and the
+  multi-word path requires `Ones > 0`).
+- **`ApInt::to_string_radix` emitted lower-case hexadecimal.**
+  `APInt::toString` defaults to `UpperCase = true`. Only radix 10 reaches the
+  IR printer, so printed IR is unchanged.
+
+### ApFloat audit: `ilogb`'s three dependants
+
+Ports of `TEST(APFloatTest, scalbn)`, `frexp`, `getExactLog2`, `next`,
+`remainder` (its 340-row table plus the individual cases), and `mod`. The
+`remainder`, `mod`, and `getExactLog2` families were already bit-exact; the
+other three were not.
+
+#### Fixed
+
+- **`scalbn` left a signaling NaN signaling.** Upstream's last act is
+  `if (X.isNaN()) X.makeQuiet()`, so the result is quiet with its payload
+  intact.
+- **`frexp` reported an exponent of `0` for NaNs and infinities**, and did not
+  quiet a signaling NaN. Upstream opens with `Exp = ilogb(Val)` and returns
+  before overwriting it, so the answer for those categories is `ilogb`'s
+  sentinel — `ILOGB_NAN` and `ILOGB_INF`, not zero. Only a zero answers `0`.
+- **`next` quieted a signaling NaN in place**, keeping the payload and the
+  "make it a NaN, not an infinity" filler bit. Upstream builds a *fresh*
+  payload-less quiet NaN carrying only the sign
+  (`makeNaN(false, isNegative(), nullptr)`). This is a deliberate asymmetry
+  with `scalbn` / `frexp` / `convert`, which do quiet in place — worth knowing
+  before "simplifying" any of the four to share a helper.
+
+### ApFloat `convert` carries NaN payloads
+
+#### Fixed
+
+- **Converting a NaN between semantics discarded its payload.** The NaN arm of
+  `convert` rebuilt a bare quiet NaN in the target semantics, so
+  `snan` widened from `float` to `x86_fp80` produced the default pattern
+  instead of upstream's payload-carrying one, and no truncation could ever
+  report a lost payload. It now ports the `fcNaN` arm of `IEEEFloat::convert`:
+  the significand is shifted by the precision difference — right on a
+  truncation, where dropped bits make the conversion lossy, left on an
+  extension — and the result is always quiet, with a signaling source raising
+  invalid-op. That last rule is what keeps a signaling NaN from becoming an
+  infinity when a truncation drops every payload bit.
+
+  Reassembly routes back through the NaN constructor rather than laying out
+  bits at the call site, so payload masking, the quiet bit, and x87's explicit
+  integer bit keep one definition each.
+
+### ApFloat audit, continued: three more defects
+
+Ports of the `APFloat` classification, factory, and small-operation tests from
+`llvm/unittests/ADT/APFloatTest.cpp` — twenty upstream `TEST(...)` blocks —
+found three more divergences.
+
+#### Fixed
+
+- **`ilogb` answered `0` for almost everything.** It delegated to
+  `exact_log2_abs`, which is `None` unless the value is *exactly* a power of
+  two, and then defaulted to `0`. So `ilogb(0x1.ffffffffffffep-1023)` reported
+  `0` where upstream reports `-1023`, and every NaN, zero, and infinity
+  reported `0` as well. It now ports the free function `llvm::ilogb`: the
+  unbiased exponent of any finite non-zero value, denormals included, with
+  upstream's sentinels exposed as `ApFloat::ILOGB_NAN` / `ILOGB_ZERO` /
+  `ILOGB_INF` (`APFloat::IEK_NaN` / `IEK_Zero` / `IEK_Inf`).
+- **`ppc_fp128` factories left a negative-zero residual.** `inf`, `smallest`,
+  `smallest_normalized`, and the NaN constructors signed the value by flipping
+  the whole 128-bit pattern, which negates the residual half too. Upstream's
+  `DoubleAPFloat` factories sign only the leading component and set the
+  residual with `Floats[1].makeZero(/*Neg=*/false)`. `makeLargest` is the
+  deliberate exception — it negates both — and is left alone.
+
+#### Added
+
+- **`ApFloat::is_smallest_normalized`**, which had no counterpart at all
+  despite `TEST(APFloatTest, IsSmallestNormalized)` exercising it across every
+  semantics. Ports both upstream implementations, using the numeric comparison
+  `DoubleAPFloat` uses: a bitwise test would additionally demand the `ppc_fp128`
+  residual's sign, where a `(smallest normal, -0.0)` pair counts upstream.
+
+### ApFloat bit-exactness audit (three fixes)
+
+Audited against LLVM's own `llvm/unittests/ADT/APFloatTest.cpp` from the
+vendored 22.1.4 tree, not against hand-derived expectations. All 784 rows of
+the `add` / `subtract` / `multiply` / `divide` special-case tables now ship as
+`llvmkit-ir/tests/ap_float_upstream_arithmetic.rs`.
+
+#### Fixed
+
+- **A signaling NaN lost its payload when it was quieted.** `make_quiet`
+  rebuilt a default quiet NaN instead of setting the quiet bit, so
+  `snan123 + 1.0` produced a bare `nan` where LLVM produces `nan123`. It now
+  ports `IEEEFloat::makeQuiet` exactly — one bit set, sign
+  and payload untouched. This was the *only* divergence in the 784-row
+  arithmetic matrix: it accounted for all 104 failing rows, and every row not
+  involving a signaling NaN already matched bit for bit.
+- **`fp128` hex literals parsed with their two 64-bit halves transposed.**
+  `0xL…` is not a big-endian 128-bit number: `LLLexer::HexToIntPair` reads the
+  first sixteen hex digits into the APInt's *low* word. llvmkit read the whole string big-endian, so
+  `0xL00000000000000003FFF000000000000` — LLVM's spelling of 1.0 — was read as
+  a subnormal, and printing it back produced a different spelling.
+- **`ppc_fp128` printed its two components in the wrong order.** Upstream
+  writes the leading double first (`WriteConstantInternal` prints
+  `getLoBits(64)` first, and its low word holds `DoubleAPFloat::Floats[0]`).
+  Values were never wrong here — llvmkit stores the pair mirrored from upstream
+  and the two mirrorings cancelled on the parse side — but the printed text
+  disagreed with LLVM, and `parse → print` oscillated between two spellings.
+
+  Two round-trip fixtures asserted the transposed spellings and were updated;
+  they had encoded the defect.
+
+#### Known divergence, now recorded and pinned
+
+- `ApFloat::to_bits` does **not** agree with upstream's `bitcastToAPInt` for
+  `PpcDoubleDouble` alone: llvmkit keeps the leading double in the high word
+  where upstream keeps it in the low word. Invisible to finite arithmetic
+  (llvmkit sums both components) and invisible in the textual form (reader and
+  printer both compensate); visible only to a raw-bit reader. Pinned by
+  `llvmkit-ir/tests/ap_float_ppc_word_order.rs`.
+
+### Lexer diagnostics name what the lexer choked on
+
+#### Changed
+
+- **BREAKING: `LexError::UnknownToken` gained a `reason` field.** It used to
+  render as a bare `invalid token` at every one of its ten construction sites,
+  so a misspelled attribute, a stray byte, a `$` with no comdat name, and a
+  hexadecimal float prefix with no digits were indistinguishable. Each now
+  reports its own message: `unknown keyword 'nocalback'`, `no token starts with
+  '\x01'`, `expected a comdat name after '$'`, `expected hexadecimal digits
+  after '0xK'`, `'.' is a token only as part of '...'`, and so on. Callers that
+  matched `LexError::UnknownToken { span }` need `{ span, .. }`; the new
+  `UnknownTokenReason` is a public enum, so the reason can be matched on rather
+  than parsed out of a string.
+
+  This is a deliberate improvement on upstream, not a port. `LLLexer` records
+  no message at any of these sites — it returns a bare `lltok::Error` and lets
+  `LLParser` describe the failure from the surrounding production. That is
+  adequate when the parser is always the caller; llvmkit's lexer is public, so
+  its errors have to stand on their own.
+
+- The span reported for an unknown *keyword* now covers the whole word instead
+  of its first byte. The cursor rewind that produced the one-byte span is
+  upstream behaviour (`LLLexer::LexIdentifier`) and is unchanged — only the reported
+  span moved, because a caret under the `n` of `nocalback` helps nobody.
+
+### Parser — Milestone 0 complete
+
+#### Added
+
+- **Aliases and ifuncs may name a target declared later in the file.** The
+  printer emits them before function declarations, so a printed module whose
+  ifunc resolver is a declared function previously failed to re-parse. Forward
+  targets now become a placeholder patched at end of module, mirroring the
+  mechanism `personality` already used. Backward references and genuinely
+  undefined targets are unchanged.
+- **An anti-drift guard for the attribute keyword table.** `Attributes.td` is
+  vendored under `llvmkit-asmparser/tablegen/`, and a test asserts every LLVM
+  22.1.4 attribute is either accepted by the parser in a position the `.td`
+  declares for it, or named in an explicit `NOT_YET_MODELED` list. A new
+  upstream attribute, or one the parser silently stops accepting, now fails
+  CI — the failure mode that hid the ~21 missing keywords in the first place.
+
+#### Fixed
+
+- A global with declaration linkage (`external`, `extern_weak`) carrying an
+  initializer reported `expected top-level entity`, pointing at the wrong
+  construct entirely. It now reports that a global with that linkage is a
+  declaration and takes no initializer.
+- Two parser messages read wrong through the `expected {}` frame: a doubled
+  `expected expected comma after …`, and a capitalised sentence
+  (`An alias or ifunc must have pointer type`) wedged into the fragment slot.
+
 ### Parser — ordinary `clang` output now parses (Milestone 0, keyword slice)
 
 #### Added

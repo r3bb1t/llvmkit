@@ -73,6 +73,46 @@ impl DenormalMode {
         Self::new(DenormalModeKind::Dynamic, DenormalModeKind::Dynamic)
     }
 
+    /// Denormals flushed to signed zero on both sides. Mirrors
+    /// `DenormalMode::getPreserveSign()`.
+    #[inline]
+    pub const fn preserve_sign() -> Self {
+        Self::new(
+            DenormalModeKind::PreserveSign,
+            DenormalModeKind::PreserveSign,
+        )
+    }
+
+    /// Denormals flushed to positive zero on both sides. Mirrors
+    /// `DenormalMode::getPositiveZero()`.
+    #[inline]
+    pub const fn positive_zero() -> Self {
+        Self::new(
+            DenormalModeKind::PositiveZero,
+            DenormalModeKind::PositiveZero,
+        )
+    }
+
+    /// Whether denormal *inputs* are treated as zero. Mirrors
+    /// `DenormalMode::inputsAreZero`.
+    #[inline]
+    pub const fn inputs_are_zero(self) -> bool {
+        matches!(
+            self.input,
+            DenormalModeKind::PreserveSign | DenormalModeKind::PositiveZero
+        )
+    }
+
+    /// Whether denormal *outputs* are flushed to zero. Mirrors
+    /// `DenormalMode::outputsAreZero`.
+    #[inline]
+    pub const fn outputs_are_zero(self) -> bool {
+        matches!(
+            self.output,
+            DenormalModeKind::PreserveSign | DenormalModeKind::PositiveZero
+        )
+    }
+
     /// Input-side mode.
     #[inline]
     pub const fn input(self) -> DenormalModeKind {

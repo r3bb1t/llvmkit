@@ -15,7 +15,7 @@
 //! returns them typed and the marker gates real accessors. `AddInst`,
 //! `LoadInst`, and the other per-opcode handles do not: the typed
 //! information already lives on the value handles the builder returns
-//! (D4 — `build_int_add::<W>` returns `IntValue<W>`), and the handles'
+//! (D4 — `int_add::<W>` returns `IntValue<W>`), and the handles'
 //! reachable constructors are rediscovery paths (`BlockCursor`,
 //! `InstructionView`, `TryFrom`) which are inherently dyn-shaped — a
 //! marker there would instantiate as `AddInst<IntDyn>` everywhere and
@@ -25,34 +25,35 @@ use crate::Branded;
 use core::fmt;
 use core::iter::FusedIterator;
 
-use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
-use super::atomicrmw_binop::AtomicRMWBinOp;
+use super::atomicrmw_binop::AtomicRmwBinOp;
 use super::basic_block::{BasicBlockLabel, IntoBasicBlockLabel, require_no_block_parameters};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
 use super::float_kind::FloatKind;
+use super::{IrError, IrResult};
 // Only the crate-internal raw-phi authoring surface lifts through these, and
 // that surface is `#[cfg(test)]` — block arguments are the public way to
 // author a phi. See `docs/design/phi-type-guarantees-design.md`, slice 7.
 #[cfg(test)]
 use super::float_kind::IntoFloatValue;
-use super::float_kind::{BFloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
 use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
 use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
+use super::instr_types::ShuffleMaskElem;
 use super::instr_types::TailCallKind;
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
-    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FCmpInstData,
-    FNegInstData, FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FcmpInstData,
+    FenceInstData, FnegInstData, FreezeInstData, GepInstData, IndirectBrInstData,
     InsertElementInstData, InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData,
     ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData,
-    VAArgInstData,
+    VaArgInstData,
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
@@ -71,8 +72,8 @@ use super::value::{
     FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueUse,
 };
 use super::value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
-    OtherPhiInstId, PhiInstId, PointerPhiInstId, TypedCallInstId, VAArgInstId,
+    AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
+    OtherPhiInstId, PhiInstId, PointerPhiInstId, TypedCallInstId, VaArgInstId,
 };
 
 macro_rules! decl_binop_handle {
@@ -172,19 +173,19 @@ decl_binop_handle!(
 );
 decl_binop_handle!(
     /// `udiv` integer divide (unsigned).
-    UDivInst, UDiv
+    UdivInst, Udiv
 );
 decl_binop_handle!(
     /// `sdiv` integer divide (signed).
-    SDivInst, SDiv
+    SdivInst, Sdiv
 );
 decl_binop_handle!(
     /// `urem` integer remainder (unsigned).
-    URemInst, URem
+    UremInst, Urem
 );
 decl_binop_handle!(
     /// `srem` integer remainder (signed).
-    SRemInst, SRem
+    SremInst, Srem
 );
 decl_binop_handle!(
     /// `shl` logical left shift.
@@ -192,11 +193,11 @@ decl_binop_handle!(
 );
 decl_binop_handle!(
     /// `lshr` logical right shift.
-    LShrInst, LShr
+    LshrInst, Lshr
 );
 decl_binop_handle!(
     /// `ashr` arithmetic right shift.
-    AShrInst, AShr
+    AshrInst, Ashr
 );
 decl_binop_handle!(
     /// `and` bitwise and.
@@ -212,23 +213,23 @@ decl_binop_handle!(
 );
 decl_binop_handle!(
     /// `fadd` floating-point add.
-    FAddInst, FAdd
+    FaddInst, Fadd
 );
 decl_binop_handle!(
     /// `fsub` floating-point subtract.
-    FSubInst, FSub
+    FsubInst, Fsub
 );
 decl_binop_handle!(
     /// `fmul` floating-point multiply.
-    FMulInst, FMul
+    FmulInst, Fmul
 );
 decl_binop_handle!(
     /// `fdiv` floating-point divide.
-    FDivInst, FDiv
+    FdivInst, Fdiv
 );
 decl_binop_handle!(
     /// `frem` floating-point remainder.
-    FRemInst, FRem
+    FremInst, Frem
 );
 
 /// Grouped view over any binary operator (`add`..`frem`). Lets a pass read
@@ -262,21 +263,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
                 InstructionKindData::Add(b)
                 | InstructionKindData::Sub(b)
                 | InstructionKindData::Mul(b)
-                | InstructionKindData::UDiv(b)
-                | InstructionKindData::SDiv(b)
-                | InstructionKindData::URem(b)
-                | InstructionKindData::SRem(b)
+                | InstructionKindData::Udiv(b)
+                | InstructionKindData::Sdiv(b)
+                | InstructionKindData::Urem(b)
+                | InstructionKindData::Srem(b)
                 | InstructionKindData::Shl(b)
-                | InstructionKindData::LShr(b)
-                | InstructionKindData::AShr(b)
+                | InstructionKindData::Lshr(b)
+                | InstructionKindData::Ashr(b)
                 | InstructionKindData::And(b)
                 | InstructionKindData::Or(b)
                 | InstructionKindData::Xor(b)
-                | InstructionKindData::FAdd(b)
-                | InstructionKindData::FSub(b)
-                | InstructionKindData::FMul(b)
-                | InstructionKindData::FDiv(b)
-                | InstructionKindData::FRem(b) => b,
+                | InstructionKindData::Fadd(b)
+                | InstructionKindData::Fsub(b)
+                | InstructionKindData::Fmul(b)
+                | InstructionKindData::Fdiv(b)
+                | InstructionKindData::Frem(b) => b,
                 _ => unreachable!("BinaryOp invariant: kind is a binary operator"),
             },
             _ => unreachable!("BinaryOp invariant: kind is Instruction"),
@@ -363,9 +364,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::ICmp(c) => CmpPredicate::Int(c.predicate),
-                InstructionKindData::FCmp(c) => CmpPredicate::Float(c.predicate),
-                _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
+                InstructionKindData::Icmp(c) => CmpPredicate::Int(c.predicate),
+                InstructionKindData::Fcmp(c) => CmpPredicate::Float(c.predicate),
+                _ => unreachable!("Cmp invariant: kind is Icmp or Fcmp"),
             },
             _ => unreachable!("Cmp invariant: kind is Instruction"),
         }
@@ -386,21 +387,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
         let module = self.module.module();
         let id = match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::ICmp(c) => {
+                InstructionKindData::Icmp(c) => {
                     if left {
                         c.lhs.get()
                     } else {
                         c.rhs.get()
                     }
                 }
-                InstructionKindData::FCmp(c) => {
+                InstructionKindData::Fcmp(c) => {
                     if left {
                         c.lhs.get()
                     } else {
                         c.rhs.get()
                     }
                 }
-                _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
+                _ => unreachable!("Cmp invariant: kind is Icmp or Fcmp"),
             },
             _ => unreachable!("Cmp invariant: kind is Instruction"),
         };
@@ -487,8 +488,8 @@ macro_rules! decl_instruction_id_accessors {
 
 decl_instruction_id_accessors!(
     FreezeInst => FreezeInstId,
-    VAArgInst => VAArgInstId,
-    AtomicRMWInst => AtomicRMWInstId,
+    VaArgInst => VaArgInstId,
+    AtomicRmwInst => AtomicRmwInstId,
     AtomicCmpXchgInst => AtomicCmpXchgInstId,
 );
 
@@ -532,6 +533,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> AllocaInst<'ctx, B> {
     /// Address space of the result pointer.
     pub fn addr_space(self) -> u32 {
         self.payload().addr_space
+    }
+    /// `true` when this allocation carries the `inalloca` marker. Mirrors
+    /// `AllocaInst::isUsedWithInAlloca` in `Instructions.h`.
+    pub fn is_inalloca(self) -> bool {
+        self.payload().flags.is_inalloca()
+    }
+    /// `true` when this allocation carries the `swifterror` marker. Mirrors
+    /// `AllocaInst::isSwiftError` in `Instructions.h`.
+    pub fn is_swifterror(self) -> bool {
+        self.payload().flags.is_swifterror()
     }
 }
 
@@ -719,7 +730,7 @@ pub enum Callee<'ctx, B: ModuleBrand> {
 /// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
 ///
 /// The `R: ReturnMarker` parameter (default [`crate::Dyn`]) propagates
-/// the callee's return shape, so a typed [`crate::IRBuilder::build_call_dyn`] for an `i32`
+/// the callee's return shape, so a typed [`crate::IrBuilder::call_dyn`] for an `i32`
 /// callee returns `CallInst<'ctx, i32>` and exposes a typed
 /// `return_int_value()` accessor without a runtime
 /// [`crate::IrError::TypeMismatch`].
@@ -798,7 +809,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         CallInstId::from_raw(self.module.id(), self.id)
     }
 
-    /// Re-tag the return marker. Crate-internal: only [`build_call_dyn`]
+    /// Re-tag the return marker. Crate-internal: only [`call_dyn`]
     /// flows the typed marker; [`as_dyn`] erases it.
     #[inline]
     pub(super) fn retag<R2: ReturnMarker>(self) -> CallInst<'ctx, R2, B> {
@@ -914,7 +925,7 @@ macro_rules! call_inst_float_return {
         }
     )+ };
 }
-call_inst_float_return!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
+call_inst_float_return!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
     /// Typed result handle for a pointer-returning call.
@@ -926,7 +937,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
 
 /// Call handle whose full return schema is carried at the type level.
 /// The marker on the inner [`CallInst`] is `Ret::Marker` — derived from
-/// the callee by [`crate::IRBuilder::build_call`], never caller-asserted.
+/// the callee by [`crate::IrBuilder::call`], never caller-asserted.
 pub struct TypedCallInst<'ctx, Ret, B: ModuleBrand>
 where
     Ret: FunctionReturn,
@@ -966,7 +977,7 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> fmt::Debug for TypedCallInst<'ct
 impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, B> {
     /// Crate-internal: wrap a raw [`CallInst`] already known to have
     /// been emitted against a validated [`crate::TypedFunctionValue`]
-    /// callee. Only the typed `build_call` family constructs this —
+    /// callee. Only the typed `call` family constructs this —
     /// the schema-carrying guarantee comes from the callee facade's
     /// own construction-time validation, not from anything checked
     /// here.
@@ -1015,7 +1026,7 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         self.inner.to_erased()
     }
 }
@@ -1040,6 +1051,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectInst<'ctx, B> {
             },
             _ => unreachable!("SelectInst invariant: kind is Instruction"),
         }
+    }
+    /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`, which a
+    /// `select` answers when its arms are floating-point.
+    pub fn fast_math_flags(self) -> FastMathFlags {
+        self.payload().fmf.get()
     }
     pub fn condition(self) -> Value<'ctx, B> {
         let id = self.payload().cond.get();
@@ -1173,11 +1189,11 @@ decl_cast_handle!(
 );
 decl_cast_handle!(
     /// `zext .. to ..` — zero-extend an integer.
-    ZExtInst, ZExt
+    ZextInst, Zext
 );
 decl_cast_handle!(
     /// `sext .. to ..` — sign-extend an integer.
-    SExtInst, SExt
+    SextInst, Sext
 );
 decl_cast_handle!(
     /// `fptrunc .. to ..` — narrow a float.
@@ -1189,19 +1205,19 @@ decl_cast_handle!(
 );
 decl_cast_handle!(
     /// `fptoui .. to ..` — float to unsigned integer.
-    FpToUIInst, FpToUI
+    FpToUiInst, FpToUi
 );
 decl_cast_handle!(
     /// `fptosi .. to ..` — float to signed integer.
-    FpToSIInst, FpToSI
+    FpToSiInst, FpToSi
 );
 decl_cast_handle!(
     /// `uitofp .. to ..` — unsigned integer to float.
-    UIToFpInst, UIToFp
+    UiToFpInst, UiToFp
 );
 decl_cast_handle!(
     /// `sitofp .. to ..` — signed integer to float.
-    SIToFpInst, SIToFp
+    SiToFpInst, SiToFp
 );
 decl_cast_handle!(
     /// `ptrtoaddr .. to ..` — pointer to integer address bits.
@@ -1228,25 +1244,25 @@ decl_cast_handle!(
 // Comparison instructions
 // --------------------------------------------------------------------------
 
-/// `icmp` integer comparison. Mirrors `ICmpInst` (`Instructions.h`).
+/// `icmp` integer comparison. Mirrors `IcmpInst` (`Instructions.h`).
 #[derive(Branded)]
-pub struct ICmpInst<'ctx, B: ModuleBrand> {
+pub struct IcmpInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(ICmpInst);
+decl_handle_scaffold!(IcmpInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> ICmpInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> IcmpInst<'ctx, B> {
     fn payload(self) -> &'ctx CmpInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::ICmp(c) => c,
-                _ => unreachable!("ICmpInst invariant: kind is ICmp"),
+                InstructionKindData::Icmp(c) => c,
+                _ => unreachable!("IcmpInst invariant: kind is Icmp"),
             },
-            _ => unreachable!("ICmpInst invariant: kind is Instruction"),
+            _ => unreachable!("IcmpInst invariant: kind is Instruction"),
         }
     }
     /// Integer predicate (`eq`, `slt`, `ult`, ...).
@@ -1268,26 +1284,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> ICmpInst<'ctx, B> {
     }
 }
 
-/// `fcmp` floating-point comparison. Mirrors `FCmpInst`
+/// `fcmp` floating-point comparison. Mirrors `FcmpInst`
 /// (`Instructions.h`).
 #[derive(Branded)]
-pub struct FCmpInst<'ctx, B: ModuleBrand> {
+pub struct FcmpInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(FCmpInst);
+decl_handle_scaffold!(FcmpInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> FCmpInst<'ctx, B> {
-    fn payload(self) -> &'ctx FCmpInstData {
+impl<'ctx, B: ModuleBrand + 'ctx> FcmpInst<'ctx, B> {
+    fn payload(self) -> &'ctx FcmpInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::FCmp(c) => c,
-                _ => unreachable!("FCmpInst invariant: kind is FCmp"),
+                InstructionKindData::Fcmp(c) => c,
+                _ => unreachable!("FcmpInst invariant: kind is Fcmp"),
             },
-            _ => unreachable!("FCmpInst invariant: kind is Instruction"),
+            _ => unreachable!("FcmpInst invariant: kind is Instruction"),
         }
     }
     /// Float predicate (`oeq`, `olt`, `une`, ...).
@@ -1452,7 +1468,7 @@ fn phi_remove_incoming<'ctx, B: ModuleBrand + 'ctx>(
 /// The handle is a copyable read/edit view, minted from the storable
 /// [`PhiInstId<W>`](crate::PhiInstId) the phi builders hand back. Authoring
 /// (`add_incoming`) is crate-internal — block arguments
-/// ([`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params))
+/// ([`IrBuilder::append_block_with_params`](crate::IrBuilder::append_block_with_params))
 /// are the public phi-authoring surface — while
 /// [`remove_incoming`](Self::remove_incoming) is public for CFG rewriters and
 /// takes an `Unverified` module token as its mutation-capability witness.
@@ -1488,6 +1504,30 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
             },
             _ => unreachable!("PhiInst invariant: kind is Instruction"),
         }
+    }
+
+    /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`, which a
+    /// `phi` answers when its result type is floating-point.
+    pub fn fast_math_flags(&self) -> FastMathFlags {
+        self.payload().fmf.get()
+    }
+
+    /// Set the fast-math flags. Mirrors `Instruction::setFastMathFlags`,
+    /// which `LLParser::parseInstruction` calls after `parsePHI` returns.
+    ///
+    /// A `phi` is an `FPMathOperator` only when its result type is
+    /// floating-point, so non-empty flags on any other result type are
+    /// refused — upstream reports that as
+    /// `fast-math-flags specified for phi without floating-point scalar or
+    /// vector return type`.
+    pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
+        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+            return Err(IrError::InvalidOperation {
+                message: "fast-math flags require a floating-point phi result",
+            });
+        }
+        self.payload().fmf.set(fmf);
+        Ok(())
     }
 
     #[inline]
@@ -1564,7 +1604,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, W, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -1588,11 +1628,10 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     ///
     /// Like upstream, the vacated slot is backfilled from the **end** of the
     /// incoming list, so **incoming order is not preserved**. Errors with
-    /// [`IrError::ArgumentIndexOutOfRange`](crate::IrError::ArgumentIndexOutOfRange)
-    /// when `index` is past the end.
+    /// [`IrError::ArgumentIndexOutOfRange`] when `index` is past the end.
     ///
     /// Requires an `Unverified` module token: like
-    /// [`AtomicRMWInst::set_value_operand`], this mutates the IR and must not be
+    /// [`AtomicRmwInst::set_value_operand`], this mutates the IR and must not be
     /// reachable without proof of mutation capability.
     ///
     /// Unlike upstream's default `DeletePHIIfEmpty = true`, removing the last
@@ -1634,7 +1673,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
-        if value.into_erased().ty == self.ty {
+        if value.as_erased().ty == self.ty {
             let value_id = value.slot();
             let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
@@ -1656,14 +1695,12 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
             module
                 .context()
                 .value_data(value_id)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(self.id));
+                .add_use(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::<B>::new(self.ty, module).kind_label(),
-                got: value.into_erased().ty().kind_label(),
+                got: value.as_erased().ty().kind_label(),
             })
         }
     }
@@ -1731,6 +1768,29 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
             },
             _ => unreachable!("FpPhiInst invariant: kind is Instruction"),
         }
+    }
+
+    /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`.
+    pub fn fast_math_flags(&self) -> FastMathFlags {
+        self.payload().fmf.get()
+    }
+
+    /// Set the fast-math flags. Mirrors `Instruction::setFastMathFlags`,
+    /// which `LLParser::parseInstruction` calls after `parsePHI` returns.
+    ///
+    /// A `phi` is an `FPMathOperator` only when its result type is
+    /// floating-point (scalar or vector), so non-empty flags on any other
+    /// result type are refused; upstream reports that as `fast-math-flags
+    /// specified for phi without floating-point scalar or vector return
+    /// type`.
+    pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
+        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+            return Err(IrError::InvalidOperation {
+                message: "fast-math flags require a floating-point phi result",
+            });
+        }
+        self.payload().fmf.set(fmf);
+        Ok(())
     }
 
     #[inline]
@@ -1803,7 +1863,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, K, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -1854,7 +1914,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
-        if value.into_erased().ty == self.ty {
+        if value.as_erased().ty == self.ty {
             let value_id = value.slot();
             let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
@@ -1875,14 +1935,12 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
             module
                 .context()
                 .value_data(value_id)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(self.id));
+                .add_use(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::<B>::new(self.ty, module).kind_label(),
-                got: value.into_erased().ty().kind_label(),
+                got: value.as_erased().ty().kind_label(),
             })
         }
     }
@@ -2017,7 +2075,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -2063,7 +2121,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
-        if value.into_erased().ty == self.ty {
+        if value.as_erased().ty == self.ty {
             let value_id = value.slot();
             let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
@@ -2084,14 +2142,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
             module
                 .context()
                 .value_data(value_id)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(self.id));
+                .add_use(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::<B>::new(self.ty, module).kind_label(),
-                got: IsValue::into_erased(value).ty().kind_label(),
+                got: IsValue::as_erased(value).ty().kind_label(),
             })
         }
     }
@@ -2140,6 +2196,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
             },
             _ => unreachable!("OtherPhiInst invariant: kind is Instruction"),
         }
+    }
+
+    /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`.
+    pub fn fast_math_flags(&self) -> FastMathFlags {
+        self.payload().fmf.get()
+    }
+
+    /// Set the fast-math flags. Mirrors `Instruction::setFastMathFlags`,
+    /// which `LLParser::parseInstruction` calls after `parsePHI` returns.
+    ///
+    /// A `phi` is an `FPMathOperator` only when its result type is
+    /// floating-point (scalar or vector), so non-empty flags on any other
+    /// result type are refused; upstream reports that as `fast-math-flags
+    /// specified for phi without floating-point scalar or vector return
+    /// type`.
+    pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
+        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+            return Err(IrError::InvalidOperation {
+                message: "fast-math flags require a floating-point phi result",
+            });
+        }
+        self.payload().fmf.set(fmf);
+        Ok(())
     }
 
     /// Bare arena slot of the underlying value (same slot as
@@ -2205,7 +2284,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -2232,23 +2311,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
 /// `InstrTypes.h`. Carries [`crate::FastMathFlags`] like every
 /// `FPMathOperator`-class instruction (`Operator.h`).
 #[derive(Branded)]
-pub struct FNegInst<'ctx, B: ModuleBrand> {
+pub struct FnegInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(FNegInst);
+decl_handle_scaffold!(FnegInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> FNegInst<'ctx, B> {
-    fn payload(self) -> &'ctx FNegInstData {
+impl<'ctx, B: ModuleBrand + 'ctx> FnegInst<'ctx, B> {
+    fn payload(self) -> &'ctx FnegInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::FNeg(u) => u,
-                _ => unreachable!("FNegInst invariant: kind is FNeg"),
+                InstructionKindData::Fneg(u) => u,
+                _ => unreachable!("FnegInst invariant: kind is Fneg"),
             },
-            _ => unreachable!("FNegInst invariant: kind is Instruction"),
+            _ => unreachable!("FnegInst invariant: kind is Instruction"),
         }
     }
     /// Source operand. Mirrors `UnaryOperator::getOperand(0)`.
@@ -2295,27 +2374,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> FreezeInst<'ctx, B> {
     }
 }
 
-/// `va_arg` instruction. Mirrors `VAArgInst` (`Instructions.h`).
+/// `va_arg` instruction. Mirrors `VaArgInst` (`Instructions.h`).
 /// Loads the next argument from a `va_list` pointer; the destination
 /// type lives on [`Self::result_type`].
 #[derive(Branded)]
-pub struct VAArgInst<'ctx, B: ModuleBrand> {
+pub struct VaArgInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(VAArgInst);
+decl_handle_scaffold!(VaArgInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
-    fn payload(self) -> &'ctx VAArgInstData {
+impl<'ctx, B: ModuleBrand + 'ctx> VaArgInst<'ctx, B> {
+    fn payload(self) -> &'ctx VaArgInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::VAArg(u) => u,
-                _ => unreachable!("VAArgInst invariant: kind is VAArg"),
+                InstructionKindData::VaArg(u) => u,
+                _ => unreachable!("VaArgInst invariant: kind is VaArg"),
             },
-            _ => unreachable!("VAArgInst invariant: kind is Instruction"),
+            _ => unreachable!("VaArgInst invariant: kind is Instruction"),
         }
     }
     /// `va_list` pointer operand.
@@ -2529,8 +2608,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
         Value::from_parts(id, self.module, data.ty)
     }
     /// Shuffle mask. Mirrors `ShuffleVectorInst::getShuffleMask`.
-    /// `-1` ([`crate::instr_types::POISON_MASK_ELEM`]) marks poison entries.
-    pub fn mask(self) -> &'ctx [i32] {
+    ///
+    /// Upstream's `-1` poison entries are [`ShuffleMaskElem::Poison`] here, so
+    /// a consumer names the case rather than testing a sign.
+    pub fn mask(self) -> &'ctx [ShuffleMaskElem] {
         &self.payload().mask
     }
 }
@@ -2637,26 +2718,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
 /// `atomicrmw` read-modify-write. Mirrors `AtomicRMWInst`
 /// (`Instructions.h`).
 #[derive(Branded)]
-pub struct AtomicRMWInst<'ctx, B: ModuleBrand> {
+pub struct AtomicRmwInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(AtomicRMWInst);
+decl_handle_scaffold!(AtomicRmwInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
-    fn payload(self) -> &'ctx AtomicRMWInstData {
+impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
+    fn payload(self) -> &'ctx AtomicRmwInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::AtomicRMW(d) => d,
-                _ => unreachable!("AtomicRMWInst invariant: kind is AtomicRMW"),
+                InstructionKindData::AtomicRmw(d) => d,
+                _ => unreachable!("AtomicRmwInst invariant: kind is AtomicRmw"),
             },
-            _ => unreachable!("AtomicRMWInst invariant: kind is Instruction"),
+            _ => unreachable!("AtomicRmwInst invariant: kind is Instruction"),
         }
     }
-    pub fn operation(self) -> AtomicRMWBinOp {
+    pub fn operation(self) -> AtomicRmwBinOp {
         self.payload().op
     }
     /// Pointer operand. Statically a pointer for this opcode, so returned
@@ -2711,9 +2792,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
         module
             .context()
             .value_data(value.id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(self.id));
+            .add_use(ValueUse::Instruction(self.id));
         Ok(())
     }
     pub fn align(self) -> Option<Align> {
@@ -2747,7 +2826,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// `W` — a wrong-width case is a *compile* error (there is no
 /// `IntoIntValue<'ctx, W, B>` impl for the mismatched value). The erased
 /// `W = IntDyn` flavour (produced by the parser / SSA builder via the
-/// width-erased [`build_switch_dyn`](crate::IRBuilder::build_switch_dyn)) keeps the
+/// width-erased [`switch_dyn`](crate::IrBuilder::switch_dyn)) keeps the
 /// runtime [`crate::IrError::TypeMismatch`] check instead. `W` is the LAST parameter
 /// and defaults to `IntDyn`, so width-agnostic `SwitchInst<'ctx, P, B>`
 /// annotations keep resolving to the erased flavour unchanged.
@@ -2843,7 +2922,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, P, B, W> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -2881,7 +2960,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
     /// must not be a **parameterised** block — the same guard the plain
     /// terminator builders apply, reported as
     /// [`crate::IrError::PhiArgArityMismatch`]. The argument-carrying route is
-    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// [`IrBuilder::switch_with_args`](crate::IrBuilder::switch_with_args)
     /// (and its erased twin), which spells every case at the call and hands
     /// back an already-[`TermClosed`] switch — so a `switch` reaching a
     /// parameterised block either carries that block's arguments or does not
@@ -2899,7 +2978,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
     /// Append a case whose target's block parameters this call's caller has
     /// **already seeded**, skipping the parameterised-target rejection
     /// `push_case_checked` applies. Crate-internal: only
-    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// [`IrBuilder::switch_with_args`](crate::IrBuilder::switch_with_args)
     /// and its erased twin reach for it, after `add_block_args` has recorded
     /// each edge's incomings.
     pub(crate) fn push_case_seeded<R, Target>(
@@ -2957,13 +3036,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
             .cases
             .borrow_mut()
             .push((core::cell::Cell::new(v_id), target.slot()));
-        self.module
-            .module()
-            .context()
+        let context = self.module.module().context();
+        context
             .value_data(v_id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(self.id));
+            .add_use(ValueUse::Instruction(self.id));
+        // `SwitchInst::addCase` grows the operand list by *two* — the case
+        // value and its destination — so the block gets an edge as well.
+        // Registered after the value, matching `[…, CaseVal, CaseDest]`.
+        context
+            .value_data(target.slot())
+            .add_use(ValueUse::Instruction(self.id));
         self
     }
 }
@@ -2984,7 +3066,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let v = case_value.into_erased();
+        let v = case_value.as_erased();
         self.push_case_checked(v, target)
     }
 }
@@ -3006,7 +3088,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, 
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module_ref = self.module;
-        let v = IsValue::into_erased(case_value.into_int_value(module_ref)?);
+        let v = IsValue::as_erased(case_value.into_int_value(module_ref)?);
         self.push_case_checked(v, target)
     }
 }
@@ -3096,8 +3178,10 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     /// walking `IndirectBrInst::successors()`.
     pub fn destinations(
         &self,
-    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
-    {
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, P, B> {
         let module_ref = self.module;
         let ids: Vec<ValueSlot> = self.payload().destinations.borrow().clone();
         ids.into_iter()
@@ -3112,7 +3196,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
     /// argument-carrying form — the address picks the destination at run time,
     /// so there is nothing to attach a per-edge argument list to. A
     /// **parameterised** destination (one from
-    /// [`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params)
+    /// [`IrBuilder::append_block_with_params`](crate::IrBuilder::append_block_with_params)
     /// or its siblings) is therefore rejected outright with
     /// [`crate::IrError::PhiArgArityMismatch`], the documented restriction the
     /// block-argument design called for. A block that merely *contains* phis is
@@ -3126,6 +3210,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         let target = target.into_basic_block_label(self.module)?;
         require_no_block_parameters(self.module, target.slot())?;
         self.payload().destinations.borrow_mut().push(target.slot());
+        // `IndirectBrInst::addDestination` appends a real operand.
+        self.module
+            .module()
+            .context()
+            .value_data(target.slot())
+            .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`TermClosed`] view.
@@ -3199,8 +3289,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: both
-    /// [`crate::IRBuilder::build_invoke_dyn`] (caller-asserted `R2`) and
-    /// the typed [`crate::IRBuilder::build_invoke`] (marker derived
+    /// [`crate::IrBuilder::invoke_dyn`] (caller-asserted `R2`) and
+    /// the typed [`crate::IrBuilder::invoke`] (marker derived
     /// from the callee's `Ret::Marker`) flow through this.
     #[inline]
     pub(super) fn retag<R2: ReturnMarker>(self) -> InvokeInst<'ctx, R2, B> {
@@ -3413,7 +3503,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     ) -> impl ExactSizeIterator<Item = (LandingPadClauseKind, Value<'ctx, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, P, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(LandingPadClauseKind, ValueSlot)> = self
@@ -3432,6 +3522,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// Mark this landingpad as a cleanup. Mirrors `LandingPadInst::setCleanup(true)`.
+    #[must_use]
     pub fn set_cleanup(self) -> Self {
         self.payload().cleanup.set(true);
         self
@@ -3440,7 +3531,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// for `Catch`.
     pub fn add_catch_clause<V: IsValue<'ctx, B>>(self, type_info: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = type_info.into_erased();
+        let v = type_info.as_erased();
         self.payload()
             .clauses
             .borrow_mut()
@@ -3448,15 +3539,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
         module
             .context()
             .value_data(v.id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(self.id));
+            .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Append a `filter <ty> <val>` clause.
     pub fn add_filter_clause<V: IsValue<'ctx, B>>(self, filter_array: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = filter_array.into_erased();
+        let v = filter_array.as_erased();
         self.payload()
             .clauses
             .borrow_mut()
@@ -3464,9 +3553,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
         module
             .context()
             .value_data(v.id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(self.id));
+            .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open landingpad and return its [`TermClosed`] view.
@@ -3750,8 +3837,10 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     /// `CatchSwitchInst::handlers()`.
     pub fn handlers(
         &self,
-    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
-    {
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, P, B> {
         let module_ref = self.module;
         let ids: Vec<ValueSlot> = self.payload().handlers.borrow().clone();
         ids.into_iter()
@@ -3765,16 +3854,179 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         R: ReturnMarker,
         Handler: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        self.payload()
-            .handlers
-            .borrow_mut()
-            .push(handler.into_basic_block_label(self.module)?.slot());
+        let handler = handler.into_basic_block_label(self.module)?;
+        self.payload().handlers.borrow_mut().push(handler.slot());
+        // `CatchSwitchInst::addHandler` appends a real operand.
+        self.module
+            .module()
+            .context()
+            .value_data(handler.slot())
+            .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     #[inline]
     pub fn finish(self) -> CatchSwitchInst<'ctx, TermClosed, B> {
         self.retag()
     }
+}
+
+/// Is `op` a legal cast from `src` to `dst`? Port of
+/// `CastInst::castIsValid` (`llvm/lib/IR/Instructions.cpp`).
+///
+/// Pure and infallible — a predicate, not a builder check (design law 7).
+/// The parser, the constant-expression path and the verifier all ask the
+/// same question, so there is one table.
+///
+/// Element counts do the scalar/vector agreement work: a scalar counts as 0
+/// elements, so comparing counts also rejects scalar-to-vector and
+/// vector-to-scalar without a separate arm — upstream's own trick.
+pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
+    op: CastOpcode,
+    src: Type<'ctx, B>,
+    dst: Type<'ctx, B>,
+) -> bool {
+    if !src.is_first_class() || !dst.is_first_class() || src.is_aggregate() || dst.is_aggregate() {
+        return false;
+    }
+
+    let src_is_vector = src.is_vector();
+    let dst_is_vector = dst.is_vector();
+    let src_scalar_bits = src.scalar_size_in_bits();
+    let dst_scalar_bits = dst.scalar_size_in_bits();
+    let src_elements = if src_is_vector {
+        src.vector_element_count()
+    } else {
+        None
+    };
+    let dst_elements = if dst_is_vector {
+        dst.vector_element_count()
+    } else {
+        None
+    };
+    let counts_agree = src_elements == dst_elements;
+
+    match op {
+        CastOpcode::Trunc => {
+            src.is_int_or_int_vector()
+                && dst.is_int_or_int_vector()
+                && counts_agree
+                && src_scalar_bits > dst_scalar_bits
+        }
+        CastOpcode::Zext | CastOpcode::Sext => {
+            src.is_int_or_int_vector()
+                && dst.is_int_or_int_vector()
+                && counts_agree
+                && src_scalar_bits < dst_scalar_bits
+        }
+        CastOpcode::FpTrunc => {
+            src.is_float_or_float_vector()
+                && dst.is_float_or_float_vector()
+                && counts_agree
+                && src_scalar_bits > dst_scalar_bits
+        }
+        CastOpcode::FpExt => {
+            src.is_float_or_float_vector()
+                && dst.is_float_or_float_vector()
+                && counts_agree
+                && src_scalar_bits < dst_scalar_bits
+        }
+        CastOpcode::UiToFp | CastOpcode::SiToFp => {
+            src.is_int_or_int_vector() && dst.is_float_or_float_vector() && counts_agree
+        }
+        CastOpcode::FpToUi | CastOpcode::FpToSi => {
+            src.is_float_or_float_vector() && dst.is_int_or_int_vector() && counts_agree
+        }
+        CastOpcode::PtrToAddr | CastOpcode::PtrToInt => {
+            counts_agree && src.is_ptr_or_ptr_vector() && dst.is_int_or_int_vector()
+        }
+        CastOpcode::IntToPtr => {
+            counts_agree && src.is_int_or_int_vector() && dst.is_ptr_or_ptr_vector()
+        }
+        CastOpcode::BitCast => {
+            let src_ptr = src.scalar_type().pointer_address_space();
+            let dst_ptr = dst.scalar_type().pointer_address_space();
+            // A pointer may only bitcast to a pointer, and vice versa.
+            if src_ptr.is_some() != dst_ptr.is_some() {
+                return false;
+            }
+            let Some(src_space) = src_ptr else {
+                // Non-pointer: a no-op cast of type only, so the bit widths
+                // must match exactly.
+                return src.primitive_size_in_bits() == dst.primitive_size_in_bits();
+            };
+            if Some(src_space) != dst_ptr {
+                return false;
+            }
+            match (src_is_vector, dst_is_vector) {
+                (true, true) => counts_agree,
+                (true, false) => src_elements == Some(1),
+                (false, true) => dst_elements == Some(1),
+                (false, false) => true,
+            }
+        }
+        CastOpcode::AddrSpaceCast => {
+            let (Some(src_space), Some(dst_space)) = (
+                src.scalar_type().pointer_address_space(),
+                dst.scalar_type().pointer_address_space(),
+            ) else {
+                return false;
+            };
+            if src_space == dst_space {
+                return false;
+            }
+            counts_agree
+        }
+    }
+}
+
+/// The type a `getelementptr` index list arrives at, or `None` when the list
+/// does not index into `source_ty`. Port of
+/// `GetElementPtrInst::getIndexedType` (`llvm/lib/IR/Instructions.cpp`).
+///
+/// `indices` is the index list *without* the base pointer, exactly as upstream
+/// passes it. The first index steps the pointer and is never applied to
+/// `source_ty`, so an empty list arrives at `source_ty` itself — which is why
+/// upstream's null check doubles as "these indices are valid".
+pub fn indexed_gep_type<'ctx, B: ModuleBrand + 'ctx>(
+    source_ty: Type<'ctx, B>,
+    indices: &[Value<'ctx, B>],
+) -> Option<Type<'ctx, B>> {
+    let module = source_ty.module;
+    let slots: Vec<_> = indices.iter().map(|index| index.slot()).collect();
+    crate::constants::gep_indexed_type(module.module(), source_ty.id(), &slots)
+        .map(|indexed| Type::new(indexed, module))
+}
+
+/// The type an `extractvalue` / `insertvalue` index list arrives at, or
+/// `None` when the list does not index into `agg_ty`. Port of
+/// `ExtractValueInst::getIndexedType` (`llvm/lib/IR/Instructions.cpp`), which
+/// **rejects** rather than clamps an index at or past the element count.
+///
+/// Unlike [`indexed_gep_type`] every index applies to the aggregate itself —
+/// there is no leading pointer step — so an empty list arrives at `agg_ty`.
+///
+/// Two private near-copies of this walk exist, in `ir_builder.rs` and
+/// `verifier.rs`; consolidating them onto this one is recorded in
+/// `docs/future-work.md`.
+pub fn indexed_aggregate_type<'ctx, B: ModuleBrand + 'ctx>(
+    agg_ty: Type<'ctx, B>,
+    indices: &[u32],
+) -> Option<Type<'ctx, B>> {
+    use crate::AnyTypeEnum;
+    let mut current = agg_ty;
+    for &index in indices {
+        current = match AnyTypeEnum::from(current) {
+            AnyTypeEnum::Array(array) => {
+                if u64::from(index) >= array.len() {
+                    return None;
+                }
+                array.element()
+            }
+            AnyTypeEnum::Struct(structure) => structure.field_type(usize::try_from(index).ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(current)
 }
 
 #[cfg(test)]
@@ -3804,13 +4056,13 @@ mod tests {
         let callee = m
             .add_typed_function::<i32, (), _>("callee", Linkage::External)?
             .as_function();
-        let caller_ty = m.fn_type_no_params(m.i32_type(), false);
+        let caller_ty = m.function_type_no_parameters(m.i32_type());
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
-        let b = crate::IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = crate::IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let call: CallInst<'_, i32, _> =
-            b.view(b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
+            b.view(b.call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
         let call_id = call.to_erased().slot();
 
         let typed = TypedCallInst::<i32, _> {

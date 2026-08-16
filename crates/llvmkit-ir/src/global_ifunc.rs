@@ -7,16 +7,19 @@ use super::DebugLoc;
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
-use super::global_value::{DsoLocality, Linkage, Visibility};
+use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
-use super::value_id::GlobalIFuncId;
+use super::unnamed_addr::UnnamedAddr;
+use super::value::{
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
+};
+use super::value_id::GlobalIfuncId;
 
 #[derive(Debug)]
-pub(super) struct GlobalIFuncData {
+pub(super) struct GlobalIfuncData {
     pub(super) name: String,
     pub(super) value_type: TypeSlot,
     pub(super) address_space: u32,
@@ -24,18 +27,24 @@ pub(super) struct GlobalIFuncData {
     pub(super) linkage: Cell<Linkage>,
     pub(super) dso_locality: Cell<DsoLocality>,
     pub(super) visibility: Cell<Visibility>,
+    /// `parseAliasOrIFunc` reads these three before it knows whether it is
+    /// looking at an alias or an ifunc, so an ifunc carries them too — the
+    /// grammar shares the whole prefix.
+    pub(super) dll_storage_class: Cell<DllStorageClass>,
+    pub(super) thread_local_mode: Cell<ThreadLocalMode>,
+    pub(super) unnamed_addr: Cell<UnnamedAddr>,
     pub(super) partition: RefCell<Option<String>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
 #[derive(Branded)]
-pub struct GlobalIFunc<'ctx, B: ModuleBrand> {
+pub struct GlobalIfunc<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
     #[inline]
     pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
@@ -49,7 +58,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     }
 
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -57,12 +66,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
         }
     }
 
-    /// Storable, module-tagged [`GlobalIFuncId`] for this `ifunc` (llvmkit
+    /// Storable, module-tagged [`GlobalIfuncId`] for this `ifunc` (llvmkit
     /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
-    pub fn id(self) -> GlobalIFuncId<B> {
-        GlobalIFuncId::from_raw(self.module.id(), self.id)
+    pub fn id(self) -> GlobalIfuncId<B> {
+        GlobalIfuncId::from_raw(self.module.id(), self.id)
     }
 
     #[inline]
@@ -79,10 +88,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
         self.as_constant()
     }
 
-    fn data(self) -> &'ctx GlobalIFuncData {
+    fn data(self) -> &'ctx GlobalIfuncData {
         match &self.module.value_data(self.id).kind {
-            ValueKindData::GlobalIFunc(i) => i,
-            _ => unreachable!("GlobalIFunc handle invariant: ValueKindData::GlobalIFunc"),
+            ValueKindData::GlobalIfunc(i) => i,
+            _ => unreachable!("GlobalIfunc handle invariant: ValueKindData::GlobalIfunc"),
         }
     }
 
@@ -139,6 +148,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
                 got: constant.ty().kind_label(),
             });
         }
+        self.module.module().context().retarget_global_field_use(
+            self.id,
+            GlobalFieldKind::IfuncResolver,
+            Some(self.data().resolver.get()),
+            Some(constant.id),
+        );
         self.data().resolver.set(constant.id);
         Ok(())
     }
@@ -172,6 +187,36 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     #[inline]
     pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility) {
         self.data().visibility.set(visibility);
+    }
+
+    #[inline]
+    pub fn dll_storage_class(self) -> DllStorageClass {
+        self.data().dll_storage_class.get()
+    }
+
+    #[inline]
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
+        self.data().dll_storage_class.set(cls);
+    }
+
+    #[inline]
+    pub fn thread_local_mode(self) -> ThreadLocalMode {
+        self.data().thread_local_mode.get()
+    }
+
+    #[inline]
+    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode) {
+        self.data().thread_local_mode.set(tlm);
+    }
+
+    #[inline]
+    pub fn unnamed_addr(self) -> UnnamedAddr {
+        self.data().unnamed_addr.get()
+    }
+
+    #[inline]
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
+        self.data().unnamed_addr.set(value);
     }
 
     pub fn metadata(self) -> MetadataAttachmentSet<B> {
@@ -218,29 +263,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalIFunc<'ctx, B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalIFunc<'ctx, B> {
+impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalIfunc<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalIfunc<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        GlobalIFunc::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        GlobalIfunc::as_erased(self)
     }
 }
-crate::value::impl_into_erased_value_for_handle!(GlobalIFunc);
-impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalIFunc<'ctx, B> {
+crate::value::impl_into_erased_value_for_handle!(GlobalIfunc);
+impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalIfunc<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
-        GlobalIFunc::as_constant(self)
+        GlobalIfunc::as_constant(self)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalIFunc<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalIfunc<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
         Type::new(self.ty, self.module)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIFunc<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIfunc<'ctx, B> {
     fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
@@ -249,44 +294,46 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIFunc<'ctx, B> {
     }
     fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
-impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalIFunc<'_, B> {
+impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalIfunc<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
         None
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalIFunc<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalIfunc<'ctx, B>> for Value<'ctx, B> {
     #[inline]
-    fn from(i: GlobalIFunc<'ctx, B>) -> Self {
-        i.into_erased()
+    fn from(i: GlobalIfunc<'ctx, B>) -> Self {
+        i.as_erased()
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalIFunc<'ctx, B>> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalIfunc<'ctx, B>> for Constant<'ctx, B> {
     #[inline]
-    fn from(i: GlobalIFunc<'ctx, B>) -> Self {
+    fn from(i: GlobalIfunc<'ctx, B>) -> Self {
         i.as_constant()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalIFunc<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalIfunc<'ctx, B> {
     type Error = IrError;
 
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match &v.data().kind {
-            ValueKindData::GlobalIFunc(_) => Ok(Self {
+            ValueKindData::GlobalIfunc(_) => Ok(Self {
                 id: v.id,
                 module: v.module,
                 ty: v.ty,
             }),
             other => Err(IrError::ValueCategoryMismatch {
-                expected: ValueCategoryLabel::GlobalIFunc,
+                expected: ValueCategoryLabel::GlobalIfunc,
                 got: crate::value::category_label_for_kind(other),
             }),
         }
     }
 }
 
-pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand> {
+#[derive(Branded)]
+#[branded(Debug)]
+pub struct GlobalIfuncBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
     value_type: TypeSlot,
@@ -296,10 +343,13 @@ pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand> {
     linkage: Linkage,
     dso_locality: DsoLocality,
     visibility: Visibility,
+    dll_storage_class: DllStorageClass,
+    thread_local_mode: ThreadLocalMode,
+    unnamed_addr: UnnamedAddr,
     partition: Option<String>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
     pub(super) fn new<M, C, N>(module: M, name: N, value_type: Type<'ctx, B>, resolver: C) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
@@ -319,10 +369,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
             linkage: Linkage::External,
             dso_locality: DsoLocality::Default,
             visibility: Visibility::Default,
+            dll_storage_class: DllStorageClass::Default,
+            thread_local_mode: ThreadLocalMode::NotThreadLocal,
+            unnamed_addr: UnnamedAddr::None,
             partition: None,
         }
     }
 
+    #[must_use]
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
@@ -330,13 +384,35 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
 
     /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
     /// `GlobalValue::setDSOLocal`.
+    #[must_use]
     pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
         self.dso_locality = dso;
         self
     }
 
+    #[must_use]
     pub fn visibility(mut self, visibility: Visibility) -> Self {
         self.visibility = visibility;
+        self
+    }
+
+    /// The three clauses `parseAliasOrIFunc` reads before it knows whether it
+    /// is looking at an alias or an ifunc, so an ifunc accepts them too.
+    #[must_use]
+    pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
+        self.dll_storage_class = cls;
+        self
+    }
+
+    #[must_use]
+    pub fn thread_local_mode(mut self, tlm: ThreadLocalMode) -> Self {
+        self.thread_local_mode = tlm;
+        self
+    }
+
+    #[must_use]
+    pub fn unnamed_addr(mut self, value: UnnamedAddr) -> Self {
+        self.unnamed_addr = value;
         self
     }
 
@@ -348,15 +424,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
         self
     }
 
-    /// Materialise the `ifunc`, returning its storable [`GlobalIFuncId`].
-    /// Resolve the id back into a borrowing [`GlobalIFunc`] with
+    /// Materialise the `ifunc`, returning its storable [`GlobalIfuncId`].
+    /// Resolve the id back into a borrowing [`GlobalIfunc`] with
     /// [`Module::view`](crate::Module::view).
-    pub fn build(self) -> IrResult<GlobalIFuncId<B>> {
-        if !is_valid_ifunc_linkage(self.linkage) {
-            return Err(IrError::InvalidOperation {
-                message: "invalid linkage type for ifunc",
-            });
-        }
+    pub fn build(self) -> IrResult<GlobalIfuncId<B>> {
+        // The linkage is deliberately *not* checked here. Upstream rejects a
+        // bad ifunc linkage in `Verifier::visitGlobalIFunc`, not at
+        // construction and not in `parseAliasOrIFunc` — whose `isValidLinkage`
+        // guard is `if (IsAlias && ...)`. Checking it here made that
+        // diagnostic unreachable; it now lives in
+        // `VerifierRule::IfuncInvalidLinkage`.
         if self.module.module().context().value_data(self.resolver).ty != self.resolver_type {
             return Err(IrError::InvalidOperation {
                 message: "ifunc resolver type changed before build",
@@ -377,8 +454,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
             .map(|f| f.id())
     }
 
-    pub(super) fn into_data(self) -> (String, GlobalIFuncData, u32) {
-        let GlobalIFuncBuilder {
+    pub(super) fn into_data(self) -> (String, GlobalIfuncData, u32) {
+        let GlobalIfuncBuilder {
             module: _,
             name,
             value_type,
@@ -388,9 +465,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
             linkage,
             dso_locality,
             visibility,
+            dll_storage_class,
+            thread_local_mode,
+            unnamed_addr,
             partition,
         } = self;
-        let data = GlobalIFuncData {
+        let data = GlobalIfuncData {
             name: name.clone(),
             value_type,
             address_space,
@@ -398,6 +478,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
             linkage: Cell::new(linkage),
             dso_locality: Cell::new(dso_locality),
             visibility: Cell::new(visibility),
+            dll_storage_class: Cell::new(dll_storage_class),
+            thread_local_mode: Cell::new(thread_local_mode),
+            unnamed_addr: Cell::new(unnamed_addr),
             partition: RefCell::new(partition),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
         };
@@ -419,16 +502,16 @@ pub const fn is_valid_ifunc_linkage(linkage: Linkage) -> bool {
         linkage,
         Linkage::External
             | Linkage::LinkOnceAny
-            | Linkage::LinkOnceODR
+            | Linkage::LinkOnceOdr
             | Linkage::WeakAny
-            | Linkage::WeakODR
+            | Linkage::WeakOdr
             | Linkage::Internal
             | Linkage::Private
             | Linkage::ExternalWeak
     )
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalIFunc<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalIfunc<'ctx, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_ifunc(f, *self)
     }

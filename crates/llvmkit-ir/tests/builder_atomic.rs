@@ -3,7 +3,7 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWBinOp, Dyn, IRBuilder, IrError, Linkage, PointerValue, SyncScope,
+    AtomicOrdering, AtomicRmwBinOp, Dyn, IrBuilder, IrError, Linkage, PointerValue, SyncScope,
     module_new,
 };
 
@@ -18,18 +18,14 @@ use llvmkit_ir::{
 fn fence_system_scope_orderings() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("instructions.atomics", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let _ = b.build_fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
-    let _ = b.build_fence(AtomicOrdering::Release, SyncScope::System, "")?;
-    let _ = b.build_fence(AtomicOrdering::AcquireRelease, SyncScope::System, "")?;
-    let _ = b.build_ret_void()?;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let _ = b.fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
+    let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "")?;
+    let _ = b.fence(AtomicOrdering::AcquireRelease, SyncScope::System, "")?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(text.contains("fence acquire\n"), "got:\n{text}");
     assert!(text.contains("fence release\n"), "got:\n{text}");
@@ -44,20 +40,16 @@ fn fence_system_scope_orderings() -> Result<(), IrError> {
 fn fence_singlethread_seq_cst() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let _ = b.build_fence(
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let _ = b.fence(
         AtomicOrdering::SequentiallyConsistent,
         SyncScope::SingleThread,
         "",
     )?;
-    let _ = b.build_ret_void()?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("fence syncscope(\"singlethread\") seq_cst\n"),
@@ -78,14 +70,14 @@ fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let zero = i32_ty.const_int(0_i32);
     let four = i32_ty.const_int(4_i32);
-    let _ = b.build_atomic_cmpxchg(
+    let _ = b.atomic_cmpxchg(
         word,
         zero,
         four,
@@ -96,7 +88,7 @@ fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
         ),
         "cmpxchg_no_align.0",
     )?;
-    let _ = b.build_ret_void()?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("%cmpxchg_no_align.0 = cmpxchg ptr %0, i32 0, i32 4 monotonic monotonic\n"),
@@ -114,14 +106,14 @@ fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let zero = i32_ty.const_int(0_i32);
     let eleven = i32_ty.const_int(11_i32);
-    let _ = b.build_atomic_cmpxchg(
+    let _ = b.atomic_cmpxchg(
         word,
         zero,
         eleven,
@@ -134,7 +126,7 @@ fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
         .volatile(),
         "cx",
     )?;
-    let _ = b.build_ret_void()?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains(
@@ -157,20 +149,20 @@ fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let twelve = i32_ty.const_int(12_i32);
-    let _ = b.build_atomicrmw(
-        AtomicRMWBinOp::Xchg,
+    let _ = b.atomicrmw(
+        AtomicRmwBinOp::Xchg,
         word,
         twelve,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "atomicrmw_no_align.xchg",
     )?;
-    let _ = b.build_ret_void()?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("%atomicrmw_no_align.xchg = atomicrmw xchg ptr %0, i32 12 monotonic\n"),
@@ -187,20 +179,20 @@ fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let twenty = i32_ty.const_int(20_i32);
-    let _ = b.build_atomicrmw(
-        AtomicRMWBinOp::Min,
+    let _ = b.atomicrmw(
+        AtomicRmwBinOp::Min,
         word,
         twenty,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System).volatile(),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System).volatile(),
         "amin",
     )?;
-    let _ = b.build_ret_void()?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("%amin = atomicrmw volatile min ptr %0, i32 20 monotonic\n"),
@@ -217,20 +209,20 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let twenty_one = i32_ty.const_int(21_i32);
-    let _ = b.build_atomicrmw(
-        AtomicRMWBinOp::UMax,
+    let _ = b.atomicrmw(
+        AtomicRmwBinOp::Umax,
         word,
         twenty_one,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::SingleThread),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::SingleThread),
         "u",
     )?;
-    let _ = b.build_ret_void()?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("%u = atomicrmw umax ptr %0, i32 21 syncscope(\"singlethread\") monotonic\n"),
@@ -243,27 +235,27 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
 /// `atomicrmw fmaximum ptr %word, float 1.0 monotonic`. `FMaximum` is one
 /// of the LLVM 21 IEEE-754 `maximum`/`minimum`-semantics atomicrmw ops
 /// (`AtomicRMWInst::BinOp` in `Instructions.h`); this locks its print
-/// form end to end (`AtomicRMWBinOp::keyword` -> `fmt_atomicrmw`).
+/// form end to end (`AtomicRmwBinOp::keyword` -> `fmt_atomicrmw`).
 #[test]
 fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let one = f32_ty.const_float(1.0_f32);
-    let _ = b.build_atomicrmw(
-        AtomicRMWBinOp::FMaximum,
+    let _ = b.atomicrmw(
+        AtomicRmwBinOp::Fmaximum,
         word,
         one,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "atomicrmw.fmaximum",
     )?;
-    let _ = b.build_ret_void()?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains(
@@ -284,20 +276,20 @@ fn atomicrmw_fminimum_monotonic() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let one = f32_ty.const_float(1.0_f32);
-    let _ = b.build_atomicrmw(
-        AtomicRMWBinOp::FMinimum,
+    let _ = b.atomicrmw(
+        AtomicRmwBinOp::Fminimum,
         word,
         one,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "atomicrmw.fminimum",
     )?;
-    let _ = b.build_ret_void()?;
+    let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains(

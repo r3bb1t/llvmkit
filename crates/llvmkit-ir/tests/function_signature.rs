@@ -1,5 +1,5 @@
 use llvmkit_ir::{
-    CallArgs, FloatValue, IRBuilder, IntValue, IrError, Linkage, ModuleBrand, PointerValue, Ptr,
+    CallArgs, FloatValue, IntValue, IrBuilder, IrError, Linkage, ModuleBrand, PointerValue, Ptr,
     TypeKindLabel, TypedFunctionValue, Width, module_new,
 };
 
@@ -13,10 +13,10 @@ fn typed_function_facade_builds_signature_and_params() -> Result<(), IrError> {
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (lhs, rhs) = m.view(f).params();
-    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.ret(sum)?;
 
     let text = format!("{m}");
     let expected = "; ModuleID = 'demo'\n\
@@ -59,12 +59,12 @@ fn typed_function_facade_supports_pointer_and_float_params() -> Result<(), IrErr
     let x = expect_float(x);
     let bits = expect_int17(bits);
 
-    assert_eq!(p.into_erased().ty().kind_label(), TypeKindLabel::Pointer);
-    assert_eq!(x.into_erased().ty().kind_label(), TypeKindLabel::Float);
-    assert_eq!(bits.into_erased().ty().kind_label(), TypeKindLabel::Integer);
+    assert_eq!(p.as_erased().ty().kind_label(), TypeKindLabel::Pointer);
+    assert_eq!(x.as_erased().ty().kind_label(), TypeKindLabel::Float);
+    assert_eq!(bits.as_erased().ty().kind_label(), TypeKindLabel::Integer);
 
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-    b.build_ret(0_i32)?;
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    b.ret(0_i32)?;
     Ok(())
 }
 
@@ -129,8 +129,8 @@ fn function_pointer_alias_builds_typed_function_and_params() -> Result<(), IrErr
     let _: IntValue<'_, i32, _> = lhs;
     let _: IntValue<'_, i32, _> = rhs;
     let b = m.view(f).builder(&m).position_at_end(entry);
-    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.ret(sum)?;
     let text = format!("{m}");
     assert!(
         text.contains("define i32 @add(i32 %0, i32 %1)"),
@@ -181,8 +181,8 @@ fn builder_can_be_created_from_function_pointer_return_schema() -> Result<(), Ir
     let m = module_new!("builder")?;
     let f = m.add_typed_function_of::<AddSig, _>("zero", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for_return::<AddSig>(&m).position_at_end(entry);
-    b.build_ret(0_i32)?;
+    let b = IrBuilder::new_for_return::<AddSig>(&m).position_at_end(entry);
+    b.ret(0_i32)?;
     let text = format!("{m}");
     assert!(text.contains("ret i32 0\n"), "got:\n{text}");
     Ok(())
@@ -197,12 +197,12 @@ fn call_args_lowers_tuple_to_value_ids() -> Result<(), IrError> {
     let m = module_new!("call_args")?;
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (x, _rhs) = m.view(f).params();
 
     let ids = <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), (&m).into())?;
 
     assert_eq!(ids.len(), 2, "expected two lowered call-argument ids");
-    b.build_ret(0_i32)?;
+    b.ret(0_i32)?;
     Ok(())
 }

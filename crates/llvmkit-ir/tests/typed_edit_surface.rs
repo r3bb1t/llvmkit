@@ -9,12 +9,12 @@
 //! ops that do exist.
 
 use llvmkit_ir::{
-    Analyses, BasicBlockLabel, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass, IRBuilder,
-    IntPredicate, IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, TermEdit,
-    Value, ValueId, module_new, run_function_pass,
+    Analyses, BasicBlockLabel, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass,
+    IntPredicate, IntValue, IrBuilder, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg,
+    TermEdit, Value, ValueId, module_new, run_function_pass,
 };
 
-// Fixture return-type aliases. These keep the `build_*` helper signatures under
+// Fixture return-type aliases. These keep the the emitters helper signatures under
 // clippy's `type_complexity` threshold without an `#[allow]` (the repo bans
 // `#[allow(...)]`).
 
@@ -100,15 +100,15 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn: BasicBlockLabel<'_, Dyn, _> = new.to_erased().try_into()?;
     let new_dyn = new_dyn.id();
 
-    let bn = IRBuilder::new_for::<()>(m).position_at_end(normal);
-    bn.build_ret_void();
-    let bu = IRBuilder::new_for::<()>(m).position_at_end(unwind);
-    bu.build_ret_void();
-    let bnew = IRBuilder::new_for::<()>(m).position_at_end(new);
-    bnew.build_ret_void();
+    let bn = IrBuilder::new_for::<()>(m).position_at_end(normal);
+    bn.ret_void();
+    let bu = IrBuilder::new_for::<()>(m).position_at_end(unwind);
+    bu.ret_void();
+    let bnew = IrBuilder::new_for::<()>(m).position_at_end(new);
+    bnew.ret_void();
 
-    let b = IRBuilder::new_for::<()>(m).position_at_end(entry);
-    let _ = b.build_invoke_dyn(
+    let b = IrBuilder::new_for::<()>(m).position_at_end(entry);
+    let _ = b.invoke_dyn(
         m.view(callee),
         Vec::<Value<'_, _>>::new(),
         normal_lbl,
@@ -219,15 +219,15 @@ fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn: BasicBlockLabel<'_, Dyn, _> = new.to_erased().try_into()?;
     let new_dyn = new_dyn.id();
 
-    let bc = IRBuilder::new_for::<()>(m).position_at_end(cont);
-    bc.build_ret_void();
-    let bi = IRBuilder::new_for::<()>(m).position_at_end(ind);
-    bi.build_unreachable();
-    let bnew = IRBuilder::new_for::<()>(m).position_at_end(new);
-    bnew.build_ret_void();
+    let bc = IrBuilder::new_for::<()>(m).position_at_end(cont);
+    bc.ret_void();
+    let bi = IrBuilder::new_for::<()>(m).position_at_end(ind);
+    bi.unreachable();
+    let bnew = IrBuilder::new_for::<()>(m).position_at_end(new);
+    bnew.ret_void();
 
-    let b = IRBuilder::new_for::<()>(m).position_at_end(entry);
-    let _ = b.build_callbr(callee, Vec::<Value<'_, _>>::new(), cont_lbl, [ind_lbl], "")?;
+    let b = IrBuilder::new_for::<()>(m).position_at_end(entry);
+    let _ = b.callbr(callee, Vec::<Value<'_, _>>::new(), cont_lbl, [ind_lbl], "")?;
     Ok((caller, new_dyn))
 }
 
@@ -323,15 +323,15 @@ fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
     let then_lbl = then_bb.id();
     let else_lbl = else_bb.id();
 
-    let bt = IRBuilder::new_for::<i32>(m).position_at_end(then_bb);
-    bt.build_ret(i32_ty.const_int(0_u32))?;
-    let be = IRBuilder::new_for::<i32>(m).position_at_end(else_bb);
-    be.build_ret(i32_ty.const_int(1_u32))?;
+    let bt = IrBuilder::new_for::<i32>(m).position_at_end(then_bb);
+    bt.ret(i32_ty.const_int(0_u32))?;
+    let be = IrBuilder::new_for::<i32>(m).position_at_end(else_bb);
+    be.ret(i32_ty.const_int(1_u32))?;
 
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
-    b.build_cond_br(c, then_lbl, else_lbl)?;
+    let c = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
+    b.cond_br(c, then_lbl, else_lbl)?;
     Ok(f)
 }
 
@@ -443,13 +443,13 @@ fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn = new_dyn.id();
 
     for (bb, k) in [(dflt, 0_u32), (case0, 1), (case1, 2), (new, 3)] {
-        let bb_b = IRBuilder::new_for::<i32>(m).position_at_end(bb);
-        bb_b.build_ret(i32_ty.const_int(k))?;
+        let bb_b = IrBuilder::new_for::<i32>(m).position_at_end(bb);
+        bb_b.ret(i32_ty.const_int(k))?;
     }
 
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
+    let (_sealed, sw) = b.switch_dyn(a, dflt_lbl, "")?;
     let sw = sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?;
     sw.add_case(i32_ty.const_int(1_u32), case1_lbl)?.finish();
     Ok((f, case0_dyn, new_dyn))
@@ -573,7 +573,7 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
     let case0 = m.view(f).append_basic_block(m, "case0");
     let bogus = m.view(f).append_basic_block(m, "bogus");
     // new(%np: i32): a head-phi authored as a block parameter, seeded by `dflt`.
-    let (new, new_params) = IRBuilder::new_for::<i32>(m).append_block_with_params(
+    let (new, new_params) = IrBuilder::new_for::<i32>(m).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "new",
@@ -588,32 +588,32 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn = new_dyn.id();
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> case0 ]
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let ev = b.build_int_add(a, 3_i32, "ev")?;
-    let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
+    let ev = b.int_add(a, 3_i32, "ev")?;
+    let (_sealed, sw) = b.switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?.finish();
 
     // dflt: %nd = add %a, 5 ; br new(%nd)
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
+    let b = IrBuilder::new_for::<i32>(m).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let nd = b.build_int_add(a, 5_i32, "nd")?;
-    b.build_br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
+    let nd = b.int_add(a, 5_i32, "nd")?;
+    b.br_with_args(new_lbl, &[m.view(nd).as_erased()])?;
 
     // case0: ret 0
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(case0);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    let b = IrBuilder::new_for::<i32>(m).position_at_end(case0);
+    b.ret(i32_ty.const_int(0_u32))?;
 
     // bogus: ret 99 (a real block, but not reached from the switch's cases).
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(bogus);
-    b.build_ret(i32_ty.const_int(99_u32))?;
+    let b = IrBuilder::new_for::<i32>(m).position_at_end(bogus);
+    b.ret(i32_ty.const_int(99_u32))?;
 
     // new: ret %np (the head-phi param carrying dflt's branch argument).
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(new);
+    let b = IrBuilder::new_for::<i32>(m).position_at_end(new);
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
-    b.build_ret(np)?;
+    b.ret(np)?;
 
-    Ok((f, bogus_dyn, new_dyn, m.view(ev).into_erased().id()))
+    Ok((f, bogus_dyn, new_dyn, m.view(ev).as_erased().id()))
 }
 
 /// `redirect_successor` rejects an `old_to` that is not a case successor of the
@@ -633,8 +633,7 @@ fn switch_redirect_successor_rejects_non_case_target() -> Result<(), IrError> {
         phi_values: vec![ev],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("a non-case `old_to` must be rejected");
+        .expect_err("a non-case `old_to` must be rejected");
     assert!(
         matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
         "expected InvalidOperation about a non-case successor, got: {err:?}"
@@ -658,8 +657,7 @@ fn switch_remove_successor_rejects_non_case_target() -> Result<(), IrError> {
         new_to: new_dyn,
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("a non-case `old_to` must be rejected");
+        .expect_err("a non-case `old_to` must be rejected");
     assert!(
         matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
         "expected InvalidOperation about a non-case successor, got: {err:?}"
@@ -708,8 +706,8 @@ fn edit_terminator_ret_is_uneditable() -> Result<(), IrError> {
         .add_typed_function::<i32, (), _>("f", Linkage::External)?
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    b.ret(i32_ty.const_int(0_u32))?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();

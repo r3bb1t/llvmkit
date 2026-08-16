@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use super::module::{Module, Verified};
+use crate::Branded;
 use crate::cfg_update::CfgUpdate;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{ModuleBrand, ModuleId, ModuleView};
@@ -54,7 +55,7 @@ pub struct AllAnalysesOnFunction;
 
 /// Marker set for analyses that only depend on function CFG shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CFGAnalyses;
+pub struct CfgAnalyses;
 
 /// Marker analysis modelling LLVM's `FunctionAnalysisManagerModuleProxy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -387,7 +388,7 @@ pub trait FunctionAnalysis<'ctx, B: ModuleBrand>: 'static {
 /// No upstream analog: LLVM registers analyses by runtime
 /// `AnalysisManager::registerPass` calls with no compile-time `Requires` list.
 pub trait PrefetchableAnalysis<'ctx, B: ModuleBrand>: FunctionAnalysis<'ctx, B> {
-    /// Ensure this analysis is registered in `fam`, so a following `get_result`
+    /// Ensure this analysis is registered in `fam`, so a following `result`
     /// cannot fail with [`IrError::AnalysisNotRegistered`].
     fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>);
 }
@@ -658,12 +659,12 @@ struct CachedModuleResult<'ctx, B: ModuleBrand + 'ctx> {
     ops: ModuleOps<'ctx, B>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct FunctionAnalysisSnapshot {
     cached: HashSet<(ModuleId, TypeId, ValueSlot)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ModuleAnalysisSnapshot {
     cached: HashSet<(TypeId, ModuleId)>,
 }
@@ -675,6 +676,8 @@ struct ModuleAnalysisSnapshot {
 /// [`FunctionAnalysisResult::invalidate`] lives at the caller-chosen `'v` (which
 /// an owned module mints at its borrow), while this invalidator stays at the
 /// manager's `'ctx`.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     module_id: ModuleId,
     function_slot: ValueSlot,
@@ -707,6 +710,8 @@ impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
 /// Invalidator passed to module-analysis results. Holds the module *key* rather
 /// than a [`ModuleView`], for the same reason as
 /// [`FunctionAnalysisInvalidator`].
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     module_id: ModuleId,
     pa: &'a PreservedAnalyses,
@@ -743,6 +748,22 @@ pub struct FunctionAnalysisManager<'ctx, B: ModuleBrand> {
     _brand: PhantomData<fn(B) -> B>,
 }
 
+/// Prints the cache's *shape* — how many analyses are registered, how many
+/// results are live, whether instrumentation is attached. The registered
+/// analyses are closures (`FunctionOps` holds boxed run/invalidate function
+/// pointers) and the results are erased `Any` payloads, so neither can print
+/// itself; counts are the part that is both knowable and useful when
+/// debugging a pipeline.
+impl<B: ModuleBrand> core::fmt::Debug for FunctionAnalysisManager<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FunctionAnalysisManager")
+            .field("registered", &self.analyses.len())
+            .field("cached", &self.results.len())
+            .field("instrumented", &self.instrumentation.is_some())
+            .finish()
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     /// Create an empty manager: no analyses registered and no cached results.
     pub fn new() -> Self {
@@ -761,7 +782,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     }
 
     /// Register a function-analysis pass instance, keyed by its type, so its
-    /// result can be computed on demand by [`Self::get_result`].
+    /// result can be computed on demand by [`Self::result`].
     pub fn register_pass<A>(&mut self, analysis: A)
     where
         A: FunctionAnalysis<'ctx, B>,
@@ -846,7 +867,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     /// Fetch `function`'s result for analysis `A`, running the pass and caching
     /// the result on the first request. Errors with
     /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
-    pub fn get_result<'v, A, F>(&mut self, function: F) -> IrResult<&A::Result>
+    pub fn result<'v, A, F>(&mut self, function: F) -> IrResult<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
         F: Into<FunctionView<'v, B>>,
@@ -870,7 +891,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
                 callbacks.run_after_analysis(type_name::<A>());
             }
         }
-        self.get_cached_result::<A, _>(function)
+        self.cached_result::<A, _>(function)
             .ok_or(IrError::AnalysisNotCached {
                 name: type_name::<A>(),
             })
@@ -878,7 +899,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
 
     /// Return `function`'s already-cached result for `A`, or `None` if it has
     /// not been computed. Never runs the pass.
-    pub fn get_cached_result<'v, A, F>(&self, function: F) -> Option<&A::Result>
+    pub fn cached_result<'v, A, F>(&self, function: F) -> Option<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
         F: Into<FunctionView<'v, B>>,
@@ -891,7 +912,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             .downcast_ref::<A::Result>()
     }
 
-    pub(crate) fn get_cached_result_by_type<'v, A, R, F>(&self, function: F) -> Option<&R>
+    pub(crate) fn cached_result_by_type<'v, A, R, F>(&self, function: F) -> Option<&R>
     where
         A: 'static,
         R: 'static,
@@ -1002,6 +1023,18 @@ pub struct ModuleAnalysisManager<'ctx, B: ModuleBrand> {
     _brand: PhantomData<fn(B) -> B>,
 }
 
+/// The module-level twin of [`FunctionAnalysisManager`]'s `Debug`; same
+/// reasoning, same three counts.
+impl<B: ModuleBrand> core::fmt::Debug for ModuleAnalysisManager<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModuleAnalysisManager")
+            .field("registered", &self.analyses.len())
+            .field("cached", &self.results.len())
+            .field("instrumented", &self.instrumentation.is_some())
+            .finish()
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     /// Create an empty manager: no analyses registered and no cached results.
     pub fn new() -> Self {
@@ -1020,7 +1053,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     }
 
     /// Register a module-analysis pass instance, keyed by its type, so its
-    /// result can be computed on demand by [`Self::get_result`].
+    /// result can be computed on demand by [`Self::result`].
     pub fn register_pass<A>(&mut self, analysis: A)
     where
         A: ModuleAnalysis<'ctx, B>,
@@ -1046,23 +1079,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     /// Fetch the module's result for analysis `A`, running the pass and caching
     /// the result on the first request. Takes a verified module; errors with
     /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
-    pub fn get_result<'v, A>(&mut self, module: &'v Module<B, Verified>) -> IrResult<&A::Result>
+    pub fn result<'v, A>(&mut self, module: &'v Module<B, Verified>) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
         'ctx: 'v,
     {
         let module_view = module.as_view();
-        self.get_result_view::<A>(module_view)
+        self.result_view::<A>(module_view)
     }
 
-    /// [`Self::get_result`] variant for callers that already hold a [`ModuleView`]
+    /// [`Self::result`] variant for callers that already hold a [`ModuleView`]
     /// rather than a `&Module<Verified>` (the typed pipeline runner keys its
     /// [`ModuleRunner`] by `ModuleView` already). Not part of the public API:
     /// [`ModuleAnalysisList::prefetch`] is the only caller.
-    pub(crate) fn get_result_view<'v, A>(
-        &mut self,
-        module: ModuleView<'v, B>,
-    ) -> IrResult<&A::Result>
+    pub(crate) fn result_view<'v, A>(&mut self, module: ModuleView<'v, B>) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
         'ctx: 'v,
@@ -1083,7 +1113,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
                 callbacks.run_after_analysis(type_name::<A>());
             }
         }
-        self.get_cached_result::<A, _>(module)
+        self.cached_result::<A, _>(module)
             .ok_or(IrError::AnalysisNotCached {
                 name: type_name::<A>(),
             })
@@ -1091,7 +1121,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
 
     /// Return the module's already-cached result for `A`, or `None` if it has
     /// not been computed. Never runs the pass.
-    pub fn get_cached_result<'v, A, M>(&self, module: M) -> Option<&A::Result>
+    pub fn cached_result<'v, A, M>(&self, module: M) -> Option<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
         M: Into<ModuleView<'v, B>>,
@@ -1164,6 +1194,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for ModuleAnalysisManager<'ctx, B> {
 pub struct Analyses<'ctx, B: ModuleBrand> {
     module: ModuleAnalysisManager<'ctx, B>,
     function: FunctionAnalysisManager<'ctx, B>,
+}
+
+/// Delegates to the two managers' own summaries. Hand-written rather than
+/// derived only because a `derive` would put a spurious `B: Debug` bound on
+/// the brand phantom.
+impl<B: ModuleBrand> core::fmt::Debug for Analyses<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Analyses")
+            .field("module", &self.module)
+            .field("function", &self.function)
+            .finish()
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Analyses<'ctx, B> {
@@ -1349,7 +1391,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorT
         let checker = pa.checker::<DominatorTreeAnalysis>();
         Ok(!(checker.preserved()
             || checker.preserved_set::<AllAnalysesOnFunction>()
-            || checker.preserved_set::<CFGAnalyses>()))
+            || checker.preserved_set::<CfgAnalyses>()))
     }
 }
 
@@ -1535,7 +1577,7 @@ macro_rules! impl_function_analysis_list {
             {
                 $(
                     <$member as PrefetchableAnalysis<'ctx, B>>::ensure_registered(fam);
-                    fam.get_result::<$member, _>(function)?;
+                    fam.result::<$member, _>(function)?;
                 )+
                 Ok(())
             }
@@ -1548,7 +1590,7 @@ macro_rules! impl_function_analysis_list {
                 'ctx: 'v,
             {
                 Ok(($(
-                    fam.get_cached_result::<$member, _>(function)
+                    fam.cached_result::<$member, _>(function)
                         .ok_or(IrError::AnalysisNotCached {
                             name: type_name::<$member>(),
                         })?,
@@ -1704,7 +1746,7 @@ macro_rules! impl_module_analysis_list {
             {
                 $(
                     mam.ensure_registered_default::<$member>();
-                    mam.get_result_view::<$member>(module)?;
+                    mam.result_view::<$member>(module)?;
                 )+
                 Ok(())
             }
@@ -1717,7 +1759,7 @@ macro_rules! impl_module_analysis_list {
                 'ctx: 'v,
             {
                 Ok(($(
-                    mam.get_cached_result::<$member, _>(module)
+                    mam.cached_result::<$member, _>(module)
                         .ok_or(IrError::AnalysisNotCached {
                             name: type_name::<$member>(),
                         })?,
@@ -1763,7 +1805,7 @@ impl_module_analysis_list!(8; A0: Idx0 . 0, A1: Idx1 . 1, A2: Idx2 . 2, A3: Idx3
 mod tests {
     use super::*;
     use crate::module::DynBrand;
-    use crate::{Dyn, IRBuilder, Linkage};
+    use crate::{Dyn, IrBuilder, Linkage};
 
     /// llvmkit-specific type-machinery lock (no upstream analog): the analysis-list
     /// tuple schema prefetches, collects, and selects by type. Runtime behavior it
@@ -1772,11 +1814,11 @@ mod tests {
     fn analysis_list_prefetch_collect_select() -> IrResult<()> {
         let m = crate::module_new!("analysis-list")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let fn_ty = m.function_type_no_parameters(i32_ty);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_ret(i32_ty.const_int(0_u32))?;
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        b.ret(i32_ty.const_int(0_u32))?;
         m.verify_borrowed()?;
 
         let function: FunctionView<'_, _> = m.view(f).into();
@@ -1808,7 +1850,7 @@ mod tests {
         use crate::CfgUpdate;
         let m = crate::module_new!("domtree-repair")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let fn_ty = m.function_type_no_parameters(i32_ty);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let next = m.view(f).append_basic_block(&m, "next");
@@ -1817,10 +1859,10 @@ mod tests {
         let next_label = next.id();
 
         // entry: br next    next: ret 0
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_br(next.id())?;
-        let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
-        b2.build_ret(i32_ty.const_int(0_u32))?;
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        b.br(next.id())?;
+        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
+        b2.ret(i32_ty.const_int(0_u32))?;
 
         let function: FunctionView<'_, _> = m.view(f).into();
 
@@ -1897,11 +1939,11 @@ mod tests {
     fn requires_without_default_uses_registered_instance() -> IrResult<()> {
         let m = crate::module_new!("requires-no-default")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let fn_ty = m.function_type_no_parameters(i32_ty);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_ret(i32_ty.const_int(0_u32))?;
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        b.ret(i32_ty.const_int(0_u32))?;
 
         let function: FunctionView<'_, _> = m.view(f).into();
         type Reqs = (ThresholdAnalysis,);

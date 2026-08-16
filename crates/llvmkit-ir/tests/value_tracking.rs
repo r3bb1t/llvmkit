@@ -1,10 +1,11 @@
+use llvmkit_ir::DataLayout;
 use llvmkit_ir::{
-    Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, CFGAnalyses, CallAttributeData,
+    Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, CallAttributeData, CfgAnalyses,
     ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn, DynBrand,
-    FunctionAnalysisManager, IRBuilder, InstructionView, IntValue, IrError, KnownBits,
-    KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, ModuleBrand, MulFlags, NoFolder,
-    PointerValue, PreservedAnalyses, Value, ValueTrackingQuery, Width, compute_known_bits,
-    is_known_non_zero, is_known_one, is_known_zero, module_new,
+    FunctionAnalysisManager, InstructionView, IntValue, IrBuilder, IrError, KnownBits,
+    KnownBitsAnalysis, Linkage, LshrFlags, MetadataAttachmentKind, ModuleBrand, MulFlags, NoFolder,
+    PointerValue, PreservedAnalyses, ShuffleMaskElem, Value, ValueTrackingQuery, Width,
+    compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, module_new,
 };
 
 fn zeros(width: usize) -> String {
@@ -24,10 +25,10 @@ fn known<'a, B: ModuleBrand + 'a>(
 fn constants_and_integer_operators_compute_known_bits() -> Result<(), IrError> {
     let m = module_new!("vt-int")?;
     let i8_ty = m.i8_type();
-    let fn_ty = m.fn_type_no_params(i8_ty, false);
+    let fn_ty = m.function_type_no_parameters(i8_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     let c_aa = i8_ty.const_int(0xaa_u8);
     let c_0f = i8_ty.const_int(0x0f_u8);
@@ -36,49 +37,49 @@ fn constants_and_integer_operators_compute_known_bits() -> Result<(), IrError> {
     let c_08 = i8_ty.const_int(0x08_u8);
     let c_01 = i8_ty.const_int(0x01_u8);
 
-    let and_v = b.build_int_and::<i8, _, _, _>(c_aa, c_0f, "and")?;
-    let or_v = b.build_int_or::<i8, _, _, _>(c_aa, c_0f, "or")?;
-    let xor_v = b.build_int_xor::<i8, _, _, _>(c_aa, c_0f, "xor")?;
-    let add_v = b.build_int_add::<i8, _, _, _>(c_aa, c_01, "add")?;
-    let mul_v = b.build_int_mul::<i8, _, _, _>(c_03, c_04, "mul")?;
-    let shl_v = b.build_int_shl::<i8, _, _, _>(c_03, c_01, "shl")?;
-    let lshr_v = b.build_int_lshr::<i8, _, _, _>(c_08, c_01, "lshr")?;
+    let and_v = b.int_and::<i8, _, _, _>(c_aa, c_0f, "and")?;
+    let or_v = b.int_or::<i8, _, _, _>(c_aa, c_0f, "or")?;
+    let xor_v = b.int_xor::<i8, _, _, _>(c_aa, c_0f, "xor")?;
+    let add_v = b.int_add::<i8, _, _, _>(c_aa, c_01, "add")?;
+    let mul_v = b.int_mul::<i8, _, _, _>(c_03, c_04, "mul")?;
+    let shl_v = b.int_shl::<i8, _, _, _>(c_03, c_01, "shl")?;
+    let lshr_v = b.int_lshr::<i8, _, _, _>(c_08, c_01, "lshr")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
 
-    assert_eq!(known(c_aa.into_erased(), &query)?.to_string(), "10101010");
+    assert_eq!(known(c_aa.as_erased(), &query)?.to_string(), "10101010");
     assert_eq!(
-        known(b.view(and_v).into_erased(), &query)?.to_string(),
+        known(b.view(and_v).as_erased(), &query)?.to_string(),
         "00001010"
     );
     assert_eq!(
-        known(b.view(or_v).into_erased(), &query)?.to_string(),
+        known(b.view(or_v).as_erased(), &query)?.to_string(),
         "10101111"
     );
     assert_eq!(
-        known(b.view(xor_v).into_erased(), &query)?.to_string(),
+        known(b.view(xor_v).as_erased(), &query)?.to_string(),
         "10100101"
     );
     assert_eq!(
-        known(b.view(add_v).into_erased(), &query)?.to_string(),
+        known(b.view(add_v).as_erased(), &query)?.to_string(),
         "10101011"
     );
     assert_eq!(
-        known(b.view(mul_v).into_erased(), &query)?.to_string(),
+        known(b.view(mul_v).as_erased(), &query)?.to_string(),
         "00001100"
     );
     assert_eq!(
-        known(b.view(shl_v).into_erased(), &query)?.to_string(),
+        known(b.view(shl_v).as_erased(), &query)?.to_string(),
         "00000110"
     );
     assert_eq!(
-        known(b.view(lshr_v).into_erased(), &query)?.to_string(),
+        known(b.view(lshr_v).as_erased(), &query)?.to_string(),
         "00000100"
     );
-    assert!(is_known_non_zero(c_aa.into_erased(), &query)?);
-    assert!(!is_known_zero(c_aa.into_erased(), &query)?);
-    assert!(is_known_one(c_aa.into_erased(), 7, &query)?);
+    assert!(is_known_non_zero(c_aa.as_erased(), &query)?);
+    assert!(!is_known_zero(c_aa.as_erased(), &query)?);
+    assert!(is_known_one(c_aa.as_erased(), 7, &query)?);
     Ok(())
 }
 
@@ -88,24 +89,22 @@ fn constants_and_integer_operators_compute_known_bits() -> Result<(), IrError> {
 fn signed_division_and_remainder_compute_known_bits() -> Result<(), IrError> {
     let m = module_new!("vt-signed-div-rem")?;
     let i8_ty = m.i8_type();
-    let fn_ty = m.fn_type_no_params(i8_ty, false);
+    let fn_ty = m.function_type_no_parameters(i8_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-    let sdiv =
-        b.build_int_sdiv::<i8, _, _, _>(i8_ty.const_int(-64_i8), i8_ty.const_int(2_i8), "sd")?;
-    let srem =
-        b.build_int_srem::<i8, _, _, _>(i8_ty.const_int(7_i8), i8_ty.const_int(4_i8), "sr")?;
+    let sdiv = b.int_sdiv::<i8, _, _, _>(i8_ty.const_int(-64_i8), i8_ty.const_int(2_i8), "sd")?;
+    let srem = b.int_srem::<i8, _, _, _>(i8_ty.const_int(7_i8), i8_ty.const_int(4_i8), "sr")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
     assert_eq!(
-        known(b.view(sdiv).into_erased(), &query)?.to_string(),
+        known(b.view(sdiv).as_erased(), &query)?.to_string(),
         "111?????"
     );
     assert_eq!(
-        known(b.view(srem).into_erased(), &query)?.to_string(),
+        known(b.view(srem).as_erased(), &query)?.to_string(),
         "00000011"
     );
     Ok(())
@@ -119,70 +118,70 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
     let i1_ty = m.bool_type();
     let i8_ty = m.i8_type();
     let i16_ty = m.i16_type();
-    let fn_ty = m.fn_type(i8_ty, [i1_ty.as_type()], false);
+    let fn_ty = m.function_type(i8_ty, [i1_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
     // join(%p: i8): the phi is the block's head-phi parameter, seeded from
     // each predecessor by a block-argument `br`.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i8_ty.as_type()], "join")?;
     let join_label = join.id();
 
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let cond: IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
     let c_aa = i8_ty.const_int(0xaa_u8);
     let c_ae = i8_ty.const_int(0xae_u8);
     let c_aa_val: IntValue<'_, i8, _> = c_aa.as_constant().try_into()?;
     let c_ae_val: IntValue<'_, i8, _> = c_ae.as_constant().try_into()?;
-    let select = b.build_select(cond, c_aa_val, c_ae_val, "sel")?;
-    b.build_br_with_args(join_label, &[i8_ty.const_int(0x03_u8).into_erased()])?;
+    let select = b.select(cond, c_aa_val, c_ae_val, "sel")?;
+    b.br_with_args(join_label, &[i8_ty.const_int(0x03_u8).as_erased()])?;
 
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(other);
-    b.build_br_with_args(join_label, &[i8_ty.const_int(0x07_u8).into_erased()])?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(other);
+    b.br_with_args(join_label, &[i8_ty.const_int(0x07_u8).as_erased()])?;
 
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
     let phi = params[0];
     let trunc_src: IntValue<'_, i16, _> = i16_ty.const_int(0x00f0_u16).as_constant().try_into()?;
     let zext_src: IntValue<'_, i8, _> = c_aa.as_constant().try_into()?;
     let sext_src: IntValue<'_, i8, _> = c_aa.as_constant().try_into()?;
     let bitcast_src: IntValue<'_, i8, _> = i8_ty.const_int(0x5a_u8).as_constant().try_into()?;
-    let trunc = b.build_trunc::<i16, i8, _, _>(trunc_src, i8_ty, "tr")?;
-    let zext = b.build_zext::<i8, i16, _, _>(zext_src, i16_ty, "zext")?;
-    let sext = b.build_sext::<i8, i16, _, _>(sext_src, i16_ty, "sext")?;
-    let bitcast = b.build_bitcast_int_to_int(bitcast_src, m.int_type_n::<8>(), "bc")?;
-    let freeze = b.build_freeze(c_aa, "fr")?;
-    let cmp = b.build_icmp_eq::<i8, _, _, _>(c_aa, c_aa, "cmp")?;
+    let trunc = b.trunc::<i16, i8, _, _>(trunc_src, i8_ty, "tr")?;
+    let zext = b.zext::<i8, i16, _, _>(zext_src, i16_ty, "zext")?;
+    let sext = b.sext::<i8, i16, _, _>(sext_src, i16_ty, "sext")?;
+    let bitcast = b.bitcast_int_to_int(bitcast_src, m.int_type_n::<8>(), "bc")?;
+    let freeze = b.freeze(c_aa, "fr")?;
+    let cmp = b.icmp_eq::<i8, _, _, _>(c_aa, c_aa, "cmp")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
 
     assert_eq!(
-        known(b.view(select).into_erased(), &query)?.to_string(),
+        known(b.view(select).as_erased(), &query)?.to_string(),
         "10101?10"
     );
     assert_eq!(known(phi, &query)?.to_string(), "00000?11");
     assert_eq!(
-        known(b.view(trunc).into_erased(), &query)?.to_string(),
+        known(b.view(trunc).as_erased(), &query)?.to_string(),
         "11110000"
     );
     assert_eq!(
-        known(b.view(zext).into_erased(), &query)?.to_string(),
+        known(b.view(zext).as_erased(), &query)?.to_string(),
         "0000000010101010"
     );
     assert_eq!(
-        known(b.view(sext).into_erased(), &query)?.to_string(),
+        known(b.view(sext).as_erased(), &query)?.to_string(),
         "1111111110101010"
     );
     assert_eq!(
-        known(b.view(bitcast).into_erased(), &query)?.to_string(),
+        known(b.view(bitcast).as_erased(), &query)?.to_string(),
         "01011010"
     );
     assert_eq!(
         known(b.view(freeze).to_erased(), &query)?.to_string(),
         "10101010"
     );
-    assert_eq!(known(b.view(cmp).into_erased(), &query)?.to_string(), "1");
+    assert_eq!(known(b.view(cmp).as_erased(), &query)?.to_string(), "1");
     Ok(())
 }
 
@@ -192,21 +191,21 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
 fn bitwise_with_self_plus_odd_refines_low_bit() -> Result<(), IrError> {
     let m = module_new!("vt-bitwise-odd")?;
     let i8_ty = m.i8_type();
-    let fn_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
+    let fn_ty = m.function_type(i8_ty, [i8_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let x: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-    let x_plus_one = b.build_int_add::<i8, _, _, _>(x, i8_ty.const_int(1_u8), "x1")?;
-    let and_v = b.build_int_and::<i8, _, _, _>(x, x_plus_one, "and")?;
-    let or_v = b.build_int_or::<i8, _, _, _>(x, x_plus_one, "or")?;
-    let xor_v = b.build_int_xor::<i8, _, _, _>(x, x_plus_one, "xor")?;
+    let x_plus_one = b.int_add::<i8, _, _, _>(x, i8_ty.const_int(1_u8), "x1")?;
+    let and_v = b.int_and::<i8, _, _, _>(x, x_plus_one, "and")?;
+    let or_v = b.int_or::<i8, _, _, _>(x, x_plus_one, "or")?;
+    let xor_v = b.int_xor::<i8, _, _, _>(x, x_plus_one, "xor")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    assert!(known(b.view(and_v).into_erased(), &query)?.is_known_zero(0));
-    assert!(known(b.view(or_v).into_erased(), &query)?.is_known_one(0));
-    assert!(known(b.view(xor_v).into_erased(), &query)?.is_known_one(0));
+    assert!(known(b.view(and_v).as_erased(), &query)?.is_known_zero(0));
+    assert!(known(b.view(or_v).as_erased(), &query)?.is_known_one(0));
+    assert!(known(b.view(xor_v).as_erased(), &query)?.is_known_one(0));
     Ok(())
 }
 
@@ -216,16 +215,16 @@ fn bitwise_with_self_plus_odd_refines_low_bit() -> Result<(), IrError> {
 fn mul_nsw_self_product_is_non_negative() -> Result<(), IrError> {
     let m = module_new!("vt-mul-nsw")?;
     let i8_ty = m.i8_type();
-    let fn_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
+    let fn_ty = m.function_type(i8_ty, [i8_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let x: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-    let square = b.build_int_mul_with_flags(x, x, MulFlags::new().nsw(), "square")?;
+    let square = b.int_mul_with_flags(x, x, MulFlags::new().nsw(), "square")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    assert!(known(b.view(square).into_erased(), &query)?.is_known_zero(7));
+    assert!(known(b.view(square).as_erased(), &query)?.is_known_zero(7));
     Ok(())
 }
 
@@ -236,19 +235,19 @@ fn pointer_null_and_alloca_alignment_compute_low_zero_bits() -> Result<(), IrErr
     let m = module_new!("vt-ptr")?;
     let ptr_ty = m.ptr_type(0);
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(ptr_ty.as_type(), false);
+    let fn_ty = m.function_type_no_parameters(ptr_ty.as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let alloca = b.build_alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let alloca = b.alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    let null_bits = known(ptr_ty.const_null().into_erased(), &query)?;
+    let null_bits = known(ptr_ty.const_null().as_erased(), &query)?;
     let ptr_width = usize::try_from(dl.pointer_size_in_bits(0)).expect("u32 fits usize");
     assert_eq!(null_bits.to_string(), zeros(ptr_width));
 
-    let alloca_bits = known(b.view(alloca).into_erased(), &query)?;
+    let alloca_bits = known(b.view(alloca).as_erased(), &query)?;
     for bit in 0..4 {
         assert!(
             alloca_bits.is_known_zero(bit),
@@ -267,60 +266,60 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
     let i1_ty = m.bool_type();
     let i8_ty = m.i8_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i1_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i1_ty, [ptr_ty.as_type()]);
 
     let f0 = m.add_function_dyn("test0", fn_ty, Linkage::External)?;
     let entry0 = m.view(f0).append_basic_block(&m, "entry");
-    let b0 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry0);
+    let b0 = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry0);
     let p0: PointerValue<'_, _> = m.view(f0).param(0)?.try_into()?;
-    let val0 = b0.build_int_load::<i8, _, _>(p0, "val")?;
+    let val0 = b0.int_load::<i8, _, _>(p0, "val")?;
     let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8))?;
     let hi0 = m.metadata_constant(i8_ty.const_int(0_i8))?;
     let range0 = m.metadata_tuple([lo0, hi0])?;
-    let val0_inst = InstructionView::try_from(b0.view(val0).into_erased())?;
+    let val0_inst = InstructionView::try_from(b0.view(val0).as_erased())?;
     val0_inst.set_metadata(&m, MetadataAttachmentKind::Range, range0)?;
     let mask128 = i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?;
-    let and0 = b0.build_int_and::<i8, _, _, _>(val0, mask128, "and")?;
-    let cmp0 = b0.build_icmp_eq::<i8, _, _, _>(and0, mask128, "is.eq")?;
-    b0.build_ret(cmp0)?;
+    let and0 = b0.int_and::<i8, _, _, _>(val0, mask128, "and")?;
+    let cmp0 = b0.icmp_eq::<i8, _, _, _>(and0, mask128, "is.eq")?;
+    b0.ret(cmp0)?;
 
     let f1 = m.add_function_dyn("test1", fn_ty, Linkage::External)?;
     let entry1 = m.view(f1).append_basic_block(&m, "entry");
-    let b1 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry1);
+    let b1 = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry1);
     let p1: PointerValue<'_, _> = m.view(f1).param(0)?.try_into()?;
-    let val1 = b1.build_int_load::<i8, _, _>(p1, "val")?;
+    let val1 = b1.int_load::<i8, _, _>(p1, "val")?;
     let lo1 = m.metadata_constant(i8_ty.const_int(64_i8))?;
     let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?)?;
     let range1 = m.metadata_tuple([lo1, hi1])?;
-    let val1_inst = InstructionView::try_from(b1.view(val1).into_erased())?;
+    let val1_inst = InstructionView::try_from(b1.view(val1).as_erased())?;
     val1_inst.set_metadata(&m, MetadataAttachmentKind::Range, range1)?;
     let mask64 = i8_ty.const_int(64_i8);
-    let and1 = b1.build_int_and::<i8, _, _, _>(val1, mask64, "and")?;
-    let cmp1 = b1.build_icmp_eq::<i8, _, _, _>(and1, mask64, "is.eq")?;
-    b1.build_ret(cmp1)?;
+    let and1 = b1.int_and::<i8, _, _, _>(val1, mask64, "and")?;
+    let cmp1 = b1.icmp_eq::<i8, _, _, _>(and1, mask64, "is.eq")?;
+    b1.ret(cmp1)?;
 
     let f2 = m.add_function_dyn("test2", fn_ty, Linkage::External)?;
     let entry2 = m.view(f2).append_basic_block(&m, "entry");
-    let b2 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry2);
+    let b2 = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry2);
     let p2: PointerValue<'_, _> = m.view(f2).param(0)?.try_into()?;
-    let val2 = b2.build_int_load::<i8, _, _>(p2, "val")?;
+    let val2 = b2.int_load::<i8, _, _>(p2, "val")?;
     let lo2 = m.metadata_constant(i8_ty.const_int(64_i8))?;
     let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?)?;
     let range2 = m.metadata_tuple([lo2, hi2])?;
-    let val2_inst = InstructionView::try_from(b2.view(val2).into_erased())?;
+    let val2_inst = InstructionView::try_from(b2.view(val2).as_erased())?;
     val2_inst.set_metadata(&m, MetadataAttachmentKind::Range, range2)?;
-    let and2 = b2.build_int_and::<i8, _, _, _>(val2, mask64, "and")?;
-    let cmp2 = b2.build_icmp_eq::<i8, _, _, _>(and2, mask64, "is.eq")?;
-    b2.build_ret(cmp2)?;
+    let and2 = b2.int_and::<i8, _, _, _>(val2, mask64, "and")?;
+    let cmp2 = b2.icmp_eq::<i8, _, _, _>(and2, mask64, "is.eq")?;
+    b2.ret(cmp2)?;
 
     m.verify_borrowed()?;
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    assert_eq!(known(m.view(cmp0).into_erased(), &query)?.to_string(), "1");
-    assert_eq!(known(m.view(cmp1).into_erased(), &query)?.to_string(), "1");
-    assert_eq!(known(m.view(cmp2).into_erased(), &query)?.to_string(), "?");
+    assert_eq!(known(m.view(cmp0).as_erased(), &query)?.to_string(), "1");
+    assert_eq!(known(m.view(cmp1).as_erased(), &query)?.to_string(), "1");
+    assert_eq!(known(m.view(cmp2).as_erased(), &query)?.to_string(), "?");
     let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
-    assert!(known(m.view(cmp0).into_erased(), &query_without_instr_info)?.is_unknown());
+    assert!(known(m.view(cmp0).as_erased(), &query_without_instr_info)?.is_unknown());
     Ok(())
 }
 
@@ -335,10 +334,10 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
     let callee = m
         .add_typed_function::<i8, (), _>("callee", Linkage::External)?
         .as_function();
-    let caller_ty = m.fn_type_no_params(i1_ty, false);
+    let caller_ty = m.function_type_no_parameters(i1_ty);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     let mut return_attrs = AttributeStorage::new();
     return_attrs.add(
@@ -353,13 +352,13 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
         .name("val")
         .build()?;
     let call_value = b.view(call).return_int_value();
-    let masked = b.build_int_and::<i8, _, _, _>(call_value, i8_ty.const_int(0x80_u8), "masked")?;
-    let cmp = b.build_icmp_eq::<i8, _, _, _>(masked, i8_ty.const_int(0_u8), "is.zero")?;
-    b.build_ret(cmp)?;
+    let masked = b.int_and::<i8, _, _, _>(call_value, i8_ty.const_int(0x80_u8), "masked")?;
+    let cmp = b.icmp_eq::<i8, _, _, _>(masked, i8_ty.const_int(0_u8), "is.zero")?;
+    b.ret(cmp)?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    assert_eq!(known(m.view(cmp).into_erased(), &query)?.to_string(), "1");
+    assert_eq!(known(m.view(cmp).as_erased(), &query)?.to_string(), "1");
     let text = format!("{m}");
     assert!(text.contains("call range(i8 0, 64) i8 @callee()"), "{text}");
     Ok(())
@@ -387,7 +386,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
         AttributeStorage::new(),
     );
 
-    let caller_ty = m.fn_type_no_params(void_ty, false);
+    let caller_ty = m.function_type_no_parameters(void_ty);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let call_entry = m.view(caller).append_basic_block(&m, "call.entry");
     let invoke_entry = m.view(caller).append_basic_block(&m, "invoke.entry");
@@ -397,7 +396,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
     let invoke_normal_label = invoke_normal.id();
     let invoke_unwind_label = invoke_unwind.id();
 
-    let call_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(call_entry);
+    let call_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(call_entry);
     let call = call_b
         .call_builder(m.view(callee))
         .arg(i8_ty.const_int(0xa5_u8))
@@ -405,11 +404,11 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
         .name("call")
         .build()?;
     let call = call_b.view(call).return_int_value();
-    let (_, _) = call_b.build_br(invoke_entry_label)?;
+    let (_, _) = call_b.br(invoke_entry_label)?;
 
-    let (_, invoke) = IRBuilder::with_folder(&m, NoFolder)
+    let (_, invoke) = IrBuilder::with_folder(&m, NoFolder)
         .position_at_end(invoke_entry)
-        .build_invoke_dyn_with_config(
+        .invoke_dyn_with_config(
             m.view(callee),
             [i8_ty.const_int(0x3c_u8)],
             invoke_normal_label,
@@ -418,18 +417,18 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
         )?;
     let invoke_value: IntValue<'_, i8, _> = invoke.to_erased().try_into()?;
 
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(invoke_unwind)
-        .build_unreachable();
-    IRBuilder::new_for::<Dyn>(&m)
+        .unreachable();
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(invoke_normal)
-        .build_ret_void()?;
+        .ret_void()?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    assert_eq!(known(call.into_erased(), &query)?.to_string(), "10100101");
+    assert_eq!(known(call.as_erased(), &query)?.to_string(), "10100101");
     assert_eq!(
-        known(invoke_value.into_erased(), &query)?.to_string(),
+        known(invoke_value.as_erased(), &query)?.to_string(),
         "00111100"
     );
     Ok(())
@@ -445,10 +444,10 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
     let i16_ty = m.i16_type();
     let void_ty = m.void_type();
 
-    let caller_ty = m.fn_type_no_params(void_ty, false);
+    let caller_ty = m.function_type_no_parameters(void_ty);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     let abs_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.abs.i8")?;
     let abs_call = b
@@ -554,23 +553,20 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    assert_eq!(known(abs.into_erased(), &query)?.to_string(), "00000101");
+    assert_eq!(known(abs.as_erased(), &query)?.to_string(), "00000101");
     assert_eq!(
-        known(bitreverse.into_erased(), &query)?.to_string(),
+        known(bitreverse.as_erased(), &query)?.to_string(),
         "00001000"
     );
-    assert_eq!(known(ctlz.into_erased(), &query)?.to_string(), "000000??");
-    assert_eq!(known(ctpop.into_erased(), &query)?.to_string(), "00000???");
+    assert_eq!(known(ctlz.as_erased(), &query)?.to_string(), "000000??");
+    assert_eq!(known(ctpop.as_erased(), &query)?.to_string(), "00000???");
+    assert_eq!(known(uadd_sat.as_erased(), &query)?.to_string(), "11111111");
+    assert_eq!(known(smax.as_erased(), &query)?.to_string(), "00000111");
     assert_eq!(
-        known(uadd_sat.into_erased(), &query)?.to_string(),
-        "11111111"
-    );
-    assert_eq!(known(smax.into_erased(), &query)?.to_string(), "00000111");
-    assert_eq!(
-        known(bswap.into_erased(), &query)?.to_string(),
+        known(bswap.as_erased(), &query)?.to_string(),
         "0011010000010010"
     );
-    assert_eq!(known(fshl.into_erased(), &query)?.to_string(), "00100011");
+    assert_eq!(known(fshl.as_erased(), &query)?.to_string(), "00100011");
     Ok(())
 }
 
@@ -583,12 +579,12 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
     let i1_ty = m.bool_type();
     let i16_ty = m.i16_type();
     let void_ty = m.void_type();
-    let caller_ty = m.fn_type_no_params(void_ty, false);
+    let caller_ty = m.function_type_no_parameters(void_ty);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-    let malformed_ty = m.fn_type(i16_ty, [i16_ty.as_type(), i1_ty.as_type()], false);
+    let malformed_ty = m.function_type(i16_ty, [i16_ty.as_type(), i1_ty.as_type()]);
     let malformed = m.add_function_dyn("not.llvm.abs.i8", malformed_ty, Linkage::External)?;
     let call_call = b
         .call_builder(m.view(malformed))
@@ -605,7 +601,7 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
     assert_eq!(
-        known(call.into_erased(), &query)?.to_string(),
+        known(call.as_erased(), &query)?.to_string(),
         "????????????????"
     );
     Ok(())
@@ -619,13 +615,13 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
     let m = module_new!("vt-query-shape")?;
     let i8_ty = m.i8_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i8_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let load = b.build_int_load::<i8, _, _>(p, "load")?;
-    let load_inst = InstructionView::try_from(b.view(load).into_erased())?;
+    let load = b.int_load::<i8, _, _>(p, "load")?;
+    let load_inst = InstructionView::try_from(b.view(load).as_erased())?;
     let demanded = ApInt::from_words(1, &[1]);
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl)
@@ -646,12 +642,12 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
 fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
     let m = module_new!("vt-analysis")?;
     let i8_ty = m.i8_type();
-    let fn_ty = m.fn_type_no_params(i8_ty, false);
+    let fn_ty = m.function_type_no_parameters(i8_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-    let value = b.build_int_and::<i8, _, _, _>(
+    let value = b.int_and::<i8, _, _, _>(
         i8_ty.const_int(0b1111_0000_u8),
         i8_ty.const_int(0b1010_1010_u8),
         "known",
@@ -660,16 +656,16 @@ fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(KnownBitsAnalysis);
 
-    let result = fam.get_result::<KnownBitsAnalysis, _>(m.view(f))?;
+    let result = fam.result::<KnownBitsAnalysis, _>(m.view(f))?;
     assert_eq!(
         result
-            .compute_known_bits(b.view(value).into_erased())?
+            .compute_known_bits(b.view(value).as_erased())?
             .to_string(),
         "10100000"
     );
-    assert!(result.is_known_non_zero(b.view(value).into_erased())?);
+    assert!(result.is_known_non_zero(b.view(value).as_erased())?);
     assert!(
-        fam.get_cached_result::<KnownBitsAnalysis, _>(m.view(f))
+        fam.cached_result::<KnownBitsAnalysis, _>(m.view(f))
             .is_some()
     );
     Ok(())
@@ -682,34 +678,34 @@ fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
 fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<(), IrError> {
     let m = module_new!("vt-analysis-invalidate")?;
     let i8_ty = m.i8_type();
-    let fn_ty = m.fn_type_no_params(i8_ty, false);
+    let fn_ty = m.function_type_no_parameters(i8_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let value = b.build_int_and::<i8, _, _, _>(
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let value = b.int_and::<i8, _, _, _>(
         i8_ty.const_int(0b1111_0000_u8),
         i8_ty.const_int(0b1010_1010_u8),
         "known",
     )?;
-    b.build_ret(value)?;
+    b.ret(value)?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DominatorTreeAnalysis);
     fam.register_pass(KnownBitsAnalysis);
 
-    let _ = fam.get_result::<DominatorTreeAnalysis, _>(m.view(f))?;
+    let _ = fam.result::<DominatorTreeAnalysis, _>(m.view(f))?;
     {
-        let result = fam.get_result::<KnownBitsAnalysis, _>(m.view(f))?;
+        let result = fam.result::<KnownBitsAnalysis, _>(m.view(f))?;
         let query: ValueTrackingQuery<'_, '_, DynBrand> = result.query();
         assert!(query.dominator_tree().is_some());
     }
 
     let mut preserves_known_bits_and_cfg = PreservedAnalyses::none();
     preserves_known_bits_and_cfg.preserve::<KnownBitsAnalysis>();
-    preserves_known_bits_and_cfg.preserve_set::<CFGAnalyses>();
+    preserves_known_bits_and_cfg.preserve_set::<CfgAnalyses>();
     fam.invalidate(m.view(f), &preserves_known_bits_and_cfg)?;
     assert!(
-        fam.get_cached_result::<KnownBitsAnalysis, _>(m.view(f))
+        fam.cached_result::<KnownBitsAnalysis, _>(m.view(f))
             .is_some()
     );
 
@@ -717,7 +713,7 @@ fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<()
     preserves_known_bits_only.preserve::<KnownBitsAnalysis>();
     fam.invalidate(m.view(f), &preserves_known_bits_only)?;
     assert!(
-        fam.get_cached_result::<KnownBitsAnalysis, _>(m.view(f))
+        fam.cached_result::<KnownBitsAnalysis, _>(m.view(f))
             .is_none()
     );
     Ok(())
@@ -729,16 +725,16 @@ fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<()
 fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), IrError> {
     let m = module_new!("vt-shift-poison")?;
     let i4_ty = m.int_type_n::<4>();
-    let fn_ty = m.fn_type(i4_ty, [i4_ty.as_type()], false);
+    let fn_ty = m.function_type(i4_ty, [i4_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let x: IntValue<'_, Width<4>, _> = m.view(f).param(0)?.try_into()?;
     let one = i4_ty.const_ap_int(&ApInt::from_words(4, &[1]))?;
     let eight = i4_ty.const_ap_int(&ApInt::from_words(4, &[8]))?;
-    let shift = b.build_int_and::<Width<4>, _, _, _>(x, eight, "shift")?;
-    let shl = b.build_int_shl::<Width<4>, _, _, _>(one, shift, "shl")?;
-    let frozen = b.build_freeze(shl, "fr")?;
+    let shift = b.int_and::<Width<4>, _, _, _>(x, eight, "shift")?;
+    let shl = b.int_shl::<Width<4>, _, _, _>(one, shift, "shl")?;
+    let frozen = b.freeze(shl, "fr")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
@@ -753,16 +749,16 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
     let m = module_new!("vt-addrspacecast")?;
     let i32_ty = m.i32_type();
     let ptr1_ty = m.ptr_type(1);
-    let fn_ty = m.fn_type_no_params(ptr1_ty, false);
+    let fn_ty = m.function_type_no_parameters(ptr1_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let slot = b.build_alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
-    let cast = b.build_addrspace_cast(slot, ptr1_ty, "cast")?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let slot = b.alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
+    let cast = b.addrspace_cast(slot, ptr1_ty, "cast")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    assert!(known(b.view(cast).into_erased(), &query)?.is_unknown());
+    assert!(known(b.view(cast).as_erased(), &query)?.is_unknown());
     Ok(())
 }
 
@@ -772,18 +768,14 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
 fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
     let m = module_new!("vt-freeze-exact-shift")?;
     let i4_ty = m.int_type_n::<4>();
-    let fn_ty = m.fn_type_no_params(i4_ty, false);
+    let fn_ty = m.function_type_no_parameters(i4_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let one = i4_ty.const_ap_int(&ApInt::from_words(4, &[1]))?;
-    let lshr = b.build_int_lshr_with_flags::<Width<4>, _, _, _>(
-        one,
-        one,
-        LShrFlags::new().exact(),
-        "lshr",
-    )?;
-    let frozen = b.build_freeze(lshr, "fr")?;
+    let lshr =
+        b.int_lshr_with_flags::<Width<4>, _, _, _>(one, one, LshrFlags::new().exact(), "lshr")?;
+    let frozen = b.freeze(lshr, "fr")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
@@ -804,41 +796,41 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
     let m = module_new!("vt-gep-vector")?;
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let vec_ty = m.vector_type(i8_ty.as_type(), 2, false);
+    let vec_ty = m.vector_type(i8_ty.as_type(), 2);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
+    let fn_ty = m.function_type_no_parameters(void_ty.as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-    let slot = b.build_alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
-    let ptr = b.build_ptr_add(slot, i8_ty.const_int(8_u8), "ptr")?;
+    let slot = b.alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
+    let ptr = b.ptr_add(slot, i8_ty.const_int(8_u8), "ptr")?;
 
-    let poison_vec = vec_ty.as_type().get_poison();
-    let lane0 = b.build_insert_element(
+    let poison_vec = vec_ty.as_type().poison();
+    let lane0 = b.insert_element(
         poison_vec,
         i8_ty.const_int(0xf0_u8),
         i8_ty.const_int(0_u8),
         "lane0",
     )?;
-    let lane01 = b.build_insert_element(
+    let lane01 = b.insert_element(
         lane0,
         i8_ty.const_int(0x0f_u8),
         i8_ty.const_int(1_u8),
         "lane1",
     )?;
-    let extract = b.build_extract_element(lane01, i8_ty.const_int(1_u8), "extract")?;
+    let extract = b.extract_element(lane01, i8_ty.const_int(1_u8), "extract")?;
 
     let rhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i8, _>, _>([
         i8_ty.const_int(0x55_u8),
         i8_ty.const_int(0xaa_u8),
     ])?;
-    let shuffle = b.build_shuffle_vector(lane01, rhs, &[1], "shuffle")?;
-    let shuffle_extract = b.build_extract_element(shuffle, i8_ty.const_int(0_u8), "shuf.ext")?;
+    let shuffle = b.shuffle_vector(lane01, rhs, &[ShuffleMaskElem::Lane(1)], "shuffle")?;
+    let shuffle_extract = b.extract_element(shuffle, i8_ty.const_int(0_u8), "shuf.ext")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    let ptr_bits = known(b.view(ptr).into_erased(), &query)?;
+    let ptr_bits = known(b.view(ptr).as_erased(), &query)?;
     assert!(ptr_bits.is_known_zero(0), "{ptr_bits}");
     assert!(ptr_bits.is_known_zero(1), "{ptr_bits}");
     assert!(ptr_bits.is_known_zero(2), "{ptr_bits}");
@@ -858,12 +850,12 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
 #[test]
 fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Result<(), IrError> {
     let m = module_new!("vt-vector-gep-as")?;
-    m.set_data_layout("p1:64:64:64:32")?;
+    m.set_data_layout(DataLayout::parse("p1:64:64:64:32")?);
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let ptr1_ty = m.ptr_type(1);
-    let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
-    let i32_vec_ty = m.vector_type(i32_ty.as_type(), 2, false);
+    let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2);
+    let i32_vec_ty = m.vector_type(i32_ty.as_type(), 2);
     let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
     let minus_one = i32_ty.const_int(-1_i32);
     let index = i32_vec_ty
@@ -871,7 +863,7 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
     let gep = m.constant_expr_with_options(
         ptr_vec_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [base.into_erased(), index.into_erased()],
+        [base.as_erased(), index.as_erased()],
         [],
         [],
         ConstantExprOptions::new().source_ty(i8_ty.as_type()),
@@ -880,7 +872,7 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
     let query = ValueTrackingQuery::new(&dl);
 
     assert_eq!(
-        known(gep.into_erased(), &query)?.to_string(),
+        known(gep.as_erased(), &query)?.to_string(),
         "0000000000000000000000000000000011111111111111111111111111111111"
     );
     Ok(())

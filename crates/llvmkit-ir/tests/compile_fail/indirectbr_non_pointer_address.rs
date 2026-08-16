@@ -3,7 +3,7 @@
 //!
 //! Closest upstream behaviour: LLVM's verifier
 //! (`Verifier::visitIndirectBrInst`) rejects an `indirectbr` whose address
-//! operand is not a pointer *at runtime*. llvmkit's `build_indirectbr` binds
+//! operand is not a pointer *at runtime*. llvmkit's `indirectbr` binds
 //! the address by `IntoPointerValue<'ctx, B>`, so a typed non-pointer value
 //! handle cannot type-check — the pointer-ness check moves from `verify()` to
 //! compile time.
@@ -16,23 +16,23 @@
 //! literal) is used so the fixture unambiguously proves `IntoPointerValue` is
 //! the gate: a bare literal is `!IsValue` and would fail under either bound.
 
-use llvmkit_ir::{IRBuilder, IntValue, Linkage, Module};
+use llvmkit_ir::{IrBuilder, IntValue, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
 
     // A typed non-pointer value handle: the `i32` function parameter
     // narrowed to `IntValue<i32>`.
     let addr: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
 
     // `IntValue<'_, i32, _>` does not implement `IntoPointerValue`, so it
-    // cannot be an `indirectbr` address: `build_indirectbr` does not
+    // cannot be an `indirectbr` address: `indirectbr` does not
     // type-check.
-    let _ = b.build_indirectbr(addr, "");
+    let _ = b.indirectbr(addr, "");
 }

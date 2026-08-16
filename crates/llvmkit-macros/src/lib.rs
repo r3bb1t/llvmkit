@@ -39,18 +39,35 @@ pub fn derive_ir_struct(input: TokenStream) -> TokenStream {
 ///
 /// Without a helper attribute the set is `Clone`, `Copy`, `Debug`,
 /// `PartialEq`, `Eq`, `Hash`. `#[branded(…)]` names an explicit subset and
-/// may add `Default` (structs only):
+/// may add `Default` (structs only) and the ordering pair `PartialOrd` /
+/// `Ord`:
 ///
 /// ```ignore
 /// #[derive(Branded)]
 /// #[branded(Debug, Clone)]
 /// pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx> { /* … */ }
+///
+/// #[derive(Branded)]
+/// #[branded(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// pub struct BlockId<R: ReturnMarker, B: ModuleBrand> { /* … */ }
 /// ```
 ///
 /// `Debug` skips phantom fields (last path segment `PhantomData` or
-/// `Invariant`); `PartialEq` and `Hash` are generated from one shared field
-/// walk so their contract cannot drift; a `Copy` request on a type with a
-/// non-`Copy` field is still rejected by the compiler (E0204).
+/// `Invariant`); `PartialEq`, `Hash`, `PartialOrd` and `Ord` are generated
+/// from one shared field walk so their contracts cannot drift; a `Copy`
+/// request on a type with a non-`Copy` field is still rejected by the
+/// compiler (E0204).
+///
+/// Ordering is opt-in because most branded types are views over arena
+/// indices with no meaningful order; where it *is* meaningful — an id that
+/// is `(ModuleId, slot)` — a lexicographic order is deterministic across
+/// runs, which is what makes a `BTreeMap` keyed by one safe to iterate.
+/// Structs order field by field in declaration order; enums order by
+/// variant declaration order first, then by payload, matching the std
+/// derive's semantics without its bounds (and without an `as` cast on the
+/// discriminant). `Ord` demands `Eq` and `PartialOrd` in the same
+/// `#[branded(…)]` list, and `PartialOrd` demands `PartialEq` — a missing
+/// supertrait is reported at the attribute rather than at the first `a < b`.
 #[proc_macro_derive(Branded, attributes(branded))]
 pub fn derive_branded(input: TokenStream) -> TokenStream {
     branded::derive(input)

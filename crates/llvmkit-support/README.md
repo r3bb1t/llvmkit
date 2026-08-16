@@ -17,5 +17,4 @@ IR-specific numeric cores such as `ApInt` / `ApFloat` do not — they live in
 
 ## License
 
-Apache-2.0 WITH LLVM-exception. See the workspace
-[`LICENSE`](https://github.com/r3bb1t/llvmkit/blob/main/LICENSE).
+Apache-2.0 WITH LLVM-exception. See [`LICENSE`](LICENSE).

@@ -24,6 +24,9 @@ use core::iter::FusedIterator;
 use std::fmt;
 
 use super::ApInt;
+use super::constant_range::ConstantRange;
+use super::constant_range_list::ConstantRangeList;
+use super::fp_class::FpClassTest;
 use super::module::ModuleBrand;
 use super::r#type::{Type, TypeKind, TypeSlot};
 
@@ -159,7 +162,11 @@ impl MemoryEffects {
         self.data
     }
 
-    pub const fn get_mod_ref(self, location: MemoryLocation) -> ModRefInfo {
+    /// The [`ModRefInfo`] recorded for `location`.
+    ///
+    /// Mirrors `MemoryEffectsBase::getModRef` (`ModRef.h`); the `get_` prefix
+    /// is dropped per C-GETTER.
+    pub const fn mod_ref(self, location: MemoryLocation) -> ModRefInfo {
         ModRefInfo::from_bits((self.data >> location.shift()) & Self::LOC_MASK)
     }
 
@@ -180,16 +187,64 @@ impl MemoryEffects {
     fn aggregate_mod_ref(self) -> ModRefInfo {
         let mut bits = 0;
         for location in MemoryLocation::ALL {
-            bits |= self.get_mod_ref(location).bits();
+            bits |= self.mod_ref(location).bits();
         }
         ModRefInfo::from_bits(bits)
+    }
+
+    /// Whether no memory of any class is read or written.
+    ///
+    /// Ports `MemoryEffectsBase::doesNotAccessMemory` (`ModRef.h`).
+    pub fn does_not_access_memory(self) -> bool {
+        self.aggregate_mod_ref() == ModRefInfo::NoModRef
+    }
+
+    /// Whether memory may be read but is never written.
+    ///
+    /// Ports `MemoryEffectsBase::onlyReadsMemory`. Note the upstream sense:
+    /// "reads at most", so an operation that touches nothing answers true.
+    pub fn only_reads_memory(self) -> bool {
+        !matches!(
+            self.aggregate_mod_ref(),
+            ModRefInfo::Mod | ModRefInfo::ModRef
+        )
+    }
+
+    /// Whether memory may be written but is never read.
+    ///
+    /// Ports `MemoryEffectsBase::onlyWritesMemory`, with the same "at most"
+    /// sense as [`Self::only_reads_memory`].
+    pub fn only_writes_memory(self) -> bool {
+        !matches!(
+            self.aggregate_mod_ref(),
+            ModRefInfo::Ref | ModRefInfo::ModRef
+        )
+    }
+}
+
+/// Intersection. Mirrors `MemoryEffectsBase::operator&` (`ModRef.h`): a raw
+/// bitwise AND of the packed per-location words, which is exact because each
+/// location's two bits are independent.
+impl core::ops::BitAnd for MemoryEffects {
+    type Output = Self;
+    fn bitand(self, rhs: Self) -> Self {
+        Self {
+            data: self.data & rhs.data,
+        }
+    }
+}
+
+/// Mirrors `MemoryEffectsBase::operator&=`.
+impl core::ops::BitAndAssign for MemoryEffects {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.data &= rhs.data;
     }
 }
 
 impl fmt::Display for MemoryEffects {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let effects = *self;
-        let other = effects.get_mod_ref(MemoryLocation::Other);
+        let other = effects.mod_ref(MemoryLocation::Other);
         let aggregate = effects.aggregate_mod_ref();
         let mut first = true;
 
@@ -200,7 +255,7 @@ impl fmt::Display for MemoryEffects {
         }
 
         for location in MemoryLocation::ALL {
-            let mod_ref = effects.get_mod_ref(location);
+            let mod_ref = effects.mod_ref(location);
             if mod_ref == other || location == MemoryLocation::Other {
                 continue;
             }
@@ -229,11 +284,18 @@ impl fmt::Display for MemoryEffects {
 #[non_exhaustive]
 pub enum AttrKind {
     // ---- Enum (flag) attributes ----
+    AllocAlign,
+    AllocatedPointer,
     AlwaysInline,
     Builtin,
     Cold,
     Convergent,
+    CoroDestroyOnlyWhenComplete,
+    CoroElideSafe,
+    DeadOnReturn,
+    DeadOnUnwind,
     DisableSanitizerInstrumentation,
+    FnRetThunkExtern,
     Hot,
     HybridPatchable,
     ImmArg,
@@ -250,7 +312,9 @@ pub enum AttrKind {
     NoCreateUndefOrPoison,
     NoCapture,
     NoCfCheck,
+    NoDivergenceSource,
     NoDuplicate,
+    NoExt,
     NoFree,
     NoImplicitFloat,
     NoInline,
@@ -268,6 +332,7 @@ pub enum AttrKind {
     NonNull,
     NullPointerIsValid,
     OptForFuzzing,
+    OptimizeForDebugging,
     OptimizeForSize,
     OptimizeNone,
     PresplitCoroutine,
@@ -275,13 +340,18 @@ pub enum AttrKind {
     ReadOnly,
     Returned,
     ReturnsTwice,
-    SExt,
+    Sext,
     SafeStack,
     SanitizeAddress,
+    SanitizeAllocToken,
     SanitizeHwAddress,
     SanitizeMemTag,
     SanitizeMemory,
+    SanitizeNumericalStability,
+    SanitizeRealtime,
+    SanitizeRealtimeBlocking,
     SanitizeThread,
+    SanitizeType,
     ShadowCallStack,
     SkipProfile,
     Speculatable,
@@ -289,26 +359,29 @@ pub enum AttrKind {
     StackProtect,
     StackProtectReq,
     StackProtectStrong,
-    StrictFP,
+    StrictFp,
     SwiftAsync,
     SwiftError,
     SwiftSelf,
     WillReturn,
     Writable,
     WriteOnly,
-    ZExt,
+    Zext,
 
     // ---- Integer-valued attributes ----
     Alignment,
     AllocKind,
+    Captures,
     AllocSize,
     Dereferenceable,
     DereferenceableOrNull,
     StackAlignment,
-    UWTable,
-    VScaleRange,
+    UwTable,
+    VscaleRange,
     Range,
     Memory,
+    NoFpClass,
+    Initializes,
 
     // ---- Type-valued attributes ----
     ByRef,
@@ -319,17 +392,127 @@ pub enum AttrKind {
     StructRet,
 }
 
+/// Where `Attributes.td` declares an attribute may be written. Mirrors the
+/// `[FnAttr]` / `[ParamAttr]` / `[RetAttr]` list on each `def`, which upstream
+/// generates into `AttributeProperty` and reads back through
+/// `Attribute::canUseAsFnAttr` and its two siblings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AttributePositions {
+    /// May be written on a function, or in an `attributes #N = { … }` group.
+    pub function: bool,
+    /// May be written on a parameter.
+    pub parameter: bool,
+    /// May be written on a return value.
+    pub return_value: bool,
+}
+
 impl AttrKind {
+    /// The positions `Attributes.td` declares for this attribute.
+    ///
+    /// Extracted from the vendored `.td` and pinned against it by
+    /// `attribute_td_drift.rs`, which is the second copy this table needs —
+    /// a hand-written position that drifts is a *wrong diagnostic*, not a
+    /// missing one.
+    pub const fn positions(self) -> AttributePositions {
+        const fn at(function: bool, parameter: bool, return_value: bool) -> AttributePositions {
+            AttributePositions {
+                function,
+                parameter,
+                return_value,
+            }
+        }
+        match self {
+            // `[FnAttr, ParamAttr, RetAttr]`
+            Self::StackAlignment => at(true, true, true),
+
+            // `[ParamAttr, RetAttr]`
+            Self::Alignment
+            | Self::Dereferenceable
+            | Self::DereferenceableOrNull
+            | Self::InReg
+            | Self::NoAlias
+            | Self::NoExt
+            | Self::NoFpClass
+            | Self::NoUndef
+            | Self::NonNull
+            | Self::Range
+            | Self::Sext
+            | Self::Zext => at(false, true, true),
+
+            // `[FnAttr, ParamAttr]`
+            Self::NoFree | Self::Preallocated => at(true, true, false),
+
+            // `[ParamAttr]`
+            Self::Captures
+            | Self::AllocAlign
+            | Self::AllocatedPointer
+            | Self::ByRef
+            | Self::ByVal
+            | Self::DeadOnReturn
+            | Self::DeadOnUnwind
+            | Self::ElementType
+            | Self::ImmArg
+            | Self::InAlloca
+            | Self::Initializes
+            | Self::Nest
+            | Self::ReadNone
+            | Self::ReadOnly
+            | Self::Returned
+            | Self::StructRet
+            | Self::SwiftAsync
+            | Self::SwiftError
+            | Self::SwiftSelf
+            | Self::Writable
+            | Self::WriteOnly => at(false, true, false),
+
+            // LLVM 22 has no `nocapture` def: it was replaced by
+            // `captures(none)`, which is `[ParamAttr]`. llvmkit still spells
+            // the parsed result `NoCapture`, so it inherits that position.
+            Self::NoCapture => at(false, true, false),
+
+            // `[FnAttr]` — everything else. `AttrKind` is `#[non_exhaustive]`,
+            // so a catch-all is unavoidable; what keeps it from silently
+            // guessing wrong for a future variant is `attribute_td_drift.rs`,
+            // which checks every position in this table against the `.td`.
+            _ => at(true, false, false),
+        }
+    }
+
+    /// Mirrors `Attribute::canUseAsFnAttr`.
+    #[must_use]
+    pub const fn can_use_as_fn_attr(self) -> bool {
+        self.positions().function
+    }
+
+    /// Mirrors `Attribute::canUseAsParamAttr`.
+    #[must_use]
+    pub const fn can_use_as_param_attr(self) -> bool {
+        self.positions().parameter
+    }
+
+    /// Mirrors `Attribute::canUseAsRetAttr`.
+    #[must_use]
+    pub const fn can_use_as_ret_attr(self) -> bool {
+        self.positions().return_value
+    }
+
     /// Mnemonic spelling used in `.ll` syntax. Mirrors the `def` name in
     /// `Attributes.td` (lowercased / underscored where appropriate).
     pub const fn name(self) -> &'static str {
         match self {
             // Enum / flag
             Self::AlwaysInline => "alwaysinline",
+            Self::AllocAlign => "allocalign",
+            Self::AllocatedPointer => "allocptr",
             Self::Builtin => "builtin",
             Self::Cold => "cold",
             Self::Convergent => "convergent",
+            Self::CoroDestroyOnlyWhenComplete => "coro_only_destroy_when_complete",
+            Self::CoroElideSafe => "coro_elide_safe",
+            Self::DeadOnReturn => "dead_on_return",
+            Self::DeadOnUnwind => "dead_on_unwind",
             Self::DisableSanitizerInstrumentation => "disable_sanitizer_instrumentation",
+            Self::FnRetThunkExtern => "fn_ret_thunk_extern",
             Self::Hot => "hot",
             Self::HybridPatchable => "hybrid_patchable",
             Self::ImmArg => "immarg",
@@ -346,7 +529,9 @@ impl AttrKind {
             Self::NoCreateUndefOrPoison => "nocreateundeforpoison",
             Self::NoCapture => "nocapture",
             Self::NoCfCheck => "nocf_check",
+            Self::NoDivergenceSource => "nodivergencesource",
             Self::NoDuplicate => "noduplicate",
+            Self::NoExt => "noext",
             Self::NoFree => "nofree",
             Self::NoImplicitFloat => "noimplicitfloat",
             Self::NoInline => "noinline",
@@ -364,6 +549,7 @@ impl AttrKind {
             Self::NonNull => "nonnull",
             Self::NullPointerIsValid => "null_pointer_is_valid",
             Self::OptForFuzzing => "optforfuzzing",
+            Self::OptimizeForDebugging => "optdebug",
             Self::OptimizeForSize => "optsize",
             Self::OptimizeNone => "optnone",
             Self::PresplitCoroutine => "presplitcoroutine",
@@ -371,13 +557,18 @@ impl AttrKind {
             Self::ReadOnly => "readonly",
             Self::Returned => "returned",
             Self::ReturnsTwice => "returns_twice",
-            Self::SExt => "signext",
+            Self::Sext => "signext",
             Self::SafeStack => "safestack",
             Self::SanitizeAddress => "sanitize_address",
+            Self::SanitizeAllocToken => "sanitize_alloc_token",
             Self::SanitizeHwAddress => "sanitize_hwaddress",
             Self::SanitizeMemTag => "sanitize_memtag",
             Self::SanitizeMemory => "sanitize_memory",
+            Self::SanitizeNumericalStability => "sanitize_numerical_stability",
+            Self::SanitizeRealtime => "sanitize_realtime",
+            Self::SanitizeRealtimeBlocking => "sanitize_realtime_blocking",
             Self::SanitizeThread => "sanitize_thread",
+            Self::SanitizeType => "sanitize_type",
             Self::ShadowCallStack => "shadowcallstack",
             Self::SkipProfile => "skipprofile",
             Self::Speculatable => "speculatable",
@@ -385,25 +576,28 @@ impl AttrKind {
             Self::StackProtect => "ssp",
             Self::StackProtectReq => "sspreq",
             Self::StackProtectStrong => "sspstrong",
-            Self::StrictFP => "strictfp",
+            Self::StrictFp => "strictfp",
             Self::SwiftAsync => "swiftasync",
             Self::SwiftError => "swifterror",
             Self::SwiftSelf => "swiftself",
             Self::WillReturn => "willreturn",
             Self::Writable => "writable",
             Self::WriteOnly => "writeonly",
-            Self::ZExt => "zeroext",
+            Self::Zext => "zeroext",
             // Integer
             Self::Alignment => "align",
             Self::AllocKind => "allockind",
+            Self::Captures => "captures",
             Self::AllocSize => "allocsize",
             Self::Dereferenceable => "dereferenceable",
             Self::DereferenceableOrNull => "dereferenceable_or_null",
             Self::StackAlignment => "alignstack",
-            Self::UWTable => "uwtable",
-            Self::VScaleRange => "vscale_range",
+            Self::UwTable => "uwtable",
+            Self::VscaleRange => "vscale_range",
             Self::Range => "range",
             Self::Memory => "memory",
+            Self::NoFpClass => "nofpclass",
+            Self::Initializes => "initializes",
             // Type
             Self::ByRef => "byref",
             Self::ByVal => "byval",
@@ -424,8 +618,8 @@ impl AttrKind {
                 | Self::Dereferenceable
                 | Self::DereferenceableOrNull
                 | Self::StackAlignment
-                | Self::UWTable
-                | Self::VScaleRange
+                | Self::UwTable
+                | Self::VscaleRange
         )
     }
 
@@ -453,6 +647,20 @@ impl AttrKind {
     pub const fn is_memory_kind(self) -> bool {
         matches!(self, Self::Memory)
     }
+
+    /// `true` for the floating-point class-mask payload attribute.
+    #[inline]
+    pub const fn is_fp_class_kind(self) -> bool {
+        matches!(self, Self::NoFpClass)
+    }
+
+    /// `true` for kinds whose payload is a list of integer constant ranges.
+    /// Mirrors `Attribute::isConstantRangeListAttrKind`.
+    #[inline]
+    pub const fn is_range_list_kind(self) -> bool {
+        matches!(self, Self::Initializes)
+    }
+
     /// `true` for plain enum / flag kinds (no payload).
     #[inline]
     pub const fn is_enum_kind(self) -> bool {
@@ -460,6 +668,8 @@ impl AttrKind {
             && !self.is_type_kind()
             && !self.is_range_kind()
             && !self.is_memory_kind()
+            && !self.is_fp_class_kind()
+            && !self.is_range_list_kind()
     }
 }
 
@@ -467,6 +677,93 @@ impl fmt::Display for AttrKind {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+// --------------------------------------------------------------------------
+// StrBoolAttrKind
+// --------------------------------------------------------------------------
+
+/// The string attributes `Attributes.td` declares as `StrBoolAttr`: string
+/// attributes whose value is a boolean spelled `"true"` / `"false"`.
+///
+/// This is a *reader* layer. Construction stays `Attribute::String { key,
+/// value }` — the string-attribute namespace is genuinely open (target
+/// dependent keys like `"target-features"` live alongside these), so only
+/// reading gains the typed spelling:
+/// [`FunctionValue::str_bool_attribute`](crate::function::FunctionValue::str_bool_attribute).
+/// Variants follow the `.td`'s declaration order. The two `ComplexStrAttr`
+/// declarations (`"denormal-fp-math"`, `"denormal-fp-math-f32"`) are not
+/// here — they are already typed via [`DenormalMode`](crate::DenormalMode)
+/// readers.
+///
+/// Marked `#[non_exhaustive]` so future upstream additions are non-breaking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum StrBoolAttrKind {
+    /// `"marked_for_windows_hot_patching"` (`MarkedForWindowsSecureHotPatching`).
+    MarkedForWindowsHotPatching,
+    /// `"allow_direct_access_in_hot_patch_function"`.
+    AllowDirectAccessInHotPatchFunction,
+    /// `"less-precise-fpmad"`.
+    LessPreciseFpmad,
+    /// `"no-infs-fp-math"`.
+    NoInfsFpMath,
+    /// `"no-nans-fp-math"`.
+    NoNansFpMath,
+    /// `"no-signed-zeros-fp-math"`.
+    NoSignedZerosFpMath,
+    /// `"no-jump-tables"`.
+    NoJumpTables,
+    /// `"no-inline-line-tables"`.
+    NoInlineLineTables,
+    /// `"profile-sample-accurate"`.
+    ProfileSampleAccurate,
+    /// `"use-sample-profile"`.
+    UseSampleProfile,
+    /// `"loader-replaceable"`.
+    LoaderReplaceable,
+}
+
+impl StrBoolAttrKind {
+    /// The attribute key exactly as `Attributes.td` spells it.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::MarkedForWindowsHotPatching => "marked_for_windows_hot_patching",
+            Self::AllowDirectAccessInHotPatchFunction => {
+                "allow_direct_access_in_hot_patch_function"
+            }
+            Self::LessPreciseFpmad => "less-precise-fpmad",
+            Self::NoInfsFpMath => "no-infs-fp-math",
+            Self::NoNansFpMath => "no-nans-fp-math",
+            Self::NoSignedZerosFpMath => "no-signed-zeros-fp-math",
+            Self::NoJumpTables => "no-jump-tables",
+            Self::NoInlineLineTables => "no-inline-line-tables",
+            Self::ProfileSampleAccurate => "profile-sample-accurate",
+            Self::UseSampleProfile => "use-sample-profile",
+            Self::LoaderReplaceable => "loader-replaceable",
+        }
+    }
+
+    /// The kind whose [`key`](Self::key) is `key`, or `None` when `key` is
+    /// not a `StrBoolAttr` declaration.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "marked_for_windows_hot_patching" => Self::MarkedForWindowsHotPatching,
+            "allow_direct_access_in_hot_patch_function" => {
+                Self::AllowDirectAccessInHotPatchFunction
+            }
+            "less-precise-fpmad" => Self::LessPreciseFpmad,
+            "no-infs-fp-math" => Self::NoInfsFpMath,
+            "no-nans-fp-math" => Self::NoNansFpMath,
+            "no-signed-zeros-fp-math" => Self::NoSignedZerosFpMath,
+            "no-jump-tables" => Self::NoJumpTables,
+            "no-inline-line-tables" => Self::NoInlineLineTables,
+            "profile-sample-accurate" => Self::ProfileSampleAccurate,
+            "use-sample-profile" => Self::UseSampleProfile,
+            "loader-replaceable" => Self::LoaderReplaceable,
+            _ => return None,
+        })
     }
 }
 
@@ -497,9 +794,366 @@ pub enum Attribute<'ctx, B: ModuleBrand> {
     },
     /// Exact function memory effects (`memory(read)`, `memory(argmem: read)`).
     Memory(MemoryEffects),
+    /// Floating-point classes the value is guaranteed not to be
+    /// (`nofpclass(nan inf)`). Mirrors `Attribute::getWithNoFPClass`.
+    ///
+    /// Upstream stores the mask as a plain integer payload and special-cases
+    /// its printing; here the payload is the [`FpClassTest`] it means, which
+    /// is the same shape [`Attribute::Memory`] already uses for
+    /// [`MemoryEffects`].
+    NoFpClass(FpClassTest),
+    /// `allocsize(N)` / `allocsize(N, M)` — which parameters give the
+    /// allocation's element size and, optionally, its element count.
+    ///
+    /// Upstream packs both into one `uint64_t` and reserves `-1` in the low
+    /// half to mean "absent" (`packAllocSizeArgs`). That reservation is a
+    /// storage trick, not semantics, so the absent case is an `Option` here
+    /// (design law 3) and the packing is not reproduced.
+    AllocSize {
+        /// Parameter index giving the size of one element.
+        element_size: u32,
+        /// Parameter index giving the number of elements, if the attribute
+        /// names one.
+        element_count: Option<u32>,
+    },
+    /// `vscale_range(min)` / `vscale_range(min, max)` — bounds on `vscale`.
+    ///
+    /// Upstream reserves `0` in the packed max to mean "unbounded", and
+    /// `parseVScaleRangeArguments` defaults a missing max to *min*, not to
+    /// unbounded — the two are different states and only the `Option` keeps
+    /// them apart.
+    VScaleRange {
+        /// Smallest `vscale` the function supports.
+        min: u32,
+        /// Largest `vscale`, or `None` for unbounded.
+        max: Option<u32>,
+    },
+    /// `allockind("alloc,zeroed")` — what an allocator function does.
+    AllocKind(AllocFnKind),
+    /// `captures(address, ret: provenance)` — which components of a pointer
+    /// parameter a call may capture.
+    Captures(CaptureInfo),
+    /// `initializes((-4, 0), (4, 8))` — the byte ranges, relative to the
+    /// pointer argument, that the callee writes before any read of them.
+    ///
+    /// The payload is the checked [`ConstantRangeList`], not a bare `Vec`, so
+    /// an unordered or overlapping list cannot reach the variant.
+    Initializes(ConstantRangeList),
     /// Free-form key=value string attribute. Used for target-dependent
     /// attributes (`"target-features"`, `"frame-pointer"`, ...).
     String { key: String, value: String },
+}
+
+/// Which components of a pointer a call may capture. Mirrors
+/// `enum class CaptureComponents` in `llvm/include/llvm/Support/ModRef.h`.
+///
+/// This is a **lattice, not four independent flags**: `ADDRESS` literally
+/// contains `ADDRESS_IS_NULL`'s bit, and `PROVENANCE` contains
+/// `READ_PROVENANCE`'s. Spelling it as a masked newtype rather than four
+/// bools is what makes the invariant-violating states unrepresentable —
+/// "captures the address but not whether it is null" cannot be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CaptureComponents(u8);
+
+impl CaptureComponents {
+    /// Captures nothing.
+    pub const NONE: Self = Self(0);
+    /// Captures only whether the address is null.
+    pub const ADDRESS_IS_NULL: Self = Self(1 << 0);
+    /// Captures the address — which subsumes capturing its nullness.
+    pub const ADDRESS: Self = Self((1 << 1) | 1);
+    /// Captures provenance for reads only.
+    pub const READ_PROVENANCE: Self = Self(1 << 2);
+    /// Captures full provenance — which subsumes read provenance.
+    pub const PROVENANCE: Self = Self((1 << 3) | (1 << 2));
+    /// Captures everything.
+    pub const ALL: Self = Self(0b1111);
+
+    /// Mirrors `capturesNothing`.
+    #[must_use]
+    pub const fn captures_nothing(self) -> bool {
+        self.0 == 0
+    }
+    /// Mirrors `capturesAnything`.
+    #[must_use]
+    pub const fn captures_anything(self) -> bool {
+        self.0 != 0
+    }
+    /// Mirrors `capturesAddressIsNullOnly`.
+    #[must_use]
+    pub const fn captures_address_is_null_only(self) -> bool {
+        self.0 & Self::ADDRESS.0 == Self::ADDRESS_IS_NULL.0
+    }
+    /// Mirrors `capturesAddress`.
+    #[must_use]
+    pub const fn captures_address(self) -> bool {
+        self.0 & Self::ADDRESS.0 != 0
+    }
+    /// Mirrors `capturesReadProvenanceOnly`.
+    #[must_use]
+    pub const fn captures_read_provenance_only(self) -> bool {
+        self.0 & Self::PROVENANCE.0 == Self::READ_PROVENANCE.0
+    }
+    /// Mirrors `capturesFullProvenance`.
+    #[must_use]
+    pub const fn captures_full_provenance(self) -> bool {
+        self.0 & Self::PROVENANCE.0 == Self::PROVENANCE.0
+    }
+    /// Mirrors `capturesAnyProvenance`.
+    #[must_use]
+    pub const fn captures_any_provenance(self) -> bool {
+        self.0 & Self::PROVENANCE.0 != 0
+    }
+    /// Mirrors `capturesAll`.
+    #[must_use]
+    pub const fn captures_all(self) -> bool {
+        self.0 == Self::ALL.0
+    }
+
+    /// The component one `captures` word names.
+    #[must_use]
+    pub fn from_keyword(word: &str) -> Option<Self> {
+        match word {
+            "none" => Some(Self::NONE),
+            "address_is_null" => Some(Self::ADDRESS_IS_NULL),
+            "address" => Some(Self::ADDRESS),
+            "read_provenance" => Some(Self::READ_PROVENANCE),
+            "provenance" => Some(Self::PROVENANCE),
+            _ => None,
+        }
+    }
+}
+
+impl core::ops::BitOr for CaptureComponents {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for CaptureComponents {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl fmt::Display for CaptureComponents {
+    /// Mirrors `operator<<(raw_ostream &, CaptureComponents)`.
+    ///
+    /// The two provenance tests are **not** `else if` in upstream, and the
+    /// separator is `", "`. A value of `0b1000` — reachable only from a raw
+    /// integer payload, never from the parser — prints as the empty string,
+    /// because `capturesNothing` is false but neither provenance predicate
+    /// fires. That is upstream's behaviour and is left alone.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.captures_nothing() {
+            return f.write_str("none");
+        }
+        let mut first = true;
+        let mut sep = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            Ok(())
+        };
+        if self.captures_address_is_null_only() {
+            sep(f)?;
+            f.write_str("address_is_null")?;
+        } else if self.captures_address() {
+            sep(f)?;
+            f.write_str("address")?;
+        }
+        if self.captures_read_provenance_only() {
+            sep(f)?;
+            f.write_str("read_provenance")?;
+        }
+        if self.captures_full_provenance() {
+            sep(f)?;
+            f.write_str("provenance")?;
+        }
+        Ok(())
+    }
+}
+
+/// What a call captures, split into the return value and everything else.
+/// Mirrors `class CaptureInfo` in `llvm/include/llvm/Support/ModRef.h`.
+///
+/// Named fields rather than upstream's positional `(Other, Ret)` constructor,
+/// which is easy to transpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CaptureInfo {
+    /// What is captured other than through the return value.
+    pub other: CaptureComponents,
+    /// What is captured through the return value.
+    pub ret: CaptureComponents,
+}
+
+impl CaptureInfo {
+    /// Captures nothing at all. Mirrors `CaptureInfo::none`.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            other: CaptureComponents::NONE,
+            ret: CaptureComponents::NONE,
+        }
+    }
+
+    /// Captures everything. Mirrors `CaptureInfo::all`.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            other: CaptureComponents::ALL,
+            ret: CaptureComponents::ALL,
+        }
+    }
+
+    /// Captures only through the return value. Mirrors `CaptureInfo::retOnly`.
+    #[must_use]
+    pub const fn ret_only(ret: CaptureComponents) -> Self {
+        Self {
+            other: CaptureComponents::NONE,
+            ret,
+        }
+    }
+
+    /// Everything captured either way. Upstream spells this as an *implicit*
+    /// conversion to `CaptureComponents`; here it is explicit.
+    #[must_use]
+    pub fn union_components(self) -> CaptureComponents {
+        self.other | self.ret
+    }
+
+    /// The attribute payload encoding. Mirrors `CaptureInfo::toIntValue`.
+    #[must_use]
+    pub const fn to_int_value(self) -> u64 {
+        ((self.other.0 as u64) << 4) | (self.ret.0 as u64)
+    }
+
+    /// Mirrors `CaptureInfo::createFromIntValue`.
+    #[must_use]
+    pub const fn from_int_value(value: u64) -> Self {
+        Self {
+            other: CaptureComponents(((value >> 4) & 0xf) as u8),
+            ret: CaptureComponents((value & 0xf) as u8),
+        }
+    }
+}
+
+impl fmt::Display for CaptureInfo {
+    /// Mirrors `operator<<(raw_ostream &, CaptureInfo)`, which is also what
+    /// `Attribute::getAsString` emits for this attribute — the `captures`
+    /// keyword and its parens come from here, not from the attribute-name
+    /// table.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("captures(")?;
+        let mut first = true;
+        if self.other.captures_anything() || self.other == self.ret {
+            write!(f, "{}", self.other)?;
+            first = false;
+        }
+        if self.other != self.ret {
+            if !first {
+                f.write_str(", ")?;
+            }
+            write!(f, "ret: {}", self.ret)?;
+        }
+        f.write_str(")")
+    }
+}
+
+/// What an allocator function does, as `allockind("…")` spells it. Mirrors
+/// `enum class AllocFnKind` in `llvm/include/llvm/IR/Attributes.h`, which is
+/// a bitmask: a function may be several of these at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct AllocFnKind(u8);
+
+impl AllocFnKind {
+    /// No kind named. Upstream's `Unknown`, and the value
+    /// `LLParser::parseAllocKind` rejects an empty list for.
+    pub const UNKNOWN: Self = Self(0);
+    /// Returns a new allocation.
+    pub const ALLOC: Self = Self(1 << 0);
+    /// Resizes the `allocptr` argument.
+    pub const REALLOC: Self = Self(1 << 1);
+    /// Frees the `allocptr` argument.
+    pub const FREE: Self = Self(1 << 2);
+    /// Returns uninitialized memory.
+    pub const UNINITIALIZED: Self = Self(1 << 3);
+    /// Returns zeroed memory.
+    pub const ZEROED: Self = Self(1 << 4);
+    /// Aligns allocations per the `allocalign` argument.
+    pub const ALIGNED: Self = Self(1 << 5);
+
+    /// The `.ll` spelling of each kind, in the order
+    /// `Attribute::getAsString` emits them — which is the declaration order,
+    /// not the order they were written in the source.
+    const NAMED: &'static [(Self, &'static str)] = &[
+        (Self::ALLOC, "alloc"),
+        (Self::REALLOC, "realloc"),
+        (Self::FREE, "free"),
+        (Self::UNINITIALIZED, "uninitialized"),
+        (Self::ZEROED, "zeroed"),
+        (Self::ALIGNED, "aligned"),
+    ];
+
+    /// The kind one `allockind` word names, or `None` if it names none.
+    #[must_use]
+    pub fn from_keyword(word: &str) -> Option<Self> {
+        Self::NAMED
+            .iter()
+            .find(|(_, name)| *name == word)
+            .map(|(kind, _)| *kind)
+    }
+
+    /// Whether every kind in `other` is set here.
+    #[must_use]
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether no kind is named — upstream's `== AllocFnKind::Unknown`.
+    #[must_use]
+    pub fn is_unknown(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The kinds set here, in `getAsString` order.
+    pub fn keywords(self) -> impl Iterator<Item = &'static str> {
+        Self::NAMED
+            .iter()
+            .filter(move |(kind, _)| self.contains(*kind))
+            .map(|(_, name)| *name)
+    }
+}
+
+impl core::ops::BitOr for AllocFnKind {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for AllocFnKind {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl fmt::Display for AllocFnKind {
+    /// The quoted, comma-joined body of `allockind("…")`, matching
+    /// `Attribute::getAsString`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for name in self.keywords() {
+            if !first {
+                f.write_str(",")?;
+            }
+            first = false;
+            f.write_str(name)?;
+        }
+        Ok(())
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
@@ -555,6 +1209,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
         Some(Self::Range { ty, lower, upper })
     }
 
+    /// Construct an `initializes` attribute. Returns `None` when the ranges
+    /// are unordered or overlapping — the condition
+    /// `ConstantRangeList::getConstantRangeList` reports as `std::nullopt` and
+    /// `LLParser::parseInitializesAttr` renders as
+    /// `Invalid (unordered or overlapping) range list`.
+    pub fn initializes(ranges: Vec<ConstantRange>) -> Option<Self> {
+        ConstantRangeList::new(ranges).map(Self::Initializes)
+    }
+
     /// Construct a string key=value attribute. Always valid.
     pub fn string<Key, ValueText>(key: Key, value: ValueText) -> Self
     where
@@ -579,6 +1242,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
             Self::Enum(k) | Self::Int(k, _) | Self::Type(k, _) => Some(*k),
             Self::Range { .. } => Some(AttrKind::Range),
             Self::Memory(_) => Some(AttrKind::Memory),
+            Self::NoFpClass(_) => Some(AttrKind::NoFpClass),
+            Self::AllocSize { .. } => Some(AttrKind::AllocSize),
+            Self::VScaleRange { .. } => Some(AttrKind::VscaleRange),
+            Self::AllocKind(_) => Some(AttrKind::AllocKind),
+            Self::Captures(_) => Some(AttrKind::Captures),
+            Self::Initializes(_) => Some(AttrKind::Initializes),
             Self::String { .. } => None,
         }
     }
@@ -591,20 +1260,101 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
             Self::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+            Self::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(k, t) => write!(f, "{}({t})", k.name()),
             Self::Range { ty, lower, upper } => write!(
                 f,
                 "range({ty} {}, {})",
-                lower.to_string_radix(10, crate::ApIntSignedness::Signed),
-                upper.to_string_radix(10, crate::ApIntSignedness::Signed)
+                lower.to_string_radix(10, crate::Signedness::Signed),
+                upper.to_string_radix(10, crate::Signedness::Signed)
             ),
+            Self::AllocSize {
+                element_size,
+                element_count: Some(count),
+            } => write!(f, "allocsize({element_size},{count})"),
+            Self::AllocSize {
+                element_size,
+                element_count: None,
+            } => write!(f, "allocsize({element_size})"),
+            Self::VScaleRange { min, max } => {
+                write!(f, "vscale_range({min},{})", max.unwrap_or(0))
+            }
+            Self::AllocKind(kind) => write!(f, "allockind(\"{kind}\")"),
+            Self::Captures(info) => write!(f, "{info}"),
+            Self::Initializes(ranges) => write!(f, "initializes({ranges})"),
             Self::Memory(effects) => write!(f, "{effects}"),
+            Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
+    }
+}
+
+/// The class names `nofpclass`'s mask prints as, in the order upstream
+/// consumes them.
+///
+/// Ports `NoFPClassName` (`llvm/lib/Support/FloatingPointMode.cpp`), whose own
+/// comment gives the rule: "Every bitfield has a unique name and one or more
+/// aliasing names that cover multiple bits. Names should be listed in order of
+/// preference, with higher popcounts listed first. Bits are consumed as
+/// printed."
+///
+/// **This is deliberately not the parser's keyword order.** `keywordToFPClassTest`
+/// lists `norm` before `sub` before `zero`; printing goes `zero`, `sub`, `norm`.
+/// Printing in parse order would emit a mask that re-parses to the same value
+/// but does not match `clang`'s bytes, which the round-trip tests would catch
+/// and a parse-only test would not.
+const NO_FP_CLASS_NAMES: &[(FpClassTest, &str)] = &[
+    (FpClassTest::ALL, "all"),
+    (FpClassTest::NAN, "nan"),
+    (FpClassTest::SIGNALING_NAN, "snan"),
+    (FpClassTest::QUIET_NAN, "qnan"),
+    (FpClassTest::INFINITY, "inf"),
+    (FpClassTest::NEGATIVE_INFINITY, "ninf"),
+    (FpClassTest::POSITIVE_INFINITY, "pinf"),
+    (FpClassTest::ZERO, "zero"),
+    (FpClassTest::NEGATIVE_ZERO, "nzero"),
+    (FpClassTest::POSITIVE_ZERO, "pzero"),
+    (FpClassTest::SUBNORMAL, "sub"),
+    (FpClassTest::NEGATIVE_SUBNORMAL, "nsub"),
+    (FpClassTest::POSITIVE_SUBNORMAL, "psub"),
+    (FpClassTest::NORMAL, "norm"),
+    (FpClassTest::NEGATIVE_NORMAL, "nnorm"),
+    (FpClassTest::POSITIVE_NORMAL, "pnorm"),
+];
+
+/// Renders a `nofpclass` mask as its space-separated class names.
+///
+/// Ports `operator<<(raw_ostream &, FPClassTest)`. An empty mask prints as
+/// `none`, which upstream also accepts back.
+struct FpClassMaskNames(FpClassTest);
+
+impl fmt::Display for FpClassMaskNames {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut remaining = self.0;
+        if remaining.is_none() {
+            return f.write_str("none");
+        }
+        let mut first = true;
+        for (bits, name) in NO_FP_CLASS_NAMES {
+            if !remaining.contains(*bits) {
+                continue;
+            }
+            if !first {
+                f.write_str(" ")?;
+            }
+            f.write_str(name)?;
+            first = false;
+            // Clear the bits so no aliasing name prints them again.
+            remaining = remaining.difference(*bits);
+        }
+        debug_assert!(
+            remaining.is_none(),
+            "every nofpclass bit has a name in NO_FP_CLASS_NAMES"
+        );
+        Ok(())
     }
 }
 
@@ -705,6 +1455,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> FromIterator<Attribute<'ctx, B>> for Attribute
     }
 }
 
+/// `for attr in &set` — the borrowing counterpart of the
+/// [`FromIterator`] impl above, yielding exactly what
+/// [`AttributeSet::iter`] does.
+impl<'a, 'ctx, B: ModuleBrand + 'ctx> IntoIterator for &'a AttributeSet<'ctx, B> {
+    type Item = &'a Attribute<'ctx, B>;
+    type IntoIter = core::slice::Iter<'a, Attribute<'ctx, B>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.attrs.iter()
+    }
+}
+
 // --------------------------------------------------------------------------
 // AttributeList
 // --------------------------------------------------------------------------
@@ -750,7 +1512,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
 
     /// Mutably borrow the set at `index`, creating an empty entry if
     /// none exists.
-    pub fn get_mut_or_default(&mut self, index: AttrIndex) -> &mut AttributeSet<'ctx, B> {
+    pub fn or_default_mut(&mut self, index: AttrIndex) -> &mut AttributeSet<'ctx, B> {
         if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
             return &mut self.entries[pos].1;
         }
@@ -762,14 +1524,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
     }
 
     /// Add `attr` at `index`. Convenience wrapper around
-    /// [`get_mut_or_default`](Self::get_mut_or_default).
+    /// [`or_default_mut`](Self::or_default_mut).
     pub fn add(&mut self, index: AttrIndex, attr: Attribute<'ctx, B>) {
-        self.get_mut_or_default(index).add(attr);
+        self.or_default_mut(index).add(attr);
     }
 
     /// `true` if no index has any attributes.
     pub fn is_empty(&self) -> bool {
         self.entries.iter().all(|(_, s)| s.is_empty())
+    }
+}
+
+/// The projection [`AttributeList`]'s borrowing iterator applies: a stored
+/// entry becomes the `(index, set)` pair [`AttributeList::iter`] yields.
+///
+/// Spelled as a `fn` pointer, and named, because `IntoIterator::IntoIter` is
+/// an associated *type*: a closure's own type is unnameable and `impl Trait`
+/// is not allowed there.
+type AttributeListEntryProjection<'a, 'ctx, B> =
+    fn(&'a (AttrIndex, AttributeSet<'ctx, B>)) -> (AttrIndex, &'a AttributeSet<'ctx, B>);
+
+/// `for (index, set) in &list` — yields exactly what
+/// [`AttributeList::iter`] does.
+impl<'a, 'ctx, B: ModuleBrand + 'ctx> IntoIterator for &'a AttributeList<'ctx, B> {
+    type Item = (AttrIndex, &'a AttributeSet<'ctx, B>);
+    type IntoIter = core::iter::Map<
+        core::slice::Iter<'a, (AttrIndex, AttributeSet<'ctx, B>)>,
+        AttributeListEntryProjection<'a, 'ctx, B>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        // The annotation is what coerces the closure to the `fn` pointer.
+        let project: AttributeListEntryProjection<'a, 'ctx, B> = |(index, set)| (*index, set);
+        self.entries.iter().map(project)
     }
 }
 
@@ -794,6 +1581,18 @@ pub(super) enum AttributeStored {
         upper: ApInt,
     },
     Memory(MemoryEffects),
+    NoFpClass(FpClassTest),
+    AllocSize {
+        element_size: u32,
+        element_count: Option<u32>,
+    },
+    VScaleRange {
+        min: u32,
+        max: Option<u32>,
+    },
+    AllocKind(AllocFnKind),
+    Captures(CaptureInfo),
+    Initializes(ConstantRangeList),
     String {
         key: String,
         value: String,
@@ -813,7 +1612,36 @@ impl AttributeStored {
                 upper,
             },
             Attribute::Memory(effects) => Self::Memory(effects),
+            Attribute::NoFpClass(mask) => Self::NoFpClass(mask),
+            Attribute::AllocSize {
+                element_size,
+                element_count,
+            } => Self::AllocSize {
+                element_size,
+                element_count,
+            },
+            Attribute::VScaleRange { min, max } => Self::VScaleRange { min, max },
+            Attribute::AllocKind(kind) => Self::AllocKind(kind),
+            Attribute::Captures(info) => Self::Captures(info),
+            Attribute::Initializes(ranges) => Self::Initializes(ranges),
             Attribute::String { key, value } => Self::String { key, value },
+        }
+    }
+
+    /// Enum kind, or `None` for string attributes. The storage-side twin of
+    /// [`Attribute::kind`].
+    pub(super) fn kind(&self) -> Option<AttrKind> {
+        match self {
+            Self::Enum(k) | Self::Int(k, _) | Self::Type(k, _) => Some(*k),
+            Self::Range { .. } => Some(AttrKind::Range),
+            Self::Memory(_) => Some(AttrKind::Memory),
+            Self::NoFpClass(_) => Some(AttrKind::NoFpClass),
+            Self::AllocSize { .. } => Some(AttrKind::AllocSize),
+            Self::VScaleRange { .. } => Some(AttrKind::VscaleRange),
+            Self::AllocKind(_) => Some(AttrKind::AllocKind),
+            Self::Captures(_) => Some(AttrKind::Captures),
+            Self::Initializes(_) => Some(AttrKind::Initializes),
+            Self::String { .. } => None,
         }
     }
 }
@@ -822,13 +1650,31 @@ impl fmt::Display for AttributeStored {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
             Self::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+            Self::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(_, _) | Self::Range { .. } => {
                 unreachable!("typed attributes need a module context to print")
             }
             Self::Memory(effects) => write!(f, "{effects}"),
+            Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
+            // `Attribute::getAsString` writes both `allocsize` arguments with
+            // no space after the comma, and prints an unbounded
+            // `vscale_range` max as `0` — the value it reserves for it.
+            Self::AllocSize {
+                element_size,
+                element_count: Some(count),
+            } => write!(f, "allocsize({element_size},{count})"),
+            Self::AllocSize {
+                element_size,
+                element_count: None,
+            } => write!(f, "allocsize({element_size})"),
+            Self::VScaleRange { min, max } => {
+                write!(f, "vscale_range({min},{})", max.unwrap_or(0))
+            }
+            Self::AllocKind(kind) => write!(f, "allockind(\"{kind}\")"),
+            Self::Captures(info) => write!(f, "{info}"),
+            Self::Initializes(ranges) => write!(f, "initializes({ranges})"),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
@@ -864,11 +1710,56 @@ impl AttributeStorage {
         self.entries.push((index, vec![stored]));
     }
 
+    /// Insert `attr` at `index`, **replacing** any attribute already stored
+    /// there with the same kind (or, for a string attribute, the same key).
+    ///
+    /// Ports the `std::swap(*It, Attr)` branch of `addAttributeImpl`
+    /// (`lib/IR/Attributes.cpp`), which is what every `AttrBuilder::add*`
+    /// goes through — an `AttrBuilder` can never hold two attributes of one
+    /// kind. [`Self::add`] keeps its weaker structural de-duplication; the
+    /// difference is observable and recorded in `docs/future-work.md`.
+    pub fn set<B: ModuleBrand>(&mut self, index: AttrIndex, attr: Attribute<'_, B>) {
+        let stored = AttributeStored::from_attribute(attr);
+        let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) else {
+            self.entries.push((index, vec![stored]));
+            return;
+        };
+        let set = &mut self.entries[pos].1;
+        let same_slot = set.iter().position(|existing| match (&stored, existing) {
+            (AttributeStored::String { key: new_key, .. }, AttributeStored::String { key, .. }) => {
+                new_key == key
+            }
+            _ => stored.kind().is_some() && stored.kind() == existing.kind(),
+        });
+        match same_slot {
+            Some(slot) => set[slot] = stored,
+            None => set.push(stored),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.iter().all(|(_, attrs)| attrs.is_empty())
     }
 
     /// `true` if every stored attribute here is also present in `other`.
+    /// The `nofpclass` mask recorded at `index`, if one is.
+    ///
+    /// Ports `AttributeList::getRetNoFPClass` and
+    /// `AttributeList::getParamNoFPClass`, which are the two spellings
+    /// `computeKnownFPClass` reads. Answers the mask itself rather than the
+    /// stored attribute, so the crate-private storage type stays private.
+    pub fn no_fp_class(&self, index: AttrIndex) -> Option<FpClassTest> {
+        self.entries
+            .iter()
+            .find(|(stored_index, _)| *stored_index == index)?
+            .1
+            .iter()
+            .find_map(|attr| match attr {
+                AttributeStored::NoFpClass(mask) => Some(*mask),
+                _ => None,
+            })
+    }
+
     pub fn is_subset_of(&self, other: &Self) -> bool {
         self.entries.iter().all(|(index, attrs)| {
             other
@@ -937,6 +1828,41 @@ impl AttributeStorage {
             .iter()
             .find_map(|(i, set)| (*i == index).then_some(set.as_slice()))
     }
+
+    /// `true` when an attribute of `kind` is recorded at `index`.
+    ///
+    /// Ports `AttributeList::hasParamAttr` / `hasFnAttr` for the enum-kind
+    /// spelling, which `LLParser::parseFunctionHeader` asks of parameter 0 to
+    /// enforce `functions with 'sret' argument must return void`.
+    pub fn has_kind(&self, index: AttrIndex, kind: AttrKind) -> bool {
+        self.get(index)
+            .is_some_and(|attrs| attrs.iter().any(|attr| attr.kind() == Some(kind)))
+    }
+
+    /// The integer payload recorded at `index` for an integer-flavoured
+    /// `kind`, if one is.
+    ///
+    /// Ports the `AttrBuilder` getters that read a single integer attribute
+    /// back out — `getAlignment`, `getStackAlignment` and friends in
+    /// `lib/IR/Attributes.cpp` — which `LLParser::parseFunctionHeader` needs
+    /// to move a parsed `align` from the attribute list into the function's
+    /// alignment field.
+    pub fn int_value(&self, index: AttrIndex, kind: AttrKind) -> Option<u64> {
+        self.get(index)?.iter().find_map(|attr| match attr {
+            AttributeStored::Int(k, v) if *k == kind => Some(*v),
+            _ => None,
+        })
+    }
+
+    /// Drop every attribute of `kind` at `index`.
+    ///
+    /// Ports `AttrBuilder::removeAttribute(Attribute::AttrKind)`, whose one
+    /// in-tree caller is the same alignment move.
+    pub fn remove(&mut self, index: AttrIndex, kind: AttrKind) {
+        if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
+            self.entries[pos].1.retain(|attr| attr.kind() != Some(kind));
+        }
+    }
 }
 
 /// Upstream provenance: mirrors `class Attribute` / `AttributeSet` /
@@ -975,13 +1901,16 @@ mod tests {
     /// in `lib/IR/Attributes.cpp`, extended for `RangeAttr` and `Memory`.
     #[test]
     fn kind_partition_is_total() {
-        // Every variant is exactly one of enum/int/type/range/memory.
+        // Every variant is exactly one of
+        // enum/int/type/range/memory/fp-class/range-list.
         let kinds = [
             AttrKind::AlwaysInline,
             AttrKind::Alignment,
             AttrKind::ByVal,
             AttrKind::Range,
             AttrKind::Memory,
+            AttrKind::NoFpClass,
+            AttrKind::Initializes,
         ];
         for k in kinds {
             let categories = [
@@ -990,6 +1919,8 @@ mod tests {
                 k.is_type_kind(),
                 k.is_range_kind(),
                 k.is_memory_kind(),
+                k.is_fp_class_kind(),
+                k.is_range_list_kind(),
             ];
             assert_eq!(
                 categories.into_iter().filter(|category| *category).count(),

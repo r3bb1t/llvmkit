@@ -1,6 +1,6 @@
-; llvmkit-specific subset of llvm/test/Assembler/inline-asm-constraint-error.ll.
-; Upstream checks full inline-asm constraint ordering diagnostics; llvmkit
-; currently models the callbr label-constraint count invariant.
+; llvmkit-authored: the callbr twin of the file beside it, reaching
+; Verifier::verifyInlineAsmCall's "Number of label constraints does not match
+; number of callbr dests" — one indirect destination, no label constraint.
 
 define void @foo() {
   callbr void asm sideeffect "", ""()

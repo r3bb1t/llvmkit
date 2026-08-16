@@ -4,11 +4,34 @@
 
 use crate::ap_int::ApInt;
 use crate::constants::ConstantIntValue;
+use crate::instr_types::{
+    AddFlags, AshrFlags, LshrFlags, OverflowFlags, SdivFlags, ShlFlags, SubFlags, UdivFlags,
+};
 use crate::int_width::IntWidth;
 use crate::module::ModuleBrand;
 use crate::{IrError, IrResult};
 use core::fmt;
 use core::ops::Not;
+
+/// Which twin [`KnownBits::compute_for_add_sub`] computes. Ports the
+/// `bool Add` parameter of `KnownBits::computeForAddSub` (`KnownBits.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AddSubOperation {
+    Add,
+    Sub,
+}
+
+/// Whether the caller has independently proven a shift amount non-zero.
+/// Ports the `ShAmtNonZero` parameter of `KnownBits::shl` / `lshr` / `ashr`
+/// (`KnownBits.h`). Deliberately not part of [`ShlFlags`] /
+/// [`LshrFlags`] / [`AshrFlags`]: no `.ll` keyword spells it — it is an
+/// analysis-side fact, not an IR flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ShiftAmountKnowledge {
+    #[default]
+    MaybeZero,
+    NonZero,
+}
 
 /// Struct for tracking known zeros and ones of a value.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -244,6 +267,18 @@ impl KnownBits {
         self.zero.is_zero() && self.one.is_zero()
     }
 
+    /// Returns true if the sign bit is not known either way. Mirrors
+    /// `KnownBits::isSignUnknown`.
+    ///
+    /// The masks are read directly, as upstream does, rather than spelled
+    /// `!is_negative() && !is_non_negative()`: those two answer `false` for a
+    /// zero-width value, which would make this answer `true` for a value that
+    /// has no sign bit at all.
+    #[inline]
+    pub fn is_sign_unknown(&self) -> bool {
+        !self.zero.is_negative() && !self.one.is_negative()
+    }
+
     /// Returns true if every bit has a known value.
     #[inline]
     pub fn is_constant(&self) -> bool {
@@ -466,6 +501,13 @@ impl KnownBits {
         self.one = ApInt::zero(self.bit_width());
     }
 
+    /// Make every bit known to be one, discarding what was known before.
+    /// Mirrors `KnownBits::setAllOnes`.
+    pub fn set_all_ones(&mut self) {
+        self.zero = ApInt::zero(self.bit_width());
+        self.one = ApInt::all_ones(self.bit_width());
+    }
+
     pub fn set_all_conflict(&mut self) {
         self.zero = ApInt::all_ones(self.bit_width());
         self.one = ApInt::all_ones(self.bit_width());
@@ -479,8 +521,41 @@ impl KnownBits {
         self.one.set_bit(bit);
     }
 
+    /// Add every set bit of `bits` to the known-one mask. Spells upstream's
+    /// `Known.One |= X`.
+    pub(crate) fn add_known_one_bits(&mut self, bits: &ApInt) {
+        self.one = self.one.bitor(bits);
+    }
+
+    /// Add every set bit of `bits` to the known-zero mask. Spells upstream's
+    /// `Known.Zero |= X`.
+    pub(crate) fn add_known_zero_bits(&mut self, bits: &ApInt) {
+        self.zero = self.zero.bitor(bits);
+    }
+
     pub(crate) fn set_known_zero_bits_from(&mut self, bit: u32) {
         self.zero.set_bits_from(bit);
+    }
+
+    /// Mark the low `count` bits known-zero. Spells upstream's
+    /// `Known.Zero.setLowBits(count)`.
+    #[inline]
+    pub fn mark_low_bits_zero(&mut self, count: u32) {
+        self.zero.set_low_bits(count);
+    }
+
+    /// Mark the high `count` bits known-zero. Spells upstream's
+    /// `Known.Zero.setHighBits(count)`.
+    #[inline]
+    pub fn mark_high_bits_zero(&mut self, count: u32) {
+        self.zero.set_high_bits(count);
+    }
+
+    /// Mark the high `count` bits known-one. Spells upstream's
+    /// `Known.One.setHighBits(count)`.
+    #[inline]
+    pub fn mark_high_bits_one(&mut self, count: u32) {
+        self.one.set_high_bits(count);
     }
 
     pub fn make_negative(&mut self) {
@@ -544,7 +619,7 @@ impl KnownBits {
     /// Add transfer.
     #[inline]
     pub fn add(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::add_with_flags(lhs, rhs, false, false)
+        Self::add_with_flags(lhs, rhs, AddFlags::new())
     }
 
     pub fn compute_for_add_carry(lhs: &KnownBits, rhs: &KnownBits, carry: &KnownBits) -> KnownBits {
@@ -555,13 +630,18 @@ impl KnownBits {
     }
 
     pub fn compute_for_add_sub(
-        add: bool,
-        nsw: bool,
-        nuw: bool,
+        operation: AddSubOperation,
+        flags: OverflowFlags,
         lhs: &KnownBits,
         rhs: &KnownBits,
     ) -> KnownBits {
-        compute_for_add_sub_impl(add, nsw, nuw, lhs, rhs)
+        compute_for_add_sub_impl(
+            matches!(operation, AddSubOperation::Add),
+            flags.nsw,
+            flags.nuw,
+            lhs,
+            rhs,
+        )
     }
 
     pub fn compute_for_sub_borrow(
@@ -576,18 +656,18 @@ impl KnownBits {
         compute_for_add_carry_raw(lhs, &rhs, borrow.one.bool_value(), borrow.zero.bool_value())
     }
 
-    pub fn add_with_flags(lhs: &KnownBits, rhs: &KnownBits, nsw: bool, nuw: bool) -> KnownBits {
-        Self::compute_for_add_sub(true, nsw, nuw, lhs, rhs)
+    pub fn add_with_flags(lhs: &KnownBits, rhs: &KnownBits, flags: AddFlags) -> KnownBits {
+        compute_for_add_sub_impl(true, flags.nsw, flags.nuw, lhs, rhs)
     }
 
     /// Sub transfer.
     #[inline]
     pub fn sub(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::sub_with_flags(lhs, rhs, false, false)
+        Self::sub_with_flags(lhs, rhs, SubFlags::new())
     }
 
-    pub fn sub_with_flags(lhs: &KnownBits, rhs: &KnownBits, nsw: bool, nuw: bool) -> KnownBits {
-        Self::compute_for_add_sub(false, nsw, nuw, lhs, rhs)
+    pub fn sub_with_flags(lhs: &KnownBits, rhs: &KnownBits, flags: SubFlags) -> KnownBits {
+        compute_for_add_sub_impl(false, flags.nsw, flags.nuw, lhs, rhs)
     }
 
     /// Multiply transfer.
@@ -625,61 +705,84 @@ impl KnownBits {
     /// Shift-left transfer.
     #[inline]
     pub fn shl(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::shl_with_flags(lhs, rhs, false, false, false)
+        Self::shl_with_flags(lhs, rhs, ShlFlags::new(), ShiftAmountKnowledge::MaybeZero)
     }
 
     pub fn shl_with_flags(
         lhs: &KnownBits,
         rhs: &KnownBits,
-        nuw: bool,
-        nsw: bool,
-        shift_amount_non_zero: bool,
+        flags: ShlFlags,
+        shift_amount: ShiftAmountKnowledge,
     ) -> KnownBits {
-        compute_for_shl(lhs, rhs, nuw, nsw, shift_amount_non_zero)
+        compute_for_shl(
+            lhs,
+            rhs,
+            flags.nuw,
+            flags.nsw,
+            matches!(shift_amount, ShiftAmountKnowledge::NonZero),
+        )
     }
 
     /// Logical-shift-right transfer.
     #[inline]
     pub fn lshr(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::lshr_with_flags(lhs, rhs, false, false)
+        Self::lshr_with_flags(lhs, rhs, LshrFlags::new(), ShiftAmountKnowledge::MaybeZero)
     }
 
     pub fn lshr_with_flags(
         lhs: &KnownBits,
         rhs: &KnownBits,
-        shift_amount_non_zero: bool,
-        exact: bool,
+        flags: LshrFlags,
+        shift_amount: ShiftAmountKnowledge,
     ) -> KnownBits {
-        compute_for_lshr(lhs, rhs, shift_amount_non_zero, exact)
+        compute_for_lshr(
+            lhs,
+            rhs,
+            matches!(shift_amount, ShiftAmountKnowledge::NonZero),
+            flags.exact,
+        )
     }
 
     /// Arithmetic-shift-right transfer.
     #[inline]
     pub fn ashr(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::ashr_with_flags(lhs, rhs, false, false)
+        Self::ashr_with_flags(lhs, rhs, AshrFlags::new(), ShiftAmountKnowledge::MaybeZero)
     }
 
     pub fn ashr_with_flags(
         lhs: &KnownBits,
         rhs: &KnownBits,
-        shift_amount_non_zero: bool,
-        exact: bool,
+        flags: AshrFlags,
+        shift_amount: ShiftAmountKnowledge,
     ) -> KnownBits {
-        compute_for_ashr(lhs, rhs, shift_amount_non_zero, exact)
+        compute_for_ashr(
+            lhs,
+            rhs,
+            matches!(shift_amount, ShiftAmountKnowledge::NonZero),
+            flags.exact,
+        )
     }
 
     /// Unsigned division transfer.
     #[inline]
     pub fn udiv(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::udiv_with_exact(lhs, rhs, false)
+        Self::udiv_with_exact(lhs, rhs, UdivFlags::new())
     }
 
-    pub fn udiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, exact: bool) -> KnownBits {
-        compute_for_udiv(lhs, rhs, exact)
+    pub fn udiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, flags: UdivFlags) -> KnownBits {
+        compute_for_udiv(lhs, rhs, flags.exact)
     }
 
-    pub fn sdiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, exact: bool) -> KnownBits {
-        compute_for_sdiv(lhs, rhs, exact)
+    /// Signed division transfer. The `exact`-taking twin of upstream's
+    /// defaulted `KnownBits::sdiv(LHS, RHS, Exact = false)`, spelled as a pair
+    /// so it matches [`Self::udiv`] / [`Self::udiv_with_exact`].
+    #[inline]
+    pub fn sdiv(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
+        Self::sdiv_with_exact(lhs, rhs, SdivFlags::new())
+    }
+
+    pub fn sdiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, flags: SdivFlags) -> KnownBits {
+        compute_for_sdiv(lhs, rhs, flags.exact)
     }
 
     /// Unsigned remainder transfer.
@@ -785,8 +888,11 @@ impl KnownBits {
         if rhs.min_value().uge(&lhs.max_value()) {
             return Self::sub(rhs, lhs);
         }
-        Self::sub_with_flags(lhs, rhs, false, true)
-            .intersect_with(&Self::sub_with_flags(rhs, lhs, false, true))
+        Self::sub_with_flags(lhs, rhs, SubFlags::new().nuw()).intersect_with(&Self::sub_with_flags(
+            rhs,
+            lhs,
+            SubFlags::new().nuw(),
+        ))
     }
 
     /// Signed absolute difference transfer.
@@ -800,8 +906,8 @@ impl KnownBits {
         }
         let lhs_flipped = flip_sign_bit(lhs);
         let rhs_flipped = flip_sign_bit(rhs);
-        Self::sub_with_flags(&lhs_flipped, &rhs_flipped, false, true).intersect_with(
-            &Self::sub_with_flags(&rhs_flipped, &lhs_flipped, false, true),
+        Self::sub_with_flags(&lhs_flipped, &rhs_flipped, SubFlags::new().nuw()).intersect_with(
+            &Self::sub_with_flags(&rhs_flipped, &lhs_flipped, SubFlags::new().nuw()),
         )
     }
 
@@ -918,6 +1024,144 @@ impl KnownBits {
         let min = self.count_min_trailing_zeros();
         known.one.set_low_bits(min.saturating_add(1).min(bit_width));
         known
+    }
+}
+
+// --------------------------------------------------------------------------
+// Operators
+// --------------------------------------------------------------------------
+//
+// `KnownBits` carries seven operators upstream; each maps onto the std trait
+// that spells the same thing in Rust:
+//
+// | upstream        | here                                    |
+// |-----------------|-----------------------------------------|
+// | `operator==`    | derived `PartialEq` / `Eq`              |
+// | `operator!=`    | ditto (Rust derives `!=` from `==`)     |
+// | `operator&=`    | `BitAndAssign`, and `BitAnd` alongside  |
+// | `operator\|=`   | `BitOrAssign`, and `BitOr` alongside    |
+// | `operator^=`    | `BitXorAssign`, and `BitXor` alongside  |
+// | `operator<<=`   | `ShlAssign<u32>`, and `Shl<u32>`        |
+// | `operator>>=`   | `ShrAssign<u32>`, and `Shr<u32>`        |
+//
+// The three bitwise ones delegate to the associated functions of the same
+// name, which stay the primary spelling because they read better at a call
+// site that names both operands. The two shifts have no associated-function
+// twin on purpose: `KnownBits::shl` is already the transfer function for the
+// `shl` *instruction*, and these shift something else entirely (see below).
+//
+// The by-reference impls are the ones to reach for — `KnownBits` is `Clone`
+// but not `Copy`, so `&a & &b` avoids two clones.
+
+macro_rules! bitwise_operator {
+    ($trait_name:ident, $method:ident, $assign_trait:ident, $assign_method:ident, $call:ident) => {
+        impl core::ops::$trait_name<&KnownBits> for &KnownBits {
+            type Output = KnownBits;
+            #[inline]
+            fn $method(self, rhs: &KnownBits) -> KnownBits {
+                KnownBits::$call(self, rhs)
+            }
+        }
+
+        impl core::ops::$trait_name<KnownBits> for KnownBits {
+            type Output = KnownBits;
+            #[inline]
+            fn $method(self, rhs: KnownBits) -> KnownBits {
+                KnownBits::$call(&self, &rhs)
+            }
+        }
+
+        impl core::ops::$assign_trait<&KnownBits> for KnownBits {
+            #[inline]
+            fn $assign_method(&mut self, rhs: &KnownBits) {
+                *self = KnownBits::$call(self, rhs);
+            }
+        }
+    };
+}
+
+bitwise_operator!(BitAnd, bitand, BitAndAssign, bitand_assign, bitand);
+bitwise_operator!(BitOr, bitor, BitOrAssign, bitor_assign, bitor);
+bitwise_operator!(BitXor, bitxor, BitXorAssign, bitxor_assign, bitxor);
+
+/// Move both masks left by `amount`, so the vacated low bits become
+/// **unknown**.
+///
+/// Ports `KnownBits::operator<<=`. Note this is *not* [`KnownBits::shl`],
+/// which is the transfer function for the `shl` instruction and therefore
+/// knows the vacated bits are zero. Shifting the masks alone leaves a
+/// shifted-in bit clear in both of them — the encoding of "unknown". LLVM
+/// keeps the same pair and its callers rely on the difference; see the
+/// comment at `RISCVISelLowering.cpp`'s `Known <<= ShAmt`, which restores the
+/// low zeros by hand precisely because the operator does not.
+///
+/// Shifting by at least the bit width clears both masks, matching
+/// `APInt::operator<<=`.
+fn shifted_left(value: &KnownBits, amount: u32) -> KnownBits {
+    KnownBits {
+        zero: value.zero.shl(amount),
+        one: value.one.shl(amount),
+    }
+}
+
+/// Move both masks right by `amount`, so the vacated high bits become
+/// **unknown**.
+///
+/// Ports `KnownBits::operator>>=`. Upstream shifts both masks with
+/// `lshrInPlace` whatever the value's signedness: a mask bit records what is
+/// *known*, not what the value is, so there is no sign to replicate. Stands
+/// in the same relation to [`KnownBits::lshr`] that [`shifted_left`] does to
+/// [`KnownBits::shl`].
+fn shifted_right(value: &KnownBits, amount: u32) -> KnownBits {
+    KnownBits {
+        zero: value.zero.lshr(amount),
+        one: value.one.lshr(amount),
+    }
+}
+
+impl core::ops::Shl<u32> for &KnownBits {
+    type Output = KnownBits;
+    #[inline]
+    fn shl(self, amount: u32) -> KnownBits {
+        shifted_left(self, amount)
+    }
+}
+
+impl core::ops::Shl<u32> for KnownBits {
+    type Output = KnownBits;
+    #[inline]
+    fn shl(self, amount: u32) -> KnownBits {
+        shifted_left(&self, amount)
+    }
+}
+
+impl core::ops::ShlAssign<u32> for KnownBits {
+    #[inline]
+    fn shl_assign(&mut self, amount: u32) {
+        *self = shifted_left(self, amount);
+    }
+}
+
+impl core::ops::Shr<u32> for &KnownBits {
+    type Output = KnownBits;
+    #[inline]
+    fn shr(self, amount: u32) -> KnownBits {
+        shifted_right(self, amount)
+    }
+}
+
+impl core::ops::Shr<u32> for KnownBits {
+    type Output = KnownBits;
+    #[inline]
+    fn shr(self, amount: u32) -> KnownBits {
+        shifted_right(&self, amount)
+    }
+}
+
+impl core::ops::ShrAssign<u32> for KnownBits {
+    #[inline]
+    fn shr_assign(&mut self, amount: u32) {
+        *self = shifted_right(self, amount);
     }
 }
 
@@ -1526,7 +1770,7 @@ fn compute_for_mul(lhs: &KnownBits, rhs: &KnownBits, no_undef_self_multiply: boo
         if two_tz_plus_one < bit_width {
             result.zero.set_bit(two_tz_plus_one);
         }
-        if trail_zero_lhs < bit_width && lhs.one.is_one_bit_set(trail_zero_lhs) {
+        if trail_zero_lhs < bit_width && lhs.one.bit(trail_zero_lhs) {
             let two_tz_plus_two = two_tz_plus_one.saturating_add(1);
             if two_tz_plus_two < bit_width {
                 result.zero.set_bit(two_tz_plus_two);
@@ -1555,7 +1799,7 @@ fn div_compute_low_bit(
     if !exact {
         return known;
     }
-    if lhs.one.is_one_bit_set(0) {
+    if lhs.one.bit(0) {
         known.one.set_bit(0);
     }
     let min_tz =

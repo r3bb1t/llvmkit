@@ -7,7 +7,7 @@
 //! signature's actual return kind, so a genuine kind mismatch now reports two
 //! distinct labels.
 //!
-//! This exercises the durable typed `function_by_name` lookup path (the one
+//! This exercises the durable typed `function` lookup path (the one
 //! that survives the later typed-first `add_function` rework), so it is not a
 //! throwaway. The second test covers the OTHER surviving runtime marker gate:
 //! `FunctionBuilder::build` — after the cycle-B strict cut, the one public
@@ -26,7 +26,7 @@ fn return_marker_mismatch_reports_distinct_expected_and_got() -> Result<(), IrEr
     // Look it up demanding a *pointer* return marker: a real kind mismatch,
     // so the two diagnostic fields must differ.
     let err = m
-        .function_by_name::<Ptr>("f")
+        .function::<Ptr>("f")
         .expect_err("an i32 function looked up as `Ptr` must mismatch");
 
     match err {
@@ -57,11 +57,7 @@ fn return_marker_mismatch_reports_distinct_expected_and_got() -> Result<(), IrEr
 fn function_builder_rejects_mismatched_return_marker() -> Result<(), IrError> {
     let m = module_new!("m")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let err = m
         .function_builder::<i32, _>("bad", fn_ty)
         .build()

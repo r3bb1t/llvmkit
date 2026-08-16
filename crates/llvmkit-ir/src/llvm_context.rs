@@ -22,7 +22,7 @@
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use super::value::ValueUse;
+use super::value::{GlobalFieldKind, ValueUse};
 use crate::constant::{ConstantData, ConstantExprData};
 use crate::r#type::{StructBody, TypeData, TypeSlot};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
@@ -72,6 +72,10 @@ pub(crate) struct Context {
     // `LLVMContextImpl::IntConstants` / `FPConstants` / etc.
     int_constants: RefCell<IntConstantMap>,
     float_constants: RefCell<FloatConstantMap>,
+    global_value_ref_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
+    gep_offset_constants: RefCell<GepOffsetConstantMap>,
+    symbol_delta_constants: RefCell<SymbolDeltaConstantMap>,
+    symbol_delta_plus_constants: RefCell<SymbolDeltaPlusConstantMap>,
     null_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     undef_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     poison_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
@@ -92,6 +96,17 @@ type IntConstantMap = HashMap<(TypeSlot, Box<[u64]>), ValueSlot>;
 /// the float's type plus its IEEE bit pattern (held as a `u128` so
 /// every IEEE width up to `fp128` fits without a discriminant).
 type FloatConstantMap = HashMap<(TypeSlot, u128), ValueSlot>;
+/// Intern key for [`ConstantData::GepOffset`](crate::constant::ConstantData::GepOffset):
+/// the pointer type, the host global's value-id, and the byte offset.
+type GepOffsetConstantMap = HashMap<(TypeSlot, ValueSlot, i64), ValueSlot>;
+/// Intern key for [`ConstantData::SymbolDelta`](crate::constant::ConstantData::SymbolDelta):
+/// the integer type and the two symbol value-ids, in order — the delta is not
+/// commutative.
+type SymbolDeltaConstantMap = HashMap<(TypeSlot, ValueSlot, ValueSlot), ValueSlot>;
+/// Intern key for
+/// [`ConstantData::SymbolDeltaPlus`](crate::constant::ConstantData::SymbolDeltaPlus):
+/// the [`SymbolDeltaConstantMap`] key plus the baked-in addend.
+type SymbolDeltaPlusConstantMap = HashMap<(TypeSlot, ValueSlot, ValueSlot, i64), ValueSlot>;
 type PtrauthConstantMap = HashMap<
     (
         TypeSlot,
@@ -161,6 +176,10 @@ impl Context {
             values: boxcar::Vec::new(),
             int_constants: RefCell::new(HashMap::new()),
             float_constants: RefCell::new(HashMap::new()),
+            global_value_ref_constants: RefCell::new(HashMap::new()),
+            gep_offset_constants: RefCell::new(HashMap::new()),
+            symbol_delta_constants: RefCell::new(HashMap::new()),
+            symbol_delta_plus_constants: RefCell::new(HashMap::new()),
             null_constants: RefCell::new(HashMap::new()),
             undef_constants: RefCell::new(HashMap::new()),
             poison_constants: RefCell::new(HashMap::new()),
@@ -208,7 +227,7 @@ impl Context {
         self.singleton(&self.half, TypeData::Half)
     }
     pub(crate) fn bfloat(&self) -> TypeSlot {
-        self.singleton(&self.bfloat, TypeData::BFloat)
+        self.singleton(&self.bfloat, TypeData::Bfloat)
     }
     pub(crate) fn float(&self) -> TypeSlot {
         self.singleton(&self.float, TypeData::Float)
@@ -323,7 +342,7 @@ impl Context {
             return id;
         }
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
-            name: None,
+            identity: crate::r#type::StructIdentity::Literal,
             body: RefCell::new(Some(StructBody { elements, packed })),
         }));
         self.literal_struct_types.borrow_mut().insert(key, id);
@@ -371,7 +390,9 @@ impl Context {
             return (id, true);
         }
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
-            name: Some(name.to_owned()),
+            identity: crate::r#type::StructIdentity::Identified {
+                name: Some(name.to_owned()),
+            },
             body: RefCell::new(None),
         }));
         self.named_struct_types
@@ -379,6 +400,44 @@ impl Context {
             .insert(name.to_owned(), id);
         self.named_struct_order.borrow_mut().push(id);
         (id, false)
+    }
+
+    /// An identified struct with no name — what `%0 = type { i32 }` is.
+    /// Mirrors `StructType::create(Context)` with no name argument.
+    ///
+    /// Never interned: two anonymous identified structs with the same body are
+    /// still two types, which is the whole point of the identified regime.
+    pub(crate) fn create_anonymous_identified_struct(&self) -> TypeSlot {
+        let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
+            identity: crate::r#type::StructIdentity::Identified { name: None },
+            body: RefCell::new(None),
+        }));
+        self.named_struct_order.borrow_mut().push(id);
+        id
+    }
+
+    /// This anonymous identified struct's position among the module's
+    /// anonymous identified structs — the number `AsmWriter` prints it under.
+    /// Mirrors `TypePrinting::NumberedTypes`, which counts only the unnamed
+    /// ones.
+    pub(crate) fn anonymous_identified_struct_number(&self, id: TypeSlot) -> Option<u32> {
+        let mut number: u32 = 0;
+        for &candidate in self.named_struct_order.borrow().iter() {
+            let TypeData::Struct(data) = self.type_data(candidate) else {
+                continue;
+            };
+            if !matches!(
+                data.identity,
+                crate::r#type::StructIdentity::Identified { name: None }
+            ) {
+                continue;
+            }
+            if candidate == id {
+                return Some(number);
+            }
+            number = number.saturating_add(1);
+        }
+        None
     }
 
     pub(crate) fn get_named_struct(&self, name: &str) -> Option<TypeSlot> {
@@ -406,12 +465,12 @@ impl Context {
         let mut slot = s.body.borrow_mut();
         if slot.is_some() {
             return Err(crate::IrError::StructBodyAlreadySet {
-                name: s.name.clone().expect("named struct"),
+                name: s.identity.name().unwrap_or_default().to_owned(),
             });
         }
         if self.body_would_be_recursive(id, &body) {
-            return Err(crate::IrError::InvalidOperation {
-                message: "recursive struct body",
+            return Err(crate::IrError::RecursiveStructBody {
+                name: s.identity.name().unwrap_or_default().to_owned(),
             });
         }
         *slot = Some(body);
@@ -467,7 +526,7 @@ impl Context {
                 .any(|&param| self.type_reaches_type(param, target, visited)),
             TypeData::Void
             | TypeData::Half
-            | TypeData::BFloat
+            | TypeData::Bfloat
             | TypeData::Float
             | TypeData::Double
             | TypeData::X86Fp80
@@ -517,11 +576,126 @@ impl Context {
             return;
         };
         data.for_each_operand(|operand| {
-            self.value_data(operand)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Constant(user));
+            self.value_data(operand).add_use(ValueUse::Constant(user));
         });
+    }
+
+    /// The value a use edge should be registered against.
+    ///
+    /// llvmkit gives a global object its *value* type and interns a separate
+    /// pointer-typed [`ConstantData::GlobalValueRef`] to stand for `@name`
+    /// where a constant is wanted. Upstream has no such node: a `GlobalValue`
+    /// **is** a pointer-typed `Constant`, so a field naming one is a `Use` of
+    /// the global itself.
+    ///
+    /// Registering on the wrapper instead would not merely relabel the edge,
+    /// it would lose count — the wrapper is *interned*, so three aliases of
+    /// one global share one node and `getNumUses` answers 1 where upstream
+    /// answers 3. `uselistorder`, whose index vector has to name every use
+    /// exactly once, is where that stops being invisible.
+    pub(crate) fn use_edge_target(&self, value: ValueSlot) -> ValueSlot {
+        match &self.value_data(value).kind {
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value: global }) => *global,
+            _ => value,
+        }
+    }
+
+    /// Move a global object's single-slot field edge from `old` to `new`.
+    ///
+    /// The counterpart of `Use::set` for the fields llvmkit stores as bare
+    /// `Cell`s rather than as operands: without this, an initializer or
+    /// aliasee would hold a value that neither `num_uses` counts nor RAUW can
+    /// find. Callers set the cell; this keeps the reverse edge honest.
+    pub(crate) fn retarget_global_field_use(
+        &self,
+        owner: ValueSlot,
+        field: GlobalFieldKind,
+        old: Option<ValueSlot>,
+        new: Option<ValueSlot>,
+    ) {
+        let old = old.map(|slot| self.use_edge_target(slot));
+        let new = new.map(|slot| self.use_edge_target(slot));
+        if old == new {
+            return;
+        }
+        let edge = ValueUse::GlobalField { owner, field };
+        if let Some(old) = old {
+            let data = self.value_data(old);
+            let mut uses = data.use_list.borrow_mut();
+            if let Some(position) = uses.iter().position(|use_| *use_ == edge) {
+                uses.remove(position);
+            }
+        }
+        if let Some(new) = new {
+            self.value_data(new).add_use(edge);
+        }
+    }
+
+    /// Point a global object's single-slot field at `replacement` when it
+    /// currently holds `from`. The [`ValueUse::GlobalField`] counterpart of
+    /// `instruction::rewrite_operand_cells`: this cell is what `Use::set`
+    /// would write to upstream.
+    pub(crate) fn rewrite_global_field_cell(
+        &self,
+        owner: ValueSlot,
+        field: GlobalFieldKind,
+        from: ValueSlot,
+        replacement: ValueSlot,
+    ) {
+        // The edge is registered against the global itself (see
+        // [`Self::use_edge_target`]) while the cell may hold the interned
+        // pointer wrapper standing for it, so matching goes through the same
+        // unwrap — and re-wrapping the replacement *re-interns* rather than
+        // mutating, per the constant-uniquing law.
+        let rewritten = |held: ValueSlot| -> ValueSlot {
+            if held == from {
+                return replacement;
+            }
+            match &self.value_data(replacement).kind {
+                // A global object is not itself a `Constant` in llvmkit, so a
+                // cell that held a wrapper needs one again.
+                ValueKindData::Function(_)
+                | ValueKindData::GlobalAlias(_)
+                | ValueKindData::GlobalIfunc(_)
+                | ValueKindData::GlobalVariable(_) => {
+                    let ty = self.value_data(held).ty;
+                    self.intern_constant_global_value_ref(ty, replacement)
+                }
+                _ => replacement,
+            }
+        };
+        let swap = |cell: &Cell<Option<ValueSlot>>| {
+            if let Some(held) = cell.get()
+                && self.use_edge_target(held) == from
+            {
+                cell.set(Some(rewritten(held)));
+            }
+        };
+        let swap_required = |cell: &Cell<ValueSlot>| {
+            let held = cell.get();
+            if self.use_edge_target(held) == from {
+                cell.set(rewritten(held));
+            }
+        };
+        match (&self.value_data(owner).kind, field) {
+            (ValueKindData::GlobalVariable(g), GlobalFieldKind::Initializer) => {
+                swap(&g.initializer);
+            }
+            (ValueKindData::GlobalAlias(a), GlobalFieldKind::Aliasee) => swap_required(&a.aliasee),
+            (ValueKindData::GlobalIfunc(i), GlobalFieldKind::IfuncResolver) => {
+                swap_required(&i.resolver);
+            }
+            (ValueKindData::Function(f), GlobalFieldKind::PersonalityFn) => {
+                swap(&f.personality_fn);
+            }
+            (ValueKindData::Function(f), GlobalFieldKind::PrefixData) => swap(&f.prefix_data),
+            (ValueKindData::Function(f), GlobalFieldKind::PrologueData) => swap(&f.prologue_data),
+            // A `GlobalField` edge is only ever registered by
+            // `retarget_global_field_use`, called from the one setter that
+            // owns that exact cell, so a mismatched owner/field pair cannot
+            // be constructed.
+            (_, _) => unreachable!("GlobalField edge names a field its owner does not have"),
+        }
     }
 
     /// Update the parent block of the instruction stored at `inst_id`.
@@ -621,41 +795,61 @@ impl Context {
         ty: TypeSlot,
         value: ValueSlot,
     ) -> ValueSlot {
-        self.push_value(ValueData {
+        let key = (ty, value);
+        if let Some(&id) = self.global_value_ref_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::GlobalValueRef { value }),
             use_list: core::cell::RefCell::new(Vec::new()),
-        })
+        });
+        self.global_value_ref_constants.borrow_mut().insert(key, id);
+        id
     }
 
-    pub(crate) fn push_constant_block_address_placeholder(&self, ty: TypeSlot) -> ValueSlot {
+    /// A forward reference awaiting its referent.
+    ///
+    /// **The one constant kind that is deliberately not uniqued.** Placeholders
+    /// carry no payload, so every one of them is structurally identical — yet
+    /// each stands for a *different* unresolved reference that the parser
+    /// replaces individually as the named value is reached. Interning them
+    /// would collapse every pending forward reference in a module into one
+    /// node, and resolving the first would silently resolve them all. The name
+    /// says `push`, not `intern`, for that reason.
+    pub(crate) fn push_constant_forward_ref_placeholder(&self, ty: TypeSlot) -> ValueSlot {
         self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
-            kind: ValueKindData::Constant(ConstantData::BlockAddressPlaceholder),
+            kind: ValueKindData::Constant(ConstantData::ForwardRefPlaceholder),
             use_list: core::cell::RefCell::new(Vec::new()),
         })
     }
 
     /// Materialise a `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`
-    /// constant of pointer type `ty`. Not interned (each offset-pointer is
-    /// effectively unique and cheap); a fresh value-arena node each call.
+    /// constant of pointer type `ty`.
     pub(crate) fn intern_constant_gep_offset(
         &self,
         ty: TypeSlot,
         base_id: ValueSlot,
         off: i64,
     ) -> ValueSlot {
-        self.push_value(ValueData {
+        let key = (ty, base_id, off);
+        if let Some(&id) = self.gep_offset_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::GepOffset { base_id, off }),
             use_list: core::cell::RefCell::new(Vec::new()),
-        })
+        });
+        self.gep_offset_constants.borrow_mut().insert(key, id);
+        id
     }
 
     pub(crate) fn intern_constant_symbol_delta(
@@ -664,13 +858,19 @@ impl Context {
         hi_id: ValueSlot,
         lo_id: ValueSlot,
     ) -> ValueSlot {
-        self.push_value(ValueData {
+        let key = (ty, hi_id, lo_id);
+        if let Some(&id) = self.symbol_delta_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::SymbolDelta { hi_id, lo_id }),
             use_list: core::cell::RefCell::new(Vec::new()),
-        })
+        });
+        self.symbol_delta_constants.borrow_mut().insert(key, id);
+        id
     }
 
     pub(crate) fn intern_constant_symbol_delta_plus(
@@ -680,7 +880,11 @@ impl Context {
         lo_id: ValueSlot,
         addend: i64,
     ) -> ValueSlot {
-        self.push_value(ValueData {
+        let key = (ty, hi_id, lo_id, addend);
+        if let Some(&id) = self.symbol_delta_plus_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
@@ -690,7 +894,11 @@ impl Context {
                 addend,
             }),
             use_list: core::cell::RefCell::new(Vec::new()),
-        })
+        });
+        self.symbol_delta_plus_constants
+            .borrow_mut()
+            .insert(key, id);
+        id
     }
 
     pub(crate) fn intern_constant_aggregate(
@@ -749,6 +957,8 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::BlockAddress { function, block }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        // A `blockaddress` is a `User` of its function and its block.
+        self.register_constant_operand_uses(id);
         self.block_address_constants.borrow_mut().insert(key, id);
         id
     }
@@ -766,7 +976,7 @@ impl Context {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
-            kind: ValueKindData::Constant(ConstantData::DSOLocalEquivalent { function }),
+            kind: ValueKindData::Constant(ConstantData::DsoLocalEquivalent { function }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.dso_local_equivalent_constants

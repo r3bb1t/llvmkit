@@ -16,7 +16,7 @@
 //! return ids, one family at a time — arithmetic, casts, comparisons, memory,
 //! aggregates, vectors, calls, the module-level declarations, blocks/branches
 //! and phi have all flipped, so no builder hands back a borrowing handle any
-//! more. [`IRBuilder::view`](crate::IRBuilder::view) is the builder-side twin
+//! more. [`IrBuilder::view`](crate::IrBuilder::view) is the builder-side twin
 //! of [`Module::view`](crate::Module::view) for reading at a build site.
 //!
 //! One naming rule holds across the whole surface: `handle.id()` mints the
@@ -25,7 +25,7 @@
 //!
 //! Two shapes of id live here: the **value ids** ([`ValueId`], [`IntValueId`],
 //! ...), which name a value and nothing more, and the **instruction ids**
-//! ([`CallInstId`], [`AtomicRMWInstId`], ...), whose [`ViewIn::View`] is an
+//! ([`CallInstId`], [`AtomicRmwInstId`], ...), whose [`ViewIn::View`] is an
 //! opcode handle so that a builder returning one keeps the opcode's typed API
 //! reachable through a single view.
 //!
@@ -48,6 +48,7 @@
 
 use core::marker::PhantomData;
 
+use crate::Branded;
 use crate::basic_block::BasicBlockLabel;
 use crate::block_params::{BlockParams, BlockParamsDyn};
 use crate::error::{IrError, IrResult};
@@ -57,12 +58,12 @@ use crate::function_signature::{
     FunctionParamList, FunctionReturn, TypedFunctionValue, TypedVarArgsFunctionValue,
 };
 use crate::global_alias::GlobalAlias;
-use crate::global_ifunc::GlobalIFunc;
+use crate::global_ifunc::GlobalIfunc;
 use crate::global_variable::GlobalVariable;
 use crate::instruction::InstructionKindData;
 use crate::instructions::{
-    AtomicCmpXchgInst, AtomicRMWInst, CallInst, FpPhiInst, FreezeInst, OtherPhiInst, PhiInst,
-    PointerPhiInst, TypedCallInst, VAArgInst,
+    AtomicCmpXchgInst, AtomicRmwInst, CallInst, FpPhiInst, FreezeInst, OtherPhiInst, PhiInst,
+    PointerPhiInst, TypedCallInst, VaArgInst,
 };
 use crate::int_width::{IntDyn, IntWidth, IntoIntValue, into_int_value_sealed};
 use crate::intrinsic_inst::IntrinsicInst;
@@ -80,10 +81,20 @@ use crate::value::{
 
 /// Declare a minimal, `Copy` value id with an optional list of leading type
 /// markers (before the always-present brand `B`). Generates the struct plus
-/// manual `Copy`/`Clone`/`Eq`/`PartialEq`/`Hash`/`Debug` impls — manual
-/// because a `derive` would propagate a `Marker: Trait` bound onto the impl
-/// that callers should never have to spell (the `FunctionValue` precedent),
-/// and because `Debug` must print `tag`/`slot` only, never the phantoms.
+/// manual `Copy`/`Clone`/`Eq`/`PartialEq`/`Hash`/`Ord`/`PartialOrd`/`Debug`
+/// impls — manual because a `derive` would propagate a `Marker: Trait` bound
+/// onto the impl that callers should never have to spell (the `FunctionValue`
+/// precedent), and because `Debug` must print `tag`/`slot` only, never the
+/// phantoms.
+///
+/// The ordering is lexicographic over `(tag, slot)` — the same two fields
+/// `PartialEq` and `Hash` walk, so `cmp` returns `Equal` exactly when `eq` is
+/// true. It exists so an id can key a `BTreeMap`/`BTreeSet`: a pass that
+/// wants deterministic output needs a total order that does not vary run to
+/// run, which a `HashMap` iteration order does not give. `ModuleId`s are
+/// allocated in creation order and slots are arena indices, so the order is
+/// meaningful within one module and merely deterministic across modules — it
+/// is **not** a claim about position in the instruction stream.
 macro_rules! decl_value_id {
     (
         $(#[$attr:meta])*
@@ -131,6 +142,20 @@ macro_rules! decl_value_id {
             fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
                 self.tag.hash(state);
                 self.slot.hash(state);
+            }
+        }
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> Ord for $name<$($($mk,)+)? B> {
+            #[inline]
+            fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+                self.tag
+                    .cmp(&other.tag)
+                    .then_with(|| self.slot.cmp(&other.slot))
+            }
+        }
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> PartialOrd for $name<$($($mk,)+)? B> {
+            #[inline]
+            fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+                Some(self.cmp(other))
             }
         }
         impl<$($($mk: $mkb,)+)? B: ModuleBrand> core::fmt::Debug for $name<$($($mk,)+)? B> {
@@ -238,18 +263,26 @@ decl_value_id! {
 
 decl_value_id! {
     /// Storable, module-tagged id for a module-level `ifunc`, resolved into a
-    /// [`GlobalIFunc`].
-    GlobalIFuncId
+    /// [`GlobalIfunc`].
+    GlobalIfuncId
 }
 
 /// Storable, module-tagged id for a basic block, resolved into a copyable
 /// [`BasicBlockLabel<R, B, Params>`](crate::BasicBlockLabel) (never the linear
 /// [`BasicBlock`](crate::BasicBlock)).
 ///
-/// Hand-written rather than macro-generated because — unlike the other ids —
-/// its parameter marker `Params` follows the brand `B` in the generic list (to
-/// carry the `= BlockParamsDyn` default in trailing position), matching the
-/// handle it resolves to.
+/// Outside `decl_value_id!` because — unlike the other ids — its parameter
+/// marker `Params` follows the brand `B` in the generic list (to carry the
+/// `= BlockParamsDyn` default in trailing position), matching the handle it
+/// resolves to. The trait impls still come from [`Branded`], which copies the
+/// generics verbatim and adds no bounds, and whose `Debug` skips phantoms —
+/// the same output the macro's hand-written impls produced.
+///
+/// The ordering is the id family's: lexicographic over `(tag, slot)`, so
+/// block ids can key a `BTreeMap` and give a pass deterministic iteration
+/// order. It is *not* a claim about layout order inside the function.
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockId<R: ReturnMarker, B: ModuleBrand, Params: BlockParams = BlockParamsDyn> {
     tag: ModuleId,
     slot: ValueSlot,
@@ -294,40 +327,6 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockId<R, B, Params>
     }
 }
 
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Clone for BlockId<R, B, Params> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Copy for BlockId<R, B, Params> {}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> PartialEq for BlockId<R, B, Params> {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.tag == other.tag && self.slot == other.slot
-    }
-}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Eq for BlockId<R, B, Params> {}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::hash::Hash
-    for BlockId<R, B, Params>
-{
-    #[inline]
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.tag.hash(state);
-        self.slot.hash(state);
-    }
-}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::fmt::Debug
-    for BlockId<R, B, Params>
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("BlockId")
-            .field("tag", &self.tag)
-            .field("slot", &self.slot)
-            .finish()
-    }
-}
-
 // --------------------------------------------------------------------------
 // The instruction-id family
 // --------------------------------------------------------------------------
@@ -335,7 +334,7 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::fmt::Debug
 // Most builders hand back a *value*, and the ids above say everything there is
 // to say about one. A few builders instead hand back an **opcode handle** that
 // carries its own typed API — [`CallInst::classify_callee`] /
-// `return_int_value`, [`TypedCallInst::result`], [`AtomicRMWInst::operation`],
+// `return_int_value`, [`TypedCallInst::result`], [`AtomicRmwInst::operation`],
 // ... Collapsing those to the erased [`ValueId`] would throw that API away *at
 // the return position*, and recovering it would cost a view plus an
 // [`InstructionView`](crate::InstructionView) narrowing plus a `kind()` match.
@@ -392,14 +391,14 @@ decl_value_id! {
 
 decl_value_id! {
     /// Storable, module-tagged id for a `va_arg` instruction, resolved into a
-    /// [`VAArgInst`].
-    VAArgInstId
+    /// [`VaArgInst`].
+    VaArgInstId
 }
 
 decl_value_id! {
     /// Storable, module-tagged id for an `atomicrmw` instruction, resolved into
-    /// an [`AtomicRMWInst`].
-    AtomicRMWInstId
+    /// an [`AtomicRmwInst`].
+    AtomicRmwInstId
 }
 
 decl_value_id! {
@@ -415,7 +414,7 @@ decl_value_id! {
     /// ([`PhiInst::as_int_value`](crate::PhiInst::as_int_value),
     /// [`PhiInst::incomings`](crate::PhiInst::incomings),
     /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming)) survives a
-    /// single [`view`](crate::IRBuilder::view).
+    /// single [`view`](crate::IrBuilder::view).
     PhiInstId [W: IntWidth => _w]
 }
 
@@ -636,7 +635,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId
             matches!(
                 module.type_data(ty),
                 TypeData::Half
-                    | TypeData::BFloat
+                    | TypeData::Bfloat
                     | TypeData::Float
                     | TypeData::Double
                     | TypeData::X86Fp80
@@ -796,7 +795,7 @@ macro_rules! impl_view_in_for_global_id {
 impl_view_in_for_global_id!(
     GlobalId => GlobalVariable [GlobalVariable],
     GlobalAliasId => GlobalAlias [GlobalAlias],
-    GlobalIFuncId => GlobalIFunc [GlobalIFunc],
+    GlobalIfuncId => GlobalIfunc [GlobalIfunc],
 );
 
 impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> sealed::Sealed
@@ -957,8 +956,8 @@ macro_rules! impl_view_in_for_instruction_id {
 
 impl_view_in_for_instruction_id!(
     FreezeInstId => FreezeInst [Freeze],
-    VAArgInstId => VAArgInst [VAArg],
-    AtomicRMWInstId => AtomicRMWInst [AtomicRMW],
+    VaArgInstId => VaArgInst [VaArg],
+    AtomicRmwInstId => AtomicRmwInst [AtomicRmw],
     AtomicCmpXchgInstId => AtomicCmpXchgInst [AtomicCmpXchg],
     OtherPhiInstId => OtherPhiInst [Phi],
 );
@@ -1025,7 +1024,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<
             matches!(
                 module.type_data(ty),
                 TypeData::Half
-                    | TypeData::BFloat
+                    | TypeData::Bfloat
                     | TypeData::Float
                     | TypeData::Double
                     | TypeData::X86Fp80
@@ -1063,7 +1062,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
 // --------------------------------------------------------------------------
 //
 // The three *typed-value* ids lift into their handle at an operand position,
-// so that (in cycle B) `build_int_add(some_int_id, 2i32, "x")` compiles. Each
+// so that (in cycle B) `int_add(some_int_id, 2i32, "x")` compiles. Each
 // conversion is *fallible* on a foreign module tag — unlike
 // [`Module::view`](crate::Module::view), which panics — because the operand
 // path is already `IrResult` and a foreign id is a recoverable caller error
@@ -1108,7 +1107,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<B
 // --------------------------------------------------------------------------
 //
 // The counterpart to the block above for operand slots whose declared type is
-// the *erased* [`Value`] — `build_store`'s stored value, the call-argument
+// the *erased* [`Value`] — `store`'s stored value, the call-argument
 // lists, the aggregate element slots, ... Every id lifts here, including the
 // erased [`ValueId`], because widening an erased id to an erased operand is
 // not the erased -> typed narrowing the `Into*Value` traits forbid; the
@@ -1149,7 +1148,7 @@ macro_rules! impl_into_erased_value_for_id {
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<Value<'ctx, B>> {
                 self.resolve_in(module)
-                    .map(IsValue::into_erased)
+                    .map(IsValue::as_erased)
                     .ok_or(IrError::ForeignValueId)
             }
         }
@@ -1164,7 +1163,7 @@ impl_into_erased_value_for_id!(
     FunctionId[R: ReturnMarker],
     GlobalId,
     GlobalAliasId,
-    GlobalIFuncId,
+    GlobalIfuncId,
 );
 
 /// Implement [`IntoErasedValue`] for an instruction id whose opcode handle is
@@ -1200,8 +1199,8 @@ macro_rules! impl_into_erased_value_for_instruction_id {
 
 impl_into_erased_value_for_instruction_id!(
     FreezeInstId,
-    VAArgInstId,
-    AtomicRMWInstId,
+    VaArgInstId,
+    AtomicRmwInstId,
     AtomicCmpXchgInstId,
     PhiInstId[W: IntWidth],
     FpPhiInstId[K: FloatKind],

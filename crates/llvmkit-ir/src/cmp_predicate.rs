@@ -18,12 +18,15 @@
 //! signedness-irrelevant predicates (`Eq`, `Ne`) from the unsigned
 //! family (`Ult`/`Ule`/`Ugt`/`Uge`) and the signed family
 //! (`Slt`/`Sle`/`Sgt`/`Sge`). For ergonomics,
-//! [`crate::IRBuilder`] also ships per-predicate convenience methods
-//! (`build_icmp_eq`, `build_icmp_slt`, ...) that bake the predicate
+//! [`crate::IrBuilder`] also ships per-predicate convenience methods
+//! (`icmp_eq`, `icmp_slt`, ...) that bake the predicate
 //! into the method name --- see `IRBuilder::CreateICmp{EQ,SLT,...}` in
 //! `IRBuilder.h` for the upstream parallel.
 
 use core::fmt;
+use core::str::FromStr;
+
+use crate::error::IrError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CmpPredicate {
@@ -40,6 +43,224 @@ impl From<IntPredicate> for CmpPredicate {
 impl From<FloatPredicate> for CmpPredicate {
     fn from(value: FloatPredicate) -> Self {
         Self::Float(value)
+    }
+}
+
+/// A comparison predicate together with the `samesign` flag of the `icmp` it
+/// came from.
+///
+/// Ports `llvm::CmpPredicate` (`CmpPredicate.h`), which is a `Predicate` plus
+/// one `bool`. llvmkit's [`CmpPredicate`] is the same int-or-float union
+/// *without* the flag; the two are separate types because `samesign` is
+/// meaningless on an `fcmp` and every operation that reads it — [`Self::matching`],
+/// [`Self::preferred_signed_predicate`], [`Self::drop_same_sign`] — is
+/// integer-only.
+///
+/// A predicate with the flag set claims both operands carry the same sign, so
+/// the signed and unsigned readings of the comparison agree. That is what lets
+/// [`Self::matching`] pair a signed predicate with its unsigned twin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PredicateWithSameSign {
+    predicate: CmpPredicate,
+    same_sign: bool,
+}
+
+impl PredicateWithSameSign {
+    /// An integer predicate with no `samesign` claim.
+    #[inline]
+    pub const fn int(predicate: IntPredicate) -> Self {
+        Self {
+            predicate: CmpPredicate::Int(predicate),
+            same_sign: false,
+        }
+    }
+
+    /// An integer predicate whose `icmp` carried `samesign`.
+    #[inline]
+    pub const fn int_same_sign(predicate: IntPredicate) -> Self {
+        Self {
+            predicate: CmpPredicate::Int(predicate),
+            same_sign: true,
+        }
+    }
+
+    /// A floating-point predicate. `samesign` never applies.
+    #[inline]
+    pub const fn float(predicate: FloatPredicate) -> Self {
+        Self {
+            predicate: CmpPredicate::Float(predicate),
+            same_sign: false,
+        }
+    }
+
+    /// The predicate, without the flag.
+    #[inline]
+    pub const fn predicate(self) -> CmpPredicate {
+        self.predicate
+    }
+
+    /// The integer predicate, or `None` for a floating-point one.
+    #[inline]
+    pub const fn as_int(self) -> Option<IntPredicate> {
+        match self.predicate {
+            CmpPredicate::Int(predicate) => Some(predicate),
+            CmpPredicate::Float(_) => None,
+        }
+    }
+
+    /// The floating-point predicate, or `None` for an integer one.
+    #[inline]
+    pub const fn as_float(self) -> Option<FloatPredicate> {
+        match self.predicate {
+            CmpPredicate::Float(predicate) => Some(predicate),
+            CmpPredicate::Int(_) => None,
+        }
+    }
+
+    /// Whether the originating `icmp` carried `samesign`.
+    ///
+    /// Ports `CmpPredicate::hasSameSign`.
+    #[inline]
+    pub const fn has_same_sign(self) -> bool {
+        self.same_sign
+    }
+
+    /// The bare predicate, discarding any `samesign` claim.
+    ///
+    /// Ports `CmpPredicate::dropSameSign`.
+    #[inline]
+    pub const fn drop_same_sign(self) -> CmpPredicate {
+        self.predicate
+    }
+
+    /// Under `samesign`, the signed reading of the predicate; otherwise the
+    /// predicate unchanged.
+    ///
+    /// Ports `CmpPredicate::getPreferredSignedPredicate`, whose body is
+    /// `HasSameSign ? IcmpInst::getSignedPredicate(Pred) : Pred`.
+    #[inline]
+    pub const fn preferred_signed_predicate(self) -> CmpPredicate {
+        match self.predicate {
+            CmpPredicate::Int(predicate) if self.same_sign => {
+                CmpPredicate::Int(predicate.signed_predicate())
+            }
+            other => other,
+        }
+    }
+
+    /// The predicate both `a` and `b` can be read as, if there is one.
+    ///
+    /// Ports `CmpPredicate::getMatching`. Equal predicates match, keeping the
+    /// flag only when both carry it; otherwise a `samesign` predicate matches
+    /// its opposite-signedness twin, which is exactly what the flag licenses.
+    /// Floating-point predicates only ever match themselves.
+    #[inline]
+    pub fn matching(a: Self, b: Self) -> Option<Self> {
+        if a.predicate == b.predicate {
+            return Some(if a.same_sign == b.same_sign {
+                a
+            } else {
+                Self {
+                    predicate: a.predicate,
+                    same_sign: false,
+                }
+            });
+        }
+        let (CmpPredicate::Int(a_int), CmpPredicate::Int(b_int)) = (a.predicate, b.predicate)
+        else {
+            return None;
+        };
+        if a.same_sign && a_int == b_int.flip_signedness() {
+            return Some(Self::int(b_int));
+        }
+        if b.same_sign && b_int == a_int.flip_signedness() {
+            return Some(Self::int(a_int));
+        }
+        None
+    }
+
+    /// Whether `first` being true forces `second` to be true, false, or neither,
+    /// for two comparisons over the *same* operands.
+    ///
+    /// Ports `IcmpInst::isImpliedByMatchingCmp` together with the two static
+    /// helpers it delegates to, `isImpliedTrueByMatchingCmp` and
+    /// `isImpliedFalseByMatchingCmp` (`Instructions.cpp`) — the latter is the
+    /// former against the inverse of `second`.
+    #[inline]
+    pub fn implied_by_matching_comparison(first: Self, second: Self) -> Option<bool> {
+        if Self::implied_true_by_matching(first, second) {
+            return Some(true);
+        }
+        if Self::implied_true_by_matching(first, second.inverse()) {
+            return Some(false);
+        }
+        None
+    }
+
+    /// The inverse predicate, keeping the `samesign` claim — inverting a
+    /// comparison does not change what its operands' signs are.
+    #[inline]
+    pub const fn inverse(self) -> Self {
+        let predicate = match self.predicate {
+            CmpPredicate::Int(predicate) => CmpPredicate::Int(predicate.inverse()),
+            CmpPredicate::Float(predicate) => CmpPredicate::Float(predicate.inverse()),
+        };
+        Self {
+            predicate,
+            same_sign: self.same_sign,
+        }
+    }
+
+    /// The predicate yielded by swapping the comparison's operands, keeping the
+    /// `samesign` claim.
+    #[inline]
+    pub const fn swapped(self) -> Self {
+        let predicate = match self.predicate {
+            CmpPredicate::Int(predicate) => CmpPredicate::Int(predicate.swapped()),
+            CmpPredicate::Float(predicate) => CmpPredicate::Float(predicate.swapped()),
+        };
+        Self {
+            predicate,
+            same_sign: self.same_sign,
+        }
+    }
+
+    /// Ports `isImpliedTrueByMatchingCmp`.
+    fn implied_true_by_matching(mut first: Self, mut second: Self) -> bool {
+        // Matching predicates: the first condition makes the second true.
+        if Self::matching(first, second).is_some() {
+            return true;
+        }
+
+        // Under `samesign`, read whichever side carries the flag in the other
+        // side's signedness so the table below can compare like with like.
+        if let (Some(first_int), Some(second_int)) = (first.as_int(), second.as_int()) {
+            if first.same_sign && second_int.is_signed() {
+                first = Self::int(first_int.flip_signedness());
+            } else if second.same_sign && first_int.is_signed() {
+                second = Self::int(second_int.flip_signedness());
+            }
+        }
+
+        let (Some(first), Some(second)) = (first.as_int(), second.as_int()) else {
+            return false;
+        };
+        match first {
+            // A == B implies A >=u B, A <=u B, A >=s B and A <=s B.
+            IntPredicate::Eq => matches!(
+                second,
+                IntPredicate::Uge | IntPredicate::Ule | IntPredicate::Sge | IntPredicate::Sle
+            ),
+            // A >u B implies A != B and A >=u B.
+            IntPredicate::Ugt => matches!(second, IntPredicate::Ne | IntPredicate::Uge),
+            // A <u B implies A != B and A <=u B.
+            IntPredicate::Ult => matches!(second, IntPredicate::Ne | IntPredicate::Ule),
+            // A >s B implies A != B and A >=s B.
+            IntPredicate::Sgt => matches!(second, IntPredicate::Ne | IntPredicate::Sge),
+            // A <s B implies A != B and A <=s B.
+            IntPredicate::Slt => matches!(second, IntPredicate::Ne | IntPredicate::Sle),
+            _ => false,
+        }
     }
 }
 
@@ -142,7 +363,7 @@ impl FloatPredicate {
     /// Mnemonic suffix as it appears in `.ll` syntax (`oeq`, `ord`, …).
     /// Mirrors `CmpInst::getPredicateName` (`Instructions.cpp`).
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::False => "false",
             Self::Oeq => "oeq",
@@ -189,6 +410,33 @@ impl FloatPredicate {
         }
     }
 
+    /// Whether the predicate is ordered — false whenever either operand is
+    /// NaN. Mirrors the FCMP arm of `CmpInst::isOrdered` (`Instructions.cpp`).
+    #[inline]
+    pub const fn is_ordered(self) -> bool {
+        matches!(
+            self,
+            Self::Oeq | Self::One | Self::Ogt | Self::Olt | Self::Oge | Self::Ole | Self::Ord
+        )
+    }
+
+    /// Whether the predicate is unordered — true whenever either operand is
+    /// NaN. Mirrors `CmpInst::isUnordered`.
+    #[inline]
+    pub const fn is_unordered(self) -> bool {
+        matches!(
+            self,
+            Self::Ueq | Self::Une | Self::Ugt | Self::Ult | Self::Uge | Self::Ule | Self::Uno
+        )
+    }
+
+    /// Whether the predicate tests equality in either direction. Mirrors the
+    /// FCMP arm of `CmpInst::isEquality`.
+    #[inline]
+    pub const fn is_equality(self) -> bool {
+        matches!(self, Self::Oeq | Self::One | Self::Ueq | Self::Une)
+    }
+
     /// Predicate yielded by swapping the comparison operands.
     /// Mirrors `CmpInst::getSwappedPredicate` (`Instructions.cpp`).
     #[inline]
@@ -221,7 +469,50 @@ impl FloatPredicate {
 
 impl fmt::Display for FloatPredicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<FloatPredicate> for u8 {
+    /// The `FCMP_*` discriminant. Infallible in this direction — every
+    /// variant has one, by construction of the `0..=15` layout upstream gives
+    /// `CmpInst::Predicate` (`InstrTypes.h`).
+    #[inline]
+    fn from(predicate: FloatPredicate) -> Self {
+        predicate.as_raw()
+    }
+}
+
+impl TryFrom<u8> for FloatPredicate {
+    type Error = IrError;
+
+    /// The `?`-friendly twin of [`FloatPredicate::from_raw`], which stays the
+    /// `const fn` path. Rejects anything outside
+    /// `FIRST_FCMP_PREDICATE..=LAST_FCMP_PREDICATE` (`InstrTypes.h`).
+    #[inline]
+    fn try_from(raw: u8) -> Result<Self, Self::Error> {
+        Self::from_raw(raw).ok_or(IrError::InvalidDiscriminant {
+            target: "fcmp predicate",
+            value: u64::from(raw),
+        })
+    }
+}
+
+impl FromStr for FloatPredicate {
+    type Err = IrError;
+
+    /// Inverse of [`Display`](fmt::Display) / [`FloatPredicate::as_str`],
+    /// found by searching [`all()`](FloatPredicate::all) rather than a second
+    /// keyword table — the mnemonics live in exactly one place, so the two
+    /// directions cannot drift. The lexer half upstream is `LLLexer.cpp`'s
+    /// `fcmp` keyword block.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::all()
+            .find(|p| p.as_str() == s)
+            .ok_or_else(|| IrError::InvalidKeyword {
+                target: "fcmp predicate",
+                keyword: s.to_string(),
+            })
     }
 }
 
@@ -299,7 +590,7 @@ impl IntPredicate {
     /// Mnemonic suffix as it appears in `.ll` syntax (`eq`, `slt`, …).
     /// Mirrors `CmpInst::getPredicateName`.
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Eq => "eq",
             Self::Ne => "ne",
@@ -325,6 +616,13 @@ impl IntPredicate {
     #[inline]
     pub const fn is_unsigned(self) -> bool {
         matches!(self, Self::Ugt | Self::Uge | Self::Ult | Self::Ule)
+    }
+
+    /// `true` iff this predicate tests equality. Mirrors the ICMP arm of
+    /// `CmpInst::isEquality`.
+    #[inline]
+    pub const fn is_equality(self) -> bool {
+        matches!(self, Self::Eq | Self::Ne)
     }
 
     /// Inverse predicate. Mirrors the ICMP arm of
@@ -362,9 +660,22 @@ impl IntPredicate {
         }
     }
 
+    /// The signed reading of this predicate; `eq`/`ne` and the already-signed
+    /// predicates are returned unchanged. Mirrors `IcmpInst::getSignedPredicate`.
+    #[inline]
+    pub const fn signed_predicate(self) -> Self {
+        match self {
+            Self::Ugt => Self::Sgt,
+            Self::Ult => Self::Slt,
+            Self::Uge => Self::Sge,
+            Self::Ule => Self::Sle,
+            other => other,
+        }
+    }
+
     /// If signed, return the unsigned counterpart (and vice versa).
     /// `eq`/`ne` are returned unchanged. Mirrors the
-    /// `getSignedPredicate` / `getUnsignedPredicate` pair on `ICmpInst`.
+    /// `getSignedPredicate` / `getUnsignedPredicate` pair on `IcmpInst`.
     #[inline]
     pub const fn flip_signedness(self) -> Self {
         match self {
@@ -388,19 +699,60 @@ impl IntPredicate {
 
 impl fmt::Display for IntPredicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<IntPredicate> for u8 {
+    /// The `ICMP_*` discriminant (`32..=41`, `InstrTypes.h`). Infallible:
+    /// every variant has one.
+    #[inline]
+    fn from(predicate: IntPredicate) -> Self {
+        predicate.as_raw()
+    }
+}
+
+impl TryFrom<u8> for IntPredicate {
+    type Error = IrError;
+
+    /// The `?`-friendly twin of [`IntPredicate::from_raw`], which stays the
+    /// `const fn` path. Rejects anything outside
+    /// `FIRST_ICMP_PREDICATE..=LAST_ICMP_PREDICATE` (`InstrTypes.h`) — note
+    /// that includes `0..=15`, which are the *float* predicates.
+    #[inline]
+    fn try_from(raw: u8) -> Result<Self, Self::Error> {
+        Self::from_raw(raw).ok_or(IrError::InvalidDiscriminant {
+            target: "icmp predicate",
+            value: u64::from(raw),
+        })
+    }
+}
+
+impl FromStr for IntPredicate {
+    type Err = IrError;
+
+    /// Inverse of [`Display`](fmt::Display) / [`IntPredicate::as_str`], found
+    /// by searching [`all()`](IntPredicate::all) rather than a second keyword
+    /// table. The lexer half upstream is `LLLexer.cpp`'s `icmp` keyword block.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::all()
+            .find(|p| p.as_str() == s)
+            .ok_or_else(|| IrError::InvalidKeyword {
+                target: "icmp predicate",
+                keyword: s.to_string(),
+            })
     }
 }
 
 /// Upstream provenance: mirrors `CmpInst::Predicate` /
-/// `ICmpInst::Predicate` / `FCmpInst::Predicate` from
+/// `IcmpInst::Predicate` / `FcmpInst::Predicate` from
 /// `include/llvm/IR/InstrTypes.h` and `lib/IR/Instructions.cpp`,
 /// exercised at runtime by `unittests/IR/InstructionsTest.cpp`.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// llvmkit-specific: enum round-trip. Mirrors `FCmpInst::Predicate`
+    /// llvmkit-specific: enum round-trip. Mirrors `FcmpInst::Predicate`
     /// numeric stability in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn float_round_trip() {
@@ -409,7 +761,7 @@ mod tests {
         }
     }
 
-    /// llvmkit-specific: enum round-trip. Mirrors `ICmpInst::Predicate`
+    /// llvmkit-specific: enum round-trip. Mirrors `IcmpInst::Predicate`
     /// numeric stability in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn int_round_trip() {
@@ -488,5 +840,114 @@ mod tests {
         assert_eq!(FloatPredicate::from_raw(16), None);
         assert_eq!(IntPredicate::from_raw(31), None);
         assert_eq!(IntPredicate::from_raw(42), None);
+    }
+
+    /// llvmkit-specific: the `Display`/`FromStr` drift lock — the analogue of
+    /// `attribute_td_drift.rs` for a hand-written keyword table. Upstream's
+    /// `LLLexer` and `AsmWriter` cannot drift apart because both consume the
+    /// same `InstrTypes.h` enum; llvmkit spells the mnemonics once, in
+    /// `as_str`, and this test pins that `parse ∘ display` is the identity
+    /// over every variant. Closest upstream reference:
+    /// `CmpInst::getPredicateName` (`lib/IR/Instructions.cpp`).
+    #[test]
+    fn float_predicate_display_and_from_str_round_trip() {
+        for p in FloatPredicate::all() {
+            // Exhaustive match: a new variant is a compile error here, which
+            // is the prompt to check `MAX_RAW`, `from_raw`, and `as_str`.
+            match p {
+                FloatPredicate::False
+                | FloatPredicate::Oeq
+                | FloatPredicate::Ogt
+                | FloatPredicate::Oge
+                | FloatPredicate::Olt
+                | FloatPredicate::Ole
+                | FloatPredicate::One
+                | FloatPredicate::Ord
+                | FloatPredicate::Uno
+                | FloatPredicate::Ueq
+                | FloatPredicate::Ugt
+                | FloatPredicate::Uge
+                | FloatPredicate::Ult
+                | FloatPredicate::Ule
+                | FloatPredicate::Une
+                | FloatPredicate::True => {}
+            }
+            assert_eq!(p.to_string().parse::<FloatPredicate>(), Ok(p));
+        }
+        // One entry per arm above.
+        assert_eq!(FloatPredicate::all().count(), 16);
+    }
+
+    /// llvmkit-specific: the same drift lock for the integer family. See
+    /// [`float_predicate_display_and_from_str_round_trip`].
+    #[test]
+    fn int_predicate_display_and_from_str_round_trip() {
+        for p in IntPredicate::all() {
+            // Exhaustive match: a new variant is a compile error here.
+            match p {
+                IntPredicate::Eq
+                | IntPredicate::Ne
+                | IntPredicate::Ugt
+                | IntPredicate::Uge
+                | IntPredicate::Ult
+                | IntPredicate::Ule
+                | IntPredicate::Sgt
+                | IntPredicate::Sge
+                | IntPredicate::Slt
+                | IntPredicate::Sle => {}
+            }
+            assert_eq!(p.to_string().parse::<IntPredicate>(), Ok(p));
+        }
+        // One entry per arm above.
+        assert_eq!(IntPredicate::all().count(), 10);
+    }
+
+    /// llvmkit-specific: the negative half of the drift lock — an unknown
+    /// mnemonic is an error, never a silently-defaulted predicate. Closest
+    /// upstream: `LLParser::parseCompare`'s failure path (`LLParser.cpp`).
+    #[test]
+    fn unknown_predicate_keywords_are_rejected() {
+        assert_eq!(
+            "sgt".parse::<FloatPredicate>(),
+            Err(IrError::InvalidKeyword {
+                target: "fcmp predicate",
+                keyword: "sgt".to_string(),
+            })
+        );
+        assert_eq!(
+            "oeq".parse::<IntPredicate>(),
+            Err(IrError::InvalidKeyword {
+                target: "icmp predicate",
+                keyword: "oeq".to_string(),
+            })
+        );
+    }
+
+    /// llvmkit-specific: the `TryFrom`/`From` pair agrees with the `from_raw`
+    /// / `as_raw` const path it wraps, and rejects the same values.
+    /// Closest upstream: the `CmpInst::Predicate` discriminants in
+    /// `include/llvm/IR/InstrTypes.h`.
+    #[test]
+    fn try_from_u8_matches_from_raw() {
+        for p in FloatPredicate::all() {
+            assert_eq!(FloatPredicate::try_from(u8::from(p)), Ok(p));
+        }
+        for p in IntPredicate::all() {
+            assert_eq!(IntPredicate::try_from(u8::from(p)), Ok(p));
+        }
+        assert_eq!(
+            FloatPredicate::try_from(16),
+            Err(IrError::InvalidDiscriminant {
+                target: "fcmp predicate",
+                value: 16,
+            })
+        );
+        assert_eq!(
+            IntPredicate::try_from(0),
+            Err(IrError::InvalidDiscriminant {
+                target: "icmp predicate",
+                value: 0,
+            })
+        );
     }
 }

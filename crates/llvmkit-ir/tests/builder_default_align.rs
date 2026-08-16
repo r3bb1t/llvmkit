@@ -4,7 +4,7 @@
 //! align-less `alloca`/`load`/`store` materialises the DataLayout default and
 //! prints `, align N` with the exact values the default DataLayout yields.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, NoFolder, PointerValue, module_new};
+use llvmkit_ir::{DataLayout, IrBuilder, IrError, Linkage, NoFolder, PointerValue, module_new};
 
 /// `alloca` materialises `getPrefTypeAlign`. The default DataLayout gives
 /// i32->4, i64->8, double->8, i1->1, and i128->8 (no i128 spec, so the walk
@@ -12,16 +12,16 @@ use llvmkit_ir::{IRBuilder, IrError, Linkage, NoFolder, PointerValue, module_new
 #[test]
 fn alloca_materialises_preferred_align() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.build_alloca(m.i32_type(), "a32")?;
-    b.build_alloca(m.i64_type(), "a64")?;
-    b.build_alloca(m.f64_type(), "af64")?;
-    b.build_alloca(m.bool_type(), "a1")?;
-    b.build_alloca(m.int_type_n::<128>(), "a128")?;
-    b.build_ret_void()?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    b.alloca(m.i32_type(), "a32")?;
+    b.alloca(m.i64_type(), "a64")?;
+    b.alloca(m.f64_type(), "af64")?;
+    b.alloca(m.bool_type(), "a1")?;
+    b.alloca(m.int_type_n::<128>(), "a128")?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(text.contains("%a32 = alloca i32, align 4\n"), "{text}");
@@ -41,17 +41,17 @@ fn alloca_materialises_preferred_align() -> Result<(), IrError> {
 fn load_store_materialise_abi_align() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    b.build_load(m.i64_type(), p, "l64")?;
-    b.build_load(m.ptr_type(0), p, "lptr")?;
+    b.load(m.i64_type(), p, "l64")?;
+    b.load(m.ptr_type(0), p, "lptr")?;
     // Store default keys off the *stored value's* type (f32 -> align 4),
     // not the pointer.
-    b.build_store(m.f32_type().const_float(0.0), p)?;
-    b.build_ret_void()?;
+    b.store(m.f32_type().const_float(0.0), p)?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(
@@ -76,14 +76,14 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
 #[test]
 fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
     let m = module_new!("as")?;
-    m.set_data_layout("A5")?;
-    let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
+    m.set_data_layout(DataLayout::parse("A5")?);
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let p = b.build_alloca(m.i32_type(), "p")?;
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let p = b.alloca(m.i32_type(), "p")?;
     assert_eq!(b.view(p).ty().address_space(), 5);
-    b.build_ret_void()?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(

@@ -7,7 +7,7 @@
 //! `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`
 //! and / or mirrors the assembler fixture pinning the textual form.
 
-use llvmkit_ir::{Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`
 /// (the `PtrToIntInst` case). Textual form mirrors
@@ -17,13 +17,13 @@ fn ptrtoint_emits_canonical_form() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let ptr_ty = m.ptr_type(0);
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("p2i", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_ptr_to_int(arg, i64_ty, "y")?;
-    b.build_ret(r)?;
+    let r = b.ptr_to_int(arg, i64_ty, "y")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%y = ptrtoint ptr %0 to i64"), "got:\n{text}");
     Ok(())
@@ -36,13 +36,13 @@ fn inttoptr_emits_canonical_form() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let ptr_ty = m.ptr_type(0);
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(ptr_ty.as_type(), [i64_ty.as_type()], false);
+    let fn_ty = m.function_type(ptr_ty.as_type(), [i64_ty.as_type()]);
     let f = m.add_function_dyn("i2p", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: llvmkit_ir::IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_int_to_ptr(arg, ptr_ty, "y")?;
-    b.build_ret(r)?;
+    let r = b.int_to_ptr(arg, ptr_ty, "y")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%y = inttoptr i64 %0 to ptr"), "got:\n{text}");
     Ok(())
@@ -58,13 +58,13 @@ fn addrspacecast_emits_canonical_form() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let ptr0 = m.ptr_type(0);
     let ptr1 = m.ptr_type(1);
-    let fn_ty = m.fn_type(ptr1.as_type(), [ptr0.as_type()], false);
+    let fn_ty = m.function_type(ptr1.as_type(), [ptr0.as_type()]);
     let f = m.add_function_dyn("ac", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_addrspace_cast(arg, ptr1, "y")?;
-    b.build_ret(r)?;
+    let r = b.addrspace_cast(arg, ptr1, "y")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%y = addrspacecast ptr %0 to ptr addrspace(1)"),

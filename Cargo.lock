@@ -158,6 +158,7 @@ dependencies = [
  "bitflags",
  "boxcar",
  "llvmkit-macros",
+ "llvmkit-tablegen",
  "proptest",
  "thiserror",
  "trybuild",
@@ -175,6 +176,10 @@ dependencies = [
 
 [[package]]
 name = "llvmkit-support"
+version = "0.0.4"
+
+[[package]]
+name = "llvmkit-tablegen"
 version = "0.0.4"
 
 [[package]]

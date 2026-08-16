@@ -13,7 +13,9 @@ use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value::{
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
+};
 use super::value_id::GlobalAliasId;
 
 #[derive(Debug)]
@@ -53,7 +55,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -143,6 +145,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
                 got: constant.ty().kind_label(),
             });
         }
+        self.module.module().context().retarget_global_field_use(
+            self.id,
+            GlobalFieldKind::Aliasee,
+            Some(self.data().aliasee.get()),
+            Some(constant.id),
+        );
         self.data().aliasee.set(constant.id);
         Ok(())
     }
@@ -255,8 +263,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalAlias<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalAlias<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        GlobalAlias::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        GlobalAlias::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(GlobalAlias);
@@ -274,7 +282,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalAlias<'ctx, B> {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalAlias<'ctx, B> {
     fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
@@ -292,7 +300,7 @@ impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalAlias<'_, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalAlias<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(a: GlobalAlias<'ctx, B>) -> Self {
-        a.into_erased()
+        a.as_erased()
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalAlias<'ctx, B>> for Constant<'ctx, B> {
@@ -320,6 +328,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, 
     }
 }
 
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
@@ -363,6 +373,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         }
     }
 
+    #[must_use]
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
@@ -370,26 +381,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
 
     /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
     /// `GlobalValue::setDSOLocal`.
+    #[must_use]
     pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
         self.dso_locality = dso;
         self
     }
 
+    #[must_use]
     pub fn visibility(mut self, visibility: Visibility) -> Self {
         self.visibility = visibility;
         self
     }
 
+    #[must_use]
     pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
         self.dll_storage_class = cls;
         self
     }
 
+    #[must_use]
     pub fn thread_local_mode(mut self, tlm: ThreadLocalMode) -> Self {
         self.thread_local_mode = tlm;
         self
     }
 
+    #[must_use]
     pub fn unnamed_addr(mut self, value: UnnamedAddr) -> Self {
         self.unnamed_addr = value;
         self
@@ -481,9 +497,9 @@ pub const fn is_valid_alias_linkage(linkage: Linkage) -> bool {
         Linkage::External
             | Linkage::AvailableExternally
             | Linkage::LinkOnceAny
-            | Linkage::LinkOnceODR
+            | Linkage::LinkOnceOdr
             | Linkage::WeakAny
-            | Linkage::WeakODR
+            | Linkage::WeakOdr
             | Linkage::Internal
             | Linkage::Private
             | Linkage::ExternalWeak

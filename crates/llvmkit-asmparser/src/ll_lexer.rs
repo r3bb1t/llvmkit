@@ -31,31 +31,60 @@ mod keywords;
 pub const INT_TY_MIN_BITS: u64 = 1;
 
 /// Inclusive maximum width of an `iN` integer type. Mirrors
-/// `llvm::IntegerType::MAX_INT_BITS`.
-pub const INT_TY_MAX_BITS: u64 = (1u64 << 24) - 1; // 16_777_215
+/// `llvm::IntegerType::MAX_INT_BITS` (`DerivedTypes.h`), which is `1 << 23`.
+///
+/// This read `(1 << 24) - 1` until 0.0.5 while claiming to mirror the same
+/// constant, so the lexer accepted `i8388609` through `i16777215` — widths
+/// `llvm-as` rejects outright (`test/Assembler/invalid-inttype.ll` pins
+/// `i8388609` as "the smallest integer type that can't be represented").
+/// The value now matches [`llvmkit_ir::MAX_INT_BITS`], so the rejection
+/// happens in the lexer with upstream's wording rather than downstream with
+/// a limit that contradicted the check that fired.
+pub const INT_TY_MAX_BITS: u64 = 1u64 << 23; // 8_388_608
 
 // ─── LexError ─────────────────────────────────────────────────────────────────
 //
 // The lexer does no I/O — it walks a pre-loaded slice — so I/O failures live
 // one layer up. Every variant here is a structural lexing failure carrying the
 // source [`Span`] of the offending lexeme.
+//
+// **This enum is `LLLexer::LexError`'s call sites, and nothing else.**
+// `LLLexer` produces an `lltok::Error` at twenty-one places, and splits them
+// evenly: ten record a message with `LexError(...)` first, eleven are silent.
+// The ten are this enum; the eleven are `Token::Error`, which reaches the
+// parser so that `LLParser` supplies the wording from the production it was in
+// the middle of. Upstream's `LLLexer::ErrorPriority` is the same split
+// expressed as a rank — a lexer message outranks a parser one, so where a
+// message exists it is what a reader sees.
+//
+// Two caveats, both recorded in `docs/divergences.md`:
+//
+//   * Six of upstream's `LexError(...)` calls are **non-fatal** — the lexer
+//     records the message and returns a real token, so `llvm-as` builds a
+//     module from a truncated value when the parse otherwise succeeds. Every
+//     variant here is fatal.
+//   * `IntegerOverflow64` and `IntegerOverflow128` mirror four of those six
+//     (`atoull`, `HexIntToVal`, `HexToIntPair`, `FP80HexToIntPair`) and are
+//     currently unreachable: llvmkit's lexer stores numeric lexemes and lets
+//     the parser decode them at the destination width, so it never performs
+//     the accumulate-and-detect-wraparound those helpers do.
 
 /// All lexer-level failures.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, thiserror::Error)]
 pub enum LexError {
-    #[error("unterminated /* */ block comment")]
+    #[error("unterminated comment")]
     UnterminatedBlockComment { span: Span },
 
     #[error("end of file in string constant")]
     UnterminatedString { span: Span },
 
-    #[error("end of file in {kind:?} name")]
+    #[error("{}", .kind.unterminated_message())]
     UnterminatedQuotedName { kind: QuotedNameKind, span: Span },
 
     #[error("NUL character is not allowed in names")]
     NulInName { span: Span },
 
-    #[error("invalid value number (does not fit in u32)")]
+    #[error("invalid value number (too large)")]
     IdOverflow { span: Span },
 
     #[error("constant bigger than 64 bits detected")]
@@ -64,17 +93,14 @@ pub enum LexError {
     #[error("constant bigger than 128 bits detected")]
     IntegerOverflow128 { span: Span },
 
-    #[error("bitwidth for integer type out of range (got {width}, must be 1..={max})")]
+    // `width` and `max` stay as structured fields — a caller can still ask
+    // what the offending width was — but the rendered text is upstream's,
+    // which names neither.
+    #[error("bitwidth for integer type out of range")]
     IntegerWidthOutOfRange { width: u64, max: u32, span: Span },
 
-    #[error("hexadecimal constant too large for {target:?} (16-bit)")]
+    #[error("hexadecimal constant too large for {} (16-bit)", .target.upstream_name())]
     HexFpTooLarge { target: HexFpKind, span: Span },
-
-    #[error("invalid token")]
-    UnknownToken { span: Span },
-
-    #[error("expected '*' after '/' to start block comment")]
-    StraySlash { span: Span },
 }
 
 impl LexError {
@@ -90,9 +116,7 @@ impl LexError {
             | LexError::IntegerOverflow64 { span }
             | LexError::IntegerOverflow128 { span }
             | LexError::IntegerWidthOutOfRange { span, .. }
-            | LexError::HexFpTooLarge { span, .. }
-            | LexError::UnknownToken { span }
-            | LexError::StraySlash { span } => *span,
+            | LexError::HexFpTooLarge { span, .. } => *span,
         }
     }
 }
@@ -187,12 +211,13 @@ impl<'src> Lexer<'src> {
 
     /// Produce the next token. EOF is returned as a real `Token::Eof`; calling
     /// `next_token` after EOF returns more `Eof` tokens (mirroring `LLLexer`'s
-    /// "another call to lex will return EOF again" behavior at LLLexer.cpp:188).
+    /// "another call to lex will return EOF again" behavior in
+    /// `LLLexer::LexToken`).
     pub fn next_token(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         loop {
-            // Per LLLexer::LexToken (LLLexer.cpp:194), PrevTokEnd is set at the
-            // start of each *attempt* to lex a token, before whitespace/comment
-            // skipping advances the cursor.
+            // Per `LLLexer::LexToken`, PrevTokEnd is set at the start of each
+            // *attempt* to lex a token, before whitespace/comment skipping
+            // advances the cursor.
             self.prev_tok_end = self.pos;
             self.tok_start = self.pos;
 
@@ -202,7 +227,8 @@ impl<'src> Lexer<'src> {
             };
 
             match c {
-                // Whitespace + mid-buffer NUL (LLLexer.cpp:182).
+                // Whitespace + mid-buffer NUL (`LLLexer::LexToken`'s first
+                // `switch` arm).
                 b' ' | b'\t' | b'\n' | b'\r' | 0 => {
                     self.bump();
                     continue;
@@ -212,9 +238,16 @@ impl<'src> Lexer<'src> {
                     self.skip_line_comment();
                     continue;
                 }
-                // Block comment.
+                // Block comment. `LLLexer::LexToken`'s `case '/'` has two
+                // separate `lltok::Error` returns: a `/` that is not followed
+                // by `*` (silent — the parser names what it wanted), and an
+                // unterminated comment (`SkipCComment` already recorded
+                // `unterminated comment`).
                 b'/' => {
-                    self.bump();
+                    self.bump(); // '/'
+                    if self.bump() != Some(b'*') {
+                        return Ok(self.spanned(Token::Error, self.current_span()));
+                    }
                     self.skip_block_comment()?;
                     continue;
                 }
@@ -286,11 +319,12 @@ impl<'src> Lexer<'src> {
 
                 c if c.is_ascii_alphabetic() || c == b'_' => return self.lex_identifier(),
 
+                // A byte that begins no token at all — `LLLexer::LexToken`'s
+                // `default:`, which falls through to a silent `lltok::Error`
+                // once the `isalpha`/`_` test fails.
                 _ => {
                     self.bump();
-                    return Err(LexError::UnknownToken {
-                        span: self.current_span(),
-                    });
+                    return Ok(self.spanned(Token::Error, self.current_span()));
                 }
             }
         }
@@ -299,7 +333,7 @@ impl<'src> Lexer<'src> {
     // ── Comments ─────────────────────────────────────────────────────────────
 
     /// Skip from the current `;` through the end of the line. Mirrors
-    /// `LLLexer::SkipLineComment` (LLLexer.cpp:265).
+    /// `LLLexer::SkipLineComment`.
     fn skip_line_comment(&mut self) {
         while let Some(b) = self.peek() {
             if b == b'\n' || b == b'\r' {
@@ -309,18 +343,11 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    /// Skip the body of a `/* … */` comment (the leading `/` was already
-    /// consumed). Mirrors `LLLexer::SkipCComment` (LLLexer.cpp:274).
+    /// Skip the body of a `/* … */` comment (the leading `/*` was already
+    /// consumed). Mirrors `LLLexer::SkipCComment`, which reports
+    /// `unterminated comment` itself and answers "there was an error" to a
+    /// caller that then returns `lltok::Error`.
     fn skip_block_comment(&mut self) -> Result<(), LexError> {
-        // Expect '*' immediately after the '/'.
-        match self.bump() {
-            Some(b'*') => {}
-            _ => {
-                return Err(LexError::StraySlash {
-                    span: self.span_from(self.tok_start),
-                });
-            }
-        }
         loop {
             match self.bump() {
                 None => {
@@ -348,7 +375,7 @@ impl<'src> Lexer<'src> {
     // ── Identifier-prefix lexers ─────────────────────────────────────────────
 
     /// Lex `@…` (global) or `%…` (local) tokens.
-    /// Mirrors `LLLexer::LexVar` (LLLexer.cpp:391).
+    /// Mirrors `LLLexer::LexVar`.
     fn lex_var(&mut self, kind: QuotedNameKind) -> Result<Spanned<Token<'src>>, LexError> {
         self.bump(); // consume sigil
 
@@ -394,13 +421,14 @@ impl<'src> Lexer<'src> {
             return Ok(self.spanned(token, span));
         }
 
-        Err(LexError::UnknownToken {
-            span: self.current_span(),
-        })
+        // Neither a name nor a number: `LLLexer::LexVar` falls into
+        // `LexUIntID`, whose `!isdigit` guard returns a silent `lltok::Error`
+        // with the cursor left one past the sigil.
+        Ok(self.spanned(Token::Error, self.current_span()))
     }
 
     /// Lex `$…` — quoted comdat or label-tail starting with `$`.
-    /// Mirrors `LLLexer::LexDollar` (LLLexer.cpp:302).
+    /// Mirrors `LLLexer::LexDollar`.
     fn lex_dollar(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         // Try label-tail rooted at TokStart (which is already at the `$`).
         if let Some(end) = is_label_tail(self.src, self.pos) {
@@ -442,13 +470,12 @@ impl<'src> Lexer<'src> {
             ));
         }
 
-        Err(LexError::UnknownToken {
-            span: self.current_span(),
-        })
+        // `LLLexer::LexDollar` ends `return lltok::Error;` with no message.
+        Ok(self.spanned(Token::Error, self.current_span()))
     }
 
     /// Lex `!…`. Either `!` alone (`Exclaim`) or `!name` (`MetadataVar`).
-    /// Mirrors `LLLexer::LexExclaim` (LLLexer.cpp:455).
+    /// Mirrors `LLLexer::LexExclaim`.
     fn lex_exclaim(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         self.bump(); // consume '!'
 
@@ -472,20 +499,19 @@ impl<'src> Lexer<'src> {
         Ok(self.spanned(Token::MetadataVar(decoded), self.current_span()))
     }
 
-    /// Lex `^[0-9]+` summary id. Mirrors `LLLexer::LexCaret` (LLLexer.cpp:475).
+    /// Lex `^[0-9]+` summary id. Mirrors `LLLexer::LexCaret`.
     fn lex_caret(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         self.bump(); // '^'
         if !matches!(self.peek(), Some(b'0'..=b'9')) {
-            return Err(LexError::UnknownToken {
-                span: self.current_span(),
-            });
+            // `LLLexer::LexUIntID`'s `!isdigit` guard: silent `lltok::Error`.
+            return Ok(self.spanned(Token::Error, self.current_span()));
         }
         let id = self.lex_uint()?;
         Ok(self.spanned(Token::SummaryId(id), self.current_span()))
     }
 
     /// Lex `#…` — either `#42` (AttrGrpId) or `#` alone (Hash).
-    /// Mirrors `LLLexer::LexHash` (LLLexer.cpp:483).
+    /// Mirrors `LLLexer::LexHash`.
     fn lex_hash(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         self.bump(); // '#'
         if matches!(self.peek(), Some(b'0'..=b'9')) {
@@ -496,7 +522,7 @@ impl<'src> Lexer<'src> {
     }
 
     /// Lex a `"…"` token. Either a string constant or, if followed by `:`,
-    /// a quoted label.  Mirrors `LLLexer::LexQuote` (LLLexer.cpp:434).
+    /// a quoted label.  Mirrors `LLLexer::LexQuote`.
     fn lex_quote(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         let raw = self.read_quoted_payload(QuotedNameKind::String)?;
         let decoded = escape::unescape(raw);
@@ -565,8 +591,11 @@ impl<'src> Lexer<'src> {
     // ── Numbers / labels ─────────────────────────────────────────────────────
 
     /// Consume `[0-9]+` and return as `u32`, erroring if the value overflows.
-    /// Used for `@42`, `%42`, `^42`, `#42`, and numeric labels. The cursor
-    /// must already be on the first digit (i.e. caller didn't consume it).
+    /// `LLLexer::LexUIntID`'s digit run: `@42`, `%42`, `^42` and `#42`. The
+    /// numeric *label* `42:` has its own arm inside
+    /// [`Self::lex_digit_or_negative`], because upstream's is in
+    /// `LexDigitOrNegative` rather than `LexUIntID`. The cursor must already
+    /// be on the first digit (i.e. the caller has not consumed it).
     fn lex_uint(&mut self) -> Result<u32, LexError> {
         let digits_start = self.pos;
         while matches!(self.peek(), Some(b'0'..=b'9')) {
@@ -581,7 +610,7 @@ impl<'src> Lexer<'src> {
     }
 
     /// Lex `.` — either `...` punctuation or a `.` -prefixed label.
-    /// Mirrors LLLexer.cpp:219.
+    /// Mirrors `LLLexer::LexToken`'s `case '.'`.
     fn lex_dot(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         // Look-ahead label tail starting at the '.'.
         if let Some(end) = is_label_tail(self.src, self.pos + 1) {
@@ -600,15 +629,14 @@ impl<'src> Lexer<'src> {
             self.pos += 3;
             return Ok(self.spanned(Token::DotDotDot, self.current_span()));
         }
-        // Bare '.' isn't a token in LLVM IR.
+        // Bare '.' isn't a token in LLVM IR: `LLLexer::LexToken`'s `case '.'`
+        // ends `return lltok::Error;` with no message.
         self.bump();
-        Err(LexError::UnknownToken {
-            span: self.current_span(),
-        })
+        Ok(self.spanned(Token::Error, self.current_span()))
     }
 
     /// `[0-9]+` or `-[0-9…]` or numeric label. Mirrors
-    /// `LLLexer::LexDigitOrNegative` (LLLexer.cpp:1163).
+    /// `LLLexer::LexDigitOrNegative`.
     fn lex_digit_or_negative(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         let first = self.peek().expect("caller verified non-empty");
 
@@ -624,9 +652,9 @@ impl<'src> Lexer<'src> {
                     self.current_span(),
                 ));
             }
-            return Err(LexError::UnknownToken {
-                span: self.current_span(),
-            });
+            // `LLLexer::LexDigitOrNegative`'s "not a number after the -, and
+            // not a label either" exit: silent `lltok::Error`.
+            return Ok(self.spanned(Token::Error, self.current_span()));
         }
 
         // Either '-' followed by digits, or already a digit.
@@ -641,16 +669,24 @@ impl<'src> Lexer<'src> {
             self.bump();
         }
 
-        // Numeric label: digits then ':'. (Only allowed if we started with a digit.)
+        // Numeric label: digits then ':'. (Only allowed if we started with a
+        // digit — upstream's guard is `isdigit(TokStart[0])`, and for `-1:`
+        // the leading `-` sends it to the string-label arm below instead.)
         if matches!(sign, Sign::Pos) && self.peek() == Some(b':') {
-            // We started with a digit (since sign == Pos). The leading char is
-            // included in the label slice.
-            let content = &self.src[self.tok_start..self.pos];
+            let digits = ascii_str(&self.src[self.tok_start..self.pos]);
             self.bump(); // ':'
-            return Ok(self.spanned(
-                Token::LabelStr(std::borrow::Cow::Borrowed(content)),
-                self.current_span(),
-            ));
+            // `atoull` reports `constant bigger than 64 bits detected` on
+            // wraparound and the arm itself reports
+            // `invalid value number (too large)` when the value does not fit
+            // an `unsigned`. Both messages are upstream's; the fatality is
+            // llvmkit's, exactly as for `@4294967296` in `lex_uint` (upstream
+            // records the message, truncates, and carries on — divergence 101).
+            let span = self.span_from(self.tok_start);
+            let value = digits
+                .parse::<u64>()
+                .map_err(|_| LexError::IntegerOverflow64 { span })?;
+            let id = u32::try_from(value).map_err(|_| LexError::IdOverflow { span })?;
+            return Ok(self.spanned(Token::LabelId(id), self.current_span()));
         }
 
         // String label, e.g. `-1.foo:` or `1bb:`.
@@ -691,23 +727,25 @@ impl<'src> Lexer<'src> {
         Ok(self.spanned(Token::FloatLit(FpLit::Decimal(lex)), self.current_span()))
     }
 
-    /// Lex `+1.5` style positive FP literal. Mirrors LLLexer.cpp:1232.
+    /// Lex `+1.5` style positive FP literal. Mirrors `LLLexer::LexPositive`.
     fn lex_positive(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         self.bump(); // '+'
         if !matches!(self.peek(), Some(b'0'..=b'9')) {
-            return Err(LexError::UnknownToken {
-                span: self.current_span(),
-            });
+            // `LLLexer::LexPositive`'s leading guard: silent `lltok::Error`,
+            // cursor left one past the `+`.
+            return Ok(self.spanned(Token::Error, self.current_span()));
         }
         // Skip integer part.
         while matches!(self.peek(), Some(b'0'..=b'9')) {
             self.bump();
         }
-        // Must have a '.'.
+        // A `+`-prefixed literal is floating-point, so the `.` is mandatory.
+        // `LLLexer::LexPositive` rewinds to `TokStart+1` and returns a silent
+        // `lltok::Error`; the rewind is the cursor position the next token is
+        // lexed from, so it is reproduced rather than merely reported.
         if self.peek() != Some(b'.') {
-            return Err(LexError::UnknownToken {
-                span: self.current_span(),
-            });
+            self.pos = self.tok_start + 1;
+            return Ok(self.spanned(Token::Error, self.current_span()));
         }
         self.consume_fp_tail()?;
         let lex = ascii_str(&self.src[self.tok_start..self.pos]);
@@ -744,7 +782,7 @@ impl<'src> Lexer<'src> {
     }
 
     /// Lex `0x[KLMHR]?[0-9A-Fa-f]+` (the `0x` is already at `self.tok_start`).
-    /// Mirrors `LLLexer::Lex0x` (LLLexer.cpp:1085).
+    /// Mirrors `LLLexer::Lex0x`.
     fn lex_hex_fp(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         // Cursor sits just past the digit run we already consumed in
         // `lex_digit_or_negative`. Re-park it after the `0x` prefix and reparse.
@@ -760,12 +798,10 @@ impl<'src> Lexer<'src> {
 
         let digits_start = self.pos;
         if !matches!(self.peek(), Some(c) if c.is_ascii_hexdigit()) {
-            // Bad token; LLLexer.cpp:1097-1100 rewinds to TokStart+1 and
-            // returns an error. Mirror it.
+            // "Bad token, return it as an error" — `LLLexer::Lex0x` rewinds to
+            // `TokStart+1` and returns a silent `lltok::Error`.
             self.pos = self.tok_start + 1;
-            return Err(LexError::UnknownToken {
-                span: self.current_span(),
-            });
+            return Ok(self.spanned(Token::Error, self.current_span()));
         }
         while matches!(self.peek(), Some(c) if c.is_ascii_hexdigit()) {
             self.bump();
@@ -782,8 +818,8 @@ impl<'src> Lexer<'src> {
                 Token::FloatLit(FpLit::HexHalf(digits))
             }
             b'R' => {
-                self.check_hex16_fits(digits, HexFpKind::BFloat)?;
-                Token::FloatLit(FpLit::HexBFloat(digits))
+                self.check_hex16_fits(digits, HexFpKind::Bfloat)?;
+                Token::FloatLit(FpLit::HexBfloat(digits))
             }
             _ => unreachable!(),
         };
@@ -791,7 +827,8 @@ impl<'src> Lexer<'src> {
     }
 
     /// Reject `0xH` / `0xR` constants whose payload doesn't fit in 16 bits.
-    /// Mirrors `llvm::isUInt<16>(Val)` (LLLexer.cpp:1134, :1144).
+    /// Mirrors the `llvm::isUInt<16>(Val)` guards on `LLLexer::Lex0x`'s `'H'`
+    /// and `'R'` arms.
     fn check_hex16_fits(&self, digits: &str, target: HexFpKind) -> Result<(), LexError> {
         u16::from_str_radix(digits, 16)
             .map(|_| ())
@@ -804,13 +841,14 @@ impl<'src> Lexer<'src> {
     // ── Identifier / keyword path ────────────────────────────────────────────
 
     /// Lex a label, integer type, or keyword starting with `[a-zA-Z_]`.
-    /// Mirrors `LLLexer::LexIdentifier` (LLLexer.cpp:495).
+    /// Mirrors `LLLexer::LexIdentifier`.
     fn lex_identifier(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
         let first = self.bump().expect("caller verified non-empty");
 
         // Walk the label-char run, recording the first non-keyword-char position.
         // (Keyword chars are alnum + `_`; label chars also include `-`, `$`, `.`.)
-        // Mirrors LLLexer.cpp:500-507.
+        // Mirrors `LexIdentifier`'s `isLabelChar` walk and its `KeywordEnd`
+        // bookkeeping.
         let mut keyword_end: Option<usize> = None;
         while let Some(b) = self.peek() {
             if !is_label_char(b) {
@@ -822,7 +860,8 @@ impl<'src> Lexer<'src> {
             self.bump();
         }
 
-        // Label terminator unless we've been told to ignore it (LLLexer.cpp:511).
+        // Label terminator unless we've been told to ignore it
+        // (`LexIdentifier`'s `!IgnoreColonInIdentifiers && *CurPtr == ':'`).
         if !self.ignore_colon_in_idents && self.peek() == Some(b':') {
             let content = &self.src[self.tok_start..self.pos];
             self.bump(); // ':'
@@ -833,7 +872,8 @@ impl<'src> Lexer<'src> {
         }
 
         // Integer type `iN` — only meaningful when the leading byte is `i`
-        // followed by at least one digit (LLLexer.cpp:518-528).
+        // followed by at least one digit (`LexIdentifier`'s `IntEnd` arm, with
+        // its `IntegerType::{MIN,MAX}_INT_BITS` range check).
         if first == b'i' {
             let mut int_end = self.tok_start + 1;
             while int_end < self.pos && self.src[int_end].is_ascii_digit() {
@@ -883,12 +923,29 @@ impl<'src> Lexer<'src> {
         }
 
         // [us]0x[hex]+ APSInt.
-        if let Some(tok) = self.classify_hex_apsint(word)? {
-            return Ok(self.spanned(tok, span));
+        match classify_hex_apsint(word) {
+            HexApsInt::Literal(tok) => return Ok(self.spanned(tok, span)),
+            HexApsInt::BadDigits => {
+                // "Bad token, return it as an error." Upstream rewinds to
+                // `TokStart+3` — past the `[us]0x` prefix — and returns a
+                // silent `lltok::Error`.
+                self.pos = self.tok_start + 3;
+                return Ok(self.spanned(Token::Error, self.current_span()));
+            }
+            HexApsInt::NotHexPrefixed => {}
         }
 
-        // cc<digits> rewind: emit `kw_cc` and rewind cursor to just past `cc`.
-        if word.len() > 2 && word.starts_with(b"cc") && word[2..].iter().all(|c| c.is_ascii_digit())
+        // `// If this is "cc1234", return this as just "cc".` — emit `kw_cc`
+        // and rewind the cursor to just past the `cc`.
+        //
+        // The guard is upstream's `TokStart[0] == 'c' && TokStart[1] == 'c'`
+        // read off the *source*, not a digit test on the tail: `ccfoo` is
+        // `kw_cc` followed by `foo` for `LLLexer`, and was a lex error here
+        // while the tail had to be all digits. `cc` and `ccc` never reach this
+        // point — the `KEYWORD` table above claims both — so the only words
+        // left are the ones upstream rewinds.
+        if self.src.get(self.tok_start) == Some(&b'c')
+            && self.src.get(self.tok_start + 1) == Some(&b'c')
         {
             self.pos = self.tok_start + 2;
             return Ok(self.spanned(
@@ -897,11 +954,15 @@ impl<'src> Lexer<'src> {
             ));
         }
 
-        // Truly unknown — rewind to a single byte and emit error (LLLexer.cpp:1073).
+        // "Finally, if this isn't known, return an error." The final
+        // fallthrough of `LLLexer::LexIdentifier`: rewind to `TokStart+1` and
+        // hand the parser a silent `lltok::Error`, so the message a reader
+        // sees names the production the parser was in — `expected top-level
+        // entity`, `expected memory location (argmem, …)`, `expected emission
+        // kind` — rather than the lexeme. The span still opens at `TokStart`,
+        // which is what `LLLexer::getLoc` reports the diagnostic at.
         self.pos = self.tok_start + 1;
-        Err(LexError::UnknownToken {
-            span: self.current_span(),
-        })
+        Ok(self.spanned(Token::Error, self.current_span()))
     }
 
     /// Classify words with structured prefixes: `DW_..._`, `DIFlag`, `DISPFlag`,
@@ -929,37 +990,13 @@ impl<'src> Lexer<'src> {
                 Some("VIRTUALITY") => Token::DwarfVirtuality(s),
                 Some("LANG") => Token::DwarfLang(s),
                 Some("LNAME") => Token::DwarfSourceLangName(s),
-                Some("CC") => Token::DwarfCC(s),
+                Some("CC") => Token::DwarfCc(s),
                 Some("OP") => Token::DwarfOp(s),
                 Some("MACINFO") => Token::DwarfMacinfo(s),
                 Some("APPLE") if rest.starts_with("APPLE_ENUM_KIND_") => Token::DwarfEnumKind(s),
                 _ => return None,
             };
             return Some(token);
-        }
-
-        if matches!(
-            s,
-            "DIFile"
-                | "DICompileUnit"
-                | "DISubprogram"
-                | "DILocation"
-                | "DILocalVariable"
-                | "DIBasicType"
-                | "DIDerivedType"
-                | "DICompositeType"
-                | "DISubrange"
-                | "DINamespace"
-                | "DIExpression"
-                | "DIGlobalVariable"
-                | "DIGlobalVariableExpression"
-                | "DISubroutineType"
-                | "DIEnumerator"
-                | "DIModule"
-                | "DITemplateTypeParameter"
-                | "DITemplateValueParameter"
-        ) {
-            return Some(Token::SpecializedMetadata(s));
         }
 
         if s.starts_with("DIFlag") {
@@ -981,32 +1018,49 @@ impl<'src> Lexer<'src> {
             _ => None,
         }
     }
+}
 
-    /// `[us]0x[0-9A-Fa-f]+` — emit an `IntegerLit` flagged as
-    /// hex-signed/unsigned. Returns Ok(None) when the word doesn't fit the
-    /// pattern; returns Ok(Some) on a match.
-    fn classify_hex_apsint(&self, word: &'src [u8]) -> Result<Option<Token<'src>>, LexError> {
-        if word.len() < 4 {
-            return Ok(None);
-        }
-        let base = match word[0] {
-            b's' => NumBase::HexSigned,
-            b'u' => NumBase::HexUnsigned,
-            _ => return Ok(None),
-        };
-        if word[1] != b'0' || word[2] != b'x' {
-            return Ok(None);
-        }
-        if !word[3..].iter().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(None);
-        }
-        let digits = ascii_str(&word[3..]);
-        Ok(Some(Token::IntegerLit(IntLit {
-            sign: Sign::Pos,
-            base,
-            digits,
-        })))
+/// What `LLLexer::LexIdentifier`'s `[us]0x[0-9A-Fa-f]+` block decided.
+///
+/// Three outcomes rather than an `Option` because upstream's block has three:
+/// the guard that declines the word entirely, the well-formed literal, and the
+/// "Bad token, return it as an error" exit — which is *not* the same as
+/// declining, since it rewinds the cursor differently and stops classifying.
+enum HexApsInt<'src> {
+    /// The word does not open `[us]0x<hexdigit>`; keep classifying it.
+    NotHexPrefixed,
+    /// `[us]0x<hexdigit>` followed by a non-hex-digit.
+    BadDigits,
+    /// A well-formed `[us]0x…` APSInt literal.
+    Literal(Token<'src>),
+}
+
+/// `[us]0x[0-9A-Fa-f]+` — the hexadecimal `APSInt` form Clang emits to avoid
+/// dealing with 64-bit numbers. Mirrors the matching block in
+/// `LLLexer::LexIdentifier`, whose entry guard tests only the *first*
+/// hexadecimal digit and whose body then requires all of them.
+fn classify_hex_apsint(word: &[u8]) -> HexApsInt<'_> {
+    let (Some(&first), Some(&b'0'), Some(&b'x'), Some(&fourth)) =
+        (word.first(), word.get(1), word.get(2), word.get(3))
+    else {
+        return HexApsInt::NotHexPrefixed;
+    };
+    let base = match first {
+        b's' => NumBase::HexSigned,
+        b'u' => NumBase::HexUnsigned,
+        _ => return HexApsInt::NotHexPrefixed,
+    };
+    if !fourth.is_ascii_hexdigit() {
+        return HexApsInt::NotHexPrefixed;
     }
+    if !word[4..].iter().all(|c| c.is_ascii_hexdigit()) {
+        return HexApsInt::BadDigits;
+    }
+    HexApsInt::Literal(Token::IntegerLit(IntLit {
+        sign: Sign::Pos,
+        base,
+        digits: ascii_str(&word[3..]),
+    }))
 }
 
 // ─── Iterator ─────────────────────────────────────────────────────────────────
@@ -1027,6 +1081,29 @@ impl<'src> From<&'src str> for Lexer<'src> {
     }
 }
 
+/// The two ways to drive the lexer differ **only** at end of input, and
+/// deliberately so:
+///
+/// * [`Lexer::next_token`] mirrors `LLLexer::Lex` — it yields a real
+///   `Ok(Token::Eof)` at end of input, and keeps yielding it for every later
+///   call ("another call to lex will return EOF again", `LLLexer::LexToken`).
+///   That is what a recursive-descent parser wants: `Eof` is a token it can
+///   match on, and over-reading past it is not a bug.
+/// * This `Iterator` translates that terminator into `None`, so `Eof` never
+///   appears as an item. A `for` loop therefore sees exactly the tokens the
+///   source contains.
+///
+/// Neither failure mode is a terminator on either side.
+///
+/// A [`Token::Error`] is an ordinary `Ok` item — that is the whole point of
+/// the variant — and the cursor has advanced past at least one byte, so
+/// iteration continues and cannot spin. It is the parser's job to decide the
+/// token is fatal, and to say what it wanted instead.
+///
+/// A [`LexError`] yields `Some(Err(..))`. Stop on the first one unless you
+/// have a reason not to: the cursor is wherever the failing routine left it,
+/// which for the unterminated forms is end of input, so continuing yields
+/// `Eof` rather than the same error again.
 impl<'src> Iterator for Lexer<'src> {
     type Item = Result<Spanned<Token<'src>>, LexError>;
 
@@ -1038,9 +1115,13 @@ impl<'src> Iterator for Lexer<'src> {
     }
 }
 
+/// Once end of input is reached the cursor cannot move again, so `next`
+/// answers `None` forever — the fused contract holds without a `Fuse` wrapper.
+impl core::iter::FusedIterator for Lexer<'_> {}
+
 // ─── Free helpers (LLLexer.cpp top-level statics) ─────────────────────────────
 
-/// `[-a-zA-Z$._0-9]`. Mirrors `isLabelChar` (LLLexer.cpp:153).
+/// `[-a-zA-Z$._0-9]`. Mirrors `isLabelChar`.
 #[inline]
 fn is_label_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'$' || b == b'.' || b == b'_'
@@ -1077,7 +1158,7 @@ fn ascii_str(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("lexer regex guarantees ASCII")
 }
 
-/// Mirrors `isLabelTail` (LLLexer.cpp:158): scan forward from `pos`, return
+/// Mirrors `isLabelTail`: scan forward from `pos`, return
 /// `Some(end)` where `end` is the offset just *past* the colon if the bytes
 /// from `pos` form `[-a-zA-Z$._0-9]*:`. Returns `None` otherwise.
 #[inline]

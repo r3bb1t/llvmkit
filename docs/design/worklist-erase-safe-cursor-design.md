@@ -17,6 +17,12 @@ and `docs/future-work.md`, now designed in detail.
 > original design voice and is left as-is, and the "Context" section below
 > describes `dce.rs` / `inst_simplify.rs` as they were *before* this work —
 > neither restart-scans today.
+>
+> **Renamed after this landed** (recorded 2026-08-06). The advance method on both
+> cursors shipped as `next` and became **`step`** in the 0.0.4 API sweep —
+> `WorklistScope::step` and `iter::BlockCursor::step` — because `next` on an
+> inherent method reads as `Iterator::next` and neither type is an `Iterator`.
+> The samples below already use `step`; older prose elsewhere may still say `next`.
 
 ## Context
 
@@ -130,9 +136,15 @@ impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R> {
     /// terminator. Cascades (erasing instructions *ahead* of the cursor) are the
     /// worklist's job, not the cursor's — a bare-cursor pass that needs them
     /// should drive a worklist instead.
-    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'m, B>> + '_;
+    pub fn body_instructions(
+        &self,
+    ) -> impl Iterator<Item = NonTerminator<'m, B>> + use<'m, 'r, 'ctx, B, R>;
 }
 ```
+
+(The `use<..>` bound rather than `+ '_` is deliberate and shipped that way: the walk
+snapshots each block's ids outright, so the returned iterator does not borrow the
+`&self` it was created from and may outlive it.)
 
 Used to seed the worklist and independently usable for simple single-pass
 transforms. Distinct from `iter::BlockCursor` (which is `Unterminated`-only and
@@ -140,9 +152,15 @@ yields `Instruction<Attached>`); that primitive is unchanged.
 
 ## Component 4 — `WorklistScope` driver handle (`worklist.rs`)
 
+> **Shipped as** (recorded 2026-08-06, 0.0.4). `WorklistScope` lives in
+> `pass_context.rs`, next to the `FnPatch` it borrows, not in `worklist.rs` —
+> only the brand-generic `Worklist<B>` data structure went into the new module.
+> `Worklist` is re-exported from the crate root; `WorklistScope` is reached as
+> `llvmkit_ir::pass_context::WorklistScope`.
+
 ```rust
 let scope = patch.worklist();          // activates + seeds all non-terminators
-while let Some(inst) = scope.next() {  // liveness-safe pop
+while let Some(inst) = scope.step() {  // liveness-safe pop
     // pass body mutates via `patch` directly; the mutation auto-cascades
 }
 drop(scope);                           // deactivates the worklist slot
@@ -150,10 +168,10 @@ drop(scope);                           // deactivates the worklist slot
 
 `patch.worklist()` returns a `WorklistScope` borrowing `&patch`: on creation it
 sets `patch.worklist = Some(Worklist::new())` and seeds it from
-`body_instructions()`; `next()` pops the next live instruction; `Drop` restores
+`body_instructions()`; `step()` pops the next live instruction; `Drop` restores
 `patch.worklist = None`. The scope borrows `patch` shared, and the pass body calls
 `patch.erase`/`patch.replace_all_uses` (also `&self`) — both shared borrows, so the
-loop composes without a borrow conflict; `next()`'s pop and the mutators' pushes
+loop composes without a borrow conflict; `step()`'s pop and the mutators' pushes
 touch the `RefCell` in disjoint, sequential borrows.
 
 Only one scope may be live on a given `FnPatch`: the shared slot holds one
@@ -167,7 +185,7 @@ that rather than failing quietly.
 // DcePass::run
 let patch = cx.mutate();
 let scope = patch.worklist();
-while let Some(inst) = scope.next() {
+while let Some(inst) = scope.step() {
     if is_trivially_dead(&inst.as_view()) {
         patch.erase(&inst);                      // auto-pushes operand-defs, self-removes
     }
@@ -179,7 +197,7 @@ Ok(patch.done())
 let patch = cx.mutate();
 let dl = patch.function().module().data_layout().clone();
 let scope = patch.worklist();
-while let Some(inst) = scope.next() {
+while let Some(inst) = scope.step() {
     let view = inst.as_view();
     if !view.to_erased().has_uses() { continue; }            // upstream !use_empty guard
     if let Some(c) = constant_fold_instruction(&view, &dl, None)? {

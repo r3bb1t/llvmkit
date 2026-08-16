@@ -22,7 +22,7 @@ use super::value_id::BlockId;
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
 /// substrate. Its invalidation rule is wired in `analysis.rs`: preserved by
-/// itself, `AllAnalysesOnFunction`, or `CFGAnalyses`, matching LLVM's
+/// itself, `AllAnalysesOnFunction`, or `CfgAnalyses`, matching LLVM's
 /// `DominatorTree::invalidate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct DominatorTreeAnalysis;
@@ -282,7 +282,7 @@ impl DominatorTree {
             return false;
         }
         if let Some(normal_dest) = self.normal_dest.get(&def_id).copied() {
-            return self.dominates_edge_ids(def_bb.slot(), normal_dest, use_bb_id);
+            return self.dominates_edge_slots(def_bb.slot(), normal_dest, use_bb_id);
         }
         self.dominates_block_ids(def_bb.slot(), use_bb_id)
     }
@@ -331,7 +331,7 @@ impl DominatorTree {
         EB: ModuleBrand + 'ctx,
         B: DominatorTreeBlock<'ctx>,
     {
-        self.dominates_edge_ids(
+        self.dominates_edge_slots(
             edge.start().slot(),
             edge.end().slot(),
             block.dominator_block_id(),
@@ -378,10 +378,12 @@ impl DominatorTree {
             return true;
         }
         let use_bb_id = self.use_block_id(user_id, use_index);
-        self.dominates_edge_ids(start_id, end_id, use_bb_id)
+        self.dominates_edge_slots(start_id, end_id, use_bb_id)
     }
 
-    fn dominates_edge_ids(
+    /// Edge dominance over raw slots. Ports the `BasicBlockEdge` overload of
+    /// `DominatorTree::dominates` once the edge is already in hand.
+    pub(crate) fn dominates_edge_slots(
         &self,
         start_id: ValueSlot,
         end_id: ValueSlot,
@@ -407,6 +409,34 @@ impl DominatorTree {
             }
         }
         start_edge_seen
+    }
+
+    /// Every block that *strictly* dominates `block`.
+    ///
+    /// Upstream reaches the same set one step at a time, walking
+    /// `DomTreeNode::getIDom` from `block` to the root — see the dominating-
+    /// condition loop in `isGuaranteedNotToBeUndefOrPoison`
+    /// (`ValueTracking.cpp`). llvmkit stores the dominator *sets* rather than
+    /// an idom tree, so the walk is spelled as the set it enumerates.
+    ///
+    /// Order is therefore unspecified where upstream's is nearest-first. Every
+    /// caller so far is a pure existential over the set — "does any dominating
+    /// terminator branch on this value?" — for which the two agree; a caller
+    /// that wants the *nearest* such block must not use this.
+    ///
+    /// Empty when `block` is unreachable, which is upstream's `if (!DNode)`.
+    pub(crate) fn strictly_dominating_blocks(
+        &self,
+        block: ValueSlot,
+    ) -> impl Iterator<Item = ValueSlot> + '_ {
+        let reachable = self.reachable.contains(&block);
+        self.dominators
+            .get(&block)
+            .filter(|_| reachable)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |dominator| *dominator != block)
     }
 
     fn dominates_block_ids(&self, a_id: ValueSlot, b_id: ValueSlot) -> bool {
@@ -523,7 +553,6 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
             }
             let mut pred_sets = cfg
                 .predecessors(&block)
-                .into_iter()
                 .filter(|pred| reachable.contains(&pred.slot()))
                 .filter_map(|pred| doms.get(&pred.slot()).cloned());
             let mut new_set = pred_sets.next().unwrap_or_default();
@@ -573,7 +602,7 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
             let inst_id = inst.slot();
             parent.insert(inst_id, block_id);
             order.insert(inst_id, (block_id, index));
-            if let ValueKindData::Instruction(data) = &inst.into_erased().data().kind {
+            if let ValueKindData::Instruction(data) = &inst.as_erased().data().kind {
                 match &data.kind {
                     InstructionKindData::Invoke(invoke) => {
                         normal_dest.insert(inst_id, invoke.normal_dest.get());
@@ -594,21 +623,21 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
 
 fn is_phi<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Phi(_))
     )
 }
 
 fn is_invoke<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Invoke(_))
     )
 }
 
 fn is_callbr<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::CallBr(_))
     )
 }

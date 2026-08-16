@@ -4,7 +4,7 @@
 
 use super::align::Align;
 use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
-use super::ap_int::{ApInt, ApIntSignedness};
+use super::ap_int::{ApInt, Signedness};
 use super::array_len::ArrLenDyn;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
@@ -18,7 +18,7 @@ use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::global_value::Linkage;
-use super::instr_types::{BinaryOpcode, CastOpcode, POISON_MASK_ELEM, UnaryOpcode};
+use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
@@ -40,7 +40,7 @@ pub fn constant_fold_instruction<'ctx, B>(
 where
     B: ModuleBrand + 'ctx,
 {
-    let value = instruction.into_erased();
+    let value = instruction.as_erased();
     let module = value.module();
     let ValueKindData::Instruction(data) = &value.data().kind else {
         return Ok(None);
@@ -50,7 +50,7 @@ where
     // `isExact()` into the fold: `ConstantFoldInstOperandsImpl` (Analysis/
     // ConstantFolding.cpp) always calls `ConstantFoldBinaryOpOperands`, which
     // folds the plain value regardless of the instruction's `exact` flag. Only
-    // `IRBuilderFolder::FoldExactBinOp` (see `ir_builder/constant_folder.rs`)
+    // `IrBuilderFolder::FoldExactBinOp` (see `ir_builder/constant_folder.rs`)
     // ever looks at exactness, and only to flag a lazily-built `ConstantExpr`;
     // it too falls back to the plain fold for non-`ConstantExpr` opcodes like
     // `udiv`/`sdiv`/`lshr`/`ashr`. So `is_exact` is intentionally dropped here.
@@ -71,7 +71,7 @@ where
             };
             constant_fold_cast_instruction(cast.kind, src, value.ty())
         }
-        InstructionKindData::ICmp(cmp) => {
+        InstructionKindData::Icmp(cmp) => {
             let Some(lhs) = constant_from_id(module, cmp.lhs.get()) else {
                 return Ok(None);
             };
@@ -80,7 +80,7 @@ where
             };
             constant_fold_compare_instruction(CmpPredicate::Int(cmp.predicate), lhs, rhs)
         }
-        InstructionKindData::FCmp(cmp) => {
+        InstructionKindData::Fcmp(cmp) => {
             let Some(lhs) = constant_from_id(module, cmp.lhs.get()) else {
                 return Ok(None);
             };
@@ -89,11 +89,11 @@ where
             };
             constant_fold_compare_instruction(CmpPredicate::Float(cmp.predicate), lhs, rhs)
         }
-        InstructionKindData::FNeg(fneg) => {
+        InstructionKindData::Fneg(fneg) => {
             let Some(src) = constant_from_id(module, fneg.src.get()) else {
                 return Ok(None);
             };
-            constant_fold_unary_instruction(UnaryOpcode::FNeg, src)
+            constant_fold_unary_instruction(UnaryOpcode::Fneg, src)
         }
         InstructionKindData::Select(select) => {
             let Some(cond) = constant_from_id(module, select.cond.get()) else {
@@ -165,31 +165,31 @@ where
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
         | InstructionKindData::Mul(_)
-        | InstructionKindData::UDiv(_)
-        | InstructionKindData::SDiv(_)
-        | InstructionKindData::URem(_)
-        | InstructionKindData::SRem(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
         | InstructionKindData::Shl(_)
-        | InstructionKindData::LShr(_)
-        | InstructionKindData::AShr(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
         | InstructionKindData::And(_)
         | InstructionKindData::Or(_)
         | InstructionKindData::Xor(_)
-        | InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
+        | InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Store(_)
         | InstructionKindData::Call(_)
         | InstructionKindData::Phi(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::Fence(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Switch(_)
         | InstructionKindData::IndirectBr(_)
         | InstructionKindData::Invoke(_)
@@ -214,22 +214,22 @@ fn binary_instruction_parts(
         InstructionKindData::Add(data) => (BinaryOpcode::Add, data),
         InstructionKindData::Sub(data) => (BinaryOpcode::Sub, data),
         InstructionKindData::Mul(data) => (BinaryOpcode::Mul, data),
-        InstructionKindData::UDiv(data) => (BinaryOpcode::UDiv, data),
-        InstructionKindData::SDiv(data) => (BinaryOpcode::SDiv, data),
-        InstructionKindData::URem(data) => (BinaryOpcode::URem, data),
-        InstructionKindData::SRem(data) => (BinaryOpcode::SRem, data),
+        InstructionKindData::Udiv(data) => (BinaryOpcode::Udiv, data),
+        InstructionKindData::Sdiv(data) => (BinaryOpcode::Sdiv, data),
+        InstructionKindData::Urem(data) => (BinaryOpcode::Urem, data),
+        InstructionKindData::Srem(data) => (BinaryOpcode::Srem, data),
         InstructionKindData::Shl(data) => (BinaryOpcode::Shl, data),
-        InstructionKindData::LShr(data) => (BinaryOpcode::LShr, data),
-        InstructionKindData::AShr(data) => (BinaryOpcode::AShr, data),
+        InstructionKindData::Lshr(data) => (BinaryOpcode::Lshr, data),
+        InstructionKindData::Ashr(data) => (BinaryOpcode::Ashr, data),
         InstructionKindData::And(data) => (BinaryOpcode::And, data),
         InstructionKindData::Or(data) => (BinaryOpcode::Or, data),
         InstructionKindData::Xor(data) => (BinaryOpcode::Xor, data),
-        InstructionKindData::FAdd(data) => (BinaryOpcode::FAdd, data),
-        InstructionKindData::FSub(data) => (BinaryOpcode::FSub, data),
-        InstructionKindData::FMul(data) => (BinaryOpcode::FMul, data),
-        InstructionKindData::FDiv(data) => (BinaryOpcode::FDiv, data),
-        InstructionKindData::FRem(data) => (BinaryOpcode::FRem, data),
-        InstructionKindData::FCmp(_)
+        InstructionKindData::Fadd(data) => (BinaryOpcode::Fadd, data),
+        InstructionKindData::Fsub(data) => (BinaryOpcode::Fsub, data),
+        InstructionKindData::Fmul(data) => (BinaryOpcode::Fmul, data),
+        InstructionKindData::Fdiv(data) => (BinaryOpcode::Fdiv, data),
+        InstructionKindData::Frem(data) => (BinaryOpcode::Frem, data),
+        InstructionKindData::Fcmp(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Store(_)
@@ -237,11 +237,11 @@ fn binary_instruction_parts(
         | InstructionKindData::Call(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Cast(_)
-        | InstructionKindData::ICmp(_)
+        | InstructionKindData::Icmp(_)
         | InstructionKindData::Phi(_)
-        | InstructionKindData::FNeg(_)
+        | InstructionKindData::Fneg(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::ExtractValue(_)
         | InstructionKindData::InsertValue(_)
         | InstructionKindData::ExtractElement(_)
@@ -249,7 +249,7 @@ fn binary_instruction_parts(
         | InstructionKindData::ShuffleVector(_)
         | InstructionKindData::Fence(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Switch(_)
         | InstructionKindData::IndirectBr(_)
         | InstructionKindData::Invoke(_)
@@ -282,7 +282,7 @@ fn constant_from_id<'ctx, B: ModuleBrand + 'ctx>(
         | ValueKindData::Function(_)
         | ValueKindData::Instruction(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
+        | ValueKindData::GlobalIfunc(_)
         | ValueKindData::GlobalVariable(_)
         | ValueKindData::MetadataAsValue(_)
         | ValueKindData::InlineAsm(_) => None,
@@ -314,13 +314,13 @@ pub fn constant_fold_unary_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     match opcode {
-        UnaryOpcode::FNeg => {
+        UnaryOpcode::Fneg => {
             if is_undef(operand) && !matches!(operand.ty().data(), TypeData::FixedVector { .. }) {
                 return Ok(Some(operand));
             }
             if let Some((element_ty, lanes, scalable)) = operand.ty().data().as_vector() {
-                let element_ty = Type::new(element_ty, operand.into_erased().module());
-                if let Some(splat) = constant_splat_value(operand) {
+                let element_ty = Type::new(element_ty, operand.as_erased().module());
+                if let Some(splat) = operand.splat_value(false) {
                     let Some(folded) = constant_fold_unary_instruction(opcode, splat)? else {
                         return Ok(None);
                     };
@@ -373,7 +373,7 @@ pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
     if matches!(
         opcode,
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::URem | BinaryOpcode::SRem
+        BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Urem | BinaryOpcode::Srem
     ) && constant_is_null_value(rhs)
     {
         return Ok(Some(poison_for(lhs.ty())));
@@ -402,7 +402,7 @@ pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(folded));
     }
 
-    if matches!(opcode, BinaryOpcode::URem | BinaryOpcode::SRem)
+    if matches!(opcode, BinaryOpcode::Urem | BinaryOpcode::Srem)
         && let Some(folded) = fold_i1_binary(opcode, lhs, rhs)?
     {
         return Ok(Some(folded));
@@ -412,21 +412,21 @@ pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
         BinaryOpcode::Add
         | BinaryOpcode::Sub
         | BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Xor => fold_int_binary(opcode, lhs, rhs)?,
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => fold_float_binary(opcode, lhs, rhs)?,
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => fold_float_binary(opcode, lhs, rhs)?,
     };
     if folded.is_some() {
         return Ok(folded);
@@ -448,10 +448,8 @@ fn fold_vector_binary<'ctx, B: ModuleBrand + 'ctx>(
     let Some((element_ty, lanes, scalable)) = lhs.ty().data().as_vector() else {
         return Ok(None);
     };
-    let element_ty = Type::new(element_ty, lhs.into_erased().module());
-    if let (Some(lhs_splat), Some(rhs_splat)) =
-        (constant_splat_value(lhs), constant_splat_value(rhs))
-    {
+    let element_ty = Type::new(element_ty, lhs.as_erased().module());
+    if let (Some(lhs_splat), Some(rhs_splat)) = (lhs.splat_value(false), rhs.splat_value(false)) {
         let Some(folded) = build_binary_constant_or_expr(opcode, lhs_splat, rhs_splat)? else {
             return Ok(None);
         };
@@ -487,10 +485,10 @@ fn fold_constant_expr_associative_binary<'ctx, B: ModuleBrand + 'ctx>(
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &lhs.into_erased().data().kind else {
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &lhs.as_erased().data().kind else {
         if opcode.is_commutative()
             && matches!(
-                &rhs.into_erased().data().kind,
+                &rhs.as_erased().data().kind,
                 ValueKindData::Constant(ConstantData::Expr(_))
             )
         {
@@ -509,7 +507,7 @@ fn fold_constant_expr_associative_binary<'ctx, B: ModuleBrand + 'ctx>(
     let [operand0, operand1] = expr.operands.as_ref() else {
         return Ok(None);
     };
-    let module = lhs.into_erased().module();
+    let module = lhs.as_erased().module();
     let operand0_data = module.context().value_data(*operand0);
     let operand1_data = module.context().value_data(*operand1);
     let operand0 = Constant::try_from(Value::from_parts(*operand0, module, operand0_data.ty))?;
@@ -533,13 +531,13 @@ fn build_binary_constant_or_expr<'ctx, B: ModuleBrand + 'ctx>(
             return Ok(None);
         };
         return lhs
-            .into_erased()
+            .as_erased()
             .module()
             .core_ref()
             .constant_expr(
                 lhs.ty(),
                 expr_opcode,
-                [lhs.into_erased(), rhs.into_erased()],
+                [lhs.as_erased(), rhs.as_erased()],
                 [],
                 [],
                 ConstantExprFlags::none(),
@@ -552,7 +550,7 @@ fn build_binary_constant_or_expr<'ctx, B: ModuleBrand + 'ctx>(
 fn constant_expr_binary_opcode_of<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
 ) -> Option<BinaryOpcode> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.into_erased().data().kind
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.as_erased().data().kind
     else {
         return None;
     };
@@ -583,20 +581,20 @@ fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcod
         BinaryOpcode::Sub => Some(ConstantExprOpcode::Sub),
         BinaryOpcode::Xor => Some(ConstantExprOpcode::Xor),
         BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
-        | BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => None,
+        | BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => None,
     }
 }
 
@@ -611,19 +609,19 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
     if is_undef(operand) {
         return match opcode {
-            CastOpcode::ZExt | CastOpcode::SExt | CastOpcode::UIToFp | CastOpcode::SIToFp => {
+            CastOpcode::Zext | CastOpcode::Sext | CastOpcode::UiToFp | CastOpcode::SiToFp => {
                 null_constant_for_type(dest_ty)
             }
             CastOpcode::Trunc
             | CastOpcode::FpTrunc
             | CastOpcode::FpExt
-            | CastOpcode::FpToUI
-            | CastOpcode::FpToSI
+            | CastOpcode::FpToUi
+            | CastOpcode::FpToSi
             | CastOpcode::BitCast
             | CastOpcode::PtrToAddr
             | CastOpcode::PtrToInt
             | CastOpcode::IntToPtr
-            | CastOpcode::AddrSpaceCast => Ok(Some(dest_ty.get_undef().as_constant())),
+            | CastOpcode::AddrSpaceCast => Ok(Some(dest_ty.undef().as_constant())),
         };
     }
     if constant_is_null_value(operand) && !matches!(opcode, CastOpcode::AddrSpaceCast) {
@@ -637,7 +635,7 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     match opcode {
-        CastOpcode::Trunc | CastOpcode::ZExt | CastOpcode::SExt => {
+        CastOpcode::Trunc | CastOpcode::Zext | CastOpcode::Sext => {
             let Ok(src) = ConstantIntValue::<IntDyn, B>::try_from(operand) else {
                 return Ok(None);
             };
@@ -648,8 +646,8 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
             let dst_bits = dst_ty.bit_width();
             let result = match opcode {
                 CastOpcode::Trunc => src_ap.trunc(dst_bits),
-                CastOpcode::ZExt => src_ap.zext(dst_bits),
-                CastOpcode::SExt => src_ap.sext(dst_bits),
+                CastOpcode::Zext => src_ap.zext(dst_bits),
+                CastOpcode::Sext => src_ap.sext(dst_bits),
                 _ => None,
             };
             let Some(result) = result else {
@@ -669,7 +667,7 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 .convert(dst_ty.semantics(), RoundingMode::NearestTiesToEven);
             Ok(Some(dst_ty.const_ap_float(&result)?.as_constant()))
         }
-        CastOpcode::FpToUI | CastOpcode::FpToSI => {
+        CastOpcode::FpToUi | CastOpcode::FpToSi => {
             let Ok(src) = ConstantFloatValue::<FloatDyn, B>::try_from(operand) else {
                 return Ok(None);
             };
@@ -677,8 +675,8 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(None);
             };
             let signedness = match opcode {
-                CastOpcode::FpToSI => ApIntSignedness::Signed,
-                _ => ApIntSignedness::Unsigned,
+                CastOpcode::FpToSi => Signedness::Signed,
+                _ => Signedness::Unsigned,
             };
             let (result, status, _) = src.ap_float().convert_to_integer(
                 dst_ty.bit_width(),
@@ -690,7 +688,7 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
             }
             Ok(Some(dst_ty.const_ap_int(&result)?.as_constant()))
         }
-        CastOpcode::UIToFp | CastOpcode::SIToFp => {
+        CastOpcode::UiToFp | CastOpcode::SiToFp => {
             let Ok(src) = ConstantIntValue::<IntDyn, B>::try_from(operand) else {
                 return Ok(None);
             };
@@ -698,8 +696,8 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(None);
             };
             let signedness = match opcode {
-                CastOpcode::SIToFp => ApIntSignedness::Signed,
-                _ => ApIntSignedness::Unsigned,
+                CastOpcode::SiToFp => Signedness::Signed,
+                _ => Signedness::Unsigned,
             };
             let (result, _) = crate::ApFloat::convert_from_ap_int(
                 dst_ty.semantics(),
@@ -722,8 +720,7 @@ fn fold_constant_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
     operand: Constant<'ctx, B>,
     dest_ty: Type<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.into_erased().data().kind
-    else {
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.as_erased().data().kind else {
         return Ok(None);
     };
     if !expr.opcode.is_cast() {
@@ -735,7 +732,7 @@ fn fold_constant_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
     let [source_id] = expr.operands.as_ref() else {
         return Ok(None);
     };
-    let module = operand.into_erased().module();
+    let module = operand.as_erased().module();
     let source_data = module.context().value_data(*source_id);
     let source_value = Value::from_parts(*source_id, module, source_data.ty);
     let Ok(source) = Constant::try_from(source_value) else {
@@ -759,13 +756,13 @@ fn fold_maybe_undesirable_cast<'ctx, B: ModuleBrand + 'ctx>(
             return Ok(None);
         };
         return value
-            .into_erased()
+            .as_erased()
             .module()
             .core_ref()
             .constant_expr(
                 dest_ty,
                 expr_opcode,
-                [value.into_erased()],
+                [value.as_erased()],
                 [],
                 [],
                 ConstantExprFlags::none(),
@@ -868,14 +865,14 @@ fn constant_expr_opcode_from_cast(opcode: CastOpcode) -> Option<ConstantExprOpco
         CastOpcode::IntToPtr => Some(ConstantExprOpcode::IntToPtr),
         CastOpcode::BitCast => Some(ConstantExprOpcode::BitCast),
         CastOpcode::AddrSpaceCast => Some(ConstantExprOpcode::AddrSpaceCast),
-        CastOpcode::ZExt
-        | CastOpcode::SExt
+        CastOpcode::Zext
+        | CastOpcode::Sext
         | CastOpcode::FpTrunc
         | CastOpcode::FpExt
-        | CastOpcode::FpToUI
-        | CastOpcode::FpToSI
-        | CastOpcode::UIToFp
-        | CastOpcode::SIToFp => None,
+        | CastOpcode::FpToUi
+        | CastOpcode::FpToSi
+        | CastOpcode::UiToFp
+        | CastOpcode::SiToFp => None,
     }
 }
 
@@ -925,7 +922,7 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
             match pred {
                 IntPredicate::Eq => {
                     let lhs_is_expr = matches!(
-                        &lhs.into_erased().data().kind,
+                        &lhs.as_erased().data().kind,
                         ValueKindData::Constant(ConstantData::Expr(_))
                     );
                     let (lhs, rhs) = if lhs_is_expr {
@@ -950,8 +947,7 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     if lhs.ty().data().as_vector().is_some()
-        && let (Some(lhs_splat), Some(rhs_splat)) =
-            (constant_splat_value(lhs), constant_splat_value(rhs))
+        && let (Some(lhs_splat), Some(rhs_splat)) = (lhs.splat_value(false), rhs.splat_value(false))
         && let Some(folded) = constant_fold_compare_instruction(predicate, lhs_splat, rhs_splat)?
     {
         return vector_splat_constant(result_ty, folded);
@@ -960,7 +956,7 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
         if scalable {
             return Ok(None);
         }
-        let element_ty = Type::new(element_ty, lhs.into_erased().module());
+        let element_ty = Type::new(element_ty, lhs.as_erased().module());
         let Some(lhs_elements) = fixed_vector_elements_for_rebuild(lhs, lanes, element_ty)? else {
             return Ok(None);
         };
@@ -1000,11 +996,11 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 return bool_constant_for_type(result_ty, result);
             }
             let lhs_is_not_expr = !matches!(
-                &lhs.into_erased().data().kind,
+                &lhs.as_erased().data().kind,
                 ValueKindData::Constant(ConstantData::Expr(_))
             );
             let rhs_is_expr = matches!(
-                &rhs.into_erased().data().kind,
+                &rhs.as_erased().data().kind,
                 ValueKindData::Constant(ConstantData::Expr(_))
             );
             if (lhs_is_not_expr && rhs_is_expr)
@@ -1065,11 +1061,7 @@ fn evaluate_icmp_relation<'ctx, B: ModuleBrand + 'ctx>(
     }
     if let Some(lhs_global) = global_value_ref(lhs) {
         if let Some(rhs_global) = global_value_ref(rhs) {
-            return are_globals_potentially_equal(
-                lhs.into_erased().module(),
-                lhs_global,
-                rhs_global,
-            );
+            return are_globals_potentially_equal(lhs.as_erased().module(), lhs_global, rhs_global);
         }
         if block_address_info(rhs).is_some() {
             return Some(IntPredicate::Ne);
@@ -1081,8 +1073,8 @@ fn evaluate_icmp_relation<'ctx, B: ModuleBrand + 'ctx>(
         // (Function.cpp) is `AS != 0`, i.e. defined (so the fold is unsound)
         // whenever the global's address space isn't the default 0.
         if is_pointer_null(rhs)
-            && !global_has_external_weak_linkage(lhs.into_erased().module(), lhs_global)
-            && !global_is_alias(lhs.into_erased().module(), lhs_global)
+            && !global_has_external_weak_linkage(lhs.as_erased().module(), lhs_global)
+            && !global_is_alias(lhs.as_erased().module(), lhs_global)
             && pointer_address_space(lhs.ty()) == Some(0)
         {
             return Some(IntPredicate::Ugt);
@@ -1096,7 +1088,7 @@ fn evaluate_gep_icmp_relation<'ctx, B: ModuleBrand + 'ctx>(
     rhs: Constant<'ctx, B>,
 ) -> Option<IntPredicate> {
     let lhs_expr = gep_expr_data(lhs)?;
-    let module = lhs.into_erased().module();
+    let module = lhs.as_erased().module();
     let lhs_base_global = gep_base_global(module, lhs_expr);
 
     if is_pointer_null(rhs) {
@@ -1139,7 +1131,7 @@ fn evaluate_gep_icmp_relation<'ctx, B: ModuleBrand + 'ctx>(
 fn gep_expr_data<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
 ) -> Option<&'ctx ConstantExprData> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.into_erased().data().kind
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.as_erased().data().kind
     else {
         return None;
     };
@@ -1242,12 +1234,12 @@ fn swapped_int_predicate(predicate: IntPredicate) -> IntPredicate {
 }
 
 fn constant_relation_complexity<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> u8 {
-    match &constant.into_erased().data().kind {
+    match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Expr(_)) => 3,
         ValueKindData::Constant(ConstantData::GlobalValueRef { .. })
         | ValueKindData::Function(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
+        | ValueKindData::GlobalIfunc(_)
         | ValueKindData::GlobalVariable(_) => 2,
         ValueKindData::Constant(ConstantData::BlockAddress { .. }) => 1,
         _ => 0,
@@ -1255,7 +1247,7 @@ fn constant_relation_complexity<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<
 }
 
 fn global_value_ref<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> Option<ValueSlot> {
-    global_value_ref_from_id(constant.into_erased().module(), constant.slot())
+    global_value_ref_from_id(constant.as_erased().module(), constant.slot())
 }
 
 fn global_value_ref_from_id<B: ModuleBrand>(
@@ -1266,7 +1258,7 @@ fn global_value_ref_from_id<B: ModuleBrand>(
         ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Some(*value),
         ValueKindData::Function(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
+        | ValueKindData::GlobalIfunc(_)
         | ValueKindData::GlobalVariable(_) => Some(id),
         _ => None,
     }
@@ -1276,7 +1268,7 @@ fn block_address_info<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
 ) -> Option<(ValueSlot, ValueSlot)> {
     let ValueKindData::Constant(ConstantData::BlockAddress { function, block }) =
-        &constant.into_erased().data().kind
+        &constant.as_erased().data().kind
     else {
         return None;
     };
@@ -1285,7 +1277,7 @@ fn block_address_info<'ctx, B: ModuleBrand + 'ctx>(
 
 fn is_pointer_null<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     matches!(
-        &constant.into_erased().data().kind,
+        &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::PointerNull)
     )
 }
@@ -1334,9 +1326,9 @@ fn linkage_is_weak_for_linker(linkage: Linkage) -> bool {
     matches!(
         linkage,
         Linkage::WeakAny
-            | Linkage::WeakODR
+            | Linkage::WeakOdr
             | Linkage::LinkOnceAny
-            | Linkage::LinkOnceODR
+            | Linkage::LinkOnceOdr
             | Linkage::Common
             | Linkage::ExternalWeak
     )
@@ -1354,7 +1346,7 @@ fn global_linkage<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueSlot) -> O
         ValueKindData::GlobalVariable(data) => Some(data.linkage.get()),
         ValueKindData::Function(data) => Some(*data.linkage.borrow()),
         ValueKindData::GlobalAlias(data) => Some(data.linkage.get()),
-        ValueKindData::GlobalIFunc(data) => Some(data.linkage.get()),
+        ValueKindData::GlobalIfunc(data) => Some(data.linkage.get()),
         _ => None,
     }
 }
@@ -1432,7 +1424,7 @@ pub fn constant_fold_select_instruction<'ctx, B: ModuleBrand + 'ctx>(
         if condition_elements.len() != lane_count {
             return Ok(None);
         }
-        let value_element_ty = Type::new(value_element_ty, true_value.into_erased().module());
+        let value_element_ty = Type::new(value_element_ty, true_value.as_erased().module());
         let Some(true_elements) =
             fixed_vector_elements_for_rebuild(true_value, lanes, value_element_ty)?
         else {
@@ -1517,12 +1509,12 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
     let Some((element_ty, lanes, scalable)) = vector.ty().data().as_vector() else {
         return Ok(None);
     };
-    let element_ty = Type::new(element_ty, vector.into_erased().module());
+    let element_ty = Type::new(element_ty, vector.as_erased().module());
     if is_poison(vector) || is_undef_or_poison(index) {
         return Ok(Some(poison_for(element_ty)));
     }
     if is_undef(vector) {
-        return Ok(Some(element_ty.get_undef().as_constant()));
+        return Ok(Some(element_ty.undef().as_constant()));
     }
     let Ok(index_constant) = ConstantIntValue::<IntDyn, B>::try_from(index) else {
         return Ok(None);
@@ -1544,10 +1536,10 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
         })
     };
 
-    if let ValueKindData::Constant(ConstantData::Expr(expr)) = &vector.into_erased().data().kind {
+    if let ValueKindData::Constant(ConstantData::Expr(expr)) = &vector.as_erased().data().kind {
         match expr.opcode {
             ConstantExprOpcode::GetElementPtr => {
-                let module = vector.into_erased().module();
+                let module = vector.as_erased().module();
                 let Some(source_ty) = expr.source_ty.map(|id| Type::new(id, module)) else {
                     return Ok(None);
                 };
@@ -1568,7 +1560,7 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
                     } else {
                         operand
                     };
-                    operands.push(operand.into_erased());
+                    operands.push(operand.as_erased());
                 }
                 return module
                     .core_ref()
@@ -1588,7 +1580,7 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 let [base, inserted, insert_index] = expr.operands.as_ref() else {
                     return Ok(None);
                 };
-                let module = vector.into_erased().module();
+                let module = vector.as_erased().module();
                 let Some(insert_index) = constant_from_id(module, *insert_index) else {
                     return Ok(None);
                 };
@@ -1605,13 +1597,13 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
                     return Ok(None);
                 };
                 return base
-                    .into_erased()
+                    .as_erased()
                     .module()
                     .core_ref()
                     .constant_expr(
                         element_ty,
                         ConstantExprOpcode::ExtractElement,
-                        [base.into_erased(), index_constant.into_erased()],
+                        [base.as_erased(), index_constant.as_erased()],
                         [],
                         [],
                         ConstantExprFlags::none(),
@@ -1665,7 +1657,7 @@ pub fn constant_fold_insert_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
     let Ok(index) = usize::try_from(raw_index) else {
         return Ok(None);
     };
-    let element_ty = Type::new(element_ty, vector.into_erased().module());
+    let element_ty = Type::new(element_ty, vector.as_erased().module());
     let Some(mut elements) = fixed_vector_elements_for_rebuild(vector, lanes, element_ty)? else {
         return Ok(None);
     };
@@ -1680,7 +1672,7 @@ pub fn constant_fold_insert_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
 pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
-    mask: &[i32],
+    mask: &[ShuffleMaskElem],
 ) -> IrResult<Option<Constant<'ctx, B>>> {
     let Some((element_ty, lanes, scalable)) = lhs.ty().data().as_vector() else {
         return Ok(None);
@@ -1688,21 +1680,25 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
     if rhs.ty() != lhs.ty() {
         return Ok(None);
     }
-    let element_ty = Type::new(element_ty, lhs.into_erased().module());
+    let element_ty = Type::new(element_ty, lhs.as_erased().module());
     let Ok(result_lanes) = u32::try_from(mask.len()) else {
         return Ok(None);
     };
-    let result_ty = lhs
-        .into_erased()
-        .module()
-        .vector_type(element_ty, result_lanes, scalable)
-        .as_type();
-    if mask.iter().all(|element| *element == POISON_MASK_ELEM) {
+    let result_ty =
+        vector_type_with_scalability(lhs.as_erased().module(), element_ty, result_lanes, scalable)
+            .as_type();
+    if mask
+        .iter()
+        .all(|element| *element == ShuffleMaskElem::Poison)
+    {
         return Ok(Some(poison_for(result_ty)));
     }
-    if mask.iter().all(|element| *element == 0) {
+    if mask
+        .iter()
+        .all(|element| *element == ShuffleMaskElem::Lane(0))
+    {
         let index = lhs
-            .into_erased()
+            .as_erased()
             .module()
             .i32_type()
             .const_zero()
@@ -1724,12 +1720,9 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
     };
     let mut result = Vec::with_capacity(mask.len());
     for &element in mask {
-        if element == POISON_MASK_ELEM {
-            result.push(element_ty.get_undef().as_constant());
+        let ShuffleMaskElem::Lane(element) = element else {
+            result.push(element_ty.undef().as_constant());
             continue;
-        }
-        let Ok(element) = u32::try_from(element) else {
-            return Ok(None);
         };
         let source = if element < lanes {
             usize::try_from(element)
@@ -1738,7 +1731,7 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
         } else {
             let rhs_index = element - lanes;
             if rhs_index >= lanes {
-                Some(element_ty.get_undef().as_constant())
+                Some(element_ty.undef().as_constant())
             } else {
                 usize::try_from(rhs_index)
                     .ok()
@@ -1760,14 +1753,14 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
 /// `lhs` / `rhs` lane space.
 pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx>(
     mask: Constant<'ctx, B>,
-) -> Option<Vec<i32>> {
+) -> Option<Vec<ShuffleMaskElem>> {
     let (_, lanes, scalable) = mask.ty().data().as_vector()?;
     let lane_count = usize::try_from(lanes).ok()?;
     if is_undef_or_poison(mask) {
-        return Some(vec![POISON_MASK_ELEM; lane_count]);
+        return Some(vec![ShuffleMaskElem::Poison; lane_count]);
     }
     if constant_is_null_value(mask) {
-        return Some(vec![0; lane_count]);
+        return Some(vec![ShuffleMaskElem::Lane(0); lane_count]);
     }
     if scalable {
         return None;
@@ -1780,11 +1773,11 @@ pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx>(
         .into_iter()
         .map(|element| {
             if is_undef_or_poison(element) {
-                return Some(POISON_MASK_ELEM);
+                return Some(ShuffleMaskElem::Poison);
             }
             let int = ConstantIntValue::<IntDyn, B>::try_from(element).ok()?;
             let value = int.ap_int().try_zext_u64()?;
-            i32::try_from(value).ok()
+            u32::try_from(value).ok().map(ShuffleMaskElem::Lane)
         })
         .collect()
 }
@@ -1858,7 +1851,7 @@ pub fn constant_fold_get_element_ptr<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(poison_for(result_ty)));
     }
     if is_undef(pointer) {
-        return Ok(Some(result_ty.get_undef().as_constant()));
+        return Ok(Some(result_ty.undef().as_constant()));
     }
 
     let is_noop = in_range.is_none()
@@ -1889,10 +1882,7 @@ pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx>(
     let Some((lanes, scalable)) = gep_operand_vector_shape(pointer_ty, indices)? else {
         return Ok(scalar_ptr_ty);
     };
-    Ok(pointer_ty
-        .module()
-        .vector_type(scalar_ptr_ty, lanes, scalable)
-        .as_type())
+    Ok(vector_type_with_scalability(pointer_ty.module(), scalar_ptr_ty, lanes, scalable).as_type())
 }
 
 fn gep_operand_vector_shape<'ctx, B: ModuleBrand + 'ctx>(
@@ -1936,7 +1926,7 @@ fn pointer_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
 }
 
 fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    match &constant.into_erased().data().kind {
+    match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Int(_)) => is_zero_int_constant(constant),
         ValueKindData::Constant(ConstantData::Float(_)) => {
             ConstantFloatValue::<FloatDyn, B>::try_from(constant)
@@ -1944,7 +1934,7 @@ fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, 
         }
         ValueKindData::Constant(ConstantData::PointerNull) => true,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let module = constant.into_erased().module();
+            let module = constant.as_erased().module();
             elements.iter().all(|id| {
                 let data = module.context().value_data(*id);
                 constant_is_null_value(Constant::from_parts(Value::from_parts(
@@ -1956,6 +1946,17 @@ fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, 
     }
 }
 
+/// The vector constant every lane of which is `scalar`.
+///
+/// A *scalable* vector is stored the same way — `min_len` equal elements —
+/// which is llvmkit's representation choice rather than upstream's, since
+/// `ConstantVector::get` needs a fixed count and so cannot hold one at all.
+/// It round-trips because [`fmt_aggregate_constant`](crate::asm_writer) prints
+/// a uniform vector as `splat (…)`. **That collapse only covers integer and
+/// floating-point elements**, mirroring `AsmWriter.cpp`'s own restriction, so a
+/// scalable vector of uniform *pointers* or `undef` still prints as an element
+/// list — which is not a form LLVM has for a scalable type. See
+/// `docs/future-work.md`; the fix belongs in the printer, not here.
 fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     scalar: Constant<'ctx, B>,
@@ -1993,7 +1994,7 @@ fn fold_undef_int_binary<'ctx, B: ModuleBrand + 'ctx>(
     let Some(all_ones_constant) = all_ones_constant_for_type(lhs.ty())? else {
         return Ok(None);
     };
-    let undef = || lhs.ty().get_undef().as_constant();
+    let undef = || lhs.ty().undef().as_constant();
     let zero = || zero_constant;
     let all_ones = || all_ones_constant;
     let poison = || poison_for(lhs.ty());
@@ -2006,27 +2007,27 @@ fn fold_undef_int_binary<'ctx, B: ModuleBrand + 'ctx>(
         BinaryOpcode::Mul if lhs_undef && rhs_undef => undef(),
         BinaryOpcode::Mul => {
             let known = if lhs_undef { rhs } else { lhs };
-            if constant_is_one_bit_set_low(known) {
+            if constant_has_low_bit_set(known) {
                 undef()
             } else {
                 zero()
             }
         }
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::URem | BinaryOpcode::SRem
+        BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Urem | BinaryOpcode::Srem
             if rhs_undef || is_zero_int_constant(rhs) =>
         {
             poison()
         }
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::URem | BinaryOpcode::SRem => zero(),
+        BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Urem | BinaryOpcode::Srem => zero(),
         BinaryOpcode::Or if lhs_undef && rhs_undef => undef(),
         BinaryOpcode::Or => all_ones(),
-        BinaryOpcode::LShr | BinaryOpcode::AShr | BinaryOpcode::Shl if rhs_undef => poison(),
-        BinaryOpcode::LShr | BinaryOpcode::AShr | BinaryOpcode::Shl => zero(),
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => return Ok(None),
+        BinaryOpcode::Lshr | BinaryOpcode::Ashr | BinaryOpcode::Shl if rhs_undef => poison(),
+        BinaryOpcode::Lshr | BinaryOpcode::Ashr | BinaryOpcode::Shl => zero(),
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => return Ok(None),
     };
     Ok(Some(folded))
 }
@@ -2063,15 +2064,15 @@ fn constant_not<'ctx, B: ModuleBrand + 'ctx>(
     build_binary_constant_or_expr(BinaryOpcode::Xor, value, all_ones)
 }
 
-fn constant_is_one_bit_set_low<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+fn constant_has_low_bit_set<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     if let Ok(value) = ConstantIntValue::<IntDyn, B>::try_from(constant) {
-        return value.ap_int().is_one_bit_set(0);
+        return value.ap_int().bit(0);
     }
     aggregate_elements(constant).is_some_and(|elements| {
         !elements.is_empty()
             && elements
                 .iter()
-                .all(|element| constant_is_one_bit_set_low(*element))
+                .all(|element| constant_has_low_bit_set(*element))
     })
 }
 
@@ -2088,20 +2089,20 @@ fn fold_i1_binary<'ctx, B: ModuleBrand + 'ctx>(
             build_binary_constant_or_expr(BinaryOpcode::Xor, lhs, rhs)
         }
         BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv => Ok(Some(lhs)),
-        BinaryOpcode::URem | BinaryOpcode::SRem => null_constant_for_type(lhs.ty()),
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv => Ok(Some(lhs)),
+        BinaryOpcode::Urem | BinaryOpcode::Srem => null_constant_for_type(lhs.ty()),
         BinaryOpcode::Mul
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Xor
-        | BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => Ok(None),
+        | BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => Ok(None),
     }
 }
 
@@ -2127,7 +2128,7 @@ fn fold_global_pointer_and_mask<'ctx, B: ModuleBrand + 'ctx>(
     let Some(global_id) = ptr_to_int_global_operand(pointer) else {
         return Ok(None);
     };
-    let Some(align) = global_pointer_alignment(pointer.into_erased().module(), global_id) else {
+    let Some(align) = global_pointer_alignment(pointer.as_erased().module(), global_id) else {
         return Ok(None);
     };
     if align.value() <= 1 {
@@ -2149,7 +2150,7 @@ fn fold_global_pointer_and_mask<'ctx, B: ModuleBrand + 'ctx>(
 fn ptr_to_int_global_operand<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
 ) -> Option<ValueSlot> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.into_erased().data().kind
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.as_erased().data().kind
     else {
         return None;
     };
@@ -2162,7 +2163,7 @@ fn ptr_to_int_global_operand<'ctx, B: ModuleBrand + 'ctx>(
     let [operand] = expr.operands.as_ref() else {
         return None;
     };
-    let module = constant.into_erased().module();
+    let module = constant.as_erased().module();
     global_value_ref_from_id(module, *operand)
 }
 
@@ -2239,21 +2240,21 @@ fn fold_int_binary<'ctx, B: ModuleBrand + 'ctx>(
         BinaryOpcode::Shl => {
             fold_shift(&lhs_ap, &rhs_ap, |value, amount| value.checked_shl(amount))
         }
-        BinaryOpcode::LShr => {
+        BinaryOpcode::Lshr => {
             fold_shift(&lhs_ap, &rhs_ap, |value, amount| value.checked_lshr(amount))
         }
-        BinaryOpcode::AShr => {
+        BinaryOpcode::Ashr => {
             fold_shift(&lhs_ap, &rhs_ap, |value, amount| value.checked_ashr(amount))
         }
-        BinaryOpcode::UDiv => lhs_ap.checked_udiv(&rhs_ap),
-        BinaryOpcode::SDiv => lhs_ap.checked_sdiv(&rhs_ap),
-        BinaryOpcode::URem => lhs_ap.checked_urem(&rhs_ap),
-        BinaryOpcode::SRem => lhs_ap.checked_srem(&rhs_ap),
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => return Ok(None),
+        BinaryOpcode::Udiv => lhs_ap.checked_udiv(&rhs_ap),
+        BinaryOpcode::Sdiv => lhs_ap.checked_sdiv(&rhs_ap),
+        BinaryOpcode::Urem => lhs_ap.checked_urem(&rhs_ap),
+        BinaryOpcode::Srem => lhs_ap.checked_srem(&rhs_ap),
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => return Ok(None),
     };
 
     let Some(result) = result else {
@@ -2289,21 +2290,21 @@ fn fold_float_binary<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     let (result, _) = match opcode {
-        BinaryOpcode::FAdd => lhs_ap.add(&rhs_ap, RoundingMode::NearestTiesToEven),
-        BinaryOpcode::FSub => lhs_ap.subtract(&rhs_ap, RoundingMode::NearestTiesToEven),
-        BinaryOpcode::FMul => lhs_ap.multiply(&rhs_ap, RoundingMode::NearestTiesToEven),
-        BinaryOpcode::FDiv => lhs_ap.divide(&rhs_ap, RoundingMode::NearestTiesToEven),
-        BinaryOpcode::FRem => lhs_ap.modulo(&rhs_ap),
+        BinaryOpcode::Fadd => lhs_ap.add(&rhs_ap, RoundingMode::NearestTiesToEven),
+        BinaryOpcode::Fsub => lhs_ap.subtract(&rhs_ap, RoundingMode::NearestTiesToEven),
+        BinaryOpcode::Fmul => lhs_ap.multiply(&rhs_ap, RoundingMode::NearestTiesToEven),
+        BinaryOpcode::Fdiv => lhs_ap.divide(&rhs_ap, RoundingMode::NearestTiesToEven),
+        BinaryOpcode::Frem => lhs_ap.modulo(&rhs_ap),
         BinaryOpcode::Add
         | BinaryOpcode::Sub
         | BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Xor => return Ok(None),
@@ -2325,9 +2326,9 @@ fn fold_same_lane_vector_cast<'ctx, B: ModuleBrand + 'ctx>(
     if lanes != dest_lanes || src_scalable != dest_scalable {
         return Ok(None);
     }
-    let src_element_ty = Type::new(src_element_ty, operand.into_erased().module());
-    let dest_element_ty = Type::new(dest_element_ty, operand.into_erased().module());
-    if let Some(splat) = constant_splat_value(operand) {
+    let src_element_ty = Type::new(src_element_ty, operand.as_erased().module());
+    let dest_element_ty = Type::new(dest_element_ty, operand.as_erased().module());
+    if let Some(splat) = operand.splat_value(false) {
         let Some(folded) = fold_maybe_undesirable_cast(opcode, splat, dest_element_ty)? else {
             return Ok(None);
         };
@@ -2369,15 +2370,12 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx>(
         && (ConstantIntValue::<IntDyn, B>::try_from(operand).is_ok()
             || ConstantFloatValue::<FloatDyn, B>::try_from(operand).is_ok())
     {
-        let vector_ty = operand
-            .into_erased()
-            .module()
-            .vector_type(operand.ty(), 1, false);
+        let vector_ty = operand.as_erased().module().vector_type(operand.ty(), 1);
         let vector = vector_ty.const_vector::<Constant<'ctx, B>, _>([operand])?;
-        return match operand.into_erased().module().core_ref().constant_expr(
+        return match operand.as_erased().module().core_ref().constant_expr(
             dest_ty,
             ConstantExprOpcode::BitCast,
-            [vector.into_erased()],
+            [vector.as_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2552,7 +2550,7 @@ fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         let Ok(lane_count) = usize::try_from(lanes) else {
             return Ok(None);
         };
-        let vector_ty = module.vector_type(element_ty, lanes, scalable);
+        let vector_ty = vector_type_with_scalability(module, element_ty, lanes, scalable);
         return vector_ty
             .const_vector((0..lane_count).map(|_| element))
             .map(|constant| Some(constant.as_constant()));
@@ -2576,13 +2574,13 @@ fn fold_undef_float_binary<'ctx, B: ModuleBrand + 'ctx>(
         let TypeData::ScalableVector { elem, .. } = lhs.ty().data() else {
             return Ok(None);
         };
-        let element_ty = Type::new(*elem, lhs.into_erased().module());
+        let element_ty = Type::new(*elem, lhs.as_erased().module());
         let Ok(float_ty) = FloatType::<FloatDyn, B>::try_from(element_ty) else {
             return Ok(None);
         };
         (float_ty, Some(lhs.ty()))
     };
-    let undef = || lhs.ty().get_undef().as_constant();
+    let undef = || lhs.ty().undef().as_constant();
     let nan_scalar = || {
         let value = crate::ApFloat::qnan(
             float_ty.semantics(),
@@ -2604,33 +2602,33 @@ fn fold_undef_float_binary<'ctx, B: ModuleBrand + 'ctx>(
     };
 
     let folded = match opcode {
-        BinaryOpcode::FSub if rhs_undef && constant_matches_negative_zero_fp_pattern(lhs) => {
+        BinaryOpcode::Fsub if rhs_undef && constant_matches_negative_zero_fp_pattern(lhs) => {
             undef()
         }
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem
             if lhs_undef && rhs_undef =>
         {
             undef()
         }
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => nan()?,
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => nan()?,
         BinaryOpcode::Add
         | BinaryOpcode::Sub
         | BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Xor => return Ok(None),
@@ -2642,9 +2640,7 @@ fn compare_result_type<'ctx, B: ModuleBrand + 'ctx>(operand_ty: Type<'ctx, B>) -
     let module = operand_ty.module();
     let bool_ty: IntType<'ctx, bool, B> = IntType::new(module.context().int_type(1), module);
     if let Some((_, lanes, scalable)) = operand_ty.data().as_vector() {
-        module
-            .vector_type(bool_ty.as_type(), lanes, scalable)
-            .as_type()
+        vector_type_with_scalability(module, bool_ty.as_type(), lanes, scalable).as_type()
     } else {
         bool_ty.as_type()
     }
@@ -2659,7 +2655,7 @@ fn fold_undef_compare<'ctx, B: ModuleBrand + 'ctx>(
     if is_equality_predicate(predicate)
         || (matches!(predicate, CmpPredicate::Int(_)) && is_undef(lhs) && is_undef(rhs))
     {
-        return Ok(Some(result_ty.get_undef().as_constant()));
+        return Ok(Some(result_ty.undef().as_constant()));
     }
     match predicate {
         CmpPredicate::Int(predicate) => {
@@ -2696,9 +2692,9 @@ fn bool_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         .map(|constant| Some(constant.as_constant()))
 }
 
-/// Mirrors `ICmpInst::isEquality`: true only for integer `eq`/`ne`.
+/// Mirrors `IcmpInst::isEquality`: true only for integer `eq`/`ne`.
 /// `ConstantFoldCompareInstruction` (ConstantFold.cpp) calls this via
-/// `ICmpInst::isEquality(Predicate)` even when `Predicate` may be an FP
+/// `IcmpInst::isEquality(Predicate)` even when `Predicate` may be an FP
 /// predicate — `ICMP_EQ`/`ICMP_NE` and `FCMP_OEQ`/`FCMP_ONE`/`FCMP_UEQ`/
 /// `FCMP_UNE` are distinct enumerators in the shared `CmpInst::Predicate`
 /// space, so the check is always false for FP predicates. An FP compare
@@ -2763,7 +2759,7 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(None);
     };
     let fill = if is_undef(vector) {
-        Some(element_ty.get_undef().as_constant())
+        Some(element_ty.undef().as_constant())
     } else if is_poison(vector) {
         Some(poison_for(element_ty))
     } else {
@@ -2773,7 +2769,7 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some((0..lane_count).map(|_| fill).collect()));
     }
 
-    let i32_ty = vector.into_erased().module().i32_type();
+    let i32_ty = vector.as_erased().module().i32_type();
     let mut elements = Vec::with_capacity(lane_count);
     for index in 0..lanes {
         let Ok(index) = i32::try_from(index) else {
@@ -2783,10 +2779,10 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx>(
         if let Some(folded) = constant_fold_extract_element_instruction(vector, index)? {
             elements.push(folded);
         } else {
-            let expr = vector.into_erased().module().core_ref().constant_expr(
+            let expr = vector.as_erased().module().core_ref().constant_expr(
                 element_ty,
                 ConstantExprOpcode::ExtractElement,
-                [vector.into_erased(), index.into_erased()],
+                [vector.as_erased(), index.as_erased()],
                 [],
                 [],
                 ConstantExprFlags::none(),
@@ -2805,7 +2801,7 @@ fn aggregate_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx>(
     }
     let fill_for = |ty: Type<'ctx, B>| {
         if is_undef(aggregate) {
-            Some(ty.get_undef().as_constant())
+            Some(ty.undef().as_constant())
         } else if is_poison(aggregate) {
             Some(poison_for(ty))
         } else {
@@ -2866,7 +2862,7 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         let Ok(lane_count) = usize::try_from(lanes) else {
             return Ok(None);
         };
-        let vector_ty = module.vector_type(element_ty, lanes, scalable);
+        let vector_ty = vector_type_with_scalability(module, element_ty, lanes, scalable);
         return vector_ty
             .const_vector((0..lane_count).map(|_| element))
             .map(|constant| Some(constant.as_constant()));
@@ -2875,7 +2871,7 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    match &constant.into_erased().data().kind {
+    match &constant.as_erased().data().kind {
         ValueKindData::Constant(
             ConstantData::Int(_)
             | ConstantData::Float(_)
@@ -2887,7 +2883,7 @@ fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx
         ValueKindData::Constant(ConstantData::Aggregate(elements))
             if constant.ty().data().as_vector().is_some() =>
         {
-            let module = constant.into_erased().module();
+            let module = constant.as_erased().module();
             elements.iter().all(|element| {
                 !matches!(
                     &module.context().value_data(*element).kind,
@@ -2898,17 +2894,6 @@ fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx
         _ => false,
     }
 }
-fn constant_splat_value<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-) -> Option<Constant<'ctx, B>> {
-    let elements = aggregate_elements(constant)?;
-    let first = elements.first().copied()?;
-    elements
-        .iter()
-        .all(|element| *element == first)
-        .then_some(first)
-}
-
 fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     elements: Vec<Constant<'ctx, B>>,
@@ -2935,11 +2920,11 @@ fn aggregate_elements<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
 ) -> Option<Vec<Constant<'ctx, B>>> {
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &constant.into_erased().data().kind
+        &constant.as_erased().data().kind
     else {
         return None;
     };
-    let module = constant.into_erased().module();
+    let module = constant.as_erased().module();
     Some(
         elements
             .iter()
@@ -2963,14 +2948,14 @@ fn constant_int_same_unsigned_value<'ctx, B: ModuleBrand + 'ctx>(
 
 fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     matches!(
-        &constant.into_erased().data().kind,
+        &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::Poison)
     )
 }
 
 fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     matches!(
-        &constant.into_erased().data().kind,
+        &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::Undef)
     )
 }
@@ -3012,7 +2997,7 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx>(
                 None
             }
         }
-        BinaryOpcode::FAdd => {
+        BinaryOpcode::Fadd => {
             if constant_is_float_negative_zero(lhs) {
                 Some(rhs)
             } else if constant_is_float_negative_zero(rhs) {
@@ -3021,7 +3006,7 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx>(
                 None
             }
         }
-        BinaryOpcode::FMul => {
+        BinaryOpcode::Fmul => {
             if constant_is_one_value(lhs)? {
                 Some(rhs)
             } else if constant_is_one_value(rhs)? {
@@ -3032,27 +3017,27 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx>(
         }
         BinaryOpcode::Sub
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::FSub
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Fsub
             if constant_is_null_value(rhs) =>
         {
             Some(lhs)
         }
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::FDiv
+        BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Fdiv
             if constant_is_one_value(rhs)? =>
         {
             Some(lhs)
         }
-        BinaryOpcode::URem | BinaryOpcode::SRem | BinaryOpcode::FRem => None,
+        BinaryOpcode::Urem | BinaryOpcode::Srem | BinaryOpcode::Frem => None,
         BinaryOpcode::Sub
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::FSub
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::FDiv => None,
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Fdiv => None,
     };
     Ok(folded)
 }
@@ -3084,12 +3069,12 @@ fn binop_lhs_absorber<'ctx, B: ModuleBrand + 'ctx>(
         BinaryOpcode::And
         | BinaryOpcode::Mul
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
             if constant_is_null_value(lhs) =>
         {
             Some(lhs)
@@ -3185,5 +3170,24 @@ fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>
 }
 
 fn poison_for<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Constant<'ctx, B> {
-    ty.get_poison().as_constant()
+    ty.poison().as_constant()
+}
+
+/// Runtime-scalability choke point for the folder's vector rebuilds: parsed
+/// or analyzed vectors carry `scalable` as data, so this dispatches between
+/// [`ModuleView::vector_type`] and [`ModuleView::scalable_vector_type`].
+fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, T>(
+    module: ModuleView<'ctx, B>,
+    element: T,
+    lanes: u32,
+    scalable: bool,
+) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+where
+    T: Into<Type<'ctx, B>>,
+{
+    if scalable {
+        module.scalable_vector_type(element, lanes)
+    } else {
+        module.vector_type(element, lanes)
+    }
 }

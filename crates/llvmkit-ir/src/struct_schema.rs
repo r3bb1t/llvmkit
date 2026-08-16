@@ -7,7 +7,7 @@
 use crate::argument::Argument;
 use crate::constant::Constant;
 use crate::error::{IrError, IrResult, TypeKindLabel};
-use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
+use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::function_signature::{
     CallArgs, FunctionParam, FunctionParamList, FunctionReturn, IntoCallArg,
@@ -160,7 +160,7 @@ pub trait StructSchema: Sized + 'static {
     where
         B: ModuleBrand + 'ctx,
     {
-        module.get_or_set_named_struct_body::<Self>()
+        module.get_or_insert_struct_of::<Self>()
     }
 
     /// Convert an existing raw IR value into this schema's branded wrapper.
@@ -196,7 +196,7 @@ where
         let TypeData::Struct(data) = ty.data() else {
             return false;
         };
-        if data.name.as_deref() != Some(S::NAME) {
+        if data.identity.name() != Some(S::NAME) {
             return false;
         }
         let body = data.body.borrow();
@@ -270,7 +270,7 @@ macro_rules! impl_int_field {
         {
             #[inline]
             fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_int_value(module)?.into_erased())
+                Ok(self.into_int_value(module)?.as_erased())
             }
         }
     )+};
@@ -327,7 +327,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.into_erased())
+        Ok(self.into_int_value(module)?.as_erased())
     }
 }
 
@@ -371,7 +371,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.into_erased())
+        Ok(self.into_int_value(module)?.as_erased())
     }
 }
 
@@ -417,7 +417,7 @@ macro_rules! impl_float_field {
         {
             #[inline]
             fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_float_value(module)?.into_erased())
+                Ok(self.into_float_value(module)?.as_erased())
             }
         }
     )+};
@@ -427,7 +427,7 @@ impl_float_field!(
     f32 => f32_type, crate::TypeKind::Float,
     f64 => f64_type, crate::TypeKind::Double,
     Half => half_type, crate::TypeKind::Half,
-    BFloat => bfloat_type, crate::TypeKind::BFloat,
+    Bfloat => bfloat_type, crate::TypeKind::Bfloat,
     Fp128 => fp128_type, crate::TypeKind::Fp128,
     X86Fp80 => x86_fp80_type, crate::TypeKind::X86Fp80,
     PpcFp128 => ppc_fp128_type, crate::TypeKind::PpcFp128,
@@ -473,7 +473,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_pointer_value(module)?.into_erased())
+        Ok(self.into_pointer_value(module)?.as_erased())
     }
 }
 
@@ -485,7 +485,7 @@ macro_rules! impl_struct_into_field {
             B: ModuleBrand + 'ctx,
         {
             fn into_ir_field(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().into_erased())
+                Ok(S::try_value_from_ir(self)?.as_struct_value().as_erased())
             }
         }
     };
@@ -504,7 +504,7 @@ macro_rules! impl_struct_into_call_arg {
             B: ModuleBrand + 'ctx,
         {
             fn into_call_arg(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().into_erased())
+                Ok(S::try_value_from_ir(self)?.as_struct_value().as_erased())
             }
         }
     };
@@ -517,7 +517,7 @@ impl_struct_into_call_arg!(Instruction<'ctx, Attached, B>);
 /// The `I`-th top-level field schema of a field tuple. Implemented for
 /// tuple arities 1..=16, one impl per (arity, index) pair, so an
 /// out-of-range index is "no impl" -- a compile error at the
-/// `build_field_gep::<S, I>` call site.
+/// `field_gep::<S, I>` call site.
 pub trait StructFieldAt<const I: u32> {
     type Field: IrField;
 }
@@ -729,7 +729,7 @@ where
     {
         let validated = ValidatedStructValue::new();
         S::Value::from_struct_value(
-            StructValue::from_value_unchecked(arg.into_erased()),
+            StructValue::from_value_unchecked(arg.as_erased()),
             &validated,
         )
     }

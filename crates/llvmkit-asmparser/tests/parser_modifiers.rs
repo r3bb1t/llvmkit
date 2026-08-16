@@ -254,18 +254,168 @@ fn memory_attribute_round_trips() {
     );
 }
 
-/// Mirrors `llvm/test/Assembler/memory-attribute-errors.ll`: `other` is the
-/// default memory access class in `Attribute::getAsString`, not an explicit
-/// `memory(...)` location accepted by the LLVM parser.
+/// Ports `test/Assembler/memory-attribute-errors.ll`. Each split's CHECK line
+/// pins one `LLParser::parseMemoryAttr` diagnostic verbatim.
+///
+/// All eight splits. The last three — `memory(foo)`, `memory(other: read)` and
+/// `memory(argmem: foo)` — turn on a word that matches no keyword, and were
+/// unreachable until llvmkit's lexer started returning `Token::Error` for one
+/// instead of failing outright: the message came from the lexer naming the
+/// lexeme, where upstream's comes from `parseMemoryAttr` naming what it wanted.
 #[test]
-fn memory_attribute_rejects_explicit_other_location() {
-    let err = parse_err(b"declare void @f() memory(other: read, argmem: write)\n");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "memory attribute access kind");
-        }
-        other => panic!("unexpected error variant: {other:?}"),
+fn memory_attribute_errors_match_upstream_text() {
+    for (fixture, expected) in [
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/missing_args.ll").as_slice(),
+            "expected '('",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/empty.ll").as_slice(),
+            "expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/unterminated.ll").as_slice(),
+            "unterminated memory attribute",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/missing_colon.ll").as_slice(),
+            "expected ':' after location",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/default_after_loc.ll")
+                .as_slice(),
+            "default access kind must be specified first",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/invalid_kind.ll").as_slice(),
+            "expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/other.ll").as_slice(),
+            "expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/invalid_access_kind.ll")
+                .as_slice(),
+            "expected access kind (none, read, write, readwrite)",
+        ),
+    ] {
+        assert_eq!(parse_err(fixture).to_string(), expected);
     }
+}
+
+/// `memory(argmem: read)` writes its colon as a separator, so
+/// `LLParser::parseMemoryAttr` puts the lexer in
+/// `setIgnoreColonInIdentifiers` mode for the duration. Whitespace around the
+/// colon is therefore insignificant. llvmkit matched locations by looking for
+/// a *label* token instead, which requires the colon to be glued to the word,
+/// so the spaced spelling did not parse.
+///
+/// `test/Assembler` writes only the unspaced form, so the spacing case is
+/// anchored on `parseMemoryAttr` itself (D11).
+#[test]
+fn memory_attribute_tolerates_space_before_the_colon() {
+    let module = module_new!("memory_attribute_spacing").expect("fresh module");
+    Parser::new(
+        b"declare void @f() memory(argmem : read, inaccessiblemem :write)
+",
+        &module,
+    )
+    .expect("parse constructor")
+    .parse_module()
+    .expect("upstream ignores whitespace around the location colon");
+    let printed = format!("{module}");
+    assert!(
+        printed.contains("memory(argmem: read, inaccessiblemem: write)"),
+        "{printed}"
+    );
+}
+
+/// Legacy memory keywords **intersect**: `upgradeMemoryAttr` (`LLParser.cpp`)
+/// is `ME &= MemoryEffects::X()` per keyword over an accumulator starting at
+/// `unknown()`, emitted once after the whole list, and
+/// `MemoryEffectsBase::operator&=` is a raw AND of the packed word.
+///
+/// No upstream `.ll` pins the intersection of two keywords — the closest are
+/// `test/Analysis/AliasSet/argmemonly.ll` (`argmemonly writeonly` on a
+/// declaration, no CHECK on the printed attribute) and
+/// `test/Bitcode/upgrade-masked-keep-metadata.ll` (both intersections below
+/// in `attributes #N` groups, likewise unchecked) — so these are anchored on
+/// the symbols, with those two fixtures as the corroborating in-tree usage.
+/// llvmkit used to store one `memory(...)` per keyword, so
+/// `readonly writeonly` printed `memory(read) memory(write)`.
+#[test]
+fn legacy_memory_keywords_intersect() {
+    for (spelled, expected) in [
+        ("readonly writeonly", "memory(none)"),
+        ("readnone readonly", "memory(none)"),
+        ("argmemonly writeonly", "memory(argmem: write)"),
+        (
+            "inaccessiblemem_or_argmemonly readonly",
+            "memory(argmem: read, inaccessiblemem: read)",
+        ),
+    ] {
+        let text = parse_fixture(
+            "legacy_memory_keywords_intersect",
+            format!("declare void @f() {spelled}\n").as_bytes(),
+        );
+        assert_check_lines(&text, &[&format!("declare void @f() {expected}")]);
+        assert_eq!(
+            text.matches("memory(").count(),
+            1,
+            "{spelled} must yield exactly one memory attribute:\n{text}"
+        );
+
+        // The accumulator is per attribute list, so an `attributes #N` group
+        // intersects the same way.
+        let text = parse_fixture(
+            "legacy_memory_keywords_intersect_group",
+            format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {spelled} }}\n")
+                .as_bytes(),
+        );
+        assert_check_lines(&text, &[&format!("attributes #0 = {{ {expected} }}")]);
+    }
+}
+
+/// The accumulated effects are emitted *after* the list and
+/// `addAttributeImpl` replaces by kind, so a legacy keyword discards an
+/// explicit `memory(...)` written in the same list — in either source order.
+/// Anchored on `LLParser::parseFnAttributeValuePairs`'s
+/// `if (ME != MemoryEffects::unknown()) B.addMemoryAttr(ME);` epilogue and
+/// `addAttributeImpl`'s `std::swap` branch (`lib/IR/Attributes.cpp`); no
+/// upstream `.ll` combines the two forms.
+#[test]
+fn legacy_memory_keyword_overwrites_explicit_memory() {
+    for spelled in ["memory(none) readonly", "readonly memory(none)"] {
+        let text = parse_fixture(
+            "legacy_memory_keyword_overwrites_explicit_memory",
+            format!("declare void @f() {spelled}\n").as_bytes(),
+        );
+        assert_check_lines(&text, &["declare void @f() memory(read)"]);
+        assert_eq!(
+            text.matches("memory(").count(),
+            1,
+            "{spelled} must yield exactly one memory attribute:\n{text}"
+        );
+    }
+}
+
+/// The same `expected access kind (none, read, write, readwrite)` arm, reached
+/// from the *other* side: `readonly` is a real token that `keywordToModRef`
+/// does not accept, where the upstream fixture's `foo` is a word that is no
+/// token at all.
+///
+/// This existed because the upstream trigger was unreachable; it is ported now
+/// (`memory_attribute_errors_match_upstream_text`, the `invalid-access-kind`
+/// split), and this stays as the keyword-trigger half. Anchored on
+/// `LLParser::parseMemoryAttr` (D11: no upstream counterpart uses a keyword
+/// trigger).
+#[test]
+fn memory_access_kind_diagnostic_fires_on_keyword_input() {
+    assert_eq!(
+        parse_err(b"declare void @f() memory(argmem: readonly)\n").to_string(),
+        "expected access kind (none, read, write, readwrite)"
+    );
 }
 
 /// Mirrors `llvm/test/Bitcode/upgrade-memory-intrinsics.ll`: legacy memory
@@ -301,23 +451,68 @@ fn call_parameter_legacy_memory_keywords_remain_parameter_attrs() {
     assert!(!text.contains("memory("), "{text}");
 }
 
-/// Mirrors `llvm/test/Assembler/memory-attribute-errors.ll`: after a
-/// location-specific component, LLVM requires an explicit access kind; a bare
-/// default access kind is not another component.
+/// A comdat may be used before `$name = comdat ...` defines it — upstream
+/// `LLParser::getComdat` creates the `Comdat` on first reference and records
+/// that its selection kind is still owed.
+///
+/// No upstream `.ll` fixture isolates the positive case; the rule is
+/// `getComdat`'s. The two negative halves below carry upstream's exact text.
 #[test]
-fn memory_attribute_rejects_default_access_after_location() {
-    let err = {
-        let module = module_new!("memory_attribute_error").expect("fresh module");
-        Parser::new(b"declare void @f() memory(argmem: read, write)\n", &module)
-            .expect("parse constructor")
-            .parse_module()
-            .expect_err("memory attribute is malformed")
-    };
+fn comdat_may_be_used_before_it_is_defined() {
+    let text = parse_fixture(
+        "comdat_forward",
+        b"@g = global i32 0, comdat($c)\n$c = comdat any\n",
+    );
+    assert!(text.contains("$c = comdat any"), "{text}");
+    assert!(text.contains("comdat($c)"), "{text}");
+}
 
-    match err {
-        llvmkit_asmparser::parse_error::ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "memory attribute access kind")
-        }
-        other => panic!("unexpected parse error: {other:?}"),
+/// Ports `test/Assembler/invalid-comdat.ll` verbatim, asserting its CHECK
+/// line. The rule is the `ForwardRefComdats` guard at the top of
+/// `LLParser::validateEndOfModule`: a comdat referenced but never defined is
+/// reported at its first use.
+#[test]
+fn undefined_comdat_is_rejected() {
+    assert_eq!(
+        parse_err(b"@v = global i32 0, comdat($v)\n").to_string(),
+        "use of undefined comdat '$v'"
+    );
+}
+
+/// Ports `test/Assembler/invalid-comdat2.ll` verbatim, asserting its CHECK
+/// line. The rule is the `!ForwardRefComdats.erase(Name)` guard in
+/// `LLParser::parseComdat`: a second `$v = comdat ...` is a redefinition,
+/// where a definition that merely satisfies an earlier *use* is not.
+///
+/// Note the fixture repeats the *same* selection kind, so this pins that the
+/// rejection is about redefining at all, not about disagreeing.
+#[test]
+fn redefined_comdat_is_rejected() {
+    assert_eq!(
+        parse_err(b"$v = comdat any\n$v = comdat any\n").to_string(),
+        "redefinition of comdat '$v'"
+    );
+}
+
+/// Ports both `test/Assembler/alloca-addrspace-parse-error-{0,1}.ll`, which
+/// pin that a trailing comma after an `alloca` clause demands metadata: the
+/// index-list loop breaks on `MetadataVar`, so a comma with anything else
+/// after it — or nothing — is `expected metadata after comma`.
+///
+/// The second is the interesting one: `addrspace(1), align 4` is the *wrong
+/// clause order*, and upstream reports it through the same message rather
+/// than a dedicated one.
+#[test]
+fn alloca_addrspace_parse_errors_match_upstream_text() {
+    for fixture in [
+        b"target datalayout = \"A1\"\ndefine void @use_alloca() {\n  %alloca = alloca i32, addrspace(1),\n  ret void\n}\n!0 = !{}\n"
+            .as_slice(),
+        b"target datalayout = \"A1\"\ndefine void @use_alloca() {\n  %alloca = alloca i32, addrspace(1), align 4\n  ret void\n}\n!0 = !{}\n"
+            .as_slice(),
+    ] {
+        assert_eq!(
+            parse_err(fixture).to_string(),
+            "expected metadata after comma"
+        );
     }
 }

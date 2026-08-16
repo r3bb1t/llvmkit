@@ -19,9 +19,8 @@ fn parse_err(src: &str) -> ParseError {
 #[test]
 fn standalone_constant_rejects_trailing_token() {
     let module = module_new!("parser_val_id_constant").expect("fresh module");
-    let err =
-        parser::parse_constant_value(b"42 trailing", &module, module.i32_type().as_type(), None)
-            .expect_err("parser rejects trailing token after standalone constant");
+    let err = parser::parse_constant_value(b"42 trailing", &module, module.i32_type().as_type())
+        .expect_err("parser rejects trailing token after standalone constant");
     match err {
         ParseError::Expected { expected, .. } => assert_eq!(expected, "end of string"),
         other => panic!("unexpected error variant: {other:?}"),
@@ -33,10 +32,9 @@ fn standalone_constant_rejects_trailing_token() {
 #[test]
 fn fadd_constant_expr_rejected_as_unsupported() {
     let err = parse_err("@x = global double fadd (double 1.0, double 2.0)\n");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "fadd constexprs are no longer supported")
-        }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    // Upstream prints this sentence bare, so it must render verbatim — the
+    // variant assertion locks the routing that guarantees that, and the text
+    // assertion is the mirror of the upstream FileCheck line.
+    assert!(matches!(err, ParseError::Message { .. }));
+    assert_eq!(err.to_string(), "fadd constexprs are no longer supported");
 }

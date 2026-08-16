@@ -20,8 +20,10 @@ here, and every name below is a plain re-export.
 - `llvmkit::support` — shared source-location utilities (`Span`, `Spanned`,
   `SourceMap`).
 
-The macros arrive through `llvmkit-ir`'s default `macros` feature, which this
-crate enables; `llvmkit` itself declares no features to turn off.
+The macros arrive through `llvmkit-ir`'s `macros` feature, forwarded by this
+crate's own default `macros` feature. Turn them off with
+`default-features = false`; the proc-macro crate is compiled either way, so the
+feature gates only the re-export surface.
 
 Not here, and not planned in this crate: code generation, target backends,
 linking, and object emission. Bitcode and debug info are future work.
@@ -31,5 +33,4 @@ full status and roadmap.
 
 ## License
 
-Apache-2.0 WITH LLVM-exception. See the workspace
-[`LICENSE`](https://github.com/r3bb1t/llvmkit/blob/main/LICENSE).
+Apache-2.0 WITH LLVM-exception. See [`LICENSE`](LICENSE).

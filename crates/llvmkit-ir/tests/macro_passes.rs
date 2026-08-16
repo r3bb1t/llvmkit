@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionId, FunctionPass,
-    IRBuilder, InstructionView, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
+    InstructionView, IrBuilder, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
     ModulePass, NoFolder, PatchBody, RewriteModule, Unverified, Verified, function_pass,
     module_new, module_pass, run_function_pass, run_module_pass,
 };
@@ -36,16 +36,13 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, Unverified>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
-    let _dead = b.build_int_add::<i32, _, _, _>(
-        i32_ty.const_int(10_u32),
-        i32_ty.const_int(20_u32),
-        "dead",
-    )?;
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
+    let _dead =
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(10_u32), i32_ty.const_int(20_u32), "dead")?;
+    b.ret(i32_ty.const_int(1_u32))?;
     Ok(f)
 }
 
@@ -54,11 +51,11 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, Unverified>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    b.ret(i32_ty.const_int(1_u32))?;
     Ok(f)
 }
 

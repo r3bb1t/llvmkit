@@ -64,38 +64,142 @@ fn inline_asm_inteldialect_unwind_round_trips() {
     );
 }
 
-/// llvmkit-specific subset of `test/Assembler/inline-asm-constraint-error.ll`:
-/// non-callbr inline asm may not carry label constraints.
+/// Every split of `test/Assembler/inline-asm-constraint-error.ll`, each
+/// asserting its own `FileCheck` line. The nine splits are exactly the nine
+/// messages `InlineAsm::verify` can produce, and
+/// `LLParser::convertValIDToValue` prints each verbatim.
 #[test]
-fn inline_asm_call_label_constraint_subset() {
-    const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/inline-asm-constraint-error/inline_asm_call_label_constraint_subset.ll"
-    );
+fn inline_asm_constraint_errors_match_upstream_text() {
+    const SPLITS: &[(&str, &[u8], &str)] = &[
+        (
+            "parse-fail",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/parse-fail.ll"),
+            "failed to parse constraints",
+        ),
+        (
+            "input-before-output",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/input-before-output.ll"),
+            "output constraint occurs after input, clobber or label constraint",
+        ),
+        (
+            "input-after-clobber",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/input-after-clobber.ll"),
+            "input constraint occurs after clobber constraint",
+        ),
+        (
+            "must-return-void",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/must-return-void.ll"),
+            "inline asm without outputs must return void",
+        ),
+        (
+            "cannot-be-struct",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/cannot-be-struct.ll"),
+            "inline asm with one output cannot return struct",
+        ),
+        (
+            "incorrect-struct-elements",
+            include_bytes!(
+                "fixtures/upstream/inline-asm-constraint-error/incorrect-struct-elements.ll"
+            ),
+            "number of output constraints does not match number of return struct elements",
+        ),
+        (
+            "incorrect-arg-num",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/incorrect-arg-num.ll"),
+            "number of input constraints does not match number of parameters",
+        ),
+        (
+            "label-after-clobber",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/label-after-clobber.ll"),
+            "label constraint occurs after clobber constraint",
+        ),
+        (
+            "output-after-label",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/output-after-label.ll"),
+            "output constraint occurs after input, clobber or label constraint",
+        ),
+    ];
 
-    let err = parse_fixture_err("inline_asm_call_label_constraint_subset", FIXTURE);
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "inline asm call without label constraints")
-        }
-        other => panic!("unexpected error variant: {other:?}"),
+    for (name, fixture, expected) in SPLITS {
+        let err = parse_fixture_err(name, fixture);
+        assert_eq!(err.to_string(), *expected, "split {name}");
     }
 }
 
-/// llvmkit-specific subset of `test/Assembler/inline-asm-constraint-error.ll`:
-/// callbr inline asm must provide one label constraint per indirect label.
+/// `test/Assembler/invalid-inline-constraint.ll` (LLVM bug 24646), fixture
+/// verbatim — including the stray `0x1C` byte upstream's corrupted body
+/// carries. It reaches the same `failed to parse constraints` as the
+/// `parse-fail` split above, but through wreckage rather than a tidy bad
+/// clobber: the deliberate garbage after the call (`ounwi`, `ounwindret`)
+/// lexes as `Token::Error`, which the attribute loop ends on, so
+/// `InlineAsm::verify` still runs on the constraint string. llvmkit's lexer
+/// used to fail on `unknown keyword 'ounwi'` first.
 #[test]
-fn inline_asm_callbr_label_constraints_subset() {
+fn a_corrupted_inline_asm_body_still_reports_the_constraint_failure() {
     const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/inline-asm-constraint-error/invalid-inline-constraint.ll"
+    );
+
+    let err = parse_fixture_err("invalid-inline-constraint", FIXTURE);
+    assert_eq!(err.to_string(), "failed to parse constraints");
+}
+
+/// `test/Assembler/invalid-untyped-metadata.ll` (LLVM bug 24645), fixture
+/// verbatim: inline asm outside a call callee has no function type to check
+/// the constraint string against.
+#[test]
+fn inline_asm_without_a_function_type_is_rejected() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/inline-asm-constraint-error/invalid-untyped-metadata.ll");
+
+    let err = parse_fixture_err("invalid-untyped-metadata", FIXTURE);
+    assert_eq!(
+        err.to_string(),
+        "invalid type for inline asm constraint string"
+    );
+}
+
+/// `Verifier::verifyInlineAsmCall`'s two label rules, asserted at the layer
+/// upstream puts them: the parser accepts both shapes and `verify()` reports.
+///
+/// Both used to be parse-time rejections with llvmkit wordings, which shadowed
+/// the verifier rule llvmkit already had — the ordinary-call one carries
+/// upstream's text verbatim. The fixtures are llvmkit's, because upstream's
+/// own splits of `inline-asm-constraint-error.ll` all stop at
+/// `InlineAsm::verify` and never reach these two.
+#[test]
+fn inline_asm_label_constraint_rules_are_verifier_rules() {
+    const CALL: &[u8] = include_bytes!(
+        "fixtures/upstream/inline-asm-constraint-error/inline_asm_call_label_constraint_subset.ll"
+    );
+    const CALLBR: &[u8] = include_bytes!(
         "fixtures/upstream/inline-asm-constraint-error/inline_asm_callbr_label_constraints_subset.ll"
     );
 
-    let err = parse_fixture_err("inline_asm_callbr_label_constraints_subset", FIXTURE);
-    match err {
-        ParseError::Expected { expected, .. } => assert_eq!(
-            expected,
-            "inline asm callbr label constraint count matches indirect labels"
+    for (name, fixture, expected) in [
+        (
+            "inline_asm_call_label_constraint_subset",
+            CALL,
+            "Label constraints can only be used with callbr",
         ),
-        other => panic!("unexpected error variant: {other:?}"),
+        (
+            "inline_asm_callbr_label_constraints_subset",
+            CALLBR,
+            "Number of label constraints does not match number of callbr dests",
+        ),
+    ] {
+        let module = Module::dynamic(name);
+        Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("the parser accepts what upstream's parser accepts");
+        let err = module
+            .verify_borrowed()
+            .expect_err("the verifier rejects it");
+        assert!(
+            err.to_string().contains(expected),
+            "{name}: unexpected error: {err}"
+        );
     }
 }
 
@@ -171,7 +275,7 @@ fn ellipsis_in_non_musttail_call_rejected() {
     assert_fixture_rejected(
         "ellipsis_non_musttail",
         src.as_bytes(),
-        "unexpected ellipsis in argument list for non-musttail call",
+        "expected unexpected ellipsis in argument list for non-musttail call",
     );
 }
 
@@ -188,7 +292,7 @@ fn musttail_ellipsis_in_non_varargs_function_rejected() {
     assert_fixture_rejected(
         "musttail_non_varargs",
         src.as_bytes(),
-        "unexpected ellipsis in argument list for musttail call in non-varargs function",
+        "expected unexpected ellipsis in argument list for musttail call in non-varargs function",
     );
 }
 
@@ -247,12 +351,32 @@ fn operand_bundles_round_trip() {
     );
 }
 
+/// llvmkit-specific subset of
+/// `test/Transforms/PreISelIntrinsicLowering/protected-field-pointer.ll`
+/// (the `NOPAUTH`-lowered call shape): the `"deactivation-symbol"` operand
+/// bundle keeps upstream's tag spelling through a parse/print round trip.
+/// The tag is registered as `LLVMContext::OB_deactivation_symbol` and
+/// spelled by `knownBundleName` in `lib/IR/LLVMContext.cpp` — llvmkit
+/// printed it as `"deactivation"` until this test.
+#[test]
+fn deactivation_symbol_bundle_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/deactivation-symbol/deactivation_symbol_bundle_round_trip.ll"
+    );
+
+    let text = parse_and_render_bytes("deactivation_symbol_bundle_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["call i64 @__emupac_autda(i64 %val, i64 1) [\"deactivation-symbol\"(ptr @ds1)]"],
+    );
+}
+
+/// Assert rejection with upstream's message, **rendered** — see the note on
+/// `parser_constants.rs::assert_parse_error` for why the comparison is
+/// against `to_string()` and not a variant field.
 fn assert_fixture_rejected(module_name: &str, src: &[u8], expected_message: &str) {
     let err = parse_fixture_err(module_name, src);
-    match err {
-        ParseError::Expected { expected, .. } => assert_eq!(expected, expected_message),
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert_eq!(err.to_string(), expected_message);
 }
 
 /// Crafted against `llvm/lib/AsmParser/LLParser.cpp::parseCall`'s argument
@@ -269,7 +393,7 @@ fn call_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid call: call argument #0 type mismatch: expected i32, got float",
+        "argument is not of expected type 'i32'",
     );
 }
 
@@ -287,7 +411,7 @@ fn call_explicit_type_arg_width_mismatch_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_arg_width_mismatch_rejected",
         FIXTURE,
-        "valid call: call argument #0 type mismatch: expected i32, got i8",
+        "argument is not of expected type 'i32'",
     );
 }
 
@@ -303,7 +427,7 @@ fn call_explicit_type_too_few_args_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_too_few_args_rejected",
         FIXTURE,
-        "valid call: call argument count mismatch: expected 2, got 1",
+        "not enough parameters specified for call",
     );
 }
 
@@ -319,7 +443,7 @@ fn call_explicit_type_too_many_args_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_too_many_args_rejected",
         FIXTURE,
-        "valid call: call argument count mismatch: expected 0, got 1",
+        "too many arguments specified",
     );
 }
 
@@ -335,7 +459,7 @@ fn call_vararg_missing_fixed_arg_rejected() {
     assert_fixture_rejected(
         "call_vararg_missing_fixed_arg_rejected",
         FIXTURE,
-        "valid call: call argument count mismatch: expected 1, got 0",
+        "not enough parameters specified for call",
     );
 }
 
@@ -356,7 +480,7 @@ fn call_vararg_extra_args_round_trips() {
 /// Crafted against `llvm/lib/AsmParser/LLParser.cpp::parseCall`'s argument
 /// loop, reached through an indirect (undef) callee so validation runs
 /// against the explicit call-site function type alone —
-/// `build_indirect_call_dyn`'s `validate_call_site_args` gate.
+/// `indirect_call_dyn`'s `validate_call_site_args` gate.
 #[test]
 fn indirect_call_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -366,7 +490,7 @@ fn indirect_call_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "indirect_call_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid indirect call: call argument #0 type mismatch: expected i32, got float",
+        "argument is not of expected type 'i32'",
     );
 }
 
@@ -495,10 +619,10 @@ fn indirect_call_undef_callee_round_trips() {
 }
 
 /// Mirrors `LLParser::PerFunctionState::getVal`'s type check at the callee
-/// position ("'%x' defined with type 'i32' but expected 'ptr'"): a
-/// non-pointer local cannot be a callee. llvmkit surfaces the rule when
-/// converting the parsed callee value to a pointer; no upstream lit
-/// coverage of the diagnostic, rule shape is the anchor (D11).
+/// position: a non-pointer local cannot be a callee, because
+/// `convertValIDToValue` asks `getVal` for the name at pointer type and
+/// `checkValidVariableType` refuses. No upstream lit coverage of the
+/// diagnostic, so the rule shape is the anchor (D11).
 #[test]
 fn indirect_call_non_pointer_callee_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -508,7 +632,7 @@ fn indirect_call_non_pointer_callee_rejected() {
     assert_fixture_rejected(
         "indirect_call_non_pointer_callee_rejected",
         FIXTURE,
-        "pointer callee: type mismatch: expected pointer, got integer",
+        "'%x' defined with type 'i32' but expected 'ptr'",
     );
 }
 
@@ -545,7 +669,7 @@ fn callbr_indirect_callee_rejected() {
     assert_fixture_rejected(
         "callbr_indirect_callee_rejected",
         FIXTURE,
-        "direct function callee for callbr",
+        "expected direct function callee for callbr",
     );
 }
 
@@ -608,7 +732,7 @@ fn callbr_explicit_type_vararg_round_trips() {
 /// expected type") with an explicit call-site type; no upstream lit or
 /// unittest coverage, rule shape is the anchor (D11). llvmkit routes the
 /// check through `validate_call_site_args` in
-/// `build_invoke_dyn_with_config`.
+/// `invoke_dyn_with_config`.
 #[test]
 fn invoke_explicit_type_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -618,14 +742,14 @@ fn invoke_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "invoke_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid invoke: call argument #0 type mismatch: expected i32, got float",
+        "argument is not of expected type 'i32'",
     );
 }
 
 /// Crafted against `parseCallBr`'s argument loop with an explicit
 /// call-site type — same rule as
 /// [`invoke_explicit_type_arg_type_mismatch_rejected`], surfaced through
-/// `build_callbr_with_config`.
+/// `callbr_with_config`.
 #[test]
 fn callbr_explicit_type_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -635,7 +759,7 @@ fn callbr_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "callbr_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid callbr: call argument #0 type mismatch: expected i32, got float",
+        "argument is not of expected type 'i32'",
     );
 }
 
@@ -655,4 +779,55 @@ fn invoke_explicit_type_signature_round_trips() {
         &text,
         &["invoke void @f(i8 1)", "to label %ok unwind label %lp"],
     );
+}
+
+/// `LLParser::parseOptionalOperandBundles` checks emptiness *before* it eats
+/// the `]`, and reports at the `[` — so an absent bundle set is fine while a
+/// written-but-empty one is an error. llvmkit accepted `[]`.
+///
+/// No `test/Assembler` fixture pins it, so the routine is the anchor.
+#[test]
+fn an_empty_operand_bundle_set_is_rejected() {
+    let src = "declare void @g()\n\
+               define void @f() {\nentry:\n  call void @g() []\n  ret void\n}\n";
+    assert_fixture_rejected(
+        "empty_operand_bundle_set",
+        src.as_bytes(),
+        "operand bundle set must not be empty",
+    );
+
+    // Absent is fine.
+    parse_and_render(
+        "declare void @g()\ndefine void @f() {\nentry:\n  call void @g()\n  ret void\n}\n",
+    );
+}
+
+/// `parseCallBr` ends its `||` chain with `parseToken(lltok::lsquare,
+/// "expected '[' in callbr")`, so the indirect-destination list is
+/// **mandatory** and no comma precedes it. llvmkit made the whole list
+/// optional and tolerated a leading comma, accepting both
+/// `callbr void @g() to label %x` and `... to label %x, [...]`.
+///
+/// An *empty* list is still legal — upstream only requires the brackets.
+#[test]
+fn a_callbr_indirect_destination_list_is_mandatory() {
+    for src in [
+        "declare void @g()\n\
+         define void @f() {\nentry:\n  callbr void @g() to label %ok\nok:\n  ret void\n}\n",
+        "declare void @g()\n\
+         define void @f() {\nentry:\n  callbr void @g() to label %ok, [label %ok]\nok:\n  ret void\n}\n",
+    ] {
+        assert_fixture_rejected(
+            "callbr_missing_bracket",
+            src.as_bytes(),
+            "expected '[' in callbr",
+        );
+    }
+
+    // The empty-bracket form is what upstream requires, and it round-trips.
+    let text = parse_and_render(
+        "declare void @g()\n\
+         define void @f() {\nentry:\n  callbr void @g() to label %ok []\nok:\n  ret void\n}\n",
+    );
+    assert_check_lines(&text, &["callbr void @g()", "to label %ok []"]);
 }

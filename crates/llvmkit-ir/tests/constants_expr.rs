@@ -1,7 +1,7 @@
 //! Constant-expression, blockaddress, and token-none tests.
 
 use llvmkit_ir::{
-    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn, GepNoWrapFlags, IRBuilder,
+    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn, GepNoWrapFlags, IrBuilder,
     IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags, module_new,
 };
 
@@ -30,7 +30,7 @@ fn constant_expr_bitcast_round_trips() -> Result<(), IrError> {
     let bitcast = m.constant_expr(
         ppc_ty.as_type(),
         ConstantExprOpcode::BitCast,
-        [bits.into_erased()],
+        [bits.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -57,7 +57,7 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
     let expr = m.constant_expr(
         m.i64_type().as_type(),
         ConstantExprOpcode::PtrToAddr,
-        [m.view(g).as_global_constant_ptr().into_erased()],
+        [m.view(g).as_global_constant_ptr().as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -76,16 +76,12 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
 fn blockaddress_constant_round_trips() -> Result<(), IrError> {
     let m = module_new!("blockaddress_const")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let terminator = b.build_ret_void()?.1;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let terminator = b.ret_void()?.1;
     assert!(terminator.is_terminator());
     m.add_global("addr", addr)?;
 
@@ -101,11 +97,7 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
 fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
     let m = module_new!("blockaddress_addrspace_const")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m
         .function_builder::<(), _>("f", fn_ty)
         .linkage(Linkage::External)
@@ -113,8 +105,8 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
         .build()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
-    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-    let terminator = b.build_ret_void().1;
+    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let terminator = b.ret_void().1;
     assert!(terminator.is_terminator());
     m.add_global("addr", addr)?;
 
@@ -134,7 +126,7 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
 fn token_none_round_trips() -> Result<(), IrError> {
     let m = module_new!("token_none")?;
     let none = m.token_none();
-    let text = format!("{}", none.into_erased());
+    let text = format!("{}", none.as_erased());
     assert_eq!(text, "token none");
     Ok(())
 }
@@ -204,13 +196,13 @@ fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(),
     let m = module_new!("constexpr_ptr_vec_bitcast")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
+    let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1);
     let g = m.add_global("g", i32_ty.const_zero())?;
     let scalar = m.view(g).as_global_constant_ptr();
     let to_vec = m.constant_expr(
         vec_ptr_ty.as_type(),
         ConstantExprOpcode::BitCast,
-        [scalar.into_erased()],
+        [scalar.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -219,7 +211,7 @@ fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(),
     let to_scalar = m.constant_expr(
         ptr_ty.as_type(),
         ConstantExprOpcode::BitCast,
-        [vector.into_erased()],
+        [vector.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -247,7 +239,7 @@ fn invalid_bitcast_constant_expr_is_rejected() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let zero = i32_ty.const_int(0i32);
     let g = m.add_global("g", zero)?;
-    let ptr = m.view(g).as_global_constant_ptr().into_erased();
+    let ptr = m.view(g).as_global_constant_ptr().as_erased();
 
     let err = m
         .constant_expr(
@@ -284,7 +276,7 @@ fn invalid_bitcast_constant_expr_is_rejected() -> Result<(), IrError> {
 fn invalid_gep_constant_expr_indices_are_rejected() -> Result<(), IrError> {
     let m = module_new!("constexpr_invalid_gep")?;
     let i32_ty = m.i32_type();
-    let struct_ty = m.struct_type([i32_ty.as_type()], false);
+    let struct_ty = m.struct_type([i32_ty.as_type()]);
     let init = struct_ty.const_struct([i32_ty.const_zero().as_constant()])?;
     let g = m.add_global("g", init)?;
     let zero = i32_ty.const_zero();
@@ -295,9 +287,9 @@ fn invalid_gep_constant_expr_indices_are_rejected() -> Result<(), IrError> {
             m.ptr_type(0).as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
-                m.view(g).as_global_constant_ptr().into_erased(),
-                zero.into_erased(),
-                one.into_erased(),
+                m.view(g).as_global_constant_ptr().as_erased(),
+                zero.as_erased(),
+                one.as_erased(),
             ],
             [],
             [],
@@ -320,8 +312,8 @@ fn invalid_shufflevector_constant_expr_non_i32_mask_is_rejected() -> Result<(), 
     let m = module_new!("constexpr_bad_shuffle_mask")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2, false);
-    let vec_i64_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2);
+    let vec_i64_ty = m.vector_type(i64_ty.as_type(), 2);
     let one = i32_ty.const_int(1i32);
     let two = i32_ty.const_int(2i32);
     let three = i32_ty.const_int(3i32);
@@ -338,7 +330,7 @@ fn invalid_shufflevector_constant_expr_non_i32_mask_is_rejected() -> Result<(), 
         .constant_expr(
             vec_i32_ty.as_type(),
             ConstantExprOpcode::ShuffleVector,
-            [lhs.into_erased(), rhs.into_erased(), mask.into_erased()],
+            [lhs.as_erased(), rhs.as_erased(), mask.as_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -359,7 +351,7 @@ fn invalid_shufflevector_constant_expr_non_i32_mask_is_rejected() -> Result<(), 
 fn invalid_shufflevector_constant_expr_out_of_range_mask_is_rejected() -> Result<(), IrError> {
     let m = module_new!("constexpr_bad_shuffle_mask_range")?;
     let i32_ty = m.i32_type();
-    let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2, false);
+    let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2);
     let one = i32_ty.const_int(1i32);
     let two = i32_ty.const_int(2i32);
     let three = i32_ty.const_int(3i32);
@@ -376,7 +368,7 @@ fn invalid_shufflevector_constant_expr_out_of_range_mask_is_rejected() -> Result
         .constant_expr(
             vec_i32_ty.as_type(),
             ConstantExprOpcode::ShuffleVector,
-            [lhs.into_erased(), rhs.into_erased(), mask.into_erased()],
+            [lhs.as_erased(), rhs.as_erased(), mask.as_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -397,8 +389,8 @@ fn invalid_shufflevector_constant_expr_out_of_range_mask_is_rejected() -> Result
 fn shufflevector_constant_expr_uses_mask_operand_when_folding() -> Result<(), IrError> {
     let m = module_new!("constexpr_shuffle_fold")?;
     let i32_ty = m.i32_type();
-    let src_ty = m.vector_type(i32_ty.as_type(), 2, false);
-    let result_ty = m.vector_type(i32_ty.as_type(), 3, false);
+    let src_ty = m.vector_type(i32_ty.as_type(), 2);
+    let result_ty = m.vector_type(i32_ty.as_type(), 3);
     let one = i32_ty.const_int(1_i32);
     let two = i32_ty.const_int(2_i32);
     let three = i32_ty.const_int(3_i32);
@@ -417,7 +409,7 @@ fn shufflevector_constant_expr_uses_mask_operand_when_folding() -> Result<(), Ir
     let folded = m.constant_expr(
         result_ty.as_type(),
         ConstantExprOpcode::ShuffleVector,
-        [lhs.into_erased(), rhs.into_erased(), mask.into_erased()],
+        [lhs.as_erased(), rhs.as_erased(), mask.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -435,27 +427,23 @@ fn shufflevector_constant_expr_uses_mask_operand_when_folding() -> Result<(), Ir
 fn shufflevector_constant_expr_poison_and_scalable_undef_masks_fold() -> Result<(), IrError> {
     let m = module_new!("constexpr_shuffle_poison_masks")?;
     let i32_ty = m.i32_type();
-    let fixed_ty = m.vector_type(i32_ty.as_type(), 2, false);
+    let fixed_ty = m.vector_type(i32_ty.as_type(), 2);
     let one = i32_ty.const_int(1_i32);
     let two = i32_ty.const_int(2_i32);
     let lhs = fixed_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([one, two])?;
     let rhs = fixed_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([one, two])?;
-    let fixed_mask = fixed_ty.as_type().get_poison().as_constant();
+    let fixed_mask = fixed_ty.as_type().poison().as_constant();
     let folded = m.constant_expr(
         fixed_ty.as_type(),
         ConstantExprOpcode::ShuffleVector,
-        [
-            lhs.into_erased(),
-            rhs.into_erased(),
-            fixed_mask.into_erased(),
-        ],
+        [lhs.as_erased(), rhs.as_erased(), fixed_mask.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
     )?;
-    assert_eq!(folded, fixed_ty.as_type().get_poison().as_constant());
+    assert_eq!(folded, fixed_ty.as_type().poison().as_constant());
 
-    let scalable_ty = m.vector_type(i32_ty.as_type(), 2, true);
+    let scalable_ty = m.scalable_vector_type(i32_ty.as_type(), 2);
     let lhs = scalable_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(1_i32),
         i32_ty.const_int(1_i32),
@@ -464,20 +452,16 @@ fn shufflevector_constant_expr_poison_and_scalable_undef_masks_fold() -> Result<
         i32_ty.const_int(2_i32),
         i32_ty.const_int(2_i32),
     ])?;
-    let scalable_mask = scalable_ty.as_type().get_undef().as_constant();
+    let scalable_mask = scalable_ty.as_type().undef().as_constant();
     let folded = m.constant_expr(
         scalable_ty.as_type(),
         ConstantExprOpcode::ShuffleVector,
-        [
-            lhs.into_erased(),
-            rhs.into_erased(),
-            scalable_mask.into_erased(),
-        ],
+        [lhs.as_erased(), rhs.as_erased(), scalable_mask.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
     )?;
-    assert_eq!(folded, scalable_ty.as_type().get_poison().as_constant());
+    assert_eq!(folded, scalable_ty.as_type().poison().as_constant());
     Ok(())
 }
 
@@ -488,7 +472,7 @@ fn shufflevector_constant_expr_poison_and_scalable_undef_masks_fold() -> Result<
 fn shufflevector_constant_expr_rejects_extra_raw_mask_payload() -> Result<(), IrError> {
     let m = module_new!("constexpr_shuffle_extra_mask")?;
     let i32_ty = m.i32_type();
-    let vec_ty = m.vector_type(i32_ty.as_type(), 2, false);
+    let vec_ty = m.vector_type(i32_ty.as_type(), 2);
     let lhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(1_i32),
         i32_ty.const_int(2_i32),
@@ -506,7 +490,7 @@ fn shufflevector_constant_expr_rejects_extra_raw_mask_payload() -> Result<(), Ir
         .constant_expr(
             vec_ty.as_type(),
             ConstantExprOpcode::ShuffleVector,
-            [lhs.into_erased(), rhs.into_erased(), mask.into_erased()],
+            [lhs.as_erased(), rhs.as_erased(), mask.as_erased()],
             [],
             [0_i32],
             ConstantExprFlags::none(),
@@ -528,7 +512,7 @@ fn shufflevector_constant_expr_rejects_extra_raw_mask_payload() -> Result<(), Ir
 fn scalable_shufflevector_zero_mask_is_accepted() -> Result<(), IrError> {
     let m = module_new!("constexpr_scalable_shuffle_zero_mask")?;
     let i32_ty = m.i32_type();
-    let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2, true);
+    let vec_i32_ty = m.scalable_vector_type(i32_ty.as_type(), 2);
     let lhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(1i32),
         i32_ty.const_int(2i32),
@@ -544,12 +528,12 @@ fn scalable_shufflevector_zero_mask_is_accepted() -> Result<(), IrError> {
     let expr = m.constant_expr(
         vec_i32_ty.as_type(),
         ConstantExprOpcode::ShuffleVector,
-        [lhs.into_erased(), rhs.into_erased(), mask.into_erased()],
+        [lhs.as_erased(), rhs.as_erased(), mask.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
     )?;
-    let text = format!("{}", expr.into_erased());
+    let text = format!("{}", expr.as_erased());
     assert!(text.contains("zeroinitializer"), "{text}");
     Ok(())
 }
@@ -561,7 +545,7 @@ fn scalable_shufflevector_zero_mask_is_accepted() -> Result<(), IrError> {
 fn invalid_gep_constant_expr_scalable_aggregate_source_is_rejected() -> Result<(), IrError> {
     let m = module_new!("constexpr_scalable_gep_source")?;
     let i8_ty = m.i8_type();
-    let scalable = m.vector_type(i8_ty.as_type(), 1, true);
+    let scalable = m.scalable_vector_type(i8_ty.as_type(), 1);
     let source_ty = m.array_type(scalable.as_type(), 2);
     let ptr = m.ptr_type(0).const_null();
     let one = m.i64_type().const_int(1i64);
@@ -570,7 +554,7 @@ fn invalid_gep_constant_expr_scalable_aggregate_source_is_rejected() -> Result<(
         .constant_expr_with_options(
             m.ptr_type(0).as_type(),
             ConstantExprOpcode::GetElementPtr,
-            [ptr.into_erased(), one.into_erased()],
+            [ptr.as_erased(), one.as_erased()],
             [],
             [],
             llvmkit_ir::ConstantExprOptions::new().source_ty(source_ty.as_type()),
@@ -597,7 +581,7 @@ fn empty_constant_expr_flags_are_canonicalized_before_interning() -> Result<(), 
     let plain = m.constant_expr(
         i32_ty.as_type(),
         ConstantExprOpcode::Add,
-        [lhs.into_erased(), rhs.into_erased()],
+        [lhs.as_erased(), rhs.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -605,7 +589,7 @@ fn empty_constant_expr_flags_are_canonicalized_before_interning() -> Result<(), 
     let empty_flags = m.constant_expr(
         i32_ty.as_type(),
         ConstantExprOpcode::Add,
-        [lhs.into_erased(), rhs.into_erased()],
+        [lhs.as_erased(), rhs.as_erased()],
         [],
         [],
         ConstantExprFlags::Overflowing(OverflowingConstantExprFlags::none()),
@@ -626,19 +610,15 @@ fn vector_gep_scalar_sequential_indices_are_splatted_before_interning() -> Resul
     let ptr = m.ptr_type(0).const_null();
     let zero = i64_ty.const_zero();
     let one = i64_ty.const_int(1i64);
-    let vec_i64_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let vec_i64_ty = m.vector_type(i64_ty.as_type(), 2);
     let vector_index =
         vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero, one])?;
-    let result_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
+    let result_ty = m.vector_type(m.ptr_type(0).as_type(), 2);
 
     let gep = m.constant_expr_with_options(
         result_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [
-            ptr.into_erased(),
-            vector_index.into_erased(),
-            zero.into_erased(),
-        ],
+        [ptr.as_erased(), vector_index.as_erased(), zero.as_erased()],
         [],
         [],
         llvmkit_ir::ConstantExprOptions::new().source_ty(source_ty.as_type()),
@@ -662,13 +642,13 @@ fn vector_gep_struct_index_width_mismatch_is_rejected() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let source_ty = m.struct_type([i8_ty.as_type()], false);
+    let source_ty = m.struct_type([i8_ty.as_type()]);
     let ptr_ty = m.ptr_type(0);
-    let result_ty = m.vector_type(ptr_ty.as_type(), 4, false);
+    let result_ty = m.vector_type(ptr_ty.as_type(), 4);
     let base = result_ty.const_vector([ptr_ty.const_null(); 4])?;
     let zero64 = i64_ty.const_zero();
     let zero32 = i32_ty.const_zero();
-    let wrong_index_ty = m.vector_type(i32_ty.as_type(), 2, false);
+    let wrong_index_ty = m.vector_type(i32_ty.as_type(), 2);
     let wrong_struct_index = wrong_index_ty
         .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([zero32, zero32])?;
 
@@ -677,9 +657,9 @@ fn vector_gep_struct_index_width_mismatch_is_rejected() -> Result<(), IrError> {
             result_ty.as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
-                base.into_erased(),
-                zero64.into_erased(),
-                wrong_struct_index.into_erased(),
+                base.as_erased(),
+                zero64.as_erased(),
+                wrong_struct_index.as_erased(),
             ],
             [],
             [],
@@ -712,7 +692,7 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
     let canonical = m.constant_expr_with_options(
         m.ptr_type(0).as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [ptr.into_erased(), offset.into_erased()],
+        [ptr.as_erased(), offset.as_erased()],
         [],
         [],
         llvmkit_ir::ConstantExprOptions::new()
@@ -725,7 +705,7 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
     let high_word = m.constant_expr_with_options(
         m.ptr_type(0).as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [ptr.into_erased(), offset.into_erased()],
+        [ptr.as_erased(), offset.as_erased()],
         [],
         [],
         llvmkit_ir::ConstantExprOptions::new()
@@ -757,8 +737,8 @@ fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), I
             m.ptr_type(0).as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
-                m.view(g).as_global_constant_ptr().into_erased(),
-                offset.into_erased(),
+                m.view(g).as_global_constant_ptr().as_erased(),
+                offset.as_erased(),
             ],
             [],
             [],
@@ -792,20 +772,20 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
         .initializer(i8_ty.const_zero())
         .build()?;
     let i64_ty = m.i64_type();
-    let vec_i64_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let vec_i64_ty = m.vector_type(i64_ty.as_type(), 2);
     let zero = i64_ty.const_zero();
     let one = i64_ty.const_int(1i64);
     let vector_index =
         vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero, one])?;
-    let wrong_result_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
+    let wrong_result_ty = m.vector_type(m.ptr_type(0).as_type(), 2);
 
     let err = m
         .constant_expr_with_options(
             wrong_result_ty.as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
-                m.view(target).as_global_constant_ptr().into_erased(),
-                vector_index.into_erased(),
+                m.view(target).as_global_constant_ptr().as_erased(),
+                vector_index.as_erased(),
             ],
             [],
             [],
@@ -854,7 +834,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     let constant_expr_pointer = m.constant_expr_with_options(
         m.ptr_type(0).as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [addr_disc.into_erased(), disc.into_erased()],
+        [addr_disc.as_erased(), disc.as_erased()],
         [],
         [],
         llvmkit_ir::ConstantExprOptions::new().source_ty(i8_ty.as_type()),
