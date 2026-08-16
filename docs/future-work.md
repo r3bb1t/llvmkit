@@ -19,6 +19,89 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## The gate is ~90% build, and trybuild builds `dev` whatever you ask for (measured 2026-08-16)
+
+Two findings from one gate run, both measured rather than estimated. They
+matter together: the second is why the first cannot be fixed by the obvious
+lever.
+
+### trybuild ignores `--release`
+
+`trybuild` (1.0.116) does not compile fixtures in-process. It synthesises a
+scratch package — `target/tests/trybuild/llvmkit-ir/`, named
+`llvmkit-ir-tests` — and shells out to `cargo build` inside it **with no
+profile flag**, so the 87 registered fixtures always build `dev`. The gate
+output says so in the middle of a `--release` run:
+
+```text
+Compiling llvmkit-ir-tests v0.0.0 (…\target\tests\trybuild\llvmkit-ir)
+ Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.71s
+```
+
+So the standing "release builds only, delete `target/debug`" rule has always
+had a hole in it, invisible because the artifacts are not under
+`target/debug`:
+
+| | |
+|---|---|
+| `target/release` | 5537 MB |
+| `target/debug` | absent — the rule holds here |
+| `target/tests/trybuild` | **625 MB, unoptimized + debuginfo** |
+
+There is no supported knob to make trybuild build release. Two consequences
+worth carrying: `target/tests` is a real disk consumer and should be swept
+alongside `target/debug`; and every gate already pays for a full dev-profile
+compile of `llvmkit-ir` inside that scratch crate, work the release build
+cannot share because the scratch project has its own target directory.
+
+### Where the gate's time actually goes
+
+Across all 212 binaries, **test execution totals 109.05 s** — only 22 binaries
+have a non-zero time at all. The rest of a ~17-minute gate is compile and
+link. The slowest five:
+
+| secs | tests | binary |
+|---|---|---|
+| **66.07** | **1** | `typestate_compile_fail` |
+| 9.91 | 19 | `known_bits` |
+| 9.28 | 6 | `constant_range_dispatch` |
+| 7.44 | 9 | `llvmkit_tablegen` (lib) |
+| 7.13 | 4 | `constant_range_saturating` |
+
+The 66 s entry is one `#[test]` that is really 87 `rustc` invocations plus that
+dev-profile dependency build. It is on the slow `cargo build` path rather than
+`cargo check` **deliberately**, and the reason is in the test's own doc
+comment: `extract_value_empty_indices.rs` asserts a `const { assert!(N > 0) }`
+(D3) whose `E0080` is a monomorphisation-time diagnostic, and under `check`
+that fixture reports "succeeded" — verified empirically. Speeding this up by
+switching to `check` would silently stop testing a type-level law.
+
+The `known_bits` / `constant_range_*` cost is inherited: they are ports of
+upstream's `KnownBitsTest` and `ConstantRangeTest`, which verify by exhaustive
+enumeration over small bit widths (43 exhaustive loops in `known_bits.rs`
+alone). Cutting it means weakening the port.
+
+**The build cost, not the test cost, is the target.** The workspace has no
+`[profile]` section and no `.cargo/config.toml`, so `--release` means cargo's
+defaults: `opt-level = 3`, `codegen-units = 16`, and incremental **off**
+(release disables it). And there are **192 integration test files**, each built
+as its own crate and linked as its own binary against the whole `llvmkit-ir`
+rlib. Three levers, unranked because none has been measured against the others:
+
+1. **Consolidate the 192 binaries into ~10** (`mod` per area). Removes the
+   dominant cost rather than shrinking it. Does not touch trybuild.
+2. **A profile with `debug = false` and a lower `opt-level`.** The disk rule is
+   about debuginfo, not optimisation, so this preserves it. Note that dropping
+   to a dev-like profile turns on `debug_assert!` and overflow checks — argued
+   as a *benefit* for this codebase, since it forbids `as` casts and uses
+   `wrapping_*`/`saturating_*` deliberately, but it can surface new failures
+   that are findings rather than regressions.
+3. **`rust-lld` via `.cargo/config.toml`.** Link-bound builds on Windows
+   typically gain; costs nothing semantically.
+
+`cargo build --timings` would settle the split between codegen and link, and
+has not been run.
+
 ## Summary index — printing a module and its index is two calls (found 2026-08-15, LLParser parity W10)
 
 `llvm-dis` prints a module and its summary index together because
