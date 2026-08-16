@@ -19,6 +19,126 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## AutoUpgrade — six of nine `validateEndOfModule` call sites still open (measured 2026-08-16, LLParser parity W13d)
+
+`crates/llvmkit-ir/src/auto_upgrade.rs` exists now and carries the
+target-independent, module-level half of `llvm/lib/IR/AutoUpgrade.cpp`. This
+records what is still missing, and what each piece is blocked on.
+
+### The count, verified
+
+`LLParser::validateEndOfModule` contains **nine** `AutoUpgrade.h` entry points,
+not the eight the program plan lists. The plan's own prose names nine symbols;
+only the number is wrong. In call order:
+
+| # | upstream symbol | status |
+|---|---|---|
+| 1 | `UpgradeIntrinsicFunction` (from the `ForwardRefVals` sweep) | not ported |
+| 2 | `UpgradeIntrinsicCall` (same sweep) | not ported |
+| 3 | `UpgradeTBAANode` (over `InstsWithTBAATag`) | **ported (W13d)** |
+| 4 | `UpgradeCallsToIntrinsic` (per `Function`) | not ported |
+| 5 | `llvm::UpgradeDebugInfo` | not ported |
+| 6 | `UpgradeModuleFlags` | **ported (W13d)** |
+| 7 | `UpgradeNVVMAnnotations` | not ported |
+| 8 | `UpgradeSectionAttributes` | **ported (W13d)** |
+| 9 | `copyModuleAttrToFunctions` | not ported |
+
+`copyModuleAttrToFunctions` is declared in `llvm/include/llvm/IR/AutoUpgrade.h`
+like the other eight, which is why it counts.
+
+### 1/2/4 — the intrinsic-upgrade framework
+
+The largest item, and the one every clang-21 module needs
+(`llvm.lifetime.start/end` still ship with the dropped size argument). It is
+**not** blocked on transcription effort but on where llvmkit puts the check:
+
+* `LLParser::parseDeclare` builds the `Function` and lets the *verifier* judge
+  the signature. llvmkit's `Parser::parse_declare` resolves the name through
+  `resolve_intrinsic_name`, then demands
+  `intrinsic_descriptor_from_signature` succeed — so
+  `declare void @llvm.lifetime.start.p0(i64, ptr)` is rejected at parse with
+  `intrinsic signature mismatch` before any upgrade could see it. Same for a
+  call: `Parser::resolve_direct_callee` compares `f.signature()` against the
+  parsed type and errors on disagreement.
+* Upstream's `upgradeIntrinsicFunction1` therefore runs against a `Function`
+  that llvmkit refuses to create. Porting the arms is only useful once the
+  legacy signature can *exist* long enough to be upgraded, which means moving
+  the descriptor check out of `parse_declare` /`resolve_direct_callee` and into
+  the end-of-module path — the same restructuring `docs/divergences.md`
+  entries 15 and 19 describe.
+* `UpgradeIntrinsicCall`'s generic arms then need instruction-level surgery
+  llvmkit has only in part: `Instruction::erase_from_parent` and
+  `replace_all_uses_with` exist, but there is no way to erase a `Function` from
+  a module (`F->eraseFromParent()`), and no builder entry point that inserts a
+  call *at* an existing instruction's position outside the pass framework.
+  The lifetime arm needs both, plus `stripPointerCasts` (present, but
+  `pub(crate)` in `pointer_analysis.rs`).
+
+The generic (non-target) arms of `upgradeIntrinsicFunction1`, extracted so the
+next pass does not have to re-read 600 lines of C++: `ctlz.`/`cttz.` with one
+argument; `coro.end` with two; the five `dbg.*` names; `experimental.vector.`
+{extract, insert, reverse, interleave2, deinterleave2, partial.reduce.add},
+`experimental.vector.reduce.*`, `experimental.vector.splice`,
+`experimental.stepvector.`; `flt.rounds`; `invariant.group.barrier`;
+`lifetime.start`/`lifetime.end` with two arguments; `memcpy.`/`memmove.`/
+`memset.` with five; `masked.{load,gather,store,scatter}` with four;
+`objectsize.` with two or three; `ptr.annotation.` with four;
+`stackprotectorcheck`; `thread.pointer`; `var.annotation` with four;
+`vector.splice` (excluding `.left`/`.right`); then the two tail rules —
+literalising a non-literal struct return type, and
+`remangleIntrinsicFunction`. Everything under `case 'a'`, `'n'`, `'r'`, `'w'`
+and `'x'` is target-specific and belongs to the milestone below.
+
+### 5 — `llvm::UpgradeDebugInfo`
+
+Blocked on `StripDebugInfo(Module&)` (`lib/IR/DebugInfo.cpp`), which llvmkit
+does not have, and on a verifier that can report *broken debug info*
+separately from a broken module (`verifyModule(M, &OS, &BrokenDebugInfo)`).
+Porting only the "read the Debug Info Version flag" half would be a silent
+no-op, which the fallibility rule forbids — so it stays out until the strip
+exists. This is also why `ParserConfig::upgrade_debug_info` (W13c) still
+selects nothing: it is the flag on the call site that does not exist yet, and
+`docs/divergences.md` D11 counts it among the settings that read as inert.
+
+### 7 — `UpgradeNVVMAnnotations`
+
+Mechanically portable and target-independent in shape (it moves
+`!nvvm.annotations` entries onto function attributes), but it needs three
+things llvmkit has not got: `NamedMDNode::clearOperands` (the named-metadata
+node is append-only), `Function::addParamAttr` at a computed index from
+metadata, and `CallingConv::PTX_Kernel`. Not blocked on anything deep.
+
+### 9 — `copyModuleAttrToFunctions`
+
+Blocked on a `Triple`. The routine's first statement is
+`Triple T(M.getTargetTriple()); if (!T.isThumb() && !T.isARM() && !T.isAArch64()) return;`,
+and llvmkit models the target triple as an opaque `Option<String>` — there is
+no `llvm/lib/TargetParser/Triple.cpp` port anywhere in the tree, and
+`parseARMArch` alone is a table of its own. It also needs
+`AttrBuilder::removeAttribute(StringRef)` — `AttributeStorage::remove` takes an
+`AttrKind`, so a *string* function attribute cannot be removed today.
+
+### The target-specific rewrite bodies — a named milestone
+
+Out of scope for the parity program and recorded here as the milestone the
+2026-08-07 decision named: the x86/ARM/AArch64/AMDGPU/NVVM/RISC-V/WebAssembly
+intrinsic rewrite bodies (the bulk of `AutoUpgrade.cpp`'s 6,646 lines), plus
+`UpgradeARCRuntime`, `UpgradeBitCastInst` / `UpgradeBitCastExpr`,
+`UpgradeInlineAsmString` and `UpgradeDataLayoutString`. Ledger rows satisfiable
+only by target-specific legacy input keep `N/A(autoupgrade-milestone)`.
+
+### Blocked fixture ports
+
+`test/Assembler/autoupgrade-lifetime-intrinsics.ll`,
+`auto_upgrade_intrinsics.ll`, `autoupgrade-thread-pointer.ll`,
+`autoupgrade-wasm-intrinsics.ll`, `autoupgrade-invalid-mem-intrinsics.ll`,
+`autoupgrade-invalid-masked-align.ll`, `autoupgrade-invalid-name-mangling.ll`,
+`struct-ret-without-upgrade.ll` and `auto_upgrade_nvvm_intrinsics.ll` all need
+the intrinsic framework above; none was trimmed to fit. The three fixtures that
+*could* be ported whole were (`test/Bitcode/upgrade-module-flag.ll`,
+`upgrade-garbage-collection-for-{objc,swift}.ll`, `upgrade-section-name.ll`) —
+see `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs`.
+
 ## The gate is ~90% build, and trybuild builds `dev` whatever you ask for (measured 2026-08-16)
 
 Two findings from one gate run, both measured rather than estimated. They

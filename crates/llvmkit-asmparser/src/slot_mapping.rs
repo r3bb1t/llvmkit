@@ -17,14 +17,24 @@
 //! };
 //! ```
 //!
-//! The Rust port keeps the same shape, with two adjustments:
+//! The Rust port keeps all four upstream slots and adds one, with two
+//! spelling adjustments:
 //!
 //! - `GlobalValue *` becomes the typed [`GlobalRef`] enum so callers don't
 //!   have to dyn-cast back to a concrete handle (Doctrine D3: erased forms
 //!   are explicitly opt-in).
-//! - The `MetadataNodes` slot is intentionally omitted until the metadata
-//!   subsystem ships in `llvmkit-ir`.
-//!   Adding it now would be an empty stub.
+//! - `MetadataNodes` is [`SlotMapping::metadata_nodes`], a
+//!   [`NumberedValues<MetadataId<B>>`](NumberedValues) rather than upstream's
+//!   `std::map<unsigned, TrackingMDNodeRef>`: llvmkit resolves a metadata
+//!   forward reference by reserve-then-fill on a stable [`MetadataId`], so
+//!   there is no temporary node for a tracking reference to follow.
+//! - [`SlotMapping::attribute_groups`] has no upstream counterpart.
+//!   `LLParser::NumberedAttrBuilders` is not published through
+//!   `SlotMapping`, because upstream merges every `#N` into its objects in
+//!   `validateEndOfModule` and then discards the numbering; llvmkit keeps the
+//!   groups (`docs/divergences.md` D9) and therefore has to hand them back so
+//!   a follow-on `parse_constant_value` / `parse_type` call sees the same
+//!   table.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;

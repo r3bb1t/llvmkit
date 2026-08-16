@@ -940,6 +940,18 @@ Widen from controlled textual IR to broader LLVM ecosystem compatibility.
 - Bitcode reader/writer.
 - More complete metadata/debug-info round-trip.
 - Broader intrinsic modeling.
+- **AutoUpgrade completeness.** `llvm/lib/IR/AutoUpgrade.cpp`'s module-level,
+  target-independent half landed at LLParser parity W13d as
+  `crates/llvmkit-ir/src/auto_upgrade.rs` (`UpgradeModuleFlags`,
+  `UpgradeSectionAttributes`, `UpgradeTBAANode`). What belongs to this
+  milestone is the remainder: the intrinsic-upgrade framework
+  (`UpgradeIntrinsicFunction` / `UpgradeIntrinsicCall` /
+  `UpgradeCallsToIntrinsic`) with both its generic and its target-specific
+  arms — x86, ARM/AArch64, AMDGPU, NVVM, RISC-V, WebAssembly — plus
+  `UpgradeARCRuntime`, `UpgradeBitCastInst` / `UpgradeBitCastExpr`,
+  `UpgradeInlineAsmString` and `UpgradeDataLayoutString`. `UpgradeDebugInfo`
+  comes with `StripDebugInfo`; `copyModuleAttrToFunctions` comes with a
+  `Triple`. Per-item blockers are in `docs/future-work.md`.
 - Target-library-info-like hooks where transforms need libc semantics.
 - DataLayout parity hardening.
 - `llvm-dis` / `llvm-as` textual parity fixture expansion where external tools are available manually.

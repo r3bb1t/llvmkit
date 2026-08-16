@@ -19,6 +19,158 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### AutoUpgrade — the module-level half (LLParser parity W13d)
+
+- **Added: `llvmkit_ir::auto_upgrade`, a port of `llvm/lib/IR/AutoUpgrade.cpp`.**
+  It lives in `llvmkit-ir` rather than the parser crate because that is upstream's
+  own layering — `AutoUpgrade.cpp` is `lib/IR`, reached from both the textual
+  parser and (upstream) the bitcode reader. Three entry points ship:
+  `upgrade_module_flags` (`llvm::UpgradeModuleFlags`),
+  `upgrade_section_attributes` (`llvm::UpgradeSectionAttributes`) and
+  `upgrade_tbaa_node` (`llvm::UpgradeTBAANode`).
+
+- **Changed: parsing a module now upgrades it, at upstream's own call sites.**
+  `Parser::parse_module` runs the three upgrades from
+  `LLParser::validateEndOfModule`'s positions, so legacy input is modernised the
+  way `llvm-as` modernises it: `PIC Level` moves from `Error`/`Max` to `Min` and
+  `PIE Level` from `Error` to `Max`; `branch-target-enforcement` and
+  `sign-return-address*` move from `Error` to `Min`;
+  `Objective-C Image Info Section` loses the spaces around its commas;
+  `amdgpu_code_object_version` is renamed `amdhsa_code_object_version`;
+  `Objective-C Garbage Collection` narrows from `i32` to `i8` and, when its high
+  bits are set, emits the three `Swift * Version` flags; a module with
+  `Objective-C Image Info Version` and no `Objective-C Class Properties` gains
+  one. A `__DATA, __objc_catlist, ...` section name is rewritten to
+  `__DATA,__objc_catlist,...`. A scalar-format `!tbaa` tag becomes the
+  struct-path-aware form. Modules that carry none of these are byte-identical to
+  before.
+
+- **Added: `LLParser::InstsWithTBAATag`.** The parser now records every
+  instruction that took a `!tbaa` attachment, which is what the `UpgradeTBAANode`
+  loop drains — the same list upstream fills in `parseInstructionMetadata`.
+
+- **Known divergence, recorded not worked around:** llvmkit's printer numbers
+  every metadata node in the arena rather than walking reachability the way
+  `SlotTracker::processModule` does, so a flag tuple that `UpgradeModuleFlags`
+  replaces still prints as an unreferenced `!N`. The output re-parses but is not
+  byte-identical to `llvm-dis`. `docs/divergences.md` entry 99 has the fix.
+
+- Six of `validateEndOfModule`'s nine `AutoUpgrade.h` call sites remain — the
+  intrinsic trio, `UpgradeDebugInfo`, `UpgradeNVVMAnnotations` and
+  `copyModuleAttrToFunctions` — each with a named blocker in
+  `docs/future-work.md`. The target-specific intrinsic rewrite bodies stay a
+  separate milestone.
+
+### Parser configuration and the entry-point surface (LLParser parity W13c)
+
+- **Added: `ParserConfig`, and a `_with_config` twin for every entry point that
+  reads a whole module.** It carries `LLParser::Run`'s two parameters —
+  `upgrade_debug_info` and `data_layout_callback` — plus the
+  `-allow-incomplete-ir` option `LLParser.cpp` reads off the command line.
+  `ParserConfig::DEFAULT` is what `parseAssembly` passes, so every existing
+  entry point behaves exactly as before. New: `parse_into_with_config`,
+  `parse_dynamic_with_config`, `parse_branded_with_config`,
+  `parse_assembly_with_config`, `parse_assembly_file_with_config`,
+  `parse_assembly_with_index_and_config`,
+  `parse_assembly_with_context_and_config`, and
+  `Parser::parse_module_with_config`.
+
+- **Added: `LLParser::parseTargetDefinitions` as a leading pre-pass, which is
+  what makes the data-layout callback possible.** The file's layout string is
+  now held *tentative* across the whole leading run of `target` /
+  `source_filename` entities, so the callback is offered the target triple
+  beside it — even one declared below the layout line — and can replace the
+  string before `DataLayout::parse` sees it. A layout string this build cannot
+  parse is therefore importable. Recorded in `docs/divergences.md` D15: llvmkit
+  still accepts a `target` entity *after* other entities, which upstream rejects,
+  and such a late one bypasses the callback.
+
+- **Added: `allow_incomplete_ir` synthesises declarations for leftover forward
+  references**, porting `validateEndOfModule`'s `GetCommonFunctionType` — a
+  function at the one signature every call site used, an `i8` global otherwise.
+  Off by default, as `cl::init(false)` is. Two of upstream's three tolerances
+  are not implemented and say so in the rustdoc: `dropUnknownMetadataReferences`
+  (`docs/divergences.md` D13) and the relaxed TBAA assertion, which has no
+  counterpart because `AutoUpgrade` is not ported. `upgrade_debug_info` likewise
+  selects nothing yet, for the same reason (D11).
+
+- **Fixed!: `AsmParserContext` is filled from real token spans.** It used to be
+  reconstructed *after* the parse by a line-scanning heuristic that grepped the
+  source for `"define "`, `"@name("` and `"}"`, gave every instruction the whole
+  line it sat on, and gave every block of a function the same end position.
+  Two definitions on one line were indistinguishable, and a function whose name
+  appeared in another `define` line could take that line's range. The parser now
+  records at the three sites `LLParser` records at — `parseDefine` for a
+  function, `parseBasicBlock` for a block and for each instruction — each range
+  running from the construct's first token to `LLLexer::PrevTokEnd`.
+  `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest,
+  ParserObjectLocations)` now ports exactly, expected columns included.
+
+- **Changed!: `ParsedModule` gained a `parser_context` field.** It is upstream's
+  third out-parameter, and it travels with the slot mapping and the summary
+  index for the same reason they do — all three borrow the module they were
+  parsed against. `Parser::with_context` lost its unused
+  `&mut AsmParserContext` parameter, which no caller could have named.
+
+- **Fixed: `SlotMapping`'s doc comment claimed `metadata_nodes` was omitted.**
+  The field has existed since the metadata subsystem landed; the prose now
+  describes it, and the `attribute_groups` field that has no upstream
+  counterpart.
+
+- **Recorded, not invented:** `Can't read textual IR with a Context that
+  discards named Values` is structurally unreachable here — llvmkit has no
+  discard-names mode for the guard to read (`docs/divergences.md` D10). Two new
+  findings that surfaced while porting `incomplete-ir-declarations.ll` are
+  recorded rather than fixed: llvmkit splits upstream's single `ForwardRefVals`
+  across two maps, so a name whose call sites disagree keeps its first signature
+  and a different leftover is reported (D12); and a `declare` prints its
+  parameter names where `AssemblyWriter::printFunction` prints only types (D14).
+
+### End of module (LLParser parity W13a, W13b)
+
+- **Changed: the end-of-module checks run in `LLParser::validateEndOfModule`'s
+  order.** Which error a module with two unrelated defects reports is
+  observable, and llvmkit ran the steps in an order of its own — metadata
+  second, blockaddresses fourth, comdats eighth. A module with an undefined
+  comdat *and* an undefined metadata node reported the metadata where upstream
+  reports the comdat.
+
+- **Fixed: a global initializer is parsed inline, like `parseGlobal` does.**
+  llvmkit used to scan an initializer for `blockaddress`, `dso_local_equivalent`
+  or `no_cfi`, skip it, and re-parse it from raw source at end of module through
+  a *fresh* parser — so any forward reference the re-parse recorded was dropped
+  with that parser. Consequences, all now gone: a `blockaddress` naming a
+  function that was never defined parsed **successfully** and printed
+  `@g = global ptr <forward reference>`; a `blockaddress` naming a *numbered*
+  label of a later function (`test/Assembler/pr119818.ll`) was rejected outright,
+  because by re-parse time that function's numbering no longer existed; and
+  every leftover guard was preempted by whatever the re-parse reported first.
+
+- **Fixed: a forward `dso_local_equivalent` is deferred, as upstream defers it.**
+  `parseValID`'s `kw_dso_local_equivalent` arm records into
+  `ForwardRefDSOLocalEquivalentIDs` / `…Names` and `validateEndOfModule` drains
+  them, ids before names. llvmkit resolved eagerly and answered
+  `use of undefined global '@f'`; it now answers upstream's
+  `unknown function '<name>' referenced by dso_local_equivalent` and
+  `expected a function, alias to function, or ifunc in dso_local_equivalent`,
+  in upstream's position. Upstream's quirk is reproduced: the *numbered*
+  spelling leaves `ValID::StrVal` empty, so the message really does read
+  `unknown function '' referenced by dso_local_equivalent`.
+
+- **Fixed: a forward `blockaddress` whose type disagrees is reported in
+  `checkValidVariableType`'s words.** Upstream retires a *deferred*
+  blockaddress through `PerFunctionState::resolveForwardRefBlockAddresses`,
+  which says `'bb' defined with type 'ptr addrspace(1)' but expected
+  'ptr addrspace(2)'` at the *label*. llvmkit reported
+  `constant expression type mismatch` there — which is the right sentence only
+  for the *same-function* form, where upstream builds the constant at once and
+  `convertValIDToValue` compares it.
+
+- **Fixed: `type of blockaddress must be a pointer and not 'i8'`.** Upstream
+  asks this only inside the `if (!F)` branch, where the demanded type has to
+  supply the placeholder's address space; llvmkit asked it unconditionally and
+  in its own words (`expected pointer type for blockaddress`).
+
 ### Ordered use-lists and `uselistorder` (LLParser parity W12)
 
 - **Breaking: `Display for Module` no longer emits `uselistorder`

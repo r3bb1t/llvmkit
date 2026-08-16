@@ -66,6 +66,7 @@ pub mod atomic_ordering;
 pub mod atomicrmw_binop;
 pub mod attribute_mask;
 pub mod attributes;
+pub mod auto_upgrade;
 pub mod basic_block;
 pub mod block_params;
 pub mod block_state;

@@ -56,6 +56,26 @@ for single fragments (each with a `_with_slots` twin that threads a
 `SlotMapping`), and `parse_summary_index_assembly*` for a standalone summary
 index.
 
+Every form that reads a whole module has a `_with_config` twin taking a
+`ParserConfig` — upstream's `LLParser::Run(UpgradeDebugInfo,
+DataLayoutCallback)` parameters plus its `-allow-incomplete-ir` option. The
+plain forms run under `ParserConfig::DEFAULT`, which is what `parseAssembly`
+passes, so nothing changes unless you ask.
+
+```rust
+use llvmkit_asmparser::{ParserConfig, parse_dynamic_with_config};
+
+let config = ParserConfig { allow_incomplete_ir: true, ..ParserConfig::DEFAULT };
+let m = parse_dynamic_with_config(
+    "define void @f() {\nentry:\n  call void @undefined()\n  ret void\n}\n",
+    &config,
+)?;
+assert!(m.to_string().contains("declare void @undefined()"));
+```
+
+What each setting actually selects — and what two of them do not yet — is in
+[`docs/divergences.md`](../../docs/divergences.md) D11-D13.
+
 ## Lexer usage
 
 ```rust

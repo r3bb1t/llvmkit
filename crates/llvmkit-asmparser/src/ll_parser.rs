@@ -60,9 +60,11 @@ use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
 
 use super::asm_parser_context::AsmParserContext;
+use super::file_loc::{FileLoc, FileLocRange};
 use super::ll_lexer::{LexError, Lexer};
 use super::ll_token::Opcode;
 use super::ll_token::{IntLit, Keyword, NumBase, PrimitiveTy, Sign, Token};
+use super::parser::ParserConfig;
 use llvmkit_ir::module_summary_index::{
     AccessSpecifier, AliasSummary, AllocationInfo, AllocationType, CallEdge, CallsiteInfo,
     ConstantVirtualCall, FunctionFlags, FunctionSummary, GlobalValueFlags, GlobalValueSummary,
@@ -93,10 +95,22 @@ fn own_metadata<T>(result: IrResult<T>) -> T {
     result.expect("metadata id minted by the module the parser is populating")
 }
 
-type ParsedGlobalInitializer<'ctx, B> = (
-    Option<Constant<'ctx, B>>,
-    Option<DeferredConstantKind<'ctx, B>>,
-);
+/// Byte offset of the first byte of each line of `src`, `[0]` first.
+///
+/// Stands in for the line table `SourceMgr` builds lazily in
+/// `SourceMgr::getLineAndColumn`. A line ends at `\n`; a `\r` before it is an
+/// ordinary column, which is what `SourceMgr` counts too.
+fn line_start_offsets(src: &[u8]) -> Vec<u32> {
+    let mut starts = vec![0u32];
+    for (index, byte) in src.iter().enumerate() {
+        if *byte == b'\n'
+            && let Ok(next) = u32::try_from(index + 1)
+        {
+            starts.push(next);
+        }
+    }
+    starts
+}
 
 // ── Type pre-resolution table (mirrors LLParser::NamedTypes / NumberedTypes) ─
 
@@ -205,6 +219,24 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// Most recently produced token. The constructor primes this with the
     /// first token (mirrors `LLParser::Run`'s leading `Lex.Lex();`).
     current: Spanned<Token<'src>>,
+    /// Byte offset one past the end of the token *before* [`Self::current`].
+    /// Mirrors `LLLexer::PrevTokEnd`, which `LLLexer::LexToken` sets to
+    /// `CurPtr` on entry — before whitespace is skipped, so it is the end of
+    /// the last token consumed and not the start of the next one. This is the
+    /// exclusive end every `AsmParserContext` range is closed at
+    /// (`LLLexer::getPrevTokEndLineColumnPos`).
+    prev_token_end: u32,
+    /// Byte offset of the first byte of each source line, `line_starts[0] == 0`.
+    /// Stands in for `SourceMgr::getLineAndColumn`, which llvmkit has no
+    /// equivalent of because the lexer works in byte offsets throughout.
+    /// Built only when [`Self::parser_context`] is `Some`; an ordinary parse
+    /// never pays for it.
+    line_starts: Vec<u32>,
+    /// The file-location registry being filled, when the caller asked for one.
+    /// Mirrors `LLParser::ParserContext`: a `None` here is upstream's null
+    /// pointer, which makes every `addFunctionLocation` / `addBlockLocation` /
+    /// `addInstructionLocation` site a no-op.
+    parser_context: Option<AsmParserContext<'ctx, B>>,
 
     /// The module token being populated.
     module: &'ctx Module<B, Unverified>,
@@ -224,11 +256,16 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// Maps a textual metadata slot (`!N`) to the [`MetadataId`] it names and
     /// whether a matching `!N = ...` definition was seen.
     metadata_slots: HashMap<u32, MetadataSlotEntry<B>>,
-    deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx, B>>,
     deferred_block_addresses: Vec<DeferredBlockAddress<'ctx, B>>,
     deferred_personality_fns: Vec<DeferredPersonalityFn<'ctx, B>>,
     deferred_alias_targets: Vec<DeferredAliasTarget<'ctx, B>>,
     deferred_intrinsic_attribute_checks: Vec<DeferredIntrinsicAttributeCheck>,
+    /// Every instruction that took a `!tbaa` attachment, in attachment order.
+    /// Mirrors `LLParser::InstsWithTBAATag`, which `parseInstructionMetadata`
+    /// fills and `validateEndOfModule` drains through `UpgradeTBAANode`.
+    /// Global-object attachments are deliberately not recorded — upstream
+    /// pushes only from the instruction routine.
+    insts_with_tbaa_tag: Vec<llvmkit_ir::InstructionView<'ctx, B>>,
     forward_function_decls: HashMap<String, Span>,
     /// `@name` referenced before it was defined, holding the placeholder
     /// minted at the first use. Mirrors `LLParser::ForwardRefVals`; ordered
@@ -241,6 +278,33 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// `@N` referenced before it was defined. Mirrors
     /// `LLParser::ForwardRefValIDs`.
     forward_ref_global_ids: BTreeMap<u32, ForwardRef<'ctx, B>>,
+    /// `dso_local_equivalent @N` whose `@N` was not defined yet, holding the
+    /// placeholder minted at the first such reference. Mirrors
+    /// `LLParser::ForwardRefDSOLocalEquivalentIDs`.
+    ///
+    /// Deliberately **not** `forward_ref_global_ids`: that map resolves a
+    /// reference to the global itself, so a placeholder parked there would
+    /// become the bare `@N` rather than a `dso_local_equivalent` of it.
+    /// Upstream keeps the two apart for the same reason.
+    forward_ref_dso_local_equivalent_ids: BTreeMap<u32, ForwardRef<'ctx, B>>,
+    /// The `@name` half. Mirrors
+    /// `LLParser::ForwardRefDSOLocalEquivalentNames`; ordered because
+    /// `validateEndOfModule` drains it in key order, ids before names.
+    forward_ref_dso_local_equivalent_names: BTreeMap<String, ForwardRef<'ctx, B>>,
+    /// `no_cfi @name` / `@N` whose referent was not defined yet.
+    ///
+    /// Upstream needs no map: its `kw_no_cfi` arm only sets `ValID::NoCFI`,
+    /// and `convertValIDToValue` wraps whatever `getGlobalVal` returns —
+    /// including the forward-reference placeholder — in a `NoCFIValue`, which
+    /// re-interns itself through `handleOperandChange` when the placeholder is
+    /// RAUW'd. llvmkit's `ConstantData::NoCfi` deliberately does not register
+    /// an operand use (`docs/divergences.md` D2/D3), so nothing would rewrite
+    /// it; the wrapper is built at end of module instead. The *reference*
+    /// still goes into `forward_ref_globals` / `forward_ref_global_ids`
+    /// exactly as `getGlobalVal` does, so an undefined referent is reported by
+    /// upstream's own `ForwardRefVals` sweep, in its position and with its
+    /// wording.
+    pending_no_cfi: Vec<PendingNoCfi<'ctx, B>>,
 
     /// The summary index being filled, when the caller asked for one. Mirrors
     /// `LLParser::Index`: a `None` here is upstream's null `Index`, which makes
@@ -414,27 +478,49 @@ impl<B: ModuleBrand> core::fmt::Debug for Parser<'_, '_, B> {
 /// module-level slot mapping so callers can re-use it for follow-on
 /// `parse_constant_value` / `parse_type` calls (mirrors upstream's
 /// `parseAssemblyString(..., SlotMapping *)` pattern).
+///
+/// The three fields are upstream's three out-parameters. `SlotMapping *` and
+/// `AsmParserContext *` are filled in place there and are null when the caller
+/// did not ask for them; `ModuleSummaryIndex` comes back beside the module in
+/// `ParsedModuleAndIndex`. Here they travel together, because the by-product
+/// borrows the module it was parsed against.
 #[derive(Branded)]
 #[branded(Debug, Default)]
 pub struct ParsedModule<'ctx, B: ModuleBrand> {
     pub slot_mapping: SlotMapping<'ctx, B>,
+    /// The `ModuleSummaryIndex` half of upstream's `ParsedModuleAndIndex`.
+    /// `None` when the parser was built without one, which is upstream's null
+    /// `LLParser::Index` — every `^N` entry is then skipped rather than parsed.
     pub summary_index: Option<ModuleSummaryIndex>,
+    /// The file-location registry, when the parser was built with
+    /// [`Parser::with_context`]. `None` is upstream's null
+    /// `AsmParserContext *`.
+    pub parser_context: Option<AsmParserContext<'ctx, B>>,
 }
 
-enum DeferredConstantKind<'ctx, B: ModuleBrand> {
-    RawInitializer { ty: Type<'ctx, B>, span: Span },
-}
-
-struct DeferredGlobalInitializer<'ctx, B: ModuleBrand> {
-    global: llvmkit_ir::GlobalVariable<'ctx, B>,
-    value: DeferredConstantKind<'ctx, B>,
+/// A `no_cfi @name` / `no_cfi @N` whose referent had not been defined when it
+/// was read, holding the placeholder its uses were built against.
+struct PendingNoCfi<'ctx, B: ModuleBrand> {
+    placeholder: llvmkit_ir::ForwardRefValue<'ctx, B>,
+    reference: NameOrId,
+    loc: Span,
 }
 
 struct DeferredBlockAddress<'ctx, B: ModuleBrand> {
     placeholder: llvmkit_ir::ForwardRefValue<'ctx, B>,
     function: DeferredBlockAddressFunction<'ctx, B>,
     label: BlockLabel,
-    loc: Span,
+    /// `ID.Loc` — the `blockaddress` keyword itself, which is where
+    /// `convertValIDToValue`'s `t_Constant` arm anchors a type mismatch.
+    value_loc: Span,
+    /// `Fn.Loc` — the `@f` operand. `validateEndOfModule`'s
+    /// `ForwardRefBlockAddresses` guard reports `expected function name in
+    /// blockaddress` here.
+    function_loc: Span,
+    /// `Label.Loc` — the `%bb` operand. Both of
+    /// `PerFunctionState::resolveForwardRefBlockAddresses`'s diagnostics are
+    /// anchored here.
+    label_loc: Span,
 }
 
 /// Which function a deferred `blockaddress` is waiting on.
@@ -523,6 +609,16 @@ enum PointerSuffix {
 enum ParsedBlockAddressFunction<'ctx, B: ModuleBrand> {
     Resolved(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
     Forward { function: NameOrId, loc: Span },
+}
+
+/// The three locations a `blockaddress` can be blamed at, kept together
+/// because the routines that retire a deferred one each pick a different
+/// member — see [`DeferredBlockAddress`].
+#[derive(Clone, Copy)]
+struct BlockAddressLocs {
+    value: Span,
+    function: Span,
+    label: Span,
 }
 
 enum ParsedDirectCallee<'ctx, B: ModuleBrand> {
@@ -769,20 +865,6 @@ fn is_old_dbg_format_intrinsic(name: &str) -> bool {
 
 fn is_declaration_linkage(linkage: Linkage) -> bool {
     matches!(linkage, Linkage::External | Linkage::ExternalWeak)
-}
-
-fn keyword_starts_top_level_entity(keyword: Keyword) -> bool {
-    matches!(
-        keyword,
-        Keyword::Target
-            | Keyword::SourceFilename
-            | Keyword::Module
-            | Keyword::Uselistorder
-            | Keyword::UselistorderBb
-            | Keyword::Declare
-            | Keyword::Define
-            | Keyword::Attributes
-    )
 }
 
 /// Reject a numbered slot that goes *backwards*. Mirrors
@@ -1224,6 +1306,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             lex,
             src,
             current,
+            prev_token_end: 0,
+            line_starts: Vec::new(),
+            parser_context: None,
             module,
             named_types: HashMap::new(),
             numbered_types: HashMap::new(),
@@ -1232,14 +1317,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             numbered_attr_groups: NumberedValues::new(),
             deferred_block_addresses: Vec::new(),
             metadata_slots: HashMap::new(),
-            deferred_global_initializers: Vec::new(),
             deferred_personality_fns: Vec::new(),
             deferred_alias_targets: Vec::new(),
             deferred_intrinsic_attribute_checks: Vec::new(),
+            insts_with_tbaa_tag: Vec::new(),
             forward_function_decls: HashMap::new(),
             forward_ref_comdats: BTreeMap::new(),
             forward_ref_globals: BTreeMap::new(),
             forward_ref_global_ids: BTreeMap::new(),
+            forward_ref_dso_local_equivalent_ids: BTreeMap::new(),
+            forward_ref_dso_local_equivalent_names: BTreeMap::new(),
+            pending_no_cfi: Vec::new(),
             summary_index: None,
             parses_module_entities: true,
             summary_module_paths: BTreeMap::new(),
@@ -1336,12 +1424,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(parser)
     }
 
-    pub fn with_context(
-        src: &'src [u8],
-        module: &'ctx Module<B, Unverified>,
-        _context: &'ctx mut AsmParserContext<'ctx, B>,
-    ) -> ParseResult<Self> {
-        Self::new(src, module)
+    /// A parser that also records the source range of every function, basic
+    /// block and instruction it builds. Mirrors constructing `LLParser` with a
+    /// non-null `AsmParserContext *`, which is what `parseAssemblyString` /
+    /// `parseAssembly` do when handed one; the registry comes back out through
+    /// [`ParsedModule::parser_context`].
+    pub fn with_context(src: &'src [u8], module: &'ctx Module<B, Unverified>) -> ParseResult<Self> {
+        let mut parser = Self::new(src, module)?;
+        parser.parser_context = Some(AsmParserContext::new());
+        parser.line_starts = line_start_offsets(src);
+        Ok(parser)
     }
 
     fn resolve_md_slot(&mut self, slot: u32, loc: Span) -> MetadataId<B> {
@@ -1401,16 +1493,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(id)
     }
 
-    /// Drive the parser to EOF. Mirrors `LLParser::Run` over the
-    /// constructive subset modeled today.
-    pub fn parse_module(mut self) -> ParseResult<ParsedModule<'ctx, B>> {
-        // Upstream splits `parseTargetDefinitions` from `parseTopLevelEntities`
-        // because LLVM 22 wants a chance to apply a default DataLayout
-        // *before* anything that depends on it. We don't ship that callback
-        // path yet; the dispatch loop below handles `target` keywords as a
-        // top-level entity directly.
+    /// Drive the parser to EOF under [`ParserConfig::DEFAULT`]. Mirrors
+    /// `LLParser::Run(/*UpgradeDebugInfo=*/true, <the nullopt callback>)`,
+    /// which is what `parseAssembly` and `parseAssemblyWithIndex` pass.
+    pub fn parse_module(self) -> ParseResult<ParsedModule<'ctx, B>> {
+        self.parse_module_with_config(&ParserConfig::DEFAULT)
+    }
+
+    /// Drive the parser to EOF. Mirrors `LLParser::Run`, whose two parameters
+    /// plus the `-allow-incomplete-ir` `cl::opt` are what [`ParserConfig`]
+    /// carries.
+    pub fn parse_module_with_config(
+        mut self,
+        config: &ParserConfig<'_>,
+    ) -> ParseResult<ParsedModule<'ctx, B>> {
         // Upstream's `!M` mode: with no module to build, only summary entries
         // and the source file name are read and everything else is lexed past.
+        // `Run` skips `parseTargetDefinitions` whole in that mode — it is
+        // guarded by `if (M)`.
         if !self.parses_module_entities {
             loop {
                 match self.current.value {
@@ -1426,16 +1526,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // module-level resolution below is skipped whole.
             self.validate_end_of_index()?;
             let summary_index = self.summary_index.take();
+            let parser_context = self.parser_context.take();
             return Ok(ParsedModule {
                 slot_mapping: self.into_slot_mapping(),
                 summary_index,
+                parser_context,
             });
         }
+
+        // `if (M) { if (parseTargetDefinitions(DataLayoutCallback)) return true; }`.
+        self.parse_target_definitions(config)?;
 
         loop {
             match self.current.value {
                 Token::Eof => break,
-                Token::Kw(Keyword::Target) => self.parse_target_definition()?,
+                Token::Kw(Keyword::Target) => self.parse_late_target_definition()?,
                 Token::Kw(Keyword::SourceFilename) => self.parse_source_filename()?,
                 Token::Kw(Keyword::Module) => self.parse_module_asm()?,
                 Token::Kw(Keyword::Uselistorder) => self.parse_use_list_order(None)?,
@@ -1465,22 +1570,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // reported the metadata where upstream reports the comdat, and a
         // dangling `blockaddress` lost to an undefined type.
         //
-        // Two llvmkit-only steps lead, each standing in for something upstream
-        // does earlier than this routine:
-        //
-        // - deferred global initializers: upstream parses an initializer
-        //   inline, so an error in one is a *parse* error and precedes every
-        //   check here.
-        // - deferred intrinsic-attribute checks: these need a function's
-        //   attribute groups merged, which is `validateEndOfModule`'s own
-        //   first step (not yet ported — see `docs/future-work.md`), so they
-        //   sit at that step's position.
-        self.resolve_deferred_global_initializers()?;
+        // One llvmkit-only step leads, standing in for something upstream does
+        // earlier than this routine: the deferred intrinsic-attribute checks
+        // need a function's attribute groups merged, which is
+        // `validateEndOfModule`'s own first step (not yet ported — see
+        // `docs/future-work.md`), so they sit at that step's position.
         self.validate_deferred_intrinsic_attribute_checks()?;
 
         // `if (!ForwardRefBlockAddresses.empty())` — before the type, comdat
         // and value leftovers, not after.
         self.resolve_deferred_block_addresses()?;
+        // The `ForwardRefDSOLocalEquivalentIDs` then
+        // `ForwardRefDSOLocalEquivalentNames` loops.
+        self.resolve_forward_ref_dso_local_equivalents()?;
         // The `NumberedTypes` then `NamedTypes` loops.
         self.validate_forward_ref_types()?;
         // `if (!ForwardRefComdats.empty())`.
@@ -1490,8 +1592,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // the personality, aliasee and global-reference maps.
         self.resolve_deferred_personality_fns()?;
         self.resolve_deferred_alias_targets()?;
-        self.resolve_forward_ref_globals()?;
-        self.validate_forward_function_decls()?;
+        self.resolve_forward_ref_globals(config.allow_incomplete_ir)?;
+        // Every `no_cfi` referent is a `ForwardRefVals` entry, so by here it is
+        // either defined or already reported. Upstream needs no step of its
+        // own: its `NoCFIValue` wraps the placeholder directly and re-interns
+        // itself when the sweep above RAUWs it.
+        self.resolve_pending_no_cfi()?;
+        self.validate_forward_function_decls(config.allow_incomplete_ir)?;
         // `if (!ForwardRefMDNodes.empty())` — metadata is the *last* of the
         // leftovers, after every value one.
         for (slot, entry) in &self.metadata_slots {
@@ -1503,45 +1610,147 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 });
             }
         }
+
+        // --- AutoUpgrade ---
+        //
+        // `validateEndOfModule` closes with nine `AutoUpgrade.h` entry points,
+        // in this order: `UpgradeTBAANode` (over `InstsWithTBAATag`),
+        // `UpgradeCallsToIntrinsic` (which is where `UpgradeIntrinsicFunction`
+        // / `UpgradeIntrinsicCall` are reached for a *declared* intrinsic; the
+        // `ForwardRefVals` sweep above reaches the same pair for an
+        // undeclared one), `llvm::UpgradeDebugInfo`, `UpgradeModuleFlags`,
+        // `UpgradeNVVMAnnotations`, `UpgradeSectionAttributes` and
+        // `copyModuleAttrToFunctions`. Three of them are ported; the six that
+        // are not are recorded in `docs/future-work.md` with what each is
+        // blocked on. The ported ones sit at their own positions, so adding
+        // the rest is insertion, not re-ordering.
+        //
+        // Upstream resolves metadata cycles (`N.second->resolveCycles()`)
+        // immediately before the TBAA loop. llvmkit's metadata arena has no
+        // temporary-node forwarding to resolve — a forward `!N` is a reserved
+        // slot that `metadata_set` fills in place — so there is no step here.
+        self.upgrade_tbaa_tags();
+        llvmkit_ir::auto_upgrade::upgrade_module_flags(self.module);
+        llvmkit_ir::auto_upgrade::upgrade_section_attributes(self.module);
+
         // `Run` is `parseTopLevelEntities() || validateEndOfModule(...) ||
         // validateEndOfIndex()`, in that order, so an unresolved `^N` is
         // reported only once the module itself is whole.
         self.validate_end_of_index()?;
 
         let summary_index = self.summary_index.take();
+        let parser_context = self.parser_context.take();
         Ok(ParsedModule {
             slot_mapping: self.into_slot_mapping(),
             summary_index,
+            parser_context,
         })
     }
 
-    fn resolve_deferred_global_initializers(&mut self) -> ParseResult<()> {
-        let deferred = std::mem::take(&mut self.deferred_global_initializers);
-        let slots = self.slot_mapping_snapshot();
-        for item in deferred {
-            let constant = match item.value {
-                DeferredConstantKind::RawInitializer { ty, span } => {
-                    let start = usize::try_from(span.start)
-                        .map_err(|_| self.expected("constant initializer"))?;
-                    let end = usize::try_from(span.end)
-                        .map_err(|_| self.expected("constant initializer"))?;
-                    let bytes = self
-                        .src
-                        .get(start..end)
-                        .ok_or_else(|| self.expected("constant initializer"))?;
-                    crate::parser::parse_constant_value_with_slots(bytes, self.module, ty, &slots)
-                        .map_err(|err| match err {
-                        ParseError::Expected { expected, .. } => ParseError::Expected {
-                            expected,
-                            loc: DiagLoc::span(span),
-                        },
-                        other => other,
-                    })?
-                }
+    /// Rewrite every scalar-format `!tbaa` tag into the struct-path-aware
+    /// format. Mirrors `validateEndOfModule`'s `InstsWithTBAATag` loop, which
+    /// re-attaches only when `UpgradeTBAANode` hands back a *different* node.
+    ///
+    /// Upstream asserts the attachment is still present (it dropped only
+    /// under `-allow-incomplete-ir`); here a missing attachment is simply
+    /// nothing to upgrade, since an attachment set cannot lose an entry.
+    fn upgrade_tbaa_tags(&mut self) {
+        for inst in core::mem::take(&mut self.insts_with_tbaa_tag) {
+            let Some(tag) = inst.metadata().get(&MetadataAttachmentKind::Tbaa) else {
+                continue;
             };
-            item.global
-                .set_initializer(self.module, constant)
-                .map_err(|e| self.builder_err("deferred global initializer", e))?;
+            let upgraded = llvmkit_ir::auto_upgrade::upgrade_tbaa_node(self.module, tag);
+            if upgraded != tag {
+                own_metadata(inst.set_metadata(
+                    self.module,
+                    MetadataAttachmentKind::Tbaa,
+                    upgraded,
+                ));
+            }
+        }
+    }
+
+    /// Drain `ForwardRefDSOLocalEquivalentIDs`, then
+    /// `ForwardRefDSOLocalEquivalentNames`, against the definitions that
+    /// arrived. Mirrors `validateEndOfModule`'s
+    /// `ResolveForwardRefDSOLocalEquivalents` lambda and the two loops that
+    /// call it — ids before names, both in key order.
+    fn resolve_forward_ref_dso_local_equivalents(&mut self) -> ParseResult<()> {
+        for (id, entry) in core::mem::take(&mut self.forward_ref_dso_local_equivalent_ids) {
+            let global = self.numbered_globals.get(id).copied();
+            // `GVRef.StrVal` is empty for the numbered spelling, and upstream
+            // interpolates it regardless: the message really does read
+            // `unknown function '' referenced by dso_local_equivalent`.
+            self.resolve_one_forward_ref_dso_local_equivalent(global, "", entry)?;
+        }
+        for (name, entry) in core::mem::take(&mut self.forward_ref_dso_local_equivalent_names) {
+            let global = self.resolve_global_name_as_ref(name.clone()).ok();
+            self.resolve_one_forward_ref_dso_local_equivalent(global, &name, entry)?;
+        }
+        Ok(())
+    }
+
+    /// The body of `ResolveForwardRefDSOLocalEquivalents`: the referent must
+    /// exist, and its value type must be a function type.
+    fn resolve_one_forward_ref_dso_local_equivalent(
+        &self,
+        global: Option<GlobalRef<'ctx, B>>,
+        name: &str,
+        entry: ForwardRef<'ctx, B>,
+    ) -> ParseResult<()> {
+        let Some(global) = global else {
+            return Err(ParseError::Message {
+                message: format!("unknown function '{name}' referenced by dso_local_equivalent")
+                    .into(),
+                loc: DiagLoc::span(entry.loc),
+            });
+        };
+        if !global_ref_value_type_is_function(global) {
+            return Err(ParseError::Message {
+                message: "expected a function, alias to function, or ifunc in dso_local_equivalent"
+                    .into(),
+                loc: DiagLoc::span(entry.loc),
+            });
+        }
+        let equivalent = self
+            .module
+            .dso_local_equivalent_global(self.global_ref_to_constant(global))
+            .map_err(|e| self.builder_err("dso_local_equivalent", e))?;
+        entry
+            .placeholder
+            .replace_all_uses_with(equivalent.as_erased())
+            .map_err(|e| self.builder_err("forward dso_local_equivalent", e))
+    }
+
+    /// Build the `no_cfi` wrappers whose referent was still forward-referenced
+    /// when they were read.
+    ///
+    /// Upstream has no counterpart step — see the `pending_no_cfi` field for
+    /// why llvmkit needs one. It runs immediately after the `ForwardRefVals`
+    /// sweep, so every referent named here is already installed.
+    fn resolve_pending_no_cfi(&mut self) -> ParseResult<()> {
+        for item in core::mem::take(&mut self.pending_no_cfi) {
+            let global = match &item.reference {
+                NameOrId::Name(name) => self.resolve_global_name_as_ref(name.clone()).ok(),
+                NameOrId::Id(id) => self.numbered_globals.get(*id).copied(),
+            };
+            let Some(global) = global else {
+                return Err(ParseError::UndefinedSymbol {
+                    kind: SymbolKind::GlobalValue,
+                    id: match item.reference {
+                        NameOrId::Name(name) => SymbolId::Named(name),
+                        NameOrId::Id(id) => SymbolId::Numbered(id),
+                    },
+                    loc: DiagLoc::span(item.loc),
+                });
+            };
+            let no_cfi = self
+                .module
+                .no_cfi_global(self.global_ref_to_constant(global))
+                .map_err(|e| self.builder_err("no_cfi", e))?;
+            item.placeholder
+                .replace_all_uses_with(no_cfi.as_erased())
+                .map_err(|e| self.builder_err("forward no_cfi", e))?;
         }
         Ok(())
     }
@@ -1574,29 +1783,52 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let Some(block) = state.defined_block(&item.label) else {
                 return Err(ParseError::Message {
                     message: "referenced value is not a basic block".into(),
-                    loc: DiagLoc::span(item.loc),
+                    loc: DiagLoc::span(item.label_loc),
                 });
             };
-            let block = state.value_as_block_view(block, item.loc)?;
+            let block = state.value_as_block_view(block, item.label_loc)?;
             let address = self
                 .module
                 .block_address(state.func, &block)
                 .map_err(|e| self.builder_err("blockaddress", e))?;
-            // Upstream never defers this: `BlockAddressPFS->getBB` forward-
-            // declares the block, so `BlockAddress::get` is built at once and
-            // `convertValIDToValue` compares its type against the context's.
-            // llvmkit resolves at function close instead, but the comparison
-            // is the same one — the placeholder was minted at exactly the type
-            // the context asked for — so the diagnostic is upstream's.
             let expected = item.placeholder.ty();
             let got = address.ty();
             if got != expected {
-                return Err(ParseError::Message {
-                    message: format!(
-                        "constant expression type mismatch: got type '{got}' but expected '{expected}'"
-                    )
-                    .into(),
-                    loc: DiagLoc::span(item.loc),
+                // The two entry paths disagree about the diagnostic, because
+                // upstream reaches them through different routines.
+                //
+                // A `blockaddress` naming the function it sits in is not
+                // deferred upstream at all: `BlockAddressPFS->getBB`
+                // forward-declares the block, `BlockAddress::get` is built at
+                // once, and `convertValIDToValue`'s `t_Constant` arm compares
+                // its type against the context's. That is
+                // `constant expression type mismatch`, anchored at the
+                // `blockaddress` keyword.
+                //
+                // A `blockaddress` naming a function that has not been seen
+                // yet *is* deferred, into `ForwardRefBlockAddresses`, and
+                // `PerFunctionState::resolveForwardRefBlockAddresses` retires
+                // it through `checkValidVariableType` instead — a different
+                // sentence, anchored at the *label*, and quoting the label's
+                // own spelling. Note upstream passes `BBID.StrVal` bare: no
+                // `%` sigil, and empty for a numbered label.
+                return Err(match &item.function {
+                    DeferredBlockAddressFunction::Installed(_) => ParseError::Message {
+                        message: format!(
+                            "constant expression type mismatch: got type '{got}' but expected '{expected}'"
+                        )
+                        .into(),
+                        loc: DiagLoc::span(item.value_loc),
+                    },
+                    DeferredBlockAddressFunction::Forward(_) => ParseError::DefinedWithWrongType {
+                        name: match &item.label {
+                            BlockLabel::Named(name) => name.clone(),
+                            BlockLabel::Numbered(_) => String::new(),
+                        },
+                        defined: got.to_string(),
+                        expected: expected.to_string(),
+                        loc: DiagLoc::span(item.label_loc),
+                    },
                 });
             }
             item.placeholder
@@ -1614,7 +1846,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(item) = self.deferred_block_addresses.first() {
             return Err(ParseError::Expected {
                 expected: "function name in blockaddress".into(),
-                loc: DiagLoc::span(item.loc),
+                loc: DiagLoc::span(item.function_loc),
             });
         }
         Ok(())
@@ -1740,15 +1972,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `LLParser::validateEndOfModule`, including its noun: an unresolved
     /// `@`-reference is a `use of undefined **value**`, where a *redefinition*
     /// of the same namespace says `global`.
-    fn resolve_forward_ref_globals(&mut self) -> ParseResult<()> {
+    fn resolve_forward_ref_globals(&mut self, allow_incomplete_ir: bool) -> ParseResult<()> {
         let named = core::mem::take(&mut self.forward_ref_globals);
         for (name, entry) in named {
-            let Ok(target) = self.resolve_global_name_as_ref(name.clone()) else {
-                return Err(ParseError::UndefinedSymbol {
-                    kind: SymbolKind::GlobalValue,
-                    id: SymbolId::Named(name),
-                    loc: DiagLoc::span(entry.loc),
-                });
+            let target = match self.resolve_global_name_as_ref(name.clone()) {
+                Ok(target) => target,
+                // `if (!AllowIncompleteIR) continue;` — with the option on, a
+                // leftover that is *not* an intrinsic gets a declaration
+                // synthesised for it instead of ending the parse. Names under
+                // `llvm.` never reach the option upstream: the intrinsic
+                // auto-declaration branch above it has already `continue`d.
+                Err(_) if allow_incomplete_ir && !name.starts_with("llvm.") => {
+                    let placeholder = entry.placeholder.as_value();
+                    self.declare_incomplete_forward_ref(&name, placeholder, entry.loc)?
+                }
+                Err(_) => {
+                    return Err(ParseError::UndefinedSymbol {
+                        kind: SymbolKind::GlobalValue,
+                        id: SymbolId::Named(name),
+                        loc: DiagLoc::span(entry.loc),
+                    });
+                }
             };
             let target = self.global_ref_to_constant(target);
             Self::resolve_global_forward_ref(entry, target)?;
@@ -1785,6 +2029,99 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 message: format!("cannot resolve forward reference: {e}").into(),
                 loc: DiagLoc::span(entry.loc),
             })
+    }
+
+    /// Synthesise a declaration for a `@name` that was never defined, under
+    /// `-allow-incomplete-ir`. Mirrors the tail of `validateEndOfModule`'s
+    /// `ForwardRefVals` loop: a function when every use is a call at one common
+    /// signature, an `i8` global otherwise.
+    fn declare_incomplete_forward_ref(
+        &mut self,
+        name: &str,
+        placeholder: llvmkit_ir::Value<'ctx, B>,
+        loc: Span,
+    ) -> ParseResult<GlobalRef<'ctx, B>> {
+        match Self::common_call_site_function_type(placeholder) {
+            // `if (auto *FTy = dyn_cast<FunctionType>(Ty))
+            //    GV = Function::Create(FTy, ExternalLinkage, Name, M);`
+            Some(signature) => {
+                let id = self
+                    .module
+                    .add_function_dyn(name, signature, Linkage::External)
+                    .map_err(|e| ParseError::Message {
+                        message: format!("cannot declare incomplete forward reference: {e}").into(),
+                        loc: DiagLoc::span(loc),
+                    })?;
+                Ok(GlobalRef::Function(self.module.view(id)))
+            }
+            // `else GV = new GlobalVariable(*M, Ty, false, ExternalLinkage,
+            //    nullptr, Name);` with `Ty = Type::getInt8Ty(Context)`.
+            None => {
+                let id = self
+                    .module
+                    .add_external_global(name, self.module.i8_type().as_type())
+                    .map_err(|e| ParseError::Message {
+                        message: format!("cannot declare incomplete forward reference: {e}").into(),
+                        loc: DiagLoc::span(loc),
+                    })?;
+                Ok(GlobalRef::Variable(self.module.view(id)))
+            }
+        }
+    }
+
+    /// The one function type every use of `value` calls it at, or `None` if the
+    /// uses disagree, if any use is not a call, or if there are none at all.
+    /// Mirrors `validateEndOfModule`'s `GetCommonFunctionType` lambda, whose
+    /// `return nullptr` covers all three.
+    ///
+    /// **Divergence:** upstream walks `V->uses()`, which is every `Use` edge.
+    /// llvmkit's [`Value::users`](llvmkit_ir::Value::users) yields only the
+    /// instruction edges, so the constant-expression and global-field edges
+    /// upstream would see as non-`CallBase` users are counted here through
+    /// [`Value::num_uses`](llvmkit_ir::Value::num_uses) instead: any edge that
+    /// is not an instruction use forces the `i8` fallback, exactly as a
+    /// non-call user does upstream. That count also includes metadata and
+    /// debug-record edges, which upstream does not track as `Use`s at all
+    /// (`docs/divergences.md` D5), so a forward reference named by metadata
+    /// *and* called takes the fallback here and the function type upstream.
+    fn common_call_site_function_type(
+        value: llvmkit_ir::Value<'ctx, B>,
+    ) -> Option<llvmkit_ir::FunctionType<'ctx, B>> {
+        let users: Vec<_> = value.users().collect();
+        if users.len() != value.num_uses() {
+            return None;
+        }
+        let mut signature = None;
+        for user in users {
+            let called_at = Self::callee_function_type(&user, value)?;
+            if signature.is_some_and(|already| already != called_at) {
+                return None;
+            }
+            signature = Some(called_at);
+        }
+        signature
+    }
+
+    /// The call site's function type when `user` calls `value` — upstream's
+    /// `dyn_cast<CallBase>(U.getUser())` plus `CB->isCallee(&U)`. `None` when
+    /// `user` is not a call form, or when it names `value` somewhere other than
+    /// the callee position.
+    fn callee_function_type(
+        user: &llvmkit_ir::InstructionView<'ctx, B>,
+        value: llvmkit_ir::Value<'ctx, B>,
+    ) -> Option<llvmkit_ir::FunctionType<'ctx, B>> {
+        match user.classify() {
+            llvmkit_ir::Classified::Inst(llvmkit_ir::InstructionKind::Call(call)) => {
+                (call.callee() == value).then(|| call.function_type())
+            }
+            llvmkit_ir::Classified::Term(llvmkit_ir::TerminatorKind::Invoke(invoke)) => {
+                (invoke.callee() == value).then(|| invoke.function_type())
+            }
+            llvmkit_ir::Classified::Term(llvmkit_ir::TerminatorKind::CallBr(call_br)) => {
+                (call_br.callee() == value).then(|| call_br.function_type())
+            }
+            _ => None,
+        }
     }
 
     /// Mint (or reuse) the placeholder standing for a not-yet-defined `@`
@@ -1837,7 +2174,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(constant)
     }
 
-    fn validate_forward_function_decls(&self) -> ParseResult<()> {
+    /// The half of upstream's `ForwardRefVals` sweep that llvmkit keeps in a
+    /// map of its own: a `@name` that was only ever seen as the *callee* of a
+    /// direct call.
+    ///
+    /// Upstream has no such map — `getGlobalVal` mints one placeholder for
+    /// every spelling of a forward reference — whereas llvmkit's
+    /// `parse_direct_callee` builds a real `declare` at the first call site's
+    /// signature and remembers the name here so a later `define` / `declare`
+    /// can claim it. Under `-allow-incomplete-ir` that declaration is exactly
+    /// what upstream would have synthesised for a name whose call sites all
+    /// agree, so the entries are simply retired.
+    ///
+    /// **Divergence:** for a name whose call sites *disagree*, upstream's
+    /// `GetCommonFunctionType` answers null and it emits an `i8` global
+    /// instead. llvmkit has already built the function by then and has no way
+    /// to unbuild it, so the first call site's signature survives
+    /// (`docs/divergences.md`).
+    fn validate_forward_function_decls(&mut self, allow_incomplete_ir: bool) -> ParseResult<()> {
+        if allow_incomplete_ir {
+            self.forward_function_decls.clear();
+            return Ok(());
+        }
         if let Some((name, loc)) = self.forward_function_decls.iter().next() {
             return Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::Global,
@@ -1872,40 +2230,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ParseError::Expected {
             expected: "intrinsic declaration attribute mismatch".into(),
             loc: DiagLoc::span(loc),
-        }
-    }
-
-    fn slot_mapping_snapshot(&self) -> SlotMapping<'ctx, B> {
-        let mut named_types = HashMap::with_capacity(self.named_types.len());
-        for (name, entry) in &self.named_types {
-            named_types.insert(name.clone(), entry.ty);
-        }
-        let mut numbered_types = std::collections::BTreeMap::new();
-        for (id, entry) in &self.numbered_types {
-            numbered_types.insert(*id, entry.ty);
-        }
-        let mut metadata_nodes = NumberedValues::new();
-        let mut metadata_entries: Vec<_> = self
-            .metadata_slots
-            .iter()
-            .filter(|(_, entry)| entry.defined)
-            .collect();
-        metadata_entries.sort_by_key(|(slot, _)| *slot);
-        for (slot, entry) in metadata_entries {
-            let _ = metadata_nodes.add(*slot, entry.id);
-        }
-        let mut attribute_groups = NumberedValues::new();
-        let mut attr_entries: Vec<_> = self.module.attribute_groups().collect();
-        attr_entries.sort_by_key(|(slot, _)| *slot);
-        for (slot, storage) in attr_entries {
-            let _ = attribute_groups.add(slot, storage);
-        }
-        SlotMapping {
-            global_values: self.numbered_globals.clone(),
-            named_types,
-            numbered_types,
-            attribute_groups,
-            metadata_nodes,
         }
     }
 
@@ -1963,8 +2287,40 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// later diagnostic on the just-eaten token.
     fn bump(&mut self) -> ParseResult<Span> {
         let prev = self.current.span;
+        // `LLLexer::LexToken` opens with `PrevTokEnd = CurPtr;` — the end of
+        // the token being left behind, recorded before any whitespace is
+        // skipped. Setting it here is the same instant.
+        self.prev_token_end = prev.end;
         self.current = self.lex.next_token().map_err(map_lex_error)?;
         Ok(prev)
+    }
+
+    // ── Source positions (`AsmParserContext`) ────────────────────────────
+    //
+    // llvmkit's lexer works in byte offsets and has no `SourceMgr`, so the
+    // `(line, column)` projection upstream gets from
+    // `SourceMgr::getLineAndColumn` is computed here against a line-start
+    // index built once, when the caller asks for a registry.
+
+    /// Zero-based `(line, column)` of `offset`, mirroring
+    /// `LLLexer::getTokLineColumnPos` / `getPrevTokEndLineColumnPos` — both of
+    /// which subtract one from `SourceMgr`'s one-based answer.
+    fn file_loc(&self, offset: u32) -> FileLoc {
+        let line_index = match self.line_starts.binary_search(&offset) {
+            Ok(index) => index,
+            // `line_starts[0]` is 0 and `offset` is unsigned, so the
+            // insertion point is never 0 and the subtraction cannot wrap.
+            Err(index) => index.saturating_sub(1),
+        };
+        let line_start = self.line_starts.get(line_index).copied().unwrap_or(0);
+        let line = u32::try_from(line_index).unwrap_or(u32::MAX);
+        FileLoc::new(line, offset.saturating_sub(line_start))
+    }
+
+    /// The half-open range `[start, PrevTokEnd)` every `AsmParserContext`
+    /// entry is closed at.
+    fn file_loc_range_to_prev_token_end(&self, start: u32) -> FileLocRange {
+        FileLocRange::new(self.file_loc(start), self.file_loc(self.prev_token_end))
     }
 
     fn require_eof(&self) -> ParseResult<()> {
@@ -2474,12 +2830,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let saved_lex = self.lex.clone();
         let saved_current = self.current.clone();
+        let saved_prev_token_end = self.prev_token_end;
         self.bump()?;
         if matches!(self.peek(), Token::Kw(Keyword::Align)) {
             Ok(Some(self.parse_align_val()?))
         } else {
             self.lex = saved_lex;
             self.current = saved_current;
+            self.prev_token_end = saved_prev_token_end;
             Ok(None)
         }
     }
@@ -2639,9 +2997,64 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     // ── Top-level entities ───────────────────────────────────────────────
 
+    /// The leading run of `target ...` / `source_filename = ...` entities, and
+    /// the data-layout override that follows it. Mirrors
+    /// `LLParser::parseTargetDefinitions`.
+    ///
+    /// The split from `parseTopLevelEntities` is what makes
+    /// `DataLayoutCallbackTy` possible at all: the file's own layout string is
+    /// held *tentative* until the whole run has been read, so the callback sees
+    /// the target triple beside it and can answer with a replacement — which is
+    /// how a module carrying a layout string this build cannot parse is still
+    /// importable.
+    ///
+    /// **Divergence, unchanged by this routine:** upstream's
+    /// `parseTopLevelEntities` has no `kw_target` and no `kw_source_filename`
+    /// arm, so a `target triple` written after any other entity is
+    /// `expected top-level entity` there. llvmkit still accepts one, through
+    /// [`Self::parse_late_target_definition`]; a late `target datalayout` is
+    /// therefore validated and installed immediately and never reaches the
+    /// callback (`docs/divergences.md`).
+    fn parse_target_definitions(&mut self, config: &ParserConfig<'_>) -> ParseResult<()> {
+        // `std::string TentativeDLStr = M->getDataLayoutStr();`
+        let mut tentative_layout = self.module.data_layout().to_string();
+        let mut layout_loc = None;
+        loop {
+            match self.peek() {
+                Token::Kw(Keyword::Target) => {
+                    self.parse_target_definition(&mut tentative_layout, &mut layout_loc)?;
+                }
+                Token::Kw(Keyword::SourceFilename) => self.parse_source_filename()?,
+                // `default: Done = true;`
+                _ => break,
+            }
+        }
+        if let Some(callback) = config.data_layout_callback {
+            // `DataLayoutCallback(M->getTargetTriple().str(), TentativeDLStr)`.
+            // An unset triple is the empty string there, not a null.
+            let triple = self.module.target_triple().unwrap_or_default();
+            if let Some(overridden) = callback(&triple, &tentative_layout) {
+                tentative_layout = overridden;
+                // `DLStrLoc = {};` — an overridden string is no longer
+                // anchored at anything the file wrote.
+                layout_loc = None;
+            }
+        }
+        // `Expected<DataLayout> MaybeDL = DataLayout::parse(TentativeDLStr);`
+        // runs unconditionally, so a file with no `target datalayout` re-parses
+        // the empty string and installs the same default layout it already had.
+        self.set_data_layout(&tentative_layout, layout_loc)
+    }
+
     /// `target datalayout = STRING` / `target triple = STRING`. Mirrors
-    /// `LLParser::parseTargetDefinition`.
-    fn parse_target_definition(&mut self) -> ParseResult<()> {
+    /// `LLParser::parseTargetDefinition`, whose two out-parameters this takes:
+    /// the layout string is *not* installed here, only remembered together with
+    /// the location its diagnostic would be anchored at.
+    fn parse_target_definition(
+        &mut self,
+        tentative_layout: &mut String,
+        layout_loc: &mut Option<Span>,
+    ) -> ParseResult<()> {
         self.expect_keyword(Keyword::Target, "'target'")?;
         match self.peek() {
             Token::Kw(Keyword::Triple) => {
@@ -2654,19 +3067,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::Datalayout) => {
                 self.bump()?;
                 self.expect_punct(PunctKind::Equal, "'=' after target datalayout")?;
-                let loc = self.loc();
-                let s = self.parse_string_constant("target-datalayout string constant")?;
-                let parsed = DataLayout::parse(&s).map_err(|e| match e {
-                    IrError::InvalidDataLayout { reason } => ParseError::Expected {
-                        expected: format!("valid datalayout: {reason}").into(),
-                        loc: DiagLoc::span(loc),
-                    },
-                    other => ParseError::Expected {
-                        expected: format!("valid datalayout: {other}").into(),
-                        loc: DiagLoc::span(loc),
-                    },
-                })?;
-                self.module.set_data_layout(parsed);
+                *layout_loc = Some(self.loc());
+                *tentative_layout =
+                    self.parse_string_constant("target-datalayout string constant")?;
                 Ok(())
             }
             // `parseTargetDefinition`'s `default:` arm.
@@ -2674,9 +3077,46 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    /// `source_filename = STRING`. Upstream sets `Module::SourceFileName`;
-    /// llvmkit-ir does not yet model that slot, so the directive is parsed
-    /// and discarded here. The parser still rejects malformed forms.
+    /// A `target ...` entity reached *after* the leading run — something
+    /// upstream rejects outright (see [`Self::parse_target_definitions`]).
+    /// llvmkit keeps accepting it, and installs the layout on the spot because
+    /// there is no tentative phase left to defer it to.
+    fn parse_late_target_definition(&mut self) -> ParseResult<()> {
+        let mut tentative_layout = self.module.data_layout().to_string();
+        let mut layout_loc = None;
+        self.parse_target_definition(&mut tentative_layout, &mut layout_loc)?;
+        match layout_loc {
+            Some(_) => self.set_data_layout(&tentative_layout, layout_loc),
+            // `target triple` — nothing to install.
+            None => Ok(()),
+        }
+    }
+
+    /// `M->setDataLayout(MaybeDL.get())`, with upstream's
+    /// `error(DLStrLoc, toString(MaybeDL.takeError()))` on the failing half.
+    /// A `None` anchor is upstream's default-constructed `LocTy`, which
+    /// `SourceMgr` renders without a caret; llvmkit has no such rendering, so
+    /// the diagnostic falls back to the current token.
+    fn set_data_layout(&mut self, layout: &str, layout_loc: Option<Span>) -> ParseResult<()> {
+        let loc = layout_loc.unwrap_or_else(|| self.loc());
+        let parsed = DataLayout::parse(layout).map_err(|e| match e {
+            IrError::InvalidDataLayout { reason } => ParseError::Expected {
+                expected: format!("valid datalayout: {reason}").into(),
+                loc: DiagLoc::span(loc),
+            },
+            other => ParseError::Expected {
+                expected: format!("valid datalayout: {other}").into(),
+                loc: DiagLoc::span(loc),
+            },
+        })?;
+        self.module.set_data_layout(parsed);
+        Ok(())
+    }
+
+    /// `source_filename = STRING`. Mirrors `LLParser::parseSourceFileName`,
+    /// which stores the string on the parser and then, `if (M)`, on the module
+    /// — llvmkit reads it back off the module wherever upstream reads its own
+    /// copy, which is the local-symbol GUID computation.
     fn parse_source_filename(&mut self) -> ParseResult<()> {
         self.expect_keyword(Keyword::SourceFilename, "'source_filename'")?;
         self.expect_punct(PunctKind::Equal, "'=' after source_filename")?;
@@ -6089,11 +6529,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(DebugRecord::Variable(record))
     }
 
+    /// The tail of `parseBasicBlock`'s loop body: the `, !kind !N` attachments
+    /// (`parseInstructionMetadata`), the `#dbg_*` records that preceded the
+    /// instruction, and then `ParserContext->addInstructionLocation`.
+    ///
+    /// `instruction_start` is upstream's `InstStart`; the range closes at
+    /// `PrevTokEnd`, which by here is past the trailing metadata — upstream
+    /// records at the same point, after the `switch` that consumed it.
     fn finish_trailing_metadata(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
         bb_value: llvmkit_ir::Value<'ctx, B>,
         pending_debug_records: &mut Vec<DebugRecord<B>>,
+        instruction_start: u32,
     ) -> ParseResult<()> {
         let bb = state.value_as_block_view(bb_value, self.loc())?;
         self.skip_trailing_metadata(&bb)?;
@@ -6107,6 +6555,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 })?;
             for record in pending_debug_records.drain(..) {
                 own_metadata(inst.push_debug_record(self.module, record));
+            }
+        }
+        if self.parser_context.is_some() {
+            // The instruction just parsed is the one at the block's tail.
+            // Upstream names it directly (`Inst`); llvmkit's parse arms hand
+            // back a value rather than a lifecycle handle, so the block is
+            // asked instead. A parse arm that appended nothing — none does
+            // today — would record nothing rather than mislabel a neighbour.
+            let instruction = bb.instructions().last();
+            let range = self.file_loc_range_to_prev_token_end(instruction_start);
+            if let Some(instruction) = instruction
+                && let Some(context) = self.parser_context.as_mut()
+            {
+                // `addInstructionLocation`'s bool is discarded upstream.
+                let _first_insert_won = context.add_instruction_location(&instruction, range);
             }
         }
         Ok(())
@@ -6138,11 +6601,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.bump()?;
             let id = self.parse_metadata_attachment_operand()?;
             if let Some(inst) = bb.instructions().last() {
-                own_metadata(inst.set_metadata(
-                    self.module,
-                    MetadataAttachmentKind::from_name(&name),
-                    id,
-                ));
+                let kind = MetadataAttachmentKind::from_name(&name);
+                own_metadata(inst.set_metadata(self.module, kind.clone(), id));
+                // `if (MDK == LLVMContext::MD_tbaa)
+                //    InstsWithTBAATag.push_back(&Inst);`
+                if kind == MetadataAttachmentKind::Tbaa {
+                    self.insts_with_tbaa_tag.push(inst);
+                }
             }
         }
         Ok(())
@@ -6935,11 +7400,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // invented `no initializer: a global with 'external' linkage is a
         // declaration`. Same rejection, different message and a guess in place
         // of a rule.
-        let (initializer, deferred_initializer) = if has_linkage && is_declaration_linkage(linkage)
-        {
-            (None, None)
+        let initializer = if has_linkage && is_declaration_linkage(linkage) {
+            None
         } else {
-            self.parse_global_initializer(ty)?
+            self.parse_constant(ty)?
         };
         // Checked *after* the initializer, as upstream does, and anchored at
         // the type. `PointerType::isValidElementType` is the second half:
@@ -7069,10 +7533,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         for (kind, id) in metadata {
             own_metadata(g.set_metadata(self.module, kind, id));
-        }
-        if let Some(value) = deferred_initializer {
-            self.deferred_global_initializers
-                .push(DeferredGlobalInitializer { global: g, value });
         }
         if let NameOrId::Id(id) = name_id {
             self.numbered_globals
@@ -7263,113 +7723,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         self.parse_constant(target_ty)?
             .ok_or_else(|| self.expected("alias or ifunc target constant"))
-    }
-
-    fn parse_global_initializer(
-        &mut self,
-        ty: Type<'ctx, B>,
-    ) -> ParseResult<ParsedGlobalInitializer<'ctx, B>> {
-        if let Some(deferred) = self.defer_initializer_if_contains_special_constant(ty)? {
-            return Ok((None, Some(deferred)));
-        }
-        self.parse_constant(ty).map(|c| (c, None))
-    }
-
-    fn defer_initializer_if_contains_special_constant(
-        &mut self,
-        ty: Type<'ctx, B>,
-    ) -> ParseResult<Option<DeferredConstantKind<'ctx, B>>> {
-        let Some((span, contains_special)) = self.scan_initializer_span()? else {
-            return Ok(None);
-        };
-        if !contains_special {
-            return Ok(None);
-        }
-        self.skip_initializer_span(span.end)?;
-        Ok(Some(DeferredConstantKind::RawInitializer { ty, span }))
-    }
-
-    fn scan_initializer_span(&self) -> ParseResult<Option<(Span, bool)>> {
-        if matches!(self.peek(), Token::Comma | Token::Eof) {
-            return Ok(None);
-        }
-        let mut lex = self.lex.clone();
-        let mut current = self.current.clone();
-        let start = current.span.start;
-        let mut end = current.span.end;
-        let mut depth = 0u32;
-        let mut contains_special = false;
-        let mut consumed_any = false;
-        loop {
-            if consumed_any
-                && depth == 0
-                && self.scan_token_ends_global_initializer(&current.value, &lex)?
-            {
-                break;
-            }
-            match current.value {
-                Token::Kw(Keyword::Blockaddress)
-                | Token::Kw(Keyword::DsoLocalEquivalent)
-                | Token::Kw(Keyword::NoCfi) => contains_special = true,
-                Token::LParen | Token::LSquare | Token::LBrace | Token::Less => {
-                    depth = depth.saturating_add(1);
-                }
-                Token::RParen | Token::RSquare | Token::RBrace | Token::Greater => {
-                    depth = depth.saturating_sub(1);
-                }
-                Token::Eof => break,
-                _ => {}
-            }
-            end = current.span.end;
-            consumed_any = true;
-            current = lex.next_token().map_err(map_lex_error)?;
-        }
-        Ok(Some((Span::new(start, end), contains_special)))
-    }
-
-    fn scan_token_ends_global_initializer(
-        &self,
-        token: &Token<'src>,
-        lex_after_token: &Lexer<'src>,
-    ) -> ParseResult<bool> {
-        match token {
-            Token::Eof | Token::Comma => Ok(true),
-            Token::Kw(keyword) => Ok(keyword_starts_top_level_entity(*keyword)),
-            Token::GlobalVar(_)
-            | Token::GlobalId(_)
-            | Token::LocalVar(_)
-            | Token::LocalVarId(_)
-            | Token::ComdatVar(_)
-            | Token::MetadataVar(_) => self.scan_next_token_is_equal(lex_after_token),
-            Token::Exclaim => self.scan_numbered_metadata_definition(lex_after_token),
-            _ => Ok(false),
-        }
-    }
-
-    fn scan_next_token_is_equal(&self, lex_after_token: &Lexer<'src>) -> ParseResult<bool> {
-        let mut lookahead = lex_after_token.clone();
-        let next = lookahead.next_token().map_err(map_lex_error)?;
-        Ok(matches!(next.value, Token::Equal))
-    }
-
-    fn scan_numbered_metadata_definition(
-        &self,
-        lex_after_token: &Lexer<'src>,
-    ) -> ParseResult<bool> {
-        let mut lookahead = lex_after_token.clone();
-        let slot = lookahead.next_token().map_err(map_lex_error)?;
-        if !matches!(slot.value, Token::IntegerLit(_)) {
-            return Ok(false);
-        }
-        let equal = lookahead.next_token().map_err(map_lex_error)?;
-        Ok(matches!(equal.value, Token::Equal))
-    }
-
-    fn skip_initializer_span(&mut self, end: u32) -> ParseResult<()> {
-        while self.current.span.start < end && !matches!(self.peek(), Token::Eof) {
-            self.bump()?;
-        }
-        Ok(())
     }
 
     fn parse_constant(
@@ -7624,7 +7977,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::Blockaddress) => {
                 let ty =
                     expected_ty.ok_or_else(|| self.expected("pointer type for blockaddress"))?;
-                self.parse_blockaddress_constant(ty, pfs)
+                self.parse_blockaddress_constant(loc, ty, pfs)
                     .map(ValId::Constant)
             }
             Token::Kw(Keyword::DsoLocalEquivalent) => self
@@ -8291,17 +8644,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn resolve_global_id_as_ref(&self, id: u32) -> ParseResult<GlobalRef<'ctx, B>> {
-        self.numbered_globals
-            .get(id)
-            .copied()
-            .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: SymbolKind::Global,
-                id: SymbolId::Numbered(id),
-                loc: DiagLoc::span(self.loc()),
-            })
-    }
-
     fn parse_function_ref_for_blockaddress(
         &mut self,
         expected: &'static str,
@@ -8346,16 +8688,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `LLParser::parseValID`'s `kw_blockaddress` arm. `value_loc` is upstream's
+    /// `ID.Loc` — the `blockaddress` keyword — which anchors the
+    /// expected-type diagnostic and, later, the type comparison the deferred
+    /// same-function form makes.
     fn parse_blockaddress_constant(
         &mut self,
+        value_loc: Span,
         expected_ty: Type<'ctx, B>,
         pfs: Option<&PerFunctionState<'ctx, B>>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        if !matches!(expected_ty.into_type_enum(), AnyTypeEnum::Pointer(_)) {
-            return Err(self.expected("pointer type for blockaddress"));
-        }
         self.expect_keyword(Keyword::Blockaddress, "'blockaddress'")?;
         self.expect_punct(PunctKind::LParen, "'(' in blockaddress")?;
+        // `Fn.Loc`.
+        let function_loc = self.loc();
         let function = self.parse_function_ref_for_blockaddress("function name in blockaddress")?;
         self.expect_punct(PunctKind::Comma, "',' in blockaddress")?;
         let label_loc = self.loc();
@@ -8394,7 +8740,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         expected_ty,
                         DeferredBlockAddressFunction::Installed(function),
                         label,
-                        label_loc,
+                        BlockAddressLocs {
+                            value: value_loc,
+                            function: function_loc,
+                            label: label_loc,
+                        },
                     );
                 }
                 match label {
@@ -8418,12 +8768,31 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
             }
-            ParsedBlockAddressFunction::Forward { function, loc } => self.defer_block_address(
-                expected_ty,
-                DeferredBlockAddressFunction::Forward(function),
-                label,
-                loc,
-            ),
+            ParsedBlockAddressFunction::Forward { function, loc } => {
+                // `if (!ExpectedTy->isPointerTy())`, inside the `!F` branch:
+                // upstream only asks this when it is about to mint the
+                // placeholder, because that is the only point where the
+                // demanded type decides an address space. With the function in
+                // hand the `blockaddress` types itself and the disagreement
+                // surfaces as `convertValIDToValue`'s
+                // `constant expression type mismatch` instead.
+                if !matches!(expected_ty.into_type_enum(), AnyTypeEnum::Pointer(_)) {
+                    return Err(self.message_at(
+                        value_loc,
+                        format!("type of blockaddress must be a pointer and not '{expected_ty}'"),
+                    ));
+                }
+                self.defer_block_address(
+                    expected_ty,
+                    DeferredBlockAddressFunction::Forward(function),
+                    label,
+                    BlockAddressLocs {
+                        value: value_loc,
+                        function: loc,
+                        label: label_loc,
+                    },
+                )
+            }
         }
     }
 
@@ -8435,7 +8804,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         expected_ty: Type<'ctx, B>,
         function: DeferredBlockAddressFunction<'ctx, B>,
         label: BlockLabel,
-        loc: Span,
+        locs: BlockAddressLocs,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         let placeholder = self
             .module
@@ -8446,35 +8815,66 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             placeholder,
             function,
             label,
-            loc,
+            value_loc: locs.value,
+            function_loc: locs.function,
+            label_loc: locs.label,
         });
         Ok(constant)
     }
 
-    fn parse_dso_local_equivalent_constant(
+    /// The `@name` / `@N` operand `kw_dso_local_equivalent` and `kw_no_cfi`
+    /// both read, and the `Fn.Loc` it was written at.
+    ///
+    /// Upstream reads it with a nested `parseValID` and then rejects every
+    /// `ValID::Kind` but `t_GlobalID` / `t_GlobalName`; the rejection is what
+    /// `expected` spells.
+    fn parse_global_value_ref_operand(
         &mut self,
-    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        self.expect_keyword(Keyword::DsoLocalEquivalent, "'dso_local_equivalent'")?;
-        let operand_loc = self.loc();
-        let global = match self.peek() {
+        expected: &'static str,
+    ) -> ParseResult<(NameOrId, Span)> {
+        let loc = self.loc();
+        match self.peek() {
             Token::GlobalVar(_) => {
                 let name = self
                     .current_str_payload()
-                    .ok_or_else(|| self.expected("global value name in dso_local_equivalent"))?;
+                    .ok_or_else(|| self.expected(expected))?;
                 self.bump()?;
-                self.resolve_global_name_as_ref(name)
+                Ok((NameOrId::Name(name), loc))
             }
             Token::GlobalId(id) => {
                 let id = *id;
                 self.bump()?;
-                self.resolve_global_id_as_ref(id)
+                Ok((NameOrId::Id(id), loc))
             }
-            _ => Err(self.expected("global value name in dso_local_equivalent")),
-        }?;
+            _ => Err(self.expected(expected)),
+        }
+    }
+
+    /// `LLParser::parseValID`'s `kw_dso_local_equivalent` arm.
+    fn parse_dso_local_equivalent_constant(
+        &mut self,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        self.expect_keyword(Keyword::DsoLocalEquivalent, "'dso_local_equivalent'")?;
+        let (reference, operand_loc) =
+            self.parse_global_value_ref_operand("global value name in dso_local_equivalent")?;
+        // "Try to find the function (but skip it if it's forward-referenced)":
+        // a name that is currently a `ForwardRefVals` placeholder counts as
+        // *not* found, because the placeholder is not the function whose value
+        // type the check below asks about.
+        let global = match &reference {
+            NameOrId::Name(name) => {
+                if self.forward_ref_globals.contains_key(name) {
+                    None
+                } else {
+                    self.resolve_global_name_as_ref(name.clone()).ok()
+                }
+            }
+            NameOrId::Id(id) => self.numbered_globals.get(*id).copied(),
+        };
+        let Some(global) = global else {
+            return self.forward_ref_dso_local_equivalent(reference, operand_loc);
+        };
         // `!GV->getValueType()->isFunctionTy()`, reported at the operand.
-        // Upstream skips this when the referent is still forward-referenced;
-        // llvmkit never gets here with one, because a global initializer that
-        // mentions `dso_local_equivalent` is re-parsed after the whole module.
         if !global_ref_value_type_is_function(global) {
             return Err(ParseError::Message {
                 message: "expected a function, alias to function, or ifunc in dso_local_equivalent"
@@ -8487,27 +8887,84 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err("dso_local_equivalent", e))
     }
 
+    /// Mint — or re-use — the placeholder a forward `dso_local_equivalent`
+    /// stands behind. Mirrors the `FwdRefMap[Fn]` half of the arm: one
+    /// placeholder per referent, and the *first* reference's location is the
+    /// one `validateEndOfModule` blames, because upstream's map key is the
+    /// `ValID` it was first inserted with.
+    fn forward_ref_dso_local_equivalent(
+        &mut self,
+        reference: NameOrId,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        // Upstream's placeholder is `new GlobalVariable(*M, Int8Ty, ...)` with
+        // no address space, so the reference types as a plain `ptr`; the
+        // demanded type is compared against it by `convertValIDToValue`.
+        let ptr_ty = self.module.ptr_type(0).as_type();
+        let existing = match &reference {
+            NameOrId::Name(name) => self.forward_ref_dso_local_equivalent_names.get(name),
+            NameOrId::Id(id) => self.forward_ref_dso_local_equivalent_ids.get(id),
+        };
+        if let Some(entry) = existing {
+            return Ok(entry.placeholder.as_constant());
+        }
+        let placeholder = self
+            .module
+            .forward_ref_value_placeholder(ptr_ty)
+            .map_err(|e| self.builder_err("dso_local_equivalent placeholder", e))?;
+        let constant = placeholder.as_constant();
+        let entry = ForwardRef { placeholder, loc };
+        match reference {
+            NameOrId::Name(name) => {
+                self.forward_ref_dso_local_equivalent_names
+                    .insert(name, entry);
+            }
+            NameOrId::Id(id) => {
+                self.forward_ref_dso_local_equivalent_ids.insert(id, entry);
+            }
+        }
+        Ok(constant)
+    }
+
+    /// `LLParser::parseValID`'s `kw_no_cfi` arm, together with the
+    /// `if (V && ID.NoCFI)` half of `convertValIDToValue`'s `t_GlobalName` /
+    /// `t_GlobalID` arms that actually builds the wrapper.
     fn parse_no_cfi_constant(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         self.expect_keyword(Keyword::NoCfi, "'no_cfi'")?;
-        let global = match self.peek() {
-            Token::GlobalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected("global value name in no_cfi"))?;
-                self.bump()?;
-                self.resolve_global_name_as_ref(name)
-            }
-            Token::GlobalId(id) => {
-                let id = *id;
-                self.bump()?;
-                self.resolve_global_id_as_ref(id)
-            }
-            _ => Err(self.expected("global value name in no_cfi")),
-        }?;
-        self.module
-            .no_cfi_global(self.global_ref_to_constant(global))
-            .map_err(|e| self.builder_err("no_cfi", e))
+        let (reference, loc) =
+            self.parse_global_value_ref_operand("global value name in no_cfi")?;
+        let global = match &reference {
+            NameOrId::Name(name) => self.resolve_global_name_as_ref(name.clone()).ok(),
+            NameOrId::Id(id) => self.numbered_globals.get(*id).copied(),
+        };
+        if let Some(global) = global {
+            return self
+                .module
+                .no_cfi_global(self.global_ref_to_constant(global))
+                .map_err(|e| self.builder_err("no_cfi", e));
+        }
+        // `getGlobalVal`: the referent joins `ForwardRefVals` exactly as a bare
+        // `@name` operand would, so an undefined one is reported by that
+        // sweep, in its position and with its wording. The `NoCFIValue` itself
+        // cannot be built over the placeholder here — see `pending_no_cfi`.
+        let ptr_ty = self.module.ptr_type(0).as_type();
+        match &reference {
+            NameOrId::Name(name) => self.global_forward_ref(Some(name), None, ptr_ty, loc)?,
+            NameOrId::Id(id) => self.global_forward_ref(None, Some(*id), ptr_ty, loc)?,
+        };
+        let placeholder = self
+            .module
+            .forward_ref_value_placeholder(ptr_ty)
+            .map_err(|e| self.builder_err("no_cfi placeholder", e))?;
+        let constant = placeholder.as_constant();
+        self.pending_no_cfi.push(PendingNoCfi {
+            placeholder,
+            reference,
+            loc,
+        });
+        Ok(constant)
     }
+
     fn parse_ptrauth_operand(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         let ty = self.parse_type(false)?;
         self.parse_global_value(ty)
@@ -8927,9 +9384,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 DeferredBlockAddressFunction::Forward(reference) => reference == name_id,
             };
             if is_ours {
-                return Err(
-                    self.message_at(item.loc, "cannot take blockaddress inside a declaration")
-                );
+                // `error(Blocks->first.Loc, ...)` — the *function* reference's
+                // location, since `Blocks->first` is the `Fn` `ValID`.
+                return Err(self.message_at(
+                    item.function_loc,
+                    "cannot take blockaddress inside a declaration",
+                ));
             }
         }
         Ok(())
@@ -10630,6 +11090,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// cond_br / icmp / add / sub / mul). Function linkage and
     /// unnamed-address markers are preserved when present.
     fn parse_define(&mut self) -> ParseResult<()> {
+        // `FileLoc FunctionStart(Lex.getTokLineColumnPos());` — the `define`
+        // keyword itself, read before it is eaten.
+        let function_start = self.loc().start;
         self.expect_keyword(Keyword::Define, "'define'")?;
         let linkage_loc = self.loc();
         let linkage = self.parse_optional_function_linkage()?;
@@ -10886,8 +11349,36 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // that both ends early and leaves a value undefined reports the
         // missing brace first.
         self.expect_punct(PunctKind::RBrace, "'}' to close function body")?;
+        // `ParserContext->addFunctionLocation(F, FileLocRange(FunctionStart,
+        // Lex.getPrevTokEndLineColumnPos()))`, the `}` being the previous
+        // token by now.
+        //
+        // Upstream records the range even when the body failed to parse — it
+        // collects `RetValue` first and only then calls in. llvmkit propagates
+        // with `?` instead, so a failed `define` records nothing; the parse has
+        // failed either way and the registry never reaches a caller.
+        self.record_function_location(f, function_start);
         state.finish(self.module)?;
         Ok(())
+    }
+
+    /// `ParserContext->addFunctionLocation(...)`, a no-op when the parser was
+    /// built without a registry (upstream's null `AsmParserContext *`).
+    fn record_function_location(
+        &mut self,
+        function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>,
+        start: u32,
+    ) {
+        if self.parser_context.is_none() {
+            return;
+        }
+        let range = self.file_loc_range_to_prev_token_end(start);
+        if let Some(context) = self.parser_context.as_mut() {
+            // Upstream discards `addFunctionLocation`'s bool: a second insert
+            // for the same handle leaves the first range in place rather than
+            // failing the parse.
+            let _first_insert_won = context.add_function_location(function, range);
+        }
     }
 
     // ── Function body driver ─────────────────────────────────────────────
@@ -10956,6 +11447,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .is_some_and(|byte| *byte == b'"')
     }
 
+    /// `parseBasicBlock`, minus its instruction loop — which lives in
+    /// [`Self::parse_basic_block_instructions`] because upstream's single
+    /// `addBlockLocation` call sits after a `do`/`while` that llvmkit spells as
+    /// fifteen `return`s.
+    ///
+    /// `header_loc` is upstream's `BBStart`: the block's first token, which is
+    /// the label when there is one and the first instruction otherwise —
+    /// `parseFunctionBody` hands it in already read, where upstream reads it
+    /// inside `parseBasicBlock`.
     fn parse_basic_block(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
@@ -10972,8 +11472,45 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let bb_value = bb.to_erased();
         // Drive the typed builder for this block.
         let builder = IrBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
+        self.parse_basic_block_instructions(state, Some(builder), bb_value)?;
+        // `ParserContext->addBlockLocation(BB, FileLocRange(BBStart,
+        // Lex.getPrevTokEndLineColumnPos()))`.
+        self.record_block_location(state, bb_value, header_loc.start)?;
+        Ok(())
+    }
+
+    /// `ParserContext->addBlockLocation(...)`, a no-op without a registry.
+    ///
+    /// Fallible only in the block-view narrowing: `bb_value` is the erased
+    /// handle the caller has just built the block from, so the narrowing is the
+    /// same one [`Self::finish_trailing_metadata`] already performs on it.
+    fn record_block_location(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
+        bb_value: llvmkit_ir::Value<'ctx, B>,
+        start: u32,
+    ) -> ParseResult<()> {
+        if self.parser_context.is_none() {
+            return Ok(());
+        }
+        let bb = state.value_as_block_view(bb_value, self.loc())?;
+        let range = self.file_loc_range_to_prev_token_end(start);
+        if let Some(context) = self.parser_context.as_mut() {
+            // `addBlockLocation`'s bool is discarded upstream, as it is for
+            // functions and instructions.
+            let _first_insert_won = context.add_block_location(&bb, range);
+        }
+        Ok(())
+    }
+
+    fn parse_basic_block_instructions(
+        &mut self,
+        state: &mut PerFunctionState<'ctx, B>,
+        builder: Option<ParsedBlockBuilder<'ctx, 'ctx, B>>,
+        bb_value: llvmkit_ir::Value<'ctx, B>,
+    ) -> ParseResult<()> {
         // Emit instructions until a terminator consumes `builder`.
-        let mut builder = Some(builder);
+        let mut builder = builder;
         let mut pending_debug_records = Vec::new();
         // Track whether any non-phi instruction has been emitted in this block.
         // A `phi` appearing after one is ill-formed `.ll`: the auto-hoisting phi
@@ -11002,32 +11539,57 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 return Err(self.message("found end of file when expecting more instructions"));
             }
 
+            // `FileLoc InstStart(Lex.getTokLineColumnPos());` — taken after the
+            // `#dbg_*` records and *before* the optional `%name =`, so the
+            // recorded range opens at the result name when there is one.
+            let instruction_start = self.loc().start;
+
             // Terminator — these consume the builder.
             match self.peek() {
                 Token::Instruction(Opcode::Ret) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_ret(state, b)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::Unreachable) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     let _ = b.unreachable();
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::Br) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_br(state, b)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::Store) => {
                     let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_store(state, b_ref)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     seen_non_phi = true;
                     continue;
                 }
@@ -11035,20 +11597,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_fence(b_ref)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     seen_non_phi = true;
                     continue;
                 }
                 Token::Instruction(Opcode::Switch) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_switch(state, b)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::IndirectBr) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_indirectbr(state, b)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::Invoke) => {
@@ -11056,7 +11633,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_before_invoke()?;
                     let v = self.parse_invoke(state, b, &result_name)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     if let Some(val) = v {
                         state.bind_local(&result_name, val, result_loc)?;
                     }
@@ -11066,21 +11648,36 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_resume(state, b)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::CleanupRet) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_cleanupret(state, b)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::CatchRet) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_catchret(state, b)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::CatchSwitch) => {
@@ -11088,7 +11685,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_catchswitch(state, b, &result_name)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     state.bind_local(&result_name, v, result_loc)?;
                     return Ok(());
                 }
@@ -11097,7 +11699,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_callbr(state, b, &result_name)?;
-                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(
+                        state,
+                        bb_value,
+                        &mut pending_debug_records,
+                        instruction_start,
+                    )?;
                     if let Some(v) = v {
                         state.bind_local(&result_name, v, result_loc)?;
                     }
@@ -11115,7 +11722,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ) {
                 let b_ref = borrow_live_builder(&builder, self.loc())?;
                 let value = self.parse_call(state, b_ref, &result_name)?;
-                self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                self.finish_trailing_metadata(
+                    state,
+                    bb_value,
+                    &mut pending_debug_records,
+                    instruction_start,
+                )?;
                 state.bind_local(&result_name, value, result_loc)?;
                 seen_non_phi = true;
                 continue;
@@ -11124,7 +11736,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let b = take_live_builder(&mut builder, self.loc())?;
                 self.bump()?;
                 let value = self.parse_invoke(state, b, &result_name)?;
-                self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                self.finish_trailing_metadata(
+                    state,
+                    bb_value,
+                    &mut pending_debug_records,
+                    instruction_start,
+                )?;
                 if let Some(value) = value {
                     state.bind_local(&result_name, value, result_loc)?;
                 }
@@ -11138,7 +11755,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if matches!(self.peek(), Token::Instruction(Opcode::CallBr)) {
                 let b = take_live_builder(&mut builder, self.loc())?;
                 let value = self.parse_callbr(state, b, &result_name)?;
-                self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                self.finish_trailing_metadata(
+                    state,
+                    bb_value,
+                    &mut pending_debug_records,
+                    instruction_start,
+                )?;
                 if let Some(value) = value {
                     state.bind_local(&result_name, value, result_loc)?;
                 }
@@ -11232,7 +11854,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     });
                 }
             };
-            self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+            self.finish_trailing_metadata(
+                state,
+                bb_value,
+                &mut pending_debug_records,
+                instruction_start,
+            )?;
             state.bind_local(&result_name, value, result_loc)?;
         }
     }
@@ -11891,6 +12518,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let saved_lex = self.lex.clone();
         let saved_current = self.current.clone();
+        let saved_prev_token_end = self.prev_token_end;
         self.bump()?;
         // A `, align N`, `, addrspace(N)`, or `, !dbg !N` (trailing metadata)
         // clause is not an array size — restore the comma for the align /
@@ -11903,6 +12531,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ) {
             self.lex = saved_lex;
             self.current = saved_current;
+            self.prev_token_end = saved_prev_token_end;
             return Ok(None);
         }
         // Upstream reads a general `parseTypeAndValue` here and rejects a
@@ -11931,10 +12560,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let saved_lex = self.lex.clone();
         let saved_current = self.current.clone();
+        let saved_prev_token_end = self.prev_token_end;
         self.bump()?;
         if matches!(self.peek(), Token::MetadataVar(_)) {
             self.lex = saved_lex;
             self.current = saved_current;
+            self.prev_token_end = saved_prev_token_end;
             return Ok(None);
         }
         if !matches!(self.peek(), Token::Kw(Keyword::Addrspace)) {
@@ -11960,10 +12591,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             let saved_lex = self.lex.clone();
             let saved_current = self.current.clone();
+            let saved_prev_token_end = self.prev_token_end;
             self.bump()?;
             if matches!(self.peek(), Token::MetadataVar(_)) {
                 self.lex = saved_lex;
                 self.current = saved_current;
+                self.prev_token_end = saved_prev_token_end;
                 return Ok(alignment);
             }
             if !matches!(self.peek(), Token::Kw(Keyword::Align)) {
@@ -12169,6 +12802,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         while matches!(self.peek(), Token::Comma) {
             let saved_lex = self.lex.clone();
             let saved_current = self.current.clone();
+            let saved_prev_token_end = self.prev_token_end;
             self.bump()?;
             // A trailing `, !dbg !N` attachment is not an index. Upstream
             // breaks out of the index loop on `MetadataVar` and reports the
@@ -12178,6 +12812,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if matches!(self.peek(), Token::MetadataVar(_)) {
                 self.lex = saved_lex;
                 self.current = saved_current;
+                self.prev_token_end = saved_prev_token_end;
                 break;
             }
             let elt_loc = self.loc();
@@ -12703,6 +13338,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         while matches!(self.peek(), Token::Comma) {
             let saved_lex = self.lex.clone();
             let saved_current = self.current.clone();
+            let saved_prev_token_end = self.prev_token_end;
             self.bump()?;
             if matches!(self.peek(), Token::MetadataVar(_)) {
                 if indices.is_empty() {
@@ -12714,6 +13350,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // same backtrack `parse_optional_comma_array_size` uses.
                 self.lex = saved_lex;
                 self.current = saved_current;
+                self.prev_token_end = saved_prev_token_end;
                 return Ok(indices);
             }
             indices.push(self.parse_uint32()?);
@@ -12864,6 +13501,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if !first {
                 let saved_lex = self.lex.clone();
                 let saved_current = self.current.clone();
+                let saved_prev_token_end = self.prev_token_end;
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
@@ -12875,6 +13513,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if matches!(self.peek(), Token::MetadataVar(_)) {
                     self.lex = saved_lex;
                     self.current = saved_current;
+                    self.prev_token_end = saved_prev_token_end;
                     break;
                 }
                 if !matches!(self.peek(), Token::LSquare) {

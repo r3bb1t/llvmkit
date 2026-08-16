@@ -94,6 +94,14 @@ would register the edge against llvmkit's interned wrapper rather than the
 global — see D3. That loses count instead of fixing it, so the two have to be
 closed together.
 
+**What it costs elsewhere:** upstream's `kw_no_cfi` arm can wrap a
+forward-reference placeholder immediately, because `NoCFIValue` is a real
+`User` and `handleOperandChange` re-interns it when the placeholder is RAUW'd.
+llvmkit's `NoCfi` is not, so nothing would rewrite it — the parser keeps a
+`pending_no_cfi` list and builds the wrapper after the `ForwardRefVals` sweep
+instead. Same messages, same positions, one extra end-of-module step; it goes
+away when D2/D3 close.
+
 ### D3 — `GlobalValueRef` is an interned wrapper LLVM does not have
 
 **Severity:** model-gap
@@ -194,51 +202,36 @@ see a different answer from upstream on a value a debug record names.
 
 ## End of module
 
-### D7 — `dso_local_equivalent` forward references are not deferred
+### D7 — `dso_local_equivalent` forward references are not deferred — **FIXED (W13b)**
 
-**Severity:** rejects-valid, wrong-message
-**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
-`parse_dso_local_equivalent_constant`
-
-**LLVM:** `parseValID`'s `kw_dso_local_equivalent` arm *defers* when the named
-global is absent or still a forward reference, recording it in
-`ForwardRefDSOLocalEquivalentIDs` / `…Names`. `validateEndOfModule` resolves
-both maps — IDs first, then names — with two diagnostics:
+`parse_dso_local_equivalent_constant` now mirrors the arm: it skips a referent
+that is still a `ForwardRefVals` entry, parks the reference in
+`forward_ref_dso_local_equivalent_ids` / `…_names`, and
+`resolve_forward_ref_dso_local_equivalents` drains them at
+`validateEndOfModule`'s position 3, ids before names, with
 `unknown function '<name>' referenced by dso_local_equivalent` and
 `expected a function, alias to function, or ifunc in dso_local_equivalent`.
+The upstream quirk is reproduced: the numbered spelling really does print an
+empty name, because `ValID::StrVal` is empty for a `t_GlobalID`.
 
-**llvmkit:** resolves eagerly through `resolve_global_name_as_ref`, so an
-unknown name fails at the reference with `use of undefined global '@f'` —
-wrong text, and at the wrong time, since it preempts every check that
-upstream orders earlier. It survives the common
-`@g = global ptr dso_local_equivalent @f` case only because global
-initializers are deferred and re-parsed wholesale; the same expression in a
-function body fails outright.
+### D8 — A `blockaddress` in a global initializer never reaches the leftover check — **FIXED (W13b)**
 
-**Note the upstream quirk to reproduce:** for the numbered form the `ValID`'s
-`StrVal` is empty, so the message is literally
-`unknown function '' referenced by dso_local_equivalent`.
+The initializer deferral is gone: `parse_global` parses its initializer inline
+like `parseGlobal` does, so a forward `blockaddress` lands in
+`deferred_block_addresses` (upstream's `ForwardRefBlockAddresses`) and is
+retired either by the named function's `resolve_block_addresses_for_function`
+or by `validateEndOfModule`'s guard. `test/Assembler/pr119818.ll` — a global
+initializer naming a *numbered* label of a later function — parses as a
+result, and `expected function name in blockaddress` now fires from position 2
+for a global initializer as well as a function body.
 
-**Fix:** add the two forward-reference maps and resolve them at
-`validateEndOfModule`'s position 3, IDs before names.
-
-### D8 — A `blockaddress` in a global initializer never reaches the leftover check
-
-**Severity:** wrong-message
-**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
-`resolve_deferred_global_initializers`, `resolve_deferred_block_addresses`
-
-**LLVM:** `expected function name in blockaddress` fires from
-`validateEndOfModule`'s `ForwardRefBlockAddresses` guard, position 2 — before
-the type, comdat, value and metadata leftovers.
-
-**llvmkit:** an initializer containing a `blockaddress` is deferred and
-re-parsed from source at end of module, and that path reports its own error
-instead of recording a pending blockaddress. So the leftover guard is
-reachable only from a function body.
-
-**Fix:** falls out of removing the initializer deferral, which exists because
-llvmkit cannot parse a forward `blockaddress` inline.
+**Left open by the same change:** llvmkit still keys
+`deferred_block_addresses` as a flat list rather than upstream's
+`ForwardRefBlockAddresses[Fn][Label]` map, so two references to the same
+`(function, label)` pair mint two placeholders where upstream shares one. The
+only observable consequence is that the
+`type of blockaddress must be a pointer and not '…'` check, which upstream
+runs only when it creates a *fresh* placeholder, runs on every reference here.
 
 ### D9 — Attribute groups are never merged, and the alignment move is half-ported
 
@@ -293,6 +286,233 @@ expression.
 **Fix:** W4's type-agnostic `ValID` refactor applied one level down — same
 root cause, same shape.
 
+## Entry points and configuration
+
+### D10 — `Can't read textual IR with a Context that discards named Values` is **N/A (structurally impossible)**
+
+**Severity:** none — recorded so the parity ledger's `MISSING` count is not
+chased through this row.
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — `Parser::parse_module`
+(the `LLParser::Run` mirror)
+
+**LLVM:** `LLParser::Run` opens, right after the priming `Lex.Lex()`, with
+`if (Context.shouldDiscardValueNames()) return error(Lex.getLoc(), "Can't read
+textual IR with a Context that discards named Values");`. The flag is
+`LLVMContext::setDiscardValueNames`, which a client sets to save memory on
+IR it will never print.
+
+**llvmkit:** there is no discard-names mode to check. `llvm_context.rs`'s
+`Context` is a per-module type / constant interning pool with no configuration
+flags at all, and `ModuleCore` stores names unconditionally. Every entry point
+either takes a caller's `Module<B, Unverified>` or builds `Module::dynamic`;
+no object on any of those paths carries the setting.
+
+**Why it is not "missing":** the diagnostic has no reachable trigger, so
+implementing it would mean *inventing* a mode purely to have somewhere to
+report from. This is recorded rather than invented, in the same spirit as
+`argument can not have void type` — a message that is dead upstream and
+correspondingly absent here.
+
+**What would change this:** a `discard_value_names` mode on `Module`, wanted on
+its own merits. The guard is one `if` at the top of `parse_module` on the day
+it exists.
+
+### D11 — `ParserConfig` carries three settings and two of them select nothing yet
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-asmparser/src/parser.rs` — `ParserConfig`
+
+**LLVM:** `LLParser::Run(bool UpgradeDebugInfo, DataLayoutCallbackTy)` plus the
+`-allow-incomplete-ir` `cl::opt` are the three knobs a parse runs under.
+`AllowIncompleteIR` is read at three places in `validateEndOfModule`;
+`UpgradeDebugInfo` guards exactly one statement, `llvm::UpgradeDebugInfo(*M)`.
+
+**llvmkit:** all three are modelled, and their defaults match. What each
+selects:
+
+| setting | status |
+|---|---|
+| `data_layout_callback` | **implemented.** `parse_target_definitions` holds the layout string tentative across the leading `target` / `source_filename` run and offers `(triple, tentative)` to the callback before `DataLayout::parse`. |
+| `allow_incomplete_ir` | **partly implemented** — see D12. |
+| `upgrade_debug_info` | **selects nothing.** llvmkit has no `AutoUpgrade` port (see the inventory entry on `lib/IR/AutoUpgrade.cpp`), so there is no `UpgradeDebugInfo` call for the flag to guard. |
+
+**Consequence:** a caller that sets `upgrade_debug_info: false` (what `llvm-as`
+and `opt -disable-upgrade-debug-info` do) gets the same module as one that
+leaves it `true`. Nothing is silently *wrong* — llvmkit never upgrades — but
+the setting is a promise about a future behaviour rather than a live switch,
+and the rustdoc says so.
+
+**Fix:** lands with `AutoUpgrade`. The flag already reaches
+`Parser::parse_module_with_config`; only the guarded call is missing.
+
+### D12 — `-allow-incomplete-ir` covers value references, not disagreeing call sites
+
+**Severity:** wrong-output, wrong-message
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
+`resolve_forward_ref_globals`, `validate_forward_function_decls`,
+`parse_direct_callee`
+**Pinned by:** `crates/llvmkit-asmparser/tests/parser_facade.rs::incomplete_ir_declarations`
+against the verbatim `test/Assembler/incomplete-ir-declarations.ll`
+
+**LLVM:** `getGlobalVal` mints one placeholder for *every* forward `@`
+reference, callee or not, and parks it in a single sorted
+`std::map ForwardRefVals`. `validateEndOfModule` then sweeps that one map:
+under `AllowIncompleteIR` it synthesises a `Function` at the type
+`GetCommonFunctionType` reports — the one function type every use calls the
+value at — or an `i8` `GlobalVariable` when the uses disagree, are not calls,
+or do not exist.
+
+**llvmkit:** the forward references are split across two maps.
+`forward_ref_globals` holds ordinary value references and is upstream's
+`ForwardRefVals`; a *direct callee* instead goes through `parse_direct_callee`,
+which builds a real `declare` at the **first** call site's signature and
+records only the name in `forward_function_decls`.
+
+Two consequences, both reproduced by the ported fixture:
+
+1. **`@fn2` keeps its first signature.** Its three call sites disagree, so
+   upstream emits `@fn2 = external global i8`; llvmkit already built
+   `declare void @fn2(i32)` and prints that. Undoing it needs a
+   function-removal and a function-RAUW that `llvmkit-ir` does not have —
+   `replace_all_uses_with` exists on `ForwardRefValue` and `Instruction`, not
+   on `FunctionValue`, and nothing removes a function from a module.
+2. **A different leftover is reported when the option is off.** Upstream reports
+   `ForwardRefVals.begin()`, which for a `std::map` is the lexicographically
+   first name — `use of undefined value '@fn1'` for that fixture. llvmkit
+   checks `forward_ref_globals` first and `forward_function_decls` after, so
+   it reports `use of undefined value '@g1'`; and when the callee map *is* the
+   one that fires, it says `undefined global` where upstream says
+   `undefined value`, because the two maps carry different `SymbolKind`s.
+
+The other two `AllowIncompleteIR` tolerances are unimplemented rather than
+partial: `dropUnknownMetadataReferences` (see D13) and the relaxed
+`InstsWithTBAATag` assertion, which has no counterpart at all because
+`UpgradeTBAANode` is not ported.
+
+**Fix:** route a direct callee through the same placeholder path
+`getGlobalVal` uses, collapsing `forward_function_decls` into
+`forward_ref_globals`. That closes both consequences at once and is the same
+refactor several other rows want.
+
+### D13 — `dropUnknownMetadataReferences` has no counterpart
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — the `metadata_slots`
+leftover loop in `Parser::parse_module_with_config`
+
+**LLVM:** under `-allow-incomplete-ir`, `validateEndOfModule` calls
+`dropUnknownMetadataReferences` before the `ForwardRefMDNodes` guard. It erases
+every attachment whose node is still temporary from functions, instructions and
+global variables; erases `DbgInfoIntrinsic` and
+`llvm.experimental.noalias.scope.decl` calls that carry one
+(`dropIntrinsicWithUnknownMetadataArgument`); and then drops the
+`NumberedMetadata` / `ForwardRefMDNodes` entries whose only remaining reference
+is the numbering itself. `test/Assembler/incomplete-ir-metadata.ll` is the
+fixture.
+
+**llvmkit:** the option is accepted and this step is skipped, so an undefined
+`!N` is still `use of undefined metadata '!N'` with or without it.
+
+**Why:** two things are missing. llvmkit resolves metadata forward references
+by reserve-then-fill on a stable `MetadataId` (`resolve_md_slot` ->
+`metadata_reserve`), so "is this node temporary?" has to be asked of the
+parser's own `metadata_slots` table rather than of the node — answerable, but
+different. The blocker is the second: `MetadataAttachmentSet` has `insert` and
+`get` and no removal, none of the four attachment holders has an
+`eraseMetadataIf`, and an `InstructionView` cannot be erased from its block
+(erasure takes the linear `Instruction<Attached>` handle). Closing this is
+`llvmkit-ir` surface work, not parser work.
+
+**Fix:** add `MetadataAttachmentSet::retain` plus `erase_metadata_if` on
+`FunctionValue` / `InstructionView` / `GlobalVariable`, and a view-level
+instruction erase; then port the routine and
+`test/Assembler/incomplete-ir-metadata.ll` with it. The negative half,
+`test/Assembler/incomplete-ir-metadata-unsupported.ll`, already passes: it
+expects `use of undefined metadata '!1'` even with the option on.
+
+### D14 — a `declare` prints its parameter names
+
+**Severity:** wrong-output
+**Where:** `crates/llvmkit-ir/src/asm_writer.rs` — the function-header
+parameter loop
+**Pinned by:** `crates/llvmkit-ir/tests/builder_call.rs`
+(`declare float @llvm.acos.f32(float %0)`) and, since this wave,
+`crates/llvmkit-asmparser/tests/parser_facade.rs::incomplete_ir_declarations`
+
+**LLVM:** `AssemblyWriter::printFunction` branches on `F->isDeclaration()`:
+a declaration prints only parameter *types* and their attributes — "We're only
+interested in the type here - don't print argument names" — while a definition
+prints `printArgument`, names included.
+
+**llvmkit:** there is no branch. The loop always prints a name, falling back to
+the slot number when the parameter is unnamed, so `declare void @f(i32)` on
+input prints as `declare void @f(i32 %0)`.
+
+**Consequence:** printed bytes differ from `llvm-dis` for every declaration
+with at least one parameter — including every intrinsic declaration a module
+picks up. The output still re-parses to an equivalent module, and the corpus
+did not catch it because its expected files are llvmkit's own output; it
+surfaced only when an upstream `CHECK` line was compared directly.
+
+**Fix:** port the `isDeclaration()` branch, then re-bless every expected
+fixture and byte-lock that carries a parameterised `declare`. The two tests
+above encode the current behaviour and have to move with it.
+
+### D15 — `target` and `source_filename` are accepted after other entities
+
+**Severity:** accepts-invalid
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
+`Parser::parse_module_with_config`'s dispatch loop,
+`parse_late_target_definition`
+
+**LLVM:** `parseTargetDefinitions` consumes the *leading* run of `kw_target` /
+`kw_source_filename` and stops at the first token that is neither.
+`parseTopLevelEntities` then has no arm for either keyword, so a `target triple`
+written after any other entity falls to `default:` and is
+`expected top-level entity`.
+
+**llvmkit:** the leading pre-pass exists as of this wave — it is what makes
+`data_layout_callback` possible — but the dispatch loop still keeps its
+`Target` / `SourceFilename` arms, so a late one is accepted.
+
+**Consequence:** input LLVM rejects is accepted. A late `target datalayout` is
+also validated and installed on the spot rather than tentatively, so it never
+reaches the data-layout callback: a caller overriding the layout gets its
+override replaced by a stray late directive, where upstream would have refused
+the file.
+
+**Fix:** delete the two arms. Held back from this wave because it changes the
+verdict on inputs the corpus may contain, which is a re-blessing pass of its
+own rather than a line deletion.
+
+### D16 — `parseDIExpressionBodyAtBeginning` has no public entry point
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-asmparser/src/parser.rs` — the standalone-fragment
+family
+
+**LLVM:** `Parser.h` exposes `parseDIExpressionBodyAtBeginning(Asm, Read, Err,
+M, Slots)` beside `parseType`, `parseTypeAtBeginning` and `parseConstantValue`.
+It restores the slot mapping, parses one `!DIExpression(...)` body, and reports
+the byte count consumed —
+`unittests/AsmParser/AsmParserTest.cpp` exercises it directly.
+
+**llvmkit:** `Parser::parse_di_expression_body` exists but is private, reached
+only from the specialised-metadata production. There is no
+`parse_di_expression_body_at_beginning` on the public facade and no
+`parseStandaloneMetadata`-style wrapper, so the last `Parser.h` entry point is
+unreachable from outside the crate.
+
+**Consequence:** a caller cannot parse a debug expression against an existing
+module's slot tables the way the type and constant fragments allow. Nothing
+inside llvmkit needs it, which is why it was not noticed until the entry-point
+surface was audited as a whole.
+
+**Fix:** a wrapper of the same shape as `parse_type_at_beginning_with_slots` —
+`restoreParsingState`, prime, record the start location, call the existing body
+parser, report `End - Start`. The upstream unit test ports with it, including
+its `expected '(' here` negative case.
+
 ---
 
 
@@ -317,6 +537,10 @@ llvmkit file/line references are indicative and rot; the symbol names do not.
 Where an inventory entry overlaps the hand-written section above, the section
 above is current: it reflects what wave 12 actually closed, while the sweep
 read the tree as it stood when each entry was first recorded.
+
+Entries numbered **above 98** were not part of that sweep: they are divergences
+later waves found and appended to the section they belong to, carrying the wave
+that found them instead of a verifier's evidence block.
 
 ## Rejects valid input
 
@@ -606,7 +830,22 @@ crates/llvmkit-asmparser/src/ll_parser.rs:2216 (`parse_uint32`) and :2244 (`pars
 
 </details>
 
-### 19. AutoUpgrade does not exist — legacy-but-valid modules are not upgraded
+### 19. AutoUpgrade does not exist — legacy-but-valid modules are not upgraded — **PARTLY FIXED (W13d)**
+
+**Status 2026-08-16 (W13d).** `crates/llvmkit-ir/src/auto_upgrade.rs` now exists
+under upstream's `lib/IR` layering and carries three of the nine call sites:
+`UpgradeTBAANode` (fed by the parser's new `insts_with_tbaa_tag`, upstream's
+`InstsWithTBAATag`), `UpgradeModuleFlags` and `UpgradeSectionAttributes`, each
+wired at its own position in `Parser::parse_module_with_config`'s end-of-module
+block. The **count is nine, verified again** — see the correction below. The six
+that remain (`UpgradeIntrinsicFunction`, `UpgradeIntrinsicCall`,
+`UpgradeCallsToIntrinsic`, `llvm::UpgradeDebugInfo`, `UpgradeNVVMAnnotations`,
+`copyModuleAttrToFunctions`) each have a named blocker recorded in
+`docs/future-work.md` — the intrinsic trio needs the descriptor check moved out
+of `parse_declare` / `resolve_direct_callee`, `UpgradeDebugInfo` needs
+`StripDebugInfo`, `copyModuleAttrToFunctions` needs a `Triple`. The lifetime
+divergence and the mis-citing test named in the correction below are **still
+present**, unchanged. The rest of this entry is the pre-W13d record.
 
 *IR / parser — end of module* — crates/llvmkit-ir/src/ (new `auto_upgrade.rs`, absent today), crates/llvmkit-asmparser/src/ll_parser.rs (end-of-module call sites)
 
@@ -920,6 +1159,7 @@ llvmkit source, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_p
 - **llvmkit:** The pieces exist but were landed wave by wave (W2.5 did intrinsic auto-declaration and `@` leftovers; W3 the undefined types; W2.6 comdats), and the sequence has never been verified against upstream's. The attribute-group merge and the alignment-attr→field move do not exist at all.
 - **Why:** Recorded as W13's opening item, with the ordering explicitly called "part of parity". Its group-merge half is the blocker under the printer's missing attribute-group forming.
 - **Fix:** Port the routine as one ordered sequence, add the attr-group merge + `align`-to-field move, and pin the order with negative fixtures that trip two rules at once. Also covers `getIntrinsicSignature` mangling-suffix cases (`llvm.umax` on `i32` declares `llvm.umax.i32`) and the `InstsWithTBAATag` hook W11 was to leave behind.
+- **Status (W13a, W13b):** the *sequence* is now upstream's, step by step, and the `dso_local_equivalent` step exists (see D7). The initializer deferral that made step 3 re-mint references after step 4 had run is gone (see D8), so `@g = global ptr blockaddress(@never_defined, %entry)` on its own is rejected rather than printing `<forward reference>`. **Still open:** the attribute-group merge, the `validateEndOfModule` half of the `align` move, the intrinsic auto-declaration loop, metadata-cycle resolution, the TBAA hook and `Slots` steal semantics.
 - **Correction from verification:** Substantially accurate, with one sub-clause corrected and one under-statement. CORRECTION: "The attribute-group merge and the alignment-attr->field move do not exist at all" is half wrong. The alignment-attr->field move DOES exist — crates/llvmkit-asmparser/src/ll_parser.rs:9373-9380, inside parse_optional_function_suffix, quoting parseFunctionHeader's comment verbatim ("If the alignment was parsed as an attribute, move to the alignment field."), and check_attribute_position:9835-9841 carries upstream's matching Alignment "hack" exemption. Upstream has TWO alignment moves; llvmkit ported the parseFunctionHeader one. What is missing is the SECOND one, inside validateEndOfModule, which pulls `align` out of an attribute *group* after the group merge. The attribute-group merge itself is indeed absent. UNDER-STATEMENT: the claim says the sequence "has never been verified against upstream's". It is not merely unverified — it is demonstrably different, and there is no `validate_end_of_module` function at all; the steps are inlined in `parse_module` (ll_parser.rs:1457-1480). llvmkit's order is: (1) validate_forward_ref_types, (2) undefined-metadata loop, (3) resolve_deferred_global_initializers, (4) resolve_deferred_block_addresses, (5) resolve_deferred_personality_fns, (6) resolve_deferred_alias_targets, (7) validate_deferred_intrinsic_attribute_checks, (8) validate_forward_ref_comdats, (9) resolve_forward_ref_globals, (10) validate_forward_function_decls, (11) validate_end_of_index. Upstream's is: attr-group merge, blockaddress leftovers, dso_local_equivalent, numbered types, named types, comdats, intrinsic auto-declaration, ForwardRefVals leftovers, ForwardRefValIDs leftovers, metadata, cycles, TBAA, upgrades, Slots steal. Types moved from 4th to 1st and metadata from 10th to 2nd, both jumping ahead of the blockaddress and undefined-value guards. ALSO MISSING (claim does not mention): the dso_local_equivalent end-of-module resolution step is absent — llvmkit resolves eagerly in parse_dso_local_equivalent_constant (ll_parser.rs:8428-8462), whose own comment at :8448-8451 admits the deviation, and upstream's message "unknown function 'X' referenced by dso_local_equivalent" exists nowhere in the tree (grep over crates/ returns zero hits). FURTHER, worse than an ordering bug: the ForwardRefBlockAddresses guard is unreachable from a global initializer. `@g = global ptr blockaddress(@never_defined, %entry)` on its own parses SUCCESSFULLY and prints `@g = global ptr <forward reference>` — a placeholder leaking into printed IR — where upstream errors "expected function name in blockaddress" (LLParser.cpp:273). The deferred-initializer re-parse at step (3) re-mints the reference after step (4) would have caught it. Line citations have drifted slightly: :4786-4798 (comdat guard) and :4756 (undefined types) are exact; :1711 lands inside the doc comment of resolve_forward_ref_globals, not the sequence itself, which is at :1457-1480.
 
 <details><summary>Verification evidence</summary>
@@ -1273,6 +1513,24 @@ llvmkit (working tree, dev @ 2ac3e3a + uncommitted edits to both cited files): -
 CONFIRMED, still present at HEAD (2ac3e3a; `git diff --stat` on both cited files is empty, so working tree == HEAD). llvmkit side — C:\Users\olegg\Desktop\llvmkit\crates\llvmkit-asmparser\src\parser.rs: - `parse_assembly_with_context` (lines 288-303) parses first, then builds an empty `AsmParserContext::new()` (line 300) and calls `record_parser_context(bytes, &module, &mut context)?` (line 301) as a separate post-hoc pass over the raw bytes. The parse itself is a plain `Parser::new(bytes, &module)?.parse_module()?` (line 299) with no context threaded in. - `record_parser_context` (line 374) works from `source_lines(src)` (line 431: `from_utf8(src).unwrap_or("").lines().collect()`), then reconstructs ranges with three string heuristics, exactly as the claim describes: - `function_range` (line 435): `line.trim_start().starts_with("define ")` && `line.contains(&format!("@{name}("))` for the start; first line whose `line.trim() == "}"` at-or-after that for the end (line 447). - `label_line_in_range` (line 458): `line.trim() == format!("{label}:")`. - `instruction_lines_in_range` (line 475): any non-empty line that does not end with ':', is not "}", and does not start with "define " counts as one instruction; these are zipped positionally onto `block.instructions()` via `instruction_lines.remove(0)` (line 411). Upstream — orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp: - `parseDefine` captures `FileLoc FunctionStart(Lex.getTokLineColumnPos())` before lexing the `define`, and after the body calls `ParserContext->addFunctionLocation(F, FileLocRange(FunctionStart, Lex.getPrevTokEndLineColumnPos()))` (lines 764-766). - `parseBasicBlock` captures `FileLoc BBStart(Lex.getTokLineColumnPos())` (line 7051) and, per instruction, `FileLoc InstStart(Lex.getTokLineColumnPos())` (line 7094), then records `addInstructionLocation(Inst, FileLocRange(InstStart, Lex.getPrevTokEndLineColumnPos()))` (lines 7145-7146) and `addBlockLocation(BB, FileLocRange(BBStart, Lex.getPrevTokEndLineColumnPos()))` (lines 7151-7152). - These are the only three population sites (`grep -n ParserContext lib/AsmParser/LLParser.cpp` returns 764, 7144-7151 only), so upstream's context is entirely lexer-captured token positions. Three findings that sharpen the claim (all consistent with it, not contradicting it): 1. The parser hook exists but is a no-op: `Parser::with_context` at crates\llvmkit-asmparser\src\ll_parser.rs:1339-1345 takes `_context: &'ctx mut AsmParserContext<'ctx, B>`, discards it, and just returns `Self::new(src, module)`. So llvmkit's recursive-descent parser never touches the context at all — the reconstruction in parser.rs is the sole population path. 2. The divergence is not only precision, it is range semantics. parser.rs:405 gives every basic block the *function's* end (`FileLocRange::new(block_start, end)`), so all blocks in a multi-block function share an overlapping end at the closing brace, where upstream ends each block at its own last token. parser.rs:415 ends every instruction at `line_end(&lines, inst_start.line)`, so any instruction spanning more than one source line is mis-ranged. 3. Non-UTF-8 input degrades silently: `source_lines` uses `unwrap_or("")`, so the context comes back empty with no error rather than diagnosing. The container itself (crates\llvmkit-asmparser\src\asm_parser_context.rs) is a faithful port of AsmParserContext.h/.cpp — forward `HashMap` tables, half-open reverse lookup, `DuplicateHandle` for the upstream `false` return; the divergence is purely in who fills it and from what. Note crates\llvmkit-asmparser\src\lib.rs:16 marks `asm_parser_context` "done", which is true of the container but does not flag that its only producer is a reconstruction (the `parser` row is honestly marked "seeded"). The one test exercising this path, crates\llvmkit-asmparser\tests\parser_facade.rs:194 `parser_context_records_function_block_instruction_locations`, only asserts `is_some()` at three hand-picked coordinates in a minimal fixture, so it does not pin any of the divergent range endpoints.
 
 </details>
+
+### 99. Metadata is numbered by arena position, not reachability, so a node AutoUpgrade replaces still prints
+
+*printer* — crates/llvmkit-ir/src/asm_writer.rs (the numbered-metadata loop and `metadata_slot_map`); exposed by crates/llvmkit-ir/src/auto_upgrade.rs
+
+- **LLVM:** `SlotTracker::processModule` mints metadata slots by *walking* — named metadata operands, global and function attachments, instruction attachments, function-local metadata — so a node nothing references is never numbered and `writeAllMDNodes` never prints it. `MDNode::get` also uniques, so rebuilding a tuple with identical contents yields the same node.
+- **llvmkit:** the printer walks `metadata_store().nodes()` and numbers *every* non-`MDString` node in arena order. Before W13d that was invisible: the parser only interned nodes the text named, so every node was reachable. `UpgradeModuleFlags` breaks that — it replaces a flag tuple with a freshly interned one, and the superseded tuple stays in the arena and still prints. `test/Bitcode/upgrade-module-flag.ll` therefore prints its five upgraded flags plus three orphaned pre-upgrade tuples, where `llvm-dis` prints six nodes numbered `!0`–`!5`. The output still re-parses (a dead `!N = ...` definition is legal), so only the byte-for-byte half of the contract is broken.
+- **Why:** the fix is a real `SlotTracker` port, not a patch: upstream's numbering is *encounter* order over a specific traversal, so switching to reachability also changes which number every surviving node gets. That is a workstream of its own, and doing it inside an AutoUpgrade stage would have re-pinned every metadata-bearing expected output at the same time.
+- **Fix:** port `SlotTracker::processModule` / `processFunction`'s metadata pre-pass and drive `metadata_slot_map` from it, then re-bless the metadata numbering in the corpus in the same commit. `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs` asserts on flag *contents* rather than `!N` numbering precisely because of this, and says so.
+
+### 100. `$` in a global name prints unquoted
+
+*printer* — crates/llvmkit-ir/src/asm_writer.rs — `fmt_llvm_name_without_prefix`
+
+- **LLVM:** `llvm::printLLVMNameWithoutPrefix` (`lib/IR/AsmWriter.cpp`) quotes unless the first character is a non-digit and *every* character satisfies `isalnum(C) || C == '-' || C == '.' || C == '_'`. `$` is outside that set, so `@"OBJC_LABEL_CATEGORY_$"` prints quoted.
+- **llvmkit:** `fmt_llvm_name_without_prefix` carries the same rule with one extra character in its allowed set — `matches!(*c, b'-' | b'.' | b'_' | b'$')` — so the same name prints as `@OBJC_LABEL_CATEGORY_$`. Found while porting `test/Bitcode/upgrade-section-name.ll`, whose `CHECK` line names the quoted spelling; the ported test asserts the section substring and records this rather than encoding the wrong spelling as expected.
+- **Why:** unrelated to the AutoUpgrade stage that found it, and changing the quoting rule shifts printed bytes for any fixture with a `$` in a symbol name, so it wants its own commit with the corpus re-blessed alongside.
+- **Fix:** align the allowed-character set with `printLLVMNameWithoutPrefix` exactly (`isalnum`, `-`, `.`, `_`, plus the leading-digit rule), then re-run the byte-lock and corpus gates.
 
 ## Model gaps
 

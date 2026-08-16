@@ -51,6 +51,7 @@ use std::collections::hash_map::Entry;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 use super::align::MaybeAlign;
+use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn};
 use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
@@ -2782,6 +2783,84 @@ impl<'ctx> ModuleCore {
         entries
     }
 
+    /// Overwrite the `index`-th operand of the `llvm.module.flags` node.
+    /// `false` when the node is absent or holds no operand there.
+    ///
+    /// The positional counterpart of [`Self::replace_module_flag`], mirroring
+    /// `NamedMDNode::setOperand` — the shape `UpgradeModuleFlags`
+    /// (`lib/IR/AutoUpgrade.cpp`) uses, which rewrites the flag it is *looking
+    /// at* rather than the first one carrying a key. The two differ whenever a
+    /// module repeats a key, which is legal IR the verifier does not reject.
+    pub(super) fn set_module_flag_operand(
+        &self,
+        index: usize,
+        replacement: MetadataId<StoredBrand>,
+    ) -> bool {
+        let Some(id) = self.named_metadata(&NamedMetadataName::ModuleFlags) else {
+            return false;
+        };
+        let mut nmd = self.named_metadata.borrow_mut();
+        let node = nmd.get_mut(id.slot().0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        if index >= node.operands().len() {
+            return false;
+        }
+        // Same rebuild as `replace_module_flag`: `NamedMDNode` exposes no
+        // positional operand mutator of its own.
+        let mut rebuilt = NamedMetadataNode::new(node.name().clone());
+        for (i, op) in node.operands().iter().enumerate() {
+            rebuilt.add_operand(if i == index { replacement } else { *op });
+        }
+        *node = rebuilt;
+        true
+    }
+
+    /// The operand ids of a metadata tuple, with [`MetadataKind::Ref`] links
+    /// followed on the node itself. `None` when the node is not a tuple.
+    /// Mirrors reading `MDNode::operands()` off a `dyn_cast<MDNode>`.
+    pub(super) fn metadata_tuple_operands(
+        &self,
+        id: MetadataId<StoredBrand>,
+    ) -> Option<Vec<MetadataId<StoredBrand>>> {
+        let store = self.metadata.borrow();
+        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let MetadataKind::Tuple { operands, .. } = store.get(slot)? else {
+            return None;
+        };
+        Some(operands.clone())
+    }
+
+    /// The string behind a metadata operand, with [`MetadataKind::Ref`] links
+    /// followed. `None` for anything that is not an `MDString` — the
+    /// `dyn_cast_or_null<MDString>` shape.
+    pub(super) fn metadata_string_value(&self, id: MetadataId<StoredBrand>) -> Option<String> {
+        let store = self.metadata.borrow();
+        let slot = resolve_metadata_ref(&store, id.slot())?;
+        match store.get(slot)? {
+            MetadataKind::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// The bit width and value of a constant-integer metadata operand, with
+    /// [`MetadataKind::Ref`] links followed. `None` for anything that is not
+    /// a `ConstantInt` — the `mdconst::dyn_extract_or_null<ConstantInt>`
+    /// shape.
+    pub(super) fn metadata_constant_int_value(
+        &self,
+        id: MetadataId<StoredBrand>,
+    ) -> Option<(u32, ApInt)> {
+        let store = self.metadata.borrow();
+        let slot = resolve_metadata_ref(&store, id.slot())?;
+        // `metadata_constant_int` already established the type is an integer,
+        // and built the `ApInt` at its width — so the width is the answer to
+        // `Md->getValue()->getType() == Int8Ty` without a second type lookup.
+        let (_, value) = metadata_constant_int(self, &store, slot)?;
+        let bits = value.bit_width();
+        Some((bits, value))
+    }
+
     /// The replace half of `Module::setModuleFlag` (`lib/IR/Module.cpp`):
     /// overwrite the first flag whose key string is `key` with
     /// `replacement`, preserving its position. `false` when no flag carries
@@ -4572,6 +4651,56 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .module_flags_stored()
             .into_iter()
             .map(ModuleFlagEntry::from_stored)
+    }
+
+    /// Crate-internal: overwrite the `index`-th operand of the
+    /// `llvm.module.flags` node. `Ok(false)` when the node is absent or holds
+    /// no operand there. Mirrors `NamedMDNode::setOperand`, which
+    /// `UpgradeModuleFlags` (`lib/IR/AutoUpgrade.cpp`) calls positionally.
+    pub(crate) fn set_module_flag_operand(
+        &'ctx self,
+        index: usize,
+        replacement: MetadataId<B>,
+    ) -> IrResult<bool> {
+        let replacement = replacement.into_stored(self.core().id())?;
+        Ok(self.core().set_module_flag_operand(index, replacement))
+    }
+
+    /// Crate-internal: the operand ids of a metadata tuple, with
+    /// [`MetadataKind::Ref`] links followed. `None` when the node is not a
+    /// tuple — the `dyn_cast<MDNode>` shape.
+    pub(crate) fn metadata_tuple_operands(
+        &'ctx self,
+        id: MetadataId<B>,
+    ) -> Option<Vec<MetadataId<B>>> {
+        let id = id.into_stored(self.core().id()).ok()?;
+        Some(
+            self.core()
+                .metadata_tuple_operands(id)?
+                .into_iter()
+                .map(MetadataId::from_stored)
+                .collect(),
+        )
+    }
+
+    /// Crate-internal: the string behind a metadata operand, with
+    /// [`MetadataKind::Ref`] links followed. `None` for anything that is not
+    /// an `MDString` — the `dyn_cast_or_null<MDString>` shape.
+    pub(crate) fn metadata_string_value(&'ctx self, id: MetadataId<B>) -> Option<String> {
+        let id = id.into_stored(self.core().id()).ok()?;
+        self.core().metadata_string_value(id)
+    }
+
+    /// Crate-internal: the bit width and value of a constant-integer metadata
+    /// operand, with [`MetadataKind::Ref`] links followed. `None` for anything
+    /// that is not a `ConstantInt` — the
+    /// `mdconst::dyn_extract_or_null<ConstantInt>` shape.
+    pub(crate) fn metadata_constant_int_value(
+        &'ctx self,
+        id: MetadataId<B>,
+    ) -> Option<(u32, ApInt)> {
+        let id = id.into_stored(self.core().id()).ok()?;
+        self.core().metadata_constant_int_value(id)
     }
 
     /// Shared tuple constructor for

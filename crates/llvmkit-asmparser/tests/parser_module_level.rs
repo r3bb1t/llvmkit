@@ -1168,25 +1168,48 @@ fn a_missing_function_name_uses_upstream_text() {
 /// 8. `ForwardRefMDNodes` — `use of undefined metadata`
 ///
 /// llvmkit ran these in an order of its own until wave 13: metadata second,
-/// blockaddresses fourth, comdats eighth. Both pairs below therefore reported
+/// blockaddresses fourth, comdats eighth. Every pair below therefore reported
 /// the *other* member before the reorder.
 ///
 /// No single upstream `.ll` fixture pins the order — each fixture carries one
 /// defect — so this is a rule anchor against the routine, not a port. The
-/// individual messages are ported in `parser_module_level.rs` and
-/// `parser_types.rs`.
+/// individual messages are ported in `parser_module_level.rs`,
+/// `parser_constants.rs` and `parser_types.rs`.
 #[test]
 fn end_of_module_checks_run_in_upstream_order() {
-    // An undefined comdat (6) beats an undefined metadata node (8).
+    // A dangling `blockaddress` (2) beats an undefined named type (5).
     //
-    // The blockaddress step (2) is deliberately not exercised here. A
-    // `blockaddress` naming an undefined function, written in a *global
-    // initializer*, never reaches llvmkit's leftover check: llvmkit defers
-    // such an initializer and re-parses it from source at end of module, and
-    // that path reports its own error rather than recording a pending
-    // blockaddress. Upstream has no deferral and reaches
-    // `ForwardRefBlockAddresses` directly. Recorded in
-    // `docs/divergences.md`; when it is closed, the pair belongs here.
+    // Both operands are written in *global initializers*, which is the case
+    // llvmkit could not reach until wave 13b: it used to defer such an
+    // initializer and re-parse it from source at end of module, so the
+    // leftover guards never saw what was in it.
+    assert_eq!(
+        header_err(concat!(
+            "@g = global ptr blockaddress(@never_defined, %entry)\n",
+            "@x = external global %never.defined.type\n",
+        )),
+        "expected function name in blockaddress"
+    );
+
+    // A dangling `dso_local_equivalent` (3) beats an undefined named type (5).
+    assert_eq!(
+        header_err(concat!(
+            "@p = global ptr dso_local_equivalent @never_defined\n",
+            "@x = external global %never.defined.type\n",
+        )),
+        "unknown function 'never_defined' referenced by dso_local_equivalent"
+    );
+
+    // The blockaddress step (2) beats the `dso_local_equivalent` step (3).
+    assert_eq!(
+        header_err(concat!(
+            "@p = global ptr dso_local_equivalent @never_defined\n",
+            "@g = global ptr blockaddress(@never_defined, %entry)\n",
+        )),
+        "expected function name in blockaddress"
+    );
+
+    // An undefined comdat (6) beats an undefined metadata node (8).
     assert_eq!(
         header_err(concat!(
             "@g = global i32 0, comdat($never_defined)\n",

@@ -3,13 +3,18 @@
 //! Mirrors upstream `Parser.h` / `Parser.cpp` entry points exercised by
 //! `unittests/AsmParser/AsmParserTest.cpp`.
 
-use llvmkit_asmparser::file_loc::FileLoc;
+use llvmkit_asmparser::file_loc::{FileLoc, FileLocRange};
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_asmparser::parser;
-use llvmkit_asmparser::{parse_branded, parse_dynamic, parse_file_dynamic, parse_into};
+use llvmkit_asmparser::{
+    ParserConfig, parse_branded, parse_dynamic, parse_dynamic_with_config, parse_file_dynamic,
+    parse_into,
+};
 use llvmkit_ir::{AnyTypeEnum, Module, module_new};
 
 const MINIMAL: &str = include_str!("fixtures/facade_minimal.ll");
+const INCOMPLETE_IR_DECLARATIONS: &str =
+    include_str!("fixtures/upstream/incomplete-ir/declarations.ll");
 
 /// Ports `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest,
 /// ParseAssemblyString)` to the Rust facade.
@@ -188,14 +193,237 @@ fn parse_constant_value_uses_slot_mapping() {
     assert_eq!(constant.ty(), i32_ty);
 }
 
-/// Mirrors `AsmParserContext.cpp` source-location recording exposed through
-/// `Parser.cpp` parse-with-context entry points.
+/// `ASSERT_EQ_LOC` from `unittests/AsmParser/AsmParserTest.cpp`: two ranges
+/// are equal when each contains the other.
+#[track_caller]
+fn assert_eq_loc(left: FileLocRange, right: FileLocRange) {
+    assert!(
+        left.contains_range(right) && right.contains_range(left),
+        "left location: {}:{} - {}:{}\nright location: {}:{} - {}:{}",
+        left.start.line,
+        left.start.col,
+        left.end.line,
+        left.end.col,
+        right.start.line,
+        right.start.col,
+        right.end.line,
+        right.end.col,
+    );
+}
+
+/// Ports `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest,
+/// ParserObjectLocations)` — the same source, the same three expected
+/// [`FileLocRange`]s, and the same "the point query and the range query name
+/// the same object" cross-checks.
+///
+/// The source is spelled here rather than loaded from a fixture because the
+/// upstream test spells it inline too, and the expected columns are counted
+/// off exactly those bytes.
 #[test]
-fn parser_context_records_function_block_instruction_locations() {
-    parser::parse_assembly_with_context(MINIMAL.as_bytes(), |_module, _parsed, context| {
-        assert!(context.function_at(FileLoc::new(2, 0)).is_some());
-        assert!(context.block_at(FileLoc::new(3, 0)).is_some());
-        assert!(context.instruction_at(FileLoc::new(4, 2)).is_some());
+fn parser_object_locations() {
+    let source = concat!(
+        "define i32 @main() {\n",
+        "entry:\n",
+        "    %a = add i32 1, 2\n",
+        "    ret i32 %a\n",
+        "}\n"
+    );
+    parser::parse_assembly_with_context(source.as_bytes(), |module, _parsed, context| {
+        let main_id = module.function_dyn("main").expect("@main is defined");
+        let main_fn = module.view(main_id);
+
+        let main_loc = context
+            .function_location(main_fn)
+            .expect("@main has a recorded range");
+        assert_eq_loc(
+            main_loc,
+            FileLocRange::new(FileLoc::new(0, 0), FileLoc::new(4, 1)),
+        );
+        assert_eq!(
+            context.function_at(main_loc.start),
+            context.function_at_range(main_loc)
+        );
+
+        let entry_bb = main_fn
+            .basic_blocks()
+            .next()
+            .expect("@main has an entry block");
+        let entry_loc = context
+            .block_location(&entry_bb)
+            .expect("the entry block has a recorded range");
+        assert_eq_loc(
+            entry_loc,
+            FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(3, 14)),
+        );
+        assert_eq!(
+            context.block_at(entry_loc.start),
+            context.block_at_range(entry_loc)
+        );
+
+        let instruction_locations = [
+            FileLocRange::new(FileLoc::new(2, 4), FileLoc::new(2, 21)),
+            FileLocRange::new(FileLoc::new(3, 4), FileLoc::new(3, 14)),
+        ];
+        for (instruction, expected) in entry_bb.instructions().zip(instruction_locations) {
+            let loc = context
+                .instruction_location(&instruction)
+                .expect("the instruction has a recorded range");
+            assert_eq_loc(loc, expected);
+            assert_eq!(
+                context.instruction_at(loc.start),
+                context.instruction_at_range(loc)
+            );
+        }
     })
     .expect("context parse succeeds");
+}
+
+/// llvmkit-specific: the registry is filled from real token spans, so a
+/// construct that is *not* at the position a line-scanning heuristic would
+/// guess is still found. Closest upstream anchor: the same three
+/// `ParserContext->add*Location` calls in `LLParser::parseDefine` /
+/// `parseBasicBlock`, which are span-driven by construction and so have
+/// nothing to assert about it.
+#[test]
+fn parser_context_records_several_functions_on_one_line() {
+    // Two definitions sharing a line, and a body whose instruction does not
+    // start the line it is on.
+    let source = "define void @a() { entry: ret void } define void @b() { entry: ret void }\n";
+    parser::parse_assembly_with_context(source.as_bytes(), |module, _parsed, context| {
+        let a = module.view(module.function_dyn("a").expect("@a is defined"));
+        let b = module.view(module.function_dyn("b").expect("@b is defined"));
+        let a_loc = context.function_location(a).expect("@a has a range");
+        let b_loc = context.function_location(b).expect("@b has a range");
+        assert_eq_loc(
+            a_loc,
+            FileLocRange::new(FileLoc::new(0, 0), FileLoc::new(0, 36)),
+        );
+        assert_eq_loc(
+            b_loc,
+            FileLocRange::new(FileLoc::new(0, 37), FileLoc::new(0, 73)),
+        );
+        // The reverse lookup separates them, which the old whole-line
+        // heuristic could not.
+        assert_eq!(context.function_at(FileLoc::new(0, 10)), Some(a));
+        assert_eq!(context.function_at(FileLoc::new(0, 50)), Some(b));
+    })
+    .expect("context parse succeeds");
+}
+
+/// Ports `test/Assembler/incomplete-ir-declarations.ll`, whose
+/// `RUN: opt -S -allow-incomplete-ir` is [`ParserConfig::allow_incomplete_ir`]
+/// here. The fixture is checked in verbatim; its six `CHECK` lines are
+/// asserted below in its own order.
+///
+/// **Two of the six lines diverge and are asserted as they actually are, not
+/// trimmed.** Both are recorded in `docs/divergences.md`.
+///
+/// 1. `@fn2`'s three call sites disagree on the signature, so upstream's
+///    `GetCommonFunctionType` answers null and it emits
+///    `@fn2 = external global i8`. llvmkit's `parse_direct_callee` has already
+///    built a real `declare void @fn2(i32)` at the *first* call site — it does
+///    not route a direct callee through a `ForwardRefVals` placeholder the way
+///    `getGlobalVal` does — and llvmkit-ir has no function-removal or
+///    function-RAUW API to undo it with.
+/// 2. `@fn1`'s declaration prints its parameter *names*.
+///    `AssemblyWriter::printFunction` branches on `F->isDeclaration()` and
+///    prints only the types there; llvmkit's `fmt_function_header` prints
+///    names unconditionally, so the line reads `declare void @fn1(i32 %0)`.
+///    Unrelated to this fixture and pre-existing — `crates/llvmkit-ir/tests/
+///    builder_call.rs::…` already pins `declare float @llvm.acos.f32(float %0)`.
+#[test]
+fn incomplete_ir_declarations() {
+    let config = ParserConfig {
+        allow_incomplete_ir: true,
+        ..ParserConfig::DEFAULT
+    };
+    let module = parse_dynamic_with_config(INCOMPLETE_IR_DECLARATIONS, &config)
+        .expect("incomplete IR parses");
+    let printed = format!("{module}");
+    // `@g1`..`@g4` are never callees — an argument, two pointer operands and a
+    // return operand — so each takes upstream's dummy `i8` fallback.
+    for expected in [
+        "@g1 = external global i8",
+        "@g2 = external global i8",
+        "@g3 = external global i8",
+        "@g4 = external global i8",
+        // `@fn1` is called twice at one signature, which is the whole point of
+        // `GetCommonFunctionType`. Divergence 2 supplies the ` %0`.
+        "declare void @fn1(i32 %0)",
+    ] {
+        assert!(
+            printed.contains(expected),
+            "missing {expected} in:\n{printed}"
+        );
+    }
+    // Divergence 1, pinned so a future fix has to update this test.
+    assert!(
+        !printed.contains("@fn2 = external global i8"),
+        "llvmkit is not expected to reach upstream's @fn2 fallback yet"
+    );
+    assert!(printed.contains("declare void @fn2(i32 %0)"), "{printed}");
+}
+
+/// llvmkit-specific: the same fixture under the **default** configuration,
+/// pinning that `allow_incomplete_ir` is off unless asked for. Upstream has no
+/// negative fixture for the declaration half — `AllowIncompleteIR` is
+/// `cl::init(false)` and every other `test/Assembler` fixture depends on it —
+/// so the closest anchor is `LLParser::validateEndOfModule`'s
+/// `use of undefined value '@…'` guard.
+///
+/// The reported name is `@g1`, not upstream's `@fn1`: `ForwardRefVals` is one
+/// sorted `std::map` there, while llvmkit splits value references from direct
+/// callees across two maps checked in that order. Recorded in
+/// `docs/divergences.md`.
+#[test]
+fn incomplete_ir_is_rejected_by_default() {
+    let err = parse_dynamic(INCOMPLETE_IR_DECLARATIONS)
+        .expect_err("incomplete IR is refused without the option");
+    assert_eq!(err.to_string(), "use of undefined value '@g1'");
+}
+
+/// llvmkit-specific: [`ParserConfig::data_layout_callback`] replaces the
+/// file's `target datalayout` before it is parsed, and sees the target triple
+/// beside it. Upstream ships no unit test for `DataLayoutCallbackTy`; the
+/// closest anchor is `LLParser::parseTargetDefinitions`, which holds the
+/// string tentative across the whole leading run for exactly this.
+#[test]
+fn data_layout_callback_overrides_the_files_layout() {
+    let seen = std::cell::RefCell::new(Vec::new());
+    let callback = |triple: &str, layout: &str| {
+        seen.borrow_mut()
+            .push((triple.to_owned(), layout.to_owned()));
+        Some("e-p:32:32".to_owned())
+    };
+    let config = ParserConfig {
+        data_layout_callback: Some(&callback),
+        ..ParserConfig::DEFAULT
+    };
+    let source = concat!(
+        "target datalayout = \"e-p:64:64\"\n",
+        "target triple = \"x86_64-pc-linux-gnu\"\n",
+    );
+    let module = parse_dynamic_with_config(source, &config).expect("override parses");
+    // The callback runs once, after the whole leading run, so it sees the
+    // triple declared *below* the layout string.
+    assert_eq!(
+        seen.into_inner(),
+        vec![("x86_64-pc-linux-gnu".to_owned(), "e-p:64:64".to_owned())]
+    );
+    assert!(format!("{module}").contains("target datalayout = \"e-p:32:32\""));
+}
+
+/// llvmkit-specific: a callback answering `None` keeps the file's own layout
+/// string, which is the default callback upstream installs
+/// (`[](StringRef, StringRef) { return std::nullopt; }`).
+#[test]
+fn data_layout_callback_declining_keeps_the_files_layout() {
+    let callback = |_: &str, _: &str| None;
+    let config = ParserConfig {
+        data_layout_callback: Some(&callback),
+        ..ParserConfig::DEFAULT
+    };
+    let module = parse_dynamic_with_config("target datalayout = \"e-p:64:64\"\n", &config)
+        .expect("declined override parses");
+    assert!(format!("{module}").contains("target datalayout = \"e-p:64:64\""));
 }

@@ -1008,6 +1008,146 @@ fn nested_forward_dso_and_no_cfi_resolve_later_signature() {
     assert_parse_print_parse_stable(&text);
 }
 
+/// Exact `global-fwddecl-good.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`: a *global initializer* may name a
+/// block in a function that has not been seen yet, and the placeholder takes
+/// the address space of the demanded type (`FwdDeclAS = ExpectedTy->
+/// getPointerAddressSpace()` in `LLParser::parseValID`'s `kw_blockaddress`
+/// arm).
+#[test]
+fn global_initializer_forward_blockaddress_takes_the_demanded_address_space() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/global_fwddecl_good.ll");
+
+    let text = parse_and_render("global_fwddecl_good", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@global = constant ptr addrspace(2) blockaddress(@fwddecl_in_prog_as, %bb)"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Exact `global-fwddecl-bad.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`, whose CHECK line pins the
+/// wording. A *forward* `blockaddress` is retired by
+/// `PerFunctionState::resolveForwardRefBlockAddresses` through
+/// `checkValidVariableType`, not by `convertValIDToValue` — so the sentence is
+/// `'bb' defined with type … but expected …`, quoting the label with no `%`.
+#[test]
+fn global_initializer_forward_blockaddress_address_space_mismatch_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/global_fwddecl_bad.ll"),
+        "'bb' defined with type 'ptr addrspace(1)' but expected 'ptr addrspace(2)'",
+    );
+}
+
+/// Exact `global-use-bad.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`: with the function already
+/// defined the `blockaddress` types itself, so the disagreement is
+/// `convertValIDToValue`'s `t_Constant` arm instead.
+#[test]
+fn global_initializer_blockaddress_address_space_mismatch_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/global_use_bad.ll"),
+        "constant expression type mismatch: got type 'ptr addrspace(1)' but expected 'ptr addrspace(2)'",
+    );
+}
+
+/// Exact `bad-type-not-ptr.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`. The check lives inside
+/// `kw_blockaddress`'s `if (!F)` branch, because only there does the demanded
+/// type have to supply an address space.
+#[test]
+fn a_non_pointer_type_for_a_forward_blockaddress_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/bad_type_not_ptr.ll"),
+        "type of blockaddress must be a pointer and not 'i8'",
+    );
+}
+
+/// Exact `bad-type-not-i8-ptr.ll` case from
+/// `test/Bitcode/blockaddress-addrspace.ll`: the function is never defined, so
+/// the placeholder survives to `validateEndOfModule`'s
+/// `ForwardRefBlockAddresses` guard.
+#[test]
+fn a_global_initializer_blockaddress_naming_an_undefined_function_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/bad_type_not_i8_ptr.ll"),
+        "expected function name in blockaddress",
+    );
+}
+
+/// Exact module from `test/Assembler/pr119818.ll`: a global initializer whose
+/// aggregate names two blocks of a function defined later, one of them by
+/// *number*. Only `PerFunctionState::resolveForwardRefBlockAddresses` can
+/// resolve `%0`, since the numbering exists solely while that body is open.
+#[test]
+fn global_initializer_forward_blockaddress_resolves_a_numbered_label() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/pr119818.ll");
+
+    let text = parse_and_render("pr119818", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "@vm_exec_core.insns_address_table = internal constant [2 x ptr] \
+             [ptr blockaddress(@vm_exec_core, %0), ptr blockaddress(@vm_exec_core, %block)], align 16",
+        ],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Exact `undefined_func.ll` case from
+/// `test/CodeGen/X86/dso_local_equivalent_errors.ll`, whose CHECK line pins the
+/// wording of `validateEndOfModule`'s `ResolveForwardRefDSOLocalEquivalents`.
+#[test]
+fn dso_local_equivalent_naming_an_undefined_function_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/dso_local_equivalent_errors/undefined_func.ll"),
+        "unknown function 'undefined_func' referenced by dso_local_equivalent",
+    );
+}
+
+/// Exact `invalid_arg.ll` case from
+/// `test/CodeGen/X86/dso_local_equivalent_errors.ll`. `@glob` is defined
+/// *after* the reference, so the referent is a forward reference at the use
+/// and the value-type check is the one
+/// `ResolveForwardRefDSOLocalEquivalents` makes, not `parseValID`'s.
+#[test]
+fn a_forward_dso_local_equivalent_referent_must_still_be_a_function() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/dso_local_equivalent_errors/invalid_arg.ll"),
+        "expected a function, alias to function, or ifunc in dso_local_equivalent",
+    );
+}
+
+/// `ResolveForwardRefDSOLocalEquivalents` interpolates `GVRef.StrVal` into its
+/// message whatever the `ValID`'s kind, and a `t_GlobalID` leaves that string
+/// empty — so the numbered spelling really does report an empty name. No
+/// upstream `.ll` covers it; the quirk is anchored at the lambda itself.
+#[test]
+fn a_numbered_dso_local_equivalent_referent_reports_an_empty_name() {
+    assert_parse_error(
+        b"@p = global ptr dso_local_equivalent @0
+",
+        "unknown function '' referenced by dso_local_equivalent",
+    );
+}
+
+/// `no_cfi` has no forward-reference map of its own: `parseValID`'s
+/// `kw_no_cfi` arm only sets `ValID::NoCFI`, and `convertValIDToValue` resolves
+/// the operand with `getGlobalVal` like any other `@name`. So an operand that
+/// is never defined is reported by `validateEndOfModule`'s `ForwardRefVals`
+/// guard, in that guard's words. No upstream `.ll` isolates it; the rule is
+/// anchored at those two symbols.
+#[test]
+fn no_cfi_naming_an_undefined_global_is_rejected() {
+    assert_parse_error(
+        b"@p = global ptr no_cfi @never
+",
+        "use of undefined value '@never'",
+    );
+}
+
 /// Exact `LLParser::parseValID` `kw_splat` accepted shape plus
 /// `AsmWriter.cpp::writeConstantInternal` splat spelling: a scalar splat
 /// expands to fixed-vector element storage and prints as `splat (T C)`.
