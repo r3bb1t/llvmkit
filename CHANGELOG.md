@@ -56,12 +56,16 @@ errors below survived.
   call`. Surfaced by the funclet parity commit and disclosed until now only in
   one test's rustdoc.
 
-- **Added: divergence 113** — llvmkit has no `parseTypeAndBasicBlock`. All 13
-  terminator block-operand sites answer `expected 'label' in <production>`,
-  a message upstream never emits; upstream reaches `parseType`'s
-  `expected type` or the `expected a basic block` guard. Two of the 13 became
-  reachable for the first time at the funclet commit
-  (`catchswitch within none []` and `[label %a,]`).
+- **Added: divergence 113** — llvmkit has no `parseTypeAndBasicBlock`. Its 13
+  terminator block-operand sites answer `expected 'label' for …` (seven of
+  them) or `expected 'label' in …` (six), messages upstream never emits;
+  upstream reaches `parseType`'s `expected type` or the
+  `expected a basic block` guard. Two of the 13 became reachable for the first
+  time at the funclet commit (`catchswitch within none []` and `[label %a,]`).
+  Recorded rather than fixed, and the fix is wider than a message swap:
+  upstream has **15** `parseTypeAndBasicBlock` call sites to llvmkit's 13,
+  because `parseIndirectBr` and `parseCallBr` each unroll the first iteration
+  of their destination list where llvmkit uses one loop.
 
 - **`docs/README.md` and `CLAUDE.md` route to the two documents they omitted.**
   `divergences.md` and `fixture-coverage.md` were reachable only from inside
