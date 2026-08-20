@@ -341,20 +341,222 @@ entry:\n\
     );
 }
 
-/// llvmkit-specific subset of `test/Bitcode/operand-bundles.ll`: call/invoke
-/// operand-bundle lists are parsed into CallBase storage and printed after call-site attrs.
-#[test]
-fn operand_bundles_round_trip() {
-    const FIXTURE: &[u8] =
-        include_bytes!("fixtures/upstream/operand-bundles/operand_bundles_round_trip.ll");
+/// `FileCheck::CanonicalizeFile` (`llvm/lib/FileCheck/FileCheck.cpp`), both
+/// halves of its loop body: drop the `\r` of a `\r\n` pair, then collapse each
+/// run of ' ' / '\t' to a single ' '. FileCheck applies it to the check file
+/// *and* the input file unless `--strict-whitespace` is given, and
+/// `test/Bitcode/operand-bundles.ll`'s `RUN` line does not give it. Porting it
+/// is what lets that fixture's `CHECK` text be quoted as written: several of
+/// its lines spell `float  0.000000e+00` with two spaces, because that is how
+/// the fixture's *input* spells it, and canonicalization is why they still
+/// match `llvm-dis`'s single space.
+///
+/// This is a second copy of the routine in
+/// `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs`; items do not cross
+/// integration-test binaries, and the `tests/support/` refactor that would
+/// remove both copies is recorded in `docs/future-work.md`.
+fn canonicalize_horizontal_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        // Eliminate trailing dosish `\r`.
+        if c == '\r' && chars.peek() == Some(&'\n') {
+            continue;
+        }
+        if c != ' ' && c != '\t' {
+            out.push(c);
+            continue;
+        }
+        // Otherwise, add one space and advance over neighboring space.
+        out.push(' ');
+        while let Some(' ' | '\t') = chars.peek() {
+            chars.next();
+        }
+    }
+    out
+}
 
-    let text = parse_and_render_bytes("operand_bundles_round_trip", FIXTURE);
+/// `test/Bitcode/operand-bundles.ll`, vendored whole, asserting its `CHECK`
+/// directives in order.
+///
+/// Its `RUN` line is `llvm-as < %s | llvm-dis | FileCheck %s`, so the `CHECK`
+/// text is `AssemblyWriter` output with no bitcode round-trip loss in between
+/// — specifically `AssemblyWriter::writeOperandBundles`, whose `Out << " [ "`
+/// and `Out << " ]"` are the spaces this fixture pins. The fixture's
+/// typed-pointer spelling (`i32* %ptr`) parses and prints as `ptr %ptr`,
+/// exactly as `llvm-dis` does, and no directive pins it.
+///
+/// **Harness gap, stated rather than papered over.** This binary's
+/// `assert_check_lines` is ordered fixed-substring matching over a byte
+/// cursor. That renders `CHECK:` faithfully, and with
+/// [`canonicalize_horizontal_whitespace`] applied to both buffers it renders
+/// FileCheck's whitespace handling too, so a directive can be quoted from the
+/// fixture as written rather than hand-collapsed. What it does **not** render
+/// is `CHECK-LABEL`'s block partitioning or `CHECK-NEXT`'s line-adjacency
+/// rule: those directives are asserted below as ordered `CHECK`es, which is
+/// weaker than FileCheck, not stricter. Nor can it evaluate a regex — `{{$}}`
+/// is rendered as a trailing `\n`, which is what end-of-line means for a fixed
+/// substring.
+/// `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::check_directives` is a
+/// faithful `CHECK`/`CHECK-NEXT` port, but items do not cross integration-test
+/// binaries; the `tests/support/` refactor that would let this test use it is
+/// recorded in `docs/future-work.md`.
+///
+/// This replaces a hand-trimmed subset whose header said llvmkit could not
+/// express the rest of the file. That premise was stale: the whole fixture
+/// parses.
+#[test]
+fn operand_bundles_ll_matches_upstream_check_lines() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
+
+    // The fixture's own directives, in order, quoted from its `; CHECK…:`
+    // lines; `{{$}}` is rendered as the newline it stands for.
+    const DIRECTIVES: &[&str] = &[
+        // @f0
+        "@f0(",
+        "call void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"bar\"(float  0.000000e+00, i64 100, i32 %l) ]",
+        // @f1 --- one CHECK with `{{$}}`, then two CHECK-NEXT.
+        "@f1(",
+        "@callee0()\n",
+        "call void @callee0() [ \"foo\"() ]",
+        "call void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"bar\"(float  0.000000e+00, i64 100, i32 %l) ]",
+        // @f2
+        "@f2(",
+        "call void @callee0() [ \"foo\"() ]",
+        // @f3
+        "@f3(",
+        "call void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @f4
+        "@f4(",
+        "call void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @f5 --- the metadata-string bundle form, which llvmkit already accepted.
+        "call void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, metadata !\"abc\"), \"bar\"(metadata !\"abcde\", metadata !\"qwerty\") ]",
+        // @g0 --- the invoke twins of the above.
+        "@g0(",
+        "invoke void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"bar\"(float  0.000000e+00, i64 100, i32 %l) ]",
+        // @g1
+        "@g1(",
+        "invoke void @callee0()\n",
+        "invoke void @callee0() [ \"foo\"() ]",
+        "invoke void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @g2
+        "@g2(",
+        "invoke void @callee0() [ \"foo\"() ]",
+        // @g3
+        "@g3(",
+        "invoke void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @g4
+        "@g4(",
+        "invoke void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @g5
+        "invoke void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, metadata !\"abc\"), \"bar\"(metadata !\"abcde\", metadata !\"qwerty\") ]",
+    ];
+
+    let text = parse_and_render_bytes("operand_bundles_ll", FIXTURE);
+    let canonical_text = canonicalize_horizontal_whitespace(&text);
+    let canonical_directives: Vec<String> = DIRECTIVES
+        .iter()
+        .map(|directive| canonicalize_horizontal_whitespace(directive))
+        .collect();
+    let needles: Vec<&str> = canonical_directives.iter().map(String::as_str).collect();
+    assert_check_lines(&canonical_text, &needles);
+}
+
+/// A `ValueAsMetadata` operand-bundle input — `metadata i32 %a`,
+/// `metadata i32 42`, `metadata ptr @g`.
+///
+/// **Anchored on the routine, not on a fixture.** No `.ll` file was found to
+/// port this from — the metadata bundle inputs in the fixture vendored
+/// alongside it (`test/Bitcode/operand-bundles.ll` `@f5` and `@g5`) spell only
+/// the `metadata !"..."` form, which llvmkit already accepted. The rule is
+/// `LLParser::parseOptionalOperandBundles`, which routes a `metadata`-typed
+/// input through `parseMetadataAsValue` -> `parseMetadata`, whose non-`!`
+/// fall-through is `parseValueAsMetadata`, documented with exactly this
+/// grammar:
+///
+/// ```text
+/// /// parseValueAsMetadata
+/// ///  ::= i32 %local
+/// ///  ::= i32 @global
+/// ///  ::= i32 7
+/// ```
+///
+/// One input of each of the three spellings, plus the `!`-led forms in the
+/// same bundle set to show the branch did not regress them.
+#[test]
+fn value_as_metadata_operand_bundle_inputs_round_trip() {
+    let text = parse_and_render(
+        "@g = external global i8\n\
+declare void @callee()\n\
+define void @f(i32 %a) {\n\
+entry:\n\
+  call void @callee() [ \"tag\"(metadata i32 %a, metadata i32 7, metadata ptr @g) ]\n\
+  call void @callee() [ \"tag\"(metadata !0, metadata !\"abc\") ]\n\
+  ret void\n\
+}\n\
+!0 = !{i32 1}\n",
+    );
     assert_check_lines(
         &text,
         &[
-            "call void @callee0() [\"foo\"(i32 42, i32 %x), \"bar\"()]",
-            "invoke void @callee0() [\"foo\"(i32 %x)]\n          to label %ok unwind label %bad",
+            "call void @callee() [ \"tag\"(metadata i32 %a, metadata i32 7, metadata ptr @g) ]",
+            "call void @callee() [ \"tag\"(metadata !0, metadata !\"abc\") ]",
         ],
+    );
+}
+
+/// A `ValueAsMetadata` argument in a `cleanuppad` argument list.
+///
+/// **Anchored on the routine, not on a fixture**, for the same reason as
+/// [`value_as_metadata_operand_bundle_inputs_round_trip`]. The rule is
+/// `LLParser::parseExceptionArgs`, whose loop carries the same
+/// `if (ArgTy->isMetadataTy()) { parseMetadataAsValue } else { parseValue }`
+/// branch as `parseParameterList` and `parseOptionalOperandBundles`. Before
+/// the branch existed here, `metadata !0` parsed (through `parseValID`'s own
+/// metadata arms) and `metadata i32 %a` did not. The asserted printed form was
+/// pinned from a run.
+#[test]
+fn value_as_metadata_pad_arguments_round_trip() {
+    let text = parse_and_render(
+        "declare i32 @__gxx_personality_v0(...)\n\
+define void @f(i32 %a) personality ptr @__gxx_personality_v0 {\n\
+entry:\n\
+  ret void\n\
+cleanup:\n\
+  %cp = cleanuppad within none [metadata !0, metadata i32 %a]\n\
+  ret void\n\
+}\n\
+!0 = !{i32 1}\n",
+    );
+    assert_check_lines(
+        &text,
+        &["%cp = cleanuppad within none [metadata !0, metadata i32 %a]"],
+    );
+}
+
+/// `metadata metadata %x` — a metadata-typed inner type inside a
+/// `metadata`-typed operand.
+///
+/// `LLParser::parseValueAsMetadata` rejects it before it ever calls
+/// `parseValue`: `if (Ty->isMetadataTy()) return error(Loc, "invalid
+/// metadata-value-metadata roundtrip");`, anchored at the inner type. llvmkit
+/// carried that guard only on the `parseMDNodeVector` path
+/// (`test/Assembler/invalid-metadata-attachment-has-type.ll`, pinned by
+/// `parser_debug_metadata.rs`); this pins the `parseMetadataAsValue` path,
+/// which the operand-bundle metadata branch newly reaches. No `.ll` file was
+/// found spelling the operand form, so the rule is the anchor.
+#[test]
+fn metadata_value_metadata_roundtrip_in_an_operand_bundle_is_rejected() {
+    let src = "declare void @callee()\n\
+               define void @f(i32 %x) {\n\
+               entry:\n\
+                 call void @callee() [ \"tag\"(metadata metadata %x) ]\n\
+                 ret void\n\
+               }\n";
+    assert_fixture_rejected(
+        "metadata_value_metadata_roundtrip_bundle",
+        src.as_bytes(),
+        "invalid metadata-value-metadata roundtrip",
     );
 }
 
@@ -374,7 +576,7 @@ fn deactivation_symbol_bundle_round_trips() {
     let text = parse_and_render_bytes("deactivation_symbol_bundle_round_trips", FIXTURE);
     assert_check_lines(
         &text,
-        &["call i64 @__emupac_autda(i64 %val, i64 1) [\"deactivation-symbol\"(ptr @ds1)]"],
+        &["call i64 @__emupac_autda(i64 %val, i64 1) [ \"deactivation-symbol\"(ptr @ds1) ]"],
     );
 }
 

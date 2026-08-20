@@ -20,7 +20,7 @@ recorded premises wrong; three failed on contact in a single session, and four
 found stale in turn. A `<details>` block and a `Correction from verification`
 paragraph are *dated snapshots of one verification pass*, not standing proof:
 their line numbers, counts and command output were true when written and are
-re-checked by nothing. Of the 92 evidence blocks in this file, 10 carry a date
+re-checked by nothing. Of the 91 evidence blocks in this file, 10 carry a date
 anywhere and only **3** carry one on the summary line, where it can be seen
 without opening the block; before 2026-08-20 none did. Treat a row **and its
 evidence** as a hypothesis with a citation. When you re-verify an entry, date
@@ -714,22 +714,6 @@ CONFIRMED REAL AND STILL PRESENT; description accurate at both cited paths. 1. c
 <details><summary>Verification evidence</summary>
 
 Read crates/llvmkit-asmparser/src/ll_parser.rs: parse_call (:12917), parse_invoke (:14030) and parse_callbr (:14169) each run parse_optional_return_attrs() then parse_type(true) with nothing between; grep shows parse_optional_program_addr_space (:2203) has only two callsites, :10378 and :10679, both in the function header. Confirmed not a working-tree artifact via `git show HEAD:` (same two callsites; routines at :12909/:14022/:14161). Empirical: built `cargo +1.96.0 build --release -p llvmkit-asmparser --example parse_file` and ran it on scratch fixtures ported from orig_cpp/.../llvm/test/Assembler/call-nonzero-program-addrspace.ll and invoke-nonzero-program-addrspace.ll. `%explicit_as_0 = call addrspace(0) i8 %fnptr0(i32 0)` -> "2:25: expected type" with the caret under the `addrspace` token; the invoke form -> "3:27: expected type" the same way; the identical input without `addrspace` parses and round-trips. `target datalayout = "P42"` + `call i8 %fnptr42(i32 0)` against a `ptr addrspace(42)` param -> "'%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'", i.e. the program-AS default is ignored (upstream's PROGAS42 RUN line expects this to succeed and print `call addrspace(42)`). Upstream: grep of orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp gives exactly three parseOptionalProgramAddrSpace callsites — :6816, :7741 (InvokeAddrSpace), :8450 (CallAddrSpace) — consumed at :7764 / :8470 as `PointerType::get(Context, <AS>)`. Read LLParser::parseCallBr (:8024-8046): no addrspace parse, `convertValIDToValue(PointerType::getUnqual(Context), ...)`. Read orig_cpp/.../llvm/lib/IR/AsmWriter.cpp maybePrintCallAddrSpace (:4374) and its only two callers, :4591 and :4664. llvmkit printer: grep of crates/llvmkit-ir/src/asm_writer.rs for "addrspace" returns only :1918, :3068, :3644 — no call/invoke arm.
-
-</details>
-
-### 14. Metadata-typed operand-bundle inputs do not parse
-
-*parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs:10278-10280
-
-- **LLVM:** `LLParser::parseOptionalOperandBundles` reads each input as TYPE VALUE and branches on the type: a `metadata`-typed input goes through `parseMetadataAsValue`, not `parseValue`.
-- **llvmkit:** The bundle-input loop reads `parse_type` then `parse_value` unconditionally, with no metadata arm, so `[ "tag"(metadata !0) ]` is rejected.
-- **Why:** Recorded in the handoff as carried out of W9 ("Metadata-typed operand-bundle inputs (upstream routes them through `parseMetadataAsValue`)"). Same shape as the W11 P0 in `parseParameterList`, which was fixed; the bundle site was not.
-- **Fix:** Branch on `ty.is_metadata()` before `parse_value` and route to the same `parse_metadata_as_value` path W11 added for `metadata i32 %a` parameters.
-- **Correction from verification:** The divergence is real but the claim's description and example are wrong. The structural part is accurate: crates/llvmkit-asmparser/src/ll_parser.rs:10277-10284 (parse_optional_operand_bundles) reads `parse_type` then `parse_value` unconditionally, with no `is_metadata()` arm — unlike the parameter-list loops at lines 12979, 14067, 14205, which do branch to `parse_metadata_value_operand`. But the claimed consequence is false: `[ "tag"(metadata !0) ]` parses and round-trips fine, as do `metadata !"abc"` and `metadata !{i32 1}`, because `parse_val_id` (line 7402) has its own `Token::MetadataVar(_)` and `Token::Exclaim` arms (relative offsets 207 and 228) that check `expected_ty.is_metadata()` and delegate to `parse_metadata_value_operand`. Corrected statement: what does not parse is the ValueAsMetadata form of a bundle input — `[ "tag"(metadata i32 %a) ]`, `metadata i32 42`, `metadata ptr @g` — each rejected with "expected value token". Upstream reaches these via parseOptionalOperandBundles -> parseMetadataAsValue -> parseMetadata, whose non-`!` fallthrough (LLParser.cpp:6465-6466) calls parseValueAsMetadata (documented `i32 %local | i32 @global | i32 7`); llvmkit's bundle loop never enters that path since parse_val_id's metadata arms only fire on a `!` token. Note also that no upstream fixture currently fails on this: the only test/*.ll files with metadata bundle inputs (test/Bitcode/operand-bundles.ll:61,165 and test/Bitcode/compatibility.ll:1437) use only the `metadata !"..."` form, which llvmkit already accepts.
-
-<details><summary>Verification evidence</summary>
-
-Read crates/llvmkit-asmparser/src/ll_parser.rs:10262-10304 — the bundle-input loop is `let ty = self.parse_type(false)?; let value = self.parse_value(state, ty)?;` with no metadata branch, exactly as cited (lines 10278-10280 match). Read line 12973-12983 for contrast: the parameter-list loop has `let arg_v = if arg_ty.is_metadata() { self.parse_metadata_value_operand(Some(state))? } else { self.parse_value(state, arg_ty)? };`. Read parse_val_id at line 7402 and grepped its body: it has `Token::MetadataVar(_)` and `Token::Exclaim` arms (~lines 7608-7635) that require `ty.is_metadata()` and call parse_metadata_value_operand — this is why `!`-led forms still work. Read parse_metadata_value_operand at line 5127, whose non-`!` fallthrough handles the type-and-value ValueAsMetadata case. Upstream confirmed in orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp: parseOptionalOperandBundles at line 3308, with `if (Ty->isMetadataTy()) { parseMetadataAsValue(...) } else if (parseValue(...))` at lines 3336-3343; parseMetadataAsValue at 6405; parseMetadata at 6444 with `if (Lex.getKind() != lltok::exclaim) return parseValueAsMetadata(MD, "expected metadata operand", PFS);` at 6465-6466; parseValueAsMetadata's grammar comment at 6415-6418. Empirical: wrote a temporary integration test (since removed) at crates/llvmkit-asmparser/tests/tmp_claim66_probe.rs and ran `cargo +1.96.0 test --release -p llvmkit-asmparser --test tmp_claim66_probe -- --nocapture`. Output: `metadata !0` OK (prints `call void @g() ["tag"(metadata !0)]`), `metadata !"abc"` OK, `metadata !{i32 1}` OK, `metadata i32 %a` ERR "expected value token", `metadata i32 42` ERR "expected value token", `metadata ptr @g` ERR "expected value token", and the verbatim upstream bundle from test/Bitcode/operand-bundles.ll:61 (`"foo"(i32 42, metadata !"abc"), "bar"(metadata !"abcde", metadata !"qwerty")`) OK and byte-identical on round-trip.
 
 </details>
 
@@ -1760,27 +1744,6 @@ Found 2026-08-20 while porting `test/Verifier/preallocated-valid.ll` for the
   erasure* and *fallibility honesty* rules in `CLAUDE.md` and is reachable from
   an upstream fixture llvmkit already parses, so it should be fixed before any
   round-trip corpus fixture is written over that file.
-
-### 111. Operand bundle lists print without upstream's inner spaces
-
-*printer* — crates/llvmkit-ir/src/asm_writer.rs (the operand-bundle writer)
-
-Found 2026-08-20 while porting `test/Bitcode/compatibility.ll`
-`@instructions.win_eh.2` for the `catchswitch` work (0.0.4 funclet parity).
-
-- **LLVM:** `AssemblyWriter::writeOperandBundles` opens with `Out << " [ ";`
-  and closes with `Out << " ]";`, so the list prints as
-  `[ "funclet"(token %catch) ]` — a space inside each bracket.
-- **llvmkit:** prints `["funclet"(token %catch)]`. Probe:
-  `call void @callee(i32 %x) [ "foo"(i32 42), "bar"(i32 7) ]` prints back as
-  `call void @callee(i32 %x) ["foo"(i32 42), "bar"(i32 7)]`.
-- **Why:** not recorded; the writer was written to the grammar rather than to
-  `writeOperandBundles`. Both spellings re-parse, so nothing in the tree caught
-  it.
-- **Fix:** two string literals. It matters because
-  `test/Bitcode/compatibility.ll` carries a `CHECK` line in upstream's spelling
-  (`; CHECK: call void @instructions.bundles.callee(i32 %x) [ "foo"(…) ]`), so
-  that fixture cannot be ported byte-for-byte until it is fixed.
 
 ## Model gaps
 

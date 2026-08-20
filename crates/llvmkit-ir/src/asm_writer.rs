@@ -2289,34 +2289,57 @@ fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
     }
 }
 
+/// Mirrors `AssemblyWriter::writeOperandBundles` (`lib/IR/AsmWriter.cpp`)
+/// statement for statement, including the spaces inside `" [ "` and `" ]"`
+/// that make the printed list `call void @g() [ "tag"(i32 0) ]`.
+///
+/// Upstream's `if (Input == nullptr) Out << "<null operand bundle!>";` has no
+/// counterpart and cannot have one: an input is a bare arena index, not an
+/// optional pointer, so a null input is unrepresentable. The branch is
+/// recorded here rather than invented as a dead arm.
 fn fmt_operand_bundles(
     f: &mut fmt::Formatter<'_>,
     bundles: &[OperandBundleData],
     module: &ModuleCore,
     slots: &SlotTracker,
 ) -> fmt::Result {
+    // `if (!Call->hasOperandBundles()) return;`
     if bundles.is_empty() {
         return Ok(());
     }
-    f.write_str(" [")?;
+    // `Out << " [ ";`
+    f.write_str(" [ ")?;
+    // `ListSeparator LS;` — its default separator is ", " and its first use
+    // emits the empty prefix, which is what the `idx != 0` guard renders.
     for (idx, bundle) in bundles.iter().enumerate() {
+        // `Out << LS`
         if idx != 0 {
             f.write_str(", ")?;
         }
+        // `Out << '"'`
         f.write_str("\"")?;
+        // `printEscapedString(BU.getTagName(), Out)`
         print_escaped_string(f, operand_bundle_tag_name(bundle.tag()).as_bytes())?;
-        f.write_str("\"(")?;
+        // `Out << '"'`
+        f.write_str("\"")?;
+        // `Out << '('`
+        f.write_str("(")?;
+        // `ListSeparator InnerLS;`
         for (input_idx, id) in bundle.inputs().enumerate() {
+            // `Out << InnerLS`
             if input_idx != 0 {
                 f.write_str(", ")?;
             }
+            // `writeAsOperandInternal(Out, Input, WriterCtx, /*PrintType=*/true)`
             let data = module.context().value_data(id);
             let value = Value::<DynBrand>::from_parts(id, module, data.ty);
             fmt_operand(f, value, Some(slots))?;
         }
+        // `Out << ')'`
         f.write_str(")")?;
     }
-    f.write_str("]")
+    // `Out << " ]";`
+    f.write_str(" ]")
 }
 
 fn fmt_landingpad(

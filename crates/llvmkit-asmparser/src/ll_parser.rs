@@ -5571,11 +5571,31 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
-    /// Parse a metadata node body into its content: `!"string"` or
-    /// Parse a `metadata`-typed value operand. Mirrors
-    /// `LLParser::parseMetadataAsValue` delegating to `parseMetadata`: slot
-    /// refs (`!N`), inline tuples (`!{...}`), and MDStrings (`!"..."`) are
-    /// all legal metadata values.
+    /// `metadata i32 %local` / `metadata !0` / `metadata !"string"` — the
+    /// `metadata`-typed operand form, with the `metadata` type already
+    /// consumed by the caller.
+    ///
+    /// Mirrors `LLParser::parseMetadataAsValue`, a two-statement wrapper:
+    /// `parseMetadata(MD, &PFS)` then `MetadataAsValue::get`. Its
+    /// `PerFunctionState &` is *non-optional* — every caller
+    /// (`parseParameterList`, `parseExceptionArgs`,
+    /// `parseOptionalOperandBundles`) is inside a function body — and it
+    /// forwards it to `parseMetadata`'s nullable `PerFunctionState *`.
+    fn parse_metadata_as_value(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        self.parse_metadata_value_operand(Some(state))
+    }
+
+    /// Parse a `metadata`-typed value operand where the function state may be
+    /// absent. Mirrors `LLParser::parseMetadata` followed by
+    /// `MetadataAsValue::get` — the pair `parseMetadataAsValue` performs, but
+    /// with `parseMetadata`'s nullable `PerFunctionState *`, which is what
+    /// `parseValID`'s metadata arms need at module scope. Callers that do hold
+    /// a function state go through [`Self::parse_metadata_as_value`],
+    /// upstream's own entry point. Slot refs (`!N`), inline tuples (`!{...}`)
+    /// and MDStrings (`!"..."`) are all legal metadata values.
     fn parse_metadata_value_operand(
         &mut self,
         pfs: Option<&PerFunctionState<'ctx, B>>,
@@ -5592,9 +5612,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // (`llvm.dbg.value(metadata i32 %a, …)`). llvmkit demanded the sigil
         // here and so could not parse them at all.
         if !matches!(self.peek(), Token::Exclaim) {
+            let type_loc = self.loc();
             let ty = self
                 .parse_type(false)
                 .map_err(|_| self.expected("metadata operand"))?;
+            // `parseValueAsMetadata`'s own guard, checked *before* `parseValue`
+            // and anchored at the type — upstream's `parseType(Ty, TypeMsg,
+            // Loc)` records `Loc` before parsing. `metadata metadata %x` would
+            // round-trip metadata through a value and back.
+            // `parse_md_tuple_operand` already carries this check for the
+            // `parseMDNodeVector` path; this is `parseValueAsMetadata`'s own.
+            if ty.is_metadata() {
+                return Err(self.message_at(type_loc, "invalid metadata-value-metadata roundtrip"));
+            }
             let value_id = match pfs {
                 Some(state) => self.parse_value(state, ty)?.id(),
                 None => self.parse_global_value(ty)?.as_erased().id(),
@@ -10766,7 +10796,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if !matches!(self.peek(), Token::RParen) {
                     loop {
                         let ty = self.parse_type(false)?;
-                        let value = self.parse_value(state, ty)?;
+                        // `parseOptionalOperandBundles` branches on the input
+                        // type, exactly as `parseParameterList` and
+                        // `parseExceptionArgs` do: a `metadata`-typed input is
+                        // read by `parseMetadataAsValue`, everything else by
+                        // `parseValue`. Without the branch the `ValueAsMetadata`
+                        // spelling `metadata i32 %a` never reaches
+                        // `parseValueAsMetadata` and dies in `parseValue`.
+                        let value = if ty.is_metadata() {
+                            self.parse_metadata_as_value(state)?
+                        } else {
+                            self.parse_value(state, ty)?
+                        };
                         inputs.push(value.slot());
                         if !self.eat_punct(PunctKind::Comma)? {
                             break;
@@ -13666,7 +13707,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `parseValue`, which is what makes `metadata i32 %a` — every
                 // old-format debug intrinsic operand — legal.
                 let arg_v = if arg_ty.is_metadata() {
-                    self.parse_metadata_value_operand(Some(state))?
+                    self.parse_metadata_as_value(state)?
                 } else {
                     self.parse_value(state, arg_ty)?
                 };
@@ -14762,7 +14803,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `parseValue`, which is what makes `metadata i32 %a` — every
                 // old-format debug intrinsic operand — legal.
                 let arg_v = if arg_ty.is_metadata() {
-                    self.parse_metadata_value_operand(Some(state))?
+                    self.parse_metadata_as_value(state)?
                 } else {
                     self.parse_value(state, arg_ty)?
                 };
@@ -14900,7 +14941,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `parseValue`, which is what makes `metadata i32 %a` — every
                 // old-format debug intrinsic operand — legal.
                 let arg_v = if arg_ty.is_metadata() {
-                    self.parse_metadata_value_operand(Some(state))?
+                    self.parse_metadata_as_value(state)?
                 } else {
                     self.parse_value(state, arg_ty)?
                 };
@@ -15046,7 +15087,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !matches!(self.peek(), Token::RSquare) {
             loop {
                 let ty = self.parse_type(false)?;
-                let v = self.parse_value(state, ty)?;
+                // `parseExceptionArgs` branches on the argument type the same
+                // way `parseParameterList` and `parseOptionalOperandBundles`
+                // do: `metadata` goes to `parseMetadataAsValue`, everything
+                // else to `parseValue`.
+                let v = if ty.is_metadata() {
+                    self.parse_metadata_as_value(state)?
+                } else {
+                    self.parse_value(state, ty)?
+                };
                 args.push(v);
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;

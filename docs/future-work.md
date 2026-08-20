@@ -2495,6 +2495,14 @@ The extractvalue case is the sharpest: upstream is `CHECK: @foo` plus five
 `CHECK-NEXT:`, and a printer regression inserting one line between `@foo` and
 `load` fails upstream and passes here.
 
+The operand-bundle commit (2026-08-20) added a sixth such fixture,
+`operand-bundles/operand-bundles.ll`, whose `CHECK-NEXT` and `CHECK-LABEL`
+directives are asserted through `parser_calls.rs::assert_check_lines` as
+ordered `CHECK`es — stated in that test's doc comment rather than hidden. It
+also copied `canonicalize_horizontal_whitespace` into `parser_calls.rs`, since
+that fixture's `CHECK` text carries a doubled space; there are now two copies of
+that routine as well, and the refactor below deletes both.
+
 The work: move `check_directives` into a shared `tests/support/` module, route
 all five call sites through it, delete the four `assert_check_lines` copies, and
 re-widen the five flattened needle lists to their fixtures' own CHECK blocks —

@@ -19,6 +19,68 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Operand bundles: `ValueAsMetadata` inputs parse, and the bundle list prints upstream's spaces
+
+- **Fixed: a `metadata`-typed operand-bundle input in its `ValueAsMetadata`
+  spelling now parses.** `LLParser::parseOptionalOperandBundles` branches on the
+  input type — a `metadata` input goes to `parseMetadataAsValue`, not
+  `parseValue` — and llvmkit's bundle loop had no such arm. The `!`-led forms
+  (`metadata !0`, `metadata !"abc"`) already worked through `parseValID`'s own
+  metadata arms; `metadata i32 %a`, `metadata i32 42` and `metadata ptr @g` did
+  not, and were rejected with `expected value token`. Closes
+  `docs/divergences.md` entry 14, whose original example was wrong — the entry's
+  own correction paragraph had already said so.
+
+- **Fixed: the same missing branch in the `catchpad` / `cleanuppad` argument
+  list.** `LLParser::parseExceptionArgs` carries the identical
+  `ArgTy->isMetadataTy()` test; llvmkit's `parse_bracket_value_list` did not, so
+  `cleanuppad within none [metadata i32 %a]` was rejected. Found while porting
+  the bundle branch; it was not previously recorded, and it is reachable without
+  a `catchswitch`.
+
+- **Fixed (breaking, printed bytes): the operand bundle list prints upstream's
+  inner spaces.** `AssemblyWriter::writeOperandBundles` emits `Out << " [ "` and
+  `Out << " ]"`; llvmkit emitted `" ["` and `"]"`, so it printed
+  `call void @g()["tag"(i32 0)]` where `llvm-dis` prints
+  `call void @g() [ "tag"(i32 0) ]`. The bundle `CHECK` lines in
+  `test/Bitcode/operand-bundles.ll` failed on the missing spaces — `FileCheck`
+  collapses runs of horizontal whitespace but does not tolerate its absence.
+  `fmt_operand_bundles` is now a statement-for-statement port of
+  `writeOperandBundles`, with the `<null operand bundle!>` branch llvmkit
+  cannot have named in its doc comment rather than invented as a dead arm.
+  Closes `docs/divergences.md` entry 111.
+
+- **Fixed: `invalid metadata-value-metadata roundtrip` now fires on the
+  `parseMetadataAsValue` path.** `LLParser::parseValueAsMetadata` rejects a
+  `metadata`-typed inner type before calling `parseValue`; llvmkit carried that
+  guard only on the `parseMDNodeVector` path, so `metadata metadata %x` reported
+  `'%x' defined with type 'i32' but expected 'metadata'` instead. The
+  operand-bundle branch newly reaches this code, so the guard lands with it. It
+  also changes the diagnostic on the parameter-list path.
+
+- **Changed: `parseMetadataAsValue` is a named routine again.** llvmkit had
+  fused `parseMetadataAsValue`, `parseMetadata` and `parseValueAsMetadata` into
+  one helper. `Parser::parse_metadata_as_value` now mirrors upstream's
+  non-nullable-`PerFunctionState` entry point and delegates, as upstream's
+  two-statement wrapper does; `parse_metadata_value_operand` keeps
+  `parseMetadata`'s nullable-state shape for `parseValID`'s module-scope arms.
+  Its doc comment had also acquired a stray first line from an unrelated
+  routine; that is gone.
+
+- **Changed: `test/Bitcode/operand-bundles.ll` is vendored whole.** It replaces
+  a hand-trimmed subset whose header claimed llvmkit could not express the rest
+  — typed-pointer loads, metadata bundles, landingpad-heavy invokes. All of it
+  parses today, so the trim was a stale premise. The new test asserts the
+  fixture's directives in order and states, in its doc comment, which FileCheck
+  semantics this test binary's `assert_check_lines` does not render.
+
+- **Not ported, and why:** `test/Bitcode/compatibility.ll`'s
+  `@instructions.bundles.metadata` spells the same `"foo"` / `"bar"` bundles as
+  `test/Bitcode/operand-bundles.ll` `@f5`, so porting it adds no coverage over
+  the whole-file port above. Its sibling `[ "funclet"(token %catch) ]` invoke is
+  already vendored, inside `@instructions.win_eh.2`, where upstream writes no
+  `CHECK` for that line.
+
 ### Docs: counts re-derived, a FileCheck disclosure completed, and a divergence gets a live test
 
 Documentation and tests only — no crate content changes, and no printed byte
