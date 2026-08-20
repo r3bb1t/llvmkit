@@ -11451,13 +11451,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         header: BlockHeader,
         header_loc: Span,
     ) -> ParseResult<()> {
-        let bb = match header {
-            BlockHeader::Named(n) => state.define_named_block(self.module, n, header_loc)?,
-            BlockHeader::Numbered(id) => {
-                state.define_numbered_label(self.module, id, header_loc)?
-            }
-            BlockHeader::Implicit => state.define_implicit_block(self.module, header_loc)?,
-        };
+        let bb = state.define_basic_block(self.module, header, header_loc)?;
         let bb_value = bb.to_erased();
         // Drive the typed builder for this block.
         let builder = IrBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
@@ -15337,67 +15331,109 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         Ok(bb.id())
     }
 
-    /// Define a textual basic block label.
+    /// Mirrors `LLParser::PerFunctionState::defineBB`.
     ///
-    /// `PerFunctionState::defineBB` reaches the block through
-    /// `getBB(Name, Loc)` → `getVal(Name, LabelTy)`, so the name is looked up
-    /// in the function's **value** symbol table: a name already bound to a
-    /// non-block local makes the block uncreatable, and `getVal`'s own
-    /// `'%x' defined with type 'T' but expected 'label'` is then overwritten
-    /// by `defineBB`'s `unable to create block named '<n>'` — upstream's
-    /// `error()` keeps only the last message, so that is what a user sees.
-    ///
-    /// llvmkit keeps blocks in a map of their own (the split W2.2 already
-    /// merges back at leftover-reporting time), so the collision has to be
-    /// asked for explicitly rather than falling out of a shared lookup.
-    fn define_named_block(
+    /// One function for one upstream routine: the first `Name.empty()` branch
+    /// picks the block, the `F.splice` step moves it to the end of the
+    /// function, and the second `Name.empty()` branch drops it from the
+    /// forward-ref sets. The three [`BlockHeader`] arms are upstream's three
+    /// cases — a textual label, a numbered label (`NameID != -1`), and an
+    /// unlabeled block (`NameID == -1`, so `NameID = NumberedVals.getNext()`).
+    fn define_basic_block(
         &mut self,
         module: &'ctx Module<B, Unverified>,
-        name: String,
+        header: BlockHeader,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
     {
-        if !self.blocks.contains_key(&name) && self.local_named.contains_key(&name) {
-            return Err(ParseError::Message {
-                message: format!("unable to create block named '{name}'").into(),
+        // `BasicBlock *BB;` — upstream's `if (Name.empty()) { … } else { … }`.
+        let (block, defined_name) = match header {
+            // `} else { NameID = NumberedVals.getNext(); }`
+            BlockHeader::Implicit => {
+                let id = self.next_unnamed_value_id;
+                (
+                    self.get_basic_block_numbered(module, id, loc)?,
+                    DefinedBlockName::Numbered(id),
+                )
+            }
+            // `if (P.checkValueID(Loc, "label", "", NumberedVals.getNext(),
+            //                     NameID)) return nullptr;`
+            BlockHeader::Numbered(id) => {
+                if self.defined_numbered_blocks.contains(&id) {
+                    return Err(ParseError::Redefinition {
+                        kind: SymbolKind::Block,
+                        id: SymbolId::Numbered(id),
+                        loc: DiagLoc::span(loc),
+                    });
+                }
+                check_value_id("label", "", self.next_unnamed_value_id, id, loc)?;
+                (
+                    self.get_basic_block_numbered(module, id, loc)?,
+                    DefinedBlockName::Numbered(id),
+                )
+            }
+            // `BB = getBB(Name, Loc); if (!BB) { P.error(Loc, "unable to
+            //  create block named '" + Name + "'"); return nullptr; }`
+            BlockHeader::Named(name) => {
+                let block = self.get_basic_block_named(module, &name, loc)?;
+                (block, DefinedBlockName::Named(name))
+            }
+        };
+
+        // `F.splice(F.end(), &F, BB->getIterator());`
+        //
+        // "Move the block to the end of the function.  Forward ref'd blocks
+        // are inserted wherever they happen to be referenced." — so a block
+        // reached by a forward reference prints where it is *defined*, not
+        // where it was first mentioned. The handle is linear, so the erased
+        // value is taken first and the block view re-derived at the end.
+        //
+        // The failure arm is unreachable: the handle was minted by
+        // `append_basic_block` or `basic_block_for_construction` on *this*
+        // function, so all three of `move_basic_block_to_end`'s refusals are
+        // dead by construction — but the ban on runtime panics keeps the
+        // mapping. It spells the same `valid <label>: <e>` shape
+        // `LLParser::builder_err` uses; that helper itself is out of reach
+        // here because it hangs off `LLParser` and keys off the *current*
+        // token, where upstream's `error(Loc, …)` keys off the block's own.
+        let block_value = block.to_erased();
+        self.func
+            .move_basic_block_to_end(module, block)
+            .map_err(|e| ParseError::Expected {
+                expected: format!("valid basic block definition: {e}").into(),
                 loc: DiagLoc::span(loc),
-            });
+            })?;
+
+        // "Remove the block from forward ref sets."
+        match defined_name {
+            DefinedBlockName::Numbered(id) => {
+                // `ForwardRefValIDs.erase(NameID);`
+                self.numbered_block_refs.remove(&id);
+                // `NumberedVals.add(NameID, BB);` — `add` also advances
+                // `NextUnusedID` to `ID + 1`; `checkValueID` has already
+                // proved `id >= next`, so `max` and `id + 1` agree.
+                self.local_numbered.insert(id, block_value);
+                self.defined_numbered_blocks.insert(id);
+                self.next_unnamed_value_id = self.next_unnamed_value_id.max(id.saturating_add(1));
+            }
+            // `// BB forward references are already in the function symbol
+            //  table.
+            //  ForwardRefVals.erase(Name);` — llvmkit keeps blocks in a map of
+            // their own and reports leftovers by comparing `block_refs`
+            // against `defined_blocks`, so marking the name defined *is* the
+            // erase.
+            DefinedBlockName::Named(name) => {
+                self.defined_blocks.insert(name);
+            }
         }
-        self.defined_blocks.insert(name.clone());
-        self.ensure_block(module, &name, loc)
+
+        // `return BB;`
+        self.value_as_block(module, block_value, loc)
     }
 
-    /// Define an unlabeled block at `NumberedVals.getNext()`, matching
-    /// `PerFunctionState::defineBB(Name.empty())`.
-    fn define_implicit_block(
-        &mut self,
-        module: &'ctx Module<B, Unverified>,
-        loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
-    {
-        let id = self.next_unnamed_value_id;
-        self.define_numbered_block(module, id, loc)
-    }
-
-    fn define_numbered_label(
-        &mut self,
-        module: &'ctx Module<B, Unverified>,
-        id: u32,
-        loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
-    {
-        if self.defined_numbered_blocks.contains(&id) {
-            return Err(ParseError::Redefinition {
-                kind: SymbolKind::Block,
-                id: SymbolId::Numbered(id),
-                loc: DiagLoc::span(loc),
-            });
-        }
-        check_value_id("label", "", self.next_unnamed_value_id, id, loc)?;
-        self.define_numbered_block(module, id, loc)
-    }
-
-    fn define_numbered_block(
+    /// Mirrors `PerFunctionState::getBB(unsigned ID, LocTy)` — `getVal(ID,
+    /// LabelTy)` narrowed to a block, which forward-declares on a miss.
+    fn get_basic_block_numbered(
         &mut self,
         module: &'ctx Module<B, Unverified>,
         id: u32,
@@ -15414,25 +15450,41 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         if self.local_numbered.contains_key(&id) {
             return Err(self.invalid_numbered_slot(id, loc));
         }
-        let bb = if let Some(value) = self.numbered_blocks.get(&id).copied() {
-            self.value_as_block(module, value, loc)?
-        } else {
-            let bb = self.func.append_basic_block(module, "");
-            self.numbered_blocks.insert(id, bb.to_erased());
-            bb
-        };
-        let bb_value = bb.to_erased();
-        self.func
-            .move_basic_block_to_end(module, bb)
-            .map_err(|e| ParseError::Expected {
-                expected: format!("numbered basic block definition: {e}").into(),
+        if let Some(value) = self.numbered_blocks.get(&id).copied() {
+            return self.value_as_block(module, value, loc);
+        }
+        let bb = self.func.append_basic_block(module, "");
+        self.numbered_blocks.insert(id, bb.to_erased());
+        Ok(bb)
+    }
+
+    /// Mirrors `PerFunctionState::getBB(const std::string &Name, LocTy)`
+    /// together with `defineBB`'s `unable to create block named '<n>'` arm.
+    ///
+    /// `getBB` reaches the block through `getVal(Name, LabelTy)`, so the name
+    /// is looked up in the function's **value** symbol table: a name already
+    /// bound to a non-block local makes the block uncreatable, and `getVal`'s
+    /// own `'%x' defined with type 'T' but expected 'label'` is then
+    /// overwritten by `defineBB`'s message — upstream's `error()` keeps only
+    /// the last one at equal priority, so that is what a user sees.
+    ///
+    /// llvmkit keeps blocks in a map of their own (the split W2.2 already
+    /// merges back at leftover-reporting time), so the collision has to be
+    /// asked for explicitly rather than falling out of a shared lookup.
+    fn get_basic_block_named(
+        &mut self,
+        module: &'ctx Module<B, Unverified>,
+        name: &str,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
+        if !self.blocks.contains_key(name) && self.local_named.contains_key(name) {
+            return Err(ParseError::Message {
+                message: format!("unable to create block named '{name}'").into(),
                 loc: DiagLoc::span(loc),
-            })?;
-        self.local_numbered.insert(id, bb_value);
-        self.defined_numbered_blocks.insert(id);
-        self.numbered_block_refs.remove(&id);
-        self.next_unnamed_value_id = self.next_unnamed_value_id.max(id.saturating_add(1));
-        self.value_as_block(module, bb_value, loc)
+            });
+        }
+        self.ensure_block(module, name, loc)
     }
 
     fn value_as_block(
@@ -15768,6 +15820,20 @@ enum BlockHeader {
     Named(String),
     Numbered(u32),
     Implicit,
+}
+
+/// Which of `defineBB`'s two `Name.empty()` branches a block definition took.
+///
+/// Upstream asks `Name.empty()` twice — once to pick the block, once to drop
+/// it from the forward-ref sets — with the `F.splice` step between, and reads
+/// `Name` and `NameID` (both `defineBB` parameters) on each side. llvmkit's
+/// [`BlockHeader`] is consumed by the first `match`, so the answer is carried
+/// across the splice in this rather than re-derived.
+enum DefinedBlockName {
+    /// `Name.empty()`: `ForwardRefValIDs.erase(NameID); NumberedVals.add(NameID, BB);`
+    Numbered(u32),
+    /// otherwise: `ForwardRefVals.erase(Name);`
+    Named(String),
 }
 
 enum LocalLhs {

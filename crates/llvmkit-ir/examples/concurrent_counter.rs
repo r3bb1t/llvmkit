@@ -26,19 +26,19 @@
 //!     i32 2, label %do_mul
 //!   ]
 //!
-//! do_add:
+//! do_add:                                           ; preds = %entry
 //!   %r_add = add i32 %1, %2
 //!   ret i32 %r_add
 //!
-//! do_sub:
+//! do_sub:                                           ; preds = %entry
 //!   %r_sub = sub i32 %1, %2
 //!   ret i32 %r_sub
 //!
-//! do_mul:
+//! do_mul:                                           ; preds = %entry
 //!   %r_mul = mul i32 %1, %2
 //!   ret i32 %r_mul
 //!
-//! default:
+//! default:                                          ; preds = %entry
 //!   ret i32 0
 //! }
 //! ```

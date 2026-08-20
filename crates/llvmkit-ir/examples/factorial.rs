@@ -12,10 +12,10 @@
 //!   %is_zero = icmp eq i32 %n, 0
 //!   br i1 %is_zero, label %base, label %loop
 //!
-//! base:
+//! base:                                             ; preds = %entry
 //!   ret i32 1
 //!
-//! loop:
+//! loop:                                             ; preds = %loop, %entry
 //!   %acc = phi i32 [ 1, %entry ], [ %next_acc, %loop ]
 //!   %i = phi i32 [ %n, %entry ], [ %next_i, %loop ]
 //!   %next_acc = mul i32 %acc, %i
@@ -23,7 +23,7 @@
 //!   %done = icmp eq i32 %next_i, 0
 //!   br i1 %done, label %exit, label %loop
 //!
-//! exit:
+//! exit:                                             ; preds = %loop
 //!   ret i32 %next_acc
 //! }
 //! ```

@@ -115,9 +115,19 @@ fn parses_implicit_unnamed_blocks_with_shared_numbering() {
         printed.contains("br i1 %cond, label %0, label %1\n"),
         "{printed}"
     );
-    assert!(printed.contains("0:\n  br label %1\n"), "{printed}");
+    // Block `1`'s predecessors read `%0, %entry`: `predecessors(BB)` walks the
+    // use list, which `Value::addUse` head-inserts, so the newer user (block
+    // `0`'s `br label %1`) comes before the older one (the entry's `br i1`).
     assert!(
-        printed.contains("1:\n  %2 = add i32 %x, 1\n  ret i32 %2\n"),
+        printed.contains(
+            "0:                                                ; preds = %entry\n  br label %1\n"
+        ),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "1:                                                ; preds = %0, %entry\n  %2 = add i32 %x, 1\n  ret i32 %2\n"
+        ),
         "{printed}"
     );
 }
@@ -172,11 +182,132 @@ fn parses_forward_numbered_block_in_definition_order() {
 
     parse_and_verify(src);
     let printed = parse_and_print(src);
-    let zero_pos = printed.find("0:\n  ret i32 %x").expect("prints block 0");
+    let zero_pos = printed
+        .find("0:                                                ; preds = %entry\n  ret i32 %x")
+        .expect("prints block 0");
     let one_pos = printed
-        .find("1:\n  %2 = add i32 %x, 1")
+        .find(
+            "1:                                                ; preds = %entry\n  %2 = add i32 %x, 1",
+        )
         .expect("prints block 1");
     assert!(zero_pos < one_pos, "{printed}");
+}
+
+/// Mirrors `test/Assembler/callbr.ll`, whose
+/// `RUN: llvm-as < %s | llvm-dis | FileCheck %s` makes its CHECK block
+/// `AssemblyWriter` output. The source defines `kill` before `cont` but the
+/// `callbr` names `cont` first, and upstream's CHECK order is
+/// `[[KILL:.*:]]` / `unreachable` / `[[CONT]]:` / `ret void` — definition
+/// order, because `LLParser::PerFunctionState::defineBB` ends with
+/// `F.splice(F.end(), &F, BB->getIterator())` under the comment "Move the
+/// block to the end of the function. Forward ref'd blocks are inserted
+/// wherever they happen to be referenced."
+#[test]
+fn forward_referenced_named_block_prints_in_definition_order() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/assembler-corpus/callbr.ll");
+
+    let printed = parse_and_print(FIXTURE);
+    let kill = printed.find("\nkill:").expect("prints block kill");
+    let cont = printed.find("\ncont:").expect("prints block cont");
+    assert!(kill < cont, "{printed}");
+}
+
+/// No upstream counterpart: this is llvmkit's own statement that block-list
+/// order drives the slot tracker's unnamed-value numbering, so the `defineBB`
+/// splice is what keeps a printed slot number equal to the one the source
+/// wrote. The rule source is `AsmWriter.cpp`'s `SlotTracker`, which walks
+/// `for (auto &BB : F)` and numbers unnamed blocks and unnamed instruction
+/// results from one shared counter; the shape here is distilled from
+/// `test/Assembler/callbr.ll`'s forward-reference pattern.
+#[test]
+fn out_of_order_named_blocks_do_not_renumber_unnamed_values() {
+    let printed = parse_and_print(
+        "define i32 @f(i1 %c) {\n\
+         entry:\n  br i1 %c, label %b, label %a\n\
+         a:\n  %0 = add i32 1, 2\n  ret i32 %0\n\
+         b:\n  %1 = add i32 3, 4\n  ret i32 %1\n\
+         }\n",
+    );
+    assert!(printed.contains("%0 = add i32 1, 2"), "{printed}");
+    assert!(printed.contains("%1 = add i32 3, 4"), "{printed}");
+}
+
+/// Mirrors `test/Assembler/block-labels.ll::@test2`, whose CHECK block is
+/// `; CHECK-LABEL: define void @test2(i32 %0, i32 %1) {` followed immediately
+/// by `; CHECK-NEXT:    ret void` — an explicitly written `2:` entry label is
+/// not printed, because `AssemblyWriter::printBasicBlock` takes the
+/// slot-label branch only when `!IsEntryBlock`, and `printFunction` writes
+/// `Out << " {"` without a newline so the block owns it.
+#[test]
+fn an_unnamed_entry_block_prints_no_label() {
+    let printed = parse_and_print("define void @test2(i32 %0, i32 %1) {\n2:\n  ret void\n}\n");
+    assert!(
+        printed.contains("define void @test2(i32 %0, i32 %1) {\n  ret void\n"),
+        "{printed}"
+    );
+}
+
+/// Mirrors `test/Assembler/block-labels.ll::@test1`'s
+/// `; CHECK:      2:       ; preds = %0` / `; CHECK:      3:       ; preds = %2`
+/// (RUN: `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s
+/// --match-full-lines`, so the CHECK block is `AssemblyWriter` output). Every
+/// non-entry block carries `printBasicBlock`'s predecessors comment. FileCheck
+/// runs without `--strict-whitespace` and so canonicalizes the run of spaces;
+/// the column comes from `Out.PadToColumn(50)` itself.
+#[test]
+fn non_entry_blocks_print_a_predecessors_comment() {
+    let printed = parse_and_print(
+        "define i32 @test1(i32 %X) {\n  \
+           %1 = alloca i32\n  br label %2\n\
+         2:\n  br label %3\n\
+         3:\n  %4 = add i32 1, 1\n  ret i32 %4\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("2:                                                ; preds = %0\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("3:                                                ; preds = %2\n"),
+        "{printed}"
+    );
+}
+
+/// Ports `test/Assembler/2002-08-15-ConstantExprProblem.ll` whole, as the
+/// oracle for `printBasicBlock`'s `pred_empty(BB)` arm and for the use-list
+/// order `predecessors(BB)` reads. Its RUN line is `llvm-as %s -o /dev/null`,
+/// so its `; preds = %BB2, %0` and `; No predecessors!` comments are
+/// hand-written *input* rather than FileCheck-verified output — they document
+/// the spelling, and the rule source is `printBasicBlock` itself. The
+/// predecessor order is upstream's: `PredIterator` walks the block's use list,
+/// which `Use::addToList` head-inserts, so `BB2`'s later `br` prints before
+/// the entry block's.
+#[test]
+fn an_unreachable_block_prints_no_predecessors() {
+    let printed = parse_and_print(
+        r#"@.LC0 = internal global [12 x i8] c"hello world\00"             ; <ptr> [#uses=1]
+
+define ptr @test() {
+; <label>:0
+        br label %BB1
+
+BB1:            ; preds = %BB2, %0
+        %ret = phi ptr [ @.LC0, %0 ], [ null, %BB2 ]          ; <ptr> [#uses=1]
+        ret ptr %ret
+
+BB2:            ; No predecessors!
+        br label %BB1
+}
+"#,
+    );
+    assert!(
+        printed.contains("BB1:                                              ; preds = %BB2, %0\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("BB2:                                              ; No predecessors!\n"),
+        "{printed}"
+    );
 }
 
 /// Sub / mul arms of `parse_int_binop`. Mirrors the loop body of

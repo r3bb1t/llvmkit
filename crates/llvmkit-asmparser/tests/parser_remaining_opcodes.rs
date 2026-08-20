@@ -203,14 +203,17 @@ fn freeze_round_trips() {
 fn switch_round_trips() {
     const FIXTURE: &[u8] =
         include_bytes!("fixtures/upstream/2003-05-15-SwitchBug/switch_round_trips.ll");
+    // The entry block's `0:` label is not printed —
+    // `AssemblyWriter::printBasicBlock` takes the slot-label branch only when
+    // `!IsEntryBlock` — but the block keeps slot 0, which is what `dest`'s
+    // `Out.PadToColumn(50)`-aligned predecessors comment names.
     const EXPECTED: &str = "\
 ; ModuleID = 'test'
 define void @test(i32 %X) {
-0:
   switch i32 %X, label %dest [
   ]
 
-dest:
+dest:                                             ; preds = %0
   ret void
 }
 ";

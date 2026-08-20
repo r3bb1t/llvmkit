@@ -19,20 +19,21 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2508 (2503 distinct names). Recounted on 2026-08-16
-at the LLParser-parity Wave 14 point via the documented attribute-anchored grep
-below (`crates/llvmkit-ir` 1554 + `crates/llvmkit-asmparser` 932 +
+Total `#[test]` functions: 2514 (2509 distinct names). Recounted on 2026-08-20
+at the `printBasicBlock`-parity point via the documented attribute-anchored
+grep below (`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 937 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +273 over the 2235 point below is the
-LLParser-parity program's waves 0-14. The figure agrees with the gate: a
+`crates/llvmkit-macros` has none). The +6 over the 2508 Wave 14 point below is
+the basic-block printing and ordering parity commit; the +273 that reached 2508
+is the LLParser-parity program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2508 passed, 0 failed across 214 test binaries.
+this commit reports 2514 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2077 rows**. 13 of them name a trybuild `compile_fail/*.rs`
+below carries **2083 rows**. 13 of them name a trybuild `compile_fail/*.rs`
 fixture rather than a `#[test]` function -- those fixtures are `fn main()`
-programs and are not part of the test-function accounting. The remaining 2064
-rows give provenance for **2180 of the 2503 distinct `#[test]` functions**,
+programs and are not part of the test-function accounting. The remaining 2070
+rows give provenance for **2186 of the 2509 distinct `#[test]` functions**,
 leaving **323 with no row** and **zero rows naming a test that no longer
 exists**.
 
@@ -199,7 +200,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::module_prints_const_folded_arithmetic` | `unittests/IR/AsmWriterTest.cpp` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::function_print_standalone_matches_module_section` | `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedInstruction)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::declare_form_for_empty_function` | `unittests/IR/AsmWriterTest.cpp` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/asm_writer_basic.rs::unnamed_basic_block_uses_slot_label` | `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedArgument)` | mirror |
+| `crates/llvmkit-ir/tests/asm_writer_basic.rs::unnamed_basic_block_uses_slot_label` | `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedArgument)`; `llvm/test/Assembler/numbered-values.ll`; `llvm/test/Assembler/block-labels.ll::@test1` (`2: ; preds = %0`) | mirror |
+| `crates/llvmkit-ir/tests/display_impls.rs::basic_block_display_matches_the_module_printer` | llvmkit-specific: `llvm/lib/IR/AsmWriter.cpp::BasicBlock::print` drives the same `AssemblyWriter::printBasicBlock`, with `IsEntryBlock = BB->getParent() && BB->isEntryBlock()` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::source_filename_api_borrows_and_clears` | `llvm/lib/IR/Module.cpp::Module::setSourceFileName`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printModule` source filename arm | llvmkit-specific |
 | `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_builds_signature_and_params` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` for ordered args; `unittests/IR/AsmWriterTest.cpp` for add+ret printing | llvmkit-specific |
 | `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_supports_pointer_and_float_params` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` for ordered args; `Value::getType` category narrowing | llvmkit-specific |
@@ -874,6 +876,11 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_unnamed_non_void_callbr_result_numbering` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCallBr` plus `setInstName(NameID=-1, NameStr="")` unnamed-result numbering | llvmkit-specific regression |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_quoted_numeric_label_as_named_block` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseBasicBlock`; quoted `LabelStr` path stays textual instead of numbered | llvmkit-specific regression |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_forward_numbered_block_in_definition_order` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::defineBB`; forward-referenced numbered block is spliced to definition point | llvmkit-specific regression |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::forward_referenced_named_block_prints_in_definition_order` | `llvm/test/Assembler/callbr.ll` (RUN: `llvm-as \| llvm-dis \| FileCheck`); `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::defineBB` `F.splice(F.end(), &F, BB->getIterator())` step | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::out_of_order_named_blocks_do_not_renumber_unnamed_values` | llvmkit-specific: `llvm/lib/IR/AsmWriter.cpp::SlotTracker` numbers unnamed values in block-list order, so the `defineBB` splice is what keeps a printed slot equal to the source's; shape distilled from `llvm/test/Assembler/callbr.ll` | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::an_unnamed_entry_block_prints_no_label` | `llvm/test/Assembler/block-labels.ll::@test2`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printBasicBlock` `!IsEntryBlock` label branch | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::non_entry_blocks_print_a_predecessors_comment` | `llvm/test/Assembler/block-labels.ll::@test1`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printBasicBlock` predecessors block, `formatted_raw_ostream::PadToColumn` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::an_unreachable_block_prints_no_predecessors` | `llvm/test/Assembler/2002-08-15-ConstantExprProblem.ll` (RUN: `llvm-as %s -o /dev/null`, so its comments are input text, not FileCheck-verified output); `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printBasicBlock` `pred_empty` arm and `llvm/IR/CFG.h::PredIterator` order | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_sub_and_mul` | loop-body shape from `crates/llvmkit-ir/examples/factorial.rs`; `LLParser::parseInstruction` sub/mul arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::unsupported_opcode_is_typed_error` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` `tokError("expected instruction opcode")` default arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_div_and_rem_opcodes` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` `Instruction::{UDiv,SDiv,URem,SRem}` arms | mirror |

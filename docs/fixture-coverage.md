@@ -333,7 +333,7 @@ collision.
 | `autoupgrade-wasm-intrinsics.ll` | blocked-model | **G2** — rejected at 9:25: `expected unknown intrinsic` |
 | `bcwrap.ll` | ported | 1 pass |
 | `bfloat.ll` | ported | 1 pass |
-| `block-labels.ll` | ported | 1 pass |
+| `block-labels.ll` | ported | 1 pass — round-trip only. Since the `printBasicBlock` parity commit llvmkit reproduces its whole CHECK block byte-for-byte *except* `"$N":` / `br label %"$N"`, which it prints unquoted (divergence **100**); closing 100 unblocks turning this row into a full `expect=` byte comparison. The parts already closed are pinned by targeted tests in `parser_function_body.rs`. |
 | `br-single-destination.ll` | ported | 1 pass |
 | `byref-parse-error-0.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `byref-parse-error-1.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

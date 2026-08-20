@@ -1280,6 +1280,15 @@ recorded.
   `isValidOperands` arm so all three operands share one
   `invalid shufflevector operands` at `operand_loc`, and re-point that test.
 
+### 105. A re-used numbered label reports `redefinition of block '%N'` where upstream reports `label expected to be numbered 'N' or greater`
+
+*parser* — crates/llvmkit-asmparser/src/ll_parser.rs — `PerFunctionState::define_basic_block`, `BlockHeader::Numbered` arm
+
+- **LLVM:** `LLParser::PerFunctionState::defineBB`'s numbered branch runs `P.checkValueID(Loc, "label", "", NumberedVals.getNext(), NameID)` *first*. A re-used id is necessarily below `NumberedVals.getNext()`, so `checkValueID` is what fires, with `label expected to be numbered '<next>' or greater`.
+- **llvmkit:** a `defined_numbered_blocks` membership test raises `ParseError::Redefinition` before `check_value_id` runs, pre-empting upstream's message. The same pre-emptive check also sits in `get_basic_block_numbered`, the `getBB(unsigned ID, LocTy)` mirror.
+- **Why:** pre-existing. Carried through unchanged when `defineBB` was unified into one routine for the `printBasicBlock` parity commit, deliberately, so that no diagnostic and no diagnostic *order* moved in a commit whose subject was printed bytes. Keeping the two guards and their order is what makes that diff reviewable as a printing change; it is not an endorsement of them.
+- **Fix:** delete the pre-emptive check from both sites and let `check_value_id` speak. Re-bless whatever pins `Redefinition` for a block id first. Sequence it with the already-recorded `unable to create block numbered '<N>'` entry, which rewrites the other guard in the same function.
+
 ## Different printed bytes
 
 The parser/printer contract is that printed output matches `AsmWriter.cpp` byte for byte and re-parses.
@@ -1636,6 +1645,16 @@ CONFIRMED, still present at HEAD (2ac3e3a; `git diff --stat` on both cited files
 - **llvmkit:** `fmt_llvm_name_without_prefix` carries the same rule with one extra character in its allowed set — `matches!(*c, b'-' | b'.' | b'_' | b'$')` — so the same name prints as `@OBJC_LABEL_CATEGORY_$`. Found while porting `test/Bitcode/upgrade-section-name.ll`, whose `CHECK` line names the quoted spelling; the ported test asserts the section substring and records this rather than encoding the wrong spelling as expected.
 - **Why:** unrelated to the AutoUpgrade stage that found it, and changing the quoting rule shifts printed bytes for any fixture with a `$` in a symbol name, so it wants its own commit with the corpus re-blessed alongside.
 - **Fix:** align the allowed-character set with `printLLVMNameWithoutPrefix` exactly (`isalnum`, `-`, `.`, `_`, plus the leading-digit rule), then re-run the byte-lock and corpus gates.
+- **Unblocks:** closing this makes `test/Assembler/block-labels.ll` a full byte comparison. As of the `printBasicBlock` parity commit, llvmkit reproduces that fixture's entire `@test1` CHECK block *except* `"$N":` / `br label %"$N"`, where it prints `$N` unquoted. Its corpus row stays `status=pass` (round-trip only) until then; the parts this task did close are pinned by targeted tests in `crates/llvmkit-asmparser/tests/parser_function_body.rs` instead.
+
+### 104. `WriteAsOperandInternal` prints `<badref>`; llvmkit prints `%<unnumbered>`
+
+*printer* — crates/llvmkit-ir/src/asm_writer.rs — `fmt_operand_ref`
+
+- **LLVM:** `WriteAsOperandInternal`'s unnamed-value path is `int Slot = Machine->getLocalSlot(V); if (Slot != -1) Out << '%' << Slot; else Out << "<badref>";` — the failure spelling carries no `%` sigil.
+- **llvmkit:** both unnamed arms of `fmt_operand_ref` (the `BasicBlock` one and the `Argument`/`Instruction` one) write `%<unnumbered>`.
+- **Why:** unreachable while the `SlotTracker` covers the function being printed, which is every case the module printer produces. Found while porting `AssemblyWriter::printBasicBlock`, whose own `<badref>:` twin was fixed in that commit because the routine was being rewritten; this one was left rather than swept into a commit about block printing.
+- **Fix:** one string per arm. Blast radius is empty — a repo-wide grep for `<unnumbered>` finds no test, fixture or expected-output file.
 
 ## Model gaps
 
@@ -2112,6 +2131,15 @@ Files read: `C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_lexe
 Read `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` — 15 lines, of which exactly 9 are non-comment entries (4 local: facade_minimal, corpus_flags_minimal, corpus_dbg_declare_value, corpus_dbg_record_after_terminator_invalid; 5 under upstream/). Confirmed by `grep -v '^\s*#' | grep -v '^\s*$' | wc -l` = 9. The cited path `crates/llvmkit-asmparser/tests/parser_corpus_manifest.txt` does not exist — `cat` returned "No such file or directory"; `find . -name "*manifest*"` located it one level down under `tests/fixtures/`. `parser_corpus.rs:10` confirms: `include_str!("fixtures/parser_corpus_manifest.txt")`. Read `crates/llvmkit-asmparser/tests/parser_corpus.rs` (116 lines) — single `#[test] parser_corpus_round_trips_checked_in_fixtures`, iterates manifest entries, supports `status=pass|xfail-parse|xfail-verify` and optional `expect=`. Counted the fixture tree: `find . -name "*.ll" | wc -l` = 240 under `tests/fixtures/`, of which 2 are `.expected.ll` and 233 sit under `upstream/`. This contradicts the recorded inventory of 124/115. Counted upstream: in `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/Assembler/`, `find -maxdepth 1 -name "*.ll" | wc -l` = 500 (flat, no subdirs); `grep -lE "not +llvm-as" *.ll | wc -l` = 257; `grep -lE "llvm-as.*\|.*llvm-dis" *.ll | wc -l` = 175. All three of the claim's upstream numbers reproduce exactly. But `not llvm-as` files carrying a `; CHECK` line = 234, not the claimed 170. Ran a per-file reachability loop over all 240 fixture `.ll` paths against `tests/*.rs` plus the manifest: 236 referenced, 4 orphaned (listed in the correction). This is what shows the unmanaged fixtures are exercised by per-wave tests rather than dead. `git log --oneline -- .../parser_corpus_manifest.txt` shows its most recent commit is 2ddf0a3 "LLParser parity W3, part 5" — the manifest has been frozen at 9 entries across Waves 4 through 11, while `git status` shows W12 adding 22 more untracked fixtures under `fixtures/upstream/uselistorder/` and editing `parser_use_list.rs`, continuing the per-wave-file pattern rather than the manifest.
 
 </details>
+
+### 106. `FunctionCfg`'s predecessor lists are in block order, not use-list order
+
+*analysis* — crates/llvmkit-ir/src/cfg.rs — `FunctionCfg::new`
+
+- **LLVM:** `llvm/IR/CFG.h`'s `PredIterator` walks `BB->user_begin()`, skips every user that is not a terminator `Instruction`, and yields `cast<Instruction>(*It)->getParent()`. Because `Use::addToList` head-inserts, `predecessors(BB)` reads newest-first — reverse creation order — and every consumer (`AssemblyWriter::printBasicBlock`, the verifier, the dominator-tree builder) sees that order. It is neither sorted nor deduplicated.
+- **llvmkit:** `FunctionCfg::new` builds its predecessor map by iterating `function.basic_blocks()` and pushing each block onto its successors' lists, so `FunctionCfg::predecessors` answers in **block order**. The underlying use list *is* correct (`ValueData::add_use` head-inserts, and its rustdoc cites `Use::addToList` as the reason), so the two disagree.
+- **Why:** the CFG snapshot was written as an adjacency recomputation rather than a use-list view. Found while porting `AssemblyWriter::printBasicBlock`'s `; preds = …` comment, which needs upstream's order: that port reads the block's use list directly and does **not** go through `FunctionCfg`, so the divergence is not observable in printed output.
+- **Fix:** build the predecessor lists from each block's use list — `asm_writer.rs`'s `block_predecessors` helper is the routine — or make `FunctionCfg::predecessors` delegate to it. Check `crates/llvmkit-ir/tests/cfg_basic.rs`, `dominator_tree_basic.rs` and the verifier's own predecessor construction for order-dependent expectations first.
 
 ## Coverage, tooling and provenance
 

@@ -48,9 +48,9 @@ fn factorial_auto_ssa_example_emits_locked_ir() -> Result<(), IrError> {
     let expected = "; ModuleID = 'factorial'\n\
     define i32 @factorial(i32 %n) {\n\
     entry:\n  %is_zero = icmp eq i32 %n, 0\n  br i1 %is_zero, label %base, label %loop\n\n\
-    base:\n  ret i32 1\n\n\
-    loop:\n  %acc = phi i32 [ 1, %entry ], [ %next_acc, %loop ]\n  %i = phi i32 [ %n, %entry ], [ %next_i, %loop ]\n  %next_acc = mul i32 %acc, %i\n  %next_i = sub i32 %i, 1\n  %done = icmp eq i32 %next_i, 0\n  br i1 %done, label %exit, label %loop\n\n\
-    exit:\n  ret i32 %next_acc\n\
+    base:                                             ; preds = %entry\n  ret i32 1\n\n\
+    loop:                                             ; preds = %loop, %entry\n  %acc = phi i32 [ 1, %entry ], [ %next_acc, %loop ]\n  %i = phi i32 [ %n, %entry ], [ %next_i, %loop ]\n  %next_acc = mul i32 %acc, %i\n  %next_i = sub i32 %i, 1\n  %done = icmp eq i32 %next_i, 0\n  br i1 %done, label %exit, label %loop\n\n\
+    exit:                                             ; preds = %loop\n  ret i32 %next_acc\n\
     }\n";
     assert_eq!(actual, expected, "got:\n{actual}");
     Ok(())

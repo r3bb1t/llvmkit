@@ -205,6 +205,13 @@ fn inline_asm_label_constraint_rules_are_verifier_rules() {
 
 /// Mirrors `test/Assembler/callbr.ll` successor structure with the upstream
 /// `@llvm.amdgcn.kill` intrinsic callee.
+///
+/// The needles are matched in order, and they now read in upstream's printed
+/// order — `[[KILL:.*:]]` / `unreachable` / `[[CONT]]:` / `ret void` — for the
+/// first time: the source defines `kill` before `cont` while the `callbr`
+/// names `cont` first, and `LLParser::PerFunctionState::defineBB` ends with
+/// `F.splice(F.end(), &F, BB->getIterator())`, so the printed order is
+/// definition order.
 #[test]
 fn callbr_successor_structure_round_trips() {
     const FIXTURE: &[u8] =
@@ -216,10 +223,10 @@ fn callbr_successor_structure_round_trips() {
         &[
             "callbr void @llvm.amdgcn.kill(i1 %c)",
             "to label %cont [label %kill]",
-            "cont:",
-            "ret void",
             "kill:",
             "unreachable",
+            "cont:",
+            "ret void",
         ],
     );
 }

@@ -1177,11 +1177,18 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         if let Some(parent_id) = self.parent_id() {
             let parent = FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, self.module);
             let slots = SlotTracker::for_function(parent);
-            crate::asm_writer::fmt_basic_block(f, self.as_dyn(), &slots, true)
+            // `bool IsEntryBlock = BB->getParent() && BB->isEntryBlock();`
+            let is_entry_block = parent
+                .entry_block()
+                .is_some_and(|entry| entry.slot() == self.slot());
+            crate::asm_writer::fmt_basic_block(f, self.as_dyn(), &slots, is_entry_block)
         } else {
-            // Orphan block: no slot tracker.
+            // Orphan block: no slot tracker, and `BB->getParent()` is null so
+            // `IsEntryBlock` is false — upstream prints the label *and* a
+            // predecessors comment, which for a detached block reads
+            // `; No predecessors!`.
             let slots = SlotTracker::empty();
-            crate::asm_writer::fmt_basic_block(f, self.as_dyn(), &slots, true)
+            crate::asm_writer::fmt_basic_block(f, self.as_dyn(), &slots, false)
         }
     }
 }

@@ -19,6 +19,68 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Basic-block printing reaches `printBasicBlock` parity, and named blocks print in definition order
+
+Four previously unrecorded divergences from `lib/IR/AsmWriter.cpp` and
+`lib/AsmParser/LLParser.cpp`, all found by reading the routines rather than
+from `docs/divergences.md`, and all closed here rather than added to the
+ledger. Every one changes printed bytes.
+
+- **Fixed: a forward-referenced *named* block printed where it was first
+  mentioned, not where it was defined.**
+  `LLParser::PerFunctionState::defineBB` ends with
+  `F.splice(F.end(), &F, BB->getIterator())` under the comment "Move the block
+  to the end of the function. Forward ref'd blocks are inserted wherever they
+  happen to be referenced." llvmkit performed that step on the numbered-label
+  path only. `test/Assembler/callbr.ll` is the fixture that shows it: upstream
+  prints `kill` then `cont`, llvmkit printed `cont` then `kill`.
+- **Fixed, and worse than block order alone:** the slot tracker numbers
+  unnamed blocks and unnamed instruction results in block-list order, so the
+  missing splice renamed *every* unnamed value in a function with out-of-order
+  named blocks. Printed slot numbers now agree with the numbers the source
+  wrote, which is the property `LLParser::checkValueID` exists to guarantee.
+- **Added: the `; preds = …` comment.** `AssemblyWriter::printBasicBlock` pads
+  to column 50 (`Out.PadToColumn(50)`, which writes at least one space) and
+  prints `; preds = %a, %b` for every non-entry block, or `; No predecessors!`
+  when the block has none. llvmkit printed neither. Predecessor order is
+  upstream's `predecessors(BB)` — the block's use list, newest first, filtered
+  to terminators — not sorted and not deduplicated. `FunctionCfg::predecessors`
+  was deliberately *not* used for this; it enumerates in block order and is a
+  separate divergence, now recorded.
+- **Fixed: an unnamed entry block no longer prints its slot label.**
+  `printBasicBlock` takes the slot-label branch only when `!IsEntryBlock`, and
+  `printFunction` writes `" {"` without a newline so the block owns it. A
+  *named* entry block still prints its label. Pinned by
+  `test/Assembler/block-labels.ll::@test2`, whose CHECK block puts `ret void`
+  immediately after the `define` line.
+- **Changed (breaking): `Display for BasicBlock` now matches `BasicBlock::print`.**
+  A non-entry block prints its leading newline and its predecessors comment; a
+  detached block prints `; No predecessors!`, because `IsEntryBlock` is
+  `BB->getParent() && BB->isEntryBlock()` and a parentless block fails the
+  first conjunct.
+- **Changed: `<unnamed>:` is now `<badref>:`** in the unnumbered-block branch,
+  matching `printBasicBlock`. The branch is unreachable for a block in the
+  function being printed; the spelling is fixed because the routine was being
+  rewritten, not because it was observed. Its `fmt_operand_ref` twin
+  (`%<unnumbered>` where upstream writes `<badref>`) is recorded rather than
+  swept in.
+- **Changed (structural): `defineBB` is now one function.** Its splice and its
+  forward-ref-erase branch had been split across four llvmkit helpers with no
+  single mirror; `PerFunctionState::define_basic_block` now carries the
+  routine, with `get_basic_block_named` / `get_basic_block_numbered` as the two
+  `getBB` overloads. No diagnostic and no diagnostic order changed. The one
+  wording change is that the splice's unreachable failure arm now reads
+  `expected valid basic block definition: …` — the crate's `builder_err` shape
+  — instead of the invented `expected numbered basic block definition: …`.
+- **Re-blessed:** the `factorial`, `factorial_auto_ssa`, `concurrent_counter`
+  and `lifter_session` example byte locks, `switch_round_trips`'s expected
+  module, `callbr_successor_structure_round_trips`'s CHECK order (which now
+  matches `test/Assembler/callbr.ll`'s own order for the first time),
+  `unnamed_basic_block_uses_slot_label` (which had pinned the entry-block slot
+  label this removes, and now pins a *non*-entry one), and four block-label
+  assertions in `parser_function_body.rs`, `builder_eh_calls.rs` and
+  `builder_typestate_termination.rs`.
+
 ### The parity ledger and every doc count are re-derived from the tree (LLParser parity W14d)
 
 Documentation and measurement only — no crate source changed, so there is no

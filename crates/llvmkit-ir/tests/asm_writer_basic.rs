@@ -229,7 +229,14 @@ fn declare_form_for_empty_function() -> Result<(), IrError> {
 }
 
 /// Mirrors `test/Assembler/numbered-values.ll` (slot numbering for unnamed
-/// values and basic blocks). Closest unit-test coverage:
+/// values, so an unnamed argument claims slot 0) and
+/// `test/Assembler/block-labels.ll::@test1`, whose
+/// `; CHECK:      2:       ; preds = %0` pins the two halves of
+/// `AssemblyWriter::printBasicBlock`'s label branch: an unnamed **entry**
+/// block prints no label at all (the slot-label branch runs only when
+/// `!IsEntryBlock`) yet still holds its slot, and a later unnamed block
+/// prints that slot and names the entry's in its predecessors comment.
+/// Closest unit-test coverage:
 /// `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedArgument)`
 /// (slot-numbered argument rendering).
 #[test]
@@ -238,16 +245,23 @@ fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
-    // No name on the entry block.
+    // No name on either block.
     let entry = m.view(f).append_basic_block(&m, "");
+    let tail = m.view(f).append_basic_block(&m, "");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.br(&tail)?;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(tail);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.ret(arg)?;
     let text = format!("{m}");
-    // Block 0 (the only block) should label as `1:` because slot 0 is
-    // claimed by the unnamed argument %0.
+    // Slot 0 is claimed by the unnamed argument `%0`, so the entry block is
+    // slot 1 and the tail block slot 2.
     assert!(
-        text.contains("1:\n"),
+        text.contains("define i32 @anon(i32 %0) {\n  br label %2\n"),
+        "the unnamed entry block prints no label; got:\n{text}"
+    );
+    assert!(
+        text.contains("2:                                                ; preds = %1\n"),
         "expected slot-labelled block; got:\n{text}"
     );
     Ok(())

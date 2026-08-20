@@ -67,7 +67,7 @@ use super::module_summary_index::{
 };
 use super::sync_scope::SyncScope;
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
-use super::value::{IsValue, Value, ValueKindData, ValueSlot};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueUse};
 use super::{ApInt, AttrIndex, Signedness};
 
 // --------------------------------------------------------------------------
@@ -1106,7 +1106,13 @@ fn fmt_float_constant<B: ModuleBrand>(
 /// Mirrors `llvm::printEscapedString` in
 /// `lib/Support/StringExtras.cpp`. Used both for c-string array
 /// constants and for `section`/`partition` attributes on globals.
-fn print_escaped_string(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+///
+/// Generic over [`core::fmt::Write`] rather than taking a
+/// [`fmt::Formatter`]: `printBasicBlock`'s `PadToColumn(50)` needs the width
+/// of a label that this helper produced, and a `Formatter` cannot be built
+/// over a `String`. Every existing caller still passes a `Formatter`, which
+/// implements the trait.
+fn print_escaped_string<W: fmt::Write>(f: &mut W, bytes: &[u8]) -> fmt::Result {
     for &c in bytes {
         if c == b'\\' {
             f.write_str("\\\\")?;
@@ -1127,7 +1133,11 @@ fn fmt_llvm_name(f: &mut fmt::Formatter<'_>, prefix: &str, name: &str) -> fmt::R
     fmt_llvm_name_without_prefix(f, name)
 }
 
-fn fmt_llvm_name_without_prefix(f: &mut fmt::Formatter<'_>, name: &str) -> fmt::Result {
+/// `printLLVMName(Out, Name, NoPrefix)` (`lib/IR/AsmWriter.cpp`).
+///
+/// Generic over [`core::fmt::Write`] for the reason
+/// [`print_escaped_string`] is.
+fn fmt_llvm_name_without_prefix<W: fmt::Write>(f: &mut W, name: &str) -> fmt::Result {
     let bytes = name.as_bytes();
     let needs_quotes = bytes.first().is_some_and(u8::is_ascii_digit)
         || bytes
@@ -2923,23 +2933,125 @@ fn fmt_debug_record(
     }
 }
 
+/// The column `AssemblyWriter::printBasicBlock` pads its predecessors comment
+/// to — `Out.PadToColumn(50)`.
+const PREDECESSOR_COMMENT_COLUMN: usize = 50;
+
+/// `formatted_raw_ostream::PadToColumn(NewCol)`
+/// (`lib/Support/FormattedStream.cpp`), whose body is
+/// `indent(std::max(int(NewCol - getColumn()), 1))` — so it writes at least
+/// one space and never fewer, including when the column is already at or past
+/// `NewCol`.
+///
+/// llvmkit's writer is a [`fmt::Formatter`] and keeps no column state, so the
+/// caller passes the column it has just produced. That is exact rather than an
+/// approximation: everything emitted since the last `'\n'` was written by
+/// [`fmt_basic_block`] itself, and `printLLVMName` escapes every byte it emits
+/// into `0x20..=0x7e` — the range where `formatted_raw_ostream::UpdatePosition`
+/// counts one display column per byte.
+fn pad_to_column(f: &mut fmt::Formatter<'_>, new_column: usize, column: usize) -> fmt::Result {
+    for _ in 0..new_column.saturating_sub(column).max(1) {
+        f.write_str(" ")?;
+    }
+    Ok(())
+}
+
+/// `predecessors(BB)` (`llvm/IR/CFG.h`): `PredIterator` walks
+/// `BB->user_begin()`, skips every user that is not a terminator
+/// `Instruction`, and yields `cast<Instruction>(*It)->getParent()`.
+///
+/// Not sorted and not deduplicated — a terminator naming the same successor
+/// twice yields it twice, exactly as upstream. The use list is the ordering
+/// authority: `ValueData::add_use` head-inserts, mirroring `Use::addToList`,
+/// so this reads newest-first the way `Value::uses()` does. `FunctionCfg`'s
+/// predecessor map is deliberately *not* used here — it is built by walking
+/// the block list, so it answers in block order.
+fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(block: Value<'ctx, B>) -> Vec<ValueSlot> {
+    let context = block.module().context();
+    block
+        .data()
+        .use_list
+        .borrow()
+        .iter()
+        .filter_map(|edge| match edge {
+            ValueUse::Instruction(user) => Some(*user),
+            _ => None,
+        })
+        .filter_map(|user| {
+            let ValueKindData::Instruction(instruction) = &context.value_data(user).kind else {
+                return None;
+            };
+            if !instruction.kind.is_terminator() {
+                return None;
+            }
+            Some(instruction.parent.get())
+        })
+        .collect()
+}
+
+/// `AssemblyWriter::printBasicBlock`.
+///
+/// `is_entry_block` is upstream's `bool IsEntryBlock = BB->getParent() &&
+/// BB->isEntryBlock();` — false for a parentless block, which is why a
+/// detached block printed on its own still carries a predecessors comment
+/// where an entry block inside a function does not.
 pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     f: &mut fmt::Formatter<'_>,
     bb: BasicBlock<'_, Dyn, S, impl ModuleBrand>,
     slots: &SlotTracker,
-    is_first: bool,
+    is_entry_block: bool,
 ) -> fmt::Result {
-    if !is_first {
+    // `if (BB->hasName()) { Out << "\n"; printLLVMName(Out, BB->getName(),
+    //  LabelPrefix); Out << ':'; } else if (!IsEntryBlock) { Out << "\n";
+    //  int Slot = Machine.getLocalSlot(BB); if (Slot != -1) Out << Slot << ":";
+    //  else Out << "<badref>:"; }`
+    //
+    // The label text is rendered into a buffer first because `PadToColumn`
+    // below needs the column it leaves behind, and a `fmt::Formatter` cannot
+    // be asked for one.
+    let name = bb.name();
+    let mut label = String::new();
+    if let Some(name) = &name {
+        fmt_llvm_name_without_prefix(&mut label, name)?;
+        label.push(':');
+    } else if !is_entry_block {
+        match slots.block(bb.slot()) {
+            Some(slot) => write!(label, "{slot}:")?,
+            None => label.push_str("<badref>:"),
+        }
+    }
+    if name.is_some() || !is_entry_block {
         f.write_str("\n")?;
+        f.write_str(&label)?;
     }
-    if let Some(name) = bb.name() {
-        fmt_llvm_name_without_prefix(f, &name)?;
-        f.write_str(":")?;
-    } else if let Some(slot) = slots.block(bb.slot()) {
-        write!(f, "{slot}:")?;
-    } else {
-        f.write_str("<unnamed>:")?;
+
+    // `if (!IsEntryBlock) { Out.PadToColumn(50); Out << ";"; … }`
+    if !is_entry_block {
+        pad_to_column(f, PREDECESSOR_COMMENT_COLUMN, label.len())?;
+        f.write_str(";")?;
+        let erased = bb.to_erased();
+        let predecessors = block_predecessors(erased);
+        if predecessors.is_empty() {
+            // `Out << " No predecessors!";`
+            f.write_str(" No predecessors!")?;
+        } else {
+            // `Out << " preds = ";` then a `ListSeparator` — whose default
+            // separator is `", "` — and `writeOperand(Pred,
+            // /*PrintType=*/false)` for each predecessor.
+            f.write_str(" preds = ")?;
+            for (index, predecessor) in predecessors.into_iter().enumerate() {
+                if index > 0 {
+                    f.write_str(", ")?;
+                }
+                // Every basic block carries the module's label type, so the
+                // erased block's own type slot is the predecessor's too.
+                let pred = Value::from_parts(predecessor, erased.module, erased.ty);
+                fmt_operand_ref(f, pred, Some(slots))?;
+            }
+        }
     }
+
+    // `Out << "\n";` — shared by every branch above.
     f.write_str("\n")?;
     let module_view = bb.module();
     let md = module_view.metadata_store();
@@ -3137,11 +3249,14 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
     if header == "declare" {
         return f.write_str("\n");
     }
-    f.write_str(" {\n")?;
-    let mut first_block = true;
+    // `printFunction` writes `Out << " {"` and lets `printBasicBlock` own the
+    // newline: that is how a *named* entry block still yields `{\nentry:\n`
+    // while an unnamed one yields `{\n` and no label line at all.
+    f.write_str(" {")?;
+    let mut is_entry_block = true;
     for bb in func.basic_blocks() {
-        fmt_basic_block(f, bb, &slots, first_block)?;
-        first_block = false;
+        fmt_basic_block(f, bb, &slots, is_entry_block)?;
+        is_entry_block = false;
     }
     fmt_use_lists(f, func.module().core_ref(), use_lists, Some(&slots))?;
     f.write_str("}\n")
