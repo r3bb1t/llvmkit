@@ -19,31 +19,34 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2531 (2526 distinct names). Recounted on 2026-08-20
-at the operand-bundle-parity fix-round-2 point via the documented
+Total `#[test]` functions: 2533 (2528 distinct names). Recounted on 2026-08-20
+at the operand-bundle-parity fix-round-4 point via the documented
 attribute-anchored grep below
-(`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 954 +
+(`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 956 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
 `crates/llvmkit-macros` has none). The distinct-name total comes from the same
 attribute anchor followed to the next `fn` line:
 `awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2531 before `-u`, so the two matchers agree. The +7
-over the 2524 fix-round-4 point is the operand-bundle work: eight tests added
-across its three commits, one hand-trimmed subset test replaced. The +1 before
+— which also reproduces 2533 before `-u`, so the two matchers agree. The +9
+over the 2524 point before it is the operand-bundle work, `4e28f78..HEAD`: ten
+tests added, one hand-trimmed subset test replaced. The last two are fix round
+4's `DIArgList` port — the vendored
+`test/DebugInfo/Generic/debug_value_list.ll` and the operand-bundle /
+exception-argument rule anchor beside it. The +1 before
 that is fix round 4's `wineh_missing_funclet_token_is_not_diagnosed` divergence lock; the +5 before
 that is the funclet commit's five ported `catchswitch` tests; the +10 before
 that is the two printer-parity commits — 6 for basic-block printing and
 ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
 program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2531 passed, 0 failed across 214 test binaries.
+this commit reports 2533 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2098 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2100 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2090 rows give provenance for **2206 of
-the 2526 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2092 rows give provenance for **2208 of
+the 2528 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -2295,8 +2298,10 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::an_unknown_debug_record_type_is_rejected` | `test/Assembler/dbg-record-invalid-4.ll`, fixture verbatim, asserting its CHECK line `expected debug record type here` from `LLParser::parseDebugRecord`'s opening check | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_field_that_is_not_a_metadata_node_is_rejected` | `test/Assembler/dbg-record-invalid-2.ll` and `-6.ll` -- `parseMDNode`'s fallthrough `expected '!' here` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_missing_a_separator_reports_the_capital_e_label` | `test/Assembler/dbg-record-invalid-7.ll` and `-8.ll` -- `parseDebugRecord` labels every comma with a capital `E` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_round_trips_inside_a_debug_record` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList` and `AsmWriter.cpp::writeDIArgList`. `test/Assembler` carries `!DIArgList` only inside the `dbg-record-invalid-*` negatives, where the parse never reaches the list, so the routines are the anchor | llvmkit-specific |
-| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_rejects_a_metadata_typed_operand` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList`, the second direct caller of `parseValueAsMetadata`, from which it inherits the `Ty->isMetadataTy()` guard (`invalid metadata-value-metadata roundtrip`). `test/Assembler`'s `dbg-record-invalid-*` fixtures carry `!DIArgList` but none pins an error raised *inside* the operand list | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::upstream_debug_value_list_parses_with_di_arg_list_call_arguments` | `llvm/test/DebugInfo/Generic/debug_value_list.ll`, vendored byte-identical. Pins `LLParser::parseMetadata`'s opening `lltok::MetadataVar` / `"DIArgList"` dispatch into `LLParser::parseDIArgList`, ahead of `parseSpecializedMDNode`. The fixture's `RUN` line is `opt -passes=verify`, so its `#dbg_value(` `CHECK` block is `opt`'s output after `llvm::UpgradeIntrinsicCall`; llvmkit has no `AutoUpgrade` and its metadata slot numbering is not `SlotTracker`'s walk order, both recorded in `docs/divergences.md`, so the intrinsic-call spelling and the two operand-text `CHECK-SAME` directives are what is checked | ported (oracle substituted, stated in the doc comment) |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_reaches_the_other_parse_metadata_as_value_callers` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalOperandBundles` and `LLParser::parseExceptionArgs`, the two `parseMetadataAsValue` callers that are not `parseParameterList`. No upstream fixture spells either shape | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_round_trips_inside_a_debug_record` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList` and `AsmWriter.cpp::writeDIArgList`. `test/Assembler`'s `dbg-record-invalid-*` fixtures do carry `!DIArgList`, but none pins an error raised *inside* the operand list: `-3.ll` and `-4.ll` fail at the record's head before the `(`, while `-0.ll`, `-1.ll` and `-5.ll` parse the list to completion and fail at a token in the next IR line, so the routines are the anchor | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_rejects_a_metadata_typed_operand` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList`, the second direct caller of `parseValueAsMetadata`, from which it inherits the `Ty->isMetadataTy()` guard (`invalid metadata-value-metadata roundtrip`). `test/Assembler`'s `dbg-record-invalid-*` fixtures do carry `!DIArgList`, but none pins an error raised *inside* the operand list: `-3.ll` and `-4.ll` fail at the record's head before the `(`, while `-0.ll`, `-1.ll` and `-5.ll` parse the list to completion and fail at a token in the next IR line | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::an_empty_di_arg_list_is_accepted` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList`, whose operand loop is guarded by an `rparen` lookahead rather than requiring one operand | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_di_arg_list_outside_a_function_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseNamedMetadata`, whose explicit refusal is commented "DIArgLists should only appear inline in a function, as they may contain LocalAsMetadata arguments which require a function context" | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::specialized_nodes_enforce_their_field_agreement_rules` | the field-interaction rules below `PARSE_MD_FIELDS()` in `LLParser::parseDICompileUnit` (four), `::parseDIFile`, `::parseDIEnumerator` and `::parseDISubprogram`. `test/Assembler` has no fixture for any of them -- the routines are the anchor | llvmkit-specific |

@@ -917,6 +917,40 @@ parity); a direct consequence of the split instruction dispatch recorded in
   terminator `match` and delete `parse_lhs_before_invoke`. Not fixable in
   isolation without duplicating the lookahead.
 
+### 117. `token zeroinitializer` is rejected; upstream builds `ConstantTokenNone`
+
+*parser — constants* — crates/llvmkit-asmparser/src/ll_parser.rs
+(`zero_initializer_constant`)
+
+Found 2026-08-20 in the operand-bundle close-out, while grading which types
+reach the routine's `_` catch-all (entry 116).
+
+- **LLVM:** `Type::isFirstClassType` returns true for `TokenTyID` (its `switch`
+  returns false only for `FunctionTyID`, `VoidTyID` and an opaque `StructTyID`),
+  and a token type is neither a label nor a `TargetExtType`, so
+  `LLParser::convertValIDToValue`'s `t_Zero` case passes both guards and reaches
+  `Constant::getNullValue`, whose
+  `case Type::TokenTyID: return ConstantTokenNone::get(...)` builds the same
+  constant the `token none` spelling builds.
+- **llvmkit:** `zero_initializer_constant` has no `Token` arm, so the request
+  falls to the `_` catch-all and reports
+  `expected zeroinitializer for a zeroable type`. Probed at this commit:
+  `%v = freeze token zeroinitializer` -> `3:3: expected zeroinitializer for a
+  zeroable type`.
+- **Consequence:** rejects-valid. llvmkit already accepts and prints the
+  `token none` spelling of the identical constant, so this is a parse-stage gap,
+  not a model gap.
+- **Scope of the verification:** established at the parser layer against
+  `convertValIDToValue` and `Constant::getNullValue`. `llvm-as` was not run;
+  `Verifier.cpp`'s only token rule is
+  `Check(!PN.getType()->isTokenLikeTy(), "PHI nodes cannot have token type!")`,
+  so nothing found would reject the surrounding `freeze`.
+- **Not the same verdict for `metadata` / `x86_amx`:** both also pass
+  `isFirstClassType`, but `getNullValue` has no case for either and traps in its
+  `llvm_unreachable` default. llvmkit's rejection there is hardening; see entry
+  116.
+- **Fix:** add a `Token` arm returning the module's `token none` constant.
+
 ## Accepts invalid input
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
@@ -1361,10 +1395,27 @@ arm while testing a target extension type as a metadata operand. Pre-existing
 and unrecorded. It has the shape `docs/fixture-coverage.md` calls gap **G17** —
 a complete upstream message routed through an `expected ...` wrapper.
 
-- **LLVM:** `LLParser::convertValIDToValue`'s `case ValID::t_Zero:` rejects a
-  target extension type without the `HasZeroInit` property with
-  `error(ID.Loc, "invalid type for null constant")` — the bare message,
-  anchored at `ID.Loc`, the location of the `zeroinitializer` token itself.
+- **LLVM:** `LLParser::convertValIDToValue`'s `case ValID::t_Zero:` is *two*
+  guards, both raising the same bare message anchored at `ID.Loc` — the
+  location of the `zeroinitializer` token itself, set as `LLParser::parseValID`'s
+  first statement:
+
+  ```cpp
+  case ValID::t_Zero:
+    // FIXME: LabelTy should not be a first-class type.
+    if (!Ty->isFirstClassType() || Ty->isLabelTy())
+      return error(ID.Loc, "invalid type for null constant");
+    if (auto *TETy = dyn_cast<TargetExtType>(Ty))
+      if (!TETy->hasProperty(TargetExtType::HasZeroInit))
+        return error(ID.Loc, "invalid type for null constant");
+    V = Constant::getNullValue(Ty);
+    return false;
+  ```
+
+  This entry is about the second. Which `target(...)` names carry `HasZeroInit`
+  is decided by `Type::getTargetTypeInfo` (`lib/IR/Type.cpp`), whose table
+  `crates/llvmkit-ir/src/derived_types.rs` mirrors faithfully — the model is at
+  parity, only the diagnostic and the anchor are not.
 - **llvmkit:** the `TargetExt` arm of `zero_initializer_constant` maps
   `IrError::InvalidOperation`'s message into `ParseError::Expected`, whose
   rendering prefixes `expected `, and anchors it at `self.loc()` — the
@@ -1372,9 +1423,12 @@ a complete upstream message routed through an `expected ...` wrapper.
   prints `expected invalid type for null constant` at a later token.
 - **Consequence:** both text and column differ from `llvm-as` on every
   `target(...)` `zeroinitializer` whose type lacks `HasZeroInit`. The verdict is
-  the same, and the sibling non-`TargetExt` arms are unaffected: an ordinary
-  ill-typed `zeroinitializer` already reports the bare message, so this is one
-  arm, not the routine.
+  the same. The wrapper is **not** confined to this arm — the routine's `_`
+  catch-all (`ll_parser.rs:8347`) raises the same `ParseError::Expected` at the
+  same `self.loc()` for Token, Metadata, X86Amx, WasmExnRef and Function, and
+  the opaque-`Struct` arm (`ll_parser.rs:8321-8328`) is the only one that
+  already raises `ParseError::Message`. Those siblings, and a guard the
+  constant path drops, are entries 116 and 117.
 - **Why:** `Module::target_ext_none` answers `IrError::InvalidOperation` with a
   message that is already upstream's complete sentence, and the arm reuses
   `ParseError::Expected` to carry it rather than `ParseError::Message`, which
@@ -1382,25 +1436,55 @@ a complete upstream message routed through an `expected ...` wrapper.
 - **Why it stayed hidden, and the wider hole:** two corpus rows pin this exact
   text — `test/Assembler/2004-11-28-InvalidTypeCrash.ll` and the
   `zeroinit-error.ll` part of `test/Assembler/target-type-properties.ll` — and
-  both pass. `parser_corpus.rs` compares an `error=` pin with
-  `rendered.contains(pin)`, a substring test, so any wrapper that only *adds*
-  text around upstream's message satisfies it. The oracle cannot see a prefix
-  defect at all, and no `loc=` is set on either row, so the anchor is unchecked
-  too. That is a property of the harness, not of these two rows; it is recorded
-  in `docs/future-work.md`.
-- **Fix:** raise `ParseError::Message` instead of `ParseError::Expected` in that
-  arm, and anchor at the span of the value token rather than `self.loc()`. Then
-  tighten the two corpus rows, which is the part that keeps it fixed.
+  both pass, but only one of them passes *because of* the oracle.
+  `2004-11-28-InvalidTypeCrash.ll` is `@.FOO = internal global %struct.none
+  zeroinitializer`, an opaque struct, so it takes the arm that already renders
+  the bare text and would satisfy an equality oracle unchanged; its anchor is
+  wrong all the same. Only `zeroinit-error.ll` is green on containment:
+  `parser_corpus.rs` compares an `error=` pin with `rendered.contains(pin)`, so
+  any wrapper that only *adds* text around upstream's message satisfies it, and
+  neither row sets `loc=`, so the anchor is unchecked too. That is a property of
+  the harness, not of these two rows; it is recorded in `docs/future-work.md`.
+  A third pin is a unit test, `parser_constants.rs:742-744`
+  (`target_ext_zeroinitializer_requires_zero_init_property`), which asserts the
+  divergent `ParseError::Expected` variant by name.
+- **Fix, in three parts:**
+  - Raise `ParseError::Message` from the `TargetExt` arm
+    (`ll_parser.rs:8340-8346`) rather than wrapping
+    `IrError::InvalidOperation`'s sentence in `ParseError::Expected`.
+  - Update `parser_constants.rs:742-744` to expect `ParseError::Message`. It is
+    the only in-tree pin the change breaks — the corpus rows assert on rendered
+    text, not on the variant.
+  - The anchor half is a separate port of upstream's `ValID::Loc`, not an arm
+    edit: llvmkit's `ValId` is a bare enum with no location field, and neither
+    `convert_val_id_to_value` nor `convert_val_id_to_constant` takes one, so
+    there is no "span of the value token" in scope. Threading it fixes
+    `2004-11-28-InvalidTypeCrash.ll`'s anchor at the same time, since that
+    fixture fails upstream's *first* guard, also `error(ID.Loc, …)`.
+  - Then tighten `zeroinit-error.ll`'s manifest row with a `loc=`;
+    `2004-11-28-InvalidTypeCrash.ll` needs no row change.
 
 <details><summary>Verification evidence (verified 2026-08-20)</summary>
 
 Probed with `target/release/examples/parse_file.exe` built at `4da2ee3`.
 On the vendored
 `crates/llvmkit-asmparser/tests/fixtures/upstream/assembler-corpus/target-type-properties/zeroinit-error.ll`
-llvmkit reports `5:3: expected invalid type for null constant`, caret on `ret`;
-that file's first failing line is line 2,
-`%val = freeze target("spirv.DeviceEvent") zeroinitializer`, and its `CHECK`
-line is `error: invalid type for null constant`. Its sibling
+llvmkit reports `5:3: expected invalid type for null constant`, caret on `ret`.
+That file's *failing* line is line 3,
+`%val2 = freeze target("unknown_target_type") zeroinitializer`, whose name
+reaches `Type::getTargetTypeInfo`'s terminal `TargetTypeInfo(Type::getVoidTy(C))`
+and carries no properties. Line 2's `spirv.DeviceEvent` reaches the same
+routine's generic `Name.starts_with("spirv.")` branch, which grants
+`HasZeroInit`, and is the fixture's positive control — line 2 in isolation
+round-trips, exit 0. llvmkit's `5:3` anchor is the `ret` token after line 3's
+instruction, line 4 being the `; CHECK-ZEROINIT` comment, so the skew is two
+lines, not three. Upstream anchors at 3:48 — **derived, not observed**:
+`llvm-as` is not runnable here and the fixture's `FileCheck` line
+(`error: invalid type for null constant`) pins message text only;
+`LLParser::parseValID` sets `ID.Loc = Lex.getLoc()` as its first statement,
+`SMDiagnostic::print` (`lib/Support/SourceMgr.cpp`) emits `ColumnNo + 1` over a
+0-based offset, and `awk 'NR==3{print index($0,"zeroinitializer")}'` on the
+fixture gives 48. Its sibling
 `crates/llvmkit-asmparser/tests/fixtures/upstream/assembler-corpus/2004-11-28-InvalidTypeCrash.ll`
 reports `6:1: invalid type for null constant` — the bare text, from a
 different arm of the same routine, which is why this entry is scoped to the
@@ -1412,6 +1496,132 @@ type for null constant");`. Harness read from
 `crates/llvmkit-asmparser/tests/parser_corpus.rs`: the `error=` assertion is
 `rendered.contains(pin)`; the manifest rows for both fixtures carry
 `error=invalid type for null constant` and no `loc=`.
+
+</details>
+
+### 115. `nofpclass`'s paren diagnostics carried a suffix upstream does not print
+
+*parser — attributes* — crates/llvmkit-asmparser/src/ll_parser.rs
+(`parse_nofpclass_attribute`)
+
+Found 2026-08-20 in the operand-bundle close-out, by comparing every corpus
+`error=` pin against the rendered message rather than testing containment.
+Pre-existing and unrecorded. **Fixed in the same commit that recorded it**; the
+entry stays because the class it belongs to is still invisible to the corpus
+oracle.
+
+- **LLVM:** `LLParser::parseNoFPClassAttr` emits bare strings for both parens —
+  `tokError("expected '('")` when the `(` is missing, and
+  `error(Lex.getLoc(), "expected ')'")` after the integer spelling. Upstream's
+  own `test/Assembler/nofpclass-invalid.ll` pins them bare:
+  `error: expected '('` / `error: expected ')'`.
+- **llvmkit (before the fix):** the two `expect_punct` calls passed
+  `"'(' in nofpclass attribute"` and `"')' in nofpclass attribute"`, so the
+  rendered messages were `expected '(' in nofpclass attribute` and
+  `expected ')' in nofpclass attribute`.
+- **Consequence:** nine corpus rows printed text `llvm-as` does not print, with
+  correct anchors — `nofpclass_0_noparens`, `_1_noparens`, `_closeparen`,
+  `_name_follows_int`, `_nan_noparens`, `_nnan_noparens`, `_only_keyword`,
+  `_two_numbers`, `_two_numbers_bar`. The verdict was the same in all nine.
+- **Not gap G17.** G17 is "a complete upstream message routed through an
+  `expected …` wrapper"; here the wrapper was correct and a suffix had been
+  added to the label. `docs/fixture-coverage.md` records the sibling
+  *mask-value* wrapper for this fixture, which is G17 and is still open.
+- **llvmkit was inconsistent with itself:** `byref-parse-error-0.ll` and
+  `sret-parse-error0.ll` reach `LLParser::parseRequiredTypeAttr`'s equally bare
+  `expected '('` and rendered it bare, which is why they matched exactly.
+- **Why it stayed hidden:** `parser_corpus.rs` matches an `error=` pin with
+  `rendered.contains(pin)`, and a suffix satisfies containment. No `loc=` is set
+  on any of the nine, and none of the nine is reachable by the `{{$}}` equality
+  tier `docs/future-work.md` describes, because
+  `test/Assembler/nofpclass-invalid.ll` writes no end anchor on its `CHECK`
+  lines. This instance was found by a one-off equality sweep, not by a gate.
+- **Fix (applied):** both labels are now bare, which is also the house idiom at
+  every other `expect_punct(PunctKind::LParen, "'('")` site.
+
+<details><summary>Verification evidence (verified 2026-08-20)</summary>
+
+Upstream read from `lib/AsmParser/LLParser.cpp::parseNoFPClassAttr` — the two
+literals are `tokError("expected '('")` and
+`error(Lex.getLoc(), "expected ')'")` with nothing appended — and from
+`test/Assembler/nofpclass-invalid.ll`, whose `ONLYKEYWORD` / `NOPARENS0` /
+`NOPARENS-ONE` / `NOPARENS-NAN` / `NOPARENS-NNAN` / `CLOSEPAREN` lines read
+`error: expected '('` and whose `TWONUMBERS` / `TWONUMBERSBAR` /
+`NAME-FOLLOWS-INT` lines read `error: expected ')'`, none of them with a
+trailing `{{$}}`. Probed with `target/release/examples/parse_file.exe` after the
+fix: `float nofpclass %x` -> `1:53: expected '('`;
+`float nofpclass(2 4) %x` -> `1:54: expected ')'`. Sweep that found it, re-run
+at this commit: the 302 `error=` rows of `parser_corpus_manifest.txt`, bucketed
+by comparing the rendered message (the first stderr line of `parse_file` with
+the `<path>:<line>:<col>: ` prefix stripped) against the pin, give 297 exact /
+1 suffix / 4 mid-message / 0 non-containing — up from 288 exact / 10 suffix /
+4 mid-message before these two labels were fixed.
+
+</details>
+
+### 116. `zero_initializer_constant`'s fallback arm invents a message, and the constant path drops upstream's first guard
+
+*parser — constants* — crates/llvmkit-asmparser/src/ll_parser.rs
+(`zero_initializer_constant`, `convert_val_id_to_constant`)
+
+Found 2026-08-20 while checking entry 114's claim that the defect was confined
+to the `TargetExt` arm. It is not.
+
+- **LLVM:** `LLParser::convertValIDToValue`'s `case ValID::t_Zero:` is *two*
+  guards. It opens `if (!Ty->isFirstClassType() || Ty->isLabelTy()) return
+  error(ID.Loc, "invalid type for null constant");` and only then tests
+  `TargetExtType::HasZeroInit` with the same bare message.
+  `LLParser::parseConstantValue` routes `t_Zero` through the same routine with
+  `PFS = nullptr`, so the first guard runs on the constant path too.
+- **llvmkit, defect 1:** `zero_initializer_constant`'s `_` catch-all
+  (`ll_parser.rs:8347`) is
+  `Err(self.expected("zeroinitializer for a zeroable type"))` — the same
+  `ParseError::Expected` shape at the same `self.loc()`, carrying a production
+  string upstream never emits. It is reached for Token, Metadata, X86Amx,
+  WasmExnRef and Function.
+- **llvmkit, defect 2:** `convert_val_id_to_constant`'s `ValId::Zero` arm
+  (`ll_parser.rs:8546`) does not call `check_undef_like_type`, while its own
+  `Undef` (`:8547`) and `Poison` (`:8551`) siblings do, and the value path
+  (`:8475`) does for `Zero`. So a global initializer skips upstream's first
+  guard: `@g = global label zeroinitializer` reports
+  `2:1: expected zeroinitializer for a zeroable type` where upstream reports
+  `invalid type for null constant`.
+- **Not affected:** the opaque-`Struct` arm (`ll_parser.rs:8321-8328`) already
+  raises `ParseError::Message` with the bare text, which is why
+  `2004-11-28-InvalidTypeCrash.ll` renders exactly and is the one arm entry
+  114's original scope sentence was true about.
+- **Hardening, not a gap:** `metadata` and `x86_amx` `zeroinitializer` pass
+  upstream's first-class guard and fall to `Constant::getNullValue`'s
+  `default: llvm_unreachable("Cannot create a null constant of that type!")`, so
+  upstream traps rather than accepting. llvmkit rejecting them is safe and must
+  not be "ported" back.
+- **Fix:** raise `ParseError::Message` from the `_` arm with upstream's text
+  where upstream reaches its first guard, and call
+  `check_undef_like_type(ty, "null")` from `convert_val_id_to_constant`'s
+  `ValId::Zero` arm as the value path already does. The anchor half is entry
+  114's `ValID::Loc` port.
+
+<details><summary>Verification evidence (verified 2026-08-20)</summary>
+
+Upstream read from `lib/AsmParser/LLParser.cpp`: `convertValIDToValue`'s
+`t_Zero` case, both guards, verbatim as quoted in entry 114; `parseConstantValue`
+dispatches `ValID::t_Zero` into
+`convertValIDToValue(Ty, ID, V, /*PFS=*/nullptr)` in the same `case` group as
+`t_Constant`. `lib/IR/Type.cpp::Type::isFirstClassType` returns false only for
+`FunctionTyID`, `VoidTyID` and an opaque `StructTyID`;
+`lib/IR/Constants.cpp::Constant::getNullValue` has no `MetadataTyID` or
+`X86_AMXTyID` case and ends in
+`default: llvm_unreachable("Cannot create a null constant of that type!")`.
+llvmkit read from `crates/llvmkit-asmparser/src/ll_parser.rs`: the `_` arm at
+:8347, the opaque-`Struct` `ParseError::Message` at :8323-8328, the value path's
+`check_undef_like_type(ty, "null")` at :8475-8477, and the constant path's bare
+`ValId::Zero => self.zero_initializer_constant(ty)` at :8546. Probed with
+`target/release/examples/parse_file.exe` at this commit:
+`%v = freeze token zeroinitializer` -> `3:3: expected zeroinitializer for a
+zeroable type`; `@g = global label zeroinitializer` -> `2:1: expected
+zeroinitializer for a zeroable type`;
+`crates/llvmkit-asmparser/tests/fixtures/upstream/assembler-corpus/2004-11-28-InvalidTypeCrash.ll`
+-> `6:1: invalid type for null constant`.
 
 </details>
 

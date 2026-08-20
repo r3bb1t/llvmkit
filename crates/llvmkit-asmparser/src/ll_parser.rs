@@ -5684,11 +5684,32 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// [`Self::parse_value_as_metadata`], as `parseMetadata` does. Slot refs
     /// (`!N`), inline tuples (`!{...}`) and MDStrings (`!"..."`) are all legal
     /// metadata values.
+    ///
+    /// The `MetadataVar` branch keeps `parseMetadata`'s own `DIArgList`
+    /// special case ahead of the specialized-node dispatch, which is the only
+    /// reason the state is threaded here at all.
     fn parse_metadata_value_operand(
         &mut self,
         pfs: Option<&PerFunctionState<'ctx, B>>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         if matches!(self.peek(), Token::MetadataVar(_)) {
+            // `// DIArgLists are a special case, as they are a list of
+            // ValueAsMetadata and so parsing this requires a Function State.`
+            // `if (Lex.getStrVal() == "DIArgList") { … parseDIArgList(AL, PFS)
+            // … }` — dispatched *before* `parseSpecializedMDNode`, which is why
+            // `parseMetadataAsValue` forwards a `PerFunctionState &` at all.
+            if self.peek_is_di_arg_list() {
+                // `parseDIArgList` opens `assert(PFS && "Expected valid
+                // function state")`, so upstream aborts on a module-scope
+                // `DIArgList` rather than diagnosing one. llvmkit raises no
+                // runtime panics, so it reports instead — the message
+                // `parseNamedMetadata` uses for the same shape.
+                let Some(pfs) = pfs else {
+                    return Err(self.message("found DIArgList outside of function"));
+                };
+                let id = self.parse_di_arg_list(pfs)?;
+                return Ok(own_metadata(self.module.metadata_as_value(id)));
+            }
             let kind = self.parse_md_node_after_bang(false)?;
             let id = own_metadata(self.module.metadata_node(kind));
             return Ok(own_metadata(self.module.metadata_as_value(id)));
@@ -8079,20 +8100,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let ty = expected_ty.ok_or_else(|| self.expected("metadata operand type"))?;
                 if !ty.is_metadata() {
                     return Err(self.expected("`metadata` type for a metadata operand"));
-                }
-                // `parseMetadata` reaches `parseDIArgList` before it reaches
-                // `parseSpecializedMDNode`, and only when a function state is
-                // in hand — the intrinsic call form
-                // `llvm.dbg.value(metadata !DIArgList(...), ...)` is what gets
-                // here.
-                if self.peek_is_di_arg_list() {
-                    let Some(pfs) = pfs else {
-                        return Err(self.message("found DIArgList outside of function"));
-                    };
-                    let id = self.parse_di_arg_list(pfs)?;
-                    return Ok(ValId::Value(own_metadata(
-                        self.module.metadata_as_value(id),
-                    )));
                 }
                 Ok(ValId::Value(self.parse_metadata_value_operand(pfs)?))
             }
@@ -10647,7 +10654,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// must be non-zero, and must fit inside `fcAllFlags`.
     fn parse_nofpclass_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
         self.expect_keyword(Keyword::Nofpclass, "'nofpclass'")?;
-        self.expect_punct(PunctKind::LParen, "'(' in nofpclass attribute")?;
+        self.expect_punct(PunctKind::LParen, "'('")?;
 
         let mut mask = FpClassTest::NONE;
         loop {
@@ -10667,7 +10674,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let Some(bits) = bits else {
                     return Err(self.expected("valid mask value for 'nofpclass'"));
                 };
-                self.expect_punct(PunctKind::RParen, "')' in nofpclass attribute")?;
+                self.expect_punct(PunctKind::RParen, "')'")?;
                 return Ok(Attribute::NoFpClass(bits));
             } else {
                 return Err(self.expected("nofpclass test mask"));

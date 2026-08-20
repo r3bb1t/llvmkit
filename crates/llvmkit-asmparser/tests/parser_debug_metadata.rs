@@ -843,6 +843,9 @@ fn exact_word_kind_families_accept_every_spelling_the_lexer_produces() {
 // Debug records: `#dbg_*`, `!DIArgList`, and the debug-format intermix guard
 // --------------------------------------------------------------------------
 
+const DEBUG_VALUE_LIST: &str =
+    include_str!("fixtures/upstream/debug-value-list/debug_value_list.ll");
+
 const DBG_RECORD_INVALID_1: &str =
     include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-1.ll");
 const DBG_RECORD_INVALID_2: &str =
@@ -916,15 +919,25 @@ fn a_debug_record_missing_a_separator_reports_the_capital_e_label() {
     }
 }
 
-/// `!DIArgList(i32 %a, i32 %b)` in a `#dbg_value` record, which is the only
-/// place it can appear: its operands are a `ValueAsMetadata` list, so it needs
-/// a function state, which is why `parseMetadata` special-cases it ahead of
-/// `parseSpecializedMDNode` and why `parseNamedMetadata` refuses one outright.
+/// `!DIArgList(i32 %a, i32 %b)` in a `#dbg_value` record. Its operands are a
+/// `ValueAsMetadata` list, so it needs a function state, which is why
+/// `parseMetadata` special-cases it ahead of `parseSpecializedMDNode` and why
+/// `parseNamedMetadata` refuses one outright. The record is one of its
+/// spellings; `metadata !DIArgList(...)` in a call argument, an operand bundle
+/// or an exception-argument list is the other, covered by
+/// `upstream_debug_value_list_parses_with_di_arg_list_call_arguments` and
+/// `di_arg_list_reaches_the_other_parse_metadata_as_value_callers`.
 ///
-/// llvmkit-specific in its assembly — `test/Assembler` carries `!DIArgList`
-/// only inside the `dbg-record-invalid-*` negatives, where the parse never
-/// reaches the list — so the round trip is pinned against
+/// llvmkit-specific in its assembly, so the round trip is pinned against
 /// `AsmWriter::writeDIArgList`, which prints each operand as a typed value.
+///
+/// `test/Assembler`'s `dbg-record-invalid-*` fixtures do carry `!DIArgList`,
+/// but none pins an error raised *inside* the operand list: `-3.ll` and `-4.ll`
+/// fail at the record's head before the `(` — at the `#` itself
+/// (`LLParser::parseBasicBlock`'s hash loop) and at the record-type name
+/// (`LLParser::parseDebugRecord`'s opening check) respectively — while `-0.ll`,
+/// `-1.ll` and `-5.ll` parse the list to completion and fail at a token in the
+/// next IR line (`}`, the return type of the following `call`, and `}`).
 #[test]
 fn di_arg_list_round_trips_inside_a_debug_record() {
     let text = parse_and_render(
@@ -1095,11 +1108,14 @@ fn di_expression_validates_its_operands() {
 /// inlined the routine's body here without the guard, so the parse ran on and
 /// complained about the value instead.
 ///
-/// **Anchored on the routine, not on a fixture.** `test/Assembler` carries
-/// `!DIArgList` only inside the `dbg-record-invalid-*` negatives, and none of
-/// them pins an error raised *inside* the operand list: their `CHECK` lines
-/// sit either on the record's own opening token or on the line after a list
-/// that parsed cleanly.
+/// **Anchored on the routine, not on a fixture.**
+/// `test/Assembler`'s `dbg-record-invalid-*` fixtures do carry `!DIArgList`,
+/// but none pins an error raised *inside* the operand list: `-3.ll` and `-4.ll`
+/// fail at the record's head before the `(` — at the `#` itself
+/// (`LLParser::parseBasicBlock`'s hash loop) and at the record-type name
+/// (`LLParser::parseDebugRecord`'s opening check) respectively — while `-0.ll`,
+/// `-1.ll` and `-5.ll` parse the list to completion and fail at a token in the
+/// next IR line (`}`, the return type of the following `call`, and `}`).
 #[test]
 fn di_arg_list_rejects_a_metadata_typed_operand() {
     let src = r#"
@@ -1120,5 +1136,100 @@ entry:
     assert_eq!(
         parse_err(src).to_string(),
         "invalid metadata-value-metadata roundtrip"
+    );
+}
+/// Ports `test/DebugInfo/Generic/debug_value_list.ll`, byte-identical under
+/// `fixtures/upstream/debug-value-list/` — three `llvm.dbg.value` calls whose
+/// first argument is `metadata !DIArgList(...)`.
+///
+/// The construct this pins is `LLParser::parseMetadata`'s opening
+/// `lltok::MetadataVar` / `"DIArgList"` dispatch into
+/// `LLParser::parseDIArgList`, which runs ahead of `parseSpecializedMDNode`
+/// and is the reason `LLParser::parseMetadataAsValue` forwards a
+/// `PerFunctionState &` at all. llvmkit had hoisted that dispatch into two
+/// callers instead, so every site reached through `parse_metadata_as_value`
+/// rejected this file with `expected metadata type`.
+///
+/// **Oracle substitution, and why.** The fixture's `RUN` line is
+/// `opt -passes=verify < %s | opt -passes=verify -S | FileCheck %s`, so its
+/// `CHECK-COUNT-3: #dbg_value(` block is `opt`'s output *after* the
+/// dbg-intrinsic-to-`#dbg_*`-record conversion in `llvm::UpgradeIntrinsicCall`.
+/// llvmkit has no `AutoUpgrade` (recorded in `docs/divergences.md` as the
+/// missing-`AutoUpgrade` entry), so it re-prints the intrinsic-call spelling,
+/// and its metadata slot numbering is not `SlotTracker`'s walk order either
+/// (also recorded in `docs/divergences.md`), which is why the `CHECK-SAME: !16,`
+/// directive has no counterpart here. What is checked is the rest of the
+/// directive block against llvmkit's own printer: three `llvm.dbg.value` calls,
+/// the third carrying upstream's exact `!DIArgList` and `!DIExpression`
+/// operand text on one line, as `CHECK-SAME` demands.
+#[test]
+fn upstream_debug_value_list_parses_with_di_arg_list_call_arguments() {
+    let module = Module::dynamic("debug_value_list");
+    Parser::new(DEBUG_VALUE_LIST.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("test/DebugInfo/Generic/debug_value_list.ll parses");
+    let text = format!("{module}");
+    module.verify().expect("the fixture verifies");
+
+    // `; CHECK-COUNT-3: #dbg_value(`
+    assert_eq!(
+        text.matches("call void @llvm.dbg.value(metadata !DIArgList(")
+            .count(),
+        3,
+        "output:\n{text}"
+    );
+    // `; CHECK-SAME: !DIArgList(i32 %a, i32 %b, i32 5)` and
+    // `; CHECK-SAME: !DIExpression(DW_OP_LLVM_arg, 0, ...)`, both on the line
+    // the third match sits on.
+    let expression = concat!(
+        "!DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_plus, ",
+        "DW_OP_LLVM_arg, 2, DW_OP_plus)"
+    );
+    let third = text
+        .lines()
+        .find(|line| line.contains("!DIArgList(i32 %a, i32 %b, i32 5)"))
+        .unwrap_or_else(|| panic!("no three-operand DIArgList in:\n{text}"));
+    assert!(third.contains(expression), "line: {third}");
+}
+
+/// `metadata !DIArgList(...)` inside an operand bundle and inside a
+/// `cleanuppad` argument list — the two `parseMetadataAsValue` callers that are
+/// not `parseParameterList`.
+///
+/// `LLParser::parseOptionalOperandBundles` and `LLParser::parseExceptionArgs`
+/// both call `parseMetadataAsValue(V, PFS)` once the operand type is
+/// `metadata`, and that routine is `parseMetadata` plus `MetadataAsValue::get`
+/// — so upstream's `DIArgList` dispatch is reachable from both. No upstream
+/// fixture spells either shape; this test has no upstream counterpart and
+/// exists to hold the dispatch at the call sites the ported fixture above does
+/// not reach.
+#[test]
+fn di_arg_list_reaches_the_other_parse_metadata_as_value_callers() {
+    let text = parse_and_render(
+        r#"
+declare void @g()
+
+define void @f(i32 %a, i32 %b) personality ptr null {
+entry:
+  call void @g() [ "tag"(metadata !DIArgList(i32 %a, i32 %b)) ]
+  invoke void @g() to label %cont unwind label %pad
+
+cont:
+  ret void
+
+pad:
+  %cp = cleanuppad within none [metadata !DIArgList(i32 %a)]
+  cleanupret from %cp unwind to caller
+}
+"#,
+    );
+    assert!(
+        text.contains(r#"[ "tag"(metadata !DIArgList(i32 %a, i32 %b)) ]"#),
+        "output:\n{text}"
+    );
+    assert!(
+        text.contains("cleanuppad within none [metadata !DIArgList(i32 %a)]"),
+        "output:\n{text}"
     );
 }

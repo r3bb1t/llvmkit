@@ -48,7 +48,26 @@ A `ported` negative asserts the parse **fails**, and — for 302 of the 307
 `reject` rows — that the message contains upstream's own `FileCheck` text. 52 of
 those additionally pin upstream's `<stdin>:LINE:COL:`. Every one of those 354
 pins was re-derived from the cited upstream file, not from llvmkit's output.
-That is the parity measure, and it is now a regression lock rather than a claim.
+
+That is a **containment lock, not a text-parity measure**: the harness matches
+with `rendered.contains(pin)` (`parser_corpus.rs:204`), so a message that wraps
+upstream's satisfies the row, and a message *shorter* than upstream's is
+invisible too, since the pin is itself `FileCheck` text and `FileCheck` matches
+substrings. The 52 `loc=` rows additionally assert the caret
+(`parser_corpus.rs:209-226`); on the other 250 the anchor is unchecked. Five
+rows are known to pass while diverging in text — three genuine (entry 114's
+`zeroinit-error`, and `musttail-invalid-1` / `invalid-datalayout-override` under
+**G17** below) and two where llvmkit is exactly right and the pin is a truncated
+`FileCheck` fragment. See the corpus-oracle item in `docs/future-work.md`, which
+carries the derivation.
+
+The 302 / 307 / 52 / 354 figures were re-derived at the commit that added this
+paragraph, by splitting `parser_corpus_manifest.txt` on `|` field-exactly as
+`parse_manifest_entry` (`parser_corpus.rs:68-99`) does — skipping blank and `#`
+lines and reading only `status=` / `error=` / `loc=` options. A plain
+`grep -c 'status=reject'` answers 308; the field-exact split is why the method
+has to be stated. Same pass: 502 rows total, 5 `reject` rows with no `error=`,
+0 `error=` on a non-`reject` status.
 
 A `ported` positive asserts the fixture **parses**, **verifies**, and is
 **round-trip stable** (print → re-parse → print reproduces the first print byte
@@ -665,7 +684,7 @@ collision.
 | `named-metadata.ll` | blocked-model | **G9** — rejected at 28:1: `expected valid UTF-8 metadata name` |
 | `no-mdstring-upgrades.ll` | ported | 1 pass |
 | `noalias-addrspace-md.ll` | ported | 1 pass |
-| `nofpclass-invalid.ll` | blocked-model | **G17** — 8/18 parts blocked. reported `expected valid mask value for 'nofpclass'`, upstream `invalid mask value for 'nofpclass'` |
+| `nofpclass-invalid.ll` | blocked-model | **G17** — 8/18 parts blocked. reported `expected valid mask value for 'nofpclass'`, upstream `invalid mask value for 'nofpclass'`. The ten ported parts include nine that carried a second, distinct defect until 2026-08-20: `expected '(' in nofpclass attribute` / `expected ')' in nofpclass attribute` where `LLParser::parseNoFPClassAttr` prints the labels bare. That was not G17 (the wrapper was right, the label had a suffix) and is recorded as `docs/divergences.md` entry 115; the two labels are now bare. |
 | `nofpclass.ll` | ported | 1 pass |
 | `non-global-value-max-name-size-2.ll` | ported | 1 pass |
 | `non-global-value-max-name-size.ll` | N/A | Contract is `opt -non-global-value-max-name-size=N`, a value-naming knob llvmkit has no equivalent for; nothing about the parse is under test. |

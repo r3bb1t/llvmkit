@@ -2530,19 +2530,79 @@ row while the printed diagnostic differs from `llvm-as`. Rows that set no
 `loc=` leave the caret column unchecked as well, so an anchor that drifts to a
 later token is invisible too.
 
-That is how `docs/divergences.md` entry 114 survived: two rows pin
-`error=invalid type for null constant`, llvmkit prints
-`expected invalid type for null constant` at a later token, and both rows are
-green. The hole is the harness's, not those rows'.
+That is how `docs/divergences.md` entry 114 survived. Two rows pin
+`error=invalid type for null constant` and both are green, but only one of them
+is green *because of* the oracle: `target-type-properties/zeroinit-error.ll`
+renders `expected invalid type for null constant` at a later token, while
+`2004-11-28-InvalidTypeCrash.ll` takes a different arm of the same routine and
+renders the bare text exactly — its anchor is wrong, which containment cannot
+see either. The hole is the harness's, not those rows'.
 
-The work: decide what an `error=` pin means and make the harness enforce it.
-Equality is the strict reading and would surface every wrapper in one run —
-which is the reason to expect a large first sweep, and the reason to do it as
-its own cycle rather than inside an unrelated fix. A cheaper first step is to
-reject a rendered message that contains the pin but does not *start* with it,
-which catches the `expected ` prefix class specifically. Either way, add `loc=`
-to the rows whose upstream `CHECK` carries a column, so anchors stop being
-free.
+**How big it actually is, measured.** Bucketing the 302 `error=` rows by
+comparing the rendered message against the pin gives **302/302 failing and
+containing their pin; 297 exact, 1 adding a suffix, 4 containing the pin
+mid-message, 0 non-containing**. So an equality oracle would flag **5 rows**,
+`starts_with` would flag **4**. Of the 5, **3 are genuine defects** —
+`zeroinit-error` (entry 114), `musttail-invalid-1` and
+`invalid-datalayout-override` (both **G17** in
+[`fixture-coverage.md`](fixture-coverage.md), with the fix stated there) — and
+**2 are false positives of an equality oracle**, where llvmkit's text is
+upstream's and the pin is a truncated `FileCheck` fragment:
+`2003-04-15-ConstantInitAssertion.ll` pins `struct initializer doesn't match
+struct element type` while `LLParser::convertValIDToValue` prints
+`element 0 of struct initializer doesn't match struct element type`, and
+`2007-03-18-InvalidNumberedVar.ll` pins `'%0' defined with type 'i1'` while
+`LLParser::checkValidVariableType` prints
+`'%0' defined with type 'i1' but expected 'i32'`. Being *stricter* than the
+fixture's own `RUN` line is a divergence exactly as being weaker is, so neither
+of those two rows is work — the pin is what would change if a strict tier ever
+covered them.
+
+Derivation, at the commit that wrote this paragraph: run
+`target/release/examples/parse_file.exe` over each `error=` row's fixture, take
+the first stderr line, strip the `<path>:<line>:<col>: ` prefix (which yields
+exactly the harness's `rendered`, since `examples/parse_file.rs` prints
+`eprintln!("{path}:{line}:{col}: {err}")` and the harness compares
+`format!("{error}")`), and compare to the pin. Nine rows that added a suffix at the
+parent commit were `nofpclass-invalid` parts and were fixed in this one —
+`docs/divergences.md` entry 115 — which is what moved the exact bucket from
+288 to 297.
+
+**The work, in three tiers.** Not one switch: the oracle has to come from each
+fixture's own `FileCheck` line, not from a house preference.
+
+- **Equality, safe today.** Where the upstream directive line carrying the pin
+  ends in `{{$}}`, upstream itself demands the message end there. Measured at
+  the commit that wrote this paragraph by scanning each row's upstream original
+  for a line containing the pin and ending in `{{$}}`: **exactly 14 rows** —
+  `byref-parse-error-0` through `-10` (11), `byval-parse-error0`,
+  `inalloca-parse-error0`, `sret-parse-error0`. All 14 already render exactly,
+  so the tier switches on at zero cost. **The `symbolic-addrspace/bad-*` family
+  is *not* anchored**: `test/Assembler/symbolic-addrspace.ll` writes
+  `; ERR-BAD-CHAR: [[#@LINE-1]]:26: error: invalid symbolic addrspace 'D'` with
+  no end anchor, and the only `{{$}}` in that file belongs to four
+  `ALLOCA-IN-GLOBALS` lines of a `status=pass` row. Putting those in an equality
+  tier would be the defect this item exists to prevent.
+- **`loc=`, the real remedy for the rest.** Add `loc=` wherever the upstream
+  `CHECK` carries a column. Measured at the same commit with the matcher
+  "a line of the upstream original that contains the pin and also matches
+  `:[0-9]+: *error:` **or** `\]\]:[0-9]+:`": **114 column-carrying rows, 52
+  already pinned, 62 missing**. Re-derive before acting and record the matcher
+  beside the number — a narrower regex answers 112, because the spellings
+  upstream uses include `[[@LINE+1]]:1:`, `[[#@LINE-1]]:26:` and the bare
+  `; ERR0: :41:` of the `invalid-atomicrmw-scalable` rows.
+- **`contains` everywhere else, deliberately.** The pin is upstream's
+  `FileCheck` text and `FileCheck` matches substrings, so containment *is* that
+  fixture's contract. Tightening it without an end anchor invents a stricter
+  test than upstream runs.
+
+A blanket equality switch is what this item used to propose, on the reasoning
+that it would "surface every wrapper in one run" and so deserved its own cycle.
+That reasoning was wrong twice over: the sweep is 3 rows across roughly three
+code sites, not a large one, and a blanket switch breaks 2 correct rows. The
+prefix shortcut was wrong too — it flags only the 4 mid-message rows (1 of them
+a false alarm) and would have missed all 9 `nofpclass` rows, the largest genuine
+group at the time, because those added a *suffix*.
 
 ## Docs — the cite-by-symbol sweep (found 2026-08-20, fix round 3)
 

@@ -19,6 +19,51 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Parser: `metadata !DIArgList(...)` parses, and `nofpclass` prints upstream's paren diagnostics
+
+- **Fixed: `metadata !DIArgList(...)` is accepted wherever
+  `parseMetadataAsValue` is reached.** `LLParser::parseMetadata` opens its
+  `lltok::MetadataVar` branch with a `DIArgList` special case that calls
+  `LLParser::parseDIArgList` before `parseSpecializedMDNode` — the reason
+  `parseMetadataAsValue` forwards a `PerFunctionState &` at all. llvmkit had
+  hoisted that dispatch into two *callers* instead (`parseValID`'s metadata arm
+  and the `#dbg_*` record operand), so every site that goes through
+  `parse_metadata_as_value` — `parseParameterList` for `call` / `invoke` /
+  `callbr`, `parseOptionalOperandBundles`, `parseExceptionArgs` — fell through
+  to the specialized-node table and reported `expected metadata type` with the
+  caret on `DIArgList`. Ordinary variadic-`dbg.value` assembly did not parse:
+  upstream's own `test/DebugInfo/Generic/debug_value_list.ll` was rejected at
+  its first `call void @llvm.dbg.value(metadata !DIArgList(i32 %b), ...)`. The
+  dispatch now sits in `parse_metadata_value_operand` where `parseMetadata` has
+  it, and the caller-side hoist is deleted. Pre-existing since the `DIArgList`
+  port; the operand-bundle work is responsible only for the rustdoc that then
+  claimed the routine mirrored `parseMetadata`.
+
+  Module scope is unchanged and is *not* covered: `!0 = !{!DIArgList(i32 7)}`
+  reaches upstream's `parseDIArgList(AL, nullptr)`, which opens
+  `assert(PFS && "Expected valid function state")` — upstream aborts rather
+  than accepting, so llvmkit's diagnostic there differs only in message, against
+  undefined behaviour.
+
+- **Fixed: `nofpclass`'s `expected '('` and `expected ')'` are bare, as
+  `LLParser::parseNoFPClassAttr` prints them.** llvmkit appended
+  ` in nofpclass attribute` to both, so nine parts of
+  `test/Assembler/nofpclass-invalid.ll` printed text `llvm-as` does not print
+  while still satisfying the corpus oracle, which tests containment. Recorded as
+  `docs/divergences.md` entry 115.
+
+- **Docs:** `docs/divergences.md` entry 114's evidence block named the wrong
+  line of its fixture and its scope sentence excluded arms that are affected;
+  both corrected, and its Fix bullet now names the unit test the change would
+  break. New entries **116** (the zero-initializer fallback arm invents a
+  message; the constant path drops upstream's first guard) and **117**
+  (`token zeroinitializer` is a rejects-valid). `docs/future-work.md`'s
+  corpus-oracle item carries measured figures and their derivation in place of
+  an unsupported scale claim, and both oracle routes it proposed are replaced —
+  each would have false-failed rows where llvmkit is exactly right.
+  `docs/fixture-coverage.md` no longer calls the containment lock a parity
+  measure.
+
 ### Operand bundles: `ValueAsMetadata` inputs parse, and the bundle list prints upstream's spaces
 
 - **Fixed: a `metadata`-typed operand-bundle input in its `ValueAsMetadata`
