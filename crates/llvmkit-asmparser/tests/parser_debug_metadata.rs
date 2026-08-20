@@ -157,11 +157,16 @@ fn parse_err(src: &str) -> ParseError {
         .expect_err("parse must fail")
 }
 
-/// Ports `test/Assembler/invalid-dilocation-field-bad.ll`, whose CHECK line is
-/// `error: invalid field 'bad'`.
+/// Ports `test/Assembler/invalid-dilocation-field-bad.ll` from the vendored
+/// copy, whose CHECK line is `error: invalid field 'bad'`. The fixture's
+/// `[[@LINE+1]]:18` column pin is asserted by that file's `loc=`/`error=` row
+/// in `parser_corpus_manifest.txt`; this test pins the typed variant.
 #[test]
 fn dilocation_rejects_a_field_its_class_does_not_declare() {
-    let err = parse_err("!0 = !DILocation(bad: 0)\n");
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/assembler-corpus/invalid-dilocation-field-bad.ll");
+
+    let err = parse_err(FIXTURE);
     assert!(
         matches!(
             &err,
@@ -361,6 +366,9 @@ fn debug_info_flag_disjunction_round_trips() {
 /// `LLParser::parseDIExpressionBody` accepts.
 #[test]
 fn diexpression_forms_round_trip() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/assembler-corpus/diexpression.ll");
+
+    // The fixture's own nine `; CHECK-SAME:` needles.
     const FORMS: [&str; 9] = [
         "!DIExpression()",
         "!DIExpression(DW_OP_deref)",
@@ -372,11 +380,7 @@ fn diexpression_forms_round_trip() {
         "!DIExpression(DW_OP_LLVM_convert, 16, DW_ATE_unsigned, DW_OP_LLVM_convert, 32, DW_ATE_signed)",
         "!DIExpression(DW_OP_LLVM_tag_offset, 1)",
     ];
-    let mut src = String::from("!named = !{!0, !1, !2, !3, !4, !5, !6, !7, !8}\n");
-    for (i, form) in FORMS.iter().enumerate() {
-        src.push_str(&format!("!{i} = {form}\n"));
-    }
-    let text = parse_and_render(&src);
+    let text = parse_and_render(FIXTURE);
     for form in FORMS {
         assert!(text.contains(form), "missing {form} in:\n{text}");
     }
@@ -1033,10 +1037,13 @@ fn specialized_nodes_enforce_their_field_agreement_rules() {
 /// than trimmed.
 #[test]
 fn metadata_string_hex_escapes_print_uppercase() {
-    let text = parse_and_render(
-        "!named = !{!0}\n\
-         !0 = !DIFile(filename: \"file\", directory: \"dir\", source: \"int source() { }\\0A\")\n",
-    );
+    // The vendored fixture whole, not a hand-typed excerpt: `UPSTREAM.md`'s
+    // audit rule requires a `mirror` row over an upstream `.ll` to load a
+    // checked-in copy. This is the same file `parser_corpus_manifest.txt`
+    // drives at `status=pass`; `!39` and `!40` are the two `source:` nodes.
+    const FIXTURE: &str = include_str!("fixtures/upstream/assembler-corpus/debug-info.ll");
+
+    let text = parse_and_render(FIXTURE);
     assert!(text.contains(r#"source: "int source() { }\0A""#), "{text}");
 }
 

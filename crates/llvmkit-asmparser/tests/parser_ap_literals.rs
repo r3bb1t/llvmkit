@@ -211,7 +211,8 @@ fn hex_double_literal_converts_to_float_context() {
         "hex_double_literal_converts_to_float_context",
         b"@g = global float 0x400921fb60000000\n",
     );
-    // `writeConstantInternal` prints the hex form through
+    // `writeAPFloatInternal` — reached from `writeConstantInternal`'s
+    // `ConstantFP` arm, which only delegates — prints the hex form through
     // `format_hex(bits, 0, /*Upper=*/true)`, so the digits come back
     // uppercase whatever case the source used.
     assert!(
@@ -223,9 +224,12 @@ fn hex_double_literal_converts_to_float_context() {
 /// Mirrors `test/Assembler/2002-04-07-InfConstant.ll`'s
 /// `; CHECK: fmul float 0x7FF0000000000000, 1.000000e+01` (RUN:
 /// `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s`, so the
-/// CHECK line is `AssemblyWriter` output). `writeConstantInternal`'s FP arm
-/// is `Out << format_hex(apf.bitcastToAPInt().getZExtValue(), 0,
-/// /*Upper=*/true)`.
+/// CHECK line is `AssemblyWriter` output). The statement is
+/// `Out << format_hex(apf.bitcastToAPInt().getZExtValue(), 0, /*Upper=*/true)`
+/// in `llvm/lib/IR/AsmWriter.cpp::writeAPFloatInternal`, a file-static free
+/// function reached from `writeConstantInternal`'s `ConstantFP` arm — that arm
+/// holds only the delegating call, so it is `writeAPFloatInternal` a porter
+/// should grep for.
 #[test]
 fn hex_float_constants_print_uppercase() {
     const FIXTURE: &[u8] =
@@ -247,7 +251,8 @@ fn hex_float_constants_print_uppercase() {
 /// is no `FileCheck`, so what the fixture actually pins is printer
 /// *idempotence*, and `0x427F4000` is its hand-written **input** text, not a
 /// captured `llvm-dis` output. The rule this test asserts comes from the
-/// routine: `writeConstantInternal` prints the hex form as
+/// routine: `writeAPFloatInternal` (reached from `writeConstantInternal`'s
+/// `ConstantFP` arm) prints the hex form as
 /// `format_hex(bits, /*Width=*/0, /*Upper=*/true)`, which reaches
 /// `llvm::write_hex` with `NumChars = max(W, max(1, Nibbles) + PrefixChars)`,
 /// so with `W == 0` a value of eight significant nibbles prints in eight

@@ -19,6 +19,73 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Test oracles: a real FileCheck subset, upstream fixtures instead of hand-typed IR
+
+Nothing here changes what llvmkit parses, prints or verifies. It changes what
+the funclet tests *measure*, on the rule that a harness reimplementing an
+upstream tool must match that tool — being stricter is a divergence exactly as
+being weaker is, because it fails on input upstream accepts.
+
+- **`parser_eh_funclet.rs`'s `file_check` is now `check_directives`, a faithful
+  two-directive subset of FileCheck.** It was neither: it advanced a whole
+  *line* per match (so two `CHECK:` directives could not match one output line,
+  which `test/Assembler/alignstack.ll`'s own block needs), it never applied
+  `FileCheck::CanonicalizeFile`'s horizontal-whitespace collapse (so the **28**
+  `test/Bitcode/compatibility.ll` CHECK lines that carry an interior run of two
+  or more spaces — two globals, seventeen aligned `icmp`/`fcmp` predicates, and
+  nine operand-bundle lines — would have failed against correct output), and
+  its `CHECK-NEXT` looked at the
+  following line instead of counting newlines in the skipped region — weaker
+  than `FileCheckString::CheckNext`, which errors when the match lands on the
+  same line. All three now mirror `Pattern::match` /
+  `FileCheckString::Check` / `CheckNext` / `CountNumNewlinesBetween`. The
+  helper's rustdoc now states that only `CHECK` and `CHECK-NEXT` exist, so a
+  fixture needing `CHECK-SAME`/`-NOT`/`-DAG`/`-LABEL` is *unported* rather than
+  trimmed to fit.
+
+- **`catchswitch_in_preallocated_teardown` runs the oracle its fixture
+  actually uses.** `test/Verifier/preallocated-valid.ll`'s whole contract is
+  one RUN line, `opt -S %s -passes=verify` with no `CHECK` — "this module
+  verifies". The test parsed, printed, and asserted two substrings of its own.
+  It now calls `Module::verify_borrowed`, which passes; a regression in
+  `Verifier::check_call` or `check_invoke` on `@preallocated_teardown_invoke`
+  would have left the old test green.
+
+- **`landingpad_round_trips` is a port rather than a subset.** It was a
+  hand-written single-`catch` landingpad over `{ ptr, i32 }`, rowed against
+  `@instructions.landingpad`'s `catch2` — which is `landingpad i32` with
+  `cleanup` *and* `catch ptr null`. It now runs the whole upstream function and
+  asserts all eleven of its `CHECK` lines: `cleanup` alone, `cleanup` + one
+  `catch`, `cleanup` + two, and `filter [2 x i32] zeroinitializer`.
+
+- **Nine tests load a checked-in upstream fixture instead of re-typing its
+  IR**, which `UPSTREAM.md`'s audit rule requires of a `mirror` row: the four
+  funclet ports (`compatibility.ll`'s `@instructions.win_eh.1`/`.2`,
+  `test/Verifier/{operand-bundles-wineh,preallocated-valid}.ll`, newly vendored
+  under `tests/fixtures/upstream/`), plus `2002-08-15-ConstantExprProblem.ll`,
+  `debug-info.ll`, `diexpression.ll`, `invalid-dilocation-field-bad.ll` and
+  `2008-10-14-QuoteInName.ll`, whose copies were already in the tree. The
+  benefit is auditability by one `diff` — `orig_cpp/` is gitignored and no test
+  reads it, so this creates no drift gate either way.
+
+- **`UPSTREAM.md` regrades nine rows and repairs seven stale ones.** Six grades
+  that claimed more than the test asserts are narrowed — `callbr.ll`'s two
+  rows, `2002-08-15-ConstantExprProblem.ll`, `diexpression.ll`,
+  `debug-info.ll`, and `unnamed_basic_block_uses_slot_label`, which parses no
+  fixture at all and is now `llvmkit-specific`. Three are widened because the
+  test now does more than the row claimed: `landingpad_round_trips`,
+  `catchswitch_in_preallocated_teardown` and
+  `quoted_global_name_hex_escapes_print_uppercase`. Seven rows citing files
+  deleted in `fe11688`, `51bd441` and `2f1f390` are repointed (five) or dropped
+  (two, for machinery with no successor). Nine `compatibility.ll`
+  line-number citations, their nine rustdoc twins and one inline comment become
+  symbol citations, per the repo's cite-by-symbol law. **This does not close
+  that class:** `UPSTREAM.md` still has 167 rows carrying a line-number
+  citation (down from 176) and `docs/divergences.md` about 158 inside its
+  `Correction from verification` and `<details>` blocks. These nineteen were
+  converted only because this round vendored the blocks they name, making the
+  rewrite mechanical; the sweep is recorded in `docs/future-work.md`.
+
 ### Windows EH funclets parse: `%cs = catchswitch`, and the whole implied-`token` operand family
 
 Five `rejects-valid` divergences, all one root cause and all on the same

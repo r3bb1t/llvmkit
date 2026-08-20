@@ -14721,7 +14721,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ///        unwind label %unwind`. Terminator.
     /// Mirrors `LLParser::parseInvoke`.
     ///
-    /// Upstream: `test/Assembler/invoke.ll`.
+    /// Upstream: `test/Bitcode/compatibility.ll` `@instructions.terminators`
+    /// (`invoke fastcc void @f.fastcc() to label %defaultdest unwind label
+    /// %exc`). There is no `test/Assembler/invoke.ll` in LLVM 22.1.4.
     fn parse_invoke(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,

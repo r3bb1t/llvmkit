@@ -328,42 +328,38 @@ fn non_entry_blocks_print_a_predecessors_comment() {
     // CHECK lines 15-17: `; CHECK-NEXT:   %4 = add i32 1, 1` /
     // `; CHECK-NEXT:   ret i32 %4` / `; CHECK-NEXT: }`. These follow the `$N`
     // block, so they are not reached by the loop above, and nothing about them
-    // is blocked by divergence 100 — only the `"$N":` label line between the
-    // `-N-` block and this tail is. Asserted as one contiguous run so that
-    // label line is provably the *only* gap.
+    // is blocked by divergence 100. Two CHECK lines sit between the loop's
+    // last assertion and this tail, and both are blocked by that divergence:
+    // 13 (`; CHECK-NEXT:   br label %"$N"`, which is why the `-N-` entry above
+    // carries an empty `next_line`) and 14 (`; CHECK:      "$N":    ; preds =
+    // %-N-`). Asserted as one contiguous run so the gap is provably that
+    // two-line `$N` pair and nothing else.
     assert!(
         printed.contains("  %4 = add i32 1, 1\n  ret i32 %4\n}\n"),
         "{printed}"
     );
 }
 
-/// Ports `test/Assembler/2002-08-15-ConstantExprProblem.ll` whole, as the
-/// oracle for `printBasicBlock`'s `pred_empty(BB)` arm and for the use-list
-/// order `predecessors(BB)` reads. Its RUN line is `llvm-as %s -o /dev/null`,
-/// so its `; preds = %BB2, %0` and `; No predecessors!` comments are
-/// hand-written *input* rather than FileCheck-verified output — they document
-/// the spelling, and the rule source is `printBasicBlock` itself. The
-/// predecessor order is upstream's: `PredIterator` walks the block's use list,
-/// which `Use::addToList` head-inserts, so `BB2`'s later `br` prints before
-/// the entry block's.
+/// Ports `test/Assembler/2002-08-15-ConstantExprProblem.ll` whole, from the
+/// vendored copy, as the oracle for `printBasicBlock`'s `pred_empty(BB)` arm
+/// and for the use-list order `predecessors(BB)` reads. Its **first** RUN line
+/// is `llvm-as %s -o /dev/null`, so its `; preds = %BB2, %0` and
+/// `; No predecessors!` comments are hand-written *input* rather than
+/// FileCheck-verified output — they document the spelling, and the rule source
+/// is `printBasicBlock` itself. The predecessor order is upstream's:
+/// `PredIterator` walks the block's use list, which `Use::addToList`
+/// head-inserts, so `BB2`'s later `br` prints before the entry block's.
+///
+/// The fixture has a **second** RUN line, `verify-uselistorder %s`, which has
+/// no llvmkit counterpart: nothing here re-materialises a use list from a
+/// shuffled `uselistorder` directive and compares. That half is unported, and
+/// this test covers the `llvm-as` half only.
 #[test]
 fn an_unreachable_block_prints_no_predecessors() {
-    let printed = parse_and_print(
-        r#"@.LC0 = internal global [12 x i8] c"hello world\00"             ; <ptr> [#uses=1]
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/assembler-corpus/2002-08-15-ConstantExprProblem.ll");
 
-define ptr @test() {
-; <label>:0
-        br label %BB1
-
-BB1:            ; preds = %BB2, %0
-        %ret = phi ptr [ @.LC0, %0 ], [ null, %BB2 ]          ; <ptr> [#uses=1]
-        ret ptr %ret
-
-BB2:            ; No predecessors!
-        br label %BB1
-}
-"#,
-    );
+    let printed = parse_and_print(FIXTURE);
     assert!(
         printed.contains("BB1:                                              ; preds = %BB2, %0\n"),
         "{printed}"

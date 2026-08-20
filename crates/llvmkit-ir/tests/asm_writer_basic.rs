@@ -228,17 +228,27 @@ fn declare_form_for_empty_function() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Assembler/numbered-values.ll` (slot numbering for unnamed
-/// values, so an unnamed argument claims slot 0) and
-/// `test/Assembler/block-labels.ll::@test1`, whose
-/// `; CHECK:      2:       ; preds = %0` pins the two halves of
-/// `AssemblyWriter::printBasicBlock`'s label branch: an unnamed **entry**
-/// block prints no label at all (the slot-label branch runs only when
-/// `!IsEntryBlock`) yet still holds its slot, and a later unnamed block
-/// prints that slot and names the entry's in its predecessors comment.
-/// Closest unit-test coverage:
+/// **No upstream `.ll` counterpart:** this hand-builds `@anon(i32 %0)` rather
+/// than parsing a fixture, so it is registered `llvmkit-specific` rather than
+/// `mirror`. The rules it locks are upstream's, cited by symbol:
+/// `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printBasicBlock`'s
+/// `else if (!IsEntryBlock)` slot-label branch — an unnamed **entry** block
+/// prints no label at all yet still holds its slot, and a later unnamed block
+/// prints that slot and names the entry's in its predecessors comment — and
+/// `llvm/lib/IR/AsmWriter.cpp::SlotTracker::processFunction`, which numbers
+/// unnamed arguments before basic blocks.
+///
+/// The arg-before-block slot order has a genuine FileCheck oracle upstream:
+/// `test/Assembler/block-labels.ll::@test2`'s
+/// `; CHECK-LABEL: define void @test2(i32 %0, i32 %1) {` followed by
+/// `; CHECK-NEXT:    ret void`, which is asserted against the vendored fixture
+/// by `crates/llvmkit-asmparser/tests/parser_function_body.rs::an_unnamed_entry_block_prints_no_label`.
+/// That fixture's `@test1` cannot adjudicate the assertions below: its `%X` is
+/// a *named* argument, so its `; CHECK: 2: ; preds = %0` reads `%0` where this
+/// module's unnamed argument pushes the entry block to slot 1.
 /// `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedArgument)`
-/// (slot-numbered argument rendering).
+/// is the closest unit test but covers the opposite condition — a *detached*
+/// argument, which prints `i32 <badref>`.
 #[test]
 fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     let m = module_new!("slots")?;

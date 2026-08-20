@@ -1,13 +1,16 @@
 //! Parser integration tests for S3.3 EH/funclet opcodes.
 //!
-//! Mixed provenance, stated per test. The `landingpad` / `resume` / `invoke`
-//! cases and `cleanuppad_cleanupret_round_trips` are hand-narrowed subsets: the
+//! Mixed provenance, stated per test. The `resume` / `invoke` cases and
+//! `cleanuppad_cleanupret_round_trips` are hand-narrowed subsets: the
 //! `test/Assembler/*.ll` fixture names they were first cited against are not
 //! present in LLVM 22.1.4, and `UPSTREAM.md` now points them at the
-//! `test/Bitcode/compatibility.ll` functions they were shaped after. Four of
-//! the five `catchswitch` cases reproduce a whole upstream fixture or function
-//! verbatim; the fifth, `catchswitch_print_reparse_is_stable`, has no upstream
-//! counterpart and says so in its own doc comment.
+//! `test/Bitcode/compatibility.ll` functions they were shaped after.
+//! `landingpad_round_trips` and four of the five `catchswitch` cases reproduce
+//! a whole upstream fixture or function verbatim, loaded through `include_str!`
+//! from a checked-in copy under `tests/fixtures/upstream/` as `UPSTREAM.md`'s
+//! audit rule requires of a `mirror` row; the fifth,
+//! `catchswitch_print_reparse_is_stable`, has no upstream counterpart and says
+//! so in its own doc comment.
 //!
 //! Note: the parser does not require a `personality` attribute on `define`
 //! to accept `landingpad`/`resume`; that constraint is left to the verifier.
@@ -24,6 +27,20 @@ fn parse_snippet(src: &str) -> String {
     format!("{module}")
 }
 
+/// `opt -passes=verify` — the whole contract of an upstream `-valid` fixture.
+/// Parses, verifies, and returns the printed module.
+fn parse_verify_and_print(src: &str) -> String {
+    let module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    module
+        .verify_borrowed()
+        .expect("test/Verifier/preallocated-valid.ll: `opt -passes=verify` accepts this module");
+    format!("{module}")
+}
+
 /// Parse, print, re-parse and re-print. `test/Bitcode/compatibility.ll` runs
 /// `llvm-as | llvm-dis | llvm-as | llvm-dis | FileCheck`, so its `CHECK` lines
 /// are matched against the *second* `llvm-dis`: every construct in it must
@@ -35,66 +52,160 @@ fn parse_print_reparse(src: &str) -> (String, String) {
     (first, second)
 }
 
-/// One line of a ported fixture's `CHECK` block.
+/// One directive of a ported fixture's `CHECK` block.
 enum Check<'a> {
-    /// `; CHECK: <needle>` — matches as a substring of some line at or after
-    /// the scan cursor.
+    /// `; CHECK: <needle>` — `Pattern::match` searches the *remaining buffer*
+    /// from the byte cursor, and `FileCheckString::Check` resumes at
+    /// `MatchPos + MatchLen`, a byte position still inside the matched line.
+    /// Two `CHECK:` directives may therefore match one output line.
     Line(&'a str),
-    /// `; CHECK-NEXT: <needle>` — must match the line immediately following
-    /// the previous match.
+    /// `; CHECK-NEXT: <needle>` — matches like `Check::Line`, then
+    /// `FileCheckString::CheckNext` requires exactly one newline in the
+    /// skipped region.
     Next(&'a str),
 }
 
-/// Run a fixture's own `CHECK` / `CHECK-NEXT` lines against `text` the way
-/// `FileCheck` does: needles match as substrings of a line, every check must
-/// match, and they must match **in order**, each one at or after the previous
-/// match. The ordering rule is load-bearing for `@instructions.win_eh.2`,
-/// whose `CHECK: cleanuppad within none []` appears twice and must match two
-/// different lines.
-fn file_check(text: &str, checks: &[Check<'_>]) {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut cursor = 0usize;
-    for check in checks {
-        match check {
-            Check::Line(needle) => {
-                let hit = (cursor..lines.len())
-                    .find(|&i| lines[i].contains(needle))
-                    .unwrap_or_else(|| {
-                        panic!("CHECK: {needle:?} not found at or after line {cursor} in:\n{text}")
-                    });
-                cursor = hit + 1;
+/// Mirrors `FileCheck::CanonicalizeFile`: collapse each run of ' ' / '\t' to a
+/// single ' '. Upstream applies it to the check file *and* the input file
+/// whenever `--strict-whitespace` is absent, which is the case for every
+/// fixture ported here.
+fn canonicalize_horizontal_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_run = false;
+    for c in s.chars() {
+        if c == ' ' || c == '\t' {
+            if !in_run {
+                out.push(' ');
+                in_run = true;
             }
-            Check::Next(needle) => {
-                assert!(
-                    cursor < lines.len() && lines[cursor].contains(needle),
-                    "CHECK-NEXT: {needle:?} did not match line {cursor} in:\n{text}"
-                );
-                cursor += 1;
+        } else {
+            in_run = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Mirrors `CountNumNewlinesBetween`: a `\r\n` or `\n\r` pair is one newline.
+fn count_newlines_between(region: &str) -> usize {
+    let bytes = region.as_bytes();
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\n' || bytes[i] == b'\r' {
+            count += 1;
+            if i + 1 < bytes.len()
+                && (bytes[i + 1] == b'\n' || bytes[i + 1] == b'\r')
+                && bytes[i + 1] != bytes[i]
+            {
+                i += 1;
             }
         }
+        i += 1;
+    }
+    count
+}
+
+/// Run a fixture's own `CHECK` / `CHECK-NEXT` directives against `text`.
+///
+/// A faithful two-directive subset of FileCheck, not a paraphrase:
+///
+/// * `FileCheck::CanonicalizeFile` collapses horizontal-whitespace runs in both
+///   buffers; `FileCheck::readCheckFile` ltrims a pattern and
+///   `Pattern::parsePattern` rtrims it. Both are reproduced here.
+/// * `Pattern::match` is `Buffer.find(FixedStr)` over the *remaining buffer*, and
+///   `FileCheckString::Check` resumes at `MatchPos + MatchLen` — a byte position
+///   still inside the matched line, so two `CHECK:` directives may match one line.
+/// * `FileCheckString::CheckNext` counts newlines in the skipped region with
+///   `CountNumNewlinesBetween` and errors "is on the same line as previous match"
+///   at zero, "is not on the line after the previous match" otherwise.
+/// * `FileCheck::readCheckFile` rejects a leading `-NEXT` directive.
+///
+/// The byte cursor is load-bearing for `@instructions.win_eh.2`, whose
+/// `CHECK: cleanuppad within none []` appears twice and must match two
+/// different lines.
+///
+/// **Only `CHECK` and `CHECK-NEXT` are implemented.** A fixture needing
+/// `CHECK-SAME`, `CHECK-NOT`, `CHECK-DAG`, `CHECK-LABEL`, `{{regex}}` or
+/// `[[var]]` is *unported*, not narrowed — do not trim the fixture to fit this.
+fn check_directives(text: &str, checks: &[Check<'_>]) {
+    assert!(
+        !matches!(checks.first(), Some(Check::Next(_))),
+        "found 'CHECK-NEXT' without previous 'CHECK: line'"
+    );
+    let haystack = canonicalize_horizontal_whitespace(text);
+    let mut cursor = 0usize;
+    for check in checks {
+        let (raw, is_next) = match check {
+            Check::Line(needle) => (needle, false),
+            Check::Next(needle) => (needle, true),
+        };
+        let canonical = canonicalize_horizontal_whitespace(raw);
+        let needle = canonical.trim_matches(|c| c == ' ' || c == '\t');
+        let found = haystack[cursor..].find(needle).unwrap_or_else(|| {
+            let kind = if is_next { "CHECK-NEXT" } else { "CHECK" };
+            panic!("{kind}: {needle:?} not found after byte {cursor} in:\n{text}")
+        });
+        if is_next {
+            let newlines = count_newlines_between(&haystack[cursor..cursor + found]);
+            assert!(
+                newlines != 0,
+                "CHECK-NEXT: is on the same line as previous match ({needle:?}) in:\n{text}"
+            );
+            assert!(
+                newlines == 1,
+                "CHECK-NEXT: is not on the line after the previous match \
+                 ({needle:?}) in:\n{text}"
+            );
+        }
+        cursor += found + needle.len();
     }
 }
 
 // ── landingpad / resume ───────────────────────────────────────────────────────
 
-/// llvmkit-specific subset: `landingpad { ptr, i32 } catch ptr null`
-/// accepted via `LLParser::parseLandingPad`.
+/// `test/Bitcode/compatibility.ll` `@instructions.landingpad`, verbatim, with
+/// the `declare void @llvm.donothing()` it invokes. Covers all four clause
+/// shapes upstream writes: `cleanup` alone (`catch1`), `cleanup` + one `catch`
+/// (`catch2`), `cleanup` + two `catch`es (`catch3`), and a `filter`
+/// (`catch4`). Accepted via `LLParser::parseLandingPad`.
+///
+/// The fixture's `RUN` line is `llvm-as | llvm-dis | llvm-as | llvm-dis |
+/// FileCheck`, so its `CHECK` lines are matched against a second `llvm-dis`.
+/// All **eleven** of the function's `CHECK` lines are asserted below, in
+/// order, through [`check_directives`]. The declaration's own `CHECK`
+/// (`declare void @llvm.donothing() #35`) names a file-wide attribute-group
+/// number and is not part of this excerpt; the four `invoke` lines and the
+/// `br`/`ret` lines carry no `CHECK` upstream and are pinned by the
+/// round-trip assertion instead.
 #[test]
 fn landingpad_round_trips() {
-    let text = parse_snippet(
-        r#"define void @f() {
-entry:
-  br label %lpad
-lpad:
-  %e = landingpad { ptr, i32 } catch ptr null
-  resume { ptr, i32 } %e
-}
-"#,
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/compatibility/instructions_landingpad.ll");
+
+    let (first, second) = parse_print_reparse(FIXTURE);
+    // The function's own eleven CHECK lines, verbatim and in order.
+    check_directives(
+        &first,
+        &[
+            // catch1
+            Check::Line("landingpad i32"),
+            Check::Line("cleanup"),
+            // catch2
+            Check::Line("landingpad i32"),
+            Check::Line("cleanup"),
+            Check::Line("catch ptr null"),
+            // catch3
+            Check::Line("landingpad i32"),
+            Check::Line("cleanup"),
+            Check::Line("catch ptr null"),
+            Check::Line("catch ptr null"),
+            // catch4
+            Check::Line("landingpad i32"),
+            Check::Line("filter [2 x i32] zeroinitializer"),
+        ],
     );
-    assert!(
-        text.contains("%e = landingpad { ptr, i32 }\n          catch ptr null\n"),
-        "got: {text}"
-    );
+    assert_eq!(first, second, "print/re-parse is not idempotent");
 }
 
 /// llvmkit-specific subset: `resume { ptr, i32 } %e` accepted via
@@ -179,63 +290,17 @@ pad_bb:
 /// The fixture's `RUN` line is `llvm-as | llvm-dis | llvm-as | llvm-dis |
 /// FileCheck`, so its `CHECK` lines are matched against a second `llvm-dis`.
 /// All **eight** of the function's `CHECK`/`CHECK-NEXT` lines are asserted
-/// below, in order, through [`file_check`]. Upstream writes no `CHECK` for the
-/// three `catchswitch` lines themselves — the `RUN` line's second `llvm-as` is
-/// what pins those, so they are pinned here by the round-trip assertion plus
-/// three explicit checks.
+/// below, in order, through [`check_directives`]. Upstream writes no `CHECK`
+/// for the three `catchswitch` lines themselves — the `RUN` line's second
+/// `llvm-as` is what pins those, so they are pinned here by the round-trip
+/// assertion plus three explicit checks.
 #[test]
 fn catchswitch_handlers_and_unwind_forms() {
-    let (first, second) = parse_print_reparse(
-        r#"declare ccc void @f.ccc()
+    const FIXTURE: &str = include_str!("fixtures/upstream/compatibility/instructions_win_eh_1.ll");
 
-define i32 @instructions.win_eh.1() personality i32 -3 {
-entry:
-  %arg1 = alloca i32
-  %arg2 = alloca i32
-  invoke void @f.ccc() to label %normal unwind label %catchswitch1
-  invoke void @f.ccc() to label %normal unwind label %catchswitch2
-  invoke void @f.ccc() to label %normal unwind label %catchswitch3
-
-catchswitch1:
-  %cs1 = catchswitch within none [label %catchpad1] unwind to caller
-
-catchpad1:
-  catchpad within %cs1 []
-  br label %normal
-  ; CHECK: catchpad within %cs1 []
-  ; CHECK-NEXT: br label %normal
-
-catchswitch2:
-  %cs2 = catchswitch within none [label %catchpad2] unwind to caller
-
-catchpad2:
-  catchpad within %cs2 [ptr %arg1]
-  br label %normal
-  ; CHECK: catchpad within %cs2 [ptr %arg1]
-  ; CHECK-NEXT: br label %normal
-
-catchswitch3:
-  %cs3 = catchswitch within none [label %catchpad3] unwind label %cleanuppad1
-
-catchpad3:
-  catchpad within %cs3 [ptr %arg1, ptr %arg2]
-  br label %normal
-  ; CHECK: catchpad within %cs3 [ptr %arg1, ptr %arg2]
-  ; CHECK-NEXT: br label %normal
-
-cleanuppad1:
-  %clean.1 = cleanuppad within none []
-  unreachable
-  ; CHECK: %clean.1 = cleanuppad within none []
-  ; CHECK-NEXT: unreachable
-
-normal:
-  ret i32 0
-}
-"#,
-    );
+    let (first, second) = parse_print_reparse(FIXTURE);
     // The function's own eight CHECK lines, verbatim and in order.
-    file_check(
+    check_directives(
         &first,
         &[
             Check::Line("catchpad within %cs1 []"),
@@ -249,8 +314,11 @@ normal:
         ],
     );
     // No upstream CHECK covers the catchswitch lines themselves; the RUN
-    // line's second `llvm-as` does, by requiring them to re-parse.
-    file_check(
+    // line's second `llvm-as` does, by requiring them to re-parse. This is a
+    // deliberate *second* assertion group, not a continuation of the one
+    // above — the byte cursor restarts at 0, the way a second `FileCheck`
+    // invocation over the same input would.
+    check_directives(
         &first,
         &[
             Check::Line("%cs1 = catchswitch within none [label %catchpad1] unwind to caller"),
@@ -279,59 +347,11 @@ normal:
 /// the round trip plus one explicit check, as in `@instructions.win_eh.1`.
 #[test]
 fn catchswitch_nested_funclets_and_catchret() {
-    let (first, second) = parse_print_reparse(
-        r#"declare ccc void @f.ccc()
+    const FIXTURE: &str = include_str!("fixtures/upstream/compatibility/instructions_win_eh_2.ll");
 
-define i32 @instructions.win_eh.2() personality i32 -4 {
-entry:
-  invoke void @f.ccc() to label %invoke.cont unwind label %catchswitch
-
-invoke.cont:
-  invoke void @f.ccc() to label %continue unwind label %cleanup
-
-cleanup:
-  %clean = cleanuppad within none []
-  ; CHECK: %clean = cleanuppad within none []
-  cleanupret from %clean unwind to caller
-  ; CHECK: cleanupret from %clean unwind to caller
-
-catchswitch:
-  %cs = catchswitch within none [label %catchpad] unwind label %terminate
-
-catchpad:
-  %catch = catchpad within %cs []
-  br label %body
-  ; CHECK: %catch = catchpad within %cs []
-  ; CHECK-NEXT: br label %body
-
-body:
-  invoke void @f.ccc() [ "funclet"(token %catch) ]
-    to label %continue unwind label %terminate.inner
-  catchret from %catch to label %return
-  ; CHECK: catchret from %catch to label %return
-
-return:
-  ret i32 0
-
-terminate.inner:
-  cleanuppad within %catch []
-  unreachable
-  ; CHECK: cleanuppad within %catch []
-  ; CHECK-NEXT: unreachable
-
-terminate:
-  cleanuppad within none []
-  unreachable
-  ; CHECK: cleanuppad within none []
-  ; CHECK-NEXT: unreachable
-
-continue:
-  ret i32 0
-}
-"#,
-    );
+    let (first, second) = parse_print_reparse(FIXTURE);
     // The function's own nine CHECK lines, verbatim and in order.
-    file_check(
+    check_directives(
         &first,
         &[
             Check::Line("%clean = cleanuppad within none []"),
@@ -345,7 +365,7 @@ continue:
             Check::Next("unreachable"),
         ],
     );
-    file_check(
+    check_directives(
         &first,
         &[Check::Line(
             "%cs = catchswitch within none [label %catchpad] unwind label %terminate",
@@ -362,41 +382,17 @@ continue:
 /// Upstream's `RUN` line is `not opt -passes=verify`, and the file's single
 /// `CHECK` (`Missing funclet token on intrinsic call`) is a Verifier
 /// diagnostic: llvmkit's `verifier.rs` has no funclet-token rule, so only the
-/// parse half is ported and that one `CHECK` is **not** asserted. The input is
-/// reproduced whole rather than trimmed; what is left out is the Verifier
-/// check, not any part of the fixture's IR. The three assertions below are
-/// llvmkit's own, pinning that the numbered results survive printing.
+/// parse half is ported and that one `CHECK` is **not** asserted. llvmkit
+/// verifies this module clean where upstream rejects it — divergence **112**
+/// in `docs/divergences.md`. The input is the vendored fixture, whole rather
+/// than trimmed; what is left out is the Verifier check, not any part of the
+/// fixture's IR. The three assertions below are llvmkit's own, pinning that
+/// the numbered results survive printing.
 #[test]
 fn catchswitch_numbered_result() {
-    let text = parse_snippet(
-        r#"define void @report_missing() personality ptr @__CxxFrameHandler3 {
-entry:
-  invoke void @may_throw() to label %eh.cont unwind label %catch.dispatch
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
 
-catch.dispatch:
-  %0 = catchswitch within none [label %catch] unwind to caller
-
-catch:
-  %1 = catchpad within %0 [ptr null, i32 0, ptr null]
-  br label %catch.cont
-
-catch.cont:
-; CHECK: Missing funclet token on intrinsic call
-  %2 = call ptr @llvm.objc.retain(ptr null)
-  catchret from %1 to label %eh.cont
-
-eh.cont:
-  ret void
-}
-
-declare void @may_throw()
-declare i32 @__CxxFrameHandler3(...)
-
-declare ptr @llvm.objc.retain(ptr) #0
-
-attributes #0 = { nounwind }
-"#,
-    );
+    let text = parse_snippet(FIXTURE);
     assert!(
         text.contains("%0 = catchswitch within none [label %catch] unwind to caller"),
         "got:\n{text}"
@@ -417,93 +413,28 @@ attributes #0 = { nounwind }
 /// `%p = catchpad within %s []`.
 ///
 /// Upstream's `RUN` line is `opt -S %s -passes=verify` with no `FileCheck`, so
-/// the fixture carries no `CHECK` lines at all: it asserts only that the module
-/// verifies. llvmkit's `verifier.rs` has no `preallocated` or funclet rule, so
-/// only the parse half is ported and the two assertions below are llvmkit's
-/// own. The file is reproduced whole rather than reduced to the one function.
+/// the fixture carries no `CHECK` lines at all: **it asserts only that the
+/// module verifies**, and that is the oracle run here — `verify_borrowed`
+/// inside [`parse_verify_and_print`]. llvmkit has no `preallocated` and no
+/// funclet rule, but a missing rule can only make llvmkit more permissive, so
+/// it can never turn this fixture's contract into a false failure; what the
+/// oracle does cover is `Verifier::check_call` and `check_invoke` over the
+/// rest of the file. The two `contains` assertions below are llvmkit's own,
+/// pinning the `catchswitch`/`catchpad` spelling on top. The file is the
+/// vendored fixture, whole rather than reduced to the one function.
 ///
 /// Deliberately **not** a round trip. `@preallocated_indirect`'s
 /// `call void %f(ptr preallocated(i32) %x) ["preallocated"(token %cs)]` prints
 /// back as `call void %f(ptr %x)`: llvmkit drops parameter attributes and
 /// operand bundles on an *indirect* call, where the direct-callee form in
-/// `@preallocated` round-trips correctly. That defect is recorded separately
-/// and is not fixed here; when it is, this test can gain the round trip.
+/// `@preallocated` round-trips correctly. That is divergence **108** in
+/// `docs/divergences.md` and is not fixed here; when it is, this test can gain
+/// the round trip.
 #[test]
 fn catchswitch_in_preallocated_teardown() {
-    let text = parse_snippet(
-        r#"declare token @llvm.call.preallocated.setup(i32)
-declare ptr @llvm.call.preallocated.arg(token, i32)
-declare void @llvm.call.preallocated.teardown(token)
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/preallocated-valid.ll");
 
-declare i32 @__CxxFrameHandler3(...)
-
-declare void @foo1(ptr preallocated(i32))
-declare i64 @foo1_i64(ptr preallocated(i32))
-declare void @foo2(ptr preallocated(i32), ptr, ptr preallocated(i32))
-
-declare void @constructor(ptr)
-
-define void @preallocated() {
-    %cs = call token @llvm.call.preallocated.setup(i32 1)
-    %x = call ptr @llvm.call.preallocated.arg(token %cs, i32 0) preallocated(i32)
-    call void @foo1(ptr preallocated(i32) %x) ["preallocated"(token %cs)]
-    ret void
-}
-
-define void @preallocated_indirect(ptr %f) {
-    %cs = call token @llvm.call.preallocated.setup(i32 1)
-    %x = call ptr @llvm.call.preallocated.arg(token %cs, i32 0) preallocated(i32)
-    call void %f(ptr preallocated(i32) %x) ["preallocated"(token %cs)]
-    ret void
-}
-
-define void @preallocated_setup_without_call() {
-    %cs = call token @llvm.call.preallocated.setup(i32 1)
-    %a0 = call ptr @llvm.call.preallocated.arg(token %cs, i32 0) preallocated(i32)
-    ret void
-}
-
-define void @preallocated_num_args() {
-    %cs = call token @llvm.call.preallocated.setup(i32 2)
-    %x = call ptr @llvm.call.preallocated.arg(token %cs, i32 0) preallocated(i32)
-    %y = call ptr @llvm.call.preallocated.arg(token %cs, i32 1) preallocated(i32)
-    %a = inttoptr i32 0 to ptr
-    call void @foo2(ptr preallocated(i32) %x, ptr %a, ptr preallocated(i32) %y) ["preallocated"(token %cs)]
-    ret void
-}
-
-define void @preallocated_musttail(ptr preallocated(i32) %a) {
-    musttail call void @foo1(ptr preallocated(i32) %a)
-    ret void
-}
-
-define i64 @preallocated_musttail_i64(ptr preallocated(i32) %a) {
-    %r = musttail call i64 @foo1_i64(ptr preallocated(i32) %a)
-    ret i64 %r
-}
-
-define void @preallocated_teardown() {
-    %cs = call token @llvm.call.preallocated.setup(i32 1)
-    call void @llvm.call.preallocated.teardown(token %cs)
-    ret void
-}
-
-define void @preallocated_teardown_invoke() personality ptr @__CxxFrameHandler3 {
-    %cs = call token @llvm.call.preallocated.setup(i32 1)
-    %x = call ptr @llvm.call.preallocated.arg(token %cs, i32 0) preallocated(i32)
-    invoke void @constructor(ptr %x) to label %conta unwind label %contb
-conta:
-    call void @foo1(ptr preallocated(i32) %x) ["preallocated"(token %cs)]
-    ret void
-contb:
-    %s = catchswitch within none [label %catch] unwind to caller
-catch:
-    %p = catchpad within %s []
-    call void @llvm.call.preallocated.teardown(token %cs)
-    ret void
-}
-"#,
-    );
+    let text = parse_verify_and_print(FIXTURE);
     assert!(
         text.contains("%s = catchswitch within none [label %catch] unwind to caller"),
         "got:\n{text}"
