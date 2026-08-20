@@ -19,6 +19,74 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Docs: counts re-derived, a FileCheck disclosure completed, and a divergence gets a live test
+
+Documentation and tests only — no crate content changes, and no printed byte
+moves. Every figure below was derived at this commit and ships with the command
+that produced it; that requirement is now a standing rule in `AGENTS.md`
+(**Testing & QA**) and `CLAUDE.md` (**Rules that fail CI or review**), because
+nothing in CI reads a `.md` file. Three of the four counts corrected below were
+written by the round immediately before this one — `docs/divergences.md`
+entry 88 and `docs/future-work.md` in `5375335`, this file's own in `4e27ae7`
+— and the fourth, `AGENTS.md`'s test-suite line, had gone unrecounted since
+`c51d185`.
+
+- **`docs/future-work.md` claimed the `verify-uselistorder` half-ports "now say
+  so"; two rows do.** The measured figure at this commit is **220**
+  `UPSTREAM.md` rows citing one of **47** distinct upstream fixtures whose RUN
+  lines include `verify-uselistorder`, with no mention of it —
+  `test/Bitcode/compatibility.ll` alone is 102 of them, `test/Assembler/flags.ll`
+  34 — against exactly 2 rows that disclose it. The rows fix round 3 regraded
+  for hex-case, block-label and `compatibility.ll` reasons are themselves inside
+  the 220. The section now carries that figure and its derivation.
+
+- **`test/Assembler/debug-info.ll` and `diexpression.ll` now run both round
+  trips their RUN line spells.** Their first RUN line is
+  `llvm-as | llvm-dis | llvm-as | llvm-dis | FileCheck`, so upstream matches the
+  `CHECK` lines against the *second* `llvm-dis`; both tests ran one trip.
+  `parser_debug_metadata.rs::parse_render_reparse` runs two, and both fixtures
+  pass unchanged. Their `mirror (partial)` grade now names only what is really
+  unported: the second RUN line, `verify-uselistorder %s`.
+
+- **Divergence 112's evidence was a deleted probe; it is now a test.** New
+  `parser_eh_funclet.rs::wineh_missing_funclet_token_is_not_diagnosed` parses
+  the vendored `test/Verifier/operand-bundles-wineh.ll` and asserts
+  `Module::verify_borrowed()` returns `Ok(())` — the divergence itself, since
+  upstream's `not opt -passes=verify` rejects that module with `Missing funclet
+  token on intrinsic call`. The entry now cites a green test instead of an
+  artifact that no longer exists, and the lock flips when the rule is ported.
+
+- **Four counts corrected against the tree.** `docs/divergences.md` entry 88's
+  "749 `.ll` files, 742 under `upstream/`" was this round's *base* commit, not
+  the commit it was written at, and was already stale when written — the
+  correct figures are **754** and **747**. `CHANGELOG.md`'s "nine tests load a
+  checked-in upstream fixture … the four funclet ports … newly vendored"
+  undercounted both halves: **ten** tests and **five** fixtures. `AGENTS.md`'s
+  test-suite line said 2,204 `#[test]`s and 21 doctests; the tree has **2,524**
+  and **22 passing** (29 collected, 7 ignored). `UPSTREAM.md`'s header moves to
+  2524 / 2519 distinct / 2091 rows.
+
+- **The `writeConstantInternal` `ConstantFP` arm does not "hold only the
+  delegating call".** It also holds the vector `splat (` wrapper — the
+  `Out << "splat ("`, the scalar-type print and the closing `Out << ")"` —
+  around `writeAPFloatInternal(Out, CFP->getValueAPF())`. Corrected at all
+  three sites that said otherwise. The porting advice they carry (grep
+  `writeAPFloatInternal`, not `writeConstantInternal`, for the
+  `format_hex(…, 0, /*Upper=*/true)` statement) is unchanged and still right.
+
+- **The FileCheck substitute now discloses everything it does not implement.**
+  `parser_eh_funclet.rs::check_directives` named six omissions and has
+  fourteen: `CHECK-EMPTY`, `CHECK-COUNT-<n>`, `COM:`, the `{LITERAL}` modifier,
+  the `[[#numeric]]` syntax and the driver options `--implicit-check-not`,
+  `--strict-whitespace` and `--match-full-lines` were missing from the list,
+  which is read off `Check::FileCheckKind` (user-spellable kinds only) and
+  `utils/FileCheck/FileCheck.cpp`'s option table — and `--match-full-lines` is
+  live, since the vendored `test/Assembler/block-labels.ll` carries it on its
+  RUN line. `canonicalize_horizontal_whitespace` also implemented only the
+  second half of `FileCheck::CanonicalizeFile`; it now folds `\r\n` as upstream
+  does. The leading-`-NEXT` panic reproduces upstream's unbalanced quote
+  (`without previous 'CHECK: line`), as this repo's convention requires.
+
 ### Ledger and docs: two closed entries retired, two new divergences, three indexes repaired
 
 Documentation only — no crate content changes. `CHANGELOG.md` and
@@ -29,7 +97,7 @@ errors below survived.
   by Wave 14.** Entry 88 was falsified by the tree in every number it stated,
   including inside its own `Verification evidence` block: "9 manifest entries"
   against 502, "116 lines" for a 270-line driver, "124 fixtures on disk"
-  against 749, and a cited manifest path that does not exist. Its `Fix:` line
+  against 754, and a cited manifest path that does not exist. Its `Fix:` line
   described work that had already shipped, so a reader planning the next corpus
   wave would have re-done W14's completeness proof. Entry 25's residue turned
   out to be sharper than "three stale rows": W14 redefined `xfail-parse` as
@@ -133,13 +201,19 @@ being weaker is, because it fails on input upstream accepts.
   asserts all eleven of its `CHECK` lines: `cleanup` alone, `cleanup` + one
   `catch`, `cleanup` + two, and `filter [2 x i32] zeroinitializer`.
 
-- **Nine tests load a checked-in upstream fixture instead of re-typing its
-  IR**, which `UPSTREAM.md`'s audit rule requires of a `mirror` row: the four
-  funclet ports (`compatibility.ll`'s `@instructions.win_eh.1`/`.2`,
-  `test/Verifier/{operand-bundles-wineh,preallocated-valid}.ll`, newly vendored
-  under `tests/fixtures/upstream/`), plus `2002-08-15-ConstantExprProblem.ll`,
-  `debug-info.ll`, `diexpression.ll`, `invalid-dilocation-field-bad.ll` and
-  `2008-10-14-QuoteInName.ll`, whose copies were already in the tree. The
+- **Ten tests load a checked-in upstream fixture instead of re-typing its
+  IR**, which `UPSTREAM.md`'s audit rule requires of a `mirror` row: the five
+  ports over newly vendored copies (`compatibility.ll`'s
+  `@instructions.win_eh.1`/`.2` and `@instructions.landingpad`,
+  `test/Verifier/{operand-bundles-wineh,preallocated-valid}.ll`, all five now
+  under `tests/fixtures/upstream/`), plus
+  `2002-08-15-ConstantExprProblem.ll`, `debug-info.ll`, `diexpression.ll`,
+  `invalid-dilocation-field-bad.ll` and `2008-10-14-QuoteInName.ll`, whose
+  copies were already in the tree. Both counts derived at `ea57b14`:
+  `git diff b369431..HEAD -- '*.rs' | grep '^+' | grep -c 'include_str!("fixtures'`
+  gives 10, and
+  `git diff --name-status b369431..HEAD -- crates/llvmkit-asmparser/tests/fixtures | grep -c '^A'`
+  gives 5. The
   benefit is auditability by one `diff` — `orig_cpp/` is gitignored and no test
   reads it, so this creates no drift gate either way.
 
@@ -283,7 +357,8 @@ printed bytes.
 - **Fixed: a hex floating-point constant prints uppercase and at its natural
   width.** `writeAPFloatInternal` -- a file-static free function in
   `lib/IR/AsmWriter.cpp`, reached from `writeConstantInternal`'s `ConstantFP`
-  arm, which holds only the delegating call -- prints a non-round-tripping
+  arm, which holds the vector `splat (` wrapper and the delegating call --
+  prints a non-round-tripping
   `double` as `format_hex(bits, /*Width=*/0, /*Upper=*/true)`, which reaches
   `llvm::write_hex` with `NumChars = max(Width, max(1, Nibbles) + 2)`. llvmkit
   wrote `0x{:016x}`: lowercase, and always sixteen digits.

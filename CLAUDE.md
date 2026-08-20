@@ -15,7 +15,7 @@ Out of scope: code generation, target backends, linking. In scope and merely unf
 Every gate runs on the pinned toolchain. CI installs rustc 1.96.0; an unpinned run rewords trybuild `.stderr` diagnostics and produces mismatches that look like regressions and are not. If you see a `.stderr` diff, re-run on `+1.96.0` before touching a fixture.
 
 ```bash
-cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (2523 tests, 214 binaries)
+cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (2524 tests, 214 binaries)
 cargo +1.96.0 test -p llvmkit-ir --test ap_float               # one integration file
 cargo +1.96.0 test <substring>                                 # one test by name
 cargo +1.96.0 clippy --workspace --all-targets --all-features -- -D warnings
@@ -82,6 +82,7 @@ These are not style preferences. Each has a lint, a test, or a reviewer behind i
 - **No silent erasure.** A typed handle or id never widens to an erased one implicitly. Erasure is spelled `as_dyn()` / `as_erased()`, or a `_dyn` or `_erased` method. The suffix vocabulary is three-tier: typed forms carry no suffix (`int_add`); `_dyn` is the `Dyn`-marker member of a typed/erased pair (`IntDyn` / `FloatDyn` / `LenDyn` / `Dyn` — `int_load_dyn`); `_erased` is the fully-erased third tier — `Value` operands plus a runtime opcode, the vector-capable forms (`int_binop_erased`).
 - **Full words, no abbreviations**: `instruction` not `inst`, `predecessor` not `pred`. Internal indices are `*Slot`; public tagged ids are `*Id`. Do not blur them. Lookups are bare nouns (`global(name)`, `function::<R>(name)` — C-GETTER); `get_` appears only in the std-consistent `get_or_insert_*` entry points, and accessors never take a `get_` prefix.
 - **Cite upstream by symbol, never line number** — in comments, rustdoc, tests, `UPSTREAM.md`, `CHANGELOG.md`, and `docs/`. `// Mirrors LLParser::parseTopLevelEntities (LLParser.cpp)`. Line numbers rot the moment the vendored tree moves.
+- **Counts and completeness claims carry their derivation.** Any number, or any "all / every / none / now say so" claim, written into `docs/`, `UPSTREAM.md`, `CHANGELOG.md` or a test doc comment names the command that produced it and the commit it was measured at. Nothing in CI checks these — re-derive rather than copy, this file included. Full rule in `AGENTS.md` under **Testing & QA**.
 - **Doctrine D1–D11** governs every public API (full prose in `README.md`, short list in `AGENTS.md`). Cite ids in commits and reviews.
 
 ## Testing
@@ -108,7 +109,7 @@ Conventional Commits — `type(scope): summary`, `!` after the scope for a break
 - `docs/future-work.md` — the live backlog: what is known-missing, what was deferred, and **why** in each case. Read before proposing work that looks unfinished; it is often deliberate.
 - `docs/divergences.md` — the behavioural-difference ledger: every place llvmkit's observable behaviour differs from the vendored tree, graded by severity (`rejects-valid` is the worst). Distinct from `future-work.md`, which is unimplemented features. Every entry **and its evidence block** is a hypothesis with a citation, not a fact.
 - `docs/fixture-coverage.md` — all 500 `llvm/test/Assembler` fixtures classified `ported` / `blocked-model` / `N/A`, each blocked row naming its gap. The completeness proof behind the corpus manifest.
-- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2523 tests, 2090 rows, 320 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
+- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2524 tests, 2091 rows, 320 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
 - `docs/inkwell-migration.md` — per-API delta against inkwell.
 
 ## Before you start

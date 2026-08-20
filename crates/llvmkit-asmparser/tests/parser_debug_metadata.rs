@@ -14,6 +14,17 @@ fn parse_and_render(src: &str) -> String {
     format!("{module}")
 }
 
+/// `llvm-as | llvm-dis | llvm-as | llvm-dis` — **two** round trips, which is
+/// what `test/Assembler/debug-info.ll` and `test/Assembler/diexpression.ll`
+/// spell on their first `RUN` line. Their `CHECK` lines are therefore matched
+/// against the *second* `llvm-dis`, so a construct that survives one trip and
+/// not the next would still fail upstream. This is the parser/printer half of
+/// that pipeline; the fixtures' second `RUN` line, `verify-uselistorder %s`,
+/// has no llvmkit counterpart and is unported.
+fn parse_render_reparse(src: &str) -> String {
+    parse_and_render(&parse_and_render(src))
+}
+
 const DEBUG_MODULE: &str = r#"
 @g = global i32 0, !dbg !15
 
@@ -359,8 +370,10 @@ fn debug_info_flag_disjunction_round_trips() {
     );
 }
 
-/// Ports `test/Assembler/diexpression.ll`, an `llvm-as | llvm-dis` round-trip
-/// whose `CHECK-SAME` lines are byte-identical to its input. Covers the empty
+/// Ports `test/Assembler/diexpression.ll`, whose `CHECK-SAME` lines are
+/// byte-identical to its input and are matched against the second `llvm-dis`
+/// of `llvm-as | llvm-dis | llvm-as | llvm-dis`; `parse_render_reparse` runs
+/// both trips. Covers the empty
 /// body, bare ops, op+literal sequences, and the `DW_OP_LLVM_convert` form that
 /// mixes in `DW_ATE_*` attribute encodings — the second keyword family
 /// `LLParser::parseDIExpressionBody` accepts.
@@ -380,7 +393,7 @@ fn diexpression_forms_round_trip() {
         "!DIExpression(DW_OP_LLVM_convert, 16, DW_ATE_unsigned, DW_OP_LLVM_convert, 32, DW_ATE_signed)",
         "!DIExpression(DW_OP_LLVM_tag_offset, 1)",
     ];
-    let text = parse_and_render(FIXTURE);
+    let text = parse_render_reparse(FIXTURE);
     for form in FORMS {
         assert!(text.contains(form), "missing {form} in:\n{text}");
     }
@@ -1025,7 +1038,8 @@ fn specialized_nodes_enforce_their_field_agreement_rules() {
 /// Mirrors `test/Assembler/debug-info.ll`'s
 /// `; CHECK-NEXT: !36 = !DIFile(filename: "file", directory: "dir", source: "int source() { }\0A")`
 /// (RUN: `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s`, so
-/// the CHECK line is `AssemblyWriter` output). `llvm::printEscapedString`
+/// the CHECK line is the *second* `llvm-dis`'s output — `parse_render_reparse`
+/// runs both trips). `llvm::printEscapedString`
 /// writes `'\\' << hexdigit(C >> 4) << hexdigit(C & 0x0F)`, and `hexdigit`'s
 /// `LowerCase` parameter defaults to `false`, so the escape is `\0A` and not
 /// `\0a`.
@@ -1043,7 +1057,7 @@ fn metadata_string_hex_escapes_print_uppercase() {
     // drives at `status=pass`; `!39` and `!40` are the two `source:` nodes.
     const FIXTURE: &str = include_str!("fixtures/upstream/assembler-corpus/debug-info.ll");
 
-    let text = parse_and_render(FIXTURE);
+    let text = parse_render_reparse(FIXTURE);
     assert!(text.contains(r#"source: "int source() { }\0A""#), "{text}");
 }
 

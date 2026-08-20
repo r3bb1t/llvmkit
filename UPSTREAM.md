@@ -19,24 +19,29 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2523 (2518 distinct names). Recounted on 2026-08-20
-at the Windows-EH funclet parity point via the documented attribute-anchored
-grep below (`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 946 +
+Total `#[test]` functions: 2524 (2519 distinct names). Recounted on 2026-08-20
+at the fix-round-4 point via the documented attribute-anchored grep below
+(`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 947 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +5 over the 2518 hex-case point is the
-funclet commit's five ported `catchswitch` tests; the +10 before that is the
-two printer-parity commits — 6 for basic-block printing and ordering, 4 for
-hex case; the +273 that reached 2508 is the LLParser-parity program's waves
-0-14. The figure agrees with the gate: a
+`crates/llvmkit-macros` has none). The distinct-name total comes from the same
+attribute anchor followed to the next `fn` line:
+`awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
+— which also reproduces 2524 before `-u`, so the two matchers agree. The +1
+over the 2523 funclet-parity point is fix round 4's
+`wineh_missing_funclet_token_is_not_diagnosed` divergence lock; the +5 before
+that is the funclet commit's five ported `catchswitch` tests; the +10 before
+that is the two printer-parity commits — 6 for basic-block printing and
+ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
+program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2523 passed, 0 failed across 214 test binaries.
+this commit reports 2524 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2090 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2091 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2082 rows give provenance for **2198 of
-the 2518 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2083 rows give provenance for **2199 of
+the 2519 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -46,13 +51,14 @@ rows repointed at `src/phi_raw_tests/medium.rs`, three `compile_fail/ssa_*.rs`
 rows repointed at the `ssa_builder.rs` runtime locks that replaced those
 retired fixtures, and two `compile_fail/*_pass_*.rs` rows deleted because the
 `PassPipelineInfo` / `*PassManager` machinery they exercised was itself deleted
-in `2f1f390` and has no successor. The 2198/320 split is the 2026-08-20
+in `2f1f390` and has no successor. The 2199/320 split is the 2026-08-20
 hex-case audit's 2190/323 carried forward by arithmetic, not a fresh audit: the
 five rows added at the funclet-parity commit each name exactly one of the five
-tests added there (+5 covered, 0 unrowed), and the three `ssa_*` repoints each
-name a test that previously carried no row at all (+3 covered, -3 unrowed).
+tests added there (+5 covered, 0 unrowed), the three `ssa_*` repoints each
+name a test that previously carried no row at all (+3 covered, -3 unrowed), and
+fix round 4's one added test landed with its own row (+1 covered, 0 unrowed).
 Re-running the full audit means expanding the group rows by hand (see the
-methodology note below); do not quote 2198 as a freshly derived number.
+methodology note below); do not quote 2199 as a freshly derived number.
 
 > **Methodology, because the previous header's numbers are not comparable.**
 > Through Wave 11 the audit matched rows to tests by looking for a
@@ -69,7 +75,7 @@ methodology note below); do not quote 2198 as a freshly derived number.
 > closed are the group rows finally being credited, not new provenance. That
 > figure is a **dated measurement, not a baseline for this commit**: it was
 > taken at `3a6d379`, the matcher it used is unrecorded, and the distinct-name
-> total has since moved to 2518. Do not subtract it from today's numbers; if
+> total has since moved to 2519. Do not subtract it from today's numbers; if
 > you want a live figure, re-derive it and state the matcher alongside it.
 
 The gap is inherited, not new: it accumulated across the type-safety and
@@ -960,6 +966,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_handlers_and_unwind_forms` | `test/Bitcode/compatibility.ll` `@instructions.win_eh.1` (verbatim from a vendored copy loaded with `include_str!`, with all eight of its `CHECK`/`CHECK-NEXT` lines as ordered assertions); `LLParser::parseCatchSwitch` / `parseCatchPad` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_nested_funclets_and_catchret` | `test/Bitcode/compatibility.ll` `@instructions.win_eh.2` (verbatim from a vendored copy loaded with `include_str!`, with all nine of its `CHECK`/`CHECK-NEXT` lines as ordered assertions); `LLParser::parseCatchSwitch` / `parseCatchRet` / `parseCleanupRet` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_numbered_result` | `test/Verifier/operand-bundles-wineh.ll` (whole file verbatim from a vendored copy loaded with `include_str!`; parse half only -- upstream's `RUN` is `not opt -passes=verify` and its one `CHECK` is a Verifier diagnostic llvmkit has no rule for, so llvmkit verifies the module clean where upstream rejects it: divergence **112**) | mirror (partial) |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::wineh_missing_funclet_token_is_not_diagnosed` | llvmkit-specific: a divergence lock with **no** upstream counterpart, because it pins the *absence* of a rule. `test/Verifier/operand-bundles-wineh.ll` is the fixture, but its verdict is inverted -- upstream's `not opt -passes=verify` rejects the module with `Missing funclet token on intrinsic call` (`llvm/lib/IR/Verifier.cpp::Verifier::visitIntrinsicCall`), and this asserts llvmkit's `Module::verify_borrowed` returns `Ok(())`. Live evidence for divergence **112**; it flips when the rule is ported | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_in_preallocated_teardown` | `test/Verifier/preallocated-valid.ll` (whole file verbatim from a vendored copy loaded with `include_str!`). Upstream's `RUN` is `opt -S %s -passes=verify` with no `CHECK` lines, so the fixture's entire contract is "this module verifies" -- and that oracle **is** run here, through `Module::verify_borrowed`. Two extra `contains` needles on `@preallocated_teardown_invoke`'s `catchswitch`/`catchpad` are llvmkit's own. | mirror |
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_print_reparse_is_stable` | llvmkit-specific: parser/printer round-trip law for `catchswitch`; closest upstream reference `test/Bitcode/compatibility.ll`'s `llvm-as \| llvm-dis \| llvm-as \| llvm-dis` `RUN` line | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::bitcast_round_trips` | `test/Assembler/2006-12-09-Cast-To-Bool.ll`; `LLParser::parseCast` `Instruction::BitCast` arm | mirror |
@@ -1458,7 +1465,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_declares_no_named_fields` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIExpression` (no `VISIT_MD_FIELDS` block: a `DIExpression` body is a positional `DW_OP_*` list) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::required_fields_are_a_subset_of_accepted_fields` | `llvm/lib/AsmParser/LLParser.cpp` `PARSE_MD_FIELDS` / `REQUIRE_FIELD` macros (upstream's per-class field tables are preprocessor text, not a re-readable `.def`, so the two halves are pinned against each other instead) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::debug_info_flag_disjunction_round_trips` | `test/Assembler/debug-info.ll` (the `DISubroutineType` flags `CHECK-NEXT`); `llvm/lib/IR/AsmWriter.cpp::printDIFlags` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_forms_round_trip` | `test/Assembler/diexpression.ll`, vendored copy loaded with `include_str!`, asserting its nine `CHECK-SAME` needles; its second RUN line, `verify-uselistorder %s`, is unported | mirror (partial) |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_forms_round_trip` | `test/Assembler/diexpression.ll`, vendored copy loaded with `include_str!`, asserting its nine `CHECK-SAME` needles after **both** round trips of the first RUN line (`llvm-as \| llvm-dis \| llvm-as \| llvm-dis \| FileCheck`); its second RUN line, `verify-uselistorder %s`, is unported | mirror (partial) |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected` | `test/Assembler/invalid-diexpression-large.ll` (same accept/reject logic; llvmkit reports its structured `Expected` error rather than upstream's "element too large" text) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::the_remaining_specialized_classes_parse_and_round_trip` | the `VISIT_MD_FIELDS` blocks of `LLParser::parse{DILexicalBlock,DILexicalBlockFile,DICommonBlock,DIImportedEntity,DILabel,DIMacro,DIMacroFile,GenericDINode,DISubrangeType,DIGenericSubrange,DIFixedPointType,DIStringType,DIObjCProperty}` and `parseDIAssignID` (`LLParser.cpp`) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diassignid_requires_distinct` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIAssignID` (rejects a uniqued node before reading the parens) | mirror |
@@ -2283,7 +2290,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_di_arg_list_outside_a_function_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseNamedMetadata`, whose explicit refusal is commented "DIArgLists should only appear inline in a function, as they may contain LocalAsMetadata arguments which require a function context" | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::specialized_nodes_enforce_their_field_agreement_rules` | the field-interaction rules below `PARSE_MD_FIELDS()` in `LLParser::parseDICompileUnit` (four), `::parseDIFile`, `::parseDIEnumerator` and `::parseDISubprogram`. `test/Assembler` has no fixture for any of them -- the routines are the anchor | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_expression_validates_its_operands` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIExpressionBody` -- its `invalid DWARF op` / `invalid DWARF attribute encoding` lookups and the `element too large, limit is N` split from `expected unsigned integer` | llvmkit-specific |
-| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::metadata_string_hex_escapes_print_uppercase` | `llvm/test/Assembler/debug-info.ll`, vendored copy loaded with `include_str!` and parsed whole, asserting its CHECK for `!DIFile(... source: "int source() { }\0A")`; `llvm::printEscapedString` / `hexdigit` (`lib/Support/StringExtras.cpp`, `ADT/StringExtras.h`) | mirror (partial) |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::metadata_string_hex_escapes_print_uppercase` | `llvm/test/Assembler/debug-info.ll`, vendored copy loaded with `include_str!` and parsed whole, asserting its CHECK for `!DIFile(... source: "int source() { }\0A")` after **both** round trips of the first RUN line (`llvm-as \| llvm-dis \| llvm-as \| llvm-dis \| FileCheck`); `llvm::printEscapedString` / `hexdigit` (`lib/Support/StringExtras.cpp`, `ADT/StringExtras.h`). `(partial)` is the fixture's second RUN line, `verify-uselistorder %s`, which has no llvmkit counterpart and is unported | mirror (partial) |
 | `crates/llvmkit-asmparser/tests/dwarf_def_drift.rs::dw_apple_enum_kind_table_matches_the_vendored_def` | `llvm/lib/BinaryFormat/Dwarf.cpp::dwarf::getEnumKind`, whose `StringSwitch` is built from `HANDLE_DW_APPLE_ENUM_KIND` in `Dwarf.def` | llvmkit-specific |
 | `crates/llvmkit-ir/src/md5.rs::tests::md5_matches_upstream_vectors` | `llvm/unittests/Support/MD5Test.cpp::TEST(MD5Test, MD5)` -- the same seven inputs and expected digests, through the same `update` then `final` then stringify sequence | port |
 | `crates/llvmkit-ir/src/md5.rs::tests::md5_hash_exposes_high_and_low_words` | `llvm/unittests/Support/MD5Test.cpp::TEST(MD5HashTest, MD5)` -- same input, same digest string, same `high()` / `low()` word values; the `md5_hash` assertion is the `llvm::MD5Hash` free function the summary index's GUID is defined by | port |

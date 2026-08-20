@@ -754,7 +754,7 @@ Make/CMake and there are no submodules. `orig_cpp/` is **not** built — never r
 
 ## Testing & QA
 
-The workspace ships a substantial test suite: **2,204 attribute-anchored `#[test]`s** across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks, and **21 doctests**, all green on the pin. Per-test provenance lives in `UPSTREAM.md`; re-count with `grep -rn '^\s*#\[test\]' --include='*.rs' crates/ llvmkit/ | wc -l` rather than trusting this number after a large landing. The categories:
+The workspace ships a substantial test suite: **2,524 attribute-anchored `#[test]`s** across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks, and **22 passing doctests** (29 collected, 7 `ignore`d), all green on the pin. Both figures were derived at the 2026-08-20 fix-round-4 commit, by `grep -rn '^\s*#\[test\]' --include='*.rs' crates/ llvmkit/ | wc -l` and by `cargo +1.96.0 test --release --workspace --doc --all-features` respectively; re-run those rather than trusting these numbers after a large landing. Per-test provenance lives in `UPSTREAM.md`. The categories:
 
 **Tests are ported, not invented.** Every new opcode, predicate, or instruction lands with tests sourced from one of the upstream LLVM trees:
 
@@ -767,6 +767,8 @@ The workspace ships a substantial test suite: **2,204 attribute-anchored `#[test
 **Do not invent `.ll` strings or test scenarios** unless upstream genuinely lacks coverage for the construct. When that happens, say so inline — state what upstream does not cover and why the case still needs pinning — and cite the closest upstream test family (e.g. `IRBuilderTest::CreateStepVectorI3` for arbitrary-width tests). A test that pins an *llvmkit-specific* property (an internal representation choice, a parse/print idempotence law) is legitimate under this rule, but it must say that it has no upstream counterpart rather than implying one.
 
 **Test provenance registry.** Every `#[test]` in the workspace ships with a doc comment citing the upstream LLVM file, fixture, or `TEST(...)` it ports. The complete registry lives at `UPSTREAM.md` (repo root) and is the authoritative answer to "where does this test come from?". After adding a new test, append the row. Doctrine D11 (full prose in `README.md`, worked examples in `docs/type-safety-vs-llvm.md`) makes this rule mechanical: a test without a citation is a defect, not a stylistic gap.
+
+**Every count and every completeness claim carries its derivation.** A number, or an "all / every / none / the rows now say so" claim, written into `docs/`, `UPSTREAM.md`, `CHANGELOG.md` or a test doc comment must sit next to the command that produced it and the commit it was measured at. Nothing in CI reads any of these files, so a figure that was true once decays silently, and a sweep that covered part of a class reads as though it covered all of it. This has gone wrong repeatedly: the 2026-08-20 fix rounds corrected such claims in this registry's own header, in `docs/divergences.md` entry 88, in `docs/future-work.md`'s `mirror`-rows section and in `CHANGELOG.md` — several of them written by the same commit that repaired an earlier one, and one of them stale on the day it was written because a sibling commit in the same round had already moved the tree. So: re-derive rather than copy, including from this file, and when a claim cannot be made exactly true, write the measured figure and the reason instead of rounding the claim up.
 
 Categories below are the *shape* of testing; their content always sources from the upstream tree above.
 

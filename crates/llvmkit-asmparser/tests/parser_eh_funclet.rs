@@ -65,22 +65,28 @@ enum Check<'a> {
     Next(&'a str),
 }
 
-/// Mirrors `FileCheck::CanonicalizeFile`: collapse each run of ' ' / '\t' to a
-/// single ' '. Upstream applies it to the check file *and* the input file
-/// whenever `--strict-whitespace` is absent, which is the case for every
-/// fixture ported here.
+/// Mirrors `FileCheck::CanonicalizeFile`, both halves of its loop body: drop
+/// the `\r` of a `\r\n` pair (`if (Ptr <= End - 2 && Ptr[0] == '\r' && Ptr[1]
+/// == '\n') continue;`, so a lone trailing `\r` survives), then collapse each
+/// run of ' ' / '\t' to a single ' '. Upstream applies it to the check file
+/// *and* the input file whenever `--strict-whitespace` is absent, which is the
+/// case for every fixture ported here.
 fn canonicalize_horizontal_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut in_run = false;
-    for c in s.chars() {
-        if c == ' ' || c == '\t' {
-            if !in_run {
-                out.push(' ');
-                in_run = true;
-            }
-        } else {
-            in_run = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        // Eliminate trailing dosish `\r`.
+        if c == '\r' && chars.peek() == Some(&'\n') {
+            continue;
+        }
+        if c != ' ' && c != '\t' {
             out.push(c);
+            continue;
+        }
+        // Otherwise, add one space and advance over neighboring space.
+        out.push(' ');
+        while let Some(' ' | '\t') = chars.peek() {
+            chars.next();
         }
     }
     out
@@ -125,13 +131,28 @@ fn count_newlines_between(region: &str) -> usize {
 /// `CHECK: cleanuppad within none []` appears twice and must match two
 /// different lines.
 ///
-/// **Only `CHECK` and `CHECK-NEXT` are implemented.** A fixture needing
-/// `CHECK-SAME`, `CHECK-NOT`, `CHECK-DAG`, `CHECK-LABEL`, `{{regex}}` or
-/// `[[var]]` is *unported*, not narrowed — do not trim the fixture to fit this.
+/// **Only `CHECK` and `CHECK-NEXT` are implemented.** Everything else FileCheck
+/// understands is *unimplemented here*, and a fixture needing any of it is
+/// *unported*, not narrowed — do not trim the fixture to fit this. Omitted, as
+/// read off `Check::FileCheckKind` in `include/llvm/FileCheck/FileCheck.h` (its
+/// user-spellable kinds only; `CheckNone`, `CheckMisspelled`, `CheckEOF`,
+/// `CheckBadNot` and `CheckBadCount` are internal markers) plus
+/// `utils/FileCheck/FileCheck.cpp`'s option table: the directives `CHECK-SAME`,
+/// `CHECK-NOT`, `CHECK-DAG`, `CHECK-LABEL`, `CHECK-EMPTY`, `CHECK-COUNT-<n>`
+/// and `COM:`; the `{LITERAL}` modifier; the pattern syntaxes `{{regex}}`,
+/// `[[var]]` and `[[#numeric]]`; and the driver options
+/// `--implicit-check-not`, `--match-full-lines` and `--strict-whitespace`.
+/// `--match-full-lines` is not hypothetical: `test/Assembler/block-labels.ll`,
+/// vendored under `tests/fixtures/upstream/assembler-corpus/`, carries it on
+/// its RUN line, so a needle from that fixture matched here would be matched
+/// as a substring where upstream anchors it to a whole line.
 fn check_directives(text: &str, checks: &[Check<'_>]) {
+    // `FileCheck::readCheckFile`'s wording, reproduced including its unbalanced
+    // quote: `"found '" + UsedPrefix + "-" + Type + "' without previous '" +
+    // UsedPrefix + ": line"`.
     assert!(
         !matches!(checks.first(), Some(Check::Next(_))),
-        "found 'CHECK-NEXT' without previous 'CHECK: line'"
+        "found 'CHECK-NEXT' without previous 'CHECK: line"
     );
     let haystack = canonicalize_horizontal_whitespace(text);
     let mut cursor = 0usize;
@@ -404,6 +425,32 @@ fn catchswitch_numbered_result() {
     assert!(
         text.contains("catchret from %1 to label %eh.cont"),
         "got:\n{text}"
+    );
+}
+
+/// **llvmkit-specific divergence lock — no upstream counterpart**, because it
+/// pins the *absence* of a rule upstream has. `test/Verifier/operand-bundles-wineh.ll`
+/// runs `not opt -passes=verify` and its one `CHECK` is
+/// `Missing funclet token on intrinsic call`, so upstream **rejects** this
+/// module; llvmkit's `Module::verify_borrowed` answers `Ok(())` because
+/// `verifier.rs` has no funclet-token rule. That is divergence **112** in
+/// `docs/divergences.md`, and this test is its live evidence rather than a
+/// probe quoted in prose: when the rule is ported this assertion flips, which
+/// is the signal to retire entry 112 and regrade `catchswitch_numbered_result`
+/// from `mirror (partial)` to `mirror`.
+#[test]
+fn wineh_missing_funclet_token_is_not_diagnosed() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
+
+    let module = Module::dynamic("test");
+    let _ = Parser::new(FIXTURE.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    assert!(
+        module.verify_borrowed().is_ok(),
+        "divergence 112 assumes llvmkit accepts this module; it no longer does: {:?}",
+        module.verify_borrowed().err()
     );
 }
 

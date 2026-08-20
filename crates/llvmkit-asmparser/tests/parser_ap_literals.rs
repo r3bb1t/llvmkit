@@ -212,7 +212,8 @@ fn hex_double_literal_converts_to_float_context() {
         b"@g = global float 0x400921fb60000000\n",
     );
     // `writeAPFloatInternal` — reached from `writeConstantInternal`'s
-    // `ConstantFP` arm, which only delegates — prints the hex form through
+    // `ConstantFP` arm, which holds the vector `splat (` wrapper around the
+    // delegating call — prints the hex form through
     // `format_hex(bits, 0, /*Upper=*/true)`, so the digits come back
     // uppercase whatever case the source used.
     assert!(
@@ -228,8 +229,9 @@ fn hex_double_literal_converts_to_float_context() {
 /// `Out << format_hex(apf.bitcastToAPInt().getZExtValue(), 0, /*Upper=*/true)`
 /// in `llvm/lib/IR/AsmWriter.cpp::writeAPFloatInternal`, a file-static free
 /// function reached from `writeConstantInternal`'s `ConstantFP` arm — that arm
-/// holds only the delegating call, so it is `writeAPFloatInternal` a porter
-/// should grep for.
+/// holds the vector `splat (` wrapper (the `Out << "splat ("`, the scalar-type
+/// print and the closing `Out << ")"`) around the delegating call, and nothing
+/// else, so it is `writeAPFloatInternal` a porter should grep for.
 #[test]
 fn hex_float_constants_print_uppercase() {
     const FIXTURE: &[u8] =

@@ -2535,7 +2535,7 @@ clean.
 `UPSTREAM.md`'s audit rule: a `mirror` row over an upstream `.ll` test must load
 a checked-in copy or exact excerpt through `include_bytes!` / `include_str!`,
 and must not rewrite the IR by hand unless the row says `llvmkit-specific
-subset`. Fix round 3 converted nine tests to that shape and vendored five new
+subset`. Fix round 3 converted ten tests to that shape and vendored five new
 fixtures for them, but the general sweep — every `mirror` row whose test still
 inlines an `r#"…"#` literal — is unmeasured.
 
@@ -2545,9 +2545,32 @@ detection. `orig_cpp/` is gitignored and no test in the workspace reads it, so a
 Rust string literal. The five drift guards that do exist parse tracked vendored
 copies under `crates/llvmkit-asmparser/tablegen/`.
 
-Two unported RUN lines found in the same sweep and left open, both
-`verify-uselistorder %s`: on `test/Assembler/2002-08-15-ConstantExprProblem.ll`
+Two unported RUN lines surfaced in the same sweep and were left open, both
+`verify-uselistorder`: on `test/Assembler/2002-08-15-ConstantExprProblem.ll`
 and on `test/Assembler/numbered-values.ll`. Nothing in llvmkit re-materialises a
 use list from a shuffled `uselistorder` directive and compares, so every fixture
-whose second RUN line is `verify-uselistorder` is a half-port; the rows that
-name one now say so.
+carrying that RUN line is a half-port wherever a row cites it.
+
+**The class is far wider than those two, and almost none of it is disclosed.**
+Measured at `ea57b14`: **220** `UPSTREAM.md` rows cite one of **47** distinct
+upstream `.ll` fixtures whose RUN lines include `verify-uselistorder` without
+naming that line — `test/Bitcode/compatibility.ll` alone accounts for 102 of
+them and `test/Assembler/flags.ll` for 34 — against exactly **2** rows that do
+disclose it (`parser_function_body.rs::an_unreachable_block_prints_no_predecessors`
+over `2002-08-15-ConstantExprProblem.ll`, and
+`parser_debug_metadata.rs::diexpression_forms_round_trip` over
+`diexpression.ll`). So fix round 3's sweep disclosed the line on the two rows it
+rewrote for other reasons, not on the class; the rows it regraded for hex-case,
+block-label and `compatibility.ll` reasons are themselves inside the 220.
+`numbered-values.ll` is no longer cited by any row at all, so the pair named
+above is a sweep finding, not a disclosure pair. Derivation, run at `ea57b14`:
+
+```bash
+R=orig_cpp/llvm-project-llvmorg-22.1.4/llvm
+grep -o 'test/[A-Za-z0-9_./+-]*\.ll' UPSTREAM.md | sort -u |
+  while read -r f; do [ -f "$R/$f" ] &&
+    grep -qE '^; *RUN:.*verify-uselistorder' "$R/$f" && echo "$f"; done > ul.txt
+grep '^| `' UPSTREAM.md | grep -v verify-uselistorder | grep -cF -f ul.txt   # 220
+grep '^| `' UPSTREAM.md | grep -v verify-uselistorder |
+  grep -oF -f ul.txt | sort -u | wc -l                                      # 47
+```
