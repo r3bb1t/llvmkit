@@ -103,11 +103,17 @@ row in [`fixture-coverage.md`](fixture-coverage.md). (Its `-2.ll` sibling is
 `ported` — under `-non-global-value-max-name-size=5` it only checks that
 inlining does not *generate* an over-long label, which parses either way.)
 
-### `UPSTREAM.md` — 323 tests still have no provenance row
+### `UPSTREAM.md` — 320 tests still have no provenance row
 
-The registry recount that this wave owed is done: 2508 `#[test]` functions
-(2503 distinct), 2077 rows, 2180 distinct tests covered, **323 with no row**,
-zero rows naming a test that no longer exists. The residue is inherited from the
+The registry recount that this wave owed is done. At the W14d commit it read
+2508 `#[test]` functions (2503 distinct), 2077 rows, 2180 distinct tests
+covered, **323 with no row**, zero rows naming a `#[test]` that no longer
+exists — *scoped to test names, which is all the recount measured; the
+2026-08-20 fix-round-3 sweep found seven rows citing a deleted **file**, five
+repointed and two deleted.* At `4e27ae7` the same figures read 2523 `#[test]`
+functions (2518 distinct), 2090 rows, 2198 covered, **320 with no row**; the
+2198/320 split is arithmetic carried forward, not a fresh audit, and
+`UPSTREAM.md`'s header says why. The residue is inherited from the
 type-safety and pass-API programs and sits in `llvmkit-ir` —
 `src/pass_context.rs` (20), `src/fp_class.rs` (19),
 `constant_folding_analysis.rs` (18), `analysis_preservation.rs` (17),
@@ -2467,3 +2473,81 @@ items below are the deferred / known-remaining points.
   top of this file, which records the fourteen defects it found and the
   `APIntTest.cpp` families deliberately not ported. This entry sat open for
   five days after its own successor closed it.
+## Tests — two CHECK oracles in one crate, and the ordered one cannot express CHECK-NEXT (found 2026-08-20, fix round 3)
+
+`crates/llvmkit-asmparser/tests` carries two substitutes for FileCheck.
+`check_directives` (parser_eh_funclet.rs) implements `CHECK` and `CHECK-NEXT`
+against `FileCheckString::Check` / `FileCheckString::CheckNext` /
+`Pattern::match` / `FileCheck::CanonicalizeFile`. `assert_check_lines` — four
+byte-identical copies at parser_calls.rs, parser_constants.rs,
+parser_modifiers.rs and parser_remaining_opcodes.rs — has upstream's byte cursor
+but **no CHECK-NEXT concept**, so an upstream `CHECK-NEXT` ported into one of
+those files silently becomes an unordered "somewhere later" check. That is a
+false-pass risk, strictly worse than the symptom the fix round repaired in
+`check_directives`.
+
+Five fixtures those files drive carry `CHECK-NEXT` today:
+`insertextractvalue/{extractvalue,insertvalue}_round_trips.ll`,
+`vectorInstructions.3.2/shufflevector_round_trips.ll`,
+`zero-input-phi/phi_int_round_trips.ll`, and
+`ConstantExprFold/constant_expr_fold_full_vector_gep_and_bitcast_fixture.ll`.
+The extractvalue case is the sharpest: upstream is `CHECK: @foo` plus five
+`CHECK-NEXT:`, and a printer regression inserting one line between `@foo` and
+`load` fails upstream and passes here.
+
+The work: move `check_directives` into a shared `tests/support/` module, route
+all five call sites through it, delete the four `assert_check_lines` copies, and
+re-widen the five flattened needle lists to their fixtures' own CHECK blocks —
+using `Check::Next` where upstream writes `CHECK-NEXT`. Doing that also unblocks
+pointing `parser_calls.rs::callbr_successor_structure_round_trips` at the whole
+`fixtures/upstream/assembler-corpus/callbr.ll` and asserting all eight of
+`@test_kill`'s directives, retiring the trimmed fixture and its
+`llvmkit-specific subset` row.
+
+`parser_summary.rs`'s `check_lines` is **not** part of this. It extracts a
+fixture's CHECK lines and compares the whole list to the printed `^` lines with
+`assert_eq!` — a deliberate full-equality check, justified in that file's module
+doc. Folding it into a substring oracle would weaken it.
+
+## Docs — the cite-by-symbol sweep (found 2026-08-20, fix round 3)
+
+`docs/divergences.md` states the law for its own file ("Upstream is cited **by
+symbol, never by line number**") and its body breaks it about **158** times —
+148 matching `File.(cpp|h|def):LINE` plus roughly ten spelled as bare
+coordinates a grep cannot see (`(~:1128)`, `(~4202)`, `defined at :5010`, in
+entries 40 and 47). All 158 sit inside `Correction from verification` and
+`<details>` evidence blocks; **none** appears in an entry's **LLVM:** /
+**llvmkit:** / **Why:** / **Fix:** bullets, and all of them resolve correctly
+against the pinned 22.1.4 tree today. About 48 name the symbol adjacent to the
+number and survive a version bump in recoverable form; the remaining ~110 are
+bare. `UPSTREAM.md` carries the same debt in a different shape: **167 rows**
+carry a line-number citation of an upstream `.ll` or `.cpp`.
+
+Fix round 3 converted 19 of them — nine `UPSTREAM.md` rows, nine rustdoc twins
+and one inline comment, all naming `test/Bitcode/compatibility.ll` blocks that
+the funclet commit had just vendored, which is what made the rewrite mechanical
+and risk-free. **That opens the class, it does not close it.** The header of
+`docs/divergences.md` now discloses the debt rather than implying the file is
+clean.
+
+## Docs — `mirror` rows that hand-write their IR (found 2026-08-20, fix round 3)
+
+`UPSTREAM.md`'s audit rule: a `mirror` row over an upstream `.ll` test must load
+a checked-in copy or exact excerpt through `include_bytes!` / `include_str!`,
+and must not rewrite the IR by hand unless the row says `llvmkit-specific
+subset`. Fix round 3 converted nine tests to that shape and vendored five new
+fixtures for them, but the general sweep — every `mirror` row whose test still
+inlines an `r#"…"#` literal — is unmeasured.
+
+Note what the benefit is and is not: **auditability by one `diff`**, not drift
+detection. `orig_cpp/` is gitignored and no test in the workspace reads it, so a
+`.ll` copied into `tests/fixtures/upstream/` is exactly as frozen at 22.1.4 as a
+Rust string literal. The five drift guards that do exist parse tracked vendored
+copies under `crates/llvmkit-asmparser/tablegen/`.
+
+Two unported RUN lines found in the same sweep and left open, both
+`verify-uselistorder %s`: on `test/Assembler/2002-08-15-ConstantExprProblem.ll`
+and on `test/Assembler/numbered-values.ll`. Nothing in llvmkit re-materialises a
+use list from a shuffled `uselistorder` directive and compares, so every fixture
+whose second RUN line is `verify-uselistorder` is a half-port; the rows that
+name one now say so.

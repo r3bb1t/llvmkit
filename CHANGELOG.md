@@ -19,6 +19,77 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Ledger and docs: two closed entries retired, two new divergences, three indexes repaired
+
+Documentation only — no crate content changes. `CHANGELOG.md` and
+`docs/divergences.md` are user-facing and unchecked by CI, which is how the
+errors below survived.
+
+- **`docs/divergences.md` entries 25 and 88 read as open and were both closed
+  by Wave 14.** Entry 88 was falsified by the tree in every number it stated,
+  including inside its own `Verification evidence` block: "9 manifest entries"
+  against 502, "116 lines" for a 270-line driver, "124 fixtures on disk"
+  against 749, and a cited manifest path that does not exist. Its `Fix:` line
+  described work that had already shipped, so a reader planning the next corpus
+  wave would have re-done W14's completeness proof. Entry 25's residue turned
+  out to be sharper than "three stale rows": W14 redefined `xfail-parse` as
+  "upstream accepts it, llvmkit does not" *in the prose* and left three
+  upstream-**negative** rows sitting under it, so the conflation the entry named
+  is closed in the documentation and open in the data.
+
+- **The ledger's hypothesis warning now covers evidence blocks, which are the
+  part readers trust most.** It said "treat a *row* as a hypothesis"; the file
+  carries 92 `<details>` evidence blocks quoting shell commands and their
+  output, four of which (entries 17, 25, 38, 88) were found stale. Blocks are
+  now explicitly dated snapshots — 10 of the 92 carry a date at all and only 3
+  carry one where it is visible without opening the block. Three blocks were
+  deleted rather than repaired: entries 25 and 88 because every coordinate in
+  them resolved to unrelated code, and entry 38 because its own
+  `Status (W13a, W13b)` paragraph had already superseded it. Entry 17's was
+  re-anchored to symbols and stamped. The file also now discloses that its own
+  cite-by-symbol law is broken about 158 times inside those blocks, instead of
+  stating the law and leaving the debt silent.
+
+- **Added: divergence 112** — llvmkit has no funclet-token rule, so an
+  intrinsic call inside an EH funclet verifies where
+  `Verifier::visitIntrinsicCall` reports `Missing funclet token on intrinsic
+  call`. Surfaced by the funclet parity commit and disclosed until now only in
+  one test's rustdoc.
+
+- **Added: divergence 113** — llvmkit has no `parseTypeAndBasicBlock`. All 13
+  terminator block-operand sites answer `expected 'label' in <production>`,
+  a message upstream never emits; upstream reaches `parseType`'s
+  `expected type` or the `expected a basic block` guard. Two of the 13 became
+  reachable for the first time at the funclet commit
+  (`catchswitch within none []` and `[label %a,]`).
+
+- **`docs/README.md` and `CLAUDE.md` route to the two documents they omitted.**
+  `divergences.md` and `fixture-coverage.md` were reachable only from inside
+  each other and `future-work.md` — a grep for either across `CLAUDE.md`,
+  `AGENTS.md`, `README.md` and `ROADMAP.md` returned one hit, and it was the
+  English word.
+
+- **`docs/fixture-coverage.md`'s phantom-citation recount states its scope.**
+  The paragraph closed "its number needs a stated scope before it is quoted
+  again" while omitting its own: 57/36 reproduces only when the sweep is
+  restricted to `test/Assembler/*.ll`. The unrestricted figure is 61/40, and
+  the four extra hits are characterised rather than lumped together — three are
+  genuine `test/CodeGen/*` phantoms, the fourth was a mis-pathed citation of a
+  file that exists, now repaired.
+
+- **`UPSTREAM.md`'s Methodology recount is dated rather than restated.** "at
+  this commit gives 2037 covered and 466 unrowed (2037 + 466 = 2503)" was
+  written at `3a6d379` and closed exactly there; the distinct-name total has
+  since moved to 2518, so the sentence's own arithmetic no longer closes on the
+  tree it claimed to describe. Subtracting it from today's numbers would have
+  reported a phantom 15-row regression.
+
+- **`docs/future-work.md`** gains three entries: the shared-FileCheck-harness
+  refactor (`assert_check_lines` has no `CHECK-NEXT` concept, so five ported
+  fixtures' `CHECK-NEXT` directives are silently flattened to "somewhere
+  later" — a false-pass risk), the cite-by-symbol sweep, and the `mirror`-rows
+  sweep with its two unported `verify-uselistorder` RUN lines.
+
 ### Test oracles: a real FileCheck subset, upstream fixtures instead of hand-typed IR
 
 Nothing here changes what llvmkit parses, prints or verifies. It changes what
@@ -88,9 +159,22 @@ being weaker is, because it fails on input upstream accepts.
 
 ### Windows EH funclets parse: `%cs = catchswitch`, and the whole implied-`token` operand family
 
-Five `rejects-valid` divergences, all one root cause and all on the same
-critical path: **no `.ll` file containing a `catchswitch` parsed at all**, and
-three of llvmkit's own printers emitted text llvmkit's own parser rejected.
+Two `rejects-valid` divergences and three `accepts-invalid` ones on the same
+critical path, four of the five sharing one root cause: **no `.ll` file
+containing a `catchswitch` parsed at all**, and five of llvmkit's own printed
+instruction forms -- a named `catchswitch`, `catchpad within %cs`, a nested
+`cleanuppad within %pad`, `catchret` and `cleanupret` -- were text llvmkit's own
+parser rejected.
+
+(Corrected 2026-08-20. The original wording said "five `rejects-valid`
+divergences, all one root cause": three of the five are `accepts-invalid` by
+`docs/divergences.md`'s own severity table -- llvmkit accepted input LLVM
+rejects -- and the handler-list bullet's cause is a loop shape independent of
+the implied-`token` type bug behind the other four. `rejects-valid` is the key
+the parity program triages by, so the inflated tally also hid that this commit
+closed three holes of the class where a malformed module survives into the rest
+of the pipeline. The printer count was wrong in the other direction: four
+`asm_writer.rs` routines produce the five forms listed above.)
 
 - **Fixed (breaking, parser): `%cs = catchswitch …` and `%0 = catchswitch …` now
   parse.** `LLParser::parseBasicBlock` strips the optional result name once,
@@ -117,8 +201,10 @@ three of llvmkit's own printers emitted text llvmkit's own parser rejected.
 
 - **Fixed (breaking, parser): `cleanupret` requires its `unwind`.**
   `parseCleanupRet` spells it `parseToken(lltok::kw_unwind, "expected 'unwind'
-  in cleanupret")`; llvmkit had it optional, so `cleanupret from %cp` alone was
-  accepted.
+  in cleanupret")`; llvmkit had it optional. Pre-fix this was **masked**, not
+  observable: `parse_cleanupret` read a type first, so `cleanupret from %cp`
+  was already rejected for the type reason. Only `catchswitch within none []`
+  and `[label %a,]` were observably accepted before this commit.
 
 - **Fixed (breaking, parser): a `catchswitch` handler list must be non-empty and
   must not end in a comma.** `parseCatchSwitch` is a `do … while
@@ -140,19 +226,30 @@ three of llvmkit's own printers emitted text llvmkit's own parser rejected.
   cleanupret` (previously unreachable), `expected 'caller' in cleanupret`, and
   `expected 'from' after catchret`.
 
-- **Added: five ported tests in
-  `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs`**, from
-  `test/Bitcode/compatibility.ll` (`@instructions.win_eh.1` and
-  `@instructions.win_eh.2`, verbatim, with every one of their `CHECK` and
-  `CHECK-NEXT` lines asserted in order), `test/Verifier/operand-bundles-wineh.ll`
-  and `test/Verifier/preallocated-valid.ll`. `compatibility.ll`'s `RUN` line runs
-  `llvm-as | llvm-dis` twice, so those two tests also assert print/re-parse
-  idempotence.
+- **Added: five tests in
+  `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs`**, four of them ports
+  and the fifth (`catchswitch_print_reparse_is_stable`) llvmkit-specific, as
+  its own rustdoc and its `UPSTREAM.md` row both say. The two
+  `test/Bitcode/compatibility.ll` ports (`@instructions.win_eh.1` and
+  `@instructions.win_eh.2`) are verbatim, with every one of their `CHECK` and
+  `CHECK-NEXT` lines asserted in order; that fixture's `RUN` line runs
+  `llvm-as | llvm-dis` twice, so both also assert print/re-parse idempotence.
+  The two `test/Verifier` ports are **parse-half only**, registered
+  `mirror (partial)`: `operand-bundles-wineh.ll`'s `RUN` is
+  `not opt -passes=verify` expecting `Missing funclet token on intrinsic call`,
+  so upstream asserts the module *fails* verification while this test asserts
+  it parses and prints -- llvmkit has no funclet-token rule and verifies it
+  clean (recorded as divergence 112). `preallocated-valid.ll`'s verifier oracle
+  was dropped here and restored in the following commit.
 
 - **Corrected: `cleanuppad_cleanupret_round_trips` encoded the divergence it
   should have caught.** Its input wrote `cleanupret from token %cp` — a spelling
   upstream rejects — while its assertion expected the printer's (correct)
-  `cleanupret from %cp`. The input is now upstream's.
+  `cleanupret from %cp`. The `cleanupret` **spelling** is now upstream's --
+  only the bogus `token` keyword was removed. The surrounding module is still
+  llvmkit's own scaffold (no `personality`, an `entry: br label %pad_bb`, and
+  the pad named `%cp` where `@instructions.win_eh.2` spells it `%clean`), which
+  is why its row reads `llvmkit-specific subset`.
 
 - **Removed: `docs/divergences.md` entries 2, 11 and 13**, which were three
   records of this one divergence. Five newly found divergences that this change
@@ -180,7 +277,9 @@ printed bytes.
   Pinned by `test/Assembler/debug-info.ll`'s `source: "int source() { }\0A"`
   CHECK line.
 - **Fixed: a hex floating-point constant prints uppercase and at its natural
-  width.** `AssemblyWriter::writeConstantInternal` prints a non-round-tripping
+  width.** `writeAPFloatInternal` -- a file-static free function in
+  `lib/IR/AsmWriter.cpp`, reached from `writeConstantInternal`'s `ConstantFP`
+  arm, which holds only the delegating call -- prints a non-round-tripping
   `double` as `format_hex(bits, /*Width=*/0, /*Upper=*/true)`, which reaches
   `llvm::write_hex` with `NumChars = max(Width, max(1, Nibbles) + 2)`. llvmkit
   wrote `0x{:016x}`: lowercase, and always sixteen digits.

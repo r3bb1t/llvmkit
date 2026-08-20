@@ -106,7 +106,9 @@ Conventional Commits — `type(scope): summary`, `!` after the scope for a break
 - `README.md` — user-facing docs, authoritative Doctrine D1–D11 prose.
 - `ROADMAP.md` — milestones, release sequence, the crates.io checklist.
 - `docs/future-work.md` — the live backlog: what is known-missing, what was deferred, and **why** in each case. Read before proposing work that looks unfinished; it is often deliberate.
-- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2523 tests, 2092 rows, 323 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
+- `docs/divergences.md` — the behavioural-difference ledger: every place llvmkit's observable behaviour differs from the vendored tree, graded by severity (`rejects-valid` is the worst). Distinct from `future-work.md`, which is unimplemented features. Every entry **and its evidence block** is a hypothesis with a citation, not a fact.
+- `docs/fixture-coverage.md` — all 500 `llvm/test/Assembler` fixtures classified `ported` / `blocked-model` / `N/A`, each blocked row naming its gap. The completeness proof behind the corpus manifest.
+- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2523 tests, 2090 rows, 320 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
 - `docs/inkwell-migration.md` — per-API delta against inkwell.
 
 ## Before you start

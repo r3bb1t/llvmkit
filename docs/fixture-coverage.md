@@ -154,11 +154,39 @@ These came out of the measurement and are recorded here rather than buried:
    and tests they annotated, and leaving a false citation on a line being
    edited was not defensible. The rest stay deferred as this finding says.
    **The figure of 34 does not reproduce at that commit under any obvious
-   recount**: sweeping `*.rs` and `*.md` under `crates/`, `llvmkit/`, `docs/`
-   and the top-level docs gives **57** phantom citations across **36** distinct
-   nonexistent filenames (37/28 counting only `crates/`, 18/15 counting only
-   `UPSTREAM.md`). The finding's substance holds; its number needs a stated
-   scope before it is quoted again.
+   recount**: sweeping every tracked `*.rs` and `*.md` file, **counting only
+   citations of `test/Assembler/*.ll` and checking existence at the cited
+   path**, gives **57** phantom citations across **36** distinct nonexistent
+   filenames (37/28 counting only `crates/`, 18/15 counting only
+   `UPSTREAM.md`). That scope restriction is what makes the numbers reproduce
+   and was missing when they were first written down.
+
+   The same sweep over **every** `test/` path gives **61** across **40**
+   distinct filenames (39/30, 20/17). The four extra hits are not one class.
+   Three are genuine `test/CodeGen/*` phantoms — `UPSTREAM.md`'s rows for
+   `call_with_metadata_argument_roundtrip`
+   (`test/CodeGen/X86/read-register.ll`) and
+   `call_with_metadata_and_value_argument_roundtrip`
+   (`test/CodeGen/X86/write-register.ll`), plus the rustdoc on the former
+   (`test/CodeGen/Generic/read-write-register.ll`); none exists upstream, and
+   the nearest real register fixtures live under `test/CodeGen/AMDGPU/`. The
+   fourth was a different failure mode entirely: `builder_icmp_named.rs` cited
+   `test/Clang/CodeGen/.../auto_upgrade_nvvm_intrinsics.ll`, a path with a
+   literal `...` elision, for a fixture that **does** exist — at
+   `test/Assembler/auto_upgrade_nvvm_intrinsics.ll`. That one was a mis-pathed
+   citation of a real file, not a citation of a nonexistent one, and it was
+   repaired in the 2026-08-20 fix round rather than left on record. That round
+   also repointed the last `test/Assembler/` residue of the four filenames the
+   funclet commit fixed: `ll_parser.rs::parse_invoke`'s rustdoc cited
+   `invoke.ll`, and now cites `@instructions.terminators` by symbol.
+
+   **Both figures above are dated to `b369431`, and a naive re-run will no
+   longer reproduce them** — for the same reason the original 34 did not. This
+   paragraph and that rustdoc now *quote* five nonexistent paths in order to
+   name them, and a regex sweep cannot tell a citation from a disclaimer, so
+   the same commands give 57/36 and 64/40 here. Re-derive with an exclusion for
+   prose that is discussing the phantom rather than relying on it, and state
+   the scope, before quoting any of these numbers again.
 2. **`AssemblyWriter` printed named metadata after numbered metadata**, where
    `AssemblyWriter::printModule` runs the `M->named_metadata()` loop *before*
    `writeAllMDNodes()`. Fixed here. It was also the cause of 12 of the 24
