@@ -19,31 +19,31 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2527 (2522 distinct names). Recounted on 2026-08-20
-at the operand-bundle-parity point via the documented attribute-anchored grep
-below
-(`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 950 +
+Total `#[test]` functions: 2531 (2526 distinct names). Recounted on 2026-08-20
+at the operand-bundle-parity fix-round-2 point via the documented
+attribute-anchored grep below
+(`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 954 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
 `crates/llvmkit-macros` has none). The distinct-name total comes from the same
 attribute anchor followed to the next `fn` line:
 `awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2527 before `-u`, so the two matchers agree. The +3
-over the 2524 fix-round-4 point is this commit's operand-bundle work: four
-tests added, one hand-trimmed subset test replaced. The +1 before that is fix
-round 4's `wineh_missing_funclet_token_is_not_diagnosed` divergence lock; the +5 before
+— which also reproduces 2531 before `-u`, so the two matchers agree. The +7
+over the 2524 fix-round-4 point is the operand-bundle work: eight tests added
+across its three commits, one hand-trimmed subset test replaced. The +1 before
+that is fix round 4's `wineh_missing_funclet_token_is_not_diagnosed` divergence lock; the +5 before
 that is the funclet commit's five ported `catchswitch` tests; the +10 before
 that is the two printer-parity commits — 6 for basic-block printing and
 ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
 program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2527 passed, 0 failed across 214 test binaries.
+this commit reports 2531 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2094 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2098 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2086 rows give provenance for **2202 of
-the 2522 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2090 rows give provenance for **2206 of
+the 2526 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -53,16 +53,16 @@ rows repointed at `src/phi_raw_tests/medium.rs`, three `compile_fail/ssa_*.rs`
 rows repointed at the `ssa_builder.rs` runtime locks that replaced those
 retired fixtures, and two `compile_fail/*_pass_*.rs` rows deleted because the
 `PassPipelineInfo` / `*PassManager` machinery they exercised was itself deleted
-in `2f1f390` and has no successor. The 2202/320 split is the 2026-08-20
+in `2f1f390` and has no successor. The 2206/320 split is the 2026-08-20
 hex-case audit's 2190/323 carried forward by arithmetic, not a fresh audit: the
 five rows added at the funclet-parity commit each name exactly one of the five
 tests added there (+5 covered, 0 unrowed), the three `ssa_*` repoints each
 name a test that previously carried no row at all (+3 covered, -3 unrowed), and
 fix round 4's one added test landed with its own row (+1 covered, 0 unrowed),
-and this commit's operand-bundle work added four rowed tests and replaced one
-rowed test (+3 covered, 0 unrowed).
+and the operand-bundle work added eight rowed tests and replaced one rowed test
+across its three commits (+7 covered, 0 unrowed).
 Re-running the full audit means expanding the group rows by hand (see the
-methodology note below); do not quote 2202 as a freshly derived number.
+methodology note below); do not quote 2206 as a freshly derived number.
 
 > **Methodology, because the previous header's numbers are not comparable.**
 > Through Wave 11 the audit matched rows to tests by looking for a
@@ -79,7 +79,7 @@ methodology note below); do not quote 2202 as a freshly derived number.
 > closed are the group rows finally being credited, not new provenance. That
 > figure is a **dated measurement, not a baseline for this commit**: it was
 > taken at `3a6d379`, the matcher it used is unrecorded, and the distinct-name
-> total has since moved to 2522. Do not subtract it from today's numbers; if
+> total has since moved to 2526. Do not subtract it from today's numbers; if
 > you want a live figure, re-derive it and state the matcher alongside it.
 
 The gap is inherited, not new: it accumulated across the type-safety and
@@ -1027,6 +1027,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::undefined_named_metadata_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` undefined metadata diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::undefined_metadata_value_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` undefined metadata diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::metadata_ref_in_non_metadata_type_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue` metadata-typed operand path | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::a_target_extension_type_is_a_legal_metadata_tuple_operand` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType`'s `case lltok::kw_target:`, reached from `parseMDNodeVector` -> `parseMetadata` -> `parseValueAsMetadata`; llvmkit's tuple-element lookahead omitted that token. No `.ll` file was found with a target extension type in a metadata tuple | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::a_malformed_metadata_tuple_operand_type_keeps_the_type_s_own_message` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType(Type *&Result, const Twine &Msg, bool AllowVoid)` reached through `parseMDNodeVector` -> `parseMetadata` -> `parseValueAsMetadata`; the tuple twin of the `parser_calls.rs` row above | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_val_id.rs::standalone_constant_rejects_trailing_token` | `llvm/include/llvm/AsmParser/Parser.h::parseConstantValue`; `llvm/lib/AsmParser/LLParser.cpp::parseStandaloneConstantValue` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_val_id.rs::fadd_constant_expr_rejected_as_unsupported` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `fadd constexprs are no longer supported` diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::undef_operand` | `test/Assembler/undef.ll`; `LLParser::parseValID` `lltok::kw_undef` arm | mirror |
@@ -1418,6 +1420,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::value_as_metadata_operand_bundle_inputs_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalOperandBundles` (the `Ty->isMetadataTy()` arm) reaching `parseMetadataAsValue` -> `parseMetadata` -> `parseValueAsMetadata`, whose own grammar comment is `i32 %local \| i32 @global \| i32 7`; no vendored `test/*.ll` fixture spells a `ValueAsMetadata` bundle input | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::value_as_metadata_pad_arguments_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseExceptionArgs`, whose loop branches `if (ArgTy->isMetadataTy()) parseMetadataAsValue else parseValue`; no vendored `test/*.ll` fixture spells a `ValueAsMetadata` pad argument | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::metadata_value_metadata_roundtrip_in_an_operand_bundle_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValueAsMetadata`'s `Ty->isMetadataTy()` guard (`invalid metadata-value-metadata roundtrip`), reached from `parseOptionalOperandBundles` -> `parseMetadataAsValue` -> `parseMetadata`; `test/Assembler/invalid-metadata-attachment-has-type.ll` pins the same message on the `parseMDNodeVector` path only | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::a_malformed_metadata_operand_type_keeps_the_type_s_own_message` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType(Type *&Result, const Twine &Msg, bool AllowVoid)`, which reads `Msg` only in the `default:` arm of its leading switch, so `parseValueAsMetadata`'s `TypeMsg` cannot displace a nested type message. Upstream pins the individual texts elsewhere (`test/Assembler/invalid-opaque-ptr.ll` for `ptr* is invalid - use ptr instead`); no `.ll` file was found reaching them through a `metadata` operand | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::call_explicit_type_arg_type_mismatch_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` argument loop ("argument is not of expected type"); no upstream lit/unittest coverage of the diagnostic at 22.1.4, rule shape is the anchor | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::call_explicit_type_arg_width_mismatch_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` argument loop ("argument is not of expected type") — type-identity comparison, i8 vs i32; llvmkit's diagnostic spells the concrete widths (`expected i32, got i8`) the way upstream spells the full expected type | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::call_explicit_type_too_few_args_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` post-loop check ("not enough parameters specified for call") | mirror |
@@ -2293,6 +2296,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_field_that_is_not_a_metadata_node_is_rejected` | `test/Assembler/dbg-record-invalid-2.ll` and `-6.ll` -- `parseMDNode`'s fallthrough `expected '!' here` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_missing_a_separator_reports_the_capital_e_label` | `test/Assembler/dbg-record-invalid-7.ll` and `-8.ll` -- `parseDebugRecord` labels every comma with a capital `E` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_round_trips_inside_a_debug_record` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList` and `AsmWriter.cpp::writeDIArgList`. `test/Assembler` carries `!DIArgList` only inside the `dbg-record-invalid-*` negatives, where the parse never reaches the list, so the routines are the anchor | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_rejects_a_metadata_typed_operand` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList`, the second direct caller of `parseValueAsMetadata`, from which it inherits the `Ty->isMetadataTy()` guard (`invalid metadata-value-metadata roundtrip`). `test/Assembler`'s `dbg-record-invalid-*` fixtures carry `!DIArgList` but pin errors raised before the operand list | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::an_empty_di_arg_list_is_accepted` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList`, whose operand loop is guarded by an `rparen` lookahead rather than requiring one operand | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_di_arg_list_outside_a_function_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseNamedMetadata`, whose explicit refusal is commented "DIArgLists should only appear inline in a function, as they may contain LocalAsMetadata arguments which require a function context" | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::specialized_nodes_enforce_their_field_agreement_rules` | the field-interaction rules below `PARSE_MD_FIELDS()` in `LLParser::parseDICompileUnit` (four), `::parseDIFile`, `::parseDIEnumerator` and `::parseDISubprogram`. `test/Assembler` has no fixture for any of them -- the routines are the anchor | llvmkit-specific |

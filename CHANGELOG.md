@@ -69,18 +69,33 @@ cut, entries accumulate under **Unreleased**.
   is gone.
 
 - **Changed: the `invalid metadata-value-metadata roundtrip` guard exists once,
-  as it does upstream.** It had been written inline twice — once on the
-  `parseMetadata` fall-through and once in `parse_md_tuple_operand` — where
-  `LLParser` has it only inside `parseValueAsMetadata`. Both callers now route
-  through the single port. One diagnostic moves with the unification: a
-  malformed nested type inside a `!{...}` tuple element, such as
-  `!0 = !{ { i32, } undef }`, now reports `expected metadata operand` where it
-  reported `expected type`, because that position now applies upstream's
-  `TypeMsg` the way every other `parseValueAsMetadata` position does. That
-  llvmkit applies `TypeMsg` to *every* type failure, where upstream's
-  `parseType` uses it only in its `default:` arm, is a pre-existing divergence
-  now recorded as `docs/divergences.md` entry 114 rather than left in a commit
-  body.
+  as it does upstream.** It had been written inline three times — on the
+  `parseMetadata` fall-through, in `parse_md_tuple_operand`, and in
+  `parse_di_arg_list`, which had no guard at all — where `LLParser` has it
+  only inside `parseValueAsMetadata`. All three callers now route through the
+  single port. That corrects the diagnostic on the `DIArgList` path, which had
+  no guard at all: `#dbg_value(!DIArgList(metadata %a), ...)` reported
+  `'%a' defined with type 'i32' but expected 'metadata'`, where
+  `parseDIArgList` inherits the guard from `parseValueAsMetadata` and rejects
+  at the *type*.
+
+- **Fixed: a `metadata` operand whose type is malformed reports the type's own
+  message again.** `LLParser::parseValueAsMetadata` hands its `TypeMsg` to
+  `parseType`, which reads it in exactly one place — the `default:` arm of
+  its leading `switch (Lex.getKind())`, for a token that begins no type at all.
+  Every other arm, and every nested type routine, raises its own text at its own
+  token. `Parser::peek_begins_a_type` now renders that switch's case labels, so
+  `metadata void %x` reports `void type only allowed for function results`
+  anchored on the `void`, `metadata ptr* %x` reports
+  `ptr* is invalid - use ptr instead`, `metadata label* %x` reports
+  `basic block pointers are invalid`, and only a non-type token reports
+  `expected metadata operand`.
+
+- **Fixed: a `target("...")` extension type is a legal `!{...}` tuple
+  operand.** The tuple-element lookahead spelled `parseType`'s case labels out
+  by hand and omitted `lltok::kw_target`, so
+  `!0 = !{ target("spirv.Image") poison }` was rejected. Both lookahead sites
+  now share `peek_begins_a_type`, which is the whole set.
 
 - **Changed: `test/Bitcode/operand-bundles.ll` is vendored whole.** It replaces
   a hand-trimmed subset whose header claimed llvmkit could not express the rest
@@ -193,16 +208,19 @@ errors below survived.
 
 - **The ledger's hypothesis warning now covers evidence blocks, which are the
   part readers trust most.** It said "treat a *row* as a hypothesis"; the file
-  carries 92 `<details>` evidence blocks quoting shell commands and their
-  output, four of which (entries 17, 25, 38, 88) were found stale. Blocks are
-  now explicitly dated snapshots — 10 of the 92 carry a date at all and only 3
-  carry one where it is visible without opening the block. Three blocks were
+  carries `<details>` evidence blocks quoting shell commands and their output,
+  four of which (entries 17, 25, 38, 88) were found stale. Blocks are now
+  explicitly dated snapshots, and only a few carry a date where it is visible
+  without opening the block — the ledger's own header holds those counts and
+  the commands that derive them, so they are maintained in one place rather
+  than mirrored here. Three blocks were
   deleted rather than repaired: entries 25 and 88 because every coordinate in
   them resolved to unrelated code, and entry 38 because its own
   `Status (W13a, W13b)` paragraph had already superseded it. Entry 17's was
   re-anchored to symbols and stamped. The file also now discloses that its own
-  cite-by-symbol law is broken about 158 times inside those blocks, instead of
-  stating the law and leaving the debt silent.
+  cite-by-symbol law is broken inside those blocks, instead of stating the law
+  and leaving the debt silent; the count and its derivation live in
+  `docs/future-work.md`.
 
 - **Added: divergence 112** — llvmkit has no funclet-token rule, so an
   intrinsic call inside an EH funclet verifies where
@@ -318,8 +336,10 @@ being weaker is, because it fails on input upstream accepts.
   line-number citations, their nine rustdoc twins and one inline comment become
   symbol citations, per the repo's cite-by-symbol law. **This does not close
   that class:** `UPSTREAM.md` still has 167 rows carrying a line-number
-  citation (down from 176) and `docs/divergences.md` about 158 inside its
-  `Correction from verification` and `<details>` blocks. These nineteen were
+  citation (down from 176), and `docs/divergences.md` carries the same debt
+  inside its `Correction from verification` and `<details>` blocks;
+  `docs/future-work.md` keeps both figures with the commands that derive them.
+  These nineteen were
   converted only because this round vendored the blocks they name, making the
   rewrite mechanical; the sweep is recorded in `docs/future-work.md`.
 

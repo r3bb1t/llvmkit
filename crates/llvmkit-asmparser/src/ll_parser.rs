@@ -5571,6 +5571,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
+    /// Whether the lookahead can begin a type.
+    ///
+    /// Exactly the case labels of `LLParser::parseType`'s leading
+    /// `switch (Lex.getKind())` — `lltok::Type`, `kw_target`, `lbrace`,
+    /// `lsquare`, `less`, `LocalVar`, `LocalVarID` — so the negation is that
+    /// switch's `default:` arm, the one place `parseType` reports its `Msg`
+    /// parameter. Callers that hold an upstream `TypeMsg` test this before
+    /// calling [`Self::parse_type`], which is what keeps `Msg` from swallowing
+    /// the messages `parseType`'s later arms and its nested routines raise.
+    fn peek_begins_a_type(&self) -> bool {
+        matches!(
+            self.peek(),
+            Token::PrimitiveType(_)
+                | Token::Kw(Keyword::Target)
+                | Token::LBrace
+                | Token::LSquare
+                | Token::Less
+                | Token::LocalVar(_)
+                | Token::LocalVarId(_)
+        )
+    }
+
     /// `i32 %local` / `i32 @global` / `i32 7` — a type-and-value pair wrapped
     /// as metadata. Upstream's own grammar comment, verbatim:
     ///
@@ -5584,17 +5606,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Mirrors `LLParser::parseValueAsMetadata` statement for statement:
     /// record the type's location, parse the type under `TypeMsg`, reject a
     /// `metadata` type *before* any value is read, parse the value, then
-    /// `ValueAsMetadata::get`. Both of `parseMetadata`'s entries into it — the
-    /// non-`!` fall-through and `parseMDNodeVector`'s element loop — arrive
-    /// here, so the roundtrip guard exists once, as upstream has it once.
+    /// `ValueAsMetadata::get`. Every caller upstream gives it arrives here, so
+    /// the roundtrip guard exists once, as upstream has it once.
     ///
-    /// `pfs` is upstream's nullable `PerFunctionState *`. `None` renders what
-    /// `parseValue` / `convertValIDToValue` fall back to without a function
-    /// state, which in llvmkit is `parse_global_value`.
+    /// `pfs` is upstream's nullable `PerFunctionState *`. `None` stands in for
+    /// the no-function-state path and is rendered as `parse_global_value`,
+    /// which is **not** equivalent: upstream's `convertValIDToValue` reaches
+    /// `t_LocalName` with a null `PFS` and answers `invalid use of
+    /// function-local name` at the local token, where llvmkit answers
+    /// `expected constant value` at the token after it. That difference is
+    /// gap **G17** in `docs/fixture-coverage.md` and is older than this
+    /// routine.
     ///
-    /// `type_msg` is upstream's `const Twine &TypeMsg`. llvmkit applies it to
-    /// every failure of `parse_type`, where upstream's `parseType` uses it only
-    /// in its `default:` arm — recorded as a divergence, not fixed here.
+    /// `type_msg` is upstream's `const Twine &TypeMsg`, and it reaches the
+    /// output where upstream's does: `parseType`'s `Msg` is read in exactly one
+    /// place, its leading `switch (Lex.getKind())`'s `default:` arm, so
+    /// [`Self::peek_begins_a_type`] renders that arm and every other failure
+    /// keeps the message of the nested routine that produced it.
     fn parse_value_as_metadata(
         &mut self,
         type_msg: &'static str,
@@ -5604,9 +5632,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // upstream records `Loc` before the parse, so the guard below anchors
         // at the type token rather than wherever the type parse ended.
         let type_loc = self.loc();
-        let ty = self
-            .parse_type(false)
-            .map_err(|_| self.expected(type_msg))?;
+        // `parseType`'s `default: return tokError(Msg);`. It switches on the
+        // first token, so the lookahead decides it, and `TypeMsg` fires here
+        // and nowhere else: `void`, `ptr*`, `label*` and a malformed struct or
+        // array body all fail *after* this point and carry their own text,
+        // anchored where `parseType` anchors it.
+        if !self.peek_begins_a_type() {
+            return Err(self.expected(type_msg));
+        }
+        let ty = self.parse_type(false)?;
         // `if (Ty->isMetadataTy())
         //    return error(Loc, "invalid metadata-value-metadata roundtrip");`
         if ty.is_metadata() {
@@ -5764,15 +5798,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(own_metadata(self.module.metadata_node(content)));
         }
 
-        if matches!(
-            self.peek(),
-            Token::PrimitiveType(_)
-                | Token::LBrace
-                | Token::Less
-                | Token::LSquare
-                | Token::LocalVar(_)
-                | Token::LocalVarId(_)
-        ) {
+        if self.peek_begins_a_type() {
             // `parseMDNodeVector` reaches `parseValueAsMetadata` the same way
             // the operand form does — through `parseMetadata(MD, nullptr)`, so
             // the function state is absent and the `TypeMsg` is the same one.
@@ -6457,11 +6483,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // lookahead rather than requiring one operand.
         if !matches!(self.peek(), Token::RParen) {
             loop {
-                let ty = self
-                    .parse_type(false)
-                    .map_err(|_| self.expected("value-as-metadata operand"))?;
-                let value = self.parse_value(state, ty)?;
-                arguments.push(value.id());
+                // `if (parseValueAsMetadata(MD, "expected value-as-metadata
+                // operand", PFS)) return true;` — the same routine
+                // `parseMetadata`'s fall-through uses, with `parseDIArgList`'s
+                // own `TypeMsg`. Inlining it here cost the `isMetadataTy`
+                // guard: `!DIArgList(metadata %a)` reported a type mismatch on
+                // the value instead of `invalid metadata-value-metadata
+                // roundtrip` on the type.
+                let md = self.parse_value_as_metadata("value-as-metadata operand", Some(state))?;
+                // `Args.push_back(dyn_cast<ValueAsMetadata>(MD));` — llvmkit
+                // stores a `DIArgList` operand as the value itself, which is
+                // what a `ValueAsMetadata` wraps, so the cast is the unwrap.
+                // `parse_value_as_metadata` returns on exactly one path and it
+                // builds `MetadataKind::Constant`, so the `else` is dead by
+                // construction, as upstream's `dyn_cast` never fails here.
+                let Some(MetadataKind::Constant(value_id)) = self.module.metadata_get(md) else {
+                    unreachable!("parse_value_as_metadata yields MetadataKind::Constant")
+                };
+                arguments.push(value_id);
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }

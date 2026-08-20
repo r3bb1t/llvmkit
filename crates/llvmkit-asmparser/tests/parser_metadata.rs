@@ -741,3 +741,55 @@ define void @f() {
         "unexpected error: {err}"
     );
 }
+
+/// A `target("...")` extension type is a legal `!{...}` tuple operand.
+///
+/// `LLParser::parseMetadata` sends anything that is not a `!` to
+/// `parseValueAsMetadata`, which calls `parseType`; `parseType`'s leading
+/// switch has a `lltok::kw_target` case, so a target extension type is a type
+/// like any other there. llvmkit's tuple-element lookahead spelled that token
+/// set out by hand and omitted `target`, so the element was never routed to
+/// the type path at all and the parse died on the missing `!`. The lookahead
+/// is now `Parser::peek_begins_a_type`, a single rendering of that switch's
+/// case labels, shared with the operand form.
+///
+/// **Anchored on the routine, not on a fixture** — no `.ll` file was found
+/// with a target extension type in a metadata tuple. `zeroinitializer` is
+/// deliberately not used here: a null constant of a target extension type
+/// fails further along, for reasons that have nothing to do with metadata.
+#[test]
+fn a_target_extension_type_is_a_legal_metadata_tuple_operand() {
+    let (_, text) = parse_snippet("!0 = !{ target(\"spirv.Image\") poison }\n");
+    assert!(
+        text.contains("!0 = !{target(\"spirv.Image\") poison}"),
+        "output:\n{text}"
+    );
+}
+
+/// A malformed type in a `!{...}` tuple operand reports the type's own
+/// complaint, not `parseValueAsMetadata`'s `TypeMsg`.
+///
+/// Same policy as
+/// `parser_calls.rs::a_malformed_metadata_operand_type_keeps_the_type_s_own_message`,
+/// reached through `parseMDNodeVector` -> `parseMetadata` ->
+/// `parseValueAsMetadata` instead of through a `metadata`-typed operand.
+/// `LLParser::parseType` reads its `Msg` argument only in the `default:` arm of
+/// its leading switch, so a token that *does* begin a type never sees it.
+///
+/// **Anchored on that policy, not on a fixture.**
+#[test]
+fn a_malformed_metadata_tuple_operand_type_keeps_the_type_s_own_message() {
+    assert_eq!(parse_fails("!0 = !{ { i32, } undef }\n"), "expected type");
+    assert_eq!(
+        parse_fails("!0 = !{ void undef }\n"),
+        "void type only allowed for function results"
+    );
+    assert_eq!(
+        parse_fails("!0 = !{ ptr* undef }\n"),
+        "ptr* is invalid - use ptr instead"
+    );
+    assert_eq!(
+        parse_fails("!0 = !{ label* undef }\n"),
+        "basic block pointers are invalid"
+    );
+}

@@ -754,7 +754,7 @@ Make/CMake and there are no submodules. `orig_cpp/` is **not** built — never r
 
 ## Testing & QA
 
-The workspace ships a substantial test suite: **2,527 attribute-anchored `#[test]`s** across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks, and **22 passing doctests** (29 collected, 7 `ignore`d), all green on the pin. Both figures were derived at the 2026-08-20 operand-bundle-parity commit, by `grep -rn '^\s*#\[test\]' --include='*.rs' crates/ llvmkit/ | wc -l` and by `cargo +1.96.0 test --release --workspace --doc --all-features` respectively; re-run those rather than trusting these numbers after a large landing. Per-test provenance lives in `UPSTREAM.md`. The categories:
+The workspace ships a substantial test suite: **2,531 attribute-anchored `#[test]`s** across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks, and **22 passing doctests** (29 collected, 7 `ignore`d), all green on the pin. Both figures were derived at the 2026-08-20 operand-bundle-parity fix-round-2 commit, by `grep -rn '^\s*#\[test\]' --include='*.rs' crates/ llvmkit/ | wc -l` and by `cargo +1.96.0 test --release --workspace --doc --all-features` respectively; re-run those rather than trusting these numbers after a large landing. Per-test provenance lives in `UPSTREAM.md`. The categories:
 
 **Tests are ported, not invented.** Every new opcode, predicate, or instruction lands with tests sourced from one of the upstream LLVM trees:
 

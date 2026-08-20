@@ -17,11 +17,11 @@ fn parse_and_render_bytes(module_name: &str, src: &[u8]) -> String {
     format!("{module}")
 }
 
-/// `llvm-as < %s | llvm-dis` — both halves. `llvm-as` runs `verifyModule` on
-/// the parsed module unless `-disable-verify` is passed, so a `RUN` line that
-/// pipes through it asserts verification as well as parse-and-print;
-/// [`parse_and_render_bytes`] drops that half. Mirrors
-/// `llvm/tools/llvm-as/llvm-as.cpp`'s `if (!DisableVerify && verifyModule(*M, &errs()))`.
+/// `llvm-as < %s | llvm-dis` — both halves. `llvm-as.cpp`'s `main` guards a
+/// `verifyModule` call on `if (!DisableVerify)` and exits 1 with
+/// `assembly parsed, but does not verify as correct!` when it reports, so a
+/// `RUN` line piping through `llvm-as` asserts verification as well as
+/// parse-and-print; [`parse_and_render_bytes`] drops that half.
 fn parse_verify_and_render_bytes(module_name: &str, src: &[u8]) -> String {
     let module = Module::dynamic(module_name);
     Parser::new(src, &module)
@@ -577,6 +577,54 @@ fn metadata_value_metadata_roundtrip_in_an_operand_bundle_is_rejected() {
         src.as_bytes(),
         "invalid metadata-value-metadata roundtrip",
     );
+}
+
+/// `parseValueAsMetadata`'s `TypeMsg` reaches the output in exactly one case,
+/// and this pins where the line is drawn.
+///
+/// `LLParser::parseValueAsMetadata` passes `"expected metadata operand"` to
+/// `LLParser::parseType(Type *&Result, const Twine &Msg, bool AllowVoid)`,
+/// which reads `Msg` only in the `default:` arm of its leading
+/// `switch (Lex.getKind())`. Every later arm, and every nested type routine it
+/// calls, raises its own text at its own token. So a `metadata` operand whose
+/// type is malformed must report the *type's* complaint, not the operand's —
+/// and only a token that begins no type at all gets `expected metadata
+/// operand`.
+///
+/// **Anchored on that policy, not on a fixture.** Upstream pins these message
+/// texts elsewhere (`test/Assembler/invalid-opaque-ptr.ll` for `ptr*`), but no
+/// `.ll` file was found that reaches them through a `metadata` operand, which
+/// is the position this task made reachable.
+#[test]
+fn a_malformed_metadata_operand_type_keeps_the_type_s_own_message() {
+    // (bundle input spelling, expected message)
+    const CASES: &[(&str, &str)] = &[
+        // `parseType`'s `default:` arm — the one place `TypeMsg` is read.
+        ("metadata , ", "expected metadata operand"),
+        // `parseStructBody`'s nested `parseType`, on the trailing comma.
+        ("metadata { i32, } %x", "expected type"),
+        // `parseType`'s suffix loop, `if (!AllowVoid && Result->isVoidTy())`.
+        (
+            "metadata void %x",
+            "void type only allowed for function results",
+        ),
+        // The `lltok::Type` arm's own `ptr*` guard.
+        ("metadata ptr* %x", "ptr* is invalid - use ptr instead"),
+        // The suffix loop's `lltok::star` arm, `Result->isLabelTy()`.
+        ("metadata label* %x", "basic block pointers are invalid"),
+    ];
+
+    for (input, expected) in CASES {
+        let src = format!(
+            "declare void @callee()\n\
+             define void @f(i32 %x) {{\n\
+             entry:\n\
+               call void @callee() [ \"tag\"({input}) ]\n\
+               ret void\n\
+             }}\n"
+        );
+        assert_fixture_rejected("malformed_metadata_operand_type", src.as_bytes(), expected);
+    }
 }
 
 /// llvmkit-specific subset of

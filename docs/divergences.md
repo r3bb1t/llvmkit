@@ -20,9 +20,12 @@ recorded premises wrong; three failed on contact in a single session, and four
 found stale in turn. A `<details>` block and a `Correction from verification`
 paragraph are *dated snapshots of one verification pass*, not standing proof:
 their line numbers, counts and command output were true when written and are
-re-checked by nothing. Of the 92 evidence blocks in this file, 11 carry a date
-anywhere and only **4** carry one on the summary line, where it can be seen
-without opening the block; before 2026-08-20 none did. Treat a row **and its
+re-checked by nothing. Of the 91 evidence blocks in this file, 10 carry a date
+anywhere and only **3** carry one on the summary line, where it can be seen
+without opening the block; before 2026-08-20 none did. Those three figures were
+re-derived at the operand-bundle-parity fix-round-2 commit, by counting
+`<details><summary>Verification evidence` and matching `20\d\d-\d\d-\d\d`
+against each whole block and against its `<summary>` line. Treat a row **and its
 evidence** as a hypothesis with a citation. When you re-verify an entry, date
 the block you are trusting or replacing — on its `<summary>` line.
 
@@ -1347,67 +1350,6 @@ the `catchswitch` site or the parser-wide one behind it.
 Probed with `target/release/examples/parse_file.exe` at `b369431`. `%c = catchswitch within none [] unwind to caller` -> `5:33: expected 'label' in catchswitch handler`, caret on the `]`. `[label %a,]` -> `5:42: expected 'label' in catchswitch handler`, caret on the `]`. `[i32 0]` -> `5:33: expected 'label' in catchswitch handler`, caret on `i32` — upstream parses `i32 0` successfully and answers `expected a basic block` at that same offset. Upstream side read from `lib/AsmParser/LLParser.cpp`: `parseCatchSwitch`'s handler loop is `do { if (parseTypeAndBasicBlock(DestBB, PFS)) return true; … } while (EatIfPresent(lltok::comma));`, and `parseTypeAndBasicBlock` is `parseTypeAndValue` + the `isa<BasicBlock>` guard. `grep -n "PrimitiveTy::Label," crates/llvmkit-asmparser/src/ll_parser.rs` returns 13 sites, in `parse_br` (x2), `parse_switch` (x2), `parse_indirectbr`, `parse_cleanupret`, `parse_catchret`, `parse_catchswitch` (x2), `parse_invoke` (x2) and `parse_callbr` (x2); `grep -rn "expected 'label\|expected a basic block" crates/*/tests/ docs/` returns nothing that pins either spelling.
 
 Re-verified 2026-08-20 after the entry was first written, and it was wrong twice. (1) `grep -n parseTypeAndBasicBlock lib/AsmParser/LLParser.cpp` returns the definition plus **15** call sites (7606, 7608, 7626, 7642, 7681, 7686, 7748, 7750, 7872, 7894, 7922, 7938, 8044, 8053, 8058), not 13: `parseIndirectBr` and `parseCallBr` each unroll the first iteration of their destination list. The entry originally read "at all 13 of its sites", attributing llvmkit's count to upstream's routine. (2) The message template originally read `expected 'label' in <production>`, which covers only 6 of the 13; the other 7 spell it `for`. Probed at HEAD with `parse_file`: `br i1 %c, i32 0, label %b` -> `3:13: expected 'label' for then-target`; `switch i32 %x, i32 0 [ ]` -> `3:18: expected 'label' for switch default`; `indirectbr ptr %p, [ i32 0 ]` -> `3:24: expected 'label' in indirectbr destination`; `invoke void @g() to i32 0 unwind label %u` -> `4:23: expected 'label' for invoke normal destination`; `catchswitch within none [] unwind to caller` -> `5:33: expected 'label' in catchswitch handler`; `[label %a,]` -> `5:42:` same; `catchswitch within none [label %a] unwind i32 0` -> `5:50: expected 'label' in catchswitch unwind destination`; `cleanupret from %cp unwind i32 0` -> `6:30: expected 'label' in cleanupret unwind destination`.
-
-</details>
-
-### 114. `parseValueAsMetadata`'s `TypeMsg` replaces every type diagnostic, not just the one upstream uses it for
-
-*parser — metadata operands* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_value_as_metadata`)
-
-Found 2026-08-20 in review of the operand-bundle commit, which did not
-introduce the defect but added syntactic positions that reach it.
-
-- **LLVM:** `LLParser::parseValueAsMetadata` forwards its `const Twine &TypeMsg`
-  to `LLParser::parseType(Type *&Result, const Twine &Msg, bool AllowVoid)`,
-  which uses `Msg` in **one** place — its `default:` arm, for a token that
-  begins no type at all. Every other failure comes from the nested routine that
-  found it (`parseStructBody`, `parseArrayVectorType`, `parseTargetExtType`)
-  and keeps that routine's own message.
-- **llvmkit:** `parse_value_as_metadata` renders the parameter as
-  `self.parse_type(false).map_err(|_| self.expected(type_msg))?`, discarding the
-  error and substituting `expected metadata operand` for *any* failure. A
-  malformed nested type inside a `metadata` operand therefore reports the
-  operand-level message where upstream reports the nested one. Same verdict
-  (reject), same anchor token; different text.
-- **Consequence:** reachable from four syntactic positions, all routed through
-  the one routine — a `metadata` call/invoke/callbr parameter, a `metadata`
-  operand-bundle input, a `metadata` `catchpad`/`cleanuppad` argument, and an
-  element of a `!{...}` tuple. The last three are new to this position: the
-  bundle and pad arguments because the operand-bundle commit added the
-  `isMetadataTy` branch that reaches them, and the tuple element because that
-  commit routed `parse_md_tuple_operand` through the shared
-  `parseValueAsMetadata` port, which previously passed no message at all and so
-  let the nested message through. Unifying the two sites onto upstream's single
-  routine is what makes this one defect rather than two inconsistent ones.
-- **Why:** llvmkit's `parse_type` takes no message parameter, so there is no
-  place to put `Msg` where only the `default:` arm sees it. `map_err` at the
-  call site is the nearest expressible thing, and it over-applies. The same
-  shape appears at other `parse_type` call sites; this entry is scoped to
-  `parse_value_as_metadata`, whose upstream counterpart takes the message
-  explicitly.
-- **Fix:** either give `parse_type` upstream's `Msg` parameter and use it only
-  where `parseType`'s `default:` arm does, or keep the `map_err` and substitute
-  only when the failure is anchored at the type's first token — which is
-  where `default:` fires and nowhere else. Nothing in the tree pins either
-  spelling at this routine, so the change is message-only.
-
-<details><summary>Verification evidence (verified 2026-08-20)</summary>
-
-Probed with `target/release/examples/parse_file.exe`, built from the working
-tree of the fix-round-1 commit. `call void @callee() [ "tag"(metadata { i32, } %x) ]`
--> `expected metadata operand`, caret on the `}`. The non-metadata twin
-`call void @callee() [ "tag"({ i32, } %x) ]` -> `expected type` at the same
-offset, which is what upstream emits in **both** cases, since the failure comes
-from the struct-body parse and not from `parseType`'s `default:` arm.
-`!0 = !{ { i32, } undef }` -> `expected metadata operand`; before the two guard
-sites were unified onto one `parse_value_as_metadata` it read `expected type`
-there, so that position moved onto this divergence rather than off it.
-Upstream side read from `lib/AsmParser/LLParser.cpp`: `parseValueAsMetadata`'s
-body is `parseType(Ty, TypeMsg, Loc)`, then the `isMetadataTy` guard, then
-`parseValue`; `parseType`'s three-argument overload assigns `Msg` only in the
-`default:` arm. A grep of `crates/*/tests/` for `expected metadata operand`
-returns the `parseMetadata` fall-through cases pinned by `parser_metadata.rs`
-and `parser_debug_metadata.rs`, none of them a malformed nested type.
 
 </details>
 

@@ -1082,3 +1082,41 @@ fn di_expression_validates_its_operands() {
         "element too large, limit is 18446744073709551615"
     );
 }
+
+/// `!DIArgList(metadata %a)` — a `metadata`-typed operand inside a
+/// `DIArgList`.
+///
+/// `LLParser::parseDIArgList` is the second direct caller of
+/// `parseValueAsMetadata`, alongside `parseMetadata`'s non-`!` fall-through,
+/// and it passes its own `TypeMsg`, `"expected value-as-metadata operand"`.
+/// Because it goes through that routine it inherits the
+/// `if (Ty->isMetadataTy())` guard, so a `metadata` operand is rejected at the
+/// *type* with `invalid metadata-value-metadata roundtrip`. llvmkit had
+/// inlined the routine's body here without the guard, so the parse ran on and
+/// complained about the value instead.
+///
+/// **Anchored on the routine, not on a fixture.** `test/Assembler` carries
+/// `!DIArgList` only inside the `dbg-record-invalid-*` negatives, whose `CHECK`
+/// lines pin errors raised before the operand list is reached.
+#[test]
+fn di_arg_list_rejects_a_metadata_typed_operand() {
+    let src = r#"
+define void @f(i32 %a) !dbg !3 {
+entry:
+    #dbg_value(!DIArgList(metadata %a), !5, !DIExpression(), !4)
+  ret void
+}
+
+!0 = !DIFile(filename: "a.c", directory: "/tmp")
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
+!2 = !DISubroutineType(types: !{null})
+!3 = distinct !DISubprogram(name: "f", file: !0, type: !2, unit: !1)
+!4 = !DILocation(line: 1, column: 1, scope: !3)
+!5 = !DILocalVariable(name: "x", file: !0, type: !6, scope: !3)
+!6 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+"#;
+    assert_eq!(
+        parse_err(src).to_string(),
+        "invalid metadata-value-metadata roundtrip"
+    );
+}

@@ -2534,8 +2534,22 @@ ten spelled as bare coordinates a grep cannot see (`(~:1128)`, `(~4202)`,
 appears in an entry's **LLVM:** / **llvmkit:** / **Why:** / **Fix:** bullets,
 and all resolve correctly against the pinned 22.1.4 tree today. Some name the
 symbol adjacent to the number and so survive a version bump in recoverable
-form; most are bare. `UPSTREAM.md` carries the same debt in a different shape:
-**167 rows** carry a line-number citation of an upstream `.ll` or `.cpp`.
+form; most are bare.
+
+`UPSTREAM.md` carries the same debt in a different shape: **167 rows** carry
+a `line N` / `lines N-M` coordinate, from
+
+    grep -cE '^\|.*lines? [0-9]+' UPSTREAM.md
+
+re-derived at the operand-bundle-parity fix-round-2 commit. Read that as "167
+rows spelled that way", not as a census of the debt: it is neither a subset
+nor a superset of "rows citing an upstream `.ll` or `.cpp` by line". The same
+spelling also appears over headers, `.def` tables and in-repo docs, and **5**
+further rows write the coordinate as `file:N` and so fall outside that grep
+entirely, from
+
+    grep -cE '^\|.*\.(ll|cpp|h|td|def|py|md):[0-9]+' UPSTREAM.md
+
 
 Fix round 3 converted 19 of them — nine `UPSTREAM.md` rows, nine rustdoc twins
 and one inline comment, all naming `test/Bitcode/compatibility.ll` blocks that
