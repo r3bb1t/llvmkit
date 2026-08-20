@@ -19,6 +19,41 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Two project skills, and `CLAUDE.md` wired to them
+
+Contributor tooling only — no crate source changed, so there is no API or
+behavioural delta in this entry.
+
+- **Added: `.claude/skills/porting-from-orig-cpp/`.** The 1:1 rule stated where
+  it is decided rather than where it is filed: a rationalization table whose
+  rows are the sentences agents actually wrote while trading upstream's routine
+  shape for byte equality, then an arm-table recipe, then found-a-difference
+  triage — a parity divergence is a defect with two endings, fix it or record it
+  in `docs/divergences.md`, and say which. `references/worked-example.md` carries
+  two cases from this program: the `TypeMsg` rewrite that collapsed five upstream
+  diagnostics and moved a caret, and `parseMetadata`'s `DIArgList` arm that four
+  per-change reviews could not see.
+
+- **Added: `.claude/skills/claims-and-counts/`.** A four-step conditional that
+  **defaults to deleting** the claim, in the order this repo learned it: the
+  rounds that *corrected* counts each seeded a new defect, and it stopped at
+  `e27656c` and `71806d3`, which deleted them instead. Carries the tool-hazard
+  table — the harness `Grep` tool under-reporting, the two fixtures with a NUL
+  byte, `rg -c` counting lines, a derivation command matching its own quotation.
+
+- **Changed: `CLAUDE.md` points at both skills from the rule, not an appendix**,
+  and its `Where the detail lives` entries now name the question each answers.
+  No `@AGENTS.md` import: Claude Code has no `AGENTS.md` fallback, and importing
+  it would force 805 lines into every session — including the ones that only run
+  a gate.
+
+- **Not added, on evidence.** Baseline runs against fresh agents rejected three
+  further candidate skills: counting (the run got it right), "surface your
+  shortcuts" (volunteered unprompted in four of five runs), and a separate
+  divergence-triage skill (its trigger is a subset of the porting skill's, so one
+  of the two would never fire). The translation-idiom catalogue stays in
+  `AGENTS.md` and is linked, not copied — a second copy is a second thing to rot.
+
 ### Parser: `metadata !DIArgList(...)` parses, and `nofpclass` prints upstream's paren diagnostics
 
 - **Fixed: `metadata !DIArgList(...)` is accepted wherever

@@ -82,7 +82,7 @@ These are not style preferences. Each has a lint, a test, or a reviewer behind i
 - **No silent erasure.** A typed handle or id never widens to an erased one implicitly. Erasure is spelled `as_dyn()` / `as_erased()`, or a `_dyn` or `_erased` method. The suffix vocabulary is three-tier: typed forms carry no suffix (`int_add`); `_dyn` is the `Dyn`-marker member of a typed/erased pair (`IntDyn` / `FloatDyn` / `LenDyn` / `Dyn` — `int_load_dyn`); `_erased` is the fully-erased third tier — `Value` operands plus a runtime opcode, the vector-capable forms (`int_binop_erased`).
 - **Full words, no abbreviations**: `instruction` not `inst`, `predecessor` not `pred`. Internal indices are `*Slot`; public tagged ids are `*Id`. Do not blur them. Lookups are bare nouns (`global(name)`, `function::<R>(name)` — C-GETTER); `get_` appears only in the std-consistent `get_or_insert_*` entry points, and accessors never take a `get_` prefix.
 - **Cite upstream by symbol, never line number** — in comments, rustdoc, tests, `UPSTREAM.md`, `CHANGELOG.md`, and `docs/`. `// Mirrors LLParser::parseTopLevelEntities (LLParser.cpp)`. Line numbers rot the moment the vendored tree moves.
-- **Counts and completeness claims carry their derivation.** Any number, or any "all / every / none / now say so" claim, written into `docs/`, `UPSTREAM.md`, `CHANGELOG.md` or a test doc comment names the command that produced it and the commit it was measured at. Nothing in CI checks these — re-derive rather than copy, this file included. Full rule in `AGENTS.md` under **Testing & QA**.
+- **Counts and completeness claims carry their derivation.** Any number, or any "all / every / none / now say so" claim, written into `docs/`, `UPSTREAM.md`, `CHANGELOG.md` or a test doc comment names the command that produced it and the commit it was measured at. Nothing in CI checks these — re-derive rather than copy, this file included. Procedure, and the tool-hazard table that makes a count wrong before you write it: the `claims-and-counts` skill. Full rule in `AGENTS.md` under **Testing & QA**.
 - **Doctrine D1–D11** governs every public API (full prose in `README.md`, short list in `AGENTS.md`). Cite ids in commits and reviews.
 
 ## Testing
@@ -90,6 +90,8 @@ These are not style preferences. Each has a lint, a test, or a reviewer behind i
 **Tests are ported, not invented** (D11). Source them from `orig_cpp/.../llvm/test/{Assembler,Verifier}/*.ll` or `unittests/{IR,ADT}/*Test.cpp`.
 
 **Port faithfully — no deviation in logic.** Same inputs, built the way upstream builds them; same expected results, spelled the way upstream spells them; same comparison. Do not substitute your own oracle — precomputing expectations by another route tests your derivation instead of LLVM's answer, and produces an invention that looks like a port. If the port is blocked because llvmkit cannot express what the fixture is written in, *that gap is the finding*: close it or record it, do not route around it.
+
+The same standard binds the **routine** you are porting, not only its tests — same control flow, same branch order, same guards, each diagnostic at the same point and token. See the `porting-from-orig-cpp` skill.
 
 Genuinely llvmkit-specific tests (an internal representation choice, a parse/print idempotence law) are legitimate — but must say they have no upstream counterpart rather than implying one.
 
@@ -101,9 +103,18 @@ Test shapes in use: unit tests per module, manifest-driven round-trip corpus, tr
 
 Conventional Commits — `type(scope): summary`, `!` after the scope for a breaking change. Cite the doctrine id when a change turns on one. Every user-visible change gets a `CHANGELOG.md` entry; the project is pre-1.0, so breaking changes are expected and flagged inline. Version labels must not overclaim — pre-1.0 means the next patch version, never a marketing number.
 
+## Skills
+
+Project skills live in `.claude/skills/`. Reach for them by the moment you are in, not by topic:
+
+- about to read `orig_cpp/` to decide what llvmkit should do — a port, a diagnostic change, a parity review, or explaining why the two answer differently → `porting-from-orig-cpp`
+- about to write a number, or an "all / every / none" sentence, into a tracked file, a commit message or a report → `claims-and-counts`
+
 ## Where the detail lives
 
-- `AGENTS.md` — full API laws, Rust translation idioms, workstream history, the porting anchor tables for each LLVM subsystem.
+Each entry names the question it answers — read the section, not the file.
+
+- `AGENTS.md` § *Rust Idioms & Translation Patterns* — how a C++ sentinel, out-parameter, union or `assert` is spelled here. Also: full API laws, workstream history, the porting anchor tables for each LLVM subsystem.
 - `README.md` — user-facing docs, authoritative Doctrine D1–D11 prose.
 - `ROADMAP.md` — milestones, release sequence, the crates.io checklist.
 - `docs/future-work.md` — the live backlog: what is known-missing, what was deferred, and **why** in each case. Read before proposing work that looks unfinished; it is often deliberate.
