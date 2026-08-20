@@ -56,16 +56,16 @@ rows repointed at `src/phi_raw_tests/medium.rs`, three `compile_fail/ssa_*.rs`
 rows repointed at the `ssa_builder.rs` runtime locks that replaced those
 retired fixtures, and two `compile_fail/*_pass_*.rs` rows deleted because the
 `PassPipelineInfo` / `*PassManager` machinery they exercised was itself deleted
-in `2f1f390` and has no successor. The 2206/320 split is the 2026-08-20
+in `2f1f390` and has no successor. The 2208/320 split is the 2026-08-20
 hex-case audit's 2190/323 carried forward by arithmetic, not a fresh audit: the
 five rows added at the funclet-parity commit each name exactly one of the five
 tests added there (+5 covered, 0 unrowed), the three `ssa_*` repoints each
 name a test that previously carried no row at all (+3 covered, -3 unrowed), and
 fix round 4's one added test landed with its own row (+1 covered, 0 unrowed),
-and the operand-bundle work added eight rowed tests and replaced one rowed test
-across its three commits (+7 covered, 0 unrowed).
+and the operand-bundle work added ten rowed tests and replaced one rowed test
+across `4e28f78..HEAD` (+9 covered, 0 unrowed).
 Re-running the full audit means expanding the group rows by hand (see the
-methodology note below); do not quote 2206 as a freshly derived number.
+methodology note below); do not quote 2208 as a freshly derived number.
 
 > **Methodology, because the previous header's numbers are not comparable.**
 > Through Wave 11 the audit matched rows to tests by looking for a
@@ -82,7 +82,7 @@ methodology note below); do not quote 2206 as a freshly derived number.
 > closed are the group rows finally being credited, not new provenance. That
 > figure is a **dated measurement, not a baseline for this commit**: it was
 > taken at `3a6d379`, the matcher it used is unrecorded, and the distinct-name
-> total has since moved to 2526. Do not subtract it from today's numbers; if
+> total has since moved to 2528. Do not subtract it from today's numbers; if
 > you want a live figure, re-derive it and state the matcher alongside it.
 
 The gap is inherited, not new: it accumulated across the type-safety and
@@ -2298,7 +2298,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::an_unknown_debug_record_type_is_rejected` | `test/Assembler/dbg-record-invalid-4.ll`, fixture verbatim, asserting its CHECK line `expected debug record type here` from `LLParser::parseDebugRecord`'s opening check | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_field_that_is_not_a_metadata_node_is_rejected` | `test/Assembler/dbg-record-invalid-2.ll` and `-6.ll` -- `parseMDNode`'s fallthrough `expected '!' here` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_missing_a_separator_reports_the_capital_e_label` | `test/Assembler/dbg-record-invalid-7.ll` and `-8.ll` -- `parseDebugRecord` labels every comma with a capital `E` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::upstream_debug_value_list_parses_with_di_arg_list_call_arguments` | `llvm/test/DebugInfo/Generic/debug_value_list.ll`, vendored byte-identical. Pins `LLParser::parseMetadata`'s opening `lltok::MetadataVar` / `"DIArgList"` dispatch into `LLParser::parseDIArgList`, ahead of `parseSpecializedMDNode`. The fixture's `RUN` line is `opt -passes=verify`, so its `#dbg_value(` `CHECK` block is `opt`'s output after `llvm::UpgradeIntrinsicCall`; llvmkit has no `AutoUpgrade` and its metadata slot numbering is not `SlotTracker`'s walk order, both recorded in `docs/divergences.md`, so the intrinsic-call spelling and the two operand-text `CHECK-SAME` directives are what is checked | ported (oracle substituted, stated in the doc comment) |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::upstream_debug_value_list_parses_with_di_arg_list_call_arguments` | `llvm/test/DebugInfo/Generic/debug_value_list.ll` (checked in verbatim at `tests/fixtures/upstream/debug-value-list/debug_value_list.ll`). Pins `LLParser::parseMetadata`'s opening `lltok::MetadataVar` / `"DIArgList"` dispatch into `LLParser::parseDIArgList`, ahead of `parseSpecializedMDNode` | mirror -- two of the four `CHECK` directives match upstream's literal text (`!DIArgList(i32 %a, i32 %b, i32 5)` and the `!DIExpression(...)`); the fixture's `RUN` line is `opt -passes=verify`, so its `#dbg_value(` directive is `opt`'s output after `llvm::UpgradeIntrinsicCall`, which llvmkit does not port, and it is asserted as the `llvm.dbg.value` calls llvmkit actually prints; the `!16,` slot reference is dropped because llvmkit's metadata numbering is not `SlotTracker`'s walk order. Recorded as `docs/divergences.md` entries 19 and 99 rather than trimmed |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_reaches_the_other_parse_metadata_as_value_callers` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalOperandBundles` and `LLParser::parseExceptionArgs`, the two `parseMetadataAsValue` callers that are not `parseParameterList`. No upstream fixture spells either shape | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_round_trips_inside_a_debug_record` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList` and `AsmWriter.cpp::writeDIArgList`. `test/Assembler`'s `dbg-record-invalid-*` fixtures do carry `!DIArgList`, but none pins an error raised *inside* the operand list: `-3.ll` and `-4.ll` fail at the record's head before the `(`, while `-0.ll`, `-1.ll` and `-5.ll` parse the list to completion and fail at a token in the next IR line, so the routines are the anchor | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_rejects_a_metadata_typed_operand` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList`, the second direct caller of `parseValueAsMetadata`, from which it inherits the `Ty->isMetadataTy()` guard (`invalid metadata-value-metadata roundtrip`). `test/Assembler`'s `dbg-record-invalid-*` fixtures do carry `!DIArgList`, but none pins an error raised *inside* the operand list: `-3.ll` and `-4.ll` fail at the record's head before the `(`, while `-0.ll`, `-1.ll` and `-5.ll` parse the list to completion and fail at a token in the next IR line | llvmkit-specific (rule anchor) |

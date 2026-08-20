@@ -1625,6 +1625,73 @@ zeroinitializer for a zeroable type`;
 
 </details>
 
+### 118. A `#dbg_*` record's value operand skips `parseValueAsMetadata`'s guard and `parseMetadata`'s `TypeMsg`
+
+*parser — debug records* — crates/llvmkit-asmparser/src/ll_parser.rs
+(`parse_debug_metadata_operand`)
+
+Found 2026-08-21 in the close-out of the `DIArgList` port, which added
+`parseMetadata`'s `DIArgList` dispatch to `parse_metadata_value_operand` and
+left this fourth site — a second, hand-rolled copy of the same routine —
+carrying neither of the two things `parseMetadata`'s fall-through supplies.
+
+- **LLVM:** `LLParser::parseDebugRecord` parses its value field with
+  `parseMetadata(ValLocMD, &PFS)` — the whole routine, not a re-implementation.
+  Its non-`!` fall-through is
+  `return parseValueAsMetadata(MD, "expected metadata operand", PFS);`, and
+  `LLParser::parseValueAsMetadata` is `parseType(Ty, TypeMsg, Loc)`, then
+  `if (Ty->isMetadataTy()) return error(Loc, "invalid metadata-value-metadata
+  roundtrip");`, then `parseValue`. So a record operand gets upstream's
+  `expected metadata operand` when the type will not parse, and the roundtrip
+  guard — anchored at the *type* — when it parses as `metadata`.
+- **llvmkit:** `parse_debug_metadata_operand` is written out rather than
+  delegating: a `DIArgList` arm, then an `Exclaim | MetadataVar` arm, then a
+  bare `parse_type` + `parse_value` tail. That tail has no `TypeMsg` and no
+  `isMetadataTy` guard, so it reports `parse_type`'s own `expected type`, and
+  it runs on into `parse_value` and blames the *value* for a `metadata` inner
+  type.
+- **Consequence:** two diagnostics differ, in text and in anchor, on input both
+  sides reject. `#dbg_value(metadata %a, !5, !DIExpression(), !4)` reports
+  `3:27: '%a' defined with type 'i32' but expected 'metadata'`, caret on `%a`,
+  where upstream reports `invalid metadata-value-metadata roundtrip` at the
+  inner `metadata` keyword. `#dbg_value(42, ...)` reports `3:16: expected type`
+  where upstream reports `expected metadata operand`.
+- **The asymmetry is inside llvmkit and visible without upstream.** The same
+  shape spelled as a call argument goes through `parse_value_as_metadata` and
+  answers correctly: `call void @llvm.dbg.value(metadata metadata %a, ...)`
+  reports `3:38: invalid metadata-value-metadata roundtrip`, caret on the inner
+  `metadata`. Operand bundles, exception-argument lists and `parse_di_arg_list`
+  were all routed through that single port in the operand-bundle work; the
+  record operand is the one caller left holding its own copy.
+- **Fix:** delete the hand-rolled tail and delegate to
+  `parse_metadata_value_operand` — which, since the `DIArgList` port, already
+  is `parseMetadata` including its `DIArgList` arm — keeping only the wrapping
+  into `DebugMetadataOperand`. That is a `parseDebugRecord` change with its own
+  diagnostic re-blessing, not a one-line guard insertion, which is why it is
+  recorded here rather than done in the round that found it.
+
+<details><summary>Verification evidence (verified 2026-08-21)</summary>
+
+Upstream read from `lib/AsmParser/LLParser.cpp`: `parseDebugRecord`'s value
+field is `Metadata *ValLocMD; if (parseMetadata(ValLocMD, &PFS)) return true;`,
+and `parseValueAsMetadata` is the five-statement routine quoted above, with
+`TypeMsg` reaching `parseType` and the `isMetadataTy` error taking `Loc` from
+`parseType`'s out-parameter. llvmkit read from
+`crates/llvmkit-asmparser/src/ll_parser.rs::parse_debug_metadata_operand`: the
+routine is a `peek_is_di_arg_list` arm, an `Exclaim | MetadataVar` arm, and
+then exactly three statements — `let ty = self.parse_type(false)?;`,
+`let value = self.parse_value(state, ty)?;`,
+`Ok(DebugMetadataOperand::Value(value.id()))`. Nothing between the two calls,
+so no `is_metadata()` test, and `parse_type`'s only argument is the
+allow-void flag, so no `TypeMsg` is threaded either. Probed with
+`target/release/examples/parse_file.exe` rebuilt at this commit's parent, whose
+parser source this commit does not touch: the record shape gives
+`3:27: '%a' defined with type 'i32' but expected 'metadata'`; the same shape as
+a `call` argument gives `3:38: invalid metadata-value-metadata roundtrip`; and
+`#dbg_value(42, ...)` gives `3:16: expected type`.
+
+</details>
+
 ## Different printed bytes
 
 The parser/printer contract is that printed output matches `AsmWriter.cpp` byte for byte and re-parses.

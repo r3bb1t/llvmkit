@@ -2587,10 +2587,15 @@ fixture's own `FileCheck` line, not from a house preference.
   `CHECK` carries a column. Measured at the same commit with the matcher
   "a line of the upstream original that contains the pin and also matches
   `:[0-9]+: *error:` **or** `\]\]:[0-9]+:`": **114 column-carrying rows, 52
-  already pinned, 62 missing**. Re-derive before acting and record the matcher
-  beside the number — a narrower regex answers 112, because the spellings
-  upstream uses include `[[@LINE+1]]:1:`, `[[#@LINE-1]]:26:` and the bare
-  `; ERR0: :41:` of the `invalid-atomicrmw-scalable` rows.
+  already pinned, 62 missing**. A `grep`-based pass answers **112**, and the
+  gap is *not* regex width — narrow and wide both answer 112. The two rows it
+  drops are `test/Assembler/invalid-name.ll` and `invalid-name2.ll`, each of
+  which contains a literal NUL byte, so GNU `grep` prints
+  `Binary file … matches` instead of the matching line and a piped second
+  `grep` then sees no `:N: error:`. `grep -a` restores 114 exactly. Widening
+  the regex does not. Do record the matcher beside any figure all the same:
+  the spellings upstream uses include `[[@LINE+1]]:1:`, `[[#@LINE-1]]:26:` and
+  the bare `; ERR0: :41:` of the `invalid-atomicrmw-scalable` rows.
 - **`contains` everywhere else, deliberately.** The pin is upstream's
   `FileCheck` text and `FileCheck` matches substrings, so containment *is* that
   fixture's contract. Tightening it without an end anchor invents a stricter

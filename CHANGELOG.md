@@ -35,9 +35,13 @@ cut, entries accumulate under **Unreleased**.
   upstream's own `test/DebugInfo/Generic/debug_value_list.ll` was rejected at
   its first `call void @llvm.dbg.value(metadata !DIArgList(i32 %b), ...)`. The
   dispatch now sits in `parse_metadata_value_operand` where `parseMetadata` has
-  it, and the caller-side hoist is deleted. Pre-existing since the `DIArgList`
-  port; the operand-bundle work is responsible only for the rustdoc that then
-  claimed the routine mirrored `parseMetadata`.
+  it, and `parseValID`'s copy of the hoist is deleted. The `#dbg_*` record
+  operand keeps its own, correctly: `parse_debug_metadata_operand` is a
+  separate hand-rolled copy of `parseMetadata` rather than a caller of it, and
+  what that costs is recorded as `docs/divergences.md` entry 118.
+  Pre-existing since the `DIArgList` port; the operand-bundle work is
+  responsible only for the rustdoc that then claimed the routine mirrored
+  `parseMetadata`.
 
   Module scope is unchanged and is *not* covered: `!0 = !{!DIArgList(i32 7)}`
   reaches upstream's `parseDIArgList(AL, nullptr)`, which opens
@@ -56,8 +60,11 @@ cut, entries accumulate under **Unreleased**.
   line of its fixture and its scope sentence excluded arms that are affected;
   both corrected, and its Fix bullet now names the unit test the change would
   break. New entries **116** (the zero-initializer fallback arm invents a
-  message; the constant path drops upstream's first guard) and **117**
-  (`token zeroinitializer` is a rejects-valid). `docs/future-work.md`'s
+  message; the constant path drops upstream's first guard), **117**
+  (`token zeroinitializer` is a rejects-valid) and **118**
+  (`parse_debug_metadata_operand`'s fall-through carries neither
+  `parseValueAsMetadata`'s `isMetadataTy` guard nor `parseMetadata`'s
+  `TypeMsg`). `docs/future-work.md`'s
   corpus-oracle item carries measured figures and their derivation in place of
   an unsupported scale claim, and both oracle routes it proposed are replaced —
   each would have false-failed rows where llvmkit is exactly right.

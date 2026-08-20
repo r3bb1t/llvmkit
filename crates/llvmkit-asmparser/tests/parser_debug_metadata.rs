@@ -1154,14 +1154,21 @@ entry:
 /// `opt -passes=verify < %s | opt -passes=verify -S | FileCheck %s`, so its
 /// `CHECK-COUNT-3: #dbg_value(` block is `opt`'s output *after* the
 /// dbg-intrinsic-to-`#dbg_*`-record conversion in `llvm::UpgradeIntrinsicCall`.
-/// llvmkit has no `AutoUpgrade` (recorded in `docs/divergences.md` as the
-/// missing-`AutoUpgrade` entry), so it re-prints the intrinsic-call spelling,
-/// and its metadata slot numbering is not `SlotTracker`'s walk order either
-/// (also recorded in `docs/divergences.md`), which is why the `CHECK-SAME: !16,`
-/// directive has no counterpart here. What is checked is the rest of the
-/// directive block against llvmkit's own printer: three `llvm.dbg.value` calls,
-/// the third carrying upstream's exact `!DIArgList` and `!DIExpression`
-/// operand text on one line, as `CHECK-SAME` demands.
+/// llvmkit does not port that routine — `crates/llvmkit-ir/src/auto_upgrade.rs`
+/// covers `UpgradeModuleFlags`, `UpgradeSectionAttributes` and
+/// `UpgradeTBAANode`, and nothing on the intrinsic side, recorded as
+/// `docs/divergences.md` entry 19 — so llvmkit re-prints the intrinsic-call
+/// spelling. Its metadata slot numbering is not `SlotTracker`'s walk order
+/// either (entry 99), which is why the `CHECK-SAME: !16,` directive has no
+/// counterpart here.
+///
+/// So of the fixture's four directives, **two are asserted against upstream's
+/// literal text** — `!DIArgList(i32 %a, i32 %b, i32 5)` and the
+/// `!DIExpression(DW_OP_LLVM_arg, ...)`, on one line as `CHECK-SAME` demands.
+/// `CHECK-COUNT-3: #dbg_value(` is asserted as the three `llvm.dbg.value` calls
+/// llvmkit actually prints, and `CHECK-SAME: !16,` is dropped; both are
+/// recorded as entries 19 and 99 rather than trimmed. The fixture itself is
+/// byte-identical to upstream's.
 #[test]
 fn upstream_debug_value_list_parses_with_di_arg_list_call_arguments() {
     let module = Module::dynamic("debug_value_list");
