@@ -229,9 +229,8 @@ fn hex_double_literal_converts_to_float_context() {
 /// `Out << format_hex(apf.bitcastToAPInt().getZExtValue(), 0, /*Upper=*/true)`
 /// in `llvm/lib/IR/AsmWriter.cpp::writeAPFloatInternal`, a file-static free
 /// function reached from `writeConstantInternal`'s `ConstantFP` arm — that arm
-/// holds the vector `splat (` wrapper (the `Out << "splat ("`, the scalar-type
-/// print and the closing `Out << ")"`) around the delegating call, and nothing
-/// else, so it is `writeAPFloatInternal` a porter should grep for.
+/// wraps the delegating call in the vector `splat (…)` form and does not print
+/// the digits itself, so it is `writeAPFloatInternal` a porter should grep for.
 #[test]
 fn hex_float_constants_print_uppercase() {
     const FIXTURE: &[u8] =

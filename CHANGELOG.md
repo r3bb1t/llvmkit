@@ -69,24 +69,28 @@ entry 88 and `docs/future-work.md` in `5375335`, this file's own in `4e27ae7`
   2524 / 2519 distinct / 2091 rows.
 
 - **The `writeConstantInternal` `ConstantFP` arm does not "hold only the
-  delegating call".** It also holds the vector `splat (` wrapper — the
-  `Out << "splat ("`, the scalar-type print and the closing `Out << ")"` —
-  around `writeAPFloatInternal(Out, CFP->getValueAPF())`. Corrected at all
+  delegating call".** It also wraps `writeAPFloatInternal(Out,
+  CFP->getValueAPF())` in the vector `splat (…)` form. Corrected at all
   three sites that said otherwise. The porting advice they carry (grep
   `writeAPFloatInternal`, not `writeConstantInternal`, for the
   `format_hex(…, 0, /*Upper=*/true)` statement) is unchanged and still right.
 
-- **The FileCheck substitute now discloses everything it does not implement.**
-  `parser_eh_funclet.rs::check_directives` named six omissions and has
-  fourteen: `CHECK-EMPTY`, `CHECK-COUNT-<n>`, `COM:`, the `{LITERAL}` modifier,
-  the `[[#numeric]]` syntax and the driver options `--implicit-check-not`,
-  `--strict-whitespace` and `--match-full-lines` were missing from the list,
-  which is read off `Check::FileCheckKind` (user-spellable kinds only) and
-  `utils/FileCheck/FileCheck.cpp`'s option table — and `--match-full-lines` is
-  live, since the vendored `test/Assembler/block-labels.ll` carries it on its
-  RUN line. `canonicalize_horizontal_whitespace` also implemented only the
-  second half of `FileCheck::CanonicalizeFile`; it now folds `\r\n` as upstream
-  does. The leading-`-NEXT` panic reproduces upstream's unbalanced quote
+- **The FileCheck substitute states its gaps where they are checkable, and
+  stops enumerating where they are not.** `parser_eh_funclet.rs::check_directives`
+  listed six omissions and presented that list as read off upstream's directive
+  *and option* tables. The two enum-backed halves are now complete and say so:
+  every other user-spellable `Check::FileCheckKind` (`CHECK-SAME`, `-NOT`,
+  `-DAG`, `-LABEL`, `-EMPTY`, `-COUNT-<n>`, `COM:`) and the sole
+  `FileCheckKindModifier` (`{LITERAL}`). The options and pattern syntaxes are no
+  longer enumerated as a set: the doc states that no `FileCheckRequest` option
+  and no non-substring pattern syntax is honoured, and gives names as examples
+  only — a claim that cannot rot as upstream grows options. Three of those are
+  live in the vendored corpus rather than hypothetical: `--match-full-lines` on
+  `test/Assembler/block-labels.ll`, and `-check-prefix` and `-DFILE=%s` on
+  fixtures driven by `parser_corpus.rs`'s manifest rather than by this harness.
+  `canonicalize_horizontal_whitespace` also implemented only the second half of
+  `FileCheck::CanonicalizeFile`; it now folds the dosish CR as upstream does.
+  The leading-`-NEXT` panic reproduces upstream's unbalanced quote
   (`without previous 'CHECK: line`), as this repo's convention requires.
 
 ### Ledger and docs: two closed entries retired, two new divergences, three indexes repaired

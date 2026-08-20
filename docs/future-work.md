@@ -2565,8 +2565,9 @@ over `2002-08-15-ConstantExprProblem.ll`, and
 `debug-info.ll` row. So fix round 3's sweep disclosed the line on rows it
 rewrote for other reasons, not on the class; the rows it regraded for hex-case,
 block-label and `compatibility.ll` reasons are themselves inside the 219.
-`numbered-values.ll` is no longer cited by any row at all, so the pair named
-above is a sweep finding, not a disclosure pair. Derivation:
+`numbered-values.ll` is no longer cited by any `UPSTREAM.md` row at all (the
+fixture itself is still driven at `status=pass` by the corpus manifest), so the
+pair named above is a sweep finding, not a disclosure pair. Derivation:
 
 ```bash
 R=orig_cpp/llvm-project-llvmorg-22.1.4/llvm

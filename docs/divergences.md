@@ -1074,7 +1074,7 @@ test's rustdoc and in its `mirror (partial)` row in `UPSTREAM.md`.
 
 **How it was first found, and what that evidence was worth:** a temporary integration test (`crates/llvmkit-asmparser/tests/zz_probe_verify.rs`) printed `PROBE-RESULT: operand-bundles-wineh VERIFIES (upstream rejects)` and was deleted before the commit — so between then and fix round 4 this entry cited an artifact that no longer existed. The same probe reported that the sibling positive fixture `test/Verifier/preallocated-valid.ll` also verifies; that half *is* still live, through `parser_eh_funclet.rs::catchswitch_in_preallocated_teardown`, which runs `verify_borrowed` on it.
 
-**Upstream side, read at 22.1.4:** the fixture is four lines of `RUN`/`CHECK` plus `@report_missing`; its single directive is `; CHECK: Missing funclet token on intrinsic call`.
+**Upstream side, read at 22.1.4:** the fixture's one `CHECK` directive is `; CHECK: Missing funclet token on intrinsic call`, and it is matched against `not opt -passes=verify` output — so what it pins is the Verifier diagnostic, nothing about the printer.
 
 </details>
 
