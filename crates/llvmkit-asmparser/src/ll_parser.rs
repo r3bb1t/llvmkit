@@ -5571,6 +5571,58 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
+    /// `i32 %local` / `i32 @global` / `i32 7` — a type-and-value pair wrapped
+    /// as metadata. Upstream's own grammar comment, verbatim:
+    ///
+    /// ```text
+    /// /// parseValueAsMetadata
+    /// ///  ::= i32 %local
+    /// ///  ::= i32 @global
+    /// ///  ::= i32 7
+    /// ```
+    ///
+    /// Mirrors `LLParser::parseValueAsMetadata` statement for statement:
+    /// record the type's location, parse the type under `TypeMsg`, reject a
+    /// `metadata` type *before* any value is read, parse the value, then
+    /// `ValueAsMetadata::get`. Both of `parseMetadata`'s entries into it — the
+    /// non-`!` fall-through and `parseMDNodeVector`'s element loop — arrive
+    /// here, so the roundtrip guard exists once, as upstream has it once.
+    ///
+    /// `pfs` is upstream's nullable `PerFunctionState *`. `None` renders what
+    /// `parseValue` / `convertValIDToValue` fall back to without a function
+    /// state, which in llvmkit is `parse_global_value`.
+    ///
+    /// `type_msg` is upstream's `const Twine &TypeMsg`. llvmkit applies it to
+    /// every failure of `parse_type`, where upstream's `parseType` uses it only
+    /// in its `default:` arm — recorded as a divergence, not fixed here.
+    fn parse_value_as_metadata(
+        &mut self,
+        type_msg: &'static str,
+        pfs: Option<&PerFunctionState<'ctx, B>>,
+    ) -> ParseResult<MetadataId<B>> {
+        // `LocTy Loc;` then `if (parseType(Ty, TypeMsg, Loc)) return true;` —
+        // upstream records `Loc` before the parse, so the guard below anchors
+        // at the type token rather than wherever the type parse ended.
+        let type_loc = self.loc();
+        let ty = self
+            .parse_type(false)
+            .map_err(|_| self.expected(type_msg))?;
+        // `if (Ty->isMetadataTy())
+        //    return error(Loc, "invalid metadata-value-metadata roundtrip");`
+        if ty.is_metadata() {
+            return Err(self.message_at(type_loc, "invalid metadata-value-metadata roundtrip"));
+        }
+        // `Value *V; if (parseValue(Ty, V, PFS)) return true;`
+        let value_id = match pfs {
+            Some(state) => self.parse_value(state, ty)?.id(),
+            None => self.parse_global_value(ty)?.as_erased().id(),
+        };
+        // `MD = ValueAsMetadata::get(V);`
+        Ok(own_metadata(
+            self.module.metadata_node(MetadataKind::Constant(value_id)),
+        ))
+    }
+
     /// `metadata i32 %local` / `metadata !0` / `metadata !"string"` — the
     /// `metadata`-typed operand form, with the `metadata` type already
     /// consumed by the caller.
@@ -5594,8 +5646,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// with `parseMetadata`'s nullable `PerFunctionState *`, which is what
     /// `parseValID`'s metadata arms need at module scope. Callers that do hold
     /// a function state go through [`Self::parse_metadata_as_value`],
-    /// upstream's own entry point. Slot refs (`!N`), inline tuples (`!{...}`)
-    /// and MDStrings (`!"..."`) are all legal metadata values.
+    /// upstream's own entry point, and the non-`!` fall-through delegates to
+    /// [`Self::parse_value_as_metadata`], as `parseMetadata` does. Slot refs
+    /// (`!N`), inline tuples (`!{...}`) and MDStrings (`!"..."`) are all legal
+    /// metadata values.
     fn parse_metadata_value_operand(
         &mut self,
         pfs: Option<&PerFunctionState<'ctx, B>>,
@@ -5606,33 +5660,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(own_metadata(self.module.metadata_as_value(id)));
         }
 
-        // `parseMetadata`'s fallthrough: anything that is not a `!` at all is a
-        // `ValueAsMetadata` — a *type and value* pair, which is how every
-        // old-format debug intrinsic spells its operands
-        // (`llvm.dbg.value(metadata i32 %a, …)`). llvmkit demanded the sigil
-        // here and so could not parse them at all.
+        // `parseMetadata`'s fallthrough — `if (Lex.getKind() != lltok::exclaim)
+        // return parseValueAsMetadata(MD, "expected metadata operand", PFS);`.
+        // Anything that is not a `!` at all is a `ValueAsMetadata`: a *type and
+        // value* pair, which is how every old-format debug intrinsic spells its
+        // operands (`llvm.dbg.value(metadata i32 %a, …)`). llvmkit demanded the
+        // sigil here and so could not parse them at all.
         if !matches!(self.peek(), Token::Exclaim) {
-            let type_loc = self.loc();
-            let ty = self
-                .parse_type(false)
-                .map_err(|_| self.expected("metadata operand"))?;
-            // `parseValueAsMetadata`'s own guard, checked *before* `parseValue`
-            // and anchored at the type — upstream's `parseType(Ty, TypeMsg,
-            // Loc)` records `Loc` before parsing. `metadata metadata %x` would
-            // round-trip metadata through a value and back.
-            // `parse_md_tuple_operand` already carries this check for the
-            // `parseMDNodeVector` path; this is `parseValueAsMetadata`'s own.
-            if ty.is_metadata() {
-                return Err(self.message_at(type_loc, "invalid metadata-value-metadata roundtrip"));
-            }
-            let value_id = match pfs {
-                Some(state) => self.parse_value(state, ty)?.id(),
-                None => self.parse_global_value(ty)?.as_erased().id(),
-            };
-            let id = own_metadata(
-                self.module
-                    .metadata_node(llvmkit_ir::metadata::MetadataKind::Constant(value_id)),
-            );
+            let id = self.parse_value_as_metadata("metadata operand", pfs)?;
+            // `parseMetadataAsValue`'s second statement,
+            // `V = MetadataAsValue::get(Context, MD);`.
             return Ok(own_metadata(self.module.metadata_as_value(id)));
         }
 
@@ -5736,18 +5773,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 | Token::LocalVar(_)
                 | Token::LocalVarId(_)
         ) {
-            let type_loc = self.loc();
-            let ty = self.parse_type(false)?;
-            // `parseValueAsMetadata`'s guard, anchored at the type: a
-            // `metadata`-typed operand would round-trip metadata through a
-            // value and back. `!{metadata !0}` is the old syntax that hits it.
-            if matches!(ty.into_type_enum(), AnyTypeEnum::Metadata(_)) {
-                return Err(self.message_at(type_loc, "invalid metadata-value-metadata roundtrip"));
-            }
-            let constant = self
-                .parse_constant(ty)?
-                .ok_or_else(|| self.expected("typed metadata constant"))?;
-            return Ok(own_metadata(self.module.metadata_constant(constant)));
+            // `parseMDNodeVector` reaches `parseValueAsMetadata` the same way
+            // the operand form does — through `parseMetadata(MD, nullptr)`, so
+            // the function state is absent and the `TypeMsg` is the same one.
+            // Its roundtrip guard (`!{metadata !0}` is the old syntax that hits
+            // it) lives there, once, rather than in a second copy here.
+            return self.parse_value_as_metadata("metadata operand", None);
         }
 
         // `parseMetadata`'s fallthrough: anything that is not `!` goes to

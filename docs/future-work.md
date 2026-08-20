@@ -2504,9 +2504,12 @@ that fixture's `CHECK` text carries a doubled space; there are now two copies of
 that routine as well, and the refactor below deletes both.
 
 The work: move `check_directives` into a shared `tests/support/` module, route
-all five call sites through it, delete the four `assert_check_lines` copies, and
-re-widen the five flattened needle lists to their fixtures' own CHECK blocks —
-using `Check::Next` where upstream writes `CHECK-NEXT`. Doing that also unblocks
+all five call sites through it, delete the four `assert_check_lines` copies and
+the second `canonicalize_horizontal_whitespace`, and re-widen the five flattened
+needle lists to their fixtures' own CHECK blocks — using `Check::Next` where
+upstream writes `CHECK-NEXT`. The operand-bundle fixture needs no re-widening,
+since it already carries every directive; it needs only the `Check::Next` and
+`CHECK-LABEL` conversion. Doing that also unblocks
 pointing `parser_calls.rs::callbr_successor_structure_round_trips` at the whole
 `fixtures/upstream/assembler-corpus/callbr.ll` and asserting all eight of
 `@test_kill`'s directives, retiring the trimmed fixture and its
@@ -2520,16 +2523,19 @@ doc. Folding it into a substring oracle would weaken it.
 ## Docs — the cite-by-symbol sweep (found 2026-08-20, fix round 3)
 
 `docs/divergences.md` states the law for its own file ("Upstream is cited **by
-symbol, never by line number**") and its body breaks it about **158** times —
-148 matching `File.(cpp|h|def):LINE` plus roughly ten spelled as bare
-coordinates a grep cannot see (`(~:1128)`, `(~4202)`, `defined at :5010`, in
-entries 40 and 47). All 158 sit inside `Correction from verification` and
-`<details>` evidence blocks; **none** appears in an entry's **LLVM:** /
-**llvmkit:** / **Why:** / **Fix:** bullets, and all of them resolve correctly
-against the pinned 22.1.4 tree today. About 48 name the symbol adjacent to the
-number and survive a version bump in recoverable form; the remaining ~110 are
-bare. `UPSTREAM.md` carries the same debt in a different shape: **167 rows**
-carry a line-number citation of an upstream `.ll` or `.cpp`.
+symbol, never by line number**") and its body breaks it about **157** times —
+**147** matching
+`grep -oE '[A-Za-z_]+\.(cpp|h|def):[0-9]+' docs/divergences.md | wc -l`
+(re-derived at the operand-bundle-parity commit, down one from 148 at
+`71806d3` because closing entry 14 deleted its evidence block), plus roughly
+ten spelled as bare coordinates a grep cannot see (`(~:1128)`, `(~4202)`,
+`defined at :5010`, in entries 40 and 47). All of them sit inside
+`Correction from verification` and `<details>` evidence blocks; **none**
+appears in an entry's **LLVM:** / **llvmkit:** / **Why:** / **Fix:** bullets,
+and all resolve correctly against the pinned 22.1.4 tree today. Some name the
+symbol adjacent to the number and so survive a version bump in recoverable
+form; most are bare. `UPSTREAM.md` carries the same debt in a different shape:
+**167 rows** carry a line-number citation of an upstream `.ll` or `.cpp`.
 
 Fix round 3 converted 19 of them — nine `UPSTREAM.md` rows, nine rustdoc twins
 and one inline comment, all naming `test/Bitcode/compatibility.ll` blocks that

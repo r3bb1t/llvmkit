@@ -58,21 +58,39 @@ cut, entries accumulate under **Unreleased**.
   operand-bundle branch newly reaches this code, so the guard lands with it. It
   also changes the diagnostic on the parameter-list path.
 
-- **Changed: `parseMetadataAsValue` is a named routine again.** llvmkit had
-  fused `parseMetadataAsValue`, `parseMetadata` and `parseValueAsMetadata` into
-  one helper. `Parser::parse_metadata_as_value` now mirrors upstream's
-  non-nullable-`PerFunctionState` entry point and delegates, as upstream's
-  two-statement wrapper does; `parse_metadata_value_operand` keeps
-  `parseMetadata`'s nullable-state shape for `parseValID`'s module-scope arms.
-  Its doc comment had also acquired a stray first line from an unrelated
-  routine; that is gone.
+- **Changed: `parseMetadataAsValue`, `parseMetadata` and `parseValueAsMetadata`
+  are three named routines again.** llvmkit had fused all three into one helper.
+  `Parser::parse_metadata_as_value` mirrors upstream's
+  non-nullable-`PerFunctionState` entry point and delegates;
+  `parse_metadata_value_operand` keeps `parseMetadata`'s nullable-state shape
+  for `parseValID`'s module-scope arms; and `parse_value_as_metadata` is the
+  type-and-value tail, with the grammar comment upstream gives it. Its doc
+  comment had also acquired a stray first line from an unrelated routine; that
+  is gone.
+
+- **Changed: the `invalid metadata-value-metadata roundtrip` guard exists once,
+  as it does upstream.** It had been written inline twice — once on the
+  `parseMetadata` fall-through and once in `parse_md_tuple_operand` — where
+  `LLParser` has it only inside `parseValueAsMetadata`. Both callers now route
+  through the single port. One diagnostic moves with the unification: a
+  malformed nested type inside a `!{...}` tuple element, such as
+  `!0 = !{ { i32, } undef }`, now reports `expected metadata operand` where it
+  reported `expected type`, because that position now applies upstream's
+  `TypeMsg` the way every other `parseValueAsMetadata` position does. That
+  llvmkit applies `TypeMsg` to *every* type failure, where upstream's
+  `parseType` uses it only in its `default:` arm, is a pre-existing divergence
+  now recorded as `docs/divergences.md` entry 114 rather than left in a commit
+  body.
 
 - **Changed: `test/Bitcode/operand-bundles.ll` is vendored whole.** It replaces
   a hand-trimmed subset whose header claimed llvmkit could not express the rest
   — typed-pointer loads, metadata bundles, landingpad-heavy invokes. All of it
   parses today, so the trim was a stale premise. The new test asserts the
   fixture's directives in order and states, in its doc comment, which FileCheck
-  semantics this test binary's `assert_check_lines` does not render.
+  semantics this test binary's `assert_check_lines` does not render. Its `RUN`
+  line is `llvm-as < %s | llvm-dis | FileCheck %s` and passes no
+  `-disable-verify`, so the test runs `verify_borrowed` as well — `llvm-as` is
+  half the oracle, not just a pretty-printer, and the fixture verifies clean.
 
 - **Not ported, and why:** `test/Bitcode/compatibility.ll`'s
   `@instructions.bundles.metadata` spells the same `"foo"` / `"bar"` bundles as

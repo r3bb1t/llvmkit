@@ -17,6 +17,23 @@ fn parse_and_render_bytes(module_name: &str, src: &[u8]) -> String {
     format!("{module}")
 }
 
+/// `llvm-as < %s | llvm-dis` — both halves. `llvm-as` runs `verifyModule` on
+/// the parsed module unless `-disable-verify` is passed, so a `RUN` line that
+/// pipes through it asserts verification as well as parse-and-print;
+/// [`parse_and_render_bytes`] drops that half. Mirrors
+/// `llvm/tools/llvm-as/llvm-as.cpp`'s `if (!DisableVerify && verifyModule(*M, &errs()))`.
+fn parse_verify_and_render_bytes(module_name: &str, src: &[u8]) -> String {
+    let module = Module::dynamic(module_name);
+    Parser::new(src, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("`llvm-as` verifies this fixture, so llvmkit must too");
+    format!("{module}")
+}
+
 fn parse_fixture_err(module_name: &str, src: &[u8]) -> ParseError {
     let module = Module::dynamic(module_name);
     Parser::new(src, &module)
@@ -384,7 +401,9 @@ fn canonicalize_horizontal_whitespace(s: &str) -> String {
 /// — specifically `AssemblyWriter::writeOperandBundles`, whose `Out << " [ "`
 /// and `Out << " ]"` are the spaces this fixture pins. The fixture's
 /// typed-pointer spelling (`i32* %ptr`) parses and prints as `ptr %ptr`,
-/// exactly as `llvm-dis` does, and no directive pins it.
+/// exactly as `llvm-dis` does, and no directive pins it. The `llvm-as` half of
+/// that pipeline verifies the module — no `-disable-verify` here — so
+/// [`parse_verify_and_render_bytes`] is the oracle rather than parse-and-print.
 ///
 /// **Harness gap, stated rather than papered over.** This binary's
 /// `assert_check_lines` is ordered fixed-substring matching over a byte
@@ -452,7 +471,7 @@ fn operand_bundles_ll_matches_upstream_check_lines() {
         "invoke void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, metadata !\"abc\"), \"bar\"(metadata !\"abcde\", metadata !\"qwerty\") ]",
     ];
 
-    let text = parse_and_render_bytes("operand_bundles_ll", FIXTURE);
+    let text = parse_verify_and_render_bytes("operand_bundles_ll", FIXTURE);
     let canonical_text = canonicalize_horizontal_whitespace(&text);
     let canonical_directives: Vec<String> = DIRECTIVES
         .iter()
