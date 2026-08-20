@@ -75,19 +75,19 @@ entry 88 and `docs/future-work.md` in `5375335`, this file's own in `4e27ae7`
   `writeAPFloatInternal`, not `writeConstantInternal`, for the
   `format_hex(…, 0, /*Upper=*/true)` statement) is unchanged and still right.
 
-- **The FileCheck substitute states its gaps where they are checkable, and
-  stops enumerating where they are not.** `parser_eh_funclet.rs::check_directives`
-  listed six omissions and presented that list as read off upstream's directive
-  *and option* tables. The two enum-backed halves are now complete and say so:
-  every other user-spellable `Check::FileCheckKind` (`CHECK-SAME`, `-NOT`,
-  `-DAG`, `-LABEL`, `-EMPTY`, `-COUNT-<n>`, `COM:`) and the sole
-  `FileCheckKindModifier` (`{LITERAL}`). The options and pattern syntaxes are no
-  longer enumerated as a set: the doc states that no `FileCheckRequest` option
-  and no non-substring pattern syntax is honoured, and gives names as examples
-  only — a claim that cannot rot as upstream grows options. Three of those are
-  live in the vendored corpus rather than hypothetical: `--match-full-lines` on
-  `test/Assembler/block-labels.ll`, and `-check-prefix` and `-DFILE=%s` on
-  fixtures driven by `parser_corpus.rs`'s manifest rather than by this harness.
+- **The FileCheck substitute states its gaps as a blanket negative instead of a
+  list.** `parser_eh_funclet.rs::check_directives` used to name a handful of
+  omissions and present them as read off upstream's directive and option
+  tables, which is a promise that the doc tracks upstream and rots whenever
+  upstream moves. It now says the minimum true thing: `CHECK` and `CHECK-NEXT`
+  are implemented, and nothing else is honoured in any category — among them no
+  other directive, no modifier, no pattern syntax beyond a fixed substring, no
+  driver option. Names still appear where they help a reader, as examples
+  rather than a set. What is not hypothetical is called out: `--match-full-lines`
+  on `test/Assembler/block-labels.ll`, and `-check-prefix` and `-DFILE=%s` on
+  fixtures driven by `parser_corpus.rs`'s manifest rather than by this harness,
+  so lifting a needle out of one of those into a `check_directives` call would
+  silently drop the option it depends on.
   `canonicalize_horizontal_whitespace` also implemented only the second half of
   `FileCheck::CanonicalizeFile`; it now folds the dosish CR as upstream does.
   The leading-`-NEXT` panic reproduces upstream's unbalanced quote

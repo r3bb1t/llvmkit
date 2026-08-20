@@ -135,24 +135,17 @@ fn count_newlines_between(region: &str) -> usize {
 /// understands is *unimplemented here*, and a fixture needing any of it is
 /// *unported*, not narrowed — do not trim the fixture to fit this.
 ///
-/// Two of those gaps can be stated exactly, because each is an enum. Every
-/// other user-spellable `Check::FileCheckKind` in
-/// `include/llvm/FileCheck/FileCheck.h` is missing — `CHECK-SAME`, `CHECK-NOT`,
-/// `CHECK-DAG`, `CHECK-LABEL`, `CHECK-EMPTY`, `CHECK-COUNT-<n>` and `COM:`;
-/// that enum's remaining values (`CheckNone`, `CheckMisspelled`, `CheckEOF`,
-/// `CheckBadNot`, `CheckBadCount`) are internal markers, not spellings. So is
-/// the sole `FileCheckKindModifier`, `{LITERAL}`.
+/// Nothing else is honoured, in any category — among them no other directive,
+/// no modifier, no pattern syntax beyond a fixed substring, no driver option.
+/// Read that as a blanket statement, not a list to check against: it stays true
+/// as upstream grows FileCheck, which a list would not. Names appear here only
+/// where they help, never as a set: `CHECK-SAME`, `CHECK-NOT`, `CHECK-LABEL`,
+/// `COM:`, `{LITERAL}`, `{{regex}}`, `[[var]]`, `--implicit-check-not`,
+/// `--strict-whitespace`, `--check-prefix`.
 ///
-/// Past those two enums, assume nothing is honoured: no `FileCheckRequest`
-/// option is, and no pattern syntax beyond a fixed substring is. The names
-/// here are examples, not an inventory — `{{regex}}`, `[[var]]`,
-/// `[[#numeric]]`, `--implicit-check-not`, `--strict-whitespace`,
-/// `--ignore-case`, `-D VAR=VALUE`, `--check-prefix` / `--check-prefixes`,
-/// `--comment-prefixes`, `--match-full-lines`.
-///
-/// Three of those are live in the vendored corpus rather than hypothetical:
-/// `test/Assembler/block-labels.ll` carries `--match-full-lines` on its RUN
-/// line, and `-check-prefix` and `-DFILE=%s` appear on fixtures under
+/// Some of what is unimplemented is live in the vendored corpus rather than
+/// hypothetical: `test/Assembler/block-labels.ll` carries `--match-full-lines`
+/// on its RUN line, and `-check-prefix` and `-DFILE=%s` appear on fixtures under
 /// `tests/fixtures/upstream/assembler-corpus/`. Those fixtures are driven by
 /// `parser_corpus.rs`'s manifest rather than by this harness, which is why they
 /// are not a defect today — and why lifting a needle out of one of them into a
