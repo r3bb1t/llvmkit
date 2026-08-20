@@ -19,6 +19,83 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Windows EH funclets parse: `%cs = catchswitch`, and the whole implied-`token` operand family
+
+Five `rejects-valid` divergences, all one root cause and all on the same
+critical path: **no `.ll` file containing a `catchswitch` parsed at all**, and
+three of llvmkit's own printers emitted text llvmkit's own parser rejected.
+
+- **Fixed (breaking, parser): `%cs = catchswitch …` and `%0 = catchswitch …` now
+  parse.** `LLParser::parseBasicBlock` strips the optional result name once,
+  before `parseInstruction` dispatches, so `parseCatchSwitch` is reached
+  identically from the bare and named spellings. llvmkit dispatched terminators
+  from a `match` that ran *before* the name was consumed, so the named form fell
+  through to a table with no `CatchSwitch` arm and answered `expected instruction
+  opcode supported by this parser (got CatchSwitch)`. `catchswitch` now has a
+  post-name arm beside the existing `invoke` and `callbr` ones. This closes a
+  parser/printer contract break, not just a parser gap: `AsmWriter` prints every
+  `catchswitch` with a result name, so llvmkit could not re-read its own output.
+
+- **Fixed (breaking, parser): `catchpad within %cs []`, `cleanuppad within %cp []`,
+  `catchret from %cp to label %bb` and `cleanupret from %cp unwind to caller`
+  now parse.** `LLParser::parseCatchPad`, `parseCleanupPad`, `parseCatchSwitch`,
+  `parseCatchRet` and `parseCleanupRet` all read their pad operand as
+  `parseValue(Type::getTokenTy(Context), …)` — the `token` type is implied and
+  there is no type token in the syntax. llvmkit read a type first, so `%cs` was
+  consumed as a *named type reference* and the following `[ … ]` was parsed as an
+  array constant (`invalid empty array initializer`,
+  `array element #1 is not of type 'ptr'`). The two `*ret` forms additionally
+  demanded a `token` keyword that upstream rejects — and that llvmkit's own
+  `AsmWriter` never prints.
+
+- **Fixed (breaking, parser): `cleanupret` requires its `unwind`.**
+  `parseCleanupRet` spells it `parseToken(lltok::kw_unwind, "expected 'unwind'
+  in cleanupret")`; llvmkit had it optional, so `cleanupret from %cp` alone was
+  accepted.
+
+- **Fixed (breaking, parser): a `catchswitch` handler list must be non-empty and
+  must not end in a comma.** `parseCatchSwitch` is a `do … while
+  (EatIfPresent(lltok::comma))` followed by `parseToken(lltok::rsquare, …)`;
+  llvmkit's loop tested for `]` at the top and ate an optional trailing comma, so
+  `catchswitch within none [] unwind to caller` and `[label %a,]` were accepted.
+
+- **Fixed (breaking, parser): `catchpad within none` is rejected.**
+  `LLParser::parseCatchPad`'s scope guard admits only `LocalVar`/`LocalVarID` —
+  a catchpad's parent is always a `catchswitch`. llvmkit ran the wider
+  `cleanuppad`/`catchswitch` guard for all three pads; the mistake was masked
+  only by the type bug above.
+
+- **Fixed (diagnostics): eight funclet messages now match `LLParser.cpp`
+  verbatim** — `expected '[' with catchswitch labels`,
+  `expected ']' after catchswitch labels` (previously unreachable),
+  `expected 'unwind' after catchswitch scope`, `expected 'caller' in
+  catchswitch`, `expected 'from' after cleanupret`, `expected 'unwind' in
+  cleanupret` (previously unreachable), `expected 'caller' in cleanupret`, and
+  `expected 'from' after catchret`.
+
+- **Added: five ported tests in
+  `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs`**, from
+  `test/Bitcode/compatibility.ll` (`@instructions.win_eh.1` and
+  `@instructions.win_eh.2`, verbatim, with every one of their `CHECK` and
+  `CHECK-NEXT` lines asserted in order), `test/Verifier/operand-bundles-wineh.ll`
+  and `test/Verifier/preallocated-valid.ll`. `compatibility.ll`'s `RUN` line runs
+  `llvm-as | llvm-dis` twice, so those two tests also assert print/re-parse
+  idempotence.
+
+- **Corrected: `cleanuppad_cleanupret_round_trips` encoded the divergence it
+  should have caught.** Its input wrote `cleanupret from token %cp` — a spelling
+  upstream rejects — while its assertion expected the printer's (correct)
+  `cleanupret from %cp`. The input is now upstream's.
+
+- **Removed: `docs/divergences.md` entries 2, 11 and 13**, which were three
+  records of this one divergence. Five newly found divergences that this change
+  does *not* fix are recorded in their place as entries 107-111 — among them an
+  indirect call losing its parameter attributes and operand bundles (108), and
+  operand-bundle lists printing without `AssemblyWriter::writeOperandBundles`'s
+  inner spaces (111). Their shared structural cause, llvmkit's split instruction
+  dispatch, is recorded in `docs/future-work.md`: it has no observable behaviour
+  of its own, so it is a work item rather than a divergence.
+
 ### Hex escapes and hex floating-point constants print uppercase, at `format_hex`'s width
 
 Two more previously unrecorded divergences, found the same way as the block

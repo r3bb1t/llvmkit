@@ -19,7 +19,7 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
-## LLParser diagnostics — 46 real gaps left of 516 messages (recounted 2026-08-16, LLParser parity W14d)
+## LLParser diagnostics — 46 real gaps left of 516 messages (recounted 2026-08-16, LLParser parity W14d; 8 closed since, see below)
 
 The parity ledger was regenerated at this commit. Of the **516 exact message
 literals** `LLParser.cpp` reaches through its five diagnostic channels
@@ -38,13 +38,18 @@ The four `N/A`s, each checked against `LLParser.cpp` rather than assumed:
   sole call site is guarded by `isSanitizer(Lex.getKind())`.
 - `name is too long …` — see the divergence below.
 
-The 46 are almost all one shape: llvmkit runs the check at the same point and
-words it differently (`expected 'from' in catchret` for upstream's `expected
-'from' after catchret`, `expected '>' at end of packed struct` where upstream
-says `expected '}' at end of struct`). They are concentrated in the funclet EH
-terminators (`parseCatchSwitch` 4, `parseCleanupRet` 3), `parseValID`'s
+The remainder are almost all one shape: llvmkit runs the check at the same point
+and words it differently (`expected '>' at end of packed struct` where upstream
+says `expected '}' at end of struct`). They are concentrated in `parseValID`'s
 blockaddress and vector-splat forms (5), `parseArrayVectorType` (4) and `parsePHI`
-(2). This overlaps gap **G17** in [`fixture-coverage.md`](fixture-coverage.md)
+(2). **The count of 46 predates 0.0.4's funclet work** (2026-08-20), which
+closed the `parseCatchSwitch` (4) and `parseCleanupRet` (3) messages this
+paragraph used to count under "funclet EH terminators", plus
+`expected 'from' after catchret` — the example this paragraph used to lead
+with. That is 8 of the 46 by this paragraph's own arithmetic, so the live
+figure should be 38; it has **not** been re-derived, because `ledger_v2.py` is
+not in the tree (`find . -name 'ledger*.py'` returns nothing). Re-run the
+ledger before quoting either number. This overlaps gap **G17** in [`fixture-coverage.md`](fixture-coverage.md)
 but is not the same set: G17 counts *fixtures* that fail on wording, this counts
 *messages*. The full per-message list, with llvmkit's current spelling beside
 each, is the classification section of the parity ledger.
@@ -445,17 +450,41 @@ The verifier's error-distinguishing variant needs a richer return type than
 Not urgent: all three currently agree. It is recorded because a predicate with
 three implementations is one diagnostic away from having three behaviours.
 
-## Parser — `%x = catchswitch` is not dispatched (found 2026-08-14, LLParser parity W9c)
+## Parser — the instruction dispatch is split in two, where `LLParser`'s is single (found 2026-08-20, 0.0.4 funclet parity)
 
-`catchswitch` produces a token value and may be written with an explicit
-result name. llvmkit dispatches the *bare* form but its named-result table has
-no `CatchSwitch` arm, so `%cs = catchswitch within none [label %h] unwind to
-caller` answers `expected instruction opcode supported by this parser (got
-CatchSwitch)`.
+`LLParser::parseBasicBlock` strips the optional `%name =` **once**, before
+dispatch, and `LLParser::parseInstruction` switches on the opcode **once**. The
+result name is orthogonal to the opcode. llvmkit dispatches twice: a
+`match self.peek()` handles terminators *before* the name is consumed, and a
+chain of `if matches!(…)` handles the ones that can bind a result *after* it.
+Every result-binding terminator therefore needs two arms — `invoke`, `callbr`,
+and now `catchswitch` — and `parse_lhs_before_invoke` exists only to re-derive
+the name the first dispatch skipped past.
 
-Valid IR that does not parse, so a P0 in the W1 sense rather than a missing
-message. Found while testing `expected scope value for catchswitch`, which the
-bare form reaches.
+The split has no observable behaviour of its own, so it is recorded here rather
+than in [`divergences.md`](divergences.md) (that file's own rule: a spelling
+difference that changes no behaviour is house doctrine, not a divergence). It
+is the shared cause of three entries that *are* observable, each of which
+points back here:
+
+- **107** — `invoke %named.struct @f(…)` does not parse, because
+  `parse_lhs_before_invoke` eats the return type as a result name.
+- **109** — input ending after `%x =` reports `expected instruction opcode`
+  where upstream reports `found end of file when expecting more instructions`.
+- **110** — instruction diagnostics anchor at the opcode where upstream's
+  `NameLoc` anchors at the result name.
+
+**The fix:** hoist `parse_lhs_assignment` above the terminator `match`, then
+delete the pre-table `Invoke` / `CallBr` / `CatchSwitch` special cases and
+`parse_lhs_before_invoke` outright. 107 and 109 fall out for free.
+
+**Why it is deferred:** the same hoist moves `result_loc` from the opcode token
+to the result-name token for *every* instruction, which is entry 110 — it
+changes the anchor column of `multiple definition of local value named '…'`,
+`instructions returning void cannot have a name`, `check_value_id`'s message
+and `instruction forward referenced with type '…'` across the whole parser.
+That blast radius wants its own diagnostic-span audit and a re-bless of
+whatever pins those columns, not a rider on a funclet fix.
 
 ## Parser — a forward-referenced function is a *typed* `Function`, so a later definition may not change its signature (found 2026-08-14, LLParser parity W8)
 

@@ -562,22 +562,6 @@ Upstream, C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/ll
 
 </details>
 
-### 2. `%cs = catchswitch …` does not parse
-
-*parser* — crates/llvmkit-asmparser/src/ll_parser.rs:11058 (bare arm), :11131-11205 (named-result table and its `_ =>` fall-through)
-
-- **LLVM:** `catchswitch` produces a token value, so `LLParser::parseInstruction`'s `lltok::kw_catchswitch` case is reached from both the bare and the named-result spellings; `LLParser::parseCatchSwitch` binds the result normally.
-- **llvmkit:** The bare form is dispatched (`Token::Instruction(Opcode::CatchSwitch)` arm of `parse_basic_block`), but the named-result opcode table has no `CatchSwitch` arm — the special-cased named terminators there are `call`, `invoke` and `callbr` only — so `%cs = catchswitch within none [label %h] unwind to caller` falls to the `_ =>` arm and answers `expected instruction opcode supported by this parser (got CatchSwitch)`. Valid IR that does not parse.
-- **Why:** Recorded as a P0 in the W1 sense (valid IR that does not parse) rather than a missing message; found while testing `expected scope value for catchswitch`, which the bare form reaches. No reason for the omission is recorded — it reads as an oversight in the named-result table.
-- **Fix:** Add a `Opcode::CatchSwitch => self.parse_catchswitch(state, b_ref, &result_name)?` arm to the named-result table, mirroring the existing bare arm's `take_live_builder` + terminator return shape (catchswitch is a terminator, so it must `return Ok(())` after `bind_local` rather than continue the loop, like the `callbr` special case above it).
-- **Correction from verification:** The claim is accurate in substance; two refinements. (1) Line numbers have drifted slightly in the current working tree: the bare-form arm is at ll_parser.rs:11060 (not 11058), and the named-result opcode table spans 11137-11198 with its `_ =>` fall-through at 11199-11207 (claim said 11131-11205). (2) The claim understates the severity: this is not only "valid IR that does not parse" but a full round-trip break. The bare form DOES parse, and llvmkit's own AsmWriter prints it back with a result name (`%0 = catchswitch within none [label %entry] unwind to caller`), which llvmkit then cannot re-parse. Every `catchswitch` llvmkit prints is text llvmkit rejects, violating the parser/printer contract in CLAUDE.md. Otherwise exact: the special-cased named forms before the table are `tail`/`musttail`/`notail` -> parse_call (11086), Invoke (11097) and CallBr (11112) only; the table has CatchPad and CleanupPad arms but no CatchSwitch; and the error text matches verbatim.
-
-<details><summary>Verification evidence</summary>
-
-Read C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs. Line 10980 shows the terminator dispatch is `match self.peek()` on the raw current token, so for `%cs = catchswitch ...` the token is Token::LocalVar/LocalVarId and the Token::Instruction(Opcode::CatchSwitch) arm at 11060 is unreachable; control falls to `_ => {}` at 11080. Line 11084 then calls parse_lhs_assignment() to consume `%cs =`, and the pre-table special cases at 11086/11097/11112 cover only call-with-tail-prefix, Invoke and CallBr. The opcode table at 11137-11198 lists Opcode::CatchPad (11198) and Opcode::CleanupPad (11197) but no Opcode::CatchSwitch, so it reaches `_ =>` at 11199 which returns ParseError::Expected { expected: "instruction opcode supported by this parser (got {opcode:?})" }. Upstream C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp: LLParser::parseBasicBlock strips the optional `%name =` / `%N =` LHS (lltok::LocalVarID / lltok::LocalVar branches, each followed by parseToken(lltok::equal, ...)) BEFORE calling parseInstruction, and binds the name afterwards via PFS.setInstName(NameID, NameStr, NameLoc, Inst). LLParser::parseInstruction's switch therefore reaches `case lltok::kw_catchswitch: return parseCatchSwitch(Inst, PFS);` (line 7300-7301) identically from the bare and named-result spellings. Empirical confirmation: wrote a temporary integration test (crates/llvmkit-asmparser/tests/zz_tmp_probe_catchswitch.rs, since deleted) and ran `cargo +1.96.0 test --release -p llvmkit-asmparser`. Result: `%cs = catchswitch within none [label %h] unwind to caller` -> "PROBE-NAMED-ERR: expected instruction opcode supported by this parser (got CatchSwitch)". The bare form -> "PROBE-BARE-OK" printing `%0 = catchswitch within none [label %entry] unwind to caller`, i.e. printed output that does not re-parse. In-tree corroboration: crates/llvmkit-asmparser/tests/parser_function_body.rs:1307-1314 already documents the gap in a comment ("llvmkit dispatches the named form through a table that has no `CatchSwitch` arm, which is a pre-existing gap") and writes its fixture in the bare spelling to route around it. Printer side confirmed at crates/llvmkit-ir/src/asm_writer.rs::fmt_catchswitch (line 2419) and the byte-lock assertion in crates/llvmkit-ir/tests/builder_funclet.rs:35.
-
-</details>
-
 ### 3. A call's signature is checked against a later `declare`/`define`, which upstream leaves to the Verifier
 
 *parser* — crates/llvmkit-asmparser/src/ll_parser.rs:10474, :10698 (the two rejections); `parse_direct_callee` around :13257
@@ -703,21 +687,6 @@ CONFIRMED REAL AND STILL PRESENT; description accurate at both cited paths. 1. c
 
 </details>
 
-### 11. catchswitch with a named result does not parse
-
-*parser (EH funclets)* — crates/llvmkit-asmparser/tests/parser_function_body.rs:1307-1314; docs/future-work.md:98-105
-
-- **LLVM:** `catchswitch` produces a token value and may be written with an explicit result name: `%cs = catchswitch within none [label %h] unwind to caller` is valid IR.
-- **llvmkit:** llvmkit dispatches only the bare form; its named-result table has no `CatchSwitch` arm, so the named spelling answers `expected instruction opcode supported by this parser (got CatchSwitch)`. A test comment routes around it by writing the terminator bare.
-- **Why:** Recorded in `docs/future-work.md` as "Valid IR that does not parse, so a P0 in the W1 sense rather than a missing message", found while testing `expected scope value for catchswitch`.
-- **Fix:** Add a `CatchSwitch` arm to the named-result dispatch table in `parse_instruction` (it already exists on the bare path), then port the upstream `catchswitch` fixtures that use `%cs =`.
-
-<details><summary>Verification evidence</summary>
-
-CONFIRMED empirically and structurally; every element of the claim checks out verbatim. EMPIRICAL PROOF (strongest evidence): I wrote a throwaway probe test in crates/llvmkit-asmparser/tests/ and ran `cargo +1.96.0 test --release -p llvmkit-asmparser`. Parsing a well-formed EH funclet function gave: NAMED: ERR expected instruction opcode supported by this parser (got CatchSwitch) BARE : OK (parsed) The named source was `%cs = catchswitch within none [label %h] unwind to caller` with a matching `%cp = catchpad within %cs [ptr null]` / `catchret`. The error text matches the claim byte-for-byte. Probe file deleted afterward; `git status` on the tests dir confirms no residue of it (an unrelated pre-existing untracked `zz_probe.rs` from another session was left alone). ROOT CAUSE in C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs: `peek()` (line 1922) is a strict single-token lookahead — `&self.current.value`, no LHS skipping. The instruction loop therefore dispatches terminators in a `match self.peek()` BEFORE any `%name =` is consumed; the `Token::Instruction(Opcode::CatchSwitch)` arm at line 11060 can only fire when the line opens with the bare opcode. When the line opens with `%cs`, that match falls through `_ => {}` (line 11080) to the post-LHS path, where `parse_lhs_assignment()` (line 11084) eats `%cs =`. That path has hand-added escapes for exactly two result-binding terminators — `Opcode::Invoke` at line 11096 and `Opcode::CallBr` at line 11112 (the latter with a comment explaining why callbr "arrives here rather than at the terminator dispatch above whenever the line opens with `%res =`") — but NO `CatchSwitch` escape. Control reaches the opcode `match` at line 11120, whose arms end at `Opcode::CatchPad` with no `Opcode::CatchSwitch`, so it hits `_ =>` at line 11198 producing `format!("instruction opcode supported by this parser (got {opcode:?})")`. UPSTREAM (orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp): `LLParser::parseBasicBlock` (line 7050) parses the optional LHS ONCE, before dispatch — `if (Lex.getKind() == lltok::LocalVarID) {... parseToken(lltok::equal, "expected '=' after instruction id")} else if (Lex.getKind() == lltok::LocalVar) {...}` — and only then calls `parseInstruction`. So the LHS is orthogonal to the opcode switch and `case lltok::kw_catchswitch: return parseCatchSwitch(Inst, PFS);` (line 7300) is reached identically named or bare. That single-path structure is precisely what llvmkit's split dispatch fails to reproduce. Real upstream fixtures use the named spelling throughout: test/Verifier/invalid-eh.ll has 15+ occurrences of `%cs = catchswitch within none [...]`, including inside `CHECK` lines (e.g. lines 58, 84, 141, 166, 193). CITED LOCATIONS both accurate: crates/llvmkit-asmparser/tests/parser_function_body.rs:1307-1314 carries the routing-around comment ("llvmkit dispatches the named form through a table that has no `CatchSwitch` arm, which is a pre-existing gap unrelated to this rule") and writes the terminator bare; docs/future-work.md records it under "Parser — `%x = catchswitch` is not dispatched (found 2026-08-14, LLParser parity W9c)". NOT MASKED BY UNCOMMITTED WORK: ll_parser.rs is dirty in the working tree (173+/165-), but `git diff | grep -i catchswitch` returns nothing — the diff does not touch this code. HEAD is 2ac3e3a. ADDED SEVERITY (sharpens the claim rather than correcting it): this is also a print/re-parse round-trip break, not only unreadable input. crates/llvmkit-ir/src/asm_writer.rs:195 sets `InstructionKindData::CatchSwitch(_) => true` in the "prints a result name" predicate (the same predicate returns false for Ret/Store/Br/Switch/Resume/CatchReturn/CleanupReturn/Unreachable). So llvmkit's own AsmWriter emits `%N = catchswitch ...`, a spelling llvmkit's own parser then rejects — violating the parser/printer contract that printed output must re-parse.
-
-</details>
-
 ### 12. `call addrspace(1) void @f()` does not parse (P0)
 
 *parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs:12915 (parse_call), :14028 (parse_invoke), :14167 (parse_callbr)
@@ -731,22 +700,6 @@ CONFIRMED empirically and structurally; every element of the claim checks out ve
 <details><summary>Verification evidence</summary>
 
 Read crates/llvmkit-asmparser/src/ll_parser.rs: parse_call (:12917), parse_invoke (:14030) and parse_callbr (:14169) each run parse_optional_return_attrs() then parse_type(true) with nothing between; grep shows parse_optional_program_addr_space (:2203) has only two callsites, :10378 and :10679, both in the function header. Confirmed not a working-tree artifact via `git show HEAD:` (same two callsites; routines at :12909/:14022/:14161). Empirical: built `cargo +1.96.0 build --release -p llvmkit-asmparser --example parse_file` and ran it on scratch fixtures ported from orig_cpp/.../llvm/test/Assembler/call-nonzero-program-addrspace.ll and invoke-nonzero-program-addrspace.ll. `%explicit_as_0 = call addrspace(0) i8 %fnptr0(i32 0)` -> "2:25: expected type" with the caret under the `addrspace` token; the invoke form -> "3:27: expected type" the same way; the identical input without `addrspace` parses and round-trips. `target datalayout = "P42"` + `call i8 %fnptr42(i32 0)` against a `ptr addrspace(42)` param -> "'%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'", i.e. the program-AS default is ignored (upstream's PROGAS42 RUN line expects this to succeed and print `call addrspace(42)`). Upstream: grep of orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp gives exactly three parseOptionalProgramAddrSpace callsites — :6816, :7741 (InvokeAddrSpace), :8450 (CallAddrSpace) — consumed at :7764 / :8470 as `PointerType::get(Context, <AS>)`. Read LLParser::parseCallBr (:8024-8046): no addrspace parse, `convertValIDToValue(PointerType::getUnqual(Context), ...)`. Read orig_cpp/.../llvm/lib/IR/AsmWriter.cpp maybePrintCallAddrSpace (:4374) and its only two callers, :4591 and :4664. llvmkit printer: grep of crates/llvmkit-ir/src/asm_writer.rs for "addrspace" returns only :1918, :3068, :3644 — no call/invoke arm.
-
-</details>
-
-### 13. `%cs = catchswitch ...` — the named-result form is not dispatched (P0)
-
-*parser — instruction dispatch* — crates/llvmkit-asmparser/src/ll_parser.rs:11197 (missing arm), :13969 (`parse_catchswitch`)
-
-- **LLVM:** `LLParser::parseInstruction` reaches `parseCatchSwitch` from both the bare and the named-result path; `catchswitch` produces a `token`-typed value and may legally be given a result name.
-- **llvmkit:** The bare form is dispatched, but the named-result match has no `Opcode::CatchSwitch` arm and falls into the catch-all, answering `expected instruction opcode supported by this parser (got CatchSwitch)`. Verified: bare arm at ll_parser.rs:11058, catch-all at :11197; `parse_catchswitch` itself exists at :13969.
-- **Why:** Recorded in docs/future-work.md as a W9c P0: found while testing `expected scope value for catchswitch` (which the bare form reaches) and recorded rather than rushed into the wave.
-- **Fix:** Add the `Opcode::CatchSwitch` arm to the named-result dispatch, calling the existing `parse_catchswitch` and binding the result through `state.bind_local` exactly as the bare arm does. The parse routine already exists; this is a dispatch-table hole.
-- **Correction from verification:** The claim is accurate in substance and severity. Two refinements: (1) Cited line numbers have drifted by 2 (the file is modified per git status). Current positions: bare-form terminator arm at ll_parser.rs:11060, catch-all `_ =>` at :11199, `parse_catchswitch` doc comment at :13969 / `fn` at :13974. The claimed :11058 / :11197 are stale by two lines; :13969 is exact. (2) The claim understates the impact: this is also a self-round-trip break, not only a parser gap. llvmkit's own AsmWriter prints the bare form with an implicit numeric result — `%0 = catchswitch within none [label %h] unwind to caller` — and llvmkit's parser then rejects that exact printed text. So `format!("{module}")` output for any module containing a catchswitch does not re-parse, violating the parser/printer contract in CLAUDE.md. In practice every real `catchswitch` is named, since `catchpad within %cs` must reference it, so effectively no Windows EH `.ll` file parses at all. Note for whoever fixes it: this is not a one-line match arm. The non-terminator table at :11137 acquires the builder via `borrow_live_builder` and falls through to `continue`, but `catchswitch` is a terminator needing `take_live_builder` + `return Ok(())`. The fix belongs alongside the existing `Invoke` (:11097) and `CallBr` (:11112) special cases that already sit between `parse_lhs_assignment` and the opcode table for exactly this reason.
-
-<details><summary>Verification evidence</summary>
-
-Empirical confirmation (decisive): wrote a scratch integration test at crates/llvmkit-asmparser/tests/zz_scratch_verify_65.rs, ran `cargo +1.96.0 test --release -p llvmkit-asmparser --test zz_scratch_verify_65 -- --nocapture`, then deleted it (working tree verified clean). Output: SCRATCH-NAMED-ERR: expected instruction opcode supported by this parser (got CatchSwitch) SCRATCH-BARE-OK: ... `%0 = catchswitch within none [label %h] unwind to caller` The named form `%cs = catchswitch within none [label %h] unwind to caller` fails with the exact message the claim predicts; the bare form parses and prints as `%0 = catchswitch ...`. Source trace, crates/llvmkit-asmparser/src/ll_parser.rs `parse_basic_block`: - :10980 terminator `match self.peek()`. For `%cs = ...` the leading token is `Token::LocalVar`, so no arm matches and it falls to `_ => {}` at :11080. The `Token::Instruction(Opcode::CatchSwitch)` arm at :11060 is reachable only when the line opens with the opcode itself — its inner `parse_lhs_assignment()` at :11063 therefore always returns `LocalLhs::None`. - :11084 `parse_lhs_assignment()` consumes `%cs =`. :11086/:11097/:11112 test for tail-call / `Invoke` / `CallBr` — none match. :11121 reads `opcode = CatchSwitch`. :11135 bumps it. - :11137 opcode table runs from `Opcode::Add` (:11138) to `Opcode::CatchPad` (:11198). There is no `Opcode::CatchSwitch` arm, so control reaches `_ =>` at :11199, producing `ParseError::Expected` with `format!("instruction opcode supported by this parser (got {opcode:?})")` at :11202. - `parse_catchswitch` is fully implemented at :13974-14023 (handlers, `unwind to caller` / `unwind label`, all four builder pairings) but grep shows exactly one call site: :11064, the bare path. The named path never reaches it. Upstream, orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp: `LLParser::parseBasicBlock` (:7050) parses the optional result name uniformly *before* dispatch — `LocalVarID` at :7101 and `LocalVar` at :7106, each followed by `parseToken(lltok::equal, ...)` — then calls `parseInstruction` at :7113. `parseInstruction`'s switch has `case lltok::kw_catchswitch: return parseCatchSwitch(Inst, PFS);` at :7300-7301. So upstream reaches `parseCatchSwitch` identically from the bare and named paths, exactly as the claim states. Corroborating in-tree admission: crates/llvmkit-asmparser/tests/parser_function_body.rs:1307-1310 already carries a comment on its bare-form negative test — that the named form "dispatches ... through a table that has no `CatchSwitch` arm, which is a pre-existing gap". No test anywhere parses a named catchswitch; a grep for `catchswitch` across crates/ and examples/ (*.rs and *.ll) returns no positive fixture, only that one negative case, the lexer keyword entry, the AsmWriter/IR-builder side, and the parser itself.
 
 </details>
 
@@ -939,6 +892,30 @@ Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously
   wrong rejection for a silent wrong value, which is worse. Until then the two
   unconstructed variants should either gain their sites or be deleted — a
   public variant nothing produces is a claim the tree does not honour.
+
+### 107. `invoke %named.struct @f(…)` does not parse — the return type is eaten as a result name
+
+*parser — instruction dispatch* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_lhs_before_invoke`)
+
+Found 2026-08-20 while fixing the `catchswitch` dispatch (0.0.4 funclet
+parity); a direct consequence of the split instruction dispatch recorded in
+[`future-work.md`](future-work.md).
+
+- **LLVM:** `LLParser::parseBasicBlock` strips the optional `%name =` **before**
+  `parseInstruction` runs, and `LLParser::parseInvoke` then reads the return
+  type with `parseType`. It never looks for a result name after the opcode, so
+  a `%`-sigil token in return-type position is unambiguously a named type.
+- **llvmkit:** `parse_lhs_before_invoke` bumps `invoke` and *then* runs
+  `parse_lhs_assignment`, so `%struct.S` in return-type position is read as a
+  result name. Probe: `invoke %struct.S @f() to label %ok unwind label %lpad`
+  answers `expected '=' after local SSA name`, anchored on `@f`.
+- **Why:** llvmkit dispatches terminators before the result name is consumed,
+  so `invoke` needs a helper that re-derives the name after the opcode. The
+  helper cannot tell a return type from a result name.
+- **Fix:** falls out for free from the dispatch hoist in
+  [`future-work.md`](future-work.md) — move `parse_lhs_assignment` above the
+  terminator `match` and delete `parse_lhs_before_invoke`. Not fixable in
+  isolation without duplicating the lookahead.
 
 ## Accepts invalid input
 
@@ -1288,6 +1265,53 @@ recorded.
 - **llvmkit:** a `defined_numbered_blocks` membership test raises `ParseError::Redefinition { kind: SymbolKind::Block, .. }` before `check_value_id` runs, pre-empting upstream's message. `SymbolKind::Block` renders as `label`, so the text a user sees is `redefinition of label '%1'` — verified by probe on `define void @f() {\n1:\n  br label %1\n1:\n  ret void\n}`, which upstream answers with `label expected to be numbered '2' or greater`. The same pre-emptive check also sits in `get_basic_block_numbered`, the `getBB(unsigned ID, LocTy)` mirror.
 - **Why:** pre-existing. Carried through unchanged when `defineBB` was unified into one routine for the `printBasicBlock` parity commit, deliberately, so that no diagnostic and no diagnostic *order* moved in a commit whose subject was printed bytes. Keeping the two guards and their order is what makes that diff reviewable as a printing change; it is not an endorsement of them.
 - **Fix:** delete the pre-emptive check from both sites and let `check_value_id` speak. Re-bless whatever pins `Redefinition` for a block id first. Sequence it with the already-recorded `unable to create block numbered '<N>'` entry, which rewrites the other guard in the same function.
+
+### 109. Input ending after `%x =` reports `expected instruction opcode`, not upstream's end-of-file message
+
+*parser — instruction dispatch* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_basic_block_instructions`, the `Token::Eof` guard)
+
+Found 2026-08-20 while fixing the `catchswitch` dispatch (0.0.4 funclet
+parity).
+
+- **LLVM:** the Eof guard is `LLParser::parseInstruction`'s first statement —
+  `if (Token == lltok::Eof) return tokError("found end of file when expecting
+  more instructions");` — and `parseBasicBlock` has already consumed the
+  optional `%name =` by the time it runs. A file ending after `%x =` therefore
+  reports the end-of-file message.
+- **llvmkit:** the same guard runs at the top of the instruction loop, *before*
+  the shared `parse_lhs_assignment`. `%x =` is not `Eof`, so the guard passes,
+  the LHS is consumed, and the opcode `match` answers
+  `expected instruction opcode`. Probe: a file whose last line is `  %x =`
+  reports `3:7: expected instruction opcode`.
+- **Why:** llvmkit folded `parseInstruction`'s prologue into the loop header,
+  where it sits one step earlier than upstream's.
+- **Fix:** move the guard to just after `parse_lhs_assignment`, which is where
+  the dispatch hoist in [`future-work.md`](future-work.md) puts the dispatch
+  anyway. Doing it alone would also be correct.
+
+### 110. Instruction diagnostics anchor at the opcode where upstream anchors at the result name
+
+*parser — instruction dispatch* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_basic_block_instructions`, `result_loc`)
+
+Found 2026-08-20 while fixing the `catchswitch` dispatch (0.0.4 funclet
+parity).
+
+- **LLVM:** `LLParser::parseBasicBlock` takes `LocTy NameLoc = Lex.getLoc();`
+  *before* stripping the result name, and hands it to
+  `PerFunctionState::setInstName`. Every diagnostic that routine raises points
+  at the `%name` token.
+- **llvmkit:** `result_loc` is taken *after* `parse_lhs_assignment`, so it
+  points at the opcode. Probe: a function with two `%x = add …` lines reports
+  `4:8: multiple definition of local value named 'x'` — column 8 is `add`,
+  where upstream's `NameLoc` is column 3, the `%x`. The same shift applies to
+  `instructions returning void cannot have a name`, `check_value_id`'s message
+  and `instruction forward referenced with type '…'`.
+- **Why:** the split dispatch (see [`future-work.md`](future-work.md)) forces
+  `result_loc` to be taken in the post-LHS path, and it was taken at the point
+  of use rather than before the name.
+- **Fix:** take `result_loc` before `parse_lhs_assignment`. This changes the
+  anchor column of four diagnostics parser-wide, so it wants its own
+  diagnostic-span audit and lands with that hoist.
 
 ## Different printed bytes
 
@@ -1660,6 +1684,50 @@ CONFIRMED, still present at HEAD (2ac3e3a; `git diff --stat` on both cited files
 - **Fix:** one string per site, **all four** — the first framing of this entry said "one string per arm" of `fmt_operand_ref` and would have left the global and instruction sites behind. Blast radius is empty: a repo-wide grep for `<unnumbered>` finds no test, fixture or expected-output file.
 - **Upstream's fourth `<badref>` site is a different divergence, not this one.** `AsmWriter.cpp` writes `<badref>` in exactly four places: `writeAsOperandInternal`, `printInstruction`, `printBasicBlock` (already fixed) and `printNamedMDNode`, whose metadata arm is `int Slot = Machine.getMetadataSlot(Op); if (Slot == -1) Out << "<badref>"; else Out << '!' << Slot;`. llvmkit's counterpart does not print an `<unnumbered>` spelling at all — it falls back to the node's raw arena index, `write!(f, "!{}", id.index())` — so closing this entry does not touch it and a grep for `<unnumbered>` will never surface it. Noted here so the enumeration of upstream's `<badref>` sites is complete.
 - **Out of scope, deliberately** (three further `<unnumbered>` sites with no upstream `<badref>` twin, listed so the next reader does not re-derive it): the function-signature argument printer in `fmt_function_with_use_lists`, whose upstream counterpart `AssemblyWriter::printArgument` has no failure spelling at all — it is `int Slot = Machine.getLocalSlot(Arg); assert(Slot != -1 && "expect argument in function here"); Out << " %" << Slot;`; the anonymous identified-struct number in the type-identity block, where `printTypeIdentities` writes `Out << '%' << I << " = type "` from a `NumberedTypes` **index** and so cannot fail; and the same struct case in `type.rs`'s `Display`.
+
+### 108. An **indirect** call silently drops parameter attributes and operand bundles
+
+*parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_call`, the indirect-callee path)
+
+Found 2026-08-20 while porting `test/Verifier/preallocated-valid.ll` for the
+`catchswitch` work (0.0.4 funclet parity). Data loss, not a wording difference.
+
+- **LLVM:** `LLParser::parseCall` builds the argument list and the operand
+  bundles the same way whichever form the callee takes, and `AsmWriter` prints
+  both back.
+- **llvmkit:** the direct-callee form round-trips correctly; the indirect form
+  loses both. Probe, from `@preallocated_indirect` in that fixture:
+  - in  — `call void %f(ptr preallocated(i32) %x) ["preallocated"(token %cs)]`
+  - out — `call void %f(ptr %x)`
+- **Why:** not recorded. The two callee forms take different paths through
+  `parse_call` and only the direct one carries the attribute and bundle
+  plumbing.
+- **Fix:** route the indirect path through the same argument-attribute and
+  operand-bundle construction as the direct one. This violates the *no silent
+  erasure* and *fallibility honesty* rules in `CLAUDE.md` and is reachable from
+  an upstream fixture llvmkit already parses, so it should be fixed before any
+  round-trip corpus fixture is written over that file.
+
+### 111. Operand bundle lists print without upstream's inner spaces
+
+*printer* — crates/llvmkit-ir/src/asm_writer.rs (the operand-bundle writer)
+
+Found 2026-08-20 while porting `test/Bitcode/compatibility.ll`
+`@instructions.win_eh.2` for the `catchswitch` work (0.0.4 funclet parity).
+
+- **LLVM:** `AssemblyWriter::writeOperandBundles` opens with `Out << " [ ";`
+  and closes with `Out << " ]";`, so the list prints as
+  `[ "funclet"(token %catch) ]` — a space inside each bracket.
+- **llvmkit:** prints `["funclet"(token %catch)]`. Probe:
+  `call void @callee(i32 %x) [ "foo"(i32 42), "bar"(i32 7) ]` prints back as
+  `call void @callee(i32 %x) ["foo"(i32 42), "bar"(i32 7)]`.
+- **Why:** not recorded; the writer was written to the grammar rather than to
+  `writeOperandBundles`. Both spellings re-parse, so nothing in the tree caught
+  it.
+- **Fix:** two string literals. It matters because
+  `test/Bitcode/compatibility.ll` carries a `CHECK` line in upstream's spelling
+  (`; CHECK: call void @instructions.bundles.callee(i32 %x) [ "foo"(…) ]`), so
+  that fixture cannot be ported byte-for-byte until it is fixed.
 
 ## Model gaps
 

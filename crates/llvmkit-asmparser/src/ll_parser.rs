@@ -9412,11 +9412,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
-    /// The scope-token guard `parseCatchSwitch`, `parseCatchPad` and
-    /// `parseCleanupPad` each run right after their `within`: the next token
-    /// must be `none` or a local, and anything else is
-    /// `expected scope value for <pad>` rather than whatever reading a value
-    /// would have said. Three call sites, three nouns, one shape.
+    /// The scope-token guard `parseCatchSwitch` and `parseCleanupPad` each run
+    /// right after their `within`: the next token must be `none` or a local,
+    /// and anything else is `expected scope value for <pad>` rather than
+    /// whatever reading a value would have said. `parseCatchPad` runs a
+    /// narrower version of the same guard — see
+    /// [`check_catchpad_scope_token`](Self::check_catchpad_scope_token).
     fn check_pad_scope_token(&self, pad: &'static str) -> ParseResult<()> {
         if matches!(
             self.peek(),
@@ -9425,6 +9426,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(());
         }
         Err(self.message(format!("expected scope value for {pad}")))
+    }
+
+    /// `LLParser::parseCatchPad`'s scope guard, which is *narrower* than the
+    /// one above: `none` is not a legal catchpad scope, because a catchpad's
+    /// parent is always a `catchswitch`, never the function. Upstream tests
+    /// `Lex.getKind() != lltok::LocalVar && Lex.getKind() != lltok::LocalVarID`
+    /// where `parseCleanupPad` and `parseCatchSwitch` also admit `kw_none`.
+    fn check_catchpad_scope_token(&self) -> ParseResult<()> {
+        if matches!(self.peek(), Token::LocalVar(_) | Token::LocalVarId(_)) {
+            return Ok(());
+        }
+        Err(self.message("expected scope value for catchpad"))
     }
 
     /// The argument-agreement walk `parseCall`, `parseInvoke` and
@@ -11664,6 +11677,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Ok(());
                 }
                 Token::Instruction(Opcode::CatchSwitch) => {
+                    // Reached only when the line opens with the opcode, so
+                    // `parse_lhs_assignment` below can only answer
+                    // `LocalLhs::None`; the `%cs =` spelling is handled after
+                    // the shared `parse_lhs_assignment` further down. Upstream
+                    // needs no such pair — see the note there.
                     let b = take_live_builder(&mut builder, self.loc())?;
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
@@ -11747,6 +11765,30 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if let Some(value) = value {
                     state.bind_local(&result_name, value, result_loc)?;
                 }
+                return Ok(());
+            }
+            // `catchswitch` is a terminator whose result is `token`-typed, so
+            // like `callbr` it arrives here rather than at the terminator
+            // dispatch above whenever the line opens with `%cs =` or `%N =`.
+            // `LLParser` has no such split: `parseBasicBlock` strips the
+            // optional result name once, before `parseInstruction` dispatches
+            // on the opcode, so `parseCatchSwitch` is reached identically from
+            // the bare and the named spellings. Reaching it from both is what
+            // this arm restores — the result name is already in `result_name`,
+            // so `parse_catchswitch` is called with the opcode token still
+            // unconsumed, exactly as the bare arm above calls it.
+            if matches!(self.peek(), Token::Instruction(Opcode::CatchSwitch)) {
+                let b = take_live_builder(&mut builder, self.loc())?;
+                let value = self.parse_catchswitch(state, b, &result_name)?;
+                self.finish_trailing_metadata(
+                    state,
+                    bb_value,
+                    &mut pending_debug_records,
+                    instruction_start,
+                )?;
+                // `PFS.setInstName(NameID, NameStr, NameLoc, Inst)`, which
+                // `parseBasicBlock` runs *after* the trailing-metadata switch.
+                state.bind_local(&result_name, value, result_loc)?;
                 return Ok(());
             }
             let opcode = match self.peek() {
@@ -14500,7 +14542,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `cleanuppad within <token-or-none> [<args>]`. Non-terminator.
     /// Mirrors `LLParser::parseCleanupPad`.
     ///
-    /// Upstream: `test/Assembler/cleanuppad.ll`.
+    /// Upstream: `test/Bitcode/compatibility.ll` `@instructions.win_eh.2`.
     fn parse_cleanuppad(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
@@ -14525,7 +14567,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `catchpad within <catchswitch> [<args>]`. Non-terminator.
     /// Mirrors `LLParser::parseCatchPad`.
     ///
-    /// Upstream: `test/Assembler/catchpad.ll`.
+    /// Upstream: `test/Bitcode/compatibility.ll` `@instructions.win_eh.1`.
     fn parse_catchpad(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
@@ -14533,9 +14575,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         self.expect_keyword(Keyword::Within, "'within' after catchpad")?;
-        self.check_pad_scope_token("catchpad")?;
-        let parent_ty = self.parse_type(false)?;
-        let parent_v = self.parse_value(state, parent_ty)?;
+        self.check_catchpad_scope_token()?;
+        // `parseValue(Type::getTokenTy(Context), CatchSwitch, PFS)` — implied
+        // type, no type token in the syntax.
+        let token_ty = self.module.token_type().as_type();
+        let parent_v = self.parse_value(state, token_ty)?;
         let args = self.parse_bracket_value_list(state)?;
         let v = b
             .catch_pad(parent_v, args, result_name.as_str())
@@ -14544,9 +14588,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     }
 
     /// `resume <ty> <val>`. Terminator.
-    /// Mirrors `LLParser::parseResume` (LLParser.cpp ~7762).
+    /// Mirrors `LLParser::parseResume`.
     ///
-    /// Upstream: `test/Assembler/resume.ll`.
+    /// Upstream: `test/Verifier/resume.ll`.
     fn parse_resume(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
@@ -14558,31 +14602,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
-    /// `cleanupret from <val> [unwind (to caller | label %bb)]`.
+    /// `cleanupret from Value unwind ('to' 'caller' | TypeAndValue)`.
     /// Terminator. Mirrors `LLParser::parseCleanupRet`.
     ///
-    /// Upstream: `test/Assembler/cleanupret.ll`.
+    /// Upstream: `test/Bitcode/compatibility.ll` `@instructions.win_eh.2`.
     fn parse_cleanupret(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
-        self.expect_keyword(Keyword::From, "'from' in cleanupret")?;
-        let pad_ty = self.parse_type(false)?;
-        let pad_v = self.parse_value(state, pad_ty)?;
-        let unwind_dest = if self.eat_keyword(Keyword::Unwind)? {
-            if self.eat_keyword(Keyword::To)? {
-                self.expect_keyword(Keyword::Caller, "'caller' in cleanupret unwind")?;
-                None
-            } else {
-                self.expect_primitive(
-                    PrimitiveTy::Label,
-                    "'label' in cleanupret unwind destination",
-                )?;
-                Some(self.parse_block_ref(state)?)
-            }
-        } else {
+        self.expect_keyword(Keyword::From, "'from' after cleanupret")?;
+        // `parseValue(Type::getTokenTy(Context), CleanupPad, PFS)` — the pad
+        // operand carries no type token, so reading one consumed `%clean` as a
+        // named type.
+        let token_ty = self.module.token_type().as_type();
+        let pad_v = self.parse_value(state, token_ty)?;
+        // `parseToken(lltok::kw_unwind, "expected 'unwind' in cleanupret")` —
+        // mandatory upstream, and `unwind to caller` is the only way to spell
+        // the absent destination.
+        self.expect_keyword(Keyword::Unwind, "'unwind' in cleanupret")?;
+        let unwind_dest = if self.eat_keyword(Keyword::To)? {
+            self.expect_keyword(Keyword::Caller, "'caller' in cleanupret")?;
             None
+        } else {
+            self.expect_primitive(
+                PrimitiveTy::Label,
+                "'label' in cleanupret unwind destination",
+            )?;
+            Some(self.parse_block_ref(state)?)
         };
         let _ = match unwind_dest {
             Some(dest) => b.cleanup_ret(pad_v, dest, ""),
@@ -14592,18 +14639,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
-    /// `catchret from <val> to label %bb`. Terminator.
+    /// `catchret from Parent Value 'to' TypeAndValue`. Terminator.
     /// Mirrors `LLParser::parseCatchRet`.
     ///
-    /// Upstream: `test/Assembler/catchret.ll`.
+    /// Upstream: `test/Bitcode/compatibility.ll` `@instructions.win_eh.2`.
     fn parse_catchret(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
-        self.expect_keyword(Keyword::From, "'from' in catchret")?;
-        let pad_ty = self.parse_type(false)?;
-        let pad_v = self.parse_value(state, pad_ty)?;
+        self.expect_keyword(Keyword::From, "'from' after catchret")?;
+        // `parseValue(Type::getTokenTy(Context), CatchPad, PFS)` — implied type.
+        let token_ty = self.module.token_type().as_type();
+        let pad_v = self.parse_value(state, token_ty)?;
         self.expect_keyword(Keyword::To, "'to' in catchret")?;
         self.expect_primitive(PrimitiveTy::Label, "'label' in catchret destination")?;
         let dest = self.parse_block_ref(state)?;
@@ -14613,11 +14661,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
-    /// `catchswitch within <token> [<handlers>] unwind (to caller | label %bb)`.
+    /// `catchswitch within Parent [<handlers>] unwind ('to' 'caller' | TypeAndValue)`.
     /// Terminator. Returns the catchswitch value.
     /// Mirrors `LLParser::parseCatchSwitch`.
     ///
-    /// Upstream: `test/Assembler/catchswitch.ll`.
+    /// Upstream: `test/Bitcode/compatibility.ll` `@instructions.win_eh.1`.
     fn parse_catchswitch(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
@@ -14628,23 +14676,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_keyword(Keyword::Within, "'within' after catchswitch")?;
         self.check_pad_scope_token("catchswitch")?;
         let parent_pad = self.parse_optional_pad_token(state)?;
-        // `[handler1, handler2, ...]`
-        self.expect_punct(PunctKind::LSquare, "'[' in catchswitch handlers")?;
+        self.expect_punct(PunctKind::LSquare, "'[' with catchswitch labels")?;
+        // `do { parseTypeAndBasicBlock } while (EatIfPresent(lltok::comma));`
+        // — at least one handler is required, and the `]` is consumed by the
+        // `parseToken` *after* the loop, so a trailing comma is rejected.
         let mut handlers: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         loop {
-            if matches!(self.peek(), Token::RSquare) {
-                self.bump()?;
-                break;
-            }
             self.expect_primitive(PrimitiveTy::Label, "'label' in catchswitch handler")?;
             let bb = self.parse_block_ref(state)?;
             handlers.push(bb);
-            let _ = self.eat_punct(PunctKind::Comma)?;
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
         }
-        // `unwind (to caller | label %bb)`
-        self.expect_keyword(Keyword::Unwind, "'unwind' in catchswitch")?;
+        self.expect_punct(PunctKind::RSquare, "']' after catchswitch labels")?;
+        self.expect_keyword(Keyword::Unwind, "'unwind' after catchswitch scope")?;
         let unwind_dest = if self.eat_keyword(Keyword::To)? {
-            self.expect_keyword(Keyword::Caller, "'caller' after 'to' in catchswitch")?;
+            self.expect_keyword(Keyword::Caller, "'caller' in catchswitch")?;
             None
         } else {
             self.expect_primitive(
@@ -14958,7 +15006,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    /// Parse `none` or a local token as a parent-pad value for EH pads.
+    /// Parse a parent-pad scope operand for `cleanuppad` and `catchswitch`.
+    ///
+    /// `LLParser::parseCleanupPad` and `LLParser::parseCatchSwitch` both spell
+    /// this `parseValue(Type::getTokenTy(Context), ParentPad, PFS)`: the
+    /// `token` type is *implied*, and there is no type in the syntax. Reading
+    /// one here consumed `%cs` as a named-type reference and then read the
+    /// `[…]` argument list as an array constant.
+    ///
+    /// The `none` early return is llvmkit's ADT spelling of upstream's
+    /// `ConstantTokenNone`: the instruction payloads store the parent pad as an
+    /// `Option<ValueSlot>` and select a `*_within_none` builder where upstream
+    /// stores the constant. The accept/reject set is identical, because the
+    /// caller's `check_pad_scope_token` has already narrowed the token to
+    /// `none`, `%name` or `%N`.
     fn parse_optional_pad_token(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
@@ -14967,8 +15028,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.bump()?;
             return Ok(None);
         }
-        let ty = self.parse_type(false)?;
-        let v = self.parse_value(state, ty)?;
+        let token_ty = self.module.token_type().as_type();
+        let v = self.parse_value(state, token_ty)?;
         Ok(Some(v))
     }
 

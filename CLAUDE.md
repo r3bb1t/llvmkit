@@ -15,7 +15,7 @@ Out of scope: code generation, target backends, linking. In scope and merely unf
 Every gate runs on the pinned toolchain. CI installs rustc 1.96.0; an unpinned run rewords trybuild `.stderr` diagnostics and produces mismatches that look like regressions and are not. If you see a `.stderr` diff, re-run on `+1.96.0` before touching a fixture.
 
 ```bash
-cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (2518 tests, 214 binaries)
+cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (2523 tests, 214 binaries)
 cargo +1.96.0 test -p llvmkit-ir --test ap_float               # one integration file
 cargo +1.96.0 test <substring>                                 # one test by name
 cargo +1.96.0 clippy --workspace --all-targets --all-features -- -D warnings
@@ -106,7 +106,7 @@ Conventional Commits — `type(scope): summary`, `!` after the scope for a break
 - `README.md` — user-facing docs, authoritative Doctrine D1–D11 prose.
 - `ROADMAP.md` — milestones, release sequence, the crates.io checklist.
 - `docs/future-work.md` — the live backlog: what is known-missing, what was deferred, and **why** in each case. Read before proposing work that looks unfinished; it is often deliberate.
-- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2518 tests, 2087 rows, 323 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
+- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2523 tests, 2092 rows, 323 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
 - `docs/inkwell-migration.md` — per-API delta against inkwell.
 
 ## Before you start

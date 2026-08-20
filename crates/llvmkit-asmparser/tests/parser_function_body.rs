@@ -1499,12 +1499,13 @@ fn eh_clause_and_scope_rules_match_upstream_text() {
             "  %cp = catchpad within 3 []\n  ret void\n",
             "expected scope value for catchpad",
         ),
-        // `catchswitch` is a *terminator*, so it ends its block. Written
-        // without an explicit `%cs =`: llvmkit dispatches the named form
-        // through a table that has no `CatchSwitch` arm, which is a
-        // pre-existing gap unrelated to this rule.
+        // `catchswitch` is a *terminator*, so it ends its block. Written in
+        // upstream's own spelling (`test/Verifier/invalid-eh.ll` uses `%cs =`
+        // throughout): the scope guard runs after `within`, so the result name
+        // is orthogonal to the rule under test — and writing it named keeps
+        // this a regression guard for the named-form dispatch.
         (
-            "  catchswitch within 3 [label %entry] unwind to caller\n",
+            "  %cs = catchswitch within 3 [label %entry] unwind to caller\n",
             "expected scope value for catchswitch",
         ),
     ] {

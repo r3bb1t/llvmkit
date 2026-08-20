@@ -146,6 +146,19 @@ These came out of the measurement and are recorded here rather than buried:
    exist anywhere under `llvm/test/`. They appear in `UPSTREAM.md` rows and in
    rustdoc on `ll_parser.rs` tests. The tests themselves are real; their
    *provenance* is not. Repointing them is not part of this stage.
+
+   *Update, 2026-08-20 (funclet parity).* Ten of these were repointed at the
+   Windows-EH funclet commit — `catchpad.ll`, `catchswitch.ll`, `catchret.ll`,
+   `cleanuppad.ll` (twice), `cleanupret.ll`, `resume.ll` (twice),
+   `landingpad.ll` and `invoke.ll` — because that commit rewrote the routines
+   and tests they annotated, and leaving a false citation on a line being
+   edited was not defensible. The rest stay deferred as this finding says.
+   **The figure of 34 does not reproduce at that commit under any obvious
+   recount**: sweeping `*.rs` and `*.md` under `crates/`, `llvmkit/`, `docs/`
+   and the top-level docs gives **57** phantom citations across **36** distinct
+   nonexistent filenames (37/28 counting only `crates/`, 18/15 counting only
+   `UPSTREAM.md`). The finding's substance holds; its number needs a stated
+   scope before it is quoted again.
 2. **`AssemblyWriter` printed named metadata after numbered metadata**, where
    `AssemblyWriter::printModule` runs the `M->named_metadata()` loop *before*
    `writeAllMDNodes()`. Fixed here. It was also the cause of 12 of the 24

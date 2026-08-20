@@ -19,24 +19,31 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2518 (2513 distinct names). Recounted on 2026-08-20
-at the hex-case parity point via the documented attribute-anchored grep below
-(`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 941 +
+Total `#[test]` functions: 2523 (2518 distinct names). Recounted on 2026-08-20
+at the Windows-EH funclet parity point via the documented attribute-anchored
+grep below (`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 946 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +10 over the 2508 Wave 14 point below is
-the two printer-parity commits — 6 for basic-block printing and ordering, 4 for
+`crates/llvmkit-macros` has none). The +5 over the 2518 hex-case point is the
+funclet commit's five ported `catchswitch` tests; the +10 before that is the
+two printer-parity commits — 6 for basic-block printing and ordering, 4 for
 hex case; the +273 that reached 2508 is the LLParser-parity program's waves
 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2518 passed, 0 failed across 214 test binaries.
+this commit reports 2523 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2087 rows**. 13 of them name a trybuild `compile_fail/*.rs`
-fixture rather than a `#[test]` function -- those fixtures are `fn main()`
-programs and are not part of the test-function accounting. The remaining 2074
-rows give provenance for **2190 of the 2513 distinct `#[test]` functions**,
-leaving **323 with no row** and **zero rows naming a test that no longer
-exists**.
+below carries **2092 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 13 of
+them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
+function -- those fixtures are `fn main()` programs and are not part of the
+test-function accounting. The remaining 2079 rows give provenance for **2195 of
+the 2518 distinct `#[test]` functions**, leaving **323 with no row** and **zero
+rows naming a test that no longer exists**. The 2195/323 split is the
+2026-08-20 hex-case audit's 2190/323 carried forward by arithmetic, not a fresh
+audit: the five rows added at the funclet-parity commit each name exactly one
+of the five tests added there, so the covered count moves by five and the
+unrowed count does not move at all. Re-running the full audit means expanding
+the group rows by hand (see the methodology note below); do not quote 2195 as a
+freshly derived number.
 
 > **Methodology, because the previous header's numbers are not comparable.**
 > Through Wave 11 the audit matched rows to tests by looking for a
@@ -933,10 +940,15 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::memory_attribute_round_trips` | `llvm/test/Assembler/memory-attribute.ll`; `llvm/lib/IR/Attributes.cpp::Attribute::getAsString` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::parameter_legacy_memory_keywords_remain_parameter_attrs` | `llvm/test/Bitcode/upgrade-memory-intrinsics.ll`; `llvm/lib/AsmParser/LLParser.cpp::parseOptionalParamAttrs` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::call_parameter_legacy_memory_keywords_remain_parameter_attrs` | `llvm/test/Bitcode/upgrade-memory-intrinsics.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall` parameter attribute arms | mirror |
-| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::landingpad_round_trips` | `test/Assembler/landingpad.ll`; `LLParser::parseLandingPad` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::resume_round_trips` | `test/Assembler/resume.ll`; `LLParser::parseResume` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::invoke_round_trips` | `test/Assembler/invoke.ll`; `LLParser::parseInvoke` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::cleanuppad_cleanupret_round_trips` | `test/Assembler/cleanuppad.ll`; `LLParser::parseCleanupPad` / `parseCleanupRet` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::landingpad_round_trips` | `test/Bitcode/compatibility.ll` `@instructions.landingpad` (`catch2`'s clause shape, hand-narrowed); `LLParser::parseLandingPad` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::resume_round_trips` | `test/Bitcode/compatibility.ll` `@instructions.terminators` `exc:` (`landingpad` + `resume`, hand-narrowed); `LLParser::parseResume` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::invoke_round_trips` | `test/Bitcode/compatibility.ll` `@instructions.terminators` `invoke` + `exc:` (hand-narrowed, `ccc` callee); `LLParser::parseInvoke` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::cleanuppad_cleanupret_round_trips` | `test/Bitcode/compatibility.ll` `@instructions.win_eh.2` (two-instruction subset); `LLParser::parseCleanupPad` / `parseCleanupRet` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_handlers_and_unwind_forms` | `test/Bitcode/compatibility.ll` `@instructions.win_eh.1` (verbatim, with all eight of its `CHECK`/`CHECK-NEXT` lines as ordered assertions); `LLParser::parseCatchSwitch` / `parseCatchPad` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_nested_funclets_and_catchret` | `test/Bitcode/compatibility.ll` `@instructions.win_eh.2` (verbatim, with all nine of its `CHECK`/`CHECK-NEXT` lines as ordered assertions); `LLParser::parseCatchSwitch` / `parseCatchRet` / `parseCleanupRet` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_numbered_result` | `test/Verifier/operand-bundles-wineh.ll` (input verbatim; parse half only -- upstream's `RUN` is `not opt -passes=verify` and its one `CHECK` is a Verifier diagnostic llvmkit has no rule for) | mirror (partial) |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_in_preallocated_teardown` | `test/Verifier/preallocated-valid.ll` `@preallocated_teardown_invoke` (whole file verbatim; parse half only -- upstream's `RUN` is `opt -S -passes=verify` with no `CHECK` lines) | mirror (partial) |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::catchswitch_print_reparse_is_stable` | llvmkit-specific: parser/printer round-trip law for `catchswitch`; closest upstream reference `test/Bitcode/compatibility.ll`'s `llvm-as \| llvm-dis \| llvm-as \| llvm-dis` `RUN` line | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::bitcast_round_trips` | `test/Assembler/2006-12-09-Cast-To-Bool.ll`; `LLParser::parseCast` `Instruction::BitCast` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fptrunc_round_trips` | `test/Bitcode/conversionInstructions.3.2.ll`; `LLParser::parseCast` `Instruction::FPTrunc` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fpext_round_trips` | `test/Bitcode/conversionInstructions.3.2.ll`; `LLParser::parseCast` `Instruction::FPExt` arm | mirror |
