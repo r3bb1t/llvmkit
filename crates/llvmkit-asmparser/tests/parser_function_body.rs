@@ -257,8 +257,8 @@ const BLOCK_LABELS_FIXTURE: &str =
     include_str!("fixtures/upstream/assembler-corpus/block-labels.ll");
 
 /// Mirrors `test/Assembler/block-labels.ll::@test1`'s CHECK block against the
-/// vendored fixture — **every** line of it except the last two, which are
-/// blocked (see below). Each non-entry block carries `printBasicBlock`'s
+/// vendored fixture: **15 of its 17 CHECK lines**, the two exceptions being
+/// blocked and named below. Each non-entry block carries `printBasicBlock`'s
 /// predecessors comment, and `printLLVMName` re-quotes the label the way it
 /// quotes any other name, which is what the `"2"`, `-3` and `-N-` blocks are
 /// in the fixture to show: a quoted digit-only label stays quoted, and a
@@ -269,15 +269,19 @@ const BLOCK_LABELS_FIXTURE: &str =
 /// here comes from `Out.PadToColumn(50)` itself, which the CHECK lines cannot
 /// pin.
 ///
-/// **Partial, and this is the whole of what is left out.** The fixture's last
-/// two CHECK lines — `; CHECK-NEXT:   br label %"$N"` and
+/// **Partial, and this is the whole of what is left out.** CHECK lines **13
+/// and 14 of 17** — `; CHECK-NEXT:   br label %"$N"` and
 /// `; CHECK:      "$N":    ; preds = %-N-` — are not asserted, because
 /// llvmkit's `fmt_llvm_name_without_prefix` allows `$` in an unquoted name
 /// where `printLLVMNameWithoutPrefix` does not, so llvmkit prints `$N` and
 /// `br label %$N`. That is divergence **100** in `docs/divergences.md`, which
-/// is queued for its own commit; closing it turns this test into a full
-/// byte comparison of the fixture and lets its corpus row carry `expect=`.
-/// Nothing else in `@test1` is skipped.
+/// is queued for its own commit; closing it turns this test into a full byte
+/// comparison of the fixture and lets its corpus row carry `expect=`.
+///
+/// They are lines 13-14, not the last two: lines 15-17 (`%4 = add i32 1, 1`,
+/// `ret i32 %4`, `}`) sit *after* the `$N` block, are **not** blocked by
+/// divergence 100, and are asserted at the end of this test. Nothing else in
+/// `@test1` is skipped.
 #[test]
 fn non_entry_blocks_print_a_predecessors_comment() {
     let printed = parse_and_print(BLOCK_LABELS_FIXTURE);
@@ -320,6 +324,17 @@ fn non_entry_blocks_print_a_predecessors_comment() {
             "missing {expected:?} in:\n{printed}"
         );
     }
+
+    // CHECK lines 15-17: `; CHECK-NEXT:   %4 = add i32 1, 1` /
+    // `; CHECK-NEXT:   ret i32 %4` / `; CHECK-NEXT: }`. These follow the `$N`
+    // block, so they are not reached by the loop above, and nothing about them
+    // is blocked by divergence 100 — only the `"$N":` label line between the
+    // `-N-` block and this tail is. Asserted as one contiguous run so that
+    // label line is provably the *only* gap.
+    assert!(
+        printed.contains("  %4 = add i32 1, 1\n  ret i32 %4\n}\n"),
+        "{printed}"
+    );
 }
 
 /// Ports `test/Assembler/2002-08-15-ConstantExprProblem.ll` whole, as the
