@@ -2520,6 +2520,30 @@ fixture's CHECK lines and compares the whole list to the printed `^` lines with
 `assert_eq!` — a deliberate full-equality check, justified in that file's module
 doc. Folding it into a substring oracle would weaken it.
 
+## Tests — the corpus `error=` oracle cannot see a wrapper or an anchor (found 2026-08-20, operand-bundle fix round 3)
+
+`parser_corpus.rs` checks a reject row's pinned diagnostic with
+`rendered.contains(pin)`. A substring test passes whenever llvmkit's message
+merely *contains* upstream's, so any wrapper that adds text around it — the
+`expected ` prefix `ParseError::Expected` renders, most of all — satisfies the
+row while the printed diagnostic differs from `llvm-as`. Rows that set no
+`loc=` leave the caret column unchecked as well, so an anchor that drifts to a
+later token is invisible too.
+
+That is how `docs/divergences.md` entry 114 survived: two rows pin
+`error=invalid type for null constant`, llvmkit prints
+`expected invalid type for null constant` at a later token, and both rows are
+green. The hole is the harness's, not those rows'.
+
+The work: decide what an `error=` pin means and make the harness enforce it.
+Equality is the strict reading and would surface every wrapper in one run —
+which is the reason to expect a large first sweep, and the reason to do it as
+its own cycle rather than inside an unrelated fix. A cheaper first step is to
+reject a rendered message that contains the pin but does not *start* with it,
+which catches the `expected ` prefix class specifically. Either way, add `loc=`
+to the rows whose upstream `CHECK` carries a column, so anchors stop being
+free.
+
 ## Docs — the cite-by-symbol sweep (found 2026-08-20, fix round 3)
 
 `docs/divergences.md` states the law for its own file ("Upstream is cited **by

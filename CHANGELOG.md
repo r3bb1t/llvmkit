@@ -69,12 +69,12 @@ cut, entries accumulate under **Unreleased**.
   is gone.
 
 - **Changed: the `invalid metadata-value-metadata roundtrip` guard exists once,
-  as it does upstream.** It had been written inline three times — on the
-  `parseMetadata` fall-through, in `parse_md_tuple_operand`, and in
-  `parse_di_arg_list`, which had no guard at all — where `LLParser` has it
-  only inside `parseValueAsMetadata`. All three callers now route through the
-  single port. That corrects the diagnostic on the `DIArgList` path, which had
-  no guard at all: `#dbg_value(!DIArgList(metadata %a), ...)` reported
+  as it does upstream.** It had been written inline twice — on the
+  `parseMetadata` fall-through and in `parse_md_tuple_operand` — where
+  `LLParser` has it only inside `parseValueAsMetadata`, and a third caller,
+  `parse_di_arg_list`, inlined the routine with the guard left out. All three
+  now route through the single port. That corrects the diagnostic on the
+  `DIArgList` path: `#dbg_value(!DIArgList(metadata %a), ...)` reported
   `'%a' defined with type 'i32' but expected 'metadata'`, where
   `parseDIArgList` inherits the guard from `parseValueAsMetadata` and rejects
   at the *type*.
@@ -106,6 +106,19 @@ cut, entries accumulate under **Unreleased**.
   line is `llvm-as < %s | llvm-dis | FileCheck %s` and passes no
   `-disable-verify`, so the test runs `verify_borrowed` as well — `llvm-as` is
   half the oracle, not just a pretty-printer, and the fixture verifies clean.
+
+- **Recorded, not fixed: a `zeroinitializer` of a target extension type
+  reports `expected invalid type for null constant`.**
+  `LLParser::convertValIDToValue`'s `ValID::t_Zero` arm emits the bare
+  `invalid type for null constant` at the `zeroinitializer` token;
+  `zero_initializer_constant`'s `TargetExt` arm carries that complete message in
+  a `ParseError::Expected`, which prefixes `expected `, and anchors it at the
+  lookahead token instead. Pre-existing, found while probing a target extension
+  type as a metadata operand. New `docs/divergences.md` entry 114 — along with
+  the reason it stayed hidden: `parser_corpus.rs` matches an `error=` pin with
+  `contains`, so a wrapper that only adds text around upstream's message passes,
+  and rows without `loc=` leave the caret unchecked. That harness hole is
+  recorded in `docs/future-work.md`.
 
 - **Not ported, and why:** `test/Bitcode/compatibility.ll`'s
   `@instructions.bundles.metadata` spells the same `"foo"` / `"bar"` bundles as

@@ -1352,6 +1352,69 @@ Re-verified 2026-08-20 after the entry was first written, and it was wrong twice
 
 </details>
 
+### 114. A `zeroinitializer` of a target extension type reports `expected invalid type for null constant`
+
+*parser — constants* — crates/llvmkit-asmparser/src/ll_parser.rs (`zero_initializer_constant`, the `AnyTypeEnum::TargetExt` arm)
+
+Found 2026-08-20 in review of the operand-bundle work, which passed through this
+arm while testing a target extension type as a metadata operand. Pre-existing
+and unrecorded. It has the shape `docs/fixture-coverage.md` calls gap **G17** —
+a complete upstream message routed through an `expected ...` wrapper.
+
+- **LLVM:** `LLParser::convertValIDToValue`'s `case ValID::t_Zero:` rejects a
+  target extension type without the `HasZeroInit` property with
+  `error(ID.Loc, "invalid type for null constant")` — the bare message,
+  anchored at `ID.Loc`, the location of the `zeroinitializer` token itself.
+- **llvmkit:** the `TargetExt` arm of `zero_initializer_constant` maps
+  `IrError::InvalidOperation`'s message into `ParseError::Expected`, whose
+  rendering prefixes `expected `, and anchors it at `self.loc()` — the
+  lookahead token, reached after the failing value was consumed. So llvmkit
+  prints `expected invalid type for null constant` at a later token.
+- **Consequence:** both text and column differ from `llvm-as` on every
+  `target(...)` `zeroinitializer` whose type lacks `HasZeroInit`. The verdict is
+  the same, and the sibling non-`TargetExt` arms are unaffected: an ordinary
+  ill-typed `zeroinitializer` already reports the bare message, so this is one
+  arm, not the routine.
+- **Why:** `Module::target_ext_none` answers `IrError::InvalidOperation` with a
+  message that is already upstream's complete sentence, and the arm reuses
+  `ParseError::Expected` to carry it rather than `ParseError::Message`, which
+  adds no prefix.
+- **Why it stayed hidden, and the wider hole:** two corpus rows pin this exact
+  text — `test/Assembler/2004-11-28-InvalidTypeCrash.ll` and the
+  `zeroinit-error.ll` part of `test/Assembler/target-type-properties.ll` — and
+  both pass. `parser_corpus.rs` compares an `error=` pin with
+  `rendered.contains(pin)`, a substring test, so any wrapper that only *adds*
+  text around upstream's message satisfies it. The oracle cannot see a prefix
+  defect at all, and no `loc=` is set on either row, so the anchor is unchecked
+  too. That is a property of the harness, not of these two rows; it is recorded
+  in `docs/future-work.md`.
+- **Fix:** raise `ParseError::Message` instead of `ParseError::Expected` in that
+  arm, and anchor at the span of the value token rather than `self.loc()`. Then
+  tighten the two corpus rows, which is the part that keeps it fixed.
+
+<details><summary>Verification evidence (verified 2026-08-20)</summary>
+
+Probed with `target/release/examples/parse_file.exe` built at `4da2ee3`.
+On the vendored
+`crates/llvmkit-asmparser/tests/fixtures/upstream/assembler-corpus/target-type-properties/zeroinit-error.ll`
+llvmkit reports `5:3: expected invalid type for null constant`, caret on `ret`;
+that file's first failing line is line 2,
+`%val = freeze target("spirv.DeviceEvent") zeroinitializer`, and its `CHECK`
+line is `error: invalid type for null constant`. Its sibling
+`crates/llvmkit-asmparser/tests/fixtures/upstream/assembler-corpus/2004-11-28-InvalidTypeCrash.ll`
+reports `6:1: invalid type for null constant` — the bare text, from a
+different arm of the same routine, which is why this entry is scoped to the
+`TargetExt` arm; its anchor is off as well. Upstream read from
+`lib/AsmParser/LLParser.cpp`: `convertValIDToValue`'s `t_Zero` case is
+`if (auto *TETy = dyn_cast<TargetExtType>(Ty)) if
+(!TETy->hasProperty(TargetExtType::HasZeroInit)) return error(ID.Loc, "invalid
+type for null constant");`. Harness read from
+`crates/llvmkit-asmparser/tests/parser_corpus.rs`: the `error=` assertion is
+`rendered.contains(pin)`; the manifest rows for both fixtures carry
+`error=invalid type for null constant` and no `loc=`.
+
+</details>
+
 ## Different printed bytes
 
 The parser/printer contract is that printed output matches `AsmWriter.cpp` byte for byte and re-parses.

@@ -754,9 +754,14 @@ define void @f() {
 /// case labels, shared with the operand form.
 ///
 /// **Anchored on the routine, not on a fixture** — no `.ll` file was found
-/// with a target extension type in a metadata tuple. `zeroinitializer` is
-/// deliberately not used here: a null constant of a target extension type
-/// fails further along, for reasons that have nothing to do with metadata.
+/// with a target extension type in a metadata tuple. The operand is `poison`
+/// rather than `zeroinitializer` because `poison` is the shape that isolates
+/// the lookahead: `spirv.Image` carries no `HasZeroInit` in
+/// `llvm/lib/IR/Type.cpp`'s `getTargetTypeInfo`, so
+/// `LLParser::convertValIDToValue`'s `ValID::t_Zero` arm rejects
+/// `target("spirv.Image") zeroinitializer` upstream too, with
+/// `invalid type for null constant`. llvmkit rejects it as well — see
+/// `docs/divergences.md` entry 114 for the wording and anchor it uses.
 #[test]
 fn a_target_extension_type_is_a_legal_metadata_tuple_operand() {
     let (_, text) = parse_snippet("!0 = !{ target(\"spirv.Image\") poison }\n");

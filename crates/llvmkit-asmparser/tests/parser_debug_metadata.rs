@@ -1096,8 +1096,10 @@ fn di_expression_validates_its_operands() {
 /// complained about the value instead.
 ///
 /// **Anchored on the routine, not on a fixture.** `test/Assembler` carries
-/// `!DIArgList` only inside the `dbg-record-invalid-*` negatives, whose `CHECK`
-/// lines pin errors raised before the operand list is reached.
+/// `!DIArgList` only inside the `dbg-record-invalid-*` negatives, and none of
+/// them pins an error raised *inside* the operand list: their `CHECK` lines
+/// sit either on the record's own opening token or on the line after a list
+/// that parsed cleanly.
 #[test]
 fn di_arg_list_rejects_a_metadata_typed_operand() {
     let src = r#"
