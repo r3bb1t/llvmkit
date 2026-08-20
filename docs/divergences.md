@@ -20,13 +20,12 @@ recorded premises wrong; three failed on contact in a single session, and four
 found stale in turn. A `<details>` block and a `Correction from verification`
 paragraph are *dated snapshots of one verification pass*, not standing proof:
 their line numbers, counts and command output were true when written and are
-re-checked by nothing. Of the 91 evidence blocks in this file, 10 carry a date
-anywhere and only **3** carry one on the summary line, where it can be seen
-without opening the block; before 2026-08-20 none did. Those three figures were
-re-derived at the operand-bundle-parity fix-round-2 commit, by counting
-`<details><summary>Verification evidence` and matching `20\d\d-\d\d-\d\d`
-against each whole block and against its `<summary>` line. Treat a row **and its
-evidence** as a hypothesis with a citation. When you re-verify an entry, date
+re-checked by nothing. Most evidence blocks in this file carry no date at all,
+and only a handful carry one on the `<summary>` line, where it can be seen
+without opening the block; before 2026-08-20 none did. No count is given here
+on purpose: the obvious way to derive one is to grep for the block's opening
+marker, and this paragraph would then be counting its own quotation of it.
+Treat a row **and its evidence** as a hypothesis with a citation. When you re-verify an entry, date
 the block you are trusting or replacing — on its `<summary>` line.
 
 Entry prose cites upstream **by symbol, never by line number** (repo law: line

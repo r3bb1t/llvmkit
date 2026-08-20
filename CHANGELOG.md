@@ -210,10 +210,11 @@ errors below survived.
   part readers trust most.** It said "treat a *row* as a hypothesis"; the file
   carries `<details>` evidence blocks quoting shell commands and their output,
   four of which (entries 17, 25, 38, 88) were found stale. Blocks are now
-  explicitly dated snapshots, and only a few carry a date where it is visible
-  without opening the block — the ledger's own header holds those counts and
-  the commands that derive them, so they are maintained in one place rather
-  than mirrored here. Three blocks were
+  explicitly dated snapshots, and only a handful carry a date where it is
+  visible without opening the block. No tally is given here or in the ledger's
+  header: the only obvious way to derive one greps for the block's opening
+  marker, which a sentence quoting that marker would inflate by counting
+  itself. Three blocks were
   deleted rather than repaired: entries 25 and 88 because every coordinate in
   them resolved to unrelated code, and entry 38 because its own
   `Status (W13a, W13b)` paragraph had already superseded it. Entry 17's was
