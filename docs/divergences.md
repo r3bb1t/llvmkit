@@ -1280,12 +1280,12 @@ recorded.
   `isValidOperands` arm so all three operands share one
   `invalid shufflevector operands` at `operand_loc`, and re-point that test.
 
-### 105. A re-used numbered label reports `redefinition of block '%N'` where upstream reports `label expected to be numbered 'N' or greater`
+### 105. A re-used numbered label reports `redefinition of label '%N'` where upstream reports `label expected to be numbered 'N' or greater`
 
 *parser* — crates/llvmkit-asmparser/src/ll_parser.rs — `PerFunctionState::define_basic_block`, `BlockHeader::Numbered` arm
 
 - **LLVM:** `LLParser::PerFunctionState::defineBB`'s numbered branch runs `P.checkValueID(Loc, "label", "", NumberedVals.getNext(), NameID)` *first*. A re-used id is necessarily below `NumberedVals.getNext()`, so `checkValueID` is what fires, with `label expected to be numbered '<next>' or greater`.
-- **llvmkit:** a `defined_numbered_blocks` membership test raises `ParseError::Redefinition` before `check_value_id` runs, pre-empting upstream's message. The same pre-emptive check also sits in `get_basic_block_numbered`, the `getBB(unsigned ID, LocTy)` mirror.
+- **llvmkit:** a `defined_numbered_blocks` membership test raises `ParseError::Redefinition { kind: SymbolKind::Block, .. }` before `check_value_id` runs, pre-empting upstream's message. `SymbolKind::Block` renders as `label`, so the text a user sees is `redefinition of label '%1'` — verified by probe on `define void @f() {\n1:\n  br label %1\n1:\n  ret void\n}`, which upstream answers with `label expected to be numbered '2' or greater`. The same pre-emptive check also sits in `get_basic_block_numbered`, the `getBB(unsigned ID, LocTy)` mirror.
 - **Why:** pre-existing. Carried through unchanged when `defineBB` was unified into one routine for the `printBasicBlock` parity commit, deliberately, so that no diagnostic and no diagnostic *order* moved in a commit whose subject was printed bytes. Keeping the two guards and their order is what makes that diff reviewable as a printing change; it is not an endorsement of them.
 - **Fix:** delete the pre-emptive check from both sites and let `check_value_id` speak. Re-bless whatever pins `Redefinition` for a block id first. Sequence it with the already-recorded `unable to create block numbered '<N>'` entry, which rewrites the other guard in the same function.
 
@@ -1647,14 +1647,18 @@ CONFIRMED, still present at HEAD (2ac3e3a; `git diff --stat` on both cited files
 - **Fix:** align the allowed-character set with `printLLVMNameWithoutPrefix` exactly (`isalnum`, `-`, `.`, `_`, plus the leading-digit rule), then re-run the byte-lock and corpus gates.
 - **Unblocks:** closing this makes `test/Assembler/block-labels.ll` a full byte comparison. As of the `printBasicBlock` parity commit, llvmkit reproduces that fixture's entire `@test1` CHECK block *except* `"$N":` / `br label %"$N"`, where it prints `$N` unquoted. Its corpus row stays `status=pass` (round-trip only) until then; the parts this task did close are pinned by targeted tests in `crates/llvmkit-asmparser/tests/parser_function_body.rs` instead.
 
-### 104. `WriteAsOperandInternal` prints `<badref>`; llvmkit prints `%<unnumbered>`
+### 104. Where LLVM prints `<badref>` for an unnumbered value, llvmkit prints `%<unnumbered>` / `@<unnumbered>`
 
-*printer* — crates/llvmkit-ir/src/asm_writer.rs — `fmt_operand_ref`
+*printer* — crates/llvmkit-ir/src/asm_writer.rs — `fmt_operand_ref` (two arms), `fmt_global_value_ref`, `fmt_instruction`
 
-- **LLVM:** `WriteAsOperandInternal`'s unnamed-value path is `int Slot = Machine->getLocalSlot(V); if (Slot != -1) Out << '%' << Slot; else Out << "<badref>";` — the failure spelling carries no `%` sigil.
-- **llvmkit:** both unnamed arms of `fmt_operand_ref` (the `BasicBlock` one and the `Argument`/`Instruction` one) write `%<unnumbered>`.
-- **Why:** unreachable while the `SlotTracker` covers the function being printed, which is every case the module printer produces. Found while porting `AssemblyWriter::printBasicBlock`, whose own `<badref>:` twin was fixed in that commit because the routine was being rewritten; this one was left rather than swept into a commit about block printing.
-- **Fix:** one string per arm. Blast radius is empty — a repo-wide grep for `<unnumbered>` finds no test, fixture or expected-output file.
+- **LLVM:** `writeAsOperandInternal`'s value path ends `if (Slot != -1) Out << Prefix << Slot; else Out << "<badref>";` — where `Prefix` is `'@'` for a `GlobalValue` and `'%'` otherwise, and the failure spelling carries **no sigil at all** in either case. `AssemblyWriter::printInstruction`'s unnamed-result arm is the same shape: `if (SlotNum == -1) Out << "<badref> = "; else Out << '%' << SlotNum << " = ";`.
+- **llvmkit:** four sites spell the failure with a sigil and a different word.
+  - `fmt_operand_ref`'s `BasicBlock` arm and its `Argument`/`Instruction` arm — `%<unnumbered>`, against `writeAsOperandInternal`.
+  - `fmt_global_value_ref` — `@<unnumbered>`, against the same routine's `Prefix = '@'` branch.
+  - `fmt_instruction`'s unnamed-result arm — `%<unnumbered> = `, against `printInstruction`'s `<badref> = `.
+- **Why:** all four are unreachable while the `SlotTracker` covers what is being printed, which is every case the module printer produces. Found while porting `AssemblyWriter::printBasicBlock`, whose own `<badref>:` twin was fixed in that commit because the routine was being rewritten; these were left rather than swept into a commit about block printing.
+- **Fix:** one string per site, **all four** — the first framing of this entry said "one string per arm" of `fmt_operand_ref` and would have left the global and instruction sites behind. Blast radius is empty: a repo-wide grep for `<unnumbered>` finds no test, fixture or expected-output file.
+- **Out of scope, deliberately** (three further `<unnumbered>` sites with no upstream `<badref>` twin, listed so the next reader does not re-derive it): the function-signature argument printer in `fmt_function_with_use_lists`, whose upstream counterpart `AssemblyWriter::printArgument` has no failure spelling at all — it is `int Slot = Machine.getLocalSlot(Arg); assert(Slot != -1 && "expect argument in function here"); Out << " %" << Slot;`; the anonymous identified-struct number in the type-identity block, where `printTypeIdentities` writes `Out << '%' << I << " = type "` from a `NumberedTypes` **index** and so cannot fail; and the same struct case in `type.rs`'s `Display`.
 
 ## Model gaps
 

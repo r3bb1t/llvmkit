@@ -239,13 +239,21 @@ fn hex_float_constants_print_uppercase() {
 }
 
 /// Mirrors `test/Assembler/2002-04-07-HexFloatConstants.ll`'s
-/// `fmul double 7.200000e+101, 0x427F4000` — the spelling `llvm-dis`
-/// produced for that constant, which the fixture's own comment says it is
-/// there to pin ("when presented with a FP constant that cannot be
-/// represented exactly in exponential form, outputs it correctly in hex
-/// format"). `format_hex(N, /*Width=*/0, ...)` reaches `llvm::write_hex` with
-/// `NumChars = max(0, max(1, Nibbles) + 2)`, so a value with eight
-/// significant nibbles prints in eight digits and is *not* padded to sixteen.
+/// `fmul double 7.200000e+101, 0x427F4000`.
+///
+/// **Caveat on the oracle, stated rather than implied.** That fixture's RUN
+/// lines are `opt -passes=instsimplify -S` and
+/// `llvm-as | llvm-dis | llvm-as | opt | llvm-dis` followed by `diff` — there
+/// is no `FileCheck`, so what the fixture actually pins is printer
+/// *idempotence*, and `0x427F4000` is its hand-written **input** text, not a
+/// captured `llvm-dis` output. The rule this test asserts comes from the
+/// routine: `writeConstantInternal` prints the hex form as
+/// `format_hex(bits, /*Width=*/0, /*Upper=*/true)`, which reaches
+/// `llvm::write_hex` with `NumChars = max(W, max(1, Nibbles) + PrefixChars)`,
+/// so with `W == 0` a value of eight significant nibbles prints in eight
+/// digits and is *not* padded to sixteen. The fixture is the shape and the
+/// spelling; `write_hex` is the authority. (Its sibling
+/// `hex_float_constants_print_uppercase` does have a real FileCheck oracle.)
 #[test]
 fn hex_float_constants_are_not_zero_padded_past_their_width() {
     const FIXTURE: &[u8] =

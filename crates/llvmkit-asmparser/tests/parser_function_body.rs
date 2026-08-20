@@ -232,7 +232,8 @@ fn out_of_order_named_blocks_do_not_renumber_unnamed_values() {
     assert!(printed.contains("%1 = add i32 3, 4"), "{printed}");
 }
 
-/// Mirrors `test/Assembler/block-labels.ll::@test2`, whose CHECK block is
+/// Mirrors `test/Assembler/block-labels.ll::@test2` against the vendored
+/// fixture, whose CHECK block is
 /// `; CHECK-LABEL: define void @test2(i32 %0, i32 %1) {` followed immediately
 /// by `; CHECK-NEXT:    ret void` — an explicitly written `2:` entry label is
 /// not printed, because `AssemblyWriter::printBasicBlock` takes the
@@ -240,37 +241,85 @@ fn out_of_order_named_blocks_do_not_renumber_unnamed_values() {
 /// `Out << " {"` without a newline so the block owns it.
 #[test]
 fn an_unnamed_entry_block_prints_no_label() {
-    let printed = parse_and_print("define void @test2(i32 %0, i32 %1) {\n2:\n  ret void\n}\n");
+    let printed = parse_and_print(BLOCK_LABELS_FIXTURE);
     assert!(
         printed.contains("define void @test2(i32 %0, i32 %1) {\n  ret void\n"),
         "{printed}"
     );
 }
 
-/// Mirrors `test/Assembler/block-labels.ll::@test1`'s
-/// `; CHECK:      2:       ; preds = %0` / `; CHECK:      3:       ; preds = %2`
-/// (RUN: `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s
-/// --match-full-lines`, so the CHECK block is `AssemblyWriter` output). Every
-/// non-entry block carries `printBasicBlock`'s predecessors comment. FileCheck
-/// runs without `--strict-whitespace` and so canonicalizes the run of spaces;
-/// the column comes from `Out.PadToColumn(50)` itself.
+/// `test/Assembler/block-labels.ll`, vendored whole and parsed whole. Its RUN
+/// line is
+/// `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s --match-full-lines`,
+/// so every `; CHECK` line in it is `AssemblyWriter` output and a legitimate
+/// byte oracle.
+const BLOCK_LABELS_FIXTURE: &str =
+    include_str!("fixtures/upstream/assembler-corpus/block-labels.ll");
+
+/// Mirrors `test/Assembler/block-labels.ll::@test1`'s CHECK block against the
+/// vendored fixture — **every** line of it except the last two, which are
+/// blocked (see below). Each non-entry block carries `printBasicBlock`'s
+/// predecessors comment, and `printLLVMName` re-quotes the label the way it
+/// quotes any other name, which is what the `"2"`, `-3` and `-N-` blocks are
+/// in the fixture to show: a quoted digit-only label stays quoted, and a
+/// name that merely *looks* numeric or contains `-` prints bare.
+///
+/// FileCheck runs without `--strict-whitespace` and so canonicalizes the run
+/// of spaces in `; CHECK:      2:       ; preds = %0`; the column asserted
+/// here comes from `Out.PadToColumn(50)` itself, which the CHECK lines cannot
+/// pin.
+///
+/// **Partial, and this is the whole of what is left out.** The fixture's last
+/// two CHECK lines — `; CHECK-NEXT:   br label %"$N"` and
+/// `; CHECK:      "$N":    ; preds = %-N-` — are not asserted, because
+/// llvmkit's `fmt_llvm_name_without_prefix` allows `$` in an unquoted name
+/// where `printLLVMNameWithoutPrefix` does not, so llvmkit prints `$N` and
+/// `br label %$N`. That is divergence **100** in `docs/divergences.md`, which
+/// is queued for its own commit; closing it turns this test into a full
+/// byte comparison of the fixture and lets its corpus row carry `expect=`.
+/// Nothing else in `@test1` is skipped.
 #[test]
 fn non_entry_blocks_print_a_predecessors_comment() {
-    let printed = parse_and_print(
-        "define i32 @test1(i32 %X) {\n  \
-           %1 = alloca i32\n  br label %2\n\
-         2:\n  br label %3\n\
-         3:\n  %4 = add i32 1, 1\n  ret i32 %4\n\
-         }\n",
-    );
+    let printed = parse_and_print(BLOCK_LABELS_FIXTURE);
+
+    // `; CHECK-LABEL: define i32 @test1(i32 %X) {` / `; CHECK-NEXT:` x2 --
+    // the implicit entry label is not printed, and it keeps slot 0.
     assert!(
-        printed.contains("2:                                                ; preds = %0\n"),
+        printed
+            .contains("define i32 @test1(i32 %X) {\n  %1 = alloca i32, align 4\n  br label %2\n"),
         "{printed}"
     );
-    assert!(
-        printed.contains("3:                                                ; preds = %2\n"),
-        "{printed}"
-    );
+
+    // The label / predecessors-comment pairs, each followed by the branch the
+    // fixture's `; CHECK-NEXT:` pins.
+    for (label_line, next_line) in [
+        (
+            "2:                                                ; preds = %0\n",
+            "  br label %3\n",
+        ),
+        (
+            "3:                                                ; preds = %2\n",
+            "  br label %\"2\"\n",
+        ),
+        (
+            "\"2\":                                              ; preds = %3\n",
+            "  br label %-3\n",
+        ),
+        (
+            "-3:                                               ; preds = %\"2\"\n",
+            "  br label %-N-\n",
+        ),
+        (
+            "-N-:                                              ; preds = %-3\n",
+            "",
+        ),
+    ] {
+        let expected = format!("{label_line}{next_line}");
+        assert!(
+            printed.contains(&expected),
+            "missing {expected:?} in:\n{printed}"
+        );
+    }
 }
 
 /// Ports `test/Assembler/2002-08-15-ConstantExprProblem.ll` whole, as the

@@ -2987,8 +2987,20 @@ fn pad_to_column(f: &mut fmt::Formatter<'_>, new_column: usize, column: usize) -
 }
 
 /// `predecessors(BB)` (`llvm/IR/CFG.h`): `PredIterator` walks
-/// `BB->user_begin()`, skips every user that is not a terminator
-/// `Instruction`, and yields `cast<Instruction>(*It)->getParent()`.
+/// `BB->user_begin()` and its `advancePastNonTerminators` skips every user
+/// that is not an `Instruction` — "Loop to ignore non-terminator uses (for
+/// example BlockAddresses)" — then `assert`s `Inst->isTerminator()` and stops.
+/// It yields `cast<Instruction>(*It)->getParent()`.
+///
+/// So upstream filters on *being an instruction* and only asserts the
+/// terminator half; the `is_terminator()` test below is llvmkit's spelling of
+/// that assertion, and it is sound for the same reason upstream's assert
+/// holds: the only non-terminator that could name a block is a `PHINode`, and
+/// `InstructionKindData::block_operand_ids`'s `Phi` arm yields nothing —
+/// mirroring `PHINode`'s hung-off block array, which is reached by
+/// `block_begin` and is not a use list. A phi therefore never registers a
+/// block use to filter out. The repo bans runtime panics, so the dead branch
+/// is a `filter` rather than an assert; it can never change the result.
 ///
 /// Not sorted and not deduplicated — a terminator naming the same successor
 /// twice yields it twice, exactly as upstream. The use list is the ordering
@@ -3075,8 +3087,8 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
                 }
                 // Every basic block carries the module's label type, so the
                 // erased block's own type slot is the predecessor's too.
-                let pred = Value::from_parts(predecessor, erased.module, erased.ty);
-                fmt_operand_ref(f, pred, Some(slots))?;
+                let predecessor_value = Value::from_parts(predecessor, erased.module, erased.ty);
+                fmt_operand_ref(f, predecessor_value, Some(slots))?;
             }
         }
     }
