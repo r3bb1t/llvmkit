@@ -1055,6 +1055,33 @@ fn low_u64(bits: u128) -> u64 {
     ])
 }
 
+/// `Out << format_hex(N, 0, /*Upper=*/true)` — `llvm::format_hex` with a zero
+/// width and the `0x` prefix, as `writeConstantInternal`'s `double` arm uses
+/// it.
+///
+/// `format_hex(N, Width, Upper)` builds a `FormattedNumber` that
+/// `raw_ostream::operator<<` routes to
+/// `write_hex(S, N, HexPrintStyle::PrefixUpper, Width)`, whose body
+/// (`lib/Support/NativeFormatting.cpp`) computes
+/// `Nibbles = (bit_width(N) + 3) / 4` and
+/// `NumChars = max(W, max(1, Nibbles) + PrefixChars)` over a `'0'`-prefilled
+/// buffer. With `Width == 0` and `PrefixChars == 2` that is the `0x` prefix
+/// plus `max(1, Nibbles)` uppercase digits and **no** padding to sixteen —
+/// which is why a small value such as `0x427F4000` prints in eight digits.
+fn write_hex_prefixed_upper(f: &mut fmt::Formatter<'_>, value: u64) -> fmt::Result {
+    // `unsigned Nibbles = (llvm::bit_width(N) + 3) / 4;` —
+    // `u64::BITS - leading_zeros()` *is* `bit_width`, and `(x + 3) / 4` is
+    // spelled `div_ceil(4)` here because clippy rejects the open form.
+    let bit_width = u64::BITS - value.leading_zeros();
+    let nibbles = bit_width.div_ceil(4);
+    // `NumChars = max(W, max(1u, Nibbles) + PrefixChars)` with `W == 0`,
+    // expressed as the digit count after the prefix. `nibbles <= 16` always,
+    // so the `unwrap_or` is dead; it is spelled fallibly because `as` casts
+    // are banned, and 16 would still be correct by zero-padding.
+    let digits = usize::try_from(nibbles.max(1)).unwrap_or(16);
+    write!(f, "0x{value:0digits$X}")
+}
+
 fn fmt_float_constant<B: ModuleBrand>(
     f: &mut fmt::Formatter<'_>,
     ty: Type<'_, B>,
@@ -1069,14 +1096,14 @@ fn fmt_float_constant<B: ModuleBrand>(
                 return Ok(());
             }
             let as_double_bits = f64::from(value).to_bits();
-            write!(f, "0x{as_double_bits:016x}")
+            write_hex_prefixed_upper(f, as_double_bits)
         }
         TypeData::Double => {
             let value = f64::from_bits(low_u64(bits));
             if value.is_finite() && try_write_finite_float_decimal(f, value)? {
                 return Ok(());
             }
-            write!(f, "0x{:016x}", value.to_bits())
+            write_hex_prefixed_upper(f, value.to_bits())
         }
         TypeData::X86Fp80 => {
             let lo = low_u64(bits);
@@ -1122,7 +1149,10 @@ fn print_escaped_string<W: fmt::Write>(f: &mut W, bytes: &[u8]) -> fmt::Result {
                     .unwrap_or_else(|_| unreachable!("printable ASCII is valid UTF-8")),
             )?;
         } else {
-            write!(f, "\\{:02x}", c)?;
+            // `Out << '\\' << hexdigit(C >> 4) << hexdigit(C & 0x0F)` —
+            // `hexdigit`'s `LowerCase` parameter defaults to `false`, so the
+            // digits come from `"0123456789ABCDEF"` unmodified.
+            write!(f, "\\{c:02X}")?;
         }
     }
     Ok(())

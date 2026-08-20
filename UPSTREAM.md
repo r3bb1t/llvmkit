@@ -19,21 +19,22 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2514 (2509 distinct names). Recounted on 2026-08-20
-at the `printBasicBlock`-parity point via the documented attribute-anchored
-grep below (`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 937 +
+Total `#[test]` functions: 2518 (2513 distinct names). Recounted on 2026-08-20
+at the hex-case parity point via the documented attribute-anchored grep below
+(`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 941 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +6 over the 2508 Wave 14 point below is
-the basic-block printing and ordering parity commit; the +273 that reached 2508
-is the LLParser-parity program's waves 0-14. The figure agrees with the gate: a
+`crates/llvmkit-macros` has none). The +10 over the 2508 Wave 14 point below is
+the two printer-parity commits — 6 for basic-block printing and ordering, 4 for
+hex case; the +273 that reached 2508 is the LLParser-parity program's waves
+0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2514 passed, 0 failed across 214 test binaries.
+this commit reports 2518 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2083 rows**. 13 of them name a trybuild `compile_fail/*.rs`
+below carries **2087 rows**. 13 of them name a trybuild `compile_fail/*.rs`
 fixture rather than a `#[test]` function -- those fixtures are `fn main()`
-programs and are not part of the test-function accounting. The remaining 2070
-rows give provenance for **2186 of the 2509 distinct `#[test]` functions**,
+programs and are not part of the test-function accounting. The remaining 2074
+rows give provenance for **2190 of the 2513 distinct `#[test]` functions**,
 leaving **323 with no row** and **zero rows naming a test that no longer
 exists**.
 
@@ -1133,6 +1134,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::captures_diagnostics_match_upstream_text` | `LLParser::parseCapturesAttr`'s own diagnostics, verbatim, including the `invalid-component` split of `test/Assembler/captures-errors.ll` (`captures(foo)`) | mirror (partial) |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::uwtable_fixtures_match_upstream_text` | `test/Assembler/uwtable-1.ll` and `uwtable-2.ll`, both verbatim, asserting their CHECK lines; `LLParser::parseFnAttributeValuePairs`'s `kw_uwtable` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::captures_none_round_trips_as_itself` | `CaptureInfo::none` and its printing; replaces a test that asserted other components must fail to parse | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::quoted_global_name_hex_escapes_print_uppercase` | `llvm/test/Assembler/2008-10-14-QuoteInName.ll` (quoting path only -- the letter-digit escape `\7F` has no upstream fixture); `printLLVMName` -> `llvm::printEscapedString` -> `hexdigit` | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::an_ifunc_takes_metadata_attachments_but_an_alias_does_not` | `LLParser::parseAliasOrIFunc`'s `!IsAlias && Lex.getKind() == lltok::MetadataVar` property arm | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::an_ifunc_stores_but_does_not_print_the_shared_prefix_clauses` | `parseAliasOrIFunc`'s `setThreadLocalMode` / `setDLLStorageClass` / `setUnnamedAddr` applied in both branches, against `AssemblyWriter::printIFunc`, which stops after visibility | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_redefined_global_is_rejected_but_a_forward_reference_is_not` | `LLParser::parseGlobal`'s `else if (M->getNamedValue(Name))` arm and the `ForwardRefVals` branch above it | llvmkit-specific (rule anchor) |
@@ -1534,6 +1536,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/constant_fold.rs::fptoui_negative_constant_returns_poison` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` FP-to-unsigned invalid conversion poison behavior | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/ap_float.rs::decimal_quad_literal_keeps_bits_beyond_double_precision` | `llvm/lib/Support/APFloat.cpp::IEEEFloat::convertFromDecimalString` fp128 destination-semantics regression; upstream gtest lacks this literal | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_ap_literals.rs::hex_double_literal_converts_to_float_context` | `llvm/lib/AsmParser/LLParser.cpp::parseValID` untyped hex double APFloat conversion to typed float context | mirror |
+| `crates/llvmkit-asmparser/tests/parser_ap_literals.rs::hex_float_constants_print_uppercase` | `llvm/test/Assembler/2002-04-07-InfConstant.ll` CHECK line; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::writeConstantInternal` `format_hex(..., 0, /*Upper=*/true)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_ap_literals.rs::hex_float_constants_are_not_zero_padded_past_their_width` | `llvm/test/Assembler/2002-04-07-HexFloatConstants.ll` (`0x427F4000`); `llvm/lib/Support/NativeFormatting.cpp::llvm::write_hex` `NumChars = max(W, max(1, Nibbles) + PrefixChars)` rule | mirror |
 | `crates/llvmkit-ir/tests/ap_float.rs::decimal_quad_literal_beyond_double_range_stays_finite` | `llvm/lib/Support/APFloat.cpp::IEEEFloat::convertFromDecimalString` fp128 wide-exponent regression; upstream gtest lacks this literal | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::fptosi_fp128_integer_keeps_low_bits` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction`; `llvm/lib/Support/APFloat.cpp::IEEEFloat::convertToInteger` wide FP-to-int behavior | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/ap_float.rs::decimal_quad_subnormal_below_double_range_stays_nonzero` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, isDenormal)` fp128 min-normal/subnormal family; llvmkit uses a decimal subnormal literal | llvmkit-specific subset |
@@ -2256,6 +2260,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_di_arg_list_outside_a_function_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseNamedMetadata`, whose explicit refusal is commented "DIArgLists should only appear inline in a function, as they may contain LocalAsMetadata arguments which require a function context" | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::specialized_nodes_enforce_their_field_agreement_rules` | the field-interaction rules below `PARSE_MD_FIELDS()` in `LLParser::parseDICompileUnit` (four), `::parseDIFile`, `::parseDIEnumerator` and `::parseDISubprogram`. `test/Assembler` has no fixture for any of them -- the routines are the anchor | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_expression_validates_its_operands` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIExpressionBody` -- its `invalid DWARF op` / `invalid DWARF attribute encoding` lookups and the `element too large, limit is N` split from `expected unsigned integer` | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::metadata_string_hex_escapes_print_uppercase` | `llvm/test/Assembler/debug-info.ll` CHECK for `!DIFile(... source: "int source() { }\0A")`; `llvm::printEscapedString` / `hexdigit` (`lib/Support/StringExtras.cpp`, `ADT/StringExtras.h`) | mirror |
 | `crates/llvmkit-asmparser/tests/dwarf_def_drift.rs::dw_apple_enum_kind_table_matches_the_vendored_def` | `llvm/lib/BinaryFormat/Dwarf.cpp::dwarf::getEnumKind`, whose `StringSwitch` is built from `HANDLE_DW_APPLE_ENUM_KIND` in `Dwarf.def` | llvmkit-specific |
 | `crates/llvmkit-ir/src/md5.rs::tests::md5_matches_upstream_vectors` | `llvm/unittests/Support/MD5Test.cpp::TEST(MD5Test, MD5)` -- the same seven inputs and expected digests, through the same `update` then `final` then stringify sequence | port |
 | `crates/llvmkit-ir/src/md5.rs::tests::md5_hash_exposes_high_and_low_words` | `llvm/unittests/Support/MD5Test.cpp::TEST(MD5HashTest, MD5)` -- same input, same digest string, same `high()` / `low()` word values; the `md5_hash` assertion is the `llvm::MD5Hash` free function the summary index's GUID is defined by | port |

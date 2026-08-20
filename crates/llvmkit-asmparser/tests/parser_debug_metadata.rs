@@ -1018,6 +1018,28 @@ fn specialized_nodes_enforce_their_field_agreement_rules() {
     }
 }
 
+/// Mirrors `test/Assembler/debug-info.ll`'s
+/// `; CHECK-NEXT: !36 = !DIFile(filename: "file", directory: "dir", source: "int source() { }\0A")`
+/// (RUN: `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s`, so
+/// the CHECK line is `AssemblyWriter` output). `llvm::printEscapedString`
+/// writes `'\\' << hexdigit(C >> 4) << hexdigit(C & 0x0F)`, and `hexdigit`'s
+/// `LowerCase` parameter defaults to `false`, so the escape is `\0A` and not
+/// `\0a`.
+///
+/// The obvious fixture for this, `test/Assembler/difile-escaped-chars.ll`
+/// (`; CHECK: !0 = !DIFile(filename: "\00\01\02\80\81\82\FD\FE\FF", ...)`),
+/// cannot be ported: llvmkit rejects it with `expected UTF-8 string constant`.
+/// That is gap **G9** in `docs/fixture-coverage.md`, left on record rather
+/// than trimmed.
+#[test]
+fn metadata_string_hex_escapes_print_uppercase() {
+    let text = parse_and_render(
+        "!named = !{!0}\n\
+         !0 = !DIFile(filename: \"file\", directory: \"dir\", source: \"int source() { }\\0A\")\n",
+    );
+    assert!(text.contains(r#"source: "int source() { }\0A""#), "{text}");
+}
+
 /// Mirrors `LLParser::parseDIExpressionBody`, which looks each `DW_OP_*` and
 /// `DW_ATE_*` spelling up in its own table and rejects one the table does not
 /// carry — llvmkit used to store the name as written and print it straight

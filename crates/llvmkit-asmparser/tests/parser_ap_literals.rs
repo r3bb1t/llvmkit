@@ -211,8 +211,52 @@ fn hex_double_literal_converts_to_float_context() {
         "hex_double_literal_converts_to_float_context",
         b"@g = global float 0x400921fb60000000\n",
     );
+    // `writeConstantInternal` prints the hex form through
+    // `format_hex(bits, 0, /*Upper=*/true)`, so the digits come back
+    // uppercase whatever case the source used.
     assert!(
-        text.contains("@g = global float 0x400921fb60000000"),
+        text.contains("@g = global float 0x400921FB60000000"),
+        "{text}"
+    );
+}
+
+/// Mirrors `test/Assembler/2002-04-07-InfConstant.ll`'s
+/// `; CHECK: fmul float 0x7FF0000000000000, 1.000000e+01` (RUN:
+/// `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s`, so the
+/// CHECK line is `AssemblyWriter` output). `writeConstantInternal`'s FP arm
+/// is `Out << format_hex(apf.bitcastToAPInt().getZExtValue(), 0,
+/// /*Upper=*/true)`.
+#[test]
+fn hex_float_constants_print_uppercase() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/2002-04-07-InfConstant.ll");
+
+    let text = parse_and_render("hex_float_constants_print_uppercase", FIXTURE);
+    assert!(
+        text.contains("fmul float 0x7FF0000000000000, 1.000000e+01"),
+        "{text}"
+    );
+}
+
+/// Mirrors `test/Assembler/2002-04-07-HexFloatConstants.ll`'s
+/// `fmul double 7.200000e+101, 0x427F4000` — the spelling `llvm-dis`
+/// produced for that constant, which the fixture's own comment says it is
+/// there to pin ("when presented with a FP constant that cannot be
+/// represented exactly in exponential form, outputs it correctly in hex
+/// format"). `format_hex(N, /*Width=*/0, ...)` reaches `llvm::write_hex` with
+/// `NumChars = max(0, max(1, Nibbles) + 2)`, so a value with eight
+/// significant nibbles prints in eight digits and is *not* padded to sixteen.
+#[test]
+fn hex_float_constants_are_not_zero_padded_past_their_width() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/2002-04-07-HexFloatConstants.ll");
+
+    let text = parse_and_render(
+        "hex_float_constants_are_not_zero_padded_past_their_width",
+        FIXTURE,
+    );
+    assert!(
+        text.contains("fmul double 7.200000e+101, 0x427F4000"),
         "{text}"
     );
 }

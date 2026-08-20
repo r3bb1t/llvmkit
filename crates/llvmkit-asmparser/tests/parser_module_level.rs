@@ -265,6 +265,28 @@ fn a_redefined_global_is_rejected_but_a_forward_reference_is_not() {
     assert!(format!("{m}").contains("@p = global ptr @g"), "{m}");
 }
 
+/// Mirrors `test/Assembler/2008-10-14-QuoteInName.ll` — `@"a\22quote"` round
+/// tripped through `printLLVMName` -> `llvm::printEscapedString`, whose RUN
+/// line is `llvm-as < %s | llvm-dis | FileCheck %s` — extended to a byte whose
+/// escape has a *letter* digit, `\7F`, which is where `hexdigit`'s uppercase
+/// default becomes observable: `hexdigit(unsigned X, bool LowerCase = false)`
+/// indexes `"0123456789ABCDEF"` unmodified. The upstream fixture itself only
+/// exercises `\22`, whose digits carry no case, so the letter-digit half has
+/// no upstream fixture and is llvmkit's own extension of the same rule.
+#[test]
+fn quoted_global_name_hex_escapes_print_uppercase() {
+    let m = llvmkit_ir::Module::dynamic("quoted_names");
+    parse_into(
+        "@\"a\\22quote\" = global i32 0\n@\"t\\7Fag\" = global i32 0\n",
+        &m,
+    );
+    let text = format!("{m}");
+    // The upstream fixture's own name, unchanged: digits only.
+    assert!(text.contains(r#"@"a\22quote" = global i32 0"#), "{text}");
+    // The letter-digit extension: uppercase, not `\7f`.
+    assert!(text.contains(r#"@"t\7Fag" = global i32 0"#), "{text}");
+}
+
 /// An `ifunc` accepts metadata attachments and an alias does not.
 ///
 /// `parseAliasOrIFunc`'s property loop guards that arm with

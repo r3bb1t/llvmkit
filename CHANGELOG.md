@@ -19,6 +19,43 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Hex escapes and hex floating-point constants print uppercase, at `format_hex`'s width
+
+Two more previously unrecorded divergences, found the same way as the block
+printing ones above — by reading the routine, not the ledger. Both change
+printed bytes.
+
+- **Fixed: `printEscapedString` emits uppercase hex.**
+  `llvm::printEscapedString` writes
+  `'\\' << hexdigit(C >> 4) << hexdigit(C & 0x0F)`, and `hexdigit`'s
+  `LowerCase` parameter defaults to `false`, so the digits come from
+  `"0123456789ABCDEF"`. llvmkit wrote `\{:02x}`. Every escape it produces —
+  quoted global and local names, `c"…"` array constants, `section` and
+  `partition` attributes, `module asm` lines, metadata strings, operand-bundle
+  tags and module-summary paths — was lowercase where LLVM's is uppercase.
+  Pinned by `test/Assembler/debug-info.ll`'s `source: "int source() { }\0A"`
+  CHECK line.
+- **Fixed: a hex floating-point constant prints uppercase and at its natural
+  width.** `AssemblyWriter::writeConstantInternal` prints a non-round-tripping
+  `double` as `format_hex(bits, /*Width=*/0, /*Upper=*/true)`, which reaches
+  `llvm::write_hex` with `NumChars = max(Width, max(1, Nibbles) + 2)`. llvmkit
+  wrote `0x{:016x}`: lowercase, and always sixteen digits.
+  `test/Assembler/2002-04-07-InfConstant.ll` pins the case
+  (`0x7FF0000000000000`) and `test/Assembler/2002-04-07-HexFloatConstants.ll`
+  pins the width (`0x427F4000`, which llvmkit printed as `0x00000000427f4000`).
+- **Unchanged:** the input side was already right — `LLLexer::UnEscapeLexed`
+  accepts either case and so does llvmkit's `escape::unescape`. So are the
+  `0xH` / `0xR` / `0xK` / `0xL` / `0xM` forms, which already matched
+  `format_hex_no_prefix(…, Width, /*Upper=*/true)` at the right widths.
+- **Changed: `inline_asm.rs`'s escape assertion no longer lowercases the output
+  before matching.** The case-insensitive comparison is what let this live; its
+  own failure message had said `\0A` all along.
+- **Re-blessed:** `hex_double_literal_converts_to_float_context`'s needle.
+  The obvious escape fixture, `test/Assembler/difile-escaped-chars.ll`, still
+  cannot be ported (llvmkit rejects it with `expected UTF-8 string constant` —
+  gap **G9** in `docs/fixture-coverage.md`); `debug-info.ll` is cited instead
+  and G9 is left on record rather than trimmed.
+
 ### Basic-block printing reaches `printBasicBlock` parity, and named blocks print in definition order
 
 Four previously unrecorded divergences from `lib/IR/AsmWriter.cpp` and
