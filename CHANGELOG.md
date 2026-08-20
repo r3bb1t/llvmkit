@@ -32,13 +32,15 @@ entry 88 and `docs/future-work.md` in `5375335`, this file's own in `4e27ae7`
 `c51d185`.
 
 - **`docs/future-work.md` claimed the `verify-uselistorder` half-ports "now say
-  so"; two rows do.** The measured figure at this commit is **220**
+  so"; two rows did.** The measured figure at this commit is **219**
   `UPSTREAM.md` rows citing one of **47** distinct upstream fixtures whose RUN
   lines include `verify-uselistorder`, with no mention of it —
   `test/Bitcode/compatibility.ll` alone is 102 of them, `test/Assembler/flags.ll`
-  34 — against exactly 2 rows that disclose it. The rows fix round 3 regraded
-  for hex-case, block-label and `compatibility.ll` reasons are themselves inside
-  the 220. The section now carries that figure and its derivation.
+  34 — against **3** rows that disclose it, the third being this round's own
+  `debug-info.ll` disclosure (it read 220 / 47 / 2 at `ea57b14`). The rows fix
+  round 3 regraded for hex-case, block-label and `compatibility.ll` reasons are
+  themselves inside the 219. The section now carries that figure and its
+  derivation.
 
 - **`test/Assembler/debug-info.ll` and `diexpression.ll` now run both round
   trips their RUN line spells.** Their first RUN line is
@@ -209,10 +211,12 @@ being weaker is, because it fails on input upstream accepts.
   under `tests/fixtures/upstream/`), plus
   `2002-08-15-ConstantExprProblem.ll`, `debug-info.ll`, `diexpression.ll`,
   `invalid-dilocation-field-bad.ll` and `2008-10-14-QuoteInName.ll`, whose
-  copies were already in the tree. Both counts derived at `ea57b14`:
-  `git diff b369431..HEAD -- '*.rs' | grep '^+' | grep -c 'include_str!("fixtures'`
+  copies were already in the tree. Both counts derived over that round's own
+  commit range, `b369431..ea57b14` — not `..HEAD`, which now also picks up fix
+  round 4's added test:
+  `git diff b369431..ea57b14 -- '*.rs' | grep '^+' | grep -c 'include_str!("fixtures'`
   gives 10, and
-  `git diff --name-status b369431..HEAD -- crates/llvmkit-asmparser/tests/fixtures | grep -c '^A'`
+  `git diff --name-status b369431..ea57b14 -- crates/llvmkit-asmparser/tests/fixtures | grep -c '^A'`
   gives 5. The
   benefit is auditability by one `diff` — `orig_cpp/` is gitignored and no test
   reads it, so this creates no drift gate either way.

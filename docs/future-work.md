@@ -2552,25 +2552,28 @@ use list from a shuffled `uselistorder` directive and compares, so every fixture
 carrying that RUN line is a half-port wherever a row cites it.
 
 **The class is far wider than those two, and almost none of it is disclosed.**
-Measured at `ea57b14`: **220** `UPSTREAM.md` rows cite one of **47** distinct
+Measured at this commit: **219** `UPSTREAM.md` rows cite one of **47** distinct
 upstream `.ll` fixtures whose RUN lines include `verify-uselistorder` without
 naming that line — `test/Bitcode/compatibility.ll` alone accounts for 102 of
-them and `test/Assembler/flags.ll` for 34 — against exactly **2** rows that do
+them and `test/Assembler/flags.ll` for 34 — against exactly **3** rows that do
 disclose it (`parser_function_body.rs::an_unreachable_block_prints_no_predecessors`
 over `2002-08-15-ConstantExprProblem.ll`, and
-`parser_debug_metadata.rs::diexpression_forms_round_trip` over
-`diexpression.ll`). So fix round 3's sweep disclosed the line on the two rows it
+`parser_debug_metadata.rs::diexpression_forms_round_trip` /
+`::metadata_string_hex_escapes_print_uppercase` over `diexpression.ll` and
+`debug-info.ll`). At `ea57b14`, where this measurement was first taken, it read
+220 / 47 / 2; the one-row move is fix round 4's own disclosure on the
+`debug-info.ll` row. So fix round 3's sweep disclosed the line on rows it
 rewrote for other reasons, not on the class; the rows it regraded for hex-case,
-block-label and `compatibility.ll` reasons are themselves inside the 220.
+block-label and `compatibility.ll` reasons are themselves inside the 219.
 `numbered-values.ll` is no longer cited by any row at all, so the pair named
-above is a sweep finding, not a disclosure pair. Derivation, run at `ea57b14`:
+above is a sweep finding, not a disclosure pair. Derivation:
 
 ```bash
 R=orig_cpp/llvm-project-llvmorg-22.1.4/llvm
 grep -o 'test/[A-Za-z0-9_./+-]*\.ll' UPSTREAM.md | sort -u |
   while read -r f; do [ -f "$R/$f" ] &&
     grep -qE '^; *RUN:.*verify-uselistorder' "$R/$f" && echo "$f"; done > ul.txt
-grep '^| `' UPSTREAM.md | grep -v verify-uselistorder | grep -cF -f ul.txt   # 220
+grep '^| `' UPSTREAM.md | grep -v verify-uselistorder | grep -cF -f ul.txt   # 219
 grep '^| `' UPSTREAM.md | grep -v verify-uselistorder |
   grep -oF -f ul.txt | sort -u | wc -l                                      # 47
 ```
