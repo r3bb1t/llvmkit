@@ -2519,12 +2519,15 @@ strictly worse than the symptom the fix round repaired in `check_directives`.
 **Partly done (2026-08-21, `call addrspace(N)` port).** `check_directives`,
 `Check`, `canonicalize_horizontal_whitespace` and `count_newlines_between` now
 live in `crates/llvmkit-asmparser/tests/support/mod.rs`, `mod`-included by
-parser_eh_funclet.rs and parser_calls.rs. That is the shared home this item
-asked for, and it removed the second `canonicalize_horizontal_whitespace` copy.
-What remains is the routing: the `assert_check_lines` copies are untouched and
-`parser_calls.rs` still drives its older fixtures through one.
+parser_eh_funclet.rs, parser_calls.rs and parser_types.rs. That is the shared
+home this item asked for, and `canonicalize_horizontal_whitespace` now has one
+definition rather than two. That port had first added a *fifth*
+`assert_check_lines` copy, in parser_types.rs; its fix round converted that
+file too, so the list above is back to what it was. What remains is the
+routing: those copies are untouched, and parser_calls.rs still drives its older
+fixtures through one.
 
-Five fixtures those files drive carry `CHECK-NEXT` today:
+The fixtures those files drive that carry `CHECK-NEXT` today:
 `insertextractvalue/{extractvalue,insertvalue}_round_trips.ll`,
 `vectorInstructions.3.2/shufflevector_round_trips.ll`,
 `zero-input-phi/phi_int_round_trips.ll`, and
@@ -2533,13 +2536,13 @@ The extractvalue case is the sharpest: upstream is `CHECK: @foo` plus five
 `CHECK-NEXT:`, and a printer regression inserting one line between `@foo` and
 `load` fails upstream and passes here.
 
-The operand-bundle commit (2026-08-20) added a sixth such fixture,
+The operand-bundle commit (2026-08-20) added another such fixture,
 `operand-bundles/operand-bundles.ll`, whose `CHECK-NEXT` and `CHECK-LABEL`
 directives are asserted through `parser_calls.rs::assert_check_lines` as
 ordered `CHECK`es — stated in that test's doc comment rather than hidden. It
 also copied `canonicalize_horizontal_whitespace` into `parser_calls.rs`, since
-that fixture's `CHECK` text carries a doubled space; there are now two copies of
-that routine as well, and the refactor below deletes both.
+that fixture's `CHECK` text carries a doubled space; that copy is gone, and the
+routine now lives only in `support/`.
 
 The work that is left: route the `assert_check_lines` call sites through
 `support::check_directives`, delete the `assert_check_lines` copies, and

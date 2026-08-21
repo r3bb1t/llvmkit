@@ -1,13 +1,22 @@
 //! A faithful two-directive subset of FileCheck, shared by the integration
 //! tests in this directory.
 //!
-//! Items do not cross integration-test binaries, so a routine used by two of
-//! them has to live in a module both `mod`-include. This is the `tests/support/`
-//! home `docs/future-work.md` records; the remaining `assert_check_lines`
-//! copies it is meant to replace are still open there.
+//! Items do not cross integration-test binaries, so a routine used by more than
+//! one of them has to live in a module they each `mod`-include. This is the
+//! `tests/support/` home `docs/future-work.md` records; the remaining
+//! `assert_check_lines` copies it is meant to replace are still open there.
+//!
+//! Each includer compiles its own copy of this module and uses a subset of it —
+//! a fixture whose `CHECK` block writes no `-NEXT` never constructs
+//! [`Check::Next`] — so `dead_code` fires on whatever that binary happens not to
+//! reach. The declaration is therefore `pub mod support;` with `pub` items: this
+//! *is* the API surface the test binaries consume, and saying so is a
+//! visibility statement rather than a lint suppression, which the repo forbids.
+//! Do not narrow it back to `pub(crate)` without giving every includer a reason
+//! to touch every item.
 
 /// One directive of a ported fixture's `CHECK` block.
-pub(crate) enum Check<'a> {
+pub enum Check<'a> {
     /// `; CHECK: <needle>` — `Pattern::match` searches the *remaining buffer*
     /// from the byte cursor, and `FileCheckString::Check` resumes at
     /// `MatchPos + MatchLen`, a byte position still inside the matched line.
@@ -25,7 +34,7 @@ pub(crate) enum Check<'a> {
 /// run of ' ' / '\t' to a single ' '. Upstream applies it to the check file
 /// *and* the input file whenever `--strict-whitespace` is absent, which is the
 /// case for every fixture ported here.
-pub(crate) fn canonicalize_horizontal_whitespace(s: &str) -> String {
+pub fn canonicalize_horizontal_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -104,7 +113,7 @@ fn count_newlines_between(region: &str) -> usize {
 /// `parser_corpus.rs`'s manifest rather than by this harness, which is why they
 /// are not a defect today — and why lifting a needle out of one of them into a
 /// `check_directives` call would silently drop the option it depends on.
-pub(crate) fn check_directives(text: &str, checks: &[Check<'_>]) {
+pub fn check_directives(text: &str, checks: &[Check<'_>]) {
     // `FileCheck::readCheckFile`'s wording, reproduced including its unbalanced
     // quote: `"found '" + UsedPrefix + "-" + Type + "' without previous '" +
     // UsedPrefix + ": line"`.

@@ -52,7 +52,7 @@ fn parse_print_reparse(src: &str) -> (String, String) {
     (first, second)
 }
 
-mod support;
+pub mod support;
 
 use support::{Check, check_directives};
 

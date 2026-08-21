@@ -4,7 +4,7 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
-mod support;
+pub mod support;
 
 // `canonicalize_horizontal_whitespace` is `FileCheck::CanonicalizeFile`
 // (`llvm/lib/FileCheck/FileCheck.cpp`), which is what lets
