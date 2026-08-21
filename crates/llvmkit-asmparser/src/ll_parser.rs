@@ -2521,10 +2521,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// Consume a `(` u32 `)` block. Mirrors `LLParser::parseOptionalAddrSpace`
     /// / its mandatory cousin.
-    /// `addrspace ( <uint32> | "A" | "G" | "P" )`. Mirrors the inner
-    /// `ParseAddrspaceValue` lambda of `LLParser::parseOptionalAddrSpace`.
+    /// `addrspace ( <uint32> | "A" | "G" | "P" | "<datalayout name>" )`.
+    /// Mirrors the inner `ParseAddrspaceValue` lambda of
+    /// `LLParser::parseOptionalAddrSpace`.
     ///
-    /// The three symbolic spellings resolve through the module's data layout,
+    /// Every symbolic spelling resolves through the module's data layout,
     /// which is why `target datalayout` has to have been seen already —
     /// upstream guarantees that by parsing target definitions in their own
     /// pass before any entity.
@@ -2540,12 +2541,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     "A" => layout.alloca_addr_space(),
                     "G" => layout.default_globals_addr_space(),
                     "P" => layout.program_addr_space(),
-                    _ => {
-                        return Err(ParseError::Message {
-                            message: format!("invalid symbolic addrspace '{name}'").into(),
-                            loc: DiagLoc::span(self.loc()),
-                        });
-                    }
+                    // `ParseAddrspaceValue`'s fourth arm:
+                    // `M->getDataLayout().getNamedAddressSpace(AddrSpaceStr)`,
+                    // a name the datalayout itself gave to an address space —
+                    // `p2(global):32:8` makes `addrspace("global")` mean 2.
+                    // Order is load-bearing: `A` / `G` / `P` are tested first,
+                    // so they win over a datalayout name spelled the same way.
+                    _ => match layout.named_address_space(&name) {
+                        Some(addr_space) => addr_space,
+                        None => {
+                            return Err(ParseError::Message {
+                                message: format!("invalid symbolic addrspace '{name}'").into(),
+                                loc: DiagLoc::span(self.loc()),
+                            });
+                        }
+                    },
                 };
                 self.bump()?;
                 resolved
@@ -13733,9 +13743,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let call_loc = self.loc();
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
+        // `LLParser::parseCall` reads the call site's address space here, in
+        // the `||` chain between the return attributes and the callee type.
+        // The position is load-bearing: it decides whether a malformed
+        // `addrspace(...)` or a missing return type is reported first. Absent,
+        // the address space is the datalayout's *program* address space, not 0
+        // (`parseOptionalProgramAddrSpace`).
+        let call_addr_space = self.parse_optional_program_addr_space()?;
         let ret_ty_loc = self.loc();
         let callee_ty = self.parse_type(true)?;
-        let parsed_callee = self.parse_direct_callee_ref(state)?;
+        let parsed_callee = self.parse_direct_callee_ref(state, call_addr_space)?;
         self.expect_punct(PunctKind::LParen, "'(' in call argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
@@ -13816,6 +13833,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
             }
         };
+        // `CalleeID.StrVal` survives `convertValIDToValue` upstream because
+        // `CalleeID` is still live at the dbg guard below; llvmkit's
+        // `ParsedDirectCallee` is consumed by resolution, so the one field that
+        // guard reads is taken first.
+        let callee_global_name = match &parsed_callee {
+            ParsedDirectCallee::Name { name, .. } => Some(name.clone()),
+            _ => None,
+        };
+        // Upstream resolves the callee here — `convertValIDToValue` runs
+        // immediately after `CalleeID.FTy = Ty` and *before* the argument loop
+        // — so a bad callee is reported ahead of a bad argument.
+        let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty, call_addr_space)?;
         self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
         // `LLParser::parseCall`'s FMF guard, with its own wording.
         if !fmf.is_empty() && !is_fp_or_fp_vector_type(parsed_fn_ty.return_type()) {
@@ -13826,7 +13855,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // The old-format half of the debug-info intermix guard. It keys on the
         // callee's *ValID* being a global name, so an indirect call through a
         // pointer that happens to hold `llvm.dbg.value` does not trip it.
-        if let ParsedDirectCallee::Name { name, .. } = &parsed_callee
+        if let Some(name) = &callee_global_name
             && is_old_dbg_format_intrinsic(name)
         {
             if self.seen_new_dbg_info_format {
@@ -13837,7 +13866,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             self.seen_old_dbg_info_format = true;
         }
-        let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let v = match callee {
             ParsedCallee::Function(callee) => {
@@ -14053,10 +14081,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// resolution (forward declarations, intrinsics) still sees names; any
     /// other token parses as a general pointer-typed value (`%fp`, `null`,
     /// `undef`, constants), mirroring `LLParser::parseCall`'s
-    /// `parseValID` + `convertValIDToValue(PointerType)` callee handling.
+    /// `parseValID` + `convertValIDToValue(PointerType::get(Context,
+    /// CallAddrSpace))` callee handling. `LLParser::parseCallBr` is the one
+    /// caller that demands `PointerType::getUnqual(Context)` instead, so
+    /// `callee_addr_space` is the call site's address space and `parse_callbr`
+    /// passes a literal `0`.
     fn parse_direct_callee_ref(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
+        callee_addr_space: u32,
     ) -> ParseResult<ParsedDirectCallee<'ctx, B>> {
         let loc = self.loc();
         match self.peek() {
@@ -14074,17 +14107,32 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             Token::Kw(Keyword::Asm) => Ok(ParsedDirectCallee::InlineAsm(self.parse_inline_asm()?)),
             _ => {
-                let ptr_ty = self.module.ptr_type(0).as_type();
+                // `convertValIDToValue(PointerType::get(Context,
+                // CallAddrSpace), …)`: the callee is looked up *at* the call
+                // site's address space, which is what makes
+                // `PerFunctionState::getVal`'s `checkValidVariableType` reject
+                // `call i8 %fnptr42(…)` under a zero program address space and
+                // accept it under `P42`.
+                let ptr_ty = self.module.ptr_type(callee_addr_space).as_type();
                 let v = self.parse_value(state, ptr_ty)?;
                 Ok(ParsedDirectCallee::Value { v, loc })
             }
         }
     }
 
+    /// Mirrors `convertValIDToValue`'s callee arms: `t_GlobalName` /
+    /// `t_GlobalID` go through `LLParser::getGlobalVal`, `t_InlineAsm` builds
+    /// an `InlineAsm` and ignores `Ty`, and the local arms have already been
+    /// resolved by [`Self::parse_direct_callee_ref`].
+    ///
+    /// `callee_addr_space` is the address space of the `PointerType` upstream
+    /// demands — `PointerType::get(Context, CallAddrSpace)` in `parseCall` /
+    /// `parseInvoke`, `PointerType::getUnqual(Context)` in `parseCallBr`.
     fn resolve_direct_callee(
         &mut self,
         parsed: ParsedDirectCallee<'ctx, B>,
         parsed_fn_ty: llvmkit_ir::FunctionType<'ctx, B>,
+        callee_addr_space: u32,
     ) -> ParseResult<ParsedCallee<'ctx, B>> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
@@ -14093,6 +14141,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .function_dyn(&name)
                     .map(|id| self.module.view(id))
                 {
+                    // `getGlobalVal(Name, Ty, Loc)`: a symbol-table (or
+                    // forward-ref-table) hit goes through
+                    // `checkValidVariableType(Loc, "@" + Name, Ty, Val)` before
+                    // anything else looks at it. `Val->getType()` is
+                    // `GlobalValue::getType` — `PointerType::get(C,
+                    // GV->getAddressSpace())` — which llvmkit rebuilds from the
+                    // function's own address space, because a global's arena
+                    // type here is its *value* type (`docs/divergences.md` D3).
+                    check_valid_variable_type(
+                        loc,
+                        &format!("@{name}"),
+                        self.module.ptr_type(callee_addr_space).as_type(),
+                        self.module.ptr_type(f.address_space()).as_type(),
+                    )?;
                     match resolve_intrinsic_name(&name) {
                         // A non-intrinsic direct callee resolves to the
                         // function regardless of whether the call-site type
@@ -14147,7 +14209,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             .module
                             .get_or_insert_intrinsic_declaration(&descriptor)
                             .map_err(|e| self.intrinsic_parse_error(loc, e))?;
-                        Ok(ParsedCallee::Function(self.module.view(f)))
+                        let f = self.module.view(f);
+                        // See the non-intrinsic miss arm below:
+                        // `createGlobalFwdRef(M, PTy)` mints the placeholder at
+                        // the *demanded* pointer type's address space.
+                        f.set_address_space(self.module, callee_addr_space);
+                        Ok(ParsedCallee::Function(f))
                     }
                     IntrinsicNameResolution::UnknownIntrinsic => Err(ParseError::Expected {
                         expected: "unknown intrinsic".into(),
@@ -14161,24 +14228,49 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                                 expected: format!("forward function declaration: {e}").into(),
                                 loc: DiagLoc::span(loc),
                             })?;
+                        let f = self.module.view(f);
+                        // `createGlobalFwdRef(M, PTy)` mints the placeholder at
+                        // the *demanded* pointer type's address space, so a
+                        // later reference at a different one mismatches. Under
+                        // `target datalayout = "P42"` a `call void @f()` with no
+                        // `addrspace` keyword therefore forward-declares `@f` at
+                        // 42, not at 0.
+                        //
+                        // llvmkit declares an unseen intrinsic here rather than
+                        // deferring to `validateEndOfModule`
+                        // (`docs/divergences.md` entry 37); that arm above uses
+                        // the same address space for the same reason — it is
+                        // standing in for `getGlobalVal`.
+                        f.set_address_space(self.module, callee_addr_space);
                         self.forward_function_decls.entry(name).or_insert(loc);
-                        Ok(ParsedCallee::Function(self.module.view(f)))
+                        Ok(ParsedCallee::Function(f))
                     }
                 }
             }
-            ParsedDirectCallee::Id { id, loc } => self
-                .numbered_globals
-                .get(id)
-                .and_then(|r| match r {
-                    GlobalRef::Function(f) => Some(*f),
-                    _ => None,
-                })
-                .map(ParsedCallee::Function)
-                .ok_or_else(|| ParseError::UndefinedSymbol {
-                    kind: SymbolKind::Global,
-                    id: SymbolId::Numbered(id),
-                    loc: DiagLoc::span(loc),
-                }),
+            ParsedDirectCallee::Id { id, loc } => {
+                let f = self
+                    .numbered_globals
+                    .get(id)
+                    .and_then(|r| match r {
+                        GlobalRef::Function(f) => Some(*f),
+                        _ => None,
+                    })
+                    .ok_or_else(|| ParseError::UndefinedSymbol {
+                        kind: SymbolKind::Global,
+                        id: SymbolId::Numbered(id),
+                        loc: DiagLoc::span(loc),
+                    })?;
+                // `getGlobalVal(unsigned ID, Ty, Loc)` -> `checkValidVariableType(
+                // Loc, "@" + Twine(ID), Ty, Val)`. See the named arm above for
+                // why this reduces to an address-space comparison.
+                check_valid_variable_type(
+                    loc,
+                    &format!("@{id}"),
+                    self.module.ptr_type(callee_addr_space).as_type(),
+                    self.module.ptr_type(f.address_space()).as_type(),
+                )?;
+                Ok(ParsedCallee::Function(f))
+            }
             ParsedDirectCallee::InlineAsm(data) => Ok(ParsedCallee::InlineAsm({
                 // `convertValIDToValue`'s `t_InlineAsm` arm verifies before it
                 // constructs, and prints `InlineAsm::verify`'s message as-is.
@@ -14839,9 +14931,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let call_loc = self.loc();
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
+        // `LLParser::parseInvoke` carries its own `parseOptionalProgramAddrSpace`
+        // (upstream's `InvokeAddrSpace`) in the same slot `parseCall` does:
+        // between the return attributes and the callee type.
+        let invoke_addr_space = self.parse_optional_program_addr_space()?;
         let ret_ty_loc = self.loc();
         let callee_ty = self.parse_type(true)?;
-        let parsed_callee = self.parse_direct_callee_ref(state)?;
+        let parsed_callee = self.parse_direct_callee_ref(state, invoke_addr_space)?;
         self.expect_punct(PunctKind::LParen, "'(' in invoke argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
@@ -14909,8 +15005,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
             }
         };
+        // `parseInvoke` resolves the callee before the argument loop, exactly
+        // as `parseCall` does.
+        let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty, invoke_addr_space)?;
         self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
-        let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let (_, inst) = match callee {
             ParsedCallee::Function(callee) => b
@@ -14980,7 +15078,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let return_attrs = self.parse_optional_return_attrs()?;
         let ret_ty_loc = self.loc();
         let callee_ty = self.parse_type(true)?;
-        let parsed_callee = self.parse_direct_callee_ref(state)?;
+        // `LLParser::parseCallBr` has no `parseOptionalProgramAddrSpace` — its
+        // `||` chain goes return-attrs -> `parseType` — and resolves the callee
+        // with `convertValIDToValue(PointerType::getUnqual(Context), …)`, i.e.
+        // address space 0 whatever the datalayout says. Written out here so the
+        // asymmetry with `parseCall` / `parseInvoke` is visible at the call
+        // site rather than hidden in a callee helper's default.
+        let callbr_addr_space = 0;
+        let parsed_callee = self.parse_direct_callee_ref(state, callbr_addr_space)?;
         self.expect_punct(PunctKind::LParen, "'(' in callbr argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
@@ -15066,8 +15171,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
             }
         };
+        // `parseCallBr` resolves the callee before the argument loop, exactly
+        // as `parseCall` does.
+        let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty, callbr_addr_space)?;
         self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
-        let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let (_, inst) = match callee {
             ParsedCallee::Function(callee) => b
@@ -15375,24 +15482,40 @@ impl LocalRef<'_> {
 /// Mirrors `LLParser::checkValidVariableType`: a name that resolves to a
 /// value of the wrong type is an error, worded one way when a `label` was
 /// wanted and another way otherwise.
+///
+/// Two spelling changes from upstream, both forced:
+///
+/// - upstream takes the `Value *` and opens with `Type *ValTy =
+///   Val->getType();`. That statement is hoisted to the caller here, because a
+///   global object's arena type in llvmkit is its **value** type
+///   (`GlobalValue::getValueType`) while upstream's `Val->getType()` for a
+///   `GlobalValue` is the pointer `GlobalValue::getType` builds —
+///   `PointerType::get(C, GV->getAddressSpace())`. Callers holding a global
+///   rebuild that pointer; see `docs/divergences.md` D3.
+/// - upstream returns `Val` or `nullptr`, and every caller turns the null into
+///   `return true`. Here the sentinel is the `Err`, and the caller keeps the
+///   value it already had.
+///
+/// `name` is the sigil-prefixed spelling upstream quotes: `"%" + Name` /
+/// `"%" + Twine(ID)` from `PerFunctionState::getVal`, `"@" + Name` /
+/// `"@" + Twine(ID)` from `getGlobalVal`.
 fn check_valid_variable_type<'ctx, B: ModuleBrand + 'ctx>(
     loc: Span,
-    reference: LocalRef<'_>,
+    name: &str,
     ty: Type<'ctx, B>,
-    value: llvmkit_ir::Value<'ctx, B>,
-) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-    let value_ty = value.ty();
+    value_ty: Type<'ctx, B>,
+) -> ParseResult<()> {
     if value_ty == ty {
-        return Ok(value);
+        return Ok(());
     }
     if ty.is_label() {
         return Err(ParseError::NotABasicBlock {
-            name: reference.display(),
+            name: name.to_owned(),
             loc: DiagLoc::span(loc),
         });
     }
     Err(ParseError::DefinedWithWrongType {
-        name: reference.display(),
+        name: name.to_owned(),
         defined: value_ty.to_string(),
         expected: ty.to_string(),
         loc: DiagLoc::span(loc),
@@ -15811,7 +15934,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 }),
         };
         if let Some(value) = existing {
-            return check_valid_variable_type(loc, reference, ty, value);
+            // `checkValidVariableType(Loc, "%" + Name, Ty, Val)` —
+            // `LocalRef::display` produces upstream's `%name` / `%N` spelling.
+            check_valid_variable_type(loc, &reference.display(), ty, value.ty())?;
+            return Ok(value);
         }
         // "Don't make placeholders with invalid type" — upstream refuses a
         // sentinel it could not give a type to.

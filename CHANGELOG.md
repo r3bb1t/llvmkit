@@ -19,6 +19,84 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### `call addrspace(N)` and `invoke addrspace(N)` parse and print (divergence 12)
+
+Breaking for anyone who prints a module whose `target datalayout` sets a
+non-zero program address space: every `call` and `invoke` in such a module now
+carries an explicit `addrspace(...)`, including `addrspace(0)`. That is
+`AssemblyWriter`'s `ForcePrintAddrSpace` rule, and it is what makes the printed
+file re-parse without its datalayout string. A module whose program address
+space is zero prints byte-identically.
+
+- **Added: `LLParser::parseOptionalProgramAddrSpace` at its two missing call
+  sites.** `LLParser::parseCall` and `LLParser::parseInvoke` read the call
+  site's address space between the return attributes and the callee type;
+  llvmkit had the routine (it was already wired into `declare` / `define`) but
+  neither call site, so the keyword was a hard syntax error. `parseCallBr` does
+  **not** have it — it resolves its callee with
+  `PointerType::getUnqual(Context)` whatever the datalayout says — and llvmkit's
+  `parse_callbr` already matched; the tree now spells that asymmetry out at the
+  call site instead of leaving it implicit in a callee helper's default.
+
+- **Fixed: the expected callee type was hard-coded to address space 0.** Even
+  with no `addrspace` keyword, upstream looks the callee up at
+  `PointerType::get(Context, CallAddrSpace)`, which defaults to the datalayout's
+  *program* address space. `parse_direct_callee_ref` asked for `ptr` every time,
+  so under `target datalayout = "P42"` a perfectly good
+  `call i8 %fnptr42(i32 0)` was rejected with
+  `'%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'`.
+
+- **Added: the direct-callee half of `LLParser::checkValidVariableType`.** A
+  `@name` or `@N` callee is now compared against the call site's address space,
+  the way `LLParser::getGlobalVal` compares `GlobalValue::getType` against the
+  demanded `PointerType`, and a forward-referenced callee is created *at* that
+  address space, the way `createGlobalFwdRef(M, PTy)` does.
+
+- **Changed: the callee is resolved before the argument loop.** Upstream runs
+  `convertValIDToValue` immediately after `resolveFunctionType` and only then
+  walks the arguments. llvmkit had the two the other way round in all three
+  call-family routines, which was invisible while callee resolution could not
+  fail and is not any more.
+
+- **Added: `printAddressSpace` and `maybePrintCallAddrSpace`
+  (`lib/IR/AsmWriter.cpp`) as named ports.** The address space is not stored on
+  the instruction — upstream re-derives it from the callee operand's pointer
+  type, and so does llvmkit. `AsmWriter`'s other three address-space emissions
+  (`alloca`, function header, global variable) now route through the same
+  helper instead of three inline `write!`s. The `ptr addrspace(N)` emission in
+  `Type`'s `Display` is deliberately left where it is: it lives in a different
+  module, its behaviour is already correct, and moving a private `asm_writer`
+  helper across that boundary is churn this change does not need.
+
+- **Added: `DataLayout::getNamedAddressSpace` on the parse side.**
+  `addrspace("global")` under `target datalayout = "...-p2(global):32:8-..."`
+  now resolves to 2. It is the fourth arm of
+  `LLParser::parseOptionalAddrSpace`'s `ParseAddrspaceValue` lambda; llvmkit
+  implemented `A` / `G` / `P` and fell straight through to
+  `invalid symbolic addrspace '...'`. The data was already modelled
+  (`DataLayout::named_address_space`); only the consumption was missing.
+
+- **Closed: `docs/divergences.md` entry 12.**
+  `test/Assembler/call-nonzero-program-addrspace.ll`,
+  `call-nonzero-program-addrspace-2.ll` and
+  `invoke-nonzero-program-addrspace.ll` are now corpus fixtures, and
+  `symbolic-addrspace.ll`'s `valid.ll` part and
+  `symbolic-addrspace-datalayout.ll`'s `sym-to-num.ll` part join them.
+
+- **Recorded, not fixed:** two new `docs/divergences.md` entries.
+  `convert_val_id_to_value` anchors its diagnostics at the token *after* the
+  ValID rather than at upstream's `ID.Loc` (entry 123), which is why the three
+  new reject rows carry `error=` without `loc=`. And `resolve_direct_callee`
+  looks up only functions, so an **ifunc** callee is still not resolvable
+  (entry 122) — which is what now blocks
+  `test/Assembler/ifunc-program-addrspace.ll`, on a different gap than before.
+  A third residual is a missing *feature*, not a behavioural difference, and
+  stays in `docs/fixture-coverage.md` as the narrowed gap **G6**:
+  `printAddressSpace`'s `PrintAddrspaceName` branch prints
+  `addrspace("global")` instead of `addrspace(2)`, and its `static
+  cl::opt<bool>` trigger has no counterpart in a library with no printer-option
+  layer.
+
 ### Vector `getelementptr` instructions are constructible (divergences 5 / 9 / 17)
 
 A vector-of-pointers base and vector indices are valid LLVM IR that llvmkit

@@ -19,15 +19,22 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2545 (2540 distinct names). Recounted on 2026-08-21
-at the vector-`getelementptr` fix round via the documented
+Total `#[test]` functions: 2552 (2547 distinct names). Recounted on 2026-08-21
+at the `call addrspace(N)` / `invoke addrspace(N)` port via the documented
 attribute-anchored grep below
-(`crates/llvmkit-ir` 1565 + `crates/llvmkit-asmparser` 958 +
+(`crates/llvmkit-ir` 1565 + `crates/llvmkit-asmparser` 965 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
 `crates/llvmkit-macros` has none). The distinct-name total comes from the same
 attribute anchor followed to the next `fn` line:
 `awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2545 before `-u`, so the two matchers agree. The +6
+— which also reproduces 2552 before `-u`, so the two matchers agree. The +7
+over the 2545 point before it is the `call addrspace(N)` / `invoke
+addrspace(N)` port: five `parser_calls.rs` tests — one per `RUN` line of the
+three vendored `*-nonzero-program-addrspace` fixtures, with the two `RUN` lines
+of `call-nonzero-program-addrspace.ll` split across two tests and the other two
+fixtures taking one test each, plus one for `parseCallBr`'s *absence* of an
+address space — and two `parser_types.rs` tests for the two newly registered
+`symbolic-addrspace*` split parts. The +6
 over the 2539 point before it is the vector-`getelementptr` work: two builder
 tests for `GetElementPtrInst::getGEPReturnType` and its `getIndexedType` gate,
 two parser tests for the printed form of a vector GEP instruction, and two
@@ -48,14 +55,14 @@ that is the two printer-parity commits — 6 for basic-block printing and
 ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
 program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2545 passed, 0 failed across 214 test binaries.
+this commit reports 2552 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2112 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2119 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2104 rows give provenance for **2220 of
-the 2540 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2111 rows give provenance for **2227 of
+the 2547 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -1157,6 +1164,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_types.rs::aggregate_element_type_disagreement_is_numbered` | the element-agreement loops in `parseValID`'s `less` / `lsquare` arms — `vector element #N is not of type 'T` and the array twin, verbatim *including upstream's unbalanced quote* | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::an_empty_array_initializer_needs_a_zero_length_array` | `ValID::t_EmptyArray` and its check in `convertValIDToValue` — `invalid empty array initializer`, verbatim | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::struct_initializer_shape_is_checked` | the shared `t_ConstantStruct` / `t_PackedConstantStruct` arm of `convertValIDToValue`, all four messages verbatim and in upstream's order — element count, `packed'ness of initializer and type don't match`, per-element type, and the bare `constant expression type mismatch` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_types.rs::symbolic_a_g_p_address_spaces_resolve_including_on_a_call` | `test/Assembler/symbolic-addrspace.ll` `split-file` part `valid.ll`, vendored with `--leading-lines` padding; `LLParser::parseOptionalAddrSpace`'s `A` / `G` / `P` arms reached from a global, an `alloca`, a function header and a `call` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_types.rs::datalayout_named_address_spaces_resolve_to_their_numbers` | `test/Assembler/symbolic-addrspace-datalayout.ll` `split-file` part `sym-to-num.ll`, vendored with `--leading-lines` padding; the rule is `LLParser::parseOptionalAddrSpace`'s `DataLayout::getNamedAddressSpace` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::invalid_numbered_var_reports_the_defining_type` | `test/Assembler/2007-03-18-InvalidNumberedVar.ll`, fixture verbatim, asserting its CHECK line in full (`LLParser::checkValidVariableType`) | port |
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_local_forward_reference_resolves` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::getVal` / `setInstName`. **Provenance fix:** the test this replaces cited `test/Assembler/2009-02-01-UnnamedForwardRef.ll` while asserting the opposite verdict; that fixture is a passing *global* forward reference (`@X = global ptr @0`) and is ported with the module-level half | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::named_local_forward_reference_resolves` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::getVal` / `setInstName`, named branch (`ForwardRefVals`); no standalone upstream fixture | llvmkit-specific (rule anchor) |
@@ -1283,7 +1292,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_round_trips` | `test/Assembler/pr119818.ll`; `test/Assembler/uselistorder_bb.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_uses_function_address_space` | `llvm/lib/IR/Constants.cpp::BlockAddress::get(Function*, BasicBlock*)` uses the parent function pointer type | mirror |
 | `crates/llvmkit-ir/tests/constants_expr.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` over 506 fixtures; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`, one row per upstream file or `split-file` part, and the classification of the whole of `llvm/test/Assembler` (500 fixtures, ported / blocked-model / N/A) in `docs/fixture-coverage.md` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` over 511 fixtures; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`, one row per upstream file or `split-file` part, and the classification of the whole of `llvm/test/Assembler` (500 fixtures, ported / blocked-model / N/A) in `docs/fixture-coverage.md` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_linkage_definition_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` linkage prefix | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_local_unnamed_addr_round_trips` | `test/Assembler/unnamed-addr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` optional unnamed-address arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::extern_weak_declaration_with_unnamed_addr_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` declaration linkage validation | mirror |
@@ -2261,6 +2270,11 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/attribute_td_drift.rs::complex_str_attributes_are_typed` | no upstream counterpart — pins the `ComplexStrAttr` set of the vendored `llvm/include/llvm/IR/Attributes.td` to the two keys llvmkit types via `DenormalMode` (`llvm/lib/IR/Function.cpp::Function::getDenormalModeRaw` / `getDenormalModeF32Raw`), so a new upstream `ComplexStrAttr` demands a typed reader | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/fixed_metadata_kinds_drift.rs` (both: `vendored_fixed_metadata_kinds_def_is_parseable`, `every_fixed_metadata_kind_has_a_matching_variant`) | no upstream counterpart — `LLVMContext::LLVMContext` (`llvm/lib/IR/LLVMContext.cpp`) registers the fixed kinds by `#include`-ing `llvm/include/llvm/IR/FixedMetadataKinds.def`, so upstream structurally cannot drift; the vendored `.def` is the anchor, checked entry-by-entry against `MetadataAttachmentKind::{from_name, name, fixed_id}` | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::deactivation_symbol_bundle_round_trips` | `test/Transforms/PreISelIntrinsicLowering/protected-field-pointer.ll`, the `NOPAUTH`-lowered call shape (checked-in fixture excerpt; the source-level `@llvm.protected.field.ptr` callee is not modeled, the plain lowered call carries the identical bundle); tag spelling from `knownBundleName` / `LLVMContext::OB_deactivation_symbol` (`llvm/lib/IR/LLVMContext.cpp`) | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_in_zero_program_addrspace_rejects_a_nonzero_callee` | `test/Assembler/call-nonzero-program-addrspace.ll` first `RUN` line (`not llvm-as`), fixture vendored verbatim; the rule is `LLParser::parseCall`'s `convertValIDToValue(PointerType::get(Context, CallAddrSpace), ...)` reaching `PerFunctionState::getVal` and `LLParser::checkValidVariableType` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_addrspace_round_trips_under_a_nonzero_program_addrspace` | `test/Assembler/call-nonzero-program-addrspace.ll` second `RUN` line and its `PROGAS42` prefix, with `-data-layout=P42` supplied through `ParserConfig::data_layout_callback` as `tools/llvm-as/llvm-as.cpp` supplies `ClDataLayout`; `LLParser::parseOptionalProgramAddrSpace` and `AssemblyWriter`'s `maybePrintCallAddrSpace` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::numbered_callee_addrspace_matches_upstream_in_both_program_addrspaces` | `test/Assembler/call-nonzero-program-addrspace-2.ll`, both `RUN` lines, fixture vendored verbatim; `LLParser::parseValID`'s `t_LocalID` arm and `PerFunctionState::getVal(unsigned, ...)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::invoke_addrspace_matches_upstream_in_both_program_addrspaces` | `test/Assembler/invoke-nonzero-program-addrspace.ll`, both `RUN` lines, fixture vendored verbatim; `LLParser::parseInvoke`'s `InvokeAddrSpace` and `AssemblyWriter`'s `InvokeInst` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::callbr_does_not_accept_an_address_space` | `LLParser::parseCallBr`, whose `\|\|` chain has no `parseOptionalProgramAddrSpace` and whose callee lookup is `convertValIDToValue(PointerType::getUnqual(Context), ...)`; `AssemblyWriter`'s `CallBrInst` arm has no `maybePrintCallAddrSpace` — LLVM 22.1.4 ships no fixture pinning that absence, so the routine is the anchor | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fence_syncscope_system_round_trips` | no upstream `.ll` fixture locks the spelling — the anchor is `LLVMContext::LLVMContext`'s sync-scope seeding (`llvm/lib/IR/LLVMContext.cpp`): only `"singlethread"` and `""` map to the well-known IDs, so `syncscope("system")` is an ordinary named scope and must round-trip as text | llvmkit-specific |
 | `crates/llvmkit-ir/tests/parameter_attributes.rs::str_bool_attribute_reads_true_false_and_absent` | no upstream unittest drives it directly — functional reference `llvm/lib/IR/Attributes.cpp::Attribute::getValueAsBool` (`true` iff the value text is `"true"`; upstream asserts the stored text is `""`, `"false"`, or `"true"`, and folds absence into `false`, which llvmkit keeps distinguishable as `None`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/module_flags.rs::set_module_flag` | `llvm/unittests/IR/ModuleTest.cpp::TEST(ModuleTest, setModuleFlag)` — same key, same `MDString` values, same absent→`Val1`→`Val2` sequence; upstream's `Metadata*` pointer equality is `MetadataId` equality here because `metadata_string` interns | port |

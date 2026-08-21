@@ -934,6 +934,92 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
     expr.result_ty
 }
 
+/// Mirrors `printAddressSpace` (`lib/IR/AsmWriter.cpp`).
+///
+/// One branch of the upstream routine is **not** ported: the
+/// `PrintAddrspaceName && M ? M->getDataLayout().getAddressSpaceName(AS) : ""`
+/// path that prints `addrspace("global")` instead of `addrspace(2)`.
+/// `PrintAddrspaceName` is `static cl::opt<bool> PrintAddrspaceName(
+/// "print-addrspace-name", cl::Hidden, cl::init(false), …)`; llvmkit has no
+/// command-line-option layer for a printer, so the branch has no reachable
+/// trigger and upstream's `M` parameter — which exists only to feed it — is
+/// dropped. The data is modelled (`DataLayout::address_space_name`); only the
+/// option surface is not. Recorded as gap **G6** in
+/// `docs/fixture-coverage.md`, which is where an unimplemented *feature*
+/// belongs — with the flag at its `cl::init(false)` default the printed bytes
+/// match, so it is not a behavioural divergence.
+fn print_address_space(
+    f: &mut fmt::Formatter<'_>,
+    addr_space: u32,
+    prefix: &str,
+    suffix: &str,
+    force_print: bool,
+) -> fmt::Result {
+    if addr_space == 0 && !force_print {
+        return Ok(());
+    }
+    write!(f, "{prefix}addrspace({addr_space}){suffix}")
+}
+
+/// `Value::getType()->getPointerAddressSpace()` for a call-family callee
+/// operand, as `maybePrintCallAddrSpace` reads it.
+///
+/// llvmkit stores a global object's arena type as its **value** type
+/// (`GlobalValue::getValueType`), not as the pointer `GlobalValue::getType`
+/// hands back, so for a global the address space comes from the object's own
+/// field (`docs/divergences.md` D3). An `InlineAsm` callee is address space 0
+/// because `InlineAsm::InlineAsm` builds it with
+/// `PointerType::getUnqual(FTy->getContext())`. Everything else — an SSA
+/// pointer value, or the interned `GlobalValueRef` constant, whose arena type
+/// is already `GlobalValue::getType`'s pointer — reads its own type.
+///
+/// `None` means the operand is not pointer-typed. The builders make that
+/// unconstructible (`call_builder` takes a `FunctionValue`, `indirect_call_dyn`
+/// a `PointerValue`, `inline_asm_call` an `InlineAsm`), so it is llvmkit's
+/// stand-in for upstream's `Operand == nullptr` guard, which a `Cell<ValueSlot>`
+/// can never satisfy.
+fn callee_pointer_address_space<B: ModuleBrand>(
+    module: ModuleView<'_, B>,
+    callee: ValueSlot,
+) -> Option<u32> {
+    let data = module.context().value_data(callee);
+    match &data.kind {
+        ValueKindData::Function(function) => Some(*function.address_space.borrow()),
+        ValueKindData::GlobalAlias(alias) => Some(alias.address_space),
+        ValueKindData::GlobalIfunc(ifunc) => Some(ifunc.address_space),
+        ValueKindData::GlobalVariable(global) => Some(global.address_space),
+        ValueKindData::InlineAsm(_) => Some(0),
+        _ => match module.context().type_data(data.ty) {
+            TypeData::Pointer { addr_space } => Some(*addr_space),
+            _ => None,
+        },
+    }
+}
+
+/// Mirrors `maybePrintCallAddrSpace` (`lib/IR/AsmWriter.cpp`), whose only two
+/// callers are the `CallInst` and `InvokeInst` arms of
+/// `AssemblyWriter::printInstruction` — never `CallBrInst`, which resolves its
+/// callee at address space 0 unconditionally.
+///
+/// Nothing is stored on the instruction: the address space is re-derived from
+/// the callee operand's pointer type, exactly as upstream does.
+fn maybe_print_call_addr_space<B: ModuleBrand>(
+    f: &mut fmt::Formatter<'_>,
+    module: ModuleView<'_, B>,
+    callee: ValueSlot,
+) -> fmt::Result {
+    let Some(call_addr_space) = callee_pointer_address_space(module, callee) else {
+        return f.write_str(" <cannot get addrspace!>");
+    };
+
+    // We print the address space of the call if it is non-zero. We also print
+    // it if it is zero but not equal to the program address space, so the
+    // resulting file parses even without a datalayout string. llvmkit has no
+    // `!Mod` case: an instruction always has a module.
+    let force_print_addr_space = module.data_layout().program_addr_space() != 0;
+    print_address_space(f, call_addr_space, " ", "", force_print_addr_space)
+}
+
 fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Type<'ctx, B> {
     match &value.data().kind {
         ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
@@ -1951,12 +2037,10 @@ fn fmt_alloca(
     if let Some(al) = a.align.align() {
         write!(f, ", align {}", al.value())?;
     }
-    // Mirrors AsmWriter's AllocaInst arm: the address space is printed
-    // (after align) only when non-zero.
-    if a.addr_space != 0 {
-        write!(f, ", addrspace({})", a.addr_space)?;
-    }
-    Ok(())
+    // Mirrors AsmWriter's AllocaInst arm:
+    // `printAddressSpace(AI->getModule(), AI->getAddressSpace(), Out,
+    // /*Prefix=*/", ")` — empty suffix, no force.
+    print_address_space(f, a.addr_space, ", ", "", false)
 }
 
 fn fmt_load(
@@ -2069,15 +2153,25 @@ fn fmt_call(
     if !fmf.is_empty() {
         write!(f, " {fmf}")?;
     }
-    f.write_str(" ")?;
+    // Upstream's `CallInst` arm writes a *leading* space with each optional
+    // piece — `if (…) { Out << " "; printCallingConv(…); }`,
+    // `if (PAL.hasRetAttrs()) Out << ' ' << …` — and only then the single
+    // `Out << ' '` that precedes the type. llvmkit used to front-load that
+    // space instead; the byte stream is the same either way, but
+    // `maybePrintCallAddrSpace` sits between the return attributes and the
+    // type and calls `printAddressSpace` with `Prefix=" "`, so the separator
+    // has to belong to each piece for the port to be 1:1.
     if c.calling_conv != crate::CallingConv::C {
-        write!(f, "{} ", c.calling_conv)?;
+        write!(f, " {}", c.calling_conv)?;
     }
     let module = inst.module();
-    fmt_attribute_set(f, c.attrs.return_attrs(), AttrIndex::Return, false, module)?;
     if c.attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
+    fmt_attribute_set(f, c.attrs.return_attrs(), AttrIndex::Return, false, module)?;
+    // Only print addrspace(N) if necessary:
+    maybe_print_call_addr_space(f, module, c.callee.get())?;
+    f.write_str(" ")?;
     // LLVM prints the callee function type for varargs call sites so the
     // fixed parameter prefix is preserved (`call i32 (ptr, ...) @printf(...)`).
     // Non-varargs direct calls keep the compact result-type spelling.
@@ -2527,15 +2621,19 @@ fn fmt_invoke(
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `invoke [<cc>] <ret-ty> <callee>(<args>)\n          to label %normal unwind label %unwind`
-    f.write_str("invoke ")?;
+    f.write_str("invoke")?;
+    // Leading-space convention, and why — see `fmt_call`.
     if d.calling_conv != crate::CallingConv::C {
-        write!(f, "{} ", d.calling_conv)?;
+        write!(f, " {}", d.calling_conv)?;
     }
     let module = inst.module();
-    fmt_attribute_set(f, d.attrs.return_attrs(), AttrIndex::Return, false, module)?;
     if d.attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
+    fmt_attribute_set(f, d.attrs.return_attrs(), AttrIndex::Return, false, module)?;
+    // Only print addrspace(N) if necessary:
+    maybe_print_call_addr_space(f, module, d.callee.get())?;
+    f.write_str(" ")?;
     // LLVM prints the callee function type for varargs call sites so the
     // fixed parameter prefix is preserved; non-varargs call sites keep the
     // compact result-type spelling (same rule as `fmt_call`).
@@ -3248,9 +3346,7 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
     // prints without its `addrspace(0)` and re-parses into the program address
     // space instead. llvmkit has no `!Mod` case: a function always has one.
     let force_address_space = func.module().data_layout().program_addr_space() != 0;
-    if func.address_space() != 0 || force_address_space {
-        write!(f, " addrspace({})", func.address_space())?;
-    }
+    print_address_space(f, func.address_space(), " ", "", force_address_space)?;
     for group in func.function_attr_groups() {
         write!(f, " #{group}")?;
     }
@@ -3834,11 +3930,9 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         f.write_str(" ")?;
     }
 
-    // Address space. Mirrors `printAddressSpace(M, AS, Out, "",
-    // " ")` for non-zero AS.
-    if g.address_space() != 0 {
-        write!(f, "addrspace({}) ", g.address_space())?;
-    }
+    // Mirrors `printAddressSpace(GV->getParent(),
+    // GV->getType()->getAddressSpace(), Out, /*Prefix=*/"", /*Suffix=*/" ")`.
+    print_address_space(f, g.address_space(), "", " ", false)?;
 
     if g.is_externally_initialized() {
         f.write_str("externally_initialized ")?;

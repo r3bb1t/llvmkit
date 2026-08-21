@@ -6,8 +6,8 @@ exceptions and no sampling.**
 
 | Class | Fixtures | Meaning |
 |---|---|---|
-| `ported` | 401 | Every unit of the fixture runs in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`, driven by `parser_corpus.rs`. |
-| `blocked-model` | 98 | At least one unit is held back by a named llvmkit gap. The gap is named per row and catalogued below. |
+| `ported` | 405 | Every unit of the fixture runs — normally as a row in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` driven by `parser_corpus.rs`, and where upstream's `RUN` line passes a flag the manifest has no spelling for, in a named test the row's Detail column points at. |
+| `blocked-model` | 94 | At least one unit is held back by a named llvmkit gap. The gap is named per row and catalogued below. |
 | `N/A` | 1 | The fixture's contract needs a tool or flag llvmkit does not model, and there is nothing left about the parse for llvmkit to assert. |
 
 ## How this was measured
@@ -107,8 +107,7 @@ Each `blocked-model` row names one of these.
 | **G2** | 5 | Target-specific intrinsic tables (`llvm.amdgcn.*`, `llvm.nvvm.*`, `llvm.wasm.*`, `llvm.aarch64.*`) are not modelled. |
 | **G3** | 6 | An unknown `llvm.`-prefixed declaration is rejected; `LLParser::parseFunctionHeader` keeps it and leaves the complaint to the Verifier. |
 | **G4** | 5 | An alias/ifunc aliasee may be a constant expression (`getelementptr`, `addrspacecast`); llvmkit's `parse_alias_or_ifunc` sends everything through the TYPE VALUE branch where `LLParser::parseAliasOrIFunc` branches on the aliasee's *first token* and routes those keywords through a bare `parseValID`. This is the "self-typed aliasee does not parse" entry already in [`future-work.md`](future-work.md), and these five fixtures are what it costs. |
-| **G5** | 4 | `call`/`invoke` do not accept `addrspace(N)` — upstream's `parseOptionalProgramAddrSpace` on a call site, and `maybePrintCallAddrSpace` on the printer side. Already in [`divergences.md`](divergences.md) with a verified correction (`callbr` is *not* part of it). |
-| **G6** | 2 | Symbolic address spaces (`addrspace("global")`, datalayout `A`/`G`/`P` names, `llvm-dis --print-addrspace-name`) are not modelled. |
+| **G6** | 1 | Symbolic address-space **printing** (`llvm-dis --print-addrspace-name=true`) is not modelled: `printAddressSpace`'s `PrintAddrspaceName` branch is `static cl::opt<bool>`-gated and llvmkit has no printer-option layer, so it has no reachable trigger. Parsing `addrspace("A"/"G"/"P")` and `addrspace("<datalayout name>")` is ported, and the data the branch would print is modelled (`DataLayout::address_space_name`). |
 | **G7** | 0 | *Closed.* `getelementptr` with a vector-of-pointers base or vector indices is now modelled (`IrBuilder::gep_erased`, `GetElementPtrInst::getGEPReturnType`). The gap letter is kept so the numbering of the others is stable. |
 | **G8** | 3 | Metadata fields that take a value or a brace list (`!DITemplateValueParameter(value: i32 7)`, `!GenericDINode(operands: {...})`) are not parsed. |
 | **G9** | 2 | Metadata strings and metadata names are required to be UTF-8; LLVM allows arbitrary bytes. |
@@ -125,6 +124,7 @@ Each `blocked-model` row names one of these.
 | **G20** | 2 | A function or global used as a `ptr` constant keeps its function type instead of pointer type, so the print does not re-parse. |
 | **G21** | 1 | `!DIFile(source: ...)` and neighbouring fields in a summary-bearing module are not accepted. |
 | **G22** | 2 | llvmkit's Verifier does not exempt **unreachable** blocks: `Verifier::verifyDominatesUse` returns early when `!DT.isReachableFromEntry(...)`, so upstream accepts a self-referencing or out-of-order instruction in a block with no path from entry, and llvmkit rejects it. |
+| **G23** | 1 | A `call` / `invoke` / `callbr` callee may only be a function: `resolve_direct_callee` consults `Module::function_dyn` only, where `convertValIDToValue` -> `getGlobalVal` accepts any `GlobalValue`. An **ifunc** callee collides with the forward-declaration arm ([`divergences.md`](divergences.md) 122). |
 
 Which fixture sits on which gap:
 
@@ -132,8 +132,7 @@ Which fixture sits on which gap:
 - **G2** (5): `amdgcn-unreachable.ll`, `amdgpu-image-atomic-attributes.ll`, `auto_upgrade_nvvm_intrinsics.ll`, `autoupgrade-thread-pointer.ll`, `autoupgrade-wasm-intrinsics.ll`
 - **G3** (6): `immarg-param-attribute.ll`, `invalid-immarg.ll`, `invalid-immarg4.ll`, `invalid-immarg5.ll`, `metadata-function-local.ll`, `token.ll`
 - **G4** (5): `ConstantExprNoFold.ll`, `addrspacecast-alias.ll`, `alias-use-list-order.ll`, `getelementptr.ll`, `uselistorder.ll`
-- **G5** (4): `call-nonzero-program-addrspace-2.ll`, `call-nonzero-program-addrspace.ll`, `ifunc-program-addrspace.ll`, `invoke-nonzero-program-addrspace.ll`
-- **G6** (2): `symbolic-addrspace-datalayout.ll`, `symbolic-addrspace.ll`
+- **G6** (1): `symbolic-addrspace-datalayout.ll`
 - **G7** (0): closed
 - **G8** (3): `DIDefaultTemplateParam.ll`, `ditemplateparameter.ll`, `generic-debug-node.ll`
 - **G9** (2): `difile-escaped-chars.ll`, `named-metadata.ll`
@@ -150,6 +149,7 @@ Which fixture sits on which gap:
 - **G20** (2): `MultipleReturnValueType.ll`, `anon-functions.ll`
 - **G21** (1): `thinlto-summary.ll`
 - **G22** (2): `2004-02-27-SelfUseAssertError.ll`, `2004-06-07-VerifierBug.ll`
+- **G23** (1): `ifunc-program-addrspace.ll`
 
 ## Findings this classification produced
 
@@ -411,8 +411,8 @@ collision.
 | `c-style-comment.ll` | ported | 1 pass |
 | `call-arg-is-callee.ll` | ported | 1 pass |
 | `call-invalid-1.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `Attribute 'align 8' does not apply to functions!` |
-| `call-nonzero-program-addrspace-2.ll` | blocked-model | **G5** — reported `expected type`, upstream `target datalayout = "P42"` |
-| `call-nonzero-program-addrspace.ll` | blocked-model | **G5** — reported `expected type`, upstream `target datalayout = "P42"` |
+| `call-nonzero-program-addrspace-2.ll` | ported | 1 reject; the `-data-layout=P42` unit runs in `parser_calls.rs::numbered_callee_addrspace_matches_upstream_in_both_program_addrspaces` |
+| `call-nonzero-program-addrspace.ll` | ported | 1 reject; the `-data-layout=P42` unit runs in `parser_calls.rs::call_addrspace_round_trips_under_a_nonzero_program_addrspace` |
 | `callbr.ll` | ported | 1 pass |
 | `callee-type-metadata.ll` | ported | 1 pass |
 | `captures-errors.ll` | blocked-model | **G18** — 1/9 parts blocked. llvmkit accepts it; upstream reports `Attribute 'captures(none)' applied to incompatible type!` |
@@ -502,7 +502,7 @@ collision.
 | `huge-array.ll` | ported | 1 pass |
 | `ifunc-asm.ll` | ported | 1 pass |
 | `ifunc-dsolocal.ll` | ported | 1 pass |
-| `ifunc-program-addrspace.ll` | blocked-model | **G5** — rejected at 24:8: `expected type` |
+| `ifunc-program-addrspace.ll` | blocked-model | **G23** — `call addrspace(0) void @ifunc_as0()` reports `24:26: expected forward function declaration: a function named "ifunc_as0" already exists in this module`; the `addrspace` half is ported |
 | `ifunc-stripPointerCastsAndAliases.ll` | ported | 1 pass |
 | `ifunc-use-list-order.ll` | blocked-model | **G13** — rejected at 19:13: `expected forward function declaration: a function named "foo_ifunc" already exists in this module` |
 | `immarg-param-attribute.ll` | blocked-model | **G3** — rejected at 4:14: `expected unknown intrinsic` |
@@ -657,7 +657,7 @@ collision.
 | `invalid_cast2.ll` | blocked-model | **G17** — reported `expected valid trunc: invalid operation: trunc/zext/sext changes the vector element count`, upstream `invalid cast opcode for cast from '<4 x i64>' to 'i8'` |
 | `invalid_cast3.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `invalid cast opcode for cast from '<4 x ptr>' to '<2 x ptr>'` |
 | `invalid_cast4.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `invoke-nonzero-program-addrspace.ll` | blocked-model | **G5** — reported `expected type`, upstream `target datalayout = "P200"` |
+| `invoke-nonzero-program-addrspace.ll` | ported | 1 reject; the `-data-layout=P200` unit runs in `parser_calls.rs::invoke_addrspace_matches_upstream_in_both_program_addrspaces` |
 | `large-comdat.ll` | ported | 1 pass |
 | `local-unnamed-addr.ll` | ported | 1 pass |
 | `lround.ll` | ported | 1 pass |
@@ -726,8 +726,8 @@ collision.
 | `summary-flags.ll` | ported | 1 pass |
 | `summary-flags2.ll` | ported | 1 pass |
 | `summary-parsing-error.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `Reference to undefined global "does_not_exist"` |
-| `symbolic-addrspace-datalayout.ll` | blocked-model | **G6** — 3/4 parts blocked. rejected at 24:8: `expected type` |
-| `symbolic-addrspace.ll` | blocked-model | **G6** — 1/7 parts blocked. rejected at 29:8: `expected type` |
+| `symbolic-addrspace-datalayout.ll` | blocked-model | **G6** — 2/4 parts blocked (`num-to-sym.ll`, `sym-to-sym.ll`, both `--print-addrspace-name=true`) |
+| `symbolic-addrspace.ll` | ported | 7 split-file parts |
 | `target-type-mangled.ll` | ported | 1 pass |
 | `target-type-param-errors.ll` | ported | 3 reject (3 with upstream's diagnostic pinned) |
 | `target-type-params.ll` | ported | 1 pass |

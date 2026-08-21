@@ -1107,3 +1107,147 @@ fn a_callbr_indirect_destination_list_is_mandatory() {
     );
     assert_check_lines(&text, &["callbr void @g()", "to label %ok []"]);
 }
+
+/// Parse with [`ParserConfig::data_layout_callback`] answering `layout`, which
+/// is how `llvm-as -data-layout=<layout>` reaches the parser: `llvm-as.cpp`
+/// wraps `ClDataLayout` in a `DataLayoutCallbackTy` and hands it to
+/// `parseAssemblyFileWithIndex`. The verify half is `llvm-as`'s own — see
+/// [`parse_verify_and_render_bytes`].
+fn parse_verify_and_render_with_data_layout(src: &[u8], layout: &str) -> String {
+    let callback = |_: &str, _: &str| Some(layout.to_owned());
+    let config = llvmkit_asmparser::parser::ParserConfig {
+        data_layout_callback: Some(&callback),
+        ..llvmkit_asmparser::parser::ParserConfig::DEFAULT
+    };
+    let module = llvmkit_asmparser::parser::parse_dynamic_with_config(src, &config)
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("`llvm-as` verifies this fixture, so llvmkit must too");
+    format!("{module}")
+}
+
+/// `test/Assembler/call-nonzero-program-addrspace.ll`, first `RUN` line
+/// (`not llvm-as %s`): with the file's own — zero — program address space, a
+/// callee held in `addrspace(42)` does not match the `ptr` the call site
+/// demands. The rule is `LLParser::parseCall`'s
+/// `convertValIDToValue(PointerType::get(Context, CallAddrSpace), …)` reaching
+/// `PerFunctionState::getVal` and `LLParser::checkValidVariableType`.
+///
+/// The fixture's `[[@LINE-1]]:25` column pin is not asserted: llvmkit's
+/// `convert_val_id_to_value` anchors at the token after the ValID rather than
+/// at `ID.Loc` (`docs/divergences.md`).
+#[test]
+fn call_in_zero_program_addrspace_rejects_a_nonzero_callee() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/call-nonzero-program-addrspace.ll");
+
+    assert_fixture_rejected(
+        "call_in_zero_program_addrspace_rejects_a_nonzero_callee",
+        FIXTURE,
+        "'%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'",
+    );
+}
+
+/// `test/Assembler/call-nonzero-program-addrspace.ll`, second `RUN` line
+/// (`llvm-as %s -data-layout=P42 | llvm-dis`), asserting its `PROGAS42`
+/// prefix. Three rules at once: `parseOptionalProgramAddrSpace` defaulting to
+/// the datalayout's program address space, `AssemblyWriter`'s
+/// `maybePrintCallAddrSpace` printing `addrspace(0)` because
+/// `ForcePrintAddrSpace` is set, and printing `addrspace(42)` because it is
+/// non-zero.
+#[test]
+fn call_addrspace_round_trips_under_a_nonzero_program_addrspace() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/call-nonzero-program-addrspace.ll");
+
+    let text = parse_verify_and_render_with_data_layout(FIXTURE, "P42");
+    assert_check_lines(
+        &text,
+        &[
+            "target datalayout = \"P42\"",
+            "define i8 @test(ptr %fnptr0, ptr addrspace(42) %fnptr42) addrspace(42) {",
+            "%explicit_as_0 = call addrspace(0) i8 %fnptr0(i32 0)",
+            "%explicit_as_42 = call addrspace(42) i8 %fnptr42(i32 0)",
+            "%call_no_as = call addrspace(42) i8 %fnptr42(i32 0)",
+            "ret i8 0",
+        ],
+    );
+}
+
+/// `test/Assembler/call-nonzero-program-addrspace-2.ll`, both `RUN` lines. The
+/// numbered-value twin of the pair above: `parseValID`'s `t_LocalID` arm
+/// reaches `PerFunctionState::getVal(unsigned, …)`, and the printed slot
+/// numbers are upstream's (`%0`/`%1` arguments, `%2` the entry block, results
+/// from `%3`).
+#[test]
+fn numbered_callee_addrspace_matches_upstream_in_both_program_addrspaces() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/call-nonzero-program-addrspace-2.ll");
+
+    assert_fixture_rejected(
+        "numbered_callee_addrspace_rejected",
+        FIXTURE,
+        "'%1' defined with type 'ptr addrspace(42)' but expected 'ptr'",
+    );
+
+    let text = parse_verify_and_render_with_data_layout(FIXTURE, "P42");
+    assert_check_lines(
+        &text,
+        &[
+            "target datalayout = \"P42\"",
+            "define i8 @test_unnamed(ptr %0, ptr addrspace(42) %1) addrspace(42) {",
+            "%3 = call addrspace(0) i8 %0(i32 0)",
+            "%4 = call addrspace(42) i8 %1(i32 0)",
+            "%5 = call addrspace(42) i8 %1(i32 0)",
+            "ret i8 0",
+        ],
+    );
+}
+
+/// `test/Assembler/invoke-nonzero-program-addrspace.ll`, both `RUN` lines.
+/// `LLParser::parseInvoke` carries its own `parseOptionalProgramAddrSpace`
+/// (upstream's `InvokeAddrSpace`) and `AssemblyWriter`'s `InvokeInst` arm is
+/// `maybePrintCallAddrSpace`'s second and last caller.
+#[test]
+fn invoke_addrspace_matches_upstream_in_both_program_addrspaces() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/invoke-nonzero-program-addrspace.ll");
+
+    assert_fixture_rejected(
+        "invoke_addrspace_rejected",
+        FIXTURE,
+        "'%fnptr200' defined with type 'ptr addrspace(200)' but expected 'ptr'",
+    );
+
+    let text = parse_verify_and_render_with_data_layout(FIXTURE, "P200");
+    assert_check_lines(
+        &text,
+        &[
+            "target datalayout = \"P200\"",
+            "define i8 @test_invoke(ptr %fnptr0, ptr addrspace(200) %fnptr200) addrspace(200) personality ptr addrspace(200) @__gxx_personality_v0 {",
+            "%explicit_as_0 = invoke addrspace(0) i8 %fnptr0(i32 0)",
+            "%explicit_as_42 = invoke addrspace(200) i8 %fnptr200(i32 0)",
+            "%no_as = invoke addrspace(200) i8 %fnptr200(i32 0)",
+            "ret i8 0",
+        ],
+    );
+}
+
+/// `LLParser::parseCallBr` is the one call-family routine with **no**
+/// `parseOptionalProgramAddrSpace` — its `||` chain goes return-attrs ->
+/// `parseType` — so `callbr addrspace(1) …` is a syntax error upstream too,
+/// and `AssemblyWriter`'s `CallBrInst` arm has no `maybePrintCallAddrSpace`
+/// call. LLVM 22.1.4 ships no `.ll` fixture pinning that absence, so the
+/// routine is the anchor (D11).
+#[test]
+fn callbr_does_not_accept_an_address_space() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_rejects_addrspace.ll");
+
+    assert_fixture_rejected(
+        "callbr_does_not_accept_an_address_space",
+        FIXTURE,
+        "expected type",
+    );
+}

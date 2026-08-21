@@ -658,22 +658,6 @@ crates/llvmkit-ir/src/verifier.rs:2962-2978 — the cited range is present verba
 
 </details>
 
-### 12. `call addrspace(1) void @f()` does not parse (P0)
-
-*parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs:12915 (parse_call), :14028 (parse_invoke), :14167 (parse_callbr)
-
-- **LLVM:** `LLParser::parseCall`, `parseInvoke` and `parseCallBr` each run `parseOptionalProgramAddrSpace` between the return attributes and the callee type, and `convertValIDToValue` then compares the resolved callee against `ptr addrspace(N)`.
-- **llvmkit:** `parse_optional_program_addr_space` exists (W8 wired it into `declare`/`define`) but none of the three call routines call it — they go straight from return attributes to `parse_type`, so the `addrspace` token is a syntax error. Verified at parse_call, parse_invoke and parse_callbr.
-- **Why:** Recorded in docs/future-work.md as a W9 P0 carried out of the wave: "Parsing and discarding it would silently drop information — worse than the current honest failure", so the fix has to thread the address space into callee resolution rather than just consume the token.
-- **Fix:** Call `parse_optional_program_addr_space` at each of the three sites and thread the result into `parse_direct_callee_ref` / callee type resolution so the callee's pointer type is compared against `ptr addrspace(N)`, as `convertValIDToValue` does.
-- **Correction from verification:** Still present, but the description is wrong about callbr and understates the rest. WRONG: "parseCall, parseInvoke and parseCallBr each run parseOptionalProgramAddrSpace". Upstream `LLParser::parseCallBr` does NOT — `parseOptionalProgramAddrSpace` has exactly three callsites in LLParser.cpp (parseFunctionHeader, parseInvoke, parseCall), and parseCallBr goes return-attrs -> parseType directly, resolving the callee with `PointerType::getUnqual(Context)` (hardcoded AS 0). llvmkit's `parse_callbr` therefore MATCHES upstream exactly; it is not part of the divergence. Same asymmetry on the printer side: AsmWriter.cpp's `maybePrintCallAddrSpace` has only two callers (the call arm and the invoke arm), never callbr. CORRECTED TITLE/SCOPE: `call addrspace(N)` and `invoke addrspace(N)` do not parse (P0) — two routines, not three. Where: parse_call at crates/llvmkit-asmparser/src/ll_parser.rs:12917 and parse_invoke at :14030 (HEAD: :12909 / :14022; the claim's :12915/:14028/:14167 match neither HEAD nor the working tree, off by ~2-8 lines). UNDERSTATED: the gap is larger than the missing keyword. Even with no explicit `addrspace`, upstream defaults the expected callee type to the datalayout's *program* address space, whereas `parse_direct_callee_ref` (:13283) hardcodes `self.module.ptr_type(0)` for every callee. So under `target datalayout = "P42"`, upstream accepts `call i8 %fnptr42(i32 0)` against a `ptr addrspace(42)` callee and llvmkit rejects it — I confirmed this by running it. And crates/llvmkit-ir/src/asm_writer.rs has no `maybePrintCallAddrSpace` equivalent (its only `addrspace` emissions are the function header at :3068 and the global at :3644), so the print half is missing too and a fix must land parser + writer together. Note the callee address space is not stored on the instruction upstream either — it is derived from the callee operand's pointer type — so no IR-model field is needed, only the expected-type construction and the printer's re-derivation. Accurate as written: `parse_optional_program_addr_space` exists at :2203 and is wired only into declare/define (callsites :10378, :10679), and the `addrspace` token is a hard syntax error in the call and invoke routines.
-
-<details><summary>Verification evidence</summary>
-
-Read crates/llvmkit-asmparser/src/ll_parser.rs: parse_call (:12917), parse_invoke (:14030) and parse_callbr (:14169) each run parse_optional_return_attrs() then parse_type(true) with nothing between; grep shows parse_optional_program_addr_space (:2203) has only two callsites, :10378 and :10679, both in the function header. Confirmed not a working-tree artifact via `git show HEAD:` (same two callsites; routines at :12909/:14022/:14161). Empirical: built `cargo +1.96.0 build --release -p llvmkit-asmparser --example parse_file` and ran it on scratch fixtures ported from orig_cpp/.../llvm/test/Assembler/call-nonzero-program-addrspace.ll and invoke-nonzero-program-addrspace.ll. `%explicit_as_0 = call addrspace(0) i8 %fnptr0(i32 0)` -> "2:25: expected type" with the caret under the `addrspace` token; the invoke form -> "3:27: expected type" the same way; the identical input without `addrspace` parses and round-trips. `target datalayout = "P42"` + `call i8 %fnptr42(i32 0)` against a `ptr addrspace(42)` param -> "'%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'", i.e. the program-AS default is ignored (upstream's PROGAS42 RUN line expects this to succeed and print `call addrspace(42)`). Upstream: grep of orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp gives exactly three parseOptionalProgramAddrSpace callsites — :6816, :7741 (InvokeAddrSpace), :8450 (CallAddrSpace) — consumed at :7764 / :8470 as `PointerType::get(Context, <AS>)`. Read LLParser::parseCallBr (:8024-8046): no addrspace parse, `convertValIDToValue(PointerType::getUnqual(Context), ...)`. Read orig_cpp/.../llvm/lib/IR/AsmWriter.cpp maybePrintCallAddrSpace (:4374) and its only two callers, :4591 and :4664. llvmkit printer: grep of crates/llvmkit-ir/src/asm_writer.rs for "addrspace" returns only :1918, :3068, :3644 — no call/invoke arm.
-
-</details>
-
 ### 15. A forward-referenced function is a typed `Function`, so a later definition cannot change its signature
 
 *parser — forward references* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_direct_callee`, `parse_declare`/`parse_define` reuse path); crates/llvmkit-ir/src/module.rs (`add_function_dyn`)
@@ -889,6 +873,42 @@ reach the routine's `_` catch-all (entry 116).
   `llvm_unreachable` default. llvmkit's rejection there is hardening; see entry
   116.
 - **Fix:** add a `Token` arm returning the module's `token none` constant.
+
+### 122. A `call` / `invoke` / `callbr` callee may only be a function
+
+*parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs (`resolve_direct_callee`)
+
+Found 2026-08-21 while porting `call addrspace(N)` / `invoke addrspace(N)`.
+
+- **LLVM:** `convertValIDToValue`'s `t_GlobalName` arm is
+  `getGlobalVal(ID.StrVal, Ty, ID.Loc)`, which looks the name up in
+  `M->getValueSymbolTable()` and accepts **any** `GlobalValue` — function,
+  alias, ifunc or global variable — then type-checks it as a pointer. The
+  call's own `FunctionType` lives on the `CallBase`, not on the callee.
+- **llvmkit:** `resolve_direct_callee`'s `Name` arm consults only
+  `Module::function_dyn`; its `Id` arm accepts only `GlobalRef::Function`.
+  Anything else falls into the forward-declaration arm and collides with the
+  existing global.
+- **Evidence:** `test/Assembler/ifunc-program-addrspace.ll`, whose
+  `addrspace` half now parses, reports
+  `24:26: expected forward function declaration: a function named "ifunc_as0"
+  already exists in this module` on `call addrspace(0) void @ifunc_as0()`.
+  Probed with `target/release/examples/parse_file.exe` on the upstream fixture.
+  Note the contrast: `resolve_global_name_as_value` — llvmkit's port of
+  `getGlobalVal` for an ordinary operand — *does* consult globals, aliases and
+  ifuncs. Only the callee position is narrow.
+- **Why:** `ParsedCallee` has three shapes (`Function`, `InlineAsm`,
+  `Indirect`) and the builder's direct-call entry point takes a
+  `FunctionValue`. Routing an alias/ifunc/global-variable callee means either a
+  fourth shape or sending it through the indirect path as a `ptr` constant,
+  which is entangled with entry 15 (a forward-referenced callee is a typed
+  `Function`) and with the `GlobalValueRef` interning of D3.
+- **Cost:** `test/Assembler/ifunc-program-addrspace.ll` stays `blocked-model`,
+  on this gap rather than the address-space one.
+- **Fix:** Give `resolve_direct_callee` the same lookup order
+  `resolve_global_name_as_value` uses, and resolve a non-function global callee
+  through the indirect path with its `GlobalValue::getType` pointer, as
+  `convertValIDToValue` does.
 
 ## Accepts invalid input
 
@@ -1616,6 +1636,38 @@ a `call` argument gives `3:38: invalid metadata-value-metadata roundtrip`; and
 Upstream read at the vendored tag `llvmorg-22.1.4`; the repo commit does not pin `orig_cpp/`, which is gitignored. `llvm/lib/IR/Verifier.cpp` — the `Check` macro expands to `CheckFailed(__VA_ARGS__); return;`, and `Verifier::visitGetElementPtrInst` carries the four literals quoted above. llvmkit at this commit: `crates/llvmkit-ir/src/error.rs` — `IrError::VerifierFailure`'s `message` field is documented "Human-readable description mirroring `Verifier::CheckFailed`", and `VerifierRule`'s `Display` arm for each GEP rule renders the house label (`"getelementptr base is not a pointer"`, `"getelementptr source element type is unsized"`, `"getelementptr index operand is not an integer"`, `"getelementptr indices are invalid for the source type"`); `crates/llvmkit-ir/src/verifier.rs::check_gep` carries the four `format!` strings quoted above. Scope check before opening this entry: `grep -niE "verifier.*(wording|reworded|message text|diagnostic text|Check string)" docs/divergences.md docs/future-work.md` found no class-level entry, and the two entries that mention verifier wording (the `PhiNotAtTop` text and the `callbr` "carrying upstream's wording" fix sketch) are per-rule remarks inside entries about a different divergence. The claim here is deliberately not quantified over every rule: four pairs were read and quoted, and the sentence says the convention diverges, not that every rule does.
 
 </details>
+
+### 123. `convertValIDToValue` diagnostics are anchored one token late
+
+*parser — value resolution* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_val_id`, `convert_val_id_to_value`, `convert_val_id_to_constant`)
+
+Found 2026-08-21 while porting `call addrspace(N)` / `invoke addrspace(N)`.
+
+- **LLVM:** `LLParser::ValID` carries a `Loc` member, set by `parseValID` at the
+  ValID's **first** token, and every diagnostic `convertValIDToValue` raises
+  reports at `ID.Loc` — `getGlobalVal(ID.StrVal, Ty, ID.Loc)`,
+  `PFS->getVal(ID.UIntVal, Ty, ID.Loc)`, `error(ID.Loc, "integer constant must
+  have integer type")` among them.
+- **llvmkit:** `ValId` carries no location. `convert_val_id_to_value` passes
+  `self.loc()`, which by then is the token *after* the ValID, because
+  `parse_val_id` has already bumped it.
+- **Evidence:** `test/Assembler/call-nonzero-program-addrspace.ll` pins
+  `[[@LINE-1]]:25` — the `%fnptr42` token — and llvmkit reports column 33, the
+  `(` that follows. Same shape on `call-nonzero-program-addrspace-2.ll`
+  (upstream `11:11`, llvmkit `11:13`) and `invoke-nonzero-program-addrspace.ll`
+  (upstream `11:22`, llvmkit `11:31`). The message text matches upstream's
+  exactly in all three; only the anchor moves. Probed with
+  `target/release/examples/parse_file.exe` on the three vendored fixtures.
+- **Why:** Not introduced by the address-space work — it predates it and shows
+  on every `convertValIDToValue` arm. Entry 114 defers its own anchor half to
+  this port rather than restating it, and entry 110 is the same shape one layer
+  up (instruction result names).
+- **Cost:** the three `*-nonzero-program-addrspace` corpus rows carry `error=`
+  without `loc=`, joining the `loc=` backlog `future-work.md` already carries.
+- **Fix:** Add `loc: Span` alongside `ValId` — upstream's `ValID::Loc` — set it
+  in `parse_val_id`, thread it through `convert_val_id_to_value` /
+  `convert_val_id_to_constant`, then re-derive every `loc=` pin in
+  `parser_corpus_manifest.txt` and add the three above.
 
 ## Different printed bytes
 
