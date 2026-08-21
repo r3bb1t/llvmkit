@@ -15,9 +15,11 @@ belong here.
 
 **Every entry must be verified against the tree before it is trusted — and
 that includes its evidence.** This project has repeatedly found its own
-recorded premises wrong; three failed on contact in a single session, and four
-`Verification evidence` blocks (entries 17, 25, 38 and 88) have since been
-found stale in turn. A `<details>` block and a `Correction from verification`
+recorded premises wrong; three failed on contact in a single session, and
+several `Verification evidence` blocks have since been found stale in turn. No
+ids are named here on purpose: entries are deleted when they are closed and
+their ids are re-used, so a list of examples eventually points at entries it
+never described. A `<details>` block and a `Correction from verification`
 paragraph are *dated snapshots of one verification pass*, not standing proof:
 their line numbers, counts and command output were true when written and are
 re-checked by nothing. Most evidence blocks in this file carry no date at all,
@@ -1598,6 +1600,23 @@ a `call` argument gives `3:38: invalid metadata-value-metadata roundtrip`; and
 
 </details>
 
+### 121. Verifier diagnostics are house-worded, not `Verifier::CheckFailed`'s strings
+
+*verifier* — crates/llvmkit-ir/src/verifier.rs; crates/llvmkit-ir/src/error.rs (`VerifierRule`, `IrError::VerifierFailure`)
+
+- **LLVM:** `Verifier`'s `Check(cond, "…", V)` macro hands its literal to `CheckFailed`, which prints that string verbatim ahead of the offending value. The literal *is* the diagnostic: `llvm/test/Verifier/*.ll` `CHECK` lines match it, so it is contractual the same way a parser diagnostic is.
+- **llvmkit:** a verifier failure is `IrError::VerifierFailure { rule, function, block, message }`. `rule` is a `VerifierRule` whose `Display` is a house label written in the enum's own register (lower-case, no trailing `!`, named after the invariant rather than the sentence), and `message` is a `format!` written at the check site, usually naming the offending type or operand index. Neither reproduces upstream's literal. Four pairs from `check_gep` alone, upstream first: `GEP base pointer is not a vector or a vector of pointers` / `getelementptr base operand has type {} (expected pointer)`; `GEP into unsized type!` / `getelementptr source element type {} is unsized`; `GEP indexes must be integers` / `getelementptr index #{slot} has type {} (expected integer)`; `Invalid indices for GEP pointer type!` / `getelementptr indices do not index into source type {}`. The newer GEP rules were written to the same convention, so the divergence is the convention, not any one rule.
+- **Why:** The rule enum, not the string, is llvmkit's diagnostic API — a caller matches `VerifierRule::…` and the text is for humans — so the strings were written for that surface rather than copied. Nothing enforces the convention and nothing measures the drift: no `test/Verifier` fixture is driven through llvmkit's verifier by message text, so the wording has never been compared arm by arm against `Verifier.cpp`.
+- **Consequence:** the accept/reject verdict is unaffected — this is text only. But it means a `test/Verifier/*.ll` fixture cannot be ported the way a `test/Assembler` one is: its `CHECK` line will not match, so any such port has to assert the `VerifierRule` instead and say so.
+- **Fix:** One sweep, not a per-rule patch: give every `VerifierRule` its upstream `Check` literal (the enum doc comments already name most of them), keep the `format!` detail as a suffix rather than a replacement, and then drive the `test/Verifier` fixtures by text the way `parser_corpus.rs` drives `test/Assembler`. Decide the register question once — whether `rule`'s `Display` or `message` carries upstream's literal — because they render in different places.
+- **Not covered here:** the parser's diagnostics, which *are* upstream's literals and are pinned as such; the individual entries in this section that record a *parser* message differing from upstream's; and `VerifierRule::PhiEmptyInReachableBlock`, which has no upstream `Check` to diverge from.
+
+<details><summary>Verification evidence (2026-08-21)</summary>
+
+Upstream read at the vendored tag `llvmorg-22.1.4`; the repo commit does not pin `orig_cpp/`, which is gitignored. `llvm/lib/IR/Verifier.cpp` — the `Check` macro expands to `CheckFailed(__VA_ARGS__); return;`, and `Verifier::visitGetElementPtrInst` carries the four literals quoted above. llvmkit at this commit: `crates/llvmkit-ir/src/error.rs` — `IrError::VerifierFailure`'s `message` field is documented "Human-readable description mirroring `Verifier::CheckFailed`", and `VerifierRule`'s `Display` arm for each GEP rule renders the house label (`"getelementptr base is not a pointer"`, `"getelementptr source element type is unsized"`, `"getelementptr index operand is not an integer"`, `"getelementptr indices are invalid for the source type"`); `crates/llvmkit-ir/src/verifier.rs::check_gep` carries the four `format!` strings quoted above. Scope check before opening this entry: `grep -niE "verifier.*(wording|reworded|message text|diagnostic text|Check string)" docs/divergences.md docs/future-work.md` found no class-level entry, and the two entries that mention verifier wording (the `PhiNotAtTop` text and the `callbr` "carrying upstream's wording" fix sketch) are per-rule remarks inside entries about a different divergence. The claim here is deliberately not quantified over every rule: four pairs were read and quoted, and the sentence says the convention diverges, not that every rule does.
+
+</details>
+
 ## Different printed bytes
 
 The parser/printer contract is that printed output matches `AsmWriter.cpp` byte for byte and re-parses.
@@ -2508,7 +2527,7 @@ Both halves read at commit 481e276 plus this change. Upstream: orig_cpp/llvm-pro
 
 </details>
 
-### 120. `Verifier::visitGetElementPtrInst`'s result-element-type check has nothing to compare, and two of its `Check`s are unported
+### 120. `Verifier::visitGetElementPtrInst`'s result-element-type check has nothing to compare
 
 *verifier / IR model* — crates/llvmkit-ir/src/verifier.rs (`check_gep`); crates/llvmkit-ir/src/instr_types.rs (`GepInstData`)
 
@@ -2517,12 +2536,11 @@ Both halves read at commit 481e276 plus this change. Upstream: orig_cpp/llvm-pro
 - **Why:** Structural, and in llvmkit's favour: a stored-but-stale `ResultElementType` is a state upstream can reach and llvmkit cannot represent. Recorded so the missing `Check` is not read as an oversight.
 - **Fix:** None wanted. If a future change ever stores a result element type (say, to speed an analysis), the check comes back with it.
 
-- **Also unported in the same routine, and *not* structural:** the struct-source `Check(!STy->isScalableTy(), "getelementptr cannot target structure that contains scalable vector type")`. This is a pre-existing omission that the vector-GEP work did not make reachable; `LLParser::parseGetElementPtr`'s copy of the same rule *is* ported in `parse_gep`, so a parsed module is covered and only a builder-constructed one is not. Upstream's own fixture for it, `test/Verifier/scalable-vector-struct-gep.ll`, runs `opt -S -passes=verify`, so the diagnostic it pins comes out of the parser before the verifier ever sees the module — which is why llvmkit already reaches upstream's text on that file.
-- **And vacuous rather than missing:** `Check(GEP.getAddressSpace() == PtrTy->getAddressSpace(), "GEP address space doesn't match type")`. `GetElementPtrInst::getAddressSpace` is the *pointer operand's* address space, and its own comment says "this is always the same as the pointer operand's address space". In llvmkit both `gep_inner` and `gep_erased` derive the result type from the base operand by `getGEPReturnType`, and `Instruction::replace_all_uses_with` refuses a replacement whose type slot differs, so the two address spaces are the same interned slot by construction. Recorded as vacuous, not fixed.
+- **And vacuous rather than missing, in the same routine:** `Check(GEP.getAddressSpace() == PtrTy->getAddressSpace(), "GEP address space doesn't match type")`. `GetElementPtrInst::getAddressSpace` is the *pointer operand's* address space, and its own comment says "this is always the same as the pointer operand's address space". In llvmkit both `gep_inner` and `gep_erased` derive the result type from the base operand by `getGEPReturnType`, and `Instruction::replace_all_uses_with` refuses a replacement whose type slot differs, so the two address spaces are the same interned slot by construction. Recorded as vacuous, not fixed.
 
 <details><summary>Verification evidence (2026-08-21)</summary>
 
-Upstream read at the vendored tag `llvmorg-22.1.4` (the repo commit does not pin `orig_cpp/`, which is gitignored): `llvm/lib/IR/Verifier.cpp::Verifier::visitGetElementPtrInst` — the eight statements, in order, are the base `isa<PointerType>` check, `isSized`, the struct-scalable `Check`, the `all_of` integer-index `Check`, `ElTy = getIndexedType(...)` plus `Check(ElTy, ...)`, `PtrTy = dyn_cast<PointerType>(GEP.getType()->getScalarType())` plus the two-conjunct `Check`, the vector block, and the trailing address-space `Check`. `llvm/include/llvm/IR/Instructions.h` — `GetElementPtrInst`'s constructor initialiser list is `SourceElementType(PointeeType), ResultElementType(getIndexedType(PointeeType, IdxList))`, and `getAddressSpace()` forwards to `getPointerAddressSpace()`, which is `getPointerOperandType()->getPointerAddressSpace()`, under the comment quoted above. llvmkit side, at this commit: `crates/llvmkit-ir/src/instr_types.rs::GepInstData` has exactly four fields (`source_ty`, `ptr`, `indices`, `flags`); `crates/llvmkit-ir/src/ir_builder.rs::gep_return_type` derives the result type from the base operand's type alone; `crates/llvmkit-ir/src/instruction.rs::replace_all_uses_with` rejects a replacement with `IrError::TypeMismatch` when `new_value.ty != self.ty`, and no public operand setter exists (`grep -n 'pub fn set_operand\|pub fn replace_operand' crates/llvmkit-ir/src/*.rs` returns nothing), so an operand cannot be swapped for one in another address space after construction.
+Upstream read at the vendored tag `llvmorg-22.1.4` (the repo commit does not pin `orig_cpp/`, which is gitignored): `llvm/lib/IR/Verifier.cpp::Verifier::visitGetElementPtrInst` — the eight statements, in order, are the base `isa<PointerType>` check, `isSized`, the struct-scalable `Check`, the `all_of` integer-index `Check`, `ElTy = getIndexedType(...)` plus `Check(ElTy, ...)`, `PtrTy = dyn_cast<PointerType>(GEP.getType()->getScalarType())` plus the two-conjunct `Check`, the vector block, and the trailing address-space `Check`. Every one of those is emitted by `check_gep` except the second conjunct of the `PtrTy` `Check` and the address-space `Check`; the struct-scalable one was unported when this entry was first written and was ported in the fix round that narrowed it (`VerifierRule::GepScalableStructSource`, locked by `verifier_basic.rs::verify_gep_into_scalable_struct_fails`). `llvm/include/llvm/IR/Instructions.h` — `GetElementPtrInst`'s constructor initialiser list is `SourceElementType(PointeeType), ResultElementType(getIndexedType(PointeeType, IdxList))`, and `getAddressSpace()` forwards to `getPointerAddressSpace()`, which is `getPointerOperandType()->getPointerAddressSpace()`, under the comment quoted above. llvmkit side, at this commit: `crates/llvmkit-ir/src/instr_types.rs::GepInstData` has exactly four fields (`source_ty`, `ptr`, `indices`, `flags`); `crates/llvmkit-ir/src/ir_builder.rs::gep_return_type` derives the result type from the base operand's type alone; `crates/llvmkit-ir/src/instruction.rs::replace_all_uses_with` rejects a replacement with `IrError::TypeMismatch` when `new_value.ty != self.ty`, and no public operand setter exists (`grep -n 'pub fn set_operand\|pub fn replace_operand' crates/llvmkit-ir/src/*.rs` returns nothing), so an operand cannot be swapped for one in another address space after construction.
 
 </details>
 

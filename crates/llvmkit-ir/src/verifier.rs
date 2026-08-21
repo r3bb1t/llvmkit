@@ -2655,14 +2655,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// `Verifier::visitGetElementPtrInst`. Ports every check except the
-    /// struct-source scalable-vector `Check`, the
-    /// `getResultElementType() == ElTy` half of "GEP is not of right type for
-    /// indices!" (no stored result element type to compare against), and the
-    /// trailing address-space `Check` (vacuous here: the result type is
-    /// derived from the base operand by `GetElementPtrInst::getGEPReturnType`,
-    /// so the two address spaces are the same interned slot -- upstream's own
-    /// comment on `GetElementPtrInst::getAddressSpace` says as much). See
+    /// `Verifier::visitGetElementPtrInst`, arm for arm and in upstream's order.
+    ///
+    /// Two of upstream's `Check`s are not emitted, and each says so at the
+    /// point it would have stood: the `getResultElementType() == ElTy` half of
+    /// "GEP is not of right type for indices!", and the trailing address-space
+    /// `Check`. A third, the `isIntOrIntVectorTy` re-check inside the vector
+    /// loop, is upstream's own duplicate of the earlier one. See
     /// docs/divergences.md.
     fn check_gep(
         &self,
@@ -2691,6 +2690,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 VerifierRule::GepUnsizedSourceType,
                 format!(
                     "getelementptr source element type {} is unsized",
+                    self.type_label(g.source_ty)
+                ),
+            ));
+        }
+        // `if (auto *STy = dyn_cast<StructType>(GEP.getSourceElementType()))
+        //      Check(!STy->isScalableTy(), "getelementptr cannot target
+        //      structure that contains scalable vector" "type", &GEP);`
+        // `Type::is_scalable` is the port of `Type::isScalableTy`, so a struct
+        // that merely *contains* one at any depth is rejected, as upstream's
+        // is. `LLParser::parseGetElementPtr` carries the same rule, so a
+        // parsed module is answered before this runs; a builder-constructed
+        // one reaches it here.
+        if source.is_struct() && source.is_scalable() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::GepScalableStructSource,
+                format!(
+                    "getelementptr source type {} is a struct containing a scalable vector",
                     self.type_label(g.source_ty)
                 ),
             ));
@@ -2774,6 +2792,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
         }
+        // `Check(GEP.getAddressSpace() == PtrTy->getAddressSpace(), "GEP
+        // address space doesn't match type", &GEP);` stands here upstream and
+        // is not emitted: `GetElementPtrInst::getAddressSpace` is the *pointer
+        // operand's* address space (its own comment says "this is always the
+        // same as the pointer operand's"), and both `IrBuilder::gep_inner` and
+        // `IrBuilder::gep_erased` derive the result type from that operand via
+        // `getGEPReturnType`, so the two are the same interned slot by
+        // construction (docs/divergences.md).
         Ok(())
     }
 

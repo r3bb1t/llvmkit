@@ -263,6 +263,10 @@ pub enum VerifierRule {
     /// non-aggregate). Mirrors `Verifier::visitGetElementPtrInst`
     /// ("Invalid indices for GEP pointer type!").
     GepInvalidIndices,
+    /// `getelementptr` source element type is a struct that is, or contains,
+    /// a scalable vector. Mirrors `Verifier::visitGetElementPtrInst`'s
+    /// `Check(!STy->isScalableTy(), ...)`.
+    GepScalableStructSource,
     /// `getelementptr` result type's scalar type is not a pointer. Mirrors
     /// the `PtrTy` half of `Verifier::visitGetElementPtrInst`'s
     /// `Check(PtrTy && GEP.getResultElementType() == ElTy, "GEP is not of
@@ -511,6 +515,9 @@ impl fmt::Display for VerifierRule {
             Self::GepUnsizedSourceType => "getelementptr source element type is unsized",
             Self::GepNonIntegerIndex => "getelementptr index operand is not an integer",
             Self::GepInvalidIndices => "getelementptr indices are invalid for the source type",
+            Self::GepScalableStructSource => {
+                "getelementptr source element type is a struct containing a scalable vector"
+            }
             Self::GepNonPointerResult => "getelementptr result type is not a pointer",
             Self::GepVectorWidthMismatch => {
                 "vector getelementptr width does not match its operands"

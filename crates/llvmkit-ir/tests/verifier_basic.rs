@@ -19,9 +19,9 @@
 
 use llvmkit_ir::{
     AddFlags, Align, AshrFlags, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand,
-    FloatPredicate, FloatValue, FloatValueId, IntPredicate, IntValue, IntValueId, IntrinsicId,
-    IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags, PointerValue, PointerValueId,
-    SdivFlags, ShlFlags, SubFlags, UdivFlags, VerifierRule, module_new,
+    FloatPredicate, FloatValue, FloatValueId, GepNoWrapFlags, IntPredicate, IntValue, IntValueId,
+    IntrinsicId, IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags, PointerValue,
+    PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VerifierRule, module_new,
 };
 
 fn abs_function_attrs_without_immarg() -> AttributeStorage {
@@ -708,6 +708,116 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
             err,
             IrError::VerifierFailure {
                 rule: VerifierRule::UseBeforeDef,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// Mirrors `Verifier::visitGetElementPtrInst`'s
+/// `Check(!STy->isScalableTy(), "getelementptr cannot target structure that
+/// contains scalable vector" "type")`, on the shape of
+/// `test/Verifier/scalable-vector-struct-gep.ll` -- a `getelementptr` whose
+/// source element type is `{ <vscale x 1 x double>, <vscale x 1 x double> }`.
+///
+/// That fixture's `RUN` line is `not opt -S -passes=verify`, which parses
+/// first, and `LLParser::parseGetElementPtr` carries the same rule; llvmkit
+/// ports that copy too, so the fixture is answered before the verifier ever
+/// sees the module. The parser half is pinned separately, by
+/// `parser_function_body.rs::getelementptr_validates_its_base_and_indices`.
+/// The builder is therefore the only door left to the verifier rule, which is
+/// why this is built rather than parsed.
+#[test]
+fn verify_gep_into_scalable_struct_fails() -> Result<(), IrError> {
+    let m = module_new!("gs")?;
+    let double_ty = m.f64_type();
+    let ptr_ty = m.ptr_type(0);
+    let void_ty = m.void_type();
+    let vscale_double = m.scalable_vector_type(double_ty.as_type(), 1);
+    let struct_ty = m.struct_type([vscale_double.as_type(), vscale_double.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let f = m.add_function_dyn("gep", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+
+    let base = m.view(f).param(0)?;
+    let zero = m.i32_type().const_int(0_i32).as_erased();
+    b.gep_erased(struct_ty, base, [zero], GepNoWrapFlags::empty(), "a.addr")?;
+    b.ret_void()?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("getelementptr into a scalable struct must fail verification");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::GepScalableStructSource,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart as a fixture.** The rule is upstream's --
+/// `Verifier::visitGetElementPtrInst`'s `Check(IndexWidth == GEPWidth,
+/// "Invalid GEP index vector width")` -- but `llvm/test/Verifier/` ships no
+/// vector-`getelementptr` fixture at all, so there is nothing to port and this
+/// is an llvmkit-written lock on the ported rule.
+///
+/// It is the one genuinely reachable branch of that vector block:
+/// `GetElementPtrInst::getGEPReturnType` takes the *first* vector index's
+/// `ElementCount` and never looks at the rest, so a second vector index of a
+/// different width produces a well-typed result whose lanes disagree with it.
+/// `LLParser::parseGetElementPtr`'s `GEPWidth` loop rejects the same shape at
+/// parse time, which is why the builder is the only way to reach the verifier
+/// rule. The sibling `Check(GEPWidth == base count, "Vector GEP result width
+/// doesn't match operand's")` cannot fire here at all: for a vector base
+/// `getGEPReturnType` returns that very type.
+#[test]
+fn verify_vector_gep_with_disagreeing_index_widths_fails() -> Result<(), IrError> {
+    let m = module_new!("gv")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let void_ty = m.void_type();
+    let array_ty = m.array_type(i8_ty, 4);
+    let vec2_i32 = m.vector_type(i32_ty.as_type(), 2);
+    let vec4_i32 = m.vector_type(i32_ty.as_type(), 4);
+    let fn_ty = m.function_type(
+        void_ty.as_type(),
+        [ptr_ty.as_type(), vec2_i32.as_type(), vec4_i32.as_type()],
+    );
+    let f = m.add_function_dyn("gv", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+
+    let base = m.view(f).param(0)?;
+    let two_lane = m.view(f).param(1)?;
+    let four_lane = m.view(f).param(2)?;
+    // Result is `<2 x ptr>` -- the first vector index wins -- while the second
+    // index has four lanes.
+    b.gep_erased(
+        array_ty,
+        base,
+        [two_lane, four_lane],
+        GepNoWrapFlags::empty(),
+        "w",
+    )?;
+    b.ret_void()?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("disagreeing vector index widths must fail verification");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::GepVectorWidthMismatch,
                 ..
             }
         ),

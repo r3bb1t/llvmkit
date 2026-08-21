@@ -19,19 +19,21 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2543 (2538 distinct names). Recounted on 2026-08-21
-at the vector-`getelementptr` commit via the documented
+Total `#[test]` functions: 2545 (2540 distinct names). Recounted on 2026-08-21
+at the vector-`getelementptr` fix round via the documented
 attribute-anchored grep below
-(`crates/llvmkit-ir` 1563 + `crates/llvmkit-asmparser` 958 +
+(`crates/llvmkit-ir` 1565 + `crates/llvmkit-asmparser` 958 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
 `crates/llvmkit-macros` has none). The distinct-name total comes from the same
 attribute anchor followed to the next `fn` line:
 `awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2543 before `-u`, so the two matchers agree. The +4
+— which also reproduces 2545 before `-u`, so the two matchers agree. The +6
 over the 2539 point before it is the vector-`getelementptr` work: two builder
 tests for `GetElementPtrInst::getGEPReturnType` and its `getIndexedType` gate,
-and two parser tests for the printed form of a vector GEP instruction. The +6
-before that is the `shufflevector` port's six new
+two parser tests for the printed form of a vector GEP instruction, and two
+verifier tests added in its fix round — the struct-source scalable-vector
+`Check` ported there, and the one reachable branch of the vector-width block.
+The +6 before that is the `shufflevector` port's six new
 `builder_aggregate_vector.rs` tests -- four with the port itself, one added in
 fix round 1 for the folder path it made reachable, and one in fix round 2 for
 the cross-module mask guard (its `parser_constants.rs` change is a rename, not
@@ -46,14 +48,14 @@ that is the two printer-parity commits — 6 for basic-block printing and
 ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
 program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2543 passed, 0 failed across 214 test binaries.
+this commit reports 2545 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2110 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2112 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2102 rows give provenance for **2218 of
-the 2538 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2104 rows give provenance for **2220 of
+the 2540 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -72,10 +74,10 @@ fix round 4's one added test landed with its own row (+1 covered, 0 unrowed),
 the operand-bundle work added ten rowed tests and replaced one rowed test
 (+9 covered, 0 unrowed), the `shufflevector` `isValidOperands` port added
 six rowed tests across its three commits and renamed one rowed test
-(+6 covered, 0 unrowed), and the vector-`getelementptr` commit added four rowed
-tests (+4 covered, 0 unrowed).
+(+6 covered, 0 unrowed), and the vector-`getelementptr` work added six rowed
+tests across its two commits (+6 covered, 0 unrowed).
 Re-running the full audit means expanding the group rows by hand (see the
-methodology note below); do not quote 2218 as a freshly derived number.
+methodology note below); do not quote 2220 as a freshly derived number.
 
 > **Methodology, because the previous header's numbers are not comparable.**
 > Through Wave 11 the audit matched rows to tests by looking for a
@@ -434,6 +436,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_float_arithmetic_full` | `unittests/IR/VerifierTest.cpp` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_casts_full` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_memory_gep_select_control` | `unittests/IR/VerifierTest.cpp::TEST(VerifierTest, GetElementPtrInst)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_gep_into_scalable_struct_fails` | `llvm/lib/IR/Verifier.cpp::Verifier::visitGetElementPtrInst`'s `Check(!STy->isScalableTy(), ...)`; shape from `test/Verifier/scalable-vector-struct-gep.ll`, which `opt` answers in the parser, so the verifier rule is reached through the builder | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_vector_gep_with_disagreeing_index_widths_fails` | no upstream fixture: `llvm/test/Verifier/` ships no vector-`getelementptr` case. Locks the ported rule `llvm/lib/IR/Verifier.cpp::Verifier::visitGetElementPtrInst`'s `Check(IndexWidth == GEPWidth, "Invalid GEP index vector width")` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_call` | `unittests/IR/VerifierTest.cpp::TEST(VerifierTest, CrossFunctionRef)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_void_return_and_unreachable` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_consuming_returns_branded_module` | `unittests/IR/VerifierTest.cpp` | llvmkit-specific |

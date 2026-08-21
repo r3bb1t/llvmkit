@@ -74,12 +74,25 @@ gap; all three are deleted.
   `opaque-ptr.ll` moves off this gap onto the numbered-global forward-reference
   one.
 
+- **Fixed: `Verifier::visitGetElementPtrInst`'s struct-source scalable-vector
+  `Check` is ported too** (`VerifierRule::GepScalableStructSource`). It was a
+  pre-existing omission; upstream's fixture for it,
+  `test/Verifier/scalable-vector-struct-gep.ll`, runs through `opt`, so the
+  parser's copy of the rule answers it and only a builder-constructed module
+  ever reached the gap.
+
 - **Recorded, not fixed:** what is left of `Verifier::visitGetElementPtrInst` —
   the `getResultElementType() == ElTy` half of its result-type `Check` has no
-  counterpart, because llvmkit stores no result element type to disagree; the
-  struct-source scalable-vector `Check` remains a pre-existing omission whose
-  upstream fixture the parser already answers; and the address-space `Check` is
-  vacuous by construction. One new `docs/divergences.md` entry covers all three.
+  counterpart, because llvmkit stores no result element type to disagree, and
+  the address-space `Check` is vacuous by construction. One new
+  `docs/divergences.md` entry covers both.
+
+- **Recorded, separately: llvmkit's verifier diagnostics are house-worded**, not
+  `Verifier::CheckFailed`'s literals — the rule enum is the diagnostic API here
+  and the strings were written for it. That is a class-wide divergence with a
+  real consequence (a `test/Verifier/*.ll` fixture cannot be ported by its
+  `CHECK` line), and it now has its own `docs/divergences.md` entry rather than
+  living unrecorded behind every rule.
 
 ### `shufflevector` gets its `isValidOperands` port, and stops rejecting the scalable splat
 
