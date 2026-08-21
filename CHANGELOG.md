@@ -19,6 +19,85 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### `shufflevector` gets its `isValidOperands` port, and stops rejecting the scalable splat
+
+Closes two `docs/divergences.md` rows with one port: **10** (rejects-valid) and **102**
+(wrong-message). `ShuffleVectorInst::isValidOperands` exists upstream in two overloads and
+llvmkit had ported neither on the instruction path, so the rule was spread across partial
+hand-rolled spellings — two of them wrong.
+
+- **Fixed (rejects-valid): a scalable `shufflevector` instruction now parses, verifies and
+  prints.** `shufflevector <vscale x 4 x i32> %a, <vscale x 4 x i32> poison, <vscale x 4 x i32> zeroinitializer`
+  is the canonical scalable-splat idiom; llvmkit answered
+  `shufflevector with scalable input is not yet supported`, an invented message whose
+  "not yet" phrasing hid a hard rejection behind what read like a TODO. The rule
+  `ShuffleVectorInst::isValidOperands` actually states — a scalable operand admits an
+  all-zero or all-poison mask and nothing else — is now ported, and the constructor's
+  `VectorType::get(EltTy, Mask.size(), isa<ScalableVectorType>(V1->getType()))` gives the
+  instruction a scalable result type. The constant-expression form already worked; only
+  the instruction form was blocked. `test/Bitcode/vscale-round-trip.ll` now passes whole.
+
+- **Fixed (accepts-invalid): a mask lane naming neither source vector is now rejected.**
+  `shufflevector <2 x i32> %a, <2 x i32> %b, <4 x i32> <i32 0, i32 99, i32 2, i32 3>`
+  parsed, verified and printed unchanged. `isValidOperands`' `Elem >= V1Size * 2` clause
+  had no instruction-path counterpart — not in the parser, not in the builder, not in the
+  verifier. The constant-expression twin was already caught, which is what made the hole
+  invisible. Not previously recorded as a divergence; found while porting.
+
+- **Fixed (wrong-message): the shufflevector mask reports upstream's diagnostic, at
+  upstream's anchor.** `LLParser::parseShuffleVector` has exactly one error of its own,
+  `invalid shufflevector operands`, anchored at the **first operand**, and the mask's type
+  and shape are part of that one check. llvmkit raised `expected valid shufflevector mask`
+  — a string that exists nowhere upstream — at two sites in a second routine, anchored at
+  the mask; and the scalable rejection surfaced from the builder, which anchored it at the
+  *following* statement. That second routine is gone. A non-constant mask (`<4 x i32> %m`)
+  now reports the same message too, because the mask is read with the value parser as
+  upstream reads it, rather than being refused early as `expected constant value`.
+
+- **Added: `ShuffleVectorInst::is_valid_operands` and
+  `ShuffleVectorInst::is_valid_operands_with_constant_mask`** — the two upstream overloads,
+  as named associated functions (Rust cannot overload, so the names differ). The
+  decoded-mask form is what the builder and the verifier call; the constant-mask form is
+  what the parser calls, before the mask is decoded. They are not interchangeable: only the
+  constant-mask form has the `undef` / `zeroinitializer` early `return true` that precedes
+  every scalable test, and that early return is the whole reason a scalable
+  `zeroinitializer` mask is legal — including at a different element count from the
+  operands, which is what `@const_shufflevector_ex` writes.
+
+- **Added: `Verifier::visitShuffleVectorInst` is now actually ported.** Its entire upstream
+  body is one `Check(ShuffleVectorInst::isValidOperands(...), "Invalid shufflevector operands!")`,
+  which llvmkit never ran; the checks it did run have no upstream counterpart and are now
+  documented as the defence in depth they are.
+
+- **Breaking: `IrBuilder::shuffle_vector`'s error shape changed.** Mismatched operand types
+  returned `IrError::TypeMismatch`; they now return
+  `IrError::InvalidOperation { message: "invalid shufflevector operands" }`, because
+  upstream folds that case into the one predicate. A non-vector first operand still returns
+  `TypeMismatch`, answering the constructor's own `cast<VectorType>` — and still with the
+  `FixedVector` label, which is the pre-existing imprecision the label enum forces, not a
+  new one.
+
+- **Changed: `test/Bitcode/vscale-round-trip.ll` is checked in whole.** The corpus carried
+  a labelled excerpt of its two constant-expression functions because
+  `@non_const_shufflevector` did not parse. It does now, so the excerpt is replaced by a
+  byte-for-byte copy of the upstream file, and `@const_select` comes with it.
+
+- **Recorded: `docs/divergences.md` 119** — a scalable shuffle answers "nothing known" from
+  `computeKnownBits` / `computeKnownFPClass` where LLVM propagates the demanded set into
+  both operands. Conservative-safe and pre-existing, but unreachable until now.
+
+- **Corrected: a phantom upstream citation.** `parse_shufflevector`'s rustdoc cited
+  `test/Assembler/shufflevector.ll`. No such file exists in the vendored tree
+  (`ls llvm/test/Assembler/ | grep -i shuffle` is empty at the `llvmorg-22.1.4` tag), and
+  the one `test/Assembler` fixture naming the opcode — `constant-splat.ll` — writes the
+  constant-expression form. Nothing under `test/Assembler`, `test/Verifier` or
+  `test/Bitcode` pins `invalid shufflevector operands`
+  (`grep -rail 'invalid shufflevector operands'` over those three directories, same tag);
+  the real anchors are the routine itself and
+  `test/Bitcode/vscale-round-trip.ll`. `UPSTREAM.md`'s row for
+  `shufflevector_rejects_non_i32_mask_type` also cited upstream by line number, which repo
+  law forbids; it now cites by symbol.
+
 ### Two project skills, and `CLAUDE.md` wired to them
 
 Contributor tooling only — no crate source changed, so there is no API or

@@ -3176,6 +3176,10 @@ fn poison_for<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Constant<'ctx, 
 /// Runtime-scalability choke point for the folder's vector rebuilds: parsed
 /// or analyzed vectors carry `scalable` as data, so this dispatches between
 /// [`ModuleView::vector_type`] and [`ModuleView::scalable_vector_type`].
+///
+/// This is the view-level spelling of `VectorType::get(Type *ElementType,
+/// unsigned NumElements, bool Scalable)` (`DerivedTypes.h`). The slot-level
+/// twin, used by the builder, is `Context::vector_type_with_scalability`.
 fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, T>(
     module: ModuleView<'ctx, B>,
     element: T,

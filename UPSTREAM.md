@@ -19,16 +19,18 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2533 (2528 distinct names). Recounted on 2026-08-20
-at the operand-bundle-parity fix-round-4 point via the documented
+Total `#[test]` functions: 2537 (2532 distinct names). Recounted on 2026-08-21
+at the `shufflevector` `isValidOperands` port via the documented
 attribute-anchored grep below
-(`crates/llvmkit-ir` 1555 + `crates/llvmkit-asmparser` 956 +
+(`crates/llvmkit-ir` 1559 + `crates/llvmkit-asmparser` 956 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
 `crates/llvmkit-macros` has none). The distinct-name total comes from the same
 attribute anchor followed to the next `fn` line:
 `awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2533 before `-u`, so the two matchers agree. The +9
-over the 2524 point before it is the operand-bundle work, `4e28f78..HEAD`: ten
+— which also reproduces 2537 before `-u`, so the two matchers agree. The +4
+over the 2533 point before it is the `shufflevector` port's four new
+`builder_aggregate_vector.rs` tests (its `parser_constants.rs` change is a
+rename, not an addition). The +9 before that is the operand-bundle work: ten
 tests added, one hand-trimmed subset test replaced. The last two are fix round
 4's `DIArgList` port — the vendored
 `test/DebugInfo/Generic/debug_value_list.ll` and the operand-bundle /
@@ -39,14 +41,14 @@ that is the two printer-parity commits — 6 for basic-block printing and
 ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
 program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2533 passed, 0 failed across 214 test binaries.
+this commit reports 2537 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2100 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2104 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2092 rows give provenance for **2208 of
-the 2528 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2096 rows give provenance for **2212 of
+the 2532 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -56,16 +58,17 @@ rows repointed at `src/phi_raw_tests/medium.rs`, three `compile_fail/ssa_*.rs`
 rows repointed at the `ssa_builder.rs` runtime locks that replaced those
 retired fixtures, and two `compile_fail/*_pass_*.rs` rows deleted because the
 `PassPipelineInfo` / `*PassManager` machinery they exercised was itself deleted
-in `2f1f390` and has no successor. The 2208/320 split is the 2026-08-20
+in `2f1f390` and has no successor. The 2212/320 split is the 2026-08-20
 hex-case audit's 2190/323 carried forward by arithmetic, not a fresh audit: the
 five rows added at the funclet-parity commit each name exactly one of the five
 tests added there (+5 covered, 0 unrowed), the three `ssa_*` repoints each
 name a test that previously carried no row at all (+3 covered, -3 unrowed), and
 fix round 4's one added test landed with its own row (+1 covered, 0 unrowed),
-and the operand-bundle work added ten rowed tests and replaced one rowed test
-across `4e28f78..HEAD` (+9 covered, 0 unrowed).
+the operand-bundle work added ten rowed tests and replaced one rowed test
+(+9 covered, 0 unrowed), and the `shufflevector` `isValidOperands` port added
+four rowed tests and renamed one rowed test (+4 covered, 0 unrowed).
 Re-running the full audit means expanding the group rows by hand (see the
-methodology note below); do not quote 2208 as a freshly derived number.
+methodology note below); do not quote 2212 as a freshly derived number.
 
 > **Methodology, because the previous header's numbers are not comparable.**
 > Through Wave 11 the audit matched rows to tests by looking for a
@@ -82,7 +85,7 @@ methodology note below); do not quote 2208 as a freshly derived number.
 > closed are the group rows finally being credited, not new provenance. That
 > figure is a **dated measurement, not a baseline for this commit**: it was
 > taken at `3a6d379`, the matcher it used is unrecorded, and the distinct-name
-> total has since moved to 2528. Do not subtract it from today's numbers; if
+> total has since moved to 2532. Do not subtract it from today's numbers; if
 > you want a live figure, re-derive it and state the matcher alongside it.
 
 The gap is inherited, not new: it accumulated across the type-safety and
@@ -632,6 +635,10 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_element_vector_float_at_i8` | `test/Bitcode/compatibility.ll` lines 1537-1538 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_zeroinitializer_mask` | `test/Bitcode/compatibility.ll` line 1539 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_explicit_mask_print` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, ShuffleMaskQueries)` | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_zero_mask_splat` | `test/Bitcode/vscale-round-trip.ll::@non_const_shufflevector`, built through the builder; `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable branch and the `ArrayRef<int>` constructor's result type | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_poison_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable branch's `Mask[0] != PoisonMaskElem` half and `ShuffleVectorInst::convertShuffleMaskForBitcode`'s scalable `PoisonValue::get` arm; no upstream `.ll` fixture writes a scalable poison mask | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_rejects_a_non_splat_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable branch, both disjuncts of `(Mask[0] != 0 && Mask[0] != PoisonMaskElem) \|\| !all_equal(Mask)`; upstream has no `.ll` or gtest fixture for it | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_rejects_an_out_of_range_mask_lane` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` mask-range clause `Elem >= V1Size * 2`; the constant-expression twin is `parser_constants.rs::constant_expr_shufflevector_rejects_out_of_range_mask` | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic.rs::fence_system_scope_orderings` | `test/Bitcode/compatibility.ll` lines 893-898 | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic.rs::fence_singlethread_seq_cst` | `test/Bitcode/compatibility.ll` line 899 | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic.rs::cmpxchg_no_align_monotonic_monotonic` | `test/Bitcode/compatibility.ll` line 810 | mirror |
@@ -1043,7 +1050,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::function_call_global_reference` | `test/Assembler/call.ll`; `LLParser::parseCall` with `@func` callee reference | mirror |
 | `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_integer_type_rejects_width_overflow` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` integer width rejection | mirror |
 | `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_shuffle_mask_rejects_bad_element` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID`'s `default:` (`expected value token`), reached through `parseShuffleVector`, which re-words nothing | mirror |
-| `crates/llvmkit-asmparser/tests/parser_errors.rs::shufflevector_rejects_non_i32_mask_type` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseShuffleVector` lines 8295-8306; `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` lines 1805-1853 | mirror |
+| `crates/llvmkit-asmparser/tests/parser_errors.rs::shufflevector_rejects_non_i32_mask_type` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseShuffleVector`, whose single `error(Loc, "invalid shufflevector operands")` covers the mask; `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` (`const Value *Mask` overload) mask element-type check. Nothing under `test/Assembler`, `test/Verifier` or `test/Bitcode` pins this diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_string_round_trips_module` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_file_reads_file` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_dynamic_returns_an_owned_verifiable_module` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyString` (returns `std::unique_ptr<Module>`) | mirror -- llvmkit's closure-free entry points restore the by-value return shape upstream always had |
@@ -1164,7 +1171,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_inrange_signed_hex_active_bits_are_preserved` | `llvm/lib/AsmParser/LLLexer.cpp` hexadecimal APSInt active-bit truncation; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` constant GEP `inrange` non-empty validation | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_shufflevector_rejects_non_i32_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` mask element must be i32; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` shufflevector branch | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_shufflevector_rejects_out_of_range_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` fixed-vector mask element range check; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` shufflevector branch | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_scalable_shufflevector_zero_mask_fixture_matches_upstream` | `test/Bitcode/vscale-round-trip.ll` `const_shufflevector` cases; `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::getShuffleMask` scalable `zeroinitializer` mask decoding | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::vscale_round_trip_fixture_matches_upstream` | `test/Bitcode/vscale-round-trip.ll`, whole file, asserting all four CHECK-LABEL / CHECK pairs; `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable branch and the `ArrayRef<int>` constructor's `VectorType::get(EltTy, Mask.size(), isa<ScalableVectorType>(V1->getType()))` result type | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_rejects_scalable_vector_pointee` | `test/Assembler/constant-getelementptr-scalable_pointee.ll`; `llvm/include/llvm/IR/Constants.h::ConstantExpr::isSupportedGetElementPtr`; `llvm/lib/IR/Type.cpp::Type::isScalableTy` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_rejects_disagreeing_vector_index_widths` | `test/Assembler/getelementptr_vec_ce2.ll`, fixture verbatim, asserting its CHECK line | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_checks_run_in_upstream_order` | `LLParser::parseValID`'s `getelementptr` arm (`llvm/lib/AsmParser/LLParser.cpp`), `StructType::isSized` and `ConstantExpr::isSupportedGetElementPtr`; no upstream `.ll` pins these in constant-expression form | llvmkit-specific |

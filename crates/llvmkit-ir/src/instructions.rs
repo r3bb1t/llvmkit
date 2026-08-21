@@ -2614,6 +2614,126 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
     pub fn mask(self) -> &'ctx [ShuffleMaskElem] {
         &self.payload().mask
     }
+
+    /// Mirrors `ShuffleVectorInst::isValidOperands(const Value *V1, const
+    /// Value *V2, ArrayRef<int> Mask)` (`Instructions.cpp`) — the
+    /// **decoded-mask** overload. It is what the
+    /// `ShuffleVectorInst(Value *, Value *, ArrayRef<int>, ...)` constructor
+    /// asserts on, what `ConstantExpr::getShuffleVector` asserts on, and what
+    /// `Verifier::visitShuffleVectorInst` calls.
+    ///
+    /// It is **not** the same predicate as
+    /// [`Self::is_valid_operands_with_constant_mask`]: only that one has the
+    /// `undef` / `zeroinitializer` early `return true` that precedes every
+    /// scalable test.
+    ///
+    /// Two spellings change because Rust forces them; neither changes the
+    /// logic.
+    ///
+    /// * `Elem != PoisonMaskElem` is [`ShuffleMaskElem::Lane`], and
+    ///   `Mask[0] != 0 && Mask[0] != PoisonMaskElem` is the pair of variant
+    ///   tests below. [`ShuffleMaskElem`] has exactly two cases, so the
+    ///   translation is exact — there is no second negative sentinel in the IR
+    ///   alphabet (`SM_SentinelZero` belongs to code generation, which is out
+    ///   of scope; `docs/divergences.md` entry 69).
+    /// * `Mask[0]` on an empty mask is `ArrayRef::operator[]`'s bounds
+    ///   assertion. A crate that forbids runtime panics cannot abort, so the
+    ///   empty scalable mask answers `false` — the verdict LLVM reaches one
+    ///   step later anyway, since the constructor then calls
+    ///   `VectorType::get(EltTy, 0, /*Scalable=*/true)`, whose own assertion
+    ///   rejects a zero minimum element count.
+    pub fn is_valid_operands(
+        v1: Value<'ctx, B>,
+        v2: Value<'ctx, B>,
+        mask: &[ShuffleMaskElem],
+    ) -> bool {
+        // V1 and V2 must be vectors of the same type.
+        //
+        // The same read also yields upstream's
+        // `cast<VectorType>(V1->getType())->getElementCount().getKnownMinValue()`,
+        // which `TypeData::as_vector` already returns for both vector kinds.
+        let Some((_, v1_size, v1_scalable)) = v1.ty().data().as_vector() else {
+            return false;
+        };
+        if v1.ty() != v2.ty() {
+            return false;
+        }
+
+        // Make sure the mask elements make sense.
+        //
+        // `V1Size * 2` is `int` arithmetic upstream; widening to `u64` keeps
+        // the comparison exact for every `u32` lane count instead of wrapping.
+        let bound = u64::from(v1_size) * 2;
+        for element in mask {
+            if let ShuffleMaskElem::Lane(lane) = *element
+                && u64::from(lane) >= bound
+            {
+                return false;
+            }
+        }
+
+        if v1_scalable {
+            let Some(&first) = mask.first() else {
+                return false;
+            };
+            if (first != ShuffleMaskElem::Lane(0) && first != ShuffleMaskElem::Poison)
+                || !mask.iter().all(|element| *element == first)
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Mirrors `ShuffleVectorInst::isValidOperands(const Value *V1, const
+    /// Value *V2, const Value *Mask)` (`Instructions.cpp`) — the
+    /// **constant-mask** overload, the one `LLParser::parseShuffleVector`
+    /// calls before the mask is decoded.
+    ///
+    /// The difference from [`Self::is_valid_operands`] is load-bearing: the
+    /// `undef` / `zeroinitializer` early `return true` in the tail (the
+    /// crate-internal `valid_shufflevector_mask_constant`)
+    /// precedes every scalable test, which is precisely why a scalable
+    /// `zeroinitializer` mask is accepted while
+    /// `if (isa<ScalableVectorType>(MaskTy)) return false;` two lines below it
+    /// refuses every other scalable mask.
+    ///
+    /// `mask` is a `Value`, not a `Constant`, because upstream's is: a
+    /// non-constant mask reaches the routine's closing `return false` rather
+    /// than being refused earlier.
+    pub fn is_valid_operands_with_constant_mask(
+        v1: Value<'ctx, B>,
+        v2: Value<'ctx, B>,
+        mask: Value<'ctx, B>,
+    ) -> bool {
+        // V1 and V2 must be vectors of the same type.
+        let Some((_, v1_size, v1_scalable)) = v1.ty().data().as_vector() else {
+            return false;
+        };
+        if v1.ty() != v2.ty() {
+            return false;
+        }
+
+        // Mask must be vector of i32, and must be the same kind of vector as
+        // the input vectors.
+        let Some((mask_elem, _, mask_scalable)) = mask.ty().data().as_vector() else {
+            return false;
+        };
+        if Type::new(mask_elem, mask.ty().module()).data().as_integer() != Some(32)
+            || mask_scalable != v1_scalable
+        {
+            return false;
+        }
+
+        // Check to see if Mask is valid.
+        crate::constants::valid_shufflevector_mask_constant(
+            v1.ty().module().core_ref(),
+            mask.slot(),
+            v1_size,
+            v1_scalable,
+        )
+    }
 }
 
 // --------------------------------------------------------------------------

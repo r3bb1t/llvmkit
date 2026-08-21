@@ -468,24 +468,35 @@ fn constant_expr_shufflevector_rejects_out_of_range_mask() {
     );
 }
 
-/// Exact scalable constant-expression shufflevector excerpt from
-/// `test/Bitcode/vscale-round-trip.ll` `const_shufflevector` cases.
+/// `test/Bitcode/vscale-round-trip.ll`, the whole file, asserting each of its
+/// four `CHECK-LABEL` / `CHECK` pairs in file order.
+///
+/// Upstream's RUN line is `llvm-as < %s | llvm-dis | FileCheck %s`, so the
+/// CHECK lines are what the printer emits after a bitcode round trip. Three of
+/// the four functions are constant-expression cases;
+/// `@non_const_shufflevector` is the instruction form, which needs
+/// `ShuffleVectorInst::isValidOperands`' scalable branch —
+/// `(Mask[0] != 0 && Mask[0] != PoisonMaskElem) || !all_equal(Mask)` — to
+/// admit an all-zero mask, and the `ShuffleVectorInst(Value *, Value *,
+/// ArrayRef<int>, ...)` constructor's
+/// `VectorType::get(EltTy, Mask.size(), isa<ScalableVectorType>(V1->getType()))`
+/// to give it a scalable result type.
 #[test]
-fn constant_expr_scalable_shufflevector_zero_mask_fixture_matches_upstream() {
-    const FIXTURE: &[u8] =
-        include_bytes!("fixtures/upstream/vscale-round-trip/const_shufflevector.ll");
+fn vscale_round_trip_fixture_matches_upstream() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/vscale-round-trip.ll");
 
-    let text = parse_and_render(
-        "constant_expr_scalable_shufflevector_zero_mask_fixture_matches_upstream",
-        FIXTURE,
-    );
+    let text = parse_and_render("vscale_round_trip_fixture_matches_upstream", FIXTURE);
     assert_check_lines(
         &text,
         &[
             "define <vscale x 4 x i32> @const_shufflevector()",
-            "ret <vscale x 4 x i32> zeroinitializer",
+            "<vscale x 4 x i32> zeroinitializer",
             "define <vscale x 4 x i32> @const_shufflevector_ex()",
-            "ret <vscale x 4 x i32> zeroinitializer",
+            "<vscale x 4 x i32> zeroinitializer",
+            "define <vscale x 4 x i32> @non_const_shufflevector(",
+            "%res = shufflevector <vscale x 4 x i32>",
+            "define <vscale x 4 x i32> @const_select()",
+            "select <vscale x 4 x i1>",
         ],
     );
     assert_parse_print_parse_stable(&text);

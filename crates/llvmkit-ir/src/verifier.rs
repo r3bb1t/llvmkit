@@ -40,6 +40,7 @@ use super::instr_types::{
     SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VaArgInstData,
 };
 use super::instruction::{InstructionKind, TerminatorKind};
+use super::instructions::ShuffleVectorInst;
 use super::intrinsics::IntrinsicNameResolution;
 use super::module::ModuleRef;
 use super::value::Value;
@@ -1729,8 +1730,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// `Verifier::visitShuffleVectorInst`. Both vector operands must
-    /// agree on element type; the result is `<mask.len() x elem>`.
+    /// `Verifier::visitShuffleVectorInst`, whose entire body is one
+    /// `Check(ShuffleVectorInst::isValidOperands(SV.getOperand(0),
+    /// SV.getOperand(1), SV.getShuffleMask()), "Invalid shufflevector
+    /// operands!", &SV)`.
+    ///
+    /// The checks after it have no upstream counterpart and are defence in
+    /// depth: upstream's result type is computed by the constructor and cannot
+    /// disagree with the operands, while llvmkit's arena can hold an
+    /// instruction whose recorded result type does.
     fn check_shuffle_vector(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -1738,6 +1746,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         d: &ShuffleVectorInstData,
     ) -> IrResult<()> {
+        let lhs: Value<'ctx, B> =
+            Value::from_parts(d.lhs.get(), self.module, self.value_type(d.lhs.get()));
+        let rhs: Value<'ctx, B> =
+            Value::from_parts(d.rhs.get(), self.module, self.value_type(d.rhs.get()));
+        if !ShuffleVectorInst::is_valid_operands(lhs, rhs, &d.mask) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::ShuffleVectorTypeMismatch,
+                "Invalid shufflevector operands!".to_string(),
+            ));
+        }
+
         let l_ty = self.value_type(d.lhs.get());
         let r_ty = self.value_type(d.rhs.get());
         let l_elem = match self.module.context().type_data(l_ty).as_vector() {

@@ -1414,7 +1414,10 @@ fn aggregate_index_lists_and_operands_are_validated() {
 ///
 /// Each `isValidOperands` message covers *every* way its predicate can fail,
 /// which is why upstream needs one text where llvmkit had several invented
-/// per-operand labels.
+/// per-operand labels. The `shufflevector` rows spell out that breadth: the
+/// operand-type pair, the scalable-mask branch, the mask type's scalability,
+/// the `Elem >= V1Size * 2` range clause and a non-constant mask all produce
+/// the one message, at the first operand.
 #[test]
 fn instruction_operand_rules_match_upstream_text() {
     for (src, expected) in [
@@ -1452,6 +1455,33 @@ fn instruction_operand_rules_match_upstream_text() {
         (
             "define void @f(<2 x i32> %a, <4 x i32> %b) {\nentry:\n  \
              %v = shufflevector <2 x i32> %a, <4 x i32> %b, <2 x i32> zeroinitializer\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+        // `isValidOperands`' scalable branch: a scalable operand admits only
+        // an all-zero or all-poison mask. `splat (i32 1)` is neither.
+        (
+            "define void @f(<vscale x 4 x i32> %a, <vscale x 4 x i32> %b) {\nentry:\n  \
+             %v = shufflevector <vscale x 4 x i32> %a, <vscale x 4 x i32> %b, <vscale x 4 x i32> splat (i32 1)\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+        // `isa<ScalableVectorType>(MaskTy) != isa<ScalableVectorType>(V1->getType())`.
+        (
+            "define void @f(<vscale x 4 x i32> %a, <vscale x 4 x i32> %b) {\nentry:\n  \
+             %v = shufflevector <vscale x 4 x i32> %a, <vscale x 4 x i32> %b, <4 x i32> zeroinitializer\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+        // `Elem >= V1Size * 2` — a lane naming neither source.
+        (
+            "define void @f(<2 x i32> %a, <2 x i32> %b) {\nentry:\n  \
+             %v = shufflevector <2 x i32> %a, <2 x i32> %b, <4 x i32> <i32 0, i32 99, i32 2, i32 3>\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+        // The routine's closing `return false`: a mask that is not a constant
+        // at all. Upstream reads it with `parseTypeAndValue`, so it parses
+        // cleanly and `isValidOperands` is what refuses it.
+        (
+            "define void @f(<4 x i32> %a, <4 x i32> %b, <4 x i32> %m) {\nentry:\n  \
+             %v = shufflevector <4 x i32> %a, <4 x i32> %b, <4 x i32> %m\n  ret void\n}\n",
             "invalid shufflevector operands",
         ),
     ] {

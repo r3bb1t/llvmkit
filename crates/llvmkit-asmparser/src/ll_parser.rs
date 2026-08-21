@@ -50,10 +50,9 @@ use llvmkit_ir::{
     ConstantExprOpcode, ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatPredicate,
     FpClassTest, GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
     IrBuilder, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
-    Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, Signedness, StructType, SyncScope,
-    ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, ValueCategory,
-    Visibility, derived_types::PointerType, resolve_intrinsic_name,
-    shufflevector_mask_from_constant,
+    Positioned, RoundingMode, SelectionKind, Signedness, StructType, SyncScope, ThreadLocalMode,
+    Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, ValueCategory, Visibility,
+    derived_types::PointerType, resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
 use llvmkit_ir::{FunctionValue, IsValue};
 use llvmkit_macros::Branded;
@@ -13369,20 +13368,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(b.view(v))
     }
 
-    /// `shufflevector <vec-ty> <v1>, <vec-ty> <v2>, <mask>`.
-    /// The mask is `< i32 N, i32 M, ... >` or `poison`. Mirrors
+    /// `shufflevector <ty> <v1>, <ty> <v2>, <mask-ty> <mask>`. Mirrors
     /// `LLParser::parseShuffleVector`.
     ///
-    /// Upstream: `test/Assembler/shufflevector.ll`.
+    /// The only `test/Assembler` fixture naming this opcode is
+    /// `constant-splat.ll`, and it writes the *constant-expression* form;
+    /// `test/Verifier` names it nowhere, and nothing under `test/Assembler`,
+    /// `test/Verifier` or `test/Bitcode` pins this routine's diagnostic. The
+    /// instruction form is exercised by `test/Bitcode/vscale-round-trip.ll`
+    /// (`@non_const_shufflevector`) and `test/Bitcode/compatibility.ll`; the
+    /// rule itself is `ShuffleVectorInst::isValidOperands`
+    /// (`Instructions.cpp`).
     fn parse_shufflevector(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        // `ShuffleVectorInst::isValidOperands` requires both source operands
-        // to be vectors of the *same* type; upstream reports every failure
-        // with one message, anchored on the first operand.
+        // `LocTy Loc;` — `parseTypeAndValue(Op0, Loc, PFS)` records the span of
+        // the FIRST operand, and the routine's one error is anchored there.
         let operand_loc = self.loc();
         let v1_ty = self.parse_type(false)?;
         let v1 = self.parse_value(state, v1_ty)?;
@@ -13390,52 +13394,46 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let v2_ty = self.parse_type(false)?;
         let v2 = self.parse_value(state, v2_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after shuffle value")?;
-        if !is_vector_type(v1_ty) || v1_ty != v2_ty {
+        // `parseTypeAndValue(Op2, PFS)`. The mask is read as an ordinary
+        // value, not as a constant: upstream lets `%m` through here and lets
+        // `isValidOperands` refuse it, so the diagnostic stays the operand one.
+        // Whatever this parse says propagates untouched — upstream re-words
+        // nothing.
+        let mask_ty = self.parse_type(false)?;
+        let mask = self.parse_value(state, mask_ty)?;
+
+        // `if (!ShuffleVectorInst::isValidOperands(Op0, Op1, Op2))
+        //    return error(Loc, "invalid shufflevector operands");`
+        // One check, one message, anchored at the first operand — the mask's
+        // type and shape are part of it.
+        if !llvmkit_ir::ShuffleVectorInst::is_valid_operands_with_constant_mask(v1, v2, mask) {
             return Err(self.message_at(operand_loc, "invalid shufflevector operands"));
         }
-        // Parse mask as the upstream typed constant operand.
-        let mask = self.parse_shuffle_mask(v1_ty)?;
+
+        // `Inst = new ShuffleVectorInst(Op0, Op1, Op2);`, whose body runs
+        // `getShuffleMask(cast<Constant>(Mask), MaskArr)` before constructing.
+        // Both of that step's failure modes are assertions upstream — the
+        // `cast<Constant>`, and `getShuffleMask`'s "Scalable vector shuffle
+        // mask must be undef or zeroinitializer" — and the check above has
+        // already made each unreachable. llvmkit does not port a crash: the
+        // decode answers upstream's own message for this routine at upstream's
+        // own anchor, so no text is invented and no failure is swallowed.
+        let decoded = llvmkit_ir::Constant::try_from(mask)
+            .ok()
+            .and_then(shufflevector_mask_from_constant)
+            .ok_or_else(|| self.message_at(operand_loc, "invalid shufflevector operands"))?;
+        // `setShuffleMask(MaskArr)` plus the `Value *Mask` constructor's own
+        // `VectorType::get(V1 element type, cast<VectorType>(Mask->getType())
+        // ->getElementCount())`. `IrBuilder::shuffle_vector` is the
+        // `ArrayRef<int>` constructor, which spells the same type as
+        // `VectorType::get(EltTy, Mask.size(), isa<ScalableVectorType>(V1->
+        // getType()))`; the two agree here because `getShuffleMask` yields one
+        // entry per mask-type lane, and the check above proved the mask's
+        // scalability equal to V1's.
         let v = b
-            .shuffle_vector(v1, v2, &mask, result_name.as_str())
+            .shuffle_vector(v1, v2, &decoded, result_name.as_str())
             .map_err(|e| self.builder_err("shufflevector", e))?;
         Ok(b.view(v))
-    }
-
-    /// Parse a shufflevector mask typed constant operand and decode it with
-    /// `ShuffleVectorInst::getShuffleMask` semantics.
-    fn parse_shuffle_mask(
-        &mut self,
-        vector_ty: Type<'ctx, B>,
-    ) -> ParseResult<Vec<ShuffleMaskElem>> {
-        let mask_ty = self.parse_type(false)?;
-        let loc = self.loc();
-        let valid_mask_ty = match (AnyTypeEnum::from(vector_ty), AnyTypeEnum::from(mask_ty)) {
-            (AnyTypeEnum::Vector(vector_ty), AnyTypeEnum::Vector(mask_ty)) => {
-                matches!(mask_ty.element().kind(), TypeKind::Integer { bits: 32 })
-                    && mask_ty.is_scalable() == vector_ty.is_scalable()
-            }
-            _ => false,
-        };
-        if !valid_mask_ty {
-            return Err(ParseError::Expected {
-                expected: "valid shufflevector mask".into(),
-                loc: DiagLoc::span(loc),
-            });
-        }
-        // No re-wording of what the operand parse says. `LLParser::
-        // parseShuffleVector` propagates `parseTypeAndValue`'s failure
-        // untouched — an element that is not a value is `expected value
-        // token`, from `LLParser::parseValID`'s `default:`. The two arms that
-        // used to rewrite this into `valid shufflevector mask element` /
-        // `valid shufflevector mask` existed because llvmkit's lexer failed
-        // outright on an unlexable element and the parser had nothing to say;
-        // with `Token::Error` reaching `parse_val_id`, upstream's own message
-        // arrives on its own.
-        let mask = self.parse_global_value(mask_ty)?;
-        shufflevector_mask_from_constant(mask).ok_or_else(|| ParseError::Expected {
-            expected: "valid shufflevector mask".into(),
-            loc: DiagLoc::span(loc),
-        })
     }
 
     /// `extractvalue <agg-ty> <agg>, <idx>, ...`. Mirrors

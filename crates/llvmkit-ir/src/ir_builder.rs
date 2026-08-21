@@ -92,7 +92,7 @@ use super::instruction::{
 use super::instructions::FenceInst;
 use super::instructions::{
     CallBrInst, CallInst, CatchPadInst, CatchSwitchInst, CleanupPadInst, IndirectBrInst,
-    InvokeInst, LandingPadInst, StoreInst, SwitchInst,
+    InvokeInst, LandingPadInst, ShuffleVectorInst, StoreInst, SwitchInst,
 };
 use super::int_width::WiderThan;
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
@@ -3621,6 +3621,11 @@ where
     /// `IRBuilder::CreateShuffleVector`. Each mask element is a
     /// [`ShuffleMaskElem`]: `Lane(n)` selects lane `n` of the two operands
     /// taken as one concatenated vector, and `Poison` is upstream's `-1`.
+    ///
+    /// The validity rule is `ShuffleVectorInst::isValidOperands`'s
+    /// `ArrayRef<int>` overload — including its scalable branch, under which a
+    /// scalable operand admits an all-`Lane(0)` or all-`Poison` mask and
+    /// nothing else.
     pub fn shuffle_vector<L, Rhs2, Name>(
         &self,
         lhs: L,
@@ -3635,32 +3640,43 @@ where
     {
         let l = lhs.into_erased_value(ModuleRef::new(self.module))?;
         let r = rhs.into_erased_value(ModuleRef::new(self.module))?;
-        if l.ty != r.ty {
+        // `VectorType::get(cast<VectorType>(V1->getType())->getElementType(),
+        //  Mask.size(), isa<ScalableVectorType>(V1->getType()))` — the
+        // `ShuffleVectorInst(Value *, Value *, ArrayRef<int>, ...)`
+        // constructor's own result type, computed in its initializer list.
+        // That runs *before* the body's `assert(isValidOperands(...))`, so it
+        // is written first here too: scalability comes from V1, the lane count
+        // from the mask length.
+        //
+        // `cast<VectorType>` is unchecked upstream; a crate with no runtime
+        // panics has to answer a non-vector first operand instead of aborting.
+        let Some((elem, _, scalable)) = self.module.context().type_data(l.ty).as_vector() else {
             return Err(IrError::TypeMismatch {
-                expected: l.ty().kind_label(),
-                got: r.ty().kind_label(),
+                expected: TypeKindLabel::FixedVector,
+                got: l.ty().kind_label(),
             });
-        }
-        let elem = match self.module.context().type_data(l.ty).as_vector() {
-            Some((e, _, scalable)) => {
-                if scalable {
-                    return Err(IrError::InvalidOperation {
-                        message: "shufflevector with scalable input is not yet supported",
-                    });
-                }
-                e
-            }
-            None => {
-                return Err(IrError::TypeMismatch {
-                    expected: TypeKindLabel::FixedVector,
-                    got: l.ty().kind_label(),
-                });
-            }
         };
         let mask_len = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
             message: "shufflevector mask too large",
         })?;
-        let result_ty_id = self.module.context().fixed_vector_type(elem, mask_len);
+        let result_ty_id = self
+            .module
+            .context()
+            .vector_type_with_scalability(elem, mask_len, scalable);
+        // `assert(isValidOperands(V1, V2, Mask) && "Invalid shuffle vector
+        // instruction operands!")`. `IRBuilderBase::CreateShuffleVector` runs
+        // `Folder.FoldShuffleVector` first, but that path asserts the same
+        // predicate one call down, in `ConstantExpr::getShuffleVector`, so the
+        // single check here is on both of upstream's branches. The text is
+        // `LLParser::parseShuffleVector`'s, which is what a user of the same
+        // rejection reads; upstream's assert string is not a diagnostic. The
+        // parser never surfaces this one, because — exactly as upstream — it
+        // runs its own `isValidOperands` before constructing.
+        if !ShuffleVectorInst::is_valid_operands(l, r, mask) {
+            return Err(IrError::InvalidOperation {
+                message: "invalid shufflevector operands",
+            });
+        }
         if let Some(folded) = self.folder.fold_shuffle_vector_dyn(l, r, mask)? {
             return self
                 .checked_folded_value(folded, result_ty_id)

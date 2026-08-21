@@ -1581,7 +1581,25 @@ fn vector_splat_constant(
         .as_type();
     Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
 }
-fn valid_shufflevector_mask_constant(
+/// Ports the mask-value tail of `ShuffleVectorInst::isValidOperands(const
+/// Value *V1, const Value *V2, const Value *Mask)` (`Instructions.cpp`):
+/// every statement from its
+/// `if (isa<UndefValue>(Mask) || isa<ConstantAggregateZero>(Mask)) return true;`
+/// early return through the closing `return false`.
+///
+/// The head of that routine — the two type checks — is
+/// `ShuffleVectorInst::is_valid_operands_with_constant_mask`,
+/// which calls this. `lhs_lanes` is upstream's `V1Size`, and `lhs_scalable`
+/// stands in for `isa<ScalableVectorType>(MaskTy)`, which the head has already
+/// proved equal to `isa<ScalableVectorType>(V1->getType())`.
+///
+/// `dyn_cast<ConstantDataSequential>`'s arm is folded into the
+/// `ConstantVector` one because llvmkit has a single `ConstantData::Aggregate`
+/// representation for both and the element predicate is the same in each
+/// (`< V1Size * 2`, or `isa<UndefValue>`). `dyn_cast<ConstantInt>(Mask)` — a
+/// *scalar* mask — is dead upstream, since the head already required `MaskTy`
+/// to be a `VectorType`, so it has no arm here.
+pub(crate) fn valid_shufflevector_mask_constant(
     module: &ModuleCore,
     mask: ValueSlot,
     lhs_lanes: u32,

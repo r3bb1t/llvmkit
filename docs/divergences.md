@@ -31,8 +31,7 @@ the block you are trusting or replacing — on its `<summary>` line.
 Entry prose cites upstream **by symbol, never by line number** (repo law: line
 numbers rot the moment the vendored tree moves). The `Correction from
 verification` and `<details>` blocks predate that rule and still carry
-`File.cpp:LINE` pointers — about 157 at 0.0.4, all of them at doc line >= 573
-and none in an entry's **LLVM:** / **llvmkit:** / **Why:** / **Fix:** bullets.
+`File.cpp:LINE` pointers.
 Treat those coordinates as valid only against the vendored 22.1.4 tree, and
 re-derive the symbol before quoting one. The sweep is recorded in
 [`future-work.md`](future-work.md).
@@ -688,21 +687,6 @@ crates/llvmkit-asmparser/src/ll_parser.rs — `parse_gep` (12102-12218). Upstrea
 
 </details>
 
-### 10. `shufflevector` on scalable vectors rejected outright
-
-*IrBuilder / parser* — crates/llvmkit-ir/src/ir_builder.rs:3646-3650, reached from crates/llvmkit-asmparser/src/ll_parser.rs:12594
-
-- **LLVM:** `ShuffleVectorInst::isValidOperands` accepts scalable operands; the only extra rule is that a scalable shuffle's mask must be all-zeros or all-poison (`ShuffleVectorInst::isValidOperands` / `Verifier::visitShuffleVectorInst`). `shufflevector <vscale x 4 x i32> %a, <vscale x 4 x i32> poison, <vscale x 4 x i32> zeroinitializer` is the canonical scalable splat idiom and parses fine.
-- **llvmkit:** `IrBuilder::shuffle_vector` returns `IrError::InvalidOperation { message: "shufflevector with scalable input is not yet supported" }` as soon as the operand vector is scalable. `LLParser`'s `parse_shufflevector` routes straight to it (via `builder_err`), so the parser rejects the idiom — even though `parse_shuffle_mask` already handles the scalable mask-type rule correctly just above.
-- **Why:** Unrecorded — there is no explanatory comment, only the error string. This is the one item in this list carried solely by a message rather than by a recorded rationale, and its "not yet supported" phrasing hides a hard rejects-valid behind what reads like a TODO.
-- **Fix:** Port `ShuffleVectorInst::isValidOperands`'s scalable branch: allow a scalable operand when the decoded mask is entirely `Poison` or entirely `Lane(0)`, and keep the rejection (with upstream's wording) otherwise. The mask decode already exists in `shufflevector_mask_from_constant`. Add the ported `test/Assembler/shufflevector.ll` scalable cases and an `UPSTREAM.md` row; if the gap must stay open, replace the message with a recorded divergence comment naming what is missing and why.
-
-<details><summary>Verification evidence</summary>
-
-CONFIRMED REAL AND STILL PRESENT; description accurate at both cited paths. 1. crates/llvmkit-ir/src/ir_builder.rs:3644-3659 — `IrBuilder::shuffle_vector` matches the operand type as a vector and, at lines 3646-3650 (exactly the cited range), bails on the scalable flag: `if scalable { return Err(IrError::InvalidOperation { message: "shufflevector with scalable input is not yet supported" }); }`. Repo-wide grep for that message returns exactly one hit; grep for shuffle_vector builders shows no alternative scalable-capable entry point. Note the result type is also built with `context().fixed_vector_type(elem, mask_len)` at line 3663, so the body is structurally fixed-vector-only. 2. crates/llvmkit-asmparser/src/ll_parser.rs:12594-12596 — `parse_shufflevector` calls `b.shuffle_vector(v1, v2, &mask, ...)` and wraps any error in `self.builder_err("shufflevector", e)`, so the builder refusal becomes a parse error, as claimed. 3. Upstream orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/Instructions.cpp:1785-1803 — `ShuffleVectorInst::isValidOperands(V1, V2, ArrayRef<int> Mask)` accepts scalable operands; the sole scalable-specific rule is `if (isa<ScalableVectorType>(V1->getType())) if ((Mask[0] != 0 && Mask[0] != PoisonMaskElem) || !all_equal(Mask)) return false;` — i.e. all-zeros or all-poison, exactly as the claim describes. Verifier.cpp:4421-4426 (`visitShuffleVectorInst`) only delegates to that predicate. 4. Empirical (temporary test, run on +1.96.0 --release, then deleted; tree verified clean): parsing `define <vscale x 4 x i32> @splat(<vscale x 4 x i32> %a) { %s = shufflevector <vscale x 4 x i32> %a, <vscale x 4 x i32> poison, <vscale x 4 x i32> zeroinitializer ... }` returns `Err(Expected { expected: "valid shufflevector: invalid operation: shufflevector with scalable input is not yet supported", loc: ... })`, while the identical fixed-vector `<4 x i32>` shuffle returns `Ok(())`. Because the failure surfaces from the builder rather than the mask parse, this also confirms the claim's supporting detail that `parse_shuffle_mask` (ll_parser.rs:12602-12636, checking `mask_ty.is_scalable() == vector_ty.is_scalable()`) already handled the scalable mask type correctly before the builder refused. SCOPING NUANCE (does not contradict the claim, which is explicitly about IrBuilder/parse_shufflevector): the CONSTANT-EXPRESSION form of a scalable shuffle works today via a different validation path in crates/llvmkit-ir/src/constants.rs (`valid_shufflevector_mask_constant`, ~line 1584 and 2183-2230). Passing fixtures: crates/llvmkit-asmparser/tests/fixtures/upstream/vscale-round-trip/const_shufflevector.ll (registered in parser_corpus_manifest.txt line 11, status=pass) and crates/llvmkit-asmparser/tests/constant_expression_splat.rs. So the gap is confined to the instruction form, even though the module already models scalable shuffle semantics correctly one path over.
-
-</details>
-
 ### 12. `call addrspace(1) void @f()` does not parse (P0)
 
 *parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs:12915 (parse_call), :14028 (parse_invoke), :14167 (parse_callbr)
@@ -1275,37 +1259,6 @@ llvmkit source, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_p
 C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp:880-925 — `parseComdat` has `if (parseToken(lltok::kw_comdat, "expected comdat keyword")) return tokError("expected comdat type");` at 889-890, then the selection-kind switch whose default is `tokError("unknown selection kind")` at 894-895, and `expected '=' here` at 886. Same file:1870-1875 — `parseToken` returns `tokError(ErrMsg)` on kind mismatch, confirming both messages fire on one failure. C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/AsmParser/LLLexer.h:35-39, 99-102 — `enum class ErrorPriority { None, Parser, Lexer }`; `ParseError` calls `Error(..., ErrorPriority::Parser)`. C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLLexer.cpp:37-43 — `LLLexer::Error` early-returns only on `Priority < ErrorInfo.Priority`, so an equal-priority later call overwrites. This settles the "priority question" as deterministic. C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/AsmParser/LLParser.h:218-219, 239 — `tokError` -> `error` -> `Lex.ParseError`. C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs:4800-4840 — `parse_comdat_definition` as it stands today: line 4809 `expect_punct(PunctKind::Equal, "'=' after comdat name")?`, line 4810 `expect_keyword(Keyword::Comdat, "'comdat'")?`, line 4823 `self.message("unknown selection kind")`. No `expected comdat type` anywhere; the `?` on 4810 prevents any fall-through. Same file:2076-2101 — `expect_keyword` builds `ParseError::Expected { expected }` from its label; `expected()` wraps the bare production. C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/parse_error.rs:171-175 — `#[error("expected {expected}")] Expected { .. }`, so the label `'comdat'` renders as `expected 'comdat'`. Grep over C:/Users/olegg/Desktop/llvmkit/crates for `comdat type|comdat keyword` — zero matches, confirming the strings are absent from the crate. C:/Users/olegg/Desktop/llvmkit/orig_cpp/.../llvm/test/Assembler/invalid-comdat.ll and invalid-comdat2.ll — the only comdat negative fixtures; neither pins `expected comdat type`. Grep over C:/Users/olegg/Desktop/llvmkit/docs for `comdat type|comdat keyword|unknown selection kind` — zero matches, so the claim's "pending upstream's error-priority question" is not recorded anywhere in the project's own deferral ledger.
 
 </details>
-
-### 102. The shufflevector *mask* half reports an invented message
-
-**Severity:** wrong-message
-
-*parser — vector instructions* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_shuffle_mask`)
-
-Found 2026-08-16 during W14a, which deleted the sibling invention
-(`valid shufflevector mask element`) and left this one; not previously
-recorded.
-
-- **LLVM:** `LLParser::parseShuffleVector` has exactly **one** message of its
-  own. It reads three `TypeAndValue`s, propagating whatever they say, and then
-  runs `ShuffleVectorInst::isValidOperands(Op0, Op1, Op2)` once —
-  `error(Loc, "invalid shufflevector operands")`, anchored at the **first
-  operand**. The mask's type and shape are part of that one check.
-- **llvmkit:** `parse_shufflevector` gets the `Op0`/`Op1` half right (same
-  message, same anchor), then hands the mask to `parse_shuffle_mask`, which
-  has two checks of its own and reports both as
-  `expected valid shufflevector mask`, anchored at the *mask*: one before the
-  operand is read (the mask type is not an `<N x i32>` of matching
-  scalability) and one after (`shufflevector_mask_from_constant` cannot decode
-  it). Neither string exists upstream.
-- **Why:** not a decision — `parse_shuffle_mask` grew its own validity check
-  because llvmkit's builder needs a decoded `Vec<ShuffleMaskElem>`, not a
-  `Constant`, and the check was worded locally instead of folded into the
-  operand check. `parser_errors.rs::shufflevector_rejects_non_i32_mask_type`
-  pins the invented text today.
-- **Fix:** move both checks into `parse_shufflevector`'s existing
-  `isValidOperands` arm so all three operands share one
-  `invalid shufflevector operands` at `operand_loc`, and re-point that test.
 
 ### 105. A re-used numbered label reports `redefinition of label '%N'` where upstream reports `label expected to be numbered 'N' or greater`
 
@@ -2566,6 +2519,41 @@ Files read: `C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_lexe
 - **llvmkit:** `FunctionCfg::new` builds its predecessor map by iterating `function.basic_blocks()` and pushing each block onto its successors' lists, so `FunctionCfg::predecessors` answers in **block order**. The underlying use list *is* correct (`ValueData::add_use` head-inserts, and its rustdoc cites `Use::addToList` as the reason), so the two disagree.
 - **Why:** the CFG snapshot was written as an adjacency recomputation rather than a use-list view. Found while porting `AssemblyWriter::printBasicBlock`'s `; preds = …` comment, which needs upstream's order: that port reads the block's use list directly and does **not** go through `FunctionCfg`, so the divergence is not observable in printed output.
 - **Fix:** build the predecessor lists from each block's use list — `asm_writer.rs`'s `block_predecessors` helper is the routine — or make `FunctionCfg::predecessors` delegate to it. Check `crates/llvmkit-ir/tests/cfg_basic.rs`, `dominator_tree_basic.rs` and the verifier's own predecessor construction for order-dependent expectations first.
+
+### 119. A scalable shuffle answers "nothing known" where LLVM propagates the demanded set
+
+**Severity:** model-gap
+
+*value tracking* — crates/llvmkit-ir/src/value_tracking.rs (`shuffle_source_demands`),
+reached from `computeKnownBits`' and `computeKnownFPClass`' `ShuffleVector` arms
+
+- **LLVM:** the file-static `getShuffleDemandedElts(const ShuffleVectorInst *, const APInt &, APInt &, APInt &)`
+  in `lib/Analysis/ValueTracking.cpp` opens with
+  `if (isa<ScalableVectorType>(Shuf->getType())) { assert(DemandedElts == APInt(1,1)); DemandedLHS = DemandedRHS = DemandedElts; return true; }`
+  — a scalable shuffle succeeds, with both sources demanded, so `computeKnownBits`
+  recurses into the operands.
+- **llvmkit:** `shuffle_source_demands` answers `None` for a scalable operand
+  (`let (source_width, false) = vector_shape(lhs)? else { return None; }`), so
+  `shuffle_vector_known_bits` returns `KnownBits::unknown` and `shuffle_vector_fp_class`
+  returns `KnownFpClass::unknown` without recursing. Conservative-safe, never wrong, but
+  strictly less precise than LLVM.
+- **Why:** written when no scalable `shufflevector` instruction could be constructed, so
+  the branch was unreachable and the `false` pattern read as an assertion rather than a
+  choice. Porting `ShuffleVectorInst::isValidOperands` made it reachable.
+- **Fix:** reproduce the wrapper's scalable arm — return both sources fully demanded,
+  reusing the incoming demanded set. That needs llvmkit's demanded-elements width for a
+  scalable vector settled first: upstream's non-`DemandedElts` `computeKnownBits` entry
+  point seeds `APInt(1, 1)` for anything that is not a `FixedVectorType`, which is what
+  makes its `assert` hold, while `shuffle_source_demands` falls back to
+  `ApInt::all_ones(mask.len())`. `unittests/Analysis/ValueTrackingTest.cpp` has no
+  scalable-shuffle `computeKnownBits` case, so the fix would land with a recorded absence
+  of upstream coverage rather than a ported fixture.
+
+<details><summary>Verification evidence</summary>
+
+Both halves read at commit 481e276 plus this change. Upstream: orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/ValueTracking.cpp, `static bool getShuffleDemandedElts(const ShuffleVectorInst *Shuf, const APInt &DemandedElts, APInt &DemandedLHS, APInt &DemandedRHS)` — its first statement is the `isa<ScalableVectorType>(Shuf->getType())` arm quoted above, and only after it does the routine read `cast<FixedVectorType>(Shuf->getOperand(0)->getType())->getNumElements()` and delegate to the public `llvm::getShuffleDemandedElts`. The `APInt(1,1)` the assert expects is what `llvm::computeKnownBits(const Value *V, KnownBits &Known, const SimplifyQuery &Q, unsigned Depth)` seeds when the type is not a `FixedVectorType`. llvmkit: crates/llvmkit-ir/src/value_tracking.rs `shuffle_source_demands` computes `demanded` first, then destructures `vector_shape(lhs)` / `vector_shape(rhs)` with a `false` scalability pattern and returns `None` on a scalable operand; the guard reads the OPERAND type where upstream reads the RESULT type, which selects the same shuffles because `ShuffleVectorInst`'s `ArrayRef<int>` constructor takes the result's scalability from V1. Reachability: the two masks `isValidOperands`' scalable branch admits are all-`Lane(0)` and all-`Poison`, and both match `m_ZeroMask` (`Elem == 0 || Elem == PoisonMaskElem`), so `shuffle_vector_known_bits`' `splat_value` fast path is tried first — but `getSplatValue`'s shuffle arm then requires `m_InsertElt(..., m_ZeroInt())` on operand 0, which a function parameter is not. So `shufflevector <vscale x 4 x i32> %a, <vscale x 4 x i32> %b, <vscale x 4 x i32> zeroinitializer` with `%a`/`%b` as parameters — the shape `test/Bitcode/vscale-round-trip.ll::@non_const_shufflevector` writes — reaches `shuffle_source_demands` and gets `None`. No test in the tree exercises it; the absence is why this is recorded rather than pinned.
+
+</details>
 
 ## Coverage, tooling and provenance
 

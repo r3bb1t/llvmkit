@@ -342,8 +342,9 @@ pub enum VerifierRule {
     /// element type. Mirrors `Verifier::visitExtractElementInst` /
     /// `Verifier::visitInsertElementInst`.
     VectorElementOpTypeMismatch,
-    /// `shufflevector` operands disagree in element type, or the result
-    /// type does not match the mask length. Mirrors
+    /// `shufflevector` operands fail `ShuffleVectorInst::isValidOperands`, or
+    /// — with no upstream counterpart — the recorded result type disagrees
+    /// with the operands or the mask length. Mirrors
     /// `Verifier::visitShuffleVectorInst`.
     ShuffleVectorTypeMismatch,
     /// Atomic op (`fence`, `cmpxchg`, `atomicrmw`, `load atomic`, `store
