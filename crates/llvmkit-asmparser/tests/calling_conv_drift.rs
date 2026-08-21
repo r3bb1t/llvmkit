@@ -197,12 +197,44 @@ fn a_bare_riscv_vls_cc_swallows_the_next_token() {
 /// The numeric escape hatch, in both directions. `parseOptionalCallingConv`'s
 /// `kw_cc` arm is a bare `parseUInt32(CC)`, so any `u32` is legal — `MaxID`
 /// bounds the bitcode encoding, not the grammar.
+///
+/// Both spellings are input: `cc11` is what `printCallingConv`'s default arm
+/// writes, and `LLLexer::LexIdentifier`'s `cc`-word rewind splits it back into
+/// `kw_cc` plus an integer, so `cc 11` is the same token stream.
 #[test]
 fn the_numeric_calling_convention_form_round_trips() {
     // 12 is unassigned (it was `WebKit_JS`, removed), so it prints numerically.
-    let module = parse_dynamic("declare cc 12 void @f()\n").expect("cc 12 parses");
-    assert!(format!("{module}").contains("cc 12"), "{module}");
+    for source in ["declare cc12 void @f()\n", "declare cc 12 void @f()\n"] {
+        let module = parse_dynamic(source).expect("cc12 parses");
+        assert!(format!("{module}").contains("cc12"), "{module}");
+    }
 
-    let module = parse_dynamic("declare cc 5000 void @f()\n").expect("cc 5000 parses");
-    assert!(format!("{module}").contains("cc 5000"), "{module}");
+    for source in ["declare cc5000 void @f()\n", "declare cc 5000 void @f()\n"] {
+        let module = parse_dynamic(source).expect("cc5000 parses");
+        assert!(format!("{module}").contains("cc5000"), "{module}");
+    }
+}
+
+/// The unnamed conventions print exactly the bytes `llvm-dis` prints.
+///
+/// Ported from `test/Bitcode/compatibility.ll`, whose `llvm-as | llvm-dis |
+/// llvm-as | llvm-dis` RUN line pairs `declare cc11 void @f.cc11()` with
+/// `; CHECK: declare cc11 void @f.cc11()`, and `declare cc10 void @f.cc10()`
+/// with `; CHECK: declare ghccc void @f.cc10()` — the mnemonic wins where one
+/// exists, and `printCallingConv`'s `Out << "cc" << cc` default arm supplies
+/// the rest. The existing round-trip lock could not see the printer's spelling
+/// drift, because both its inputs were already written the spaced way.
+#[test]
+fn compatibility_ll_pins_the_printed_spelling_of_an_unnamed_convention() {
+    let module = parse_dynamic("declare cc11 void @f.cc11()\n").expect("cc11 parses");
+    assert!(
+        format!("{module}").contains("declare cc11 void @f.cc11()"),
+        "{module}"
+    );
+
+    let module = parse_dynamic("declare cc10 void @f.cc10()\n").expect("cc10 parses");
+    assert!(
+        format!("{module}").contains("declare ghccc void @f.cc10()"),
+        "{module}"
+    );
 }

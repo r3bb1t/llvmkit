@@ -19,6 +19,132 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — two ValueTracking arms that answered more than upstream does
+
+**Breaking (analysis answers).**
+
+- `is_guaranteed_not_to_be_undef_or_poison` carried an arm marked in-source as
+  an "llvmkit refinement (no upstream counterpart)": a shift whose amount known
+  bits proved in range was reported poison-free, where `shiftAmountKnownInRange`
+  is purely syntactic (`dyn_cast<Constant>`; `if (!C) return false;`) and
+  `isGuaranteedNotToBeUndefOrPoison` has no shift arm at all after the
+  `canCreateUndefOrPoison` gate. Deleting it restores the routine to an exact
+  port (D11). Ledger entries 53 and 63 — two records of the one arm — deleted.
+  An existing test, `freeze_of_exact_shift_that_can_poison_is_unknown`, had
+  encoded the arm as an expectation: it asserted a known `0000` for a
+  no-instruction-info query, which upstream cannot produce, because
+  `isGuaranteedNotToBeUndefOrPoison` writes `/*ConsiderFlagsAndMetadata=*/true`
+  into its `canCreateUndefOrPoison` call rather than taking it from the query.
+  It now asserts unknown, and says why.
+- `computeKnownFPClass`'s bitcast arm discarded its `depth` and entered known
+  bits as a fresh top-level query, so a deep FP chain was answered more
+  precisely than upstream answers it. It threads `depth + 1` onto the shared
+  budget now, through a new crate-internal `compute_known_bits_at_depth`; only
+  the depth is threaded, because llvmkit's cycle set has no upstream
+  counterpart. Ledger entry 51 deleted.
+
+Both were unpinned. `value_tracking.rs::a_non_constant_shift_amount_is_not_proven_poison_free`
+and `known_fp_class.rs::the_bitcast_arm_shares_the_recursion_budget` pin them,
+each verified to fail against the behaviour it replaces.
+
+### Fixed — an attribute list holds one attribute per kind
+
+**Breaking (printed bytes, and `AttributeStorage::set` is gone).**
+`AttributeStorage::add` de-duplicated by full structural equality, so
+`declare void @f() align 4 align 8` stored *both* and printed the first, where
+`addAttributeImpl`'s `std::swap(*It, Attr)` branch — which every
+`AttrBuilder::addAttribute` overload goes through — replaces by kind, leaving
+`align 8`. The same held for `alignstack`, `memory(...)`, `nofpclass(...)` and
+a repeated string-attribute key. `add_stored` is the port of that branch now,
+matching enum attributes by `AttrKind` and string attributes by key; the
+separate `AttributeStorage::set`, which had been the port all along and had one
+caller, is deleted — the caller says `add`, as upstream's `B.addMemoryAttr(ME)`
+does.
+
+Ledger entry 24 is **narrowed, not closed**, and re-banded from accepts-invalid
+to wrong-output: LLVM accepts every one of these inputs, and what remains is
+that upstream inserts at `lower_bound(Attrs, Kind, AttributeComparator())`
+while llvmkit appends, so `"k"="1" "j"="2"` prints in source order where
+`AttributeImpl::cmp` would sort it. `parser_modifiers.rs::an_attribute_list_holds_one_attribute_per_kind`
+pins both the closed half and the residual.
+
+### Fixed — `LLParser::parseComdat`'s two `parseToken` labels
+
+**Breaking (diagnostic text).** `$v = notcomdat any` reported `expected
+'comdat'`; upstream reports `expected comdat type`. `parseComdat` writes
+`if (parseToken(lltok::kw_comdat, "expected comdat keyword")) return
+tokError("expected comdat type");` — two messages on the one failure, at the
+one unconsumed token, both at `ErrorPriority::Parser`, and `LLLexer::Error`
+early-returns only on `Priority < ErrorInfo.Priority`, so the second overwrites
+the first and `expected comdat keyword` is dead text. The port now has that
+shape. The adjacent label is fixed with it: `$v notcomdat any` reported
+`expected '=' after comdat name` and now reports upstream's `expected '=' here`.
+Ledger entry 39 deleted; it had recorded this as blocked on an
+"error-priority question" that the routine answers deterministically.
+
+Nothing pinned any of `parseComdat`'s three `tokError` sites, and no upstream
+`.ll` fixture does either;
+`parser_modifiers.rs::comdat_definition_diagnostics_match_upstream_text_and_anchor`
+pins all three, message and caret.
+
+### Fixed — the parser corpus no longer files upstream negatives as llvmkit gaps
+
+Three manifest rows carried `status=xfail-parse`, which asserts only that the
+parse fails, while the fixtures they named were upstream *negatives* whose
+CHECK lines pin a diagnostic. They are `status=reject` rows now with `error=`
+and, where upstream pins a column, `loc=`. One of the three,
+`upstream/2004-11-28-InvalidTypeCrash.ll`, was byte-identical to the
+`upstream/assembler-corpus/` copy already carrying the stronger row: the row
+and the duplicate file are deleted. Neither xfail status has a member now, and
+the manifest header and driver doc say so instead of promising an accounting in
+`docs/fixture-coverage.md` that was never there. Ledger entry 25 deleted.
+
+`parser_corpus.rs::no_two_manifest_rows_name_or_hold_the_same_fixture` is the
+guard that was missing: two rows may not name one fixture, and two fixtures may
+not hold identical bytes — which is what let the weaker row sit beside the
+stronger one unnoticed.
+
+### Fixed — an unnamed calling convention prints `cc11`, matching `printCallingConv`
+
+**Breaking (printed bytes).** `printCallingConv`'s default arm is
+`Out << "cc" << cc`, so a convention with no mnemonic prints with no space.
+llvmkit printed `cc 11`, on a recorded premise that `cc11` could not be read
+back — false: `LLLexer::LexIdentifier` rewinds any word opening `cc` to
+`kw_cc`, `Lexer::lex_identifier` already ports that rewind, and
+`test/Bitcode/compatibility.ll` round-trips `declare cc11 void @f.cc11()`
+through `llvm-as | llvm-dis` unchanged. `CallingConv`'s `Display` now writes
+`cc11`; its `FromStr` reads both spellings, since the spaced one is the same
+token stream after the rewind. Ledger entries 42, 49 and 93 — three records of
+this one divergence — are deleted, and the `docs/future-work.md` paragraph
+carrying the false premise is gone with them.
+
+The existing round-trip lock could not see this: both its inputs were written
+the spaced way, so the printer's spelling was never compared against upstream's.
+`calling_conv_drift.rs::compatibility_ll_pins_the_printed_spelling_of_an_unnamed_convention`
+ports the fixture's `@f.cc10` / `@f.cc11` pair, and the round-trip lock now
+feeds both spellings.
+
+### Fixed — a `$` in any LLVM name now prints quoted
+
+**Breaking (printed bytes).** `printLLVMNameWithoutPrefix`'s unquoted set is
+`isalnum(C) || C == '-' || C == '.' || C == '_'`;
+`fmt_llvm_name_without_prefix` carried a fifth character, `$`, so
+`@"OBJC_LABEL_CATEGORY_$"` printed bare and llvmkit could not reproduce
+`llvm-dis`'s bytes for any `$`-bearing global, function, label or instruction
+result. The extra character is gone (ledger entry 100, deleted). `LLLexer`
+still *accepts* a bare `$` on input, which is upstream's own asymmetry and why
+`test/Assembler/block-labels.ll` writes `br label %$N` and CHECKs for
+`br label %"$N"`.
+
+Two tests had encoded the divergence as an expectation and now assert
+upstream's spelling: `asm_writer_basic.rs::dollar_names_print_quoted` (renamed
+from `dollar_names_print_without_quotes`, whose doc comment claimed `$` "must
+not force quotes"), and `parser_auto_upgrade.rs::objc_catlist_section_name_loses_its_spaces`,
+which asserted only the section half of `test/Bitcode/upgrade-section-name.ll`'s
+one CHECK and now asserts both halves.
+`parser_function_body.rs::non_entry_blocks_print_a_predecessors_comment` covers
+all 17 of `block-labels.ll::@test1`'s CHECK lines instead of 15.
+
 ### Divergence ledger: one closed entry deleted, four folded into their survivors
 
 No code change. `docs/divergences.md` only; the test suite is untouched.

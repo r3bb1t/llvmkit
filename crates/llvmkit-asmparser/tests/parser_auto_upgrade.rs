@@ -123,15 +123,15 @@ target triple = "x86_64-apple-macosx10.15.0"
 /// `llvm::UpgradeSectionAttributes`, which strips the spaces around the commas
 /// of an Objective-C category-list section name.
 ///
-/// The fixture's `CHECK` is
-/// `@"OBJC_LABEL_CATEGORY_$" = {{.*}}, section "__DATA,__objc_catlist,regular,no_dead_strip"`.
-/// Only the section half is asserted: llvmkit prints the global's name
-/// *unquoted*, because its port of `printLLVMNameWithoutPrefix` treats `$` as
-/// a plain character where upstream's allowed set is `isalnum || '-' || '.' ||
-/// '_'` and quotes anything else. That is a pre-existing printer divergence
-/// this fixture happens to walk past, not the behavior under test — see
-/// `docs/divergences.md`. `@"\01l_OBJC_$_CATEGORY_I_$_Robot"` still prints
-/// quoted, because `\01` is outside the set on both sides.
+/// The fixture's only `CHECK` is
+/// `@"OBJC_LABEL_CATEGORY_$" = {{.*}}, section "__DATA,__objc_catlist,regular,no_dead_strip"`,
+/// and both halves of it are asserted. The name half used to be skipped:
+/// llvmkit printed it unquoted, because its port of
+/// `printLLVMNameWithoutPrefix` carried `$` in the allowed set where upstream's
+/// is `isalnum || '-' || '.' || '_'`. That divergence is closed and its
+/// ledger entry deleted.
+/// `{{.*}}` cannot cross a line, so the two halves are asserted against the one
+/// line rather than against the whole module.
 ///
 /// The `__DATA, __objc_const` section of `@"\01l_OBJC_$_CATEGORY_I_$_Robot"`
 /// is the fixture's own negative case: the guard is a prefix test on
@@ -168,9 +168,13 @@ fn objc_catlist_section_name_loses_its_spaces() {
 !5 = !{i32 1, !"PIC Level", i32 2}
 "#;
     let text = parse_to_text(src);
-    assert_contains(
-        &text,
-        ", section \"__DATA,__objc_catlist,regular,no_dead_strip\"",
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("@\"OBJC_LABEL_CATEGORY_$\" = "))
+        .unwrap_or_else(|| panic!("no `@\"OBJC_LABEL_CATEGORY_$\"` line in:\n{text}"));
+    assert!(
+        line.contains(", section \"__DATA,__objc_catlist,regular,no_dead_strip\""),
+        "{line}"
     );
     assert_contains(&text, ", section \"__DATA, __objc_const\"");
 }

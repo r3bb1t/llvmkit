@@ -218,7 +218,7 @@ impl CallingConv {
 
     /// Optional well-known mnemonic. Returns `None` for IDs whose textual
     /// form is parameterised (`riscv_vls_cc(<N>)`) or that LLVM's
-    /// AsmWriter falls back to `cc <num>` for; the [`fmt::Display`] impl handles those.
+    /// AsmWriter falls back to `cc<num>` for; the [`fmt::Display`] impl handles those.
     /// Strings match `printCallingConv` in `lib/IR/AsmWriter.cpp`.
     pub const fn name(self) -> Option<&'static str> {
         Some(match self.0 {
@@ -307,23 +307,21 @@ impl CallingConv {
 impl fmt::Display for CallingConv {
     /// Print the canonical IR name; for `RISCV_VLS_CALL_<N>` emit
     /// `riscv_vls_cc(<N>)`; otherwise fall back to a numeric form, like the
-    /// default branch of `printCallingConv` (`lib/IR/AsmWriter.cpp`).
+    /// default branch of `printCallingConv` (`lib/IR/AsmWriter.cpp`), which is
+    /// `Out << "cc" << cc` — no space.
     ///
-    /// **One deliberate byte-level divergence, in the numeric fallback.**
-    /// Upstream writes `Out << "cc" << cc`, i.e. `cc11` with no space — which
-    /// `LLLexer` reads as a single unknown identifier, so `llvm-as` cannot
-    /// re-parse `llvm-dis`'s own output for any convention without a mnemonic
-    /// (`HiPE`, `M68k_INTR`, the ARM64EC thunks…). llvmkit emits `cc 11`, the
-    /// spelling upstream's *parser* accepts (`kw_cc` then an integer), so the
-    /// output round-trips here and is still valid input to `llvm-as`.
-    /// Recorded in `docs/future-work.md`.
+    /// `cc11` re-parses in both implementations: `LLLexer::LexIdentifier` has
+    /// an explicit rewind for a word opening `cc` (`CurPtr = TokStart+2;
+    /// return lltok::kw_cc;`) and `Lexer::lex_identifier` ports it, so the
+    /// digits are read by `parseOptionalCallingConv`'s `kw_cc` arm as a
+    /// separate integer.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(n) = self.riscv_vls_vlen() {
             return write!(f, "riscv_vls_cc({n})");
         }
         match self.name() {
             Some(s) => f.write_str(s),
-            None => write!(f, "cc {}", self.0),
+            None => write!(f, "cc{}", self.0),
         }
     }
 }
@@ -340,7 +338,7 @@ impl From<CallingConv> for u32 {
 impl FromStr for CallingConv {
     type Err = IrError;
 
-    /// Inverse of [`Display`](fmt::Display), branch for branch: the `cc <N>`
+    /// Inverse of [`Display`](fmt::Display), branch for branch: the `cc<N>`
     /// fallback numerically, the well-known mnemonics by searching
     /// [`name`](CallingConv::name), and `riscv_vls_cc(<N>)` by searching
     /// [`riscv_vls_vlen`](CallingConv::riscv_vls_vlen). Each spelling table
@@ -356,13 +354,13 @@ impl FromStr for CallingConv {
             keyword: s.to_string(),
         };
 
-        // `cc <N>` — AsmWriter's fallback for ids with no mnemonic. No
-        // mnemonic contains a space, so the shapes cannot collide.
-        if let Some(raw) = s.strip_prefix("cc ") {
-            return raw
-                .parse::<u32>()
-                .map(Self::from_raw)
-                .map_err(|_| invalid());
+        // `cc<N>` — AsmWriter's fallback for ids with no mnemonic. `ccc` also
+        // opens with `cc`, so a non-numeric tail falls through to the mnemonic
+        // search rather than erroring here.
+        if let Some(raw) = s.strip_prefix("cc")
+            && let Ok(raw) = raw.parse::<u32>()
+        {
+            return Ok(Self::from_raw(raw));
         }
 
         // `riscv_vls_cc(<N>)` — the parameterised printer case.
@@ -423,7 +421,7 @@ mod tests {
     #[test]
     fn max_id_does_not_bound_construction() {
         assert_eq!(CallingConv::from_raw(1024).as_raw(), 1024);
-        assert_eq!(format!("{}", CallingConv::from_raw(5000)), "cc 5000");
+        assert_eq!(format!("{}", CallingConv::from_raw(5000)), "cc5000");
     }
 
     /// Mirrors the GPU/kernel CC partition documented in
@@ -439,14 +437,14 @@ mod tests {
     }
 
     /// Mirrors `PrintCallingConv` mnemonic table in `lib/IR/AsmWriter.cpp`
-    /// (`ccc`, `fastcc`, numeric `cc N` fallback).
+    /// (`ccc`, `fastcc`, numeric `cc<N>` fallback).
     #[test]
     fn display_named_and_numeric() {
         assert_eq!(format!("{}", CallingConv::C), "ccc");
         assert_eq!(format!("{}", CallingConv::FAST), "fastcc");
         // 12 is unassigned (was WebKit_JS, removed):
         let unknown = CallingConv::from_raw(12);
-        assert_eq!(format!("{unknown}"), "cc 12");
+        assert_eq!(format!("{unknown}"), "cc12");
     }
 
     /// Mirrors `riscv_vls_cc(N)` parameterised printer case in
@@ -459,13 +457,13 @@ mod tests {
         );
     }
 
-    /// Mirrors `cc <N>` numeric fallback in
+    /// Mirrors `cc<N>` numeric fallback in
     /// `lib/IR/AsmWriter.cpp::PrintCallingConv` for IDs without an
     /// AsmWriter mnemonic (e.g. HiPE).
     #[test]
     fn unsupported_named_falls_back_to_numeric() {
         // HiPE has an enum slot but no AsmWriter mnemonic.
-        assert_eq!(format!("{}", CallingConv::HI_PE), "cc 11");
+        assert_eq!(format!("{}", CallingConv::HI_PE), "cc11");
         assert!(CallingConv::HI_PE.name().is_none());
     }
 
@@ -475,7 +473,7 @@ mod tests {
     /// the same enum), so there is no upstream test to port; llvmkit spells
     /// the mnemonics once, in `name`, and this pins that `parse ∘ display` is
     /// the identity over the **entire** legal id space — all three printer
-    /// branches (mnemonic, `riscv_vls_cc(N)`, `cc N`) at once. No `VARIANTS`
+    /// branches (mnemonic, `riscv_vls_cc(N)`, `cc<N>`) at once. No `VARIANTS`
     /// list is needed, and none can go stale. Closest upstream reference:
     /// `PrintCallingConv` in `lib/IR/AsmWriter.cpp`.
     #[test]

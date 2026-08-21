@@ -624,10 +624,10 @@ being smuggled into W7.
 
 Blocked behind it: `invalid aliasee`, which is only reachable on that route.
 
-## Two upstream calling-convention bugs: one reproduced, one not (found 2026-08-13, LLParser parity W6)
+## An upstream calling-convention bug, reproduced (found 2026-08-13, LLParser parity W6)
 
-Both were found by the round-trip drift lock in `calling_conv_drift.rs`, and
-they pull in opposite directions, so the choices are recorded here.
+Found by the round-trip drift lock in `calling_conv_drift.rs`, so the choice is
+recorded here.
 
 **Reproduced: bare `riscv_vls_cc` consumes the following token.**
 `parseOptionalCallingConv`'s `kw_riscv_vls_cc` arm calls `Lex.Lex()` itself and
@@ -639,15 +639,13 @@ from printed IR, because `printCallingConv` writes those twelve conventions
 only as `riscv_vls_cc(<N>)`. Reproduced because the contract is upstream's
 behaviour, not its intent — revisit if upstream fixes it.
 
-**Not reproduced: the numeric fallback prints without a space.**
-`printCallingConv`'s default is `Out << "cc" << cc`, so an unnamed convention
-prints as `cc11`, which `LLLexer` reads as one unknown identifier. `llvm-as`
-therefore cannot re-parse `llvm-dis`'s own output for `HiPE`, `AVR_BUILTIN`,
-`MSP430_BUILTIN`, `WASM_EmscriptenInvoke`, `M68k_INTR` or the two ARM64EC
-thunks. llvmkit prints `cc 11` instead — the spelling upstream's *parser*
-accepts, so llvmkit's output round-trips here **and** remains valid input to
-`llvm-as`. This is the one place the byte-for-byte printer rule is
-deliberately broken, and it is broken in the safe direction.
+The second finding recorded here — that the numeric fallback should print
+`cc 11` rather than `printCallingConv`'s `cc11`, because `LLLexer` would read
+`cc11` as one unknown identifier — rested on a false premise and is gone.
+`LLLexer::LexIdentifier` rewinds a word opening `cc` to `kw_cc`, which is why
+`test/Bitcode/compatibility.ll` round-trips `declare cc11 void @f.cc11()`
+through `llvm-as | llvm-dis` unchanged; `Lexer::lex_identifier` ports the same
+rewind. The printer now writes `cc11` too.
 
 ## Printer — no option surface, so `printAddressSpace`'s symbolic branch cannot be reached (found 2026-08-21, `call addrspace(N)` port)
 

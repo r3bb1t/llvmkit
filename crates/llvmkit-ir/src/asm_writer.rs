@@ -1265,7 +1265,7 @@ fn fmt_llvm_name_without_prefix<W: fmt::Write>(f: &mut W, name: &str) -> fmt::Re
     let needs_quotes = bytes.first().is_some_and(u8::is_ascii_digit)
         || bytes
             .iter()
-            .any(|c| !c.is_ascii_alphanumeric() && !matches!(*c, b'-' | b'.' | b'_' | b'$'));
+            .any(|c| !c.is_ascii_alphanumeric() && !matches!(*c, b'-' | b'.' | b'_'));
     if !needs_quotes {
         return f.write_str(name);
     }

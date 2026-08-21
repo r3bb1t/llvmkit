@@ -7,6 +7,10 @@ use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError};
 use llvmkit_ir::Module;
 use llvmkit_ir::module_new;
 
+pub mod support;
+
+use support::line_and_column;
+
 fn parse_fixture(module_name: &str, src: &[u8]) -> String {
     let module = Module::dynamic(module_name);
     Parser::new(src, &module)
@@ -418,6 +422,63 @@ fn legacy_memory_keyword_overwrites_explicit_memory() {
     }
 }
 
+/// An attribute list may not hold two attributes of one kind: the second wins.
+///
+/// **Anchored on the routine; no upstream `.ll` writes a doubled attribute.**
+/// `addAttributeImpl` (`lib/IR/Attributes.cpp`) is `lower_bound` then
+/// `if (It != Attrs.end() && It->hasAttribute(Kind)) std::swap(*It, Attr);`,
+/// and every `AttrBuilder::addAttribute` overload goes through it, so an
+/// `AttrBuilder` structurally cannot accumulate two of a kind — `align(4)`
+/// followed by `align(8)` leaves `align(8)`. String attributes match on the
+/// key alone, which is why `"k"="1" "k"="2"` collapses while `"k"="1"
+/// "j"="2"` does not.
+///
+/// llvmkit de-duplicated by full structural equality instead, so every pair
+/// below round-tripped with *both* members present. That half of ledger entry
+/// 24 is closed; the entry survives, narrowed to the print-order residual
+/// asserted at the end of this test.
+#[test]
+fn an_attribute_list_holds_one_attribute_per_kind() {
+    for (spelled, expected) in [
+        // Enum-with-value: the alignment move takes the one stored attribute.
+        ("align 4 align 8", "align 8"),
+        ("alignstack(4) alignstack(8)", "alignstack(8)"),
+        // A kind that carries a payload rather than an integer.
+        ("memory(read) memory(write)", "memory(write)"),
+        // Plain enum attributes were already covered by structural equality,
+        // and must stay covered.
+        ("nounwind nounwind", "nounwind"),
+        // String attributes key on the key, not the pair.
+        ("\"k\"=\"1\" \"k\"=\"2\"", "\"k\"=\"2\""),
+    ] {
+        let text = parse_fixture(
+            "an_attribute_list_holds_one_attribute_per_kind",
+            format!("declare void @f() {spelled}\n").as_bytes(),
+        );
+        assert_check_lines(&text, &[&format!("declare void @f() {expected}\n")]);
+    }
+
+    // The same rule on a parameter index, with a kind that only lives there.
+    let text = parse_fixture(
+        "an_attribute_list_holds_one_attribute_per_kind_param",
+        b"declare void @f(float nofpclass(nan) nofpclass(inf))\n",
+    );
+    // The trailing `%0` is divergence D14 — a `declare` prints its parameter
+    // names here — not part of what this test is about.
+    assert_check_lines(&text, &["declare void @f(float nofpclass(inf) %0)\n"]);
+
+    // The negative: two string attributes with *different* keys both survive,
+    // because `hasAttribute(Kind)` compares the key. They print in *source*
+    // order, where `AttributeImpl::cmp` would sort them by key and put `"j"`
+    // first — that is what divergence 24 is narrowed to, and this line is what
+    // pins it.
+    let text = parse_fixture(
+        "an_attribute_list_holds_one_attribute_per_kind_distinct_keys",
+        b"declare void @f() \"k\"=\"1\" \"j\"=\"2\"\n",
+    );
+    assert_check_lines(&text, &["declare void @f() \"k\"=\"1\" \"j\"=\"2\"\n"]);
+}
+
 /// The same `expected access kind (none, read, write, readwrite)` arm, reached
 /// from the *other* side: `readonly` is a real token that `keywordToModRef`
 /// does not accept, where the upstream fixture's `foo` is a word that is no
@@ -510,6 +571,67 @@ fn redefined_comdat_is_rejected() {
         parse_err(b"$v = comdat any\n$v = comdat any\n").to_string(),
         "redefinition of comdat '$v'"
     );
+}
+
+/// `LLParser::parseComdat`'s three `tokError` sites, each at the token that
+/// failed.
+///
+/// **Anchored on the routine, not on a fixture.**
+/// `rg --no-ignore --hidden -e "comdat type" -e "comdat keyword" -e "unknown
+/// selection kind" llvm/test/` returns exactly one line, and it belongs to a
+/// different assembler: `test/MC/COFF/section-invalid-flags.s`'s
+/// `expected comdat type such as 'discard' or 'largest' after protection
+/// bits`. The two `LLParser` comdat negatives that do exist —
+/// `test/Assembler/invalid-comdat.ll` and `invalid-comdat2.ll` — pin
+/// `use of undefined comdat` and `redefinition of comdat` instead (ported
+/// above).
+///
+/// The middle case is the routine's oddity. Upstream writes
+/// `if (parseToken(lltok::kw_comdat, "expected comdat keyword"))
+/// return tokError("expected comdat type");`, raising **two** messages on the
+/// one failure at the one token: `parseToken` leaves the token unconsumed, and
+/// both calls reach `LLLexer::Error` at `ErrorPriority::Parser`, which
+/// early-returns only on `Priority < ErrorInfo.Priority`. `Parser < Parser` is
+/// false, so the second overwrites the first — `expected comdat keyword` is
+/// dead text that cannot reach a user from this site. llvmkit printed
+/// `expected 'comdat'` until that divergence was closed.
+///
+/// The caret is asserted, not just the text: a message-only assertion is what
+/// let a wrong anchor ship elsewhere in this crate.
+#[test]
+fn comdat_definition_diagnostics_match_upstream_text_and_anchor() {
+    for (src, expected, expected_loc) in [
+        // `parseToken(lltok::equal, "expected '=' here")`.
+        ("$v notcomdat any\n", "expected '=' here", (1_u32, 4_u32)),
+        // `parseToken(lltok::kw_comdat, …)` then `tokError("expected comdat
+        // type")`, both at the unconsumed `notcomdat`.
+        (
+            "$v = notcomdat any\n",
+            "expected comdat type",
+            (1_u32, 6_u32),
+        ),
+        // The selection-kind switch's `default: return tokError("unknown
+        // selection kind");`.
+        (
+            "$v = comdat notakind\n",
+            "unknown selection kind",
+            (1_u32, 13_u32),
+        ),
+    ] {
+        let err = parse_err(src.as_bytes());
+        assert_eq!(err.to_string(), expected, "message text for `{src}`");
+        let start = err
+            .loc()
+            .unwrap_or_else(|| panic!("`{expected}` should carry a location"))
+            .span
+            .start;
+        let offset = usize::try_from(start).unwrap_or(usize::MAX);
+        assert_eq!(
+            line_and_column(src.as_bytes(), offset),
+            expected_loc,
+            "caret position for `{expected}`"
+        );
+    }
 }
 
 /// Ports both `test/Assembler/alloca-addrspace-parse-error-{0,1}.ll`, which

@@ -20,9 +20,11 @@
 //!   `<stdin>:LINE:COL:` as well, the row carries `loc=` and the reported span
 //!   must start there.
 //! - `xfail-parse` / `xfail-verify` --- llvmkit gaps: a fixture upstream
-//!   *accepts* that llvmkit does not yet parse or verify. These are the
-//!   explicit allowlist, and each one is accounted for in
-//!   `docs/fixture-coverage.md`.
+//!   *accepts* that llvmkit does not yet parse or verify. Neither has a row
+//!   today; a fixture llvmkit cannot handle is classified `blocked-model` in
+//!   `docs/fixture-coverage.md` and gets no manifest row at all. The three
+//!   rows that used to carry `xfail-parse` were upstream *negatives* misfiled
+//!   as llvmkit gaps, and are `reject` rows now.
 //!
 //! Fixtures under `fixtures/upstream/assembler-corpus/` are byte-for-byte copies of
 //! `llvm/test/Assembler/*.ll`; the ones in a subdirectory are the exact
@@ -256,5 +258,40 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
                 );
             }
         }
+    }
+}
+
+/// **No upstream counterpart** — a guard on this manifest, not on LLVM.
+///
+/// Two rows may not name one fixture, and two fixtures may not hold identical
+/// bytes. The second half is the one with teeth: `2004-11-28-InvalidTypeCrash.ll`
+/// sat in the corpus twice, once at `upstream/` as `status=xfail-parse` and
+/// once at `upstream/assembler-corpus/` as `status=reject | error=…`. The two
+/// files were byte-identical, so the weaker row was asserting nothing the
+/// stronger one did not already assert, and the contradiction between their
+/// statuses went unnoticed for as long as nothing compared them.
+#[test]
+fn no_two_manifest_rows_name_or_hold_the_same_fixture() {
+    let fixture_dir = fixture_dir();
+    let mut by_path: Vec<&str> = Vec::new();
+    let mut by_content: Vec<(&str, Vec<u8>)> = Vec::new();
+
+    for entry in fixture_entries() {
+        assert!(
+            !by_path.contains(&entry.fixture),
+            "manifest names `{}` twice",
+            entry.fixture
+        );
+        by_path.push(entry.fixture);
+
+        let source = read(fixture_dir.join(entry.fixture))
+            .unwrap_or_else(|err| panic!("corpus fixture {} should read: {err}", entry.fixture));
+        if let Some((other, _)) = by_content.iter().find(|(_, bytes)| *bytes == source) {
+            panic!(
+                "corpus fixtures `{}` and `{}` are byte-identical; one row is redundant",
+                other, entry.fixture
+            );
+        }
+        by_content.push((entry.fixture, source));
     }
 }

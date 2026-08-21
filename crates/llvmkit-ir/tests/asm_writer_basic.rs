@@ -73,10 +73,20 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
     Ok(())
 }
 
-/// Mirrors `llvm/lib/IR/AsmWriter.cpp::printLLVMNameWithoutPrefix`: `$` is a
-/// legal bare LLVM identifier character and must not force quotes.
+/// Mirrors `llvm::printLLVMNameWithoutPrefix` (`lib/IR/AsmWriter.cpp`): the
+/// unquoted set is `isalnum(C) || C == '-' || C == '.' || C == '_'`, and `$` is
+/// outside it, so every `$`-bearing name is quoted on output — a function, a
+/// block label and an instruction result alike, since all three go through the
+/// one routine. `LLLexer` *accepts* a bare `$` on input, which is why
+/// `test/Assembler/block-labels.ll` writes `br label %$N` and CHECKs for
+/// `br label %"$N"`; the asymmetry is upstream's, and this test pins the API
+/// side of it, where no fixture can reach.
+///
+/// This test previously asserted the opposite, on the claim that `$` "is a
+/// legal bare LLVM identifier character and must not force quotes" — which was
+/// the `$`-quoting divergence, encoded as its own expectation.
 #[test]
-fn dollar_names_print_without_quotes() -> Result<(), IrError> {
+fn dollar_names_print_quoted() -> Result<(), IrError> {
     let m = module_new!("dollar_names")?;
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
@@ -88,9 +98,9 @@ fn dollar_names_print_without_quotes() -> Result<(), IrError> {
     b.ret(sum)?;
 
     let text = format!("{m}");
-    assert!(text.contains("define i32 @foo$bar(i32 %0)"), "{text}");
-    assert!(text.contains("entry$bb:"), "{text}");
-    assert!(text.contains("%sum$value = add i32 %0, 1"), "{text}");
+    assert!(text.contains("define i32 @\"foo$bar\"(i32 %0)"), "{text}");
+    assert!(text.contains("\"entry$bb\":"), "{text}");
+    assert!(text.contains("%\"sum$value\" = add i32 %0, 1"), "{text}");
     Ok(())
 }
 /// llvmkit-specific regression for LLVM's function-local `ValueSymbolTable`:

@@ -257,31 +257,23 @@ const BLOCK_LABELS_FIXTURE: &str =
     include_str!("fixtures/upstream/assembler-corpus/block-labels.ll");
 
 /// Mirrors `test/Assembler/block-labels.ll::@test1`'s CHECK block against the
-/// vendored fixture: **15 of its 17 CHECK lines**, the two exceptions being
-/// blocked and named below. Each non-entry block carries `printBasicBlock`'s
-/// predecessors comment, and `printLLVMName` re-quotes the label the way it
-/// quotes any other name, which is what the `"2"`, `-3` and `-N-` blocks are
-/// in the fixture to show: a quoted digit-only label stays quoted, and a
-/// name that merely *looks* numeric or contains `-` prints bare.
+/// vendored fixture, all 17 lines of it. Each non-entry block carries
+/// `printBasicBlock`'s predecessors comment, and `printLLVMName` re-quotes the
+/// label the way it quotes any other name, which is what the `"2"`, `-3`,
+/// `-N-` and `$N` blocks are in the fixture to show: a quoted digit-only label
+/// stays quoted, a name that merely *looks* numeric or contains `-` prints
+/// bare, and `$` — outside `printLLVMNameWithoutPrefix`'s
+/// `isalnum || '-' || '.' || '_'` set — comes back quoted even though
+/// `LLLexer` took it bare on input.
 ///
 /// FileCheck runs without `--strict-whitespace` and so canonicalizes the run
 /// of spaces in `; CHECK:      2:       ; preds = %0`; the column asserted
 /// here comes from `Out.PadToColumn(50)` itself, which the CHECK lines cannot
 /// pin.
 ///
-/// **Partial, and this is the whole of what is left out.** CHECK lines **13
-/// and 14 of 17** — `; CHECK-NEXT:   br label %"$N"` and
-/// `; CHECK:      "$N":    ; preds = %-N-` — are not asserted, because
-/// llvmkit's `fmt_llvm_name_without_prefix` allows `$` in an unquoted name
-/// where `printLLVMNameWithoutPrefix` does not, so llvmkit prints `$N` and
-/// `br label %$N`. That is divergence **100** in `docs/divergences.md`, which
-/// is queued for its own commit; closing it turns this test into a full byte
-/// comparison of the fixture and lets its corpus row carry `expect=`.
-///
-/// They are lines 13-14, not the last two: lines 15-17 (`%4 = add i32 1, 1`,
-/// `ret i32 %4`, `}`) sit *after* the `$N` block, are **not** blocked by
-/// divergence 100, and are asserted at the end of this test. Nothing else in
-/// `@test1` is skipped.
+/// CHECK lines 13-14 (`br label %"$N"` and `"$N":`) used to be skipped,
+/// because llvmkit printed `$N` bare. That is closed, so nothing in `@test1`
+/// is left out.
 #[test]
 fn non_entry_blocks_print_a_predecessors_comment() {
     let printed = parse_and_print(BLOCK_LABELS_FIXTURE);
@@ -315,6 +307,10 @@ fn non_entry_blocks_print_a_predecessors_comment() {
         ),
         (
             "-N-:                                              ; preds = %-3\n",
+            "  br label %\"$N\"\n",
+        ),
+        (
+            "\"$N\":                                             ; preds = %-N-\n",
             "",
         ),
     ] {
@@ -327,13 +323,8 @@ fn non_entry_blocks_print_a_predecessors_comment() {
 
     // CHECK lines 15-17: `; CHECK-NEXT:   %4 = add i32 1, 1` /
     // `; CHECK-NEXT:   ret i32 %4` / `; CHECK-NEXT: }`. These follow the `$N`
-    // block, so they are not reached by the loop above, and nothing about them
-    // is blocked by divergence 100. Two CHECK lines sit between the loop's
-    // last assertion and this tail, and both are blocked by that divergence:
-    // 13 (`; CHECK-NEXT:   br label %"$N"`, which is why the `-N-` entry above
-    // carries an empty `next_line`) and 14 (`; CHECK:      "$N":    ; preds =
-    // %-N-`). Asserted as one contiguous run so the gap is provably that
-    // two-line `$N` pair and nothing else.
+    // block, so they are not reached by the loop above. Asserted as one
+    // contiguous run.
     assert!(
         printed.contains("  %4 = add i32 1, 1\n  ret i32 %4\n}\n"),
         "{printed}"

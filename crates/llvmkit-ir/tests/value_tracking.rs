@@ -5,7 +5,8 @@ use llvmkit_ir::{
     FunctionAnalysisManager, InstructionView, IntValue, IrBuilder, IrError, KnownBits,
     KnownBitsAnalysis, Linkage, LshrFlags, MetadataAttachmentKind, ModuleBrand, MulFlags, NoFolder,
     PointerValue, PreservedAnalyses, ShuffleMaskElem, Value, ValueTrackingQuery, Width,
-    compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, module_new,
+    compute_known_bits, is_known_non_zero, is_known_not_poison, is_known_one, is_known_zero,
+    module_new,
 };
 
 fn zeros(width: usize) -> String {
@@ -764,6 +765,15 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
 
 /// Regression for `llvm/lib/Analysis/ValueTracking.cpp::isGuaranteedNotToBePoison`:
 /// `exact` shifts can be poison even when the shift amount is in range.
+///
+/// The second half pins that the query's instruction-info setting does not
+/// reach this gate: `isGuaranteedNotToBeUndefOrPoison` calls
+/// `::canCreateUndefOrPoison(Opr, Kind, /*ConsiderFlagsAndMetadata=*/true)`
+/// with the flag written in, so `exact` is poison-generating whatever the
+/// caller asked for, and the frozen result is unknown either way. This used to
+/// assert `0000` for the no-instruction-info query, which only held because of
+/// the deleted shift refinement — see
+/// `a_non_constant_shift_amount_is_not_proven_poison_free`.
 #[test]
 fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
     let m = module_new!("vt-freeze-exact-shift")?;
@@ -781,9 +791,9 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
     let query = ValueTrackingQuery::new(&dl);
     assert!(known(b.view(frozen).to_erased(), &query)?.is_unknown());
     let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
-    assert_eq!(
-        known(b.view(frozen).to_erased(), &query_without_instr_info)?.to_string(),
-        "0000"
+    assert!(
+        known(b.view(frozen).to_erased(), &query_without_instr_info)?.is_unknown(),
+        "`ConsiderFlagsAndMetadata` is written into the call, not taken from the query"
     );
     Ok(())
 }
@@ -875,5 +885,54 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
         known(gep.as_erased(), &query)?.to_string(),
         "0000000000000000000000000000000011111111111111111111111111111111"
     );
+    Ok(())
+}
+
+/// A shift by a non-constant amount is never proven poison-free, however well
+/// known bits bound the amount.
+///
+/// **Anchored on the routine.** `shiftAmountKnownInRange`
+/// (`llvm/lib/Analysis/ValueTracking.cpp`) opens `auto *C =
+/// dyn_cast<Constant>(ShiftAmount); if (!C) return false;` — it is purely
+/// syntactic. `canCreateUndefOrPoison`'s `case Instruction::Shl:` is therefore
+/// true for `%amount` below, which makes
+/// `isGuaranteedNotToBeUndefOrPoison` skip the `all_of(Opr->operands(),
+/// OpCheck)` walk, and no later arm looks at a shift, so it falls to its final
+/// `return false`.
+///
+/// llvmkit had an extra arm with no upstream counterpart: known bits prove
+/// `%amount <= 3 < 4`, both operands are well defined, so the shift was
+/// reported not poison — `true` where upstream says `false`. That was
+/// recorded twice in the ledger, and both entries went with the arm (D11: an
+/// analysis fact is ported, not invented).
+#[test]
+fn a_non_constant_shift_amount_is_not_proven_poison_free() -> Result<(), IrError> {
+    let m = module_new!("vt-shift-amount-poison")?;
+    let i4_ty = m.int_type_n::<4>();
+    let fn_ty = m.function_type(i4_ty, [i4_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let x: IntValue<'_, Width<4>, _> = m.view(f).param(0)?.try_into()?;
+    let one = i4_ty.const_ap_int(&ApInt::from_words(4, &[1]))?;
+    let three = i4_ty.const_ap_int(&ApInt::from_words(4, &[3]))?;
+    // `%fx = freeze i4 %x` so the operands are themselves well defined — a bare
+    // argument without `noundef` is not, and the deleted arm bailed before it
+    // ever consulted known bits.
+    let fx_id = b.freeze(x, "fx")?;
+    let fx: IntValue<'_, Width<4>, _> = b.view(fx_id).to_erased().try_into()?;
+    // `%amount = and i4 %fx, 3` — at most 3, so always in range for an i4 shift.
+    let amount = b.int_and::<Width<4>, _, _, _>(fx, three, "amount")?;
+    let shl = b.int_shl::<Width<4>, _, _, _>(one, amount, "shl")?;
+
+    let dl = m.data_layout();
+    let query = ValueTrackingQuery::new(&dl);
+    // Known bits really do bound the amount — the premise the deleted arm used.
+    assert_eq!(
+        known(b.view(amount).as_erased(), &query)?.to_string(),
+        "00??"
+    );
+    // And upstream still answers `false`, because the amount is not a literal.
+    assert!(!is_known_not_poison(b.view(shl).as_erased(), &query)?);
     Ok(())
 }

@@ -5326,8 +5326,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("comdat variable")),
         };
         self.bump()?;
-        self.expect_punct(PunctKind::Equal, "'=' after comdat name")?;
-        self.expect_keyword(Keyword::Comdat, "'comdat'")?;
+        self.expect_punct(PunctKind::Equal, "'=' here")?;
+        // `if (parseToken(lltok::kw_comdat, "expected comdat keyword"))
+        //    return tokError("expected comdat type");`
+        //
+        // Both messages are raised on the one failure, at the same token —
+        // `parseToken` leaves it unconsumed — and both go through
+        // `LLLexer::Error` at `ErrorPriority::Parser`, which early-returns only
+        // on `Priority < ErrorInfo.Priority`. `Parser < Parser` is false, so
+        // the second overwrites the first and `expected comdat keyword` can
+        // never reach a user from this site. Discarding the first error here is
+        // that overwrite.
+        self.expect_keyword(Keyword::Comdat, "comdat keyword")
+            .map_err(|_| self.message("expected comdat type"))?;
         let kind = if self.eat_keyword(Keyword::Any)? {
             SelectionKind::Any
         } else if self.eat_keyword(Keyword::Exactmatch)? {
@@ -10448,7 +10459,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // anywhere in the list overwrites an explicit `memory(...)` from the
         // same list, in either source order.
         if legacy_memory != MemoryEffects::unknown() {
-            out.set(index, Attribute::<B>::memory(legacy_memory));
+            out.add(index, Attribute::<B>::memory(legacy_memory));
         }
         Ok(ParsedAttrList {
             groups,

@@ -1211,7 +1211,9 @@ fn indirect_call_modifiers_round_trip() {
             Check::Line("tail call void %fp(i32 %v)"),
             Check::Next("notail call void %fp(i32 %v)"),
             Check::Next("call fastcc void %fp(i32 %v)"),
-            Check::Next("call cc 99 void %fp(i32 %v)"),
+            // `printCallingConv`'s default arm writes `cc99`; the fixture's
+            // spaced input is the same token stream after `LLLexer`'s rewind.
+            Check::Next("call cc99 void %fp(i32 %v)"),
             Check::Next("%a = call nnan ninf float %fp(float %fv)"),
             Check::Next("%b = call fast float %fp(float %fv)"),
         ],

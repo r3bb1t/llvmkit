@@ -1693,38 +1693,32 @@ impl AttributeStorage {
         Self::default()
     }
 
-    /// Insert `attr` at `index`. De-duplicates by structural
-    /// equality.
+    /// Insert `attr` at `index`, **replacing** any attribute already stored
+    /// there with the same kind (or, for a string attribute, the same key).
+    ///
+    /// Ports `addAttributeImpl` (`lib/IR/Attributes.cpp`), which every
+    /// `AttrBuilder::addAttribute` overload goes through: `lower_bound` for
+    /// the slot, then `std::swap(*It, Attr)` when one of that kind is already
+    /// there and `Attrs.insert(It, Attr)` otherwise. An `AttrBuilder` can
+    /// never hold two attributes of one kind, so `align(4)` followed by
+    /// `align(8)` leaves only `align(8)`.
+    ///
+    /// One residual difference from that routine: upstream's `lower_bound`
+    /// keeps `Attrs` sorted by `AttributeComparator`, where a new attribute
+    /// lands at the end here. See `docs/divergences.md`.
     pub fn add<B: ModuleBrand>(&mut self, index: AttrIndex, attr: Attribute<'_, B>) {
         self.add_stored(index, AttributeStored::from_attribute(attr));
     }
 
     pub(super) fn add_stored(&mut self, index: AttrIndex, stored: AttributeStored) {
-        if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
-            let set = &mut self.entries[pos].1;
-            if !set.contains(&stored) {
-                set.push(stored);
-            }
-            return;
-        }
-        self.entries.push((index, vec![stored]));
-    }
-
-    /// Insert `attr` at `index`, **replacing** any attribute already stored
-    /// there with the same kind (or, for a string attribute, the same key).
-    ///
-    /// Ports the `std::swap(*It, Attr)` branch of `addAttributeImpl`
-    /// (`lib/IR/Attributes.cpp`), which is what every `AttrBuilder::add*`
-    /// goes through — an `AttrBuilder` can never hold two attributes of one
-    /// kind. [`Self::add`] keeps its weaker structural de-duplication; the
-    /// difference is observable and recorded in `docs/future-work.md`.
-    pub fn set<B: ModuleBrand>(&mut self, index: AttrIndex, attr: Attribute<'_, B>) {
-        let stored = AttributeStored::from_attribute(attr);
         let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) else {
             self.entries.push((index, vec![stored]));
             return;
         };
         let set = &mut self.entries[pos].1;
+        // `It->hasAttribute(Kind)` — an enum-kinded attribute matches by kind,
+        // a string attribute by key, and the two families never match each
+        // other because `kind()` answers `None` for a string attribute.
         let same_slot = set.iter().position(|existing| match (&stored, existing) {
             (AttributeStored::String { key: new_key, .. }, AttributeStored::String { key, .. }) => {
                 new_key == key
@@ -1732,7 +1726,9 @@ impl AttributeStorage {
             _ => stored.kind().is_some() && stored.kind() == existing.kind(),
         });
         match same_slot {
+            // `std::swap(*It, Attr)`.
             Some(slot) => set[slot] = stored,
+            // `Attrs.insert(It, Attr)`.
             None => set.push(stored),
         }
     }
