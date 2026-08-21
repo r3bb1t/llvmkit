@@ -1,10 +1,14 @@
 //! Aggregate / vector op coverage: `extractvalue`, `insertvalue`,
 //! `extractelement`, `insertelement`, `shufflevector`.
 //!
-//! Every test cites its upstream source per Doctrine D11.
+//! Every test cites its upstream source per Doctrine D11, except the one
+//! that says plainly it has none: llvmkit's cross-module tag has no LLVM
+//! counterpart to port.
 
 use llvmkit_ir::ShuffleMaskElem::{Lane, Poison};
-use llvmkit_ir::{Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{
+    Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ShuffleVectorInst, module_new,
+};
 
 // --------------------------------------------------------------------------
 // extractvalue
@@ -566,6 +570,72 @@ fn shuffle_vector_scalable_constant_operand_survives_folding() -> Result<(), IrE
         "got:
 {text}"
     );
+    Ok(())
+}
+
+/// **No upstream counterpart.** LLVM's `ShuffleVectorInst::isValidOperands`
+/// takes three `Value *`s from one `LLVMContext` and has nothing to check here;
+/// module identity is llvmkit's own invariant, so there is no fixture to port
+/// and no upstream behaviour to mirror. What is being locked is the guard
+/// itself.
+///
+/// Two [`module_new!`](llvmkit_ir::module_new) modules cannot express the
+/// mistake — their distinct generated brand types make the cross-module call a
+/// compile error, so the runtime check is unreachable. Two
+/// [`llvmkit_ir::DynBrand`] modules share one brand type, which is precisely
+/// why the [`ModuleId`](llvmkit_ir::ModuleId) tag has to hold the line.
+///
+/// Without the tag test the mask's slot is looked up in V1's arena, and both
+/// outcomes are wrong: a slot past the end reaches `Context::value_data`'s
+/// `unreachable!("invalid ValueSlot: out of arena range (cross-module
+/// mixing?)")`, and a slot that happens to be in range reads a different value
+/// entirely and answers about that. Module A here is given extra constants so
+/// its mask lands past the end of B's arena, i.e. on the panicking half.
+#[test]
+fn shuffle_vector_operands_reject_a_mask_from_another_module() -> Result<(), IrError> {
+    let a = Module::dynamic("shuffle-mask-a");
+    let b = Module::dynamic("shuffle-mask-b");
+
+    // Module A: padding constants first, so the mask below lands at an arena
+    // index past anything module B holds.
+    let a_i32 = a.i32_type();
+    for value in 0..64_i32 {
+        let _ = a_i32.const_int(value);
+    }
+    let a_mask_ty = a.vector_type(a_i32.as_type(), 4);
+    let a_mask = a_mask_ty
+        .const_vector([
+            a_i32.const_int(0_i32),
+            a_i32.const_int(1_i32),
+            a_i32.const_int(2_i32),
+            a_i32.const_int(3_i32),
+        ])?
+        .as_erased();
+
+    // Module B: two well-formed `<4 x i32>` operands and its own mask, which is
+    // the same shape as A's so nothing but the tag differs.
+    let b_i32 = b.i32_type();
+    let b_vec_ty = b.vector_type(b_i32.as_type(), 4);
+    let b_lhs = b_vec_ty.as_type().poison().as_erased();
+    let b_rhs = b_vec_ty.as_type().poison().as_erased();
+    let b_mask = b_vec_ty
+        .const_vector([
+            b_i32.const_int(0_i32),
+            b_i32.const_int(1_i32),
+            b_i32.const_int(2_i32),
+            b_i32.const_int(3_i32),
+        ])?
+        .as_erased();
+
+    assert!(
+        !ShuffleVectorInst::is_valid_operands_with_constant_mask(b_lhs, b_rhs, a_mask),
+        "a mask minted in another module must not be a valid shufflevector operand"
+    );
+    // B's own mask is accepted at the same call, so the rejection is about the
+    // tag and nothing else.
+    assert!(ShuffleVectorInst::is_valid_operands_with_constant_mask(
+        b_lhs, b_rhs, b_mask
+    ));
     Ok(())
 }
 
