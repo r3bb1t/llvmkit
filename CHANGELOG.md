@@ -19,6 +19,50 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Divergence ledger: one closed entry deleted, four folded into their survivors
+
+No code change. `docs/divergences.md` only; the test suite is untouched.
+
+- **Entry 60 (`AsmParserContext` populated by a line-scanning heuristic) is closed and
+  deleted.** Every clause it asserted is gone. The reconstruction it named —
+  `record_parser_context`, `source_lines`, `function_range`, `label_line_in_range`,
+  `instruction_lines_in_range` — matches nothing under `crates/`
+  (`rg --count-matches 'record_parser_context|source_lines|function_range|label_line_in_range|instruction_lines_in_range' crates/`
+  at this commit), `Parser::with_context` now installs a real `AsmParserContext` and a
+  line table, and the three population sites mirror the three in
+  `LLParser::parseDefine` / `parseBasicBlock`, each closed at the port of
+  `Lex.getPrevTokEndLineColumnPos()`. Its range-semantics clause — every block ending at
+  the *function's* closing brace, every instruction at its first line's end — cannot arise
+  from that mechanism, and the block half is pinned by a ported upstream fixture:
+  `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParserObjectLocations)`,
+  ported as `crates/llvmkit-asmparser/tests/parser_facade.rs::parser_object_locations`,
+  asserts the entry block ends at its own last token and not at the brace a line later.
+  (A companion llvmkit-specific test puts two definitions on one line, which the old
+  heuristic could not separate.) Its non-UTF-8 clause went with `source_lines`, which
+  lossily decoded the input; its `SlotMapping` doc clause is closed in
+  `slot_mapping.rs`, which now documents `MetadataNodes` *as* `SlotMapping::metadata_nodes`.
+- **Entries 48, 54, 55 and 59 retired into D5, D4, 22 and 43**, each after a clause-by-clause
+  containment check run in both directions. None was wholly contained, and the missing
+  clause was folded into the survivor rather than dropped: D5 gains the named in-tree
+  consumer of the unfiltered use count and the `ConstantData` caveat that makes `!{i32 1}`
+  the wrong demonstration; D4 gains `ValueUse::Constant`, which its Fix did not name;
+  entry 22 gains the stale note on `constant_fold::vector_splat_constant`. Entry 59's
+  residual — `DIExpression::isValid()` and the IR-API construction hole — is carried by
+  entry 67, which entry 43 now points at instead of restating.
+- **Entry 22's title corrected.** It claimed the bad constant "parses"; its own correction
+  block has said otherwise since it was written, and a probe at this commit confirms
+  `@g = global <vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7>` still fails with
+  `constant expression type mismatch`.
+- **Entry 37 kept, not retired.** It was slated to fold into one bullet of entry 38 and does
+  not fit there: llvmkit rejects `@g1 = global ptr @llvm.umax.i32` at parse time even when
+  the intrinsic *is* declared, where `LLParser` accepts it and the Verifier rejects it with
+  a different message (`test/Verifier/intrinsic-addr-taken.ll`). That is a `rejects-valid`
+  behaviour entry 38 does not mention. Entry 38's "Still open" bullet now points at it.
+- **Entry 38's `Correction from verification` block removed.** Each of its four empirical
+  findings now behaves the other way; the dated removal note records the four probes, where
+  its two surviving sub-clauses went, and that the `undefined global` / `undefined value`
+  noun split it did not mention is already recorded in D12.
+
 ### Guidance: resolve rather than patch, and treat an absence as a claim
 
 No code change. Two rules were added to `CLAUDE.md` and `AGENTS.md`, and the two project
