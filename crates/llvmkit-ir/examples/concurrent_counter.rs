@@ -10,6 +10,7 @@
 //!
 //! ```llvm
 //! ; ModuleID = 'concurrent_counter'
+//!
 //! define i32 @atomic_inc(ptr %0) {
 //! entry:
 //!   fence release

@@ -42,6 +42,7 @@ use lifter_session_example::{LifterSession, PROGRAM, Step};
 /// would otherwise strand are avoided by sealing each block the moment its
 /// guest predecessor count is reached.
 const EXPECTED: &str = "; ModuleID = 'lifted'\n\
+    \n\
     define i32 @lifted() {\n\
     L1000:\n  br label %L1008\n\n\
     L1008:                                            ; preds = %L100c, %L1000\n  %r1 = phi i32 [ 5, %L1000 ], [ %next_i, %L100c ]\n  %r0 = phi i32 [ 0, %L1000 ], [ %sum, %L100c ]\n  %is_zero = icmp eq i32 %r1, 0\n  br i1 %is_zero, label %L1020, label %L100c\n\n\

@@ -209,6 +209,7 @@ fn switch_round_trips() {
     // `Out.PadToColumn(50)`-aligned predecessors comment names.
     const EXPECTED: &str = "\
 ; ModuleID = 'test'
+
 define void @test(i32 %X) {
   switch i32 %X, label %dest [
   ]

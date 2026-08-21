@@ -1705,6 +1705,66 @@ Found 2026-08-21 while porting `call addrspace(N)` / `invoke addrspace(N)`.
 
 The parser/printer contract is that printed output matches `AsmWriter.cpp` byte for byte and re-parses.
 
+### 126. The comdat block prints every comdat in the module, in declaration order
+
+*printer — module header* — crates/llvmkit-ir/src/asm_writer.rs (`fmt_module_with_options`, comdat loop)
+
+Found 2026-08-21 while porting the blank lines of the very same loop
+(`printModule`'s `if (!Comdats.empty()) Out << '
+';` and its
+`if (C != Comdats.back()) Out << '
+';` separator, both of which were fixed in
+that commit). Which comdats the loop walks was not.
+
+- **LLVM:** the loop iterates `AssemblyWriter::Comdats`, a
+  `SetVector<const Comdat *>` the `AssemblyWriter` constructor fills by walking
+  `TheModule->global_objects()` and inserting `GO->getComdat()` for each object
+  that has one. `Module::global_objects` is `concat<GlobalObject>(functions(),
+  globals())`. So the printed set is *first-use* order over functions and then
+  globals, and a comdat that no global object references is never printed at
+  all.
+- **llvmkit:** the loop iterates `ModuleCore::iter_comdats`, which is the
+  module's own comdat table — declaration order, unreferenced entries
+  included.
+- **Consequence:** printed bytes differ from `llvm-dis` on any module whose
+  comdat declaration order differs from its first-use order, and on any module
+  carrying an unreferenced comdat. llvmkit's output still re-parses; the
+  difference is that `llvm-as | llvm-dis` *loses* an unreferenced comdat and
+  llvmkit keeps it, so a round-trip through the two tools disagrees.
+- **Why it is recorded rather than fixed:** closing it changes which comdats a
+  printed module contains and in what order, so every checked-in
+  `.expected.ll` and byte-lock carrying more than one comdat moves with it.
+  That is a re-blessing pass of its own, and it is a different question from
+  the whitespace parity the commit that found it was fixing. Nothing about it
+  is blocked — `GlobalVariable::comdat` and `FunctionValue::comdat` both
+  exist.
+- **Fix:** build the printed sequence the `AssemblyWriter` constructor's way:
+  one pass over `iter_functions` then `iter_globals`, pushing each
+  `comdat()` into an insertion-ordered set, and drive the loop from that
+  instead of from `iter_comdats`.
+
+<details><summary>Verification evidence (2026-08-21)</summary>
+
+Upstream read at the vendored tag `llvmorg-22.1.4`. `llvm/lib/IR/AsmWriter.cpp` — the `AssemblyWriter` constructor's body is `if (!TheModule) return; for (const GlobalObject &GO : TheModule->global_objects()) if (const Comdat *C = GO.getComdat()) Comdats.insert(C);`, and `Comdats` is declared `SetVector<const Comdat *>` on the class. `printModule`'s comdat block is `if (!Comdats.empty()) Out << '
+'; for (const Comdat *C : Comdats) { printComdat(C); if (C != Comdats.back()) Out << '
+'; }`. `llvm/lib/IR/Module.cpp` — `iterator_range<Module::global_object_iterator> Module::global_objects() { return concat<GlobalObject>(functions(), globals()); }`.
+
+llvmkit probed at the commit that fixed the blank lines, with `target/release/examples/parse_file.exe` rebuilt at that commit, on this input:
+
+```llvm
+$a = comdat any
+$b = comdat largest
+$orphan = comdat exactmatch
+@g = global i32 0, comdat($a)
+define void @f() comdat($b) {
+  ret void
+}
+```
+
+llvmkit prints `$a`, `$b`, `$orphan`, in that order. Upstream's set is `{$b, $a}` — `@f` is a function and functions come first in `global_objects()`, and `$orphan` is referenced by no global object — so `llvm-dis` would print `$b` then `$a` and drop `$orphan`. The blank-line placement around the block matches upstream at this commit; only the membership and order do not. `llvm-as`/`llvm-dis` are not runnable in this environment, so upstream's side of this probe is derived from the two routines above rather than executed.
+
+</details>
+
 ### 40. Function attributes are never hoisted into an attribute group
 
 *printer* — crates/llvmkit-ir/src/asm_writer.rs:3311-3320 (input-carried groups only), :2115 / :2525 / :3070 (inline header printing)
@@ -2068,8 +2128,10 @@ CONFIRMED, still present at HEAD (2ac3e3a; `git diff --stat` on both cited files
   - `fmt_operand_ref`'s `BasicBlock` arm and its `Argument`/`Instruction` arm — `%<unnumbered>`, against `writeAsOperandInternal`.
   - `fmt_global_value_ref` — `@<unnumbered>`, against the same routine's `Prefix = '@'` branch.
   - `fmt_instruction`'s unnamed-result arm — `%<unnumbered> = `, against `printInstruction`'s `<badref> = `.
-- **Why:** all four are unreachable while the `SlotTracker` covers what is being printed, which is every case the module printer produces. Found while porting `AssemblyWriter::printBasicBlock`, whose own `<badref>:` twin was fixed in that commit because the routine was being rewritten; these were left rather than swept into a commit about block printing.
-- **Fix:** one string per site, **all four** — the first framing of this entry said "one string per arm" of `fmt_operand_ref` and would have left the global and instruction sites behind. Blast radius is empty: a repo-wide grep for `<unnumbered>` finds no test, fixture or expected-output file.
+- **Why:** Found while porting `AssemblyWriter::printBasicBlock`, whose own `<badref>:` twin was fixed in that commit because the routine was being rewritten; these were left rather than swept into a commit about block printing.
+- **Corrected 2026-08-21 — this entry's own reachability claim was false, and it was hiding a round-trip break.** The claim was that "all four are unreachable while the `SlotTracker` covers what is being printed, which is every case the module printer produces", and that "a repo-wide grep for `<unnumbered>` finds no test, fixture or expected-output file" made the blast radius empty. The tracker did **not** cover every case the module printer produces: `fmt_metadata_operand` and `fmt_metadata_node` took no tracker parameter at all, so every unnamed local reached through a `ValueAsMetadata` printed `%<unnumbered>` — and that text is not valid IR. `declare void @f()` plus `%1 = add i32 %x, 1` / `call void @f() [ "foo"(metadata i32 %1) ]` printed `[ "foo"(metadata i32 %<unnumbered>) ]`, which re-parsed as `expected value token`. The grep came back empty because no fixture exercised the path — absence of a probe read as absence of a trigger. That hole is **fixed**: the tracker is threaded through `fmt_metadata_operand` / `fmt_metadata_node` / `fmt_specialized_metadata_node` / `fmt_metadata_attachments` the way upstream's `AsmWriterContext` carries `Machine`, present wherever `printFunction` has run `Machine.incorporateFunction(F)` and `None` at module scope where upstream's tracker has no local numbering either.
+- **What survives is the spelling only, and this entry no longer asserts the sites are unreachable.** The four sites still emit `%<unnumbered>` / `@<unnumbered>` where upstream emits `<badref>`; what is not claimed any more is that nothing reaches them. Note also that `Value`'s own `Display` (`crates/llvmkit-ir/src/value.rs`) passes `None`, where upstream's `Value::print` builds a `SlotTracker` for the parent function — a separate gap in the same family, not covered by fixing the four strings.
+- **Fix:** one string per site, **all four** — the first framing of this entry said "one string per arm" of `fmt_operand_ref` and would have left the global and instruction sites behind.
 - **Upstream's fourth `<badref>` site is a different divergence, not this one.** `AsmWriter.cpp` writes `<badref>` in exactly four places: `writeAsOperandInternal`, `printInstruction`, `printBasicBlock` (already fixed) and `printNamedMDNode`, whose metadata arm is `int Slot = Machine.getMetadataSlot(Op); if (Slot == -1) Out << "<badref>"; else Out << '!' << Slot;`. llvmkit's counterpart does not print an `<unnumbered>` spelling at all — it falls back to the node's raw arena index, `write!(f, "!{}", id.index())` — so closing this entry does not touch it and a grep for `<unnumbered>` will never surface it. Noted here so the enumeration of upstream's `<badref>` sites is complete.
 - **Out of scope, deliberately** (three further `<unnumbered>` sites with no upstream `<badref>` twin, listed so the next reader does not re-derive it): the function-signature argument printer in `fmt_function_with_use_lists`, whose upstream counterpart `AssemblyWriter::printArgument` has no failure spelling at all — it is `int Slot = Machine.getLocalSlot(Arg); assert(Slot != -1 && "expect argument in function here"); Out << " %" << Slot;`; the anonymous identified-struct number in the type-identity block, where `printTypeIdentities` writes `Out << '%' << I << " = type "` from a `NumberedTypes` **index** and so cannot fail; and the same struct case in `type.rs`'s `Display`.
 

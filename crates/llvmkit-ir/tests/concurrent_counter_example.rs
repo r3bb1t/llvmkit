@@ -30,6 +30,7 @@ fn concurrent_counter_example_emits_locked_ir() -> Result<(), IrError> {
     concurrent_counter_example::build_dispatch(&m)?;
     let actual = format!("{m}");
     let expected = "; ModuleID = 'concurrent_counter'\n\
+    \n\
     define i32 @atomic_inc(ptr %0) {\n\
     entry:\n  fence release\n  %old = atomicrmw add ptr %0, i32 1 monotonic\n  fence acquire\n  ret i32 %old\n}\n\n\
     define i32 @dispatch(i32 %0, i32 %1, i32 %2) {\n\

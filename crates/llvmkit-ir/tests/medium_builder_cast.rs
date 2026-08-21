@@ -30,6 +30,7 @@ fn build_trunc_emits_trunc_to_dst_type() -> Result<(), IrError> {
 
     let text = format!("{m}");
     let expected = "; ModuleID = 't'\n\
+        \n\
         define i32 @narrow(i64 %0) {\n\
         entry:\n\
         \x20\x20%narrow = trunc i64 %0 to i32\n\

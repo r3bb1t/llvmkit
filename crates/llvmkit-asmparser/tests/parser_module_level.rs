@@ -1260,3 +1260,76 @@ fn end_of_module_checks_run_in_upstream_order() {
         "use of undefined comdat '$never_defined'"
     );
 }
+
+/// Mirrors the module-asm arm of `AssemblyWriter::printModule`, which opens
+/// `if (!M->getModuleInlineAsm().empty()) { Out << '\n'; … }` — llvmkit had
+/// the guard and the `do`/`while (!Asm.empty())` loop but not the leading
+/// blank line.
+///
+/// **Anchored on the routine, not on a fixture**: FileCheck cannot pin a blank
+/// line.
+#[test]
+fn module_asm_block_is_preceded_by_a_blank_line() {
+    let m = module_new!("module_asm_blank").expect("fresh module");
+    parse_into(
+        "module asm \"first line\"\nmodule asm \"second line\"\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert_eq!(
+        printed,
+        "; ModuleID = 'module_asm_blank'\n\
+\n\
+module asm \"first line\"\n\
+module asm \"second line\"\n",
+        "got:\n{printed}"
+    );
+}
+
+/// Mirrors `AssemblyWriter::printModule`'s comdat loop:
+///
+/// ```text
+/// if (!Comdats.empty()) Out << '\n';
+/// for (const Comdat *C : Comdats) {
+///   printComdat(C);
+///   if (C != Comdats.back()) Out << '\n';
+/// }
+/// ```
+///
+/// `Comdat::print` already ends in `'\n'`, so the trailing guard puts a
+/// **blank** line between consecutive comdats and none after the last.
+/// llvmkit emitted the leading blank line and then ran the comdats together.
+///
+/// What this test does **not** assert, because llvmkit still answers it
+/// differently: which comdats reach the loop, and in what order. Upstream
+/// walks `TheModule->global_objects()` into a `SetVector`, so an unreferenced
+/// comdat is dropped and the order is first-use order —
+/// `docs/divergences.md` entry 126. Both comdats here are referenced, and in
+/// declaration order, so the two answers coincide on this input.
+///
+/// **Anchored on the routine, not on a fixture**: FileCheck cannot pin a blank
+/// line.
+#[test]
+fn consecutive_comdats_are_separated_by_a_blank_line() {
+    let m = module_new!("comdat_separator").expect("fresh module");
+    parse_into(
+        "$a = comdat any\n\
+$b = comdat largest\n\
+@g = global i32 0, comdat($a)\n\
+@h = global i32 0, comdat($b)\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert_eq!(
+        printed,
+        "; ModuleID = 'comdat_separator'\n\
+\n\
+$a = comdat any\n\
+\n\
+$b = comdat largest\n\
+\n\
+@g = global i32 0, comdat($a)\n\
+@h = global i32 0, comdat($b)\n",
+        "got:\n{printed}"
+    );
+}

@@ -29,6 +29,7 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
         text,
         concat!(
             "; ModuleID = 'instsimplify-pass'\n",
+            "\n",
             "define i32 @f() {\n",
             "entry:\n",
             "  ret i32 42\n",
@@ -74,6 +75,7 @@ fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> 
         text,
         concat!(
             "; ModuleID = 'instsimplify-user-cascade'\n",
+            "\n",
             "define i32 @f() {\n",
             "entry:\n",
             "  ret i32 13\n",

@@ -500,6 +500,46 @@ entry:\n\
     );
 }
 
+/// The **unnamed**-local spelling of
+/// [`value_as_metadata_operand_bundle_inputs_round_trip`], which uses `%a`
+/// throughout and therefore could not see the printer defect below.
+///
+/// **Anchored on the routine, not on a fixture**, for the same reason that
+/// test gives. The rule is `AsmWriter.cpp`'s
+/// `writeAsOperandInternal(raw_ostream &, const Metadata *, AsmWriterContext &,
+/// bool)`, whose `ValueAsMetadata` tail is
+/// `writeAsOperandInternal(Out, V->getValue(), WriterCtx, /*PrintType=*/true)`
+/// — the *same* `AsmWriterContext`, so the same `Machine` numbers `%0` inside
+/// the bundle as numbers it outside. llvmkit's metadata sub-printer took no
+/// `SlotTracker` and printed `%<unnumbered>`, which then failed to re-parse
+/// (`docs/divergences.md` entry 104). Both halves are asserted: the bytes, and
+/// that they re-parse to the same bytes.
+#[test]
+fn value_as_metadata_operand_bundle_numbers_an_unnamed_local() {
+    let text = parse_and_render(
+        "declare void @callee()\n\
+define void @f(i32 %a) {\n\
+entry:\n\
+  %0 = add i32 %a, 1\n\
+  call void @callee() [ \"tag\"(metadata i32 %0) ]\n\
+  ret void\n\
+}\n",
+    );
+    check_directives(
+        &text,
+        &[
+            Check::Line("%0 = add i32 %a, 1"),
+            Check::Next("call void @callee() [ \"tag\"(metadata i32 %0) ]"),
+        ],
+    );
+    assert!(!text.contains("<unnumbered>"), "{text}");
+    assert_eq!(
+        parse_and_render(&text),
+        text,
+        "printed module is not round-trip stable"
+    );
+}
+
 /// A `ValueAsMetadata` argument in a `cleanuppad` argument list.
 ///
 /// **Anchored on the routine, not on a fixture**, for the same reason as

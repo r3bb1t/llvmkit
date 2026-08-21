@@ -63,6 +63,7 @@ fn build_int_ops_unique_duplicate_requested_names() -> Result<(), IrError> {
     assert_eq!(m.view(second_af).name().as_deref(), Some("af_lhs_rhs2"));
 
     let expected = "; ModuleID = 'names'\n\
+        \n\
         define i64 @names(i64 %0) {\n\
         entry:\n\
         \x20\x20%push_sp = sub i64 %0, 8\n\

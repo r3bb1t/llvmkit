@@ -19,6 +19,68 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Printed IR that could not be re-parsed, a skipped `checkValidVariableType`, and `printModule`'s blank lines
+
+- **Fixed: an unnamed local inside a `metadata` operand printed `%<unnumbered>`,
+  which is not valid IR.** `call void @f() [ "foo"(metadata i32 %1) ]` printed
+  back as `[ "foo"(metadata i32 %<unnumbered>) ]`, and re-parsing that gave
+  `expected value token` — the parse/print/parse contract broken on ordinary
+  input. The same hole reached every `#dbg_` record operand and every
+  `!DIArgList` element. Cause: llvmkit's metadata sub-printer took no
+  `SlotTracker` at all, where upstream's `AsmWriterContext` carries `Machine`
+  down to `writeAsOperandInternal(Out, V->getValue(), WriterCtx,
+  /*PrintType=*/true)`. The tracker is now threaded through
+  `fmt_metadata_operand`, `fmt_metadata_node`, `fmt_specialized_metadata_node`
+  and `fmt_metadata_attachments`, present wherever `printFunction` has run
+  `Machine.incorporateFunction(F)` and absent at module scope, exactly as
+  upstream's is. A *named* value printed correctly throughout, which is why the
+  bug outlived the tests written over the same surface.
+
+- **Corrected: `docs/divergences.md` entry 104**, which asserted the
+  `%<unnumbered>` sites were unreachable and that the blast radius was empty.
+  Both claims were false; the entry now records the spelling difference only and
+  says so.
+
+- **Fixed: a `@name` / `@N` reference at the wrong pointer type was accepted.**
+  `LLParser::getGlobalVal` runs `checkValidVariableType` on every symbol-table
+  *and* forward-reference-table hit, and rejects a demanded type that is not a
+  pointer before it looks anything up. llvmkit's `resolve_global_name_as_value`,
+  `resolve_global_id_as_value`, `resolve_global_name_as_constant` and
+  `resolve_global_id_as_constant` did neither. `@g = global i32 0` followed by
+  `@p = global ptr addrspace(3) @g` parsed, verified and printed back unchanged,
+  and `call void @c() [ "tag"(i32 @g) ]` was silently retyped to `ptr @g`. Both
+  guards are now ported under upstream's names, at upstream's positions, with
+  upstream's messages verbatim: `'@g' defined with type 'ptr' but expected 'ptr
+  addrspace(3)'` and `global variable reference must have pointer type`.
+  **Behaviour change:** modules llvmkit used to accept are now rejected, which
+  is what `llvm-as` does with them.
+
+- **Also fixed by that change:** the deferred `alias` / `ifunc` target and
+  `personality` fixups now carry the pointer type the clause actually spelled
+  instead of fabricating `ptr addrspace(0)` at end of module, so a
+  forward-referenced target in a non-zero address space resolves the way an
+  already-declared one does.
+
+- **Fixed: `printModule`'s blank lines.** Four arms of `AssemblyWriter::printModule`
+  were off. The blank line before each function is `Out << '
+'` with no guard
+  upstream, and was conditional here on the module also having globals, aliases,
+  ifuncs or named structs. The `module asm` block's leading blank line was
+  missing entirely, and its line loop dropped interior empty lines instead of
+  mirroring upstream's `do`/`while (!Asm.empty())`. Consecutive comdats ran
+  together where upstream's `if (C != Comdats.back()) Out << '
+'` puts a blank
+  line between them. And `; ModuleID = '…'` was printed unconditionally, where
+  upstream suppresses it for an empty name or one containing a newline.
+  **Printed bytes move** for every module without a global, alias, ifunc or
+  named struct — most small ones, and every `declare`-only module.
+
+- **Recorded: `docs/divergences.md` entry 126** — *which* comdats the block
+  prints is still wrong. Upstream fills a `SetVector` from
+  `TheModule->global_objects()`, so it prints only comdats a global object
+  references, in first-use order over `functions()` then `globals()`; llvmkit
+  prints the whole comdat table in declaration order.
+
 ### An indirect or inline-asm `call` no longer drops its call-site information (divergence 108)
 
 - **Fixed: `call` through a function pointer or an inline-asm value kept none of

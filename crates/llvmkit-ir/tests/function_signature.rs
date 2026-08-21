@@ -20,6 +20,7 @@ fn typed_function_facade_builds_signature_and_params() -> Result<(), IrError> {
 
     let text = format!("{m}");
     let expected = "; ModuleID = 'demo'\n\
+        \n\
         define i32 @add(i32 %0, i32 %1) {\n\
         entry:\n\
         \x20\x20%sum = add i32 %0, %1\n\

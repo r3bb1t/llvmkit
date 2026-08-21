@@ -8,7 +8,7 @@
 //! `unnamed_addr` assertions in `module_prints_simple_add_function` track
 //! `test/Assembler/unnamed-addr.ll`.
 
-use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, Type, module_new};
 
 /// Closest upstream coverage:
 /// `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedInstruction)`
@@ -30,6 +30,7 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
 
     let text = format!("{m}");
     let expected = "; ModuleID = 'demo'\n\
+        \n\
         define i32 @add(i32 %0, i32 %1) {\n\
         entry:\n\
         \x20\x20%sum = add i32 %0, %1\n\
@@ -116,6 +117,7 @@ fn function_local_names_share_argument_block_and_instruction_namespace() -> Resu
     assert_eq!(m.view(result).name().as_deref(), Some("entry2"));
 
     let expected = "; ModuleID = 'local_names'\n\
+        \n\
         define i32 @f(i32 %entry) {\n\
         entry1:\n\
         \x20\x20%entry2 = add i32 %entry, 1\n\
@@ -297,4 +299,34 @@ fn source_filename_api_borrows_and_clears() {
     m.clear_source_filename();
     assert!(m.source_filename().is_none());
     assert_eq!(format!("{m}"), "; ModuleID = 'source_filename_api'\n");
+}
+
+/// Mirrors `AssemblyWriter::printModule`'s function loop, which is
+/// `for (const Function &F : *M) { Out << '\n'; printFunction(&F); }` — the
+/// blank line is **unconditional**. llvmkit guarded it on the module also
+/// having globals, aliases, ifuncs or named structs, so every module without
+/// one of those printed one byte short of `llvm-dis`, and the shortfall was on
+/// the first function only.
+///
+/// **Anchored on the routine, not on a fixture**: FileCheck cannot pin a blank
+/// line, so no upstream `CHECK` block asserts this. The corroborating artefact
+/// is `test/Assembler/debug-label-bitcode.ll`, whose checked-in body is
+/// `llvm-as | llvm-dis` output and reads `source_filename = "…"`, a blank
+/// line, then `; Function Attrs: …` — with no global, alias, ifunc or named
+/// struct anywhere in that module.
+#[test]
+fn module_prints_a_blank_line_before_every_function_including_the_first() -> Result<(), IrError> {
+    let m = module_new!("blank_lines")?;
+    let fn_ty = m.function_type(m.void_type(), Vec::<Type<'_, _>>::new());
+    m.add_function_dyn("a", fn_ty, Linkage::External)?;
+    m.add_function_dyn("b", fn_ty, Linkage::External)?;
+
+    let text = format!("{m}");
+    let expected = "; ModuleID = 'blank_lines'\n\
+        \n\
+        declare void @a()\n\
+        \n\
+        declare void @b()\n";
+    assert_eq!(text, expected, "got:\n{text}");
+    Ok(())
 }

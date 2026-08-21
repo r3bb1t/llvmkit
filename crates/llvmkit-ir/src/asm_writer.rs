@@ -249,11 +249,18 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
         ValueKindData::Constant(c) => fmt_constant(f, v, c),
         // `MetadataAsValue` delegates to the metadata printer. MDStrings
         // print inline as `!"..."`; MDNodes print as their numbered slot.
+        //
+        // `slots` travels with the delegation because a `ValueAsMetadata`
+        // bottoms out in `writeAsOperandInternal(Out, V->getValue(),
+        // WriterCtx, /*PrintType=*/true)`, and upstream's `AsmWriterContext`
+        // carries `Machine` all the way down — an unnamed local reached
+        // through `metadata i32 %1` is numbered by the same tracker that
+        // numbers the enclosing instruction's operands.
         ValueKindData::MetadataAsValue(id) => {
             let module_view = v.module();
             let module = module_view.core_ref();
             let md = module_view.metadata_store();
-            fmt_metadata_operand(f, *id, module, &md, &metadata_slot_map(md.nodes()))
+            fmt_metadata_operand(f, *id, module, &md, &metadata_slot_map(md.nodes()), slots)
         }
         // An inline-asm value only ever appears as a `call` callee, where
         // `fmt_call` short-circuits to the `asm "...", "..."` form before
@@ -1558,6 +1565,7 @@ pub(super) fn fmt_instruction(
         module_view.core_ref(),
         &md,
         &md_slots,
+        Some(slots),
         ", ",
     )
 }
@@ -3027,7 +3035,7 @@ fn fmt_debug_metadata_operand(
 ) -> fmt::Result {
     match operand {
         DebugMetadataOperand::Metadata(md) => {
-            fmt_metadata_operand(f, md.slot(), module, store, md_slots)
+            fmt_metadata_operand(f, md.slot(), module, store, md_slots, Some(slots))
         }
         DebugMetadataOperand::Value(id) => {
             let slot = id.slot();
@@ -3055,12 +3063,26 @@ fn fmt_debug_record(
             write!(f, "#dbg_{}(", record.kind().name())?;
             fmt_debug_metadata_operand(f, record.location(), module, store, md_slots, slots)?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, record.variable().slot(), module, store, md_slots)?;
+            fmt_metadata_operand(
+                f,
+                record.variable().slot(),
+                module,
+                store,
+                md_slots,
+                Some(slots),
+            )?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, record.expression().slot(), module, store, md_slots)?;
+            fmt_metadata_operand(
+                f,
+                record.expression().slot(),
+                module,
+                store,
+                md_slots,
+                Some(slots),
+            )?;
             f.write_str(", ")?;
             if let Some(assign_id) = record.assign_id() {
-                fmt_metadata_operand(f, assign_id.slot(), module, store, md_slots)?;
+                fmt_metadata_operand(f, assign_id.slot(), module, store, md_slots, Some(slots))?;
                 f.write_str(", ")?;
             }
             if let Some(address_location) = record.address_location() {
@@ -3068,17 +3090,31 @@ fn fmt_debug_record(
                 f.write_str(", ")?;
             }
             if let Some(address_expression) = record.address_expression() {
-                fmt_metadata_operand(f, address_expression.slot(), module, store, md_slots)?;
+                fmt_metadata_operand(
+                    f,
+                    address_expression.slot(),
+                    module,
+                    store,
+                    md_slots,
+                    Some(slots),
+                )?;
                 f.write_str(", ")?;
             }
-            fmt_metadata_operand(f, record.debug_loc().slot(), module, store, md_slots)?;
+            fmt_metadata_operand(
+                f,
+                record.debug_loc().slot(),
+                module,
+                store,
+                md_slots,
+                Some(slots),
+            )?;
             f.write_str(")")
         }
         DebugRecord::Label { label, debug_loc } => {
             f.write_str("#dbg_label(")?;
-            fmt_metadata_operand(f, label.slot(), module, store, md_slots)?;
+            fmt_metadata_operand(f, label.slot(), module, store, md_slots, Some(slots))?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, debug_loc.slot(), module, store, md_slots)?;
+            fmt_metadata_operand(f, debug_loc.slot(), module, store, md_slots, Some(slots))?;
             f.write_str(")")
         }
     }
@@ -3268,6 +3304,10 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
             module_view.core_ref(),
             &md,
             &md_slots,
+            // `printFunction` runs `Machine.incorporateFunction(F)` *before*
+            // it prints either attachment position, so a function-local value
+            // reached through an attachment is numbered here too.
+            Some(&slots),
             " ",
         )?;
     }
@@ -3404,6 +3444,10 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
             module_view.core_ref(),
             &md,
             &md_slots,
+            // `printFunction` runs `Machine.incorporateFunction(F)` *before*
+            // it prints either attachment position, so a function-local value
+            // reached through an attachment is numbered here too.
+            Some(&slots),
             " ",
         )?;
     }
@@ -3461,7 +3505,13 @@ pub(super) fn fmt_module_with_options(
     preserve_use_list_order: bool,
 ) -> fmt::Result {
     let use_lists = preserve_use_list_order.then(|| predict_use_list_order(m));
-    writeln!(f, "; ModuleID = '{}'", m.name())?;
+    // `if (!M->getModuleIdentifier().empty() &&
+    //      M->getModuleIdentifier().find('\n') == std::string::npos)`, whose
+    // own comment explains the second half: "Don't print the ID if it will
+    // start a new line (which would require a comment char before it)."
+    if !m.name().is_empty() && !m.name().contains('\n') {
+        writeln!(f, "; ModuleID = '{}'", m.name())?;
+    }
     if let Some(source_filename) = m.source_filename() {
         f.write_str("source_filename = \"")?;
         print_escaped_string(f, source_filename.as_bytes())?;
@@ -3486,30 +3536,59 @@ pub(super) fn fmt_module_with_options(
 
     // Module-level inline assembly: one `module asm "<line>"` per
     // newline-split entry. Mirrors the `do { ... } while (!Asm.empty())`
-    // loop in `printModule`.
+    // loop in `printModule`, which is preceded by an unconditional
+    // `Out << '\n'` inside the same `if (!M->getModuleInlineAsm().empty())`.
     {
         let asm = m.module_asm();
         if !asm.is_empty() {
-            for line in asm.split('\n') {
-                if line.is_empty() {
-                    continue;
-                }
+            f.write_str("\n")?;
+            // `StringRef::split('\n')` yields (everything, "") when there is
+            // no separator left, and the loop is a `do`/`while (!Asm.empty())`
+            // — so an interior empty line prints as `module asm ""` while a
+            // single trailing newline does not add a line.
+            let mut rest = asm.as_str();
+            loop {
+                let (front, remainder) = match rest.split_once('\n') {
+                    Some(split) => split,
+                    None => (rest, ""),
+                };
                 f.write_str("module asm \"")?;
-                print_escaped_string(f, line.as_bytes())?;
+                print_escaped_string(f, front.as_bytes())?;
                 f.write_str("\"\n")?;
+                if remainder.is_empty() {
+                    break;
+                }
+                rest = remainder;
             }
         }
     }
 
-    // Comdats. Mirrors `AssemblyWriter::printModuleSummaryIndex`'s
-    // comdat-emission loop in `lib/IR/AsmWriter.cpp` (the bare-module
-    // path: a leading blank line if any comdats exist, then one line
-    // per comdat).
+    // Comdats. Mirrors `AssemblyWriter::printModule`'s comdat loop:
+    //
+    //     if (!Comdats.empty()) Out << '\n';
+    //     for (const Comdat *C : Comdats) {
+    //       printComdat(C);
+    //       if (C != Comdats.back()) Out << '\n';
+    //     }
+    //
+    // `Comdat::print` already ends in `'\n'`, so the trailing guard puts a
+    // *blank* line between consecutive comdats and none after the last.
+    //
+    // Which comdats reach the loop still differs: upstream's `Comdats` is the
+    // `SetVector` the `AssemblyWriter` constructor fills from
+    // `TheModule->global_objects()` — which is `concat(functions(),
+    // globals())` — so a comdat no global object references is never printed
+    // and the order is first-use order rather than declaration order. See
+    // `docs/divergences.md` entry 126.
     let mut comdats_iter = m.iter_comdats();
-    if comdats_iter.len() > 0 {
+    let comdat_count = comdats_iter.len();
+    if comdat_count > 0 {
         f.write_str("\n")?;
-        for c in comdats_iter.by_ref() {
+        for (position, c) in comdats_iter.by_ref().enumerate() {
             fmt_comdat(f, c)?;
+            if position + 1 != comdat_count {
+                f.write_str("\n")?;
+            }
         }
     }
 
@@ -3572,13 +3651,11 @@ pub(super) fn fmt_module_with_options(
         }
     }
 
-    let mut first = true;
+    // `for (const Function &F : *M) { Out << '\n'; printFunction(&F); }` —
+    // the blank line is unconditional, so a module whose first section is its
+    // function list still opens with one.
     for func in m.iter_functions::<DynBrand>() {
-        if !first || !m.global_empty() || !m.alias_empty() || !m.ifunc_empty() || has_named_structs
-        {
-            f.write_str("\n")?;
-        }
-        first = false;
+        f.write_str("\n")?;
         fmt_function_with_use_lists(
             f,
             func,
@@ -3648,7 +3725,9 @@ pub(super) fn fmt_module_with_options(
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, op.slot(), m, &md, &slots)?;
+                    // `printNamedMDNode` runs under `printModule`'s
+                    // `Machine`, with no function incorporated.
+                    fmt_metadata_operand(f, op.slot(), m, &md, &slots, None)?;
                 }
                 f.write_str("}\n")?;
             }
@@ -3668,7 +3747,8 @@ pub(super) fn fmt_module_with_options(
             for (i, node) in nodes.iter().enumerate() {
                 if let Some(slot) = slots[i] {
                     write!(f, "!{slot} = ")?;
-                    fmt_metadata_node(f, node, m, &md, &slots)?;
+                    // `writeAllMDNodes`, likewise at module scope.
+                    fmt_metadata_node(f, node, m, &md, &slots, None)?;
                     f.write_str("\n")?;
                 }
             }
@@ -3691,12 +3771,17 @@ fn fmt_md_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 ///
 /// Tuple MDString operands are printed *inline* (`!{!"rsp"}`) because LLVM
 /// never assigns standalone metadata slots to `MDString`s.
+///
+/// `value_slots` is `AsmWriterContext::Machine` — present wherever upstream's
+/// writer has incorporated a function, `None` at module scope where upstream's
+/// module-level `SlotTracker` has no local numbering either.
 fn fmt_metadata_node(
     f: &mut fmt::Formatter<'_>,
     node: &MetadataKind<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    value_slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     use super::metadata::MetadataKind;
     match node {
@@ -3711,13 +3796,15 @@ fn fmt_metadata_node(
                 if i > 0 {
                     f.write_str(", ")?;
                 }
-                fmt_metadata_operand(f, op.slot(), module, store, slots)?;
+                fmt_metadata_operand(f, op.slot(), module, store, slots, value_slots)?;
             }
             f.write_str("}")
         }
-        MetadataKind::Ref(id) => fmt_metadata_operand(f, id.slot(), module, store, slots),
+        MetadataKind::Ref(id) => {
+            fmt_metadata_operand(f, id.slot(), module, store, slots, value_slots)
+        }
         MetadataKind::Specialized(node) => {
-            fmt_specialized_metadata_node(f, node, module, store, slots)
+            fmt_specialized_metadata_node(f, node, module, store, slots, value_slots)
         }
         // `AsmWriter::writeDIArgList` — each operand printed as a typed value,
         // which is what makes the list a `ValueAsMetadata` list rather than a
@@ -3734,7 +3821,7 @@ fn fmt_metadata_node(
                     module.context().value_data(argument.slot()).ty,
                 );
                 write!(f, "{} ", value.ty())?;
-                fmt_operand_ref(f, value, None)?;
+                fmt_operand_ref(f, value, value_slots)?;
             }
             f.write_str(")")
         }
@@ -3742,7 +3829,7 @@ fn fmt_metadata_node(
             let slot = id.slot();
             let data = module.context().value_data(slot);
             let value = Value::<DynBrand>::from_parts(slot, module, data.ty);
-            fmt_operand(f, value, None)
+            fmt_operand(f, value, value_slots)
         }
     }
 }
@@ -3752,6 +3839,7 @@ fn fmt_specialized_metadata_node(
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    value_slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     use super::metadata::MetadataFieldValue;
     if node.is_distinct() {
@@ -3788,7 +3876,7 @@ fn fmt_specialized_metadata_node(
             }
             MetadataFieldValue::Enum(s) => f.write_str(s)?,
             MetadataFieldValue::Metadata(md) => {
-                fmt_metadata_operand(f, md.slot(), module, store, slots)?
+                fmt_metadata_operand(f, md.slot(), module, store, slots, value_slots)?
             }
             MetadataFieldValue::MetadataList(items) => {
                 f.write_str("!{")?;
@@ -3796,7 +3884,7 @@ fn fmt_specialized_metadata_node(
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, md.slot(), module, store, slots)?;
+                    fmt_metadata_operand(f, md.slot(), module, store, slots, value_slots)?;
                 }
                 f.write_str("}")?;
             }
@@ -3814,11 +3902,12 @@ fn fmt_metadata_attachments(
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    value_slots: Option<&SlotTracker>,
     separator: &str,
 ) -> fmt::Result {
     for (kind, id) in attachments.iter() {
         write!(f, "{separator}!{} ", kind.name())?;
-        fmt_metadata_operand(f, id.slot(), module, store, slots)?;
+        fmt_metadata_operand(f, id.slot(), module, store, slots, value_slots)?;
     }
     Ok(())
 }
@@ -3832,13 +3921,14 @@ fn fmt_metadata_operand(
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    value_slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     if let Some(node) = store.get(id) {
         if let MetadataKind::String(s) = node {
             return fmt_md_string(f, s);
         }
         if is_inline_metadata_node(node) {
-            return fmt_metadata_node(f, node, module, store, slots);
+            return fmt_metadata_node(f, node, module, store, slots, value_slots);
         }
     }
     match slots.get(id.index()).and_then(|slot| *slot) {
@@ -4008,6 +4098,10 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         g.module().core_ref(),
         &md,
         &md_slots,
+        // Module scope: upstream's `printGlobal` / `printAlias` / `printIFunc`
+        // run under `printModule`'s `Machine`, which has no function
+        // incorporated, so there is no local numbering to hand down either.
+        None,
         ", ",
     )
 }
@@ -4060,6 +4154,10 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
         a.module().core_ref(),
         &md,
         &md_slots,
+        // Module scope: upstream's `printGlobal` / `printAlias` / `printIFunc`
+        // run under `printModule`'s `Machine`, which has no function
+        // incorporated, so there is no local numbering to hand down either.
+        None,
         ", ",
     )?;
     f.write_str("\n")
@@ -4101,6 +4199,10 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
         i.module().core_ref(),
         &md,
         &md_slots,
+        // Module scope: upstream's `printGlobal` / `printAlias` / `printIFunc`
+        // run under `printModule`'s `Machine`, which has no function
+        // incorporated, so there is no local numbering to hand down either.
+        None,
         ", ",
     )?;
     f.write_str("\n")

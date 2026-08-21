@@ -25,6 +25,7 @@ fn factorial_example_emits_locked_ir() -> Result<(), IrError> {
     factorial_example::build(&m)?;
     let actual = format!("{m}");
     let expected = "; ModuleID = 'factorial'\n\
+    \n\
     define i32 @factorial(i32 %n) {\n\
     entry:\n  %is_zero = icmp eq i32 %n, 0\n  br i1 %is_zero, label %base, label %loop\n\n\
     base:                                             ; preds = %entry\n  ret i32 1\n\n\

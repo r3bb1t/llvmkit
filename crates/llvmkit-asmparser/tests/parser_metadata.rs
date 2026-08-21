@@ -798,3 +798,42 @@ fn a_malformed_metadata_tuple_operand_type_keeps_the_type_s_own_message() {
         "basic block pointers are invalid"
     );
 }
+
+/// Mirrors `llvm/test/Verifier/dbg-declare-invalid-debug-loc.ll`, vendored
+/// whole under `fixtures/upstream/Verifier/`.
+///
+/// The fixture's `RUN` line is `opt %s -o /dev/null -S 2>&1 | FileCheck %s`, so
+/// most of its `CHECK` block is the *verifier's* rendering, which llvmkit does
+/// not reproduce (`docs/divergences.md` entry 121), and llvmkit does not
+/// auto-upgrade `@llvm.dbg.declare` into a `#dbg_declare` record either
+/// (`docs/future-work.md`, AutoUpgrade). One token in that block is pure
+/// `AsmWriter` output, and it is the one asserted here: `ptr %1`, the
+/// intrinsic's `ValueAsMetadata` operand, from
+/// `; CHECK-NEXT: #dbg_declare(ptr %1, …)`.
+///
+/// `%1` is an **unnamed** local. Until `AssemblyWriter`'s `SlotTracker` was
+/// threaded into the metadata sub-printer — upstream carries it on
+/// `AsmWriterContext::Machine` and bottoms out in
+/// `writeAsOperandInternal(Out, V->getValue(), WriterCtx, /*PrintType=*/true)`
+/// — llvmkit printed `%<unnumbered>` here, and the printed module then failed
+/// to re-parse. A *named* value prints correctly either way, which is why the
+/// operand-bundle test in `parser_calls.rs` did not catch it; this one pins the
+/// unnamed spelling and the re-parse.
+///
+/// Byte equality across two prints is deliberately **not** asserted: this
+/// fixture is one of the files whose `!N` numbering moves on a second print,
+/// which is the separate `SlotTracker::processModule` pre-pass gap
+/// (`docs/fixture-coverage.md` G19). The operand this test is about is
+/// asserted on both prints instead.
+#[test]
+fn upstream_dbg_declare_fixture_numbers_an_unnamed_metadata_operand() {
+    const OPERAND: &str = "call void @llvm.dbg.declare(metadata ptr %1, ";
+    let src = include_str!("fixtures/upstream/Verifier/dbg-declare-invalid-debug-loc.ll");
+    let (_stats, text) = parse_snippet(src);
+    assert!(text.contains(OPERAND), "{text}");
+    assert!(!text.contains("<unnumbered>"), "{text}");
+    // The printed module must re-parse --- the half that `%<unnumbered>` broke.
+    let (_stats, reprinted) = parse_snippet(&text);
+    assert!(reprinted.contains(OPERAND), "{reprinted}");
+    assert!(!reprinted.contains("<unnumbered>"), "{reprinted}");
+}

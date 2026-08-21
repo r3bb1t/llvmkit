@@ -1,4 +1,5 @@
 ; ModuleID = 'corpus_dbg_declare_value.ll'
+
 define void @foo(double %x) !dbg !0 {
 entry:
   #dbg_declare_value(double %x, !1, !DIExpression(), !2)

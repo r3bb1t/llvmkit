@@ -46,6 +46,7 @@ fn factorial_auto_ssa_example_emits_locked_ir() -> Result<(), IrError> {
     // `tests/factorial_example.rs::factorial_example_emits_locked_ir`.
     // Any change to either target string must update both.
     let expected = "; ModuleID = 'factorial'\n\
+    \n\
     define i32 @factorial(i32 %n) {\n\
     entry:\n  %is_zero = icmp eq i32 %n, 0\n  br i1 %is_zero, label %base, label %loop\n\n\
     base:                                             ; preds = %entry\n  ret i32 1\n\n\

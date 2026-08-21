@@ -7,6 +7,7 @@
 //!
 //! ```llvm
 //! ; ModuleID = 'factorial'
+//!
 //! define i32 @factorial(i32 %n) {
 //! entry:
 //!   %is_zero = icmp eq i32 %n, 0
