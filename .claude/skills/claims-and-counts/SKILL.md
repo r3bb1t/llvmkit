@@ -85,6 +85,19 @@ produced it, and the anchor it was measured at.
 - Your evidence is that a search returned **nothing**. That proves the term you
   typed is absent, not that the fact is. Search the concept's other spelling
   before writing "no entry exists".
+- You are asserting an absence **without having run any search at all** —
+  "this is unrecorded", "nothing pins this", "there is no entry to delete",
+  "no caller does X". A negative existence claim is the cheapest thing in this
+  file to check and the easiest to be wrong about. It has shipped twice: a task
+  brief declared a defect unrecorded when `### 108` had named it for a day, and
+  a routine was called uncalled when its one caller spelled the name differently.
+  **Run the grep, paste it beside the claim, or do not make the claim.**
+- The thing you found **exists but may not cover what you think**. A ledger row,
+  a test, or a doc section is evidence of *someone's* coverage, not of yours.
+  Entry 108 named this exact defect and covered two of its eight parts; a
+  regression test pinned the bug with a *named* value when only an unnamed one
+  reproduced it. Read what it actually asserts before counting it as covered,
+  and if it is narrower than the thing you are describing, say so.
 - You deleted the hedge without adding the check. An unhedged wrong claim reads
   as verified; that is worse than the hedge you removed.
 - You reached for the `Grep` tool to get a count.

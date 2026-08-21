@@ -19,6 +19,33 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Guidance: resolve rather than patch, and treat an absence as a claim
+
+No code change. Two rules were added to `CLAUDE.md` and `AGENTS.md`, and the two project
+skills were sharpened against failures observed while closing the divergence ledger.
+
+- **Resolve, don't patch.** A fix now lands with whatever should have caught the bug. The
+  test is a question asked out loud — *what would have failed if this were wrong?* — and if
+  the answer is "nothing" or "something too weak", that gap is part of the finding and lands
+  in the same commit. **A recorded weakness is not a resolved one.** Two defects shipped
+  behind already-recorded weaknesses: a diagnostic carrying upstream's message verbatim but
+  anchored at an unrelated line, because the corpus `error=` oracle matches text by
+  containment and ignores position; and a regression test that pinned its bug with a *named*
+  value when only an unnamed value reproduced it. Both fixes were correct and both detections
+  stayed blind. The rule binds hardest on findings that look trivial — severity governs how
+  loudly a finding is reported, never how deeply it is fixed.
+- **An assertion of absence is a claim and needs a command.** "This is unrecorded", "nothing
+  pins this", "no caller does X" — run the search and paste it, or do not write the sentence.
+  And when a search *does* find something, read what it asserts before counting it: entry 108
+  named its defect exactly and covered two of that defect's eight parts. Recorded is not
+  covered.
+- `claims-and-counts` gains two red flags — asserting an absence having run no search at all,
+  and treating an existing row or test as coverage without reading what it asserts.
+- `porting-from-orig-cpp` gains five rationalization rows (probing one arm and concluding
+  about a sibling; "there is already an entry"; "the gap that hid it is a known backlog item";
+  trusting a stale probe binary) and a third obligation on the fix/record fork: close whatever
+  should have caught the difference.
+
 ### `convertValIDToValue` diagnostics are anchored at the ValID's own token (divergence 123)
 
 - **Fixed: every diagnostic `convertValIDToValue` raises reported at the wrong

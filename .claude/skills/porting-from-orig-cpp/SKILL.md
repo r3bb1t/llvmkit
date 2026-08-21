@@ -28,6 +28,10 @@ laziness, so it comes with a justifying sentence. These are the sentences.
 | "llvmkit rejects it, so upstream must reject it too." | Trace upstream to its terminal before asserting. It frequently accepts. |
 | "`foo_a(x, label)` is llvmkit's spelling of `barA(T, Msg)`." | Check whether a closer spelling already exists in the same file first. |
 | "The tests pass, so the port is faithful." | The tests encode what someone already believed. They cannot detect an arm nobody ported. |
+| "I probed arm 2 and it works, so arm 4 is fine." | Sibling arms are separate code. A `switch` with four string cases had three ported and one missing; the probe hit a ported one. Probe **the arm you are claiming about**. |
+| "There is already an entry for this." | An entry is evidence of someone's coverage, not yours. One named this defect and covered two of its eight parts. Read what it asserts before counting it. |
+| "I fixed it; the gap that hid it is a known backlog item." | Then it is patched, not resolved. The mechanism that let it ship is part of the finding and lands in the same commit. Recorded is not resolved. |
+| "The probe output shows the fix works." | Rebuild first. A binary four minutes stale already misled one reviewer here into reporting a shipped fix as missing. |
 
 **Violating the letter of the rule is violating the spirit of it.** If you find
 yourself arguing that the outcome is what matters, stop — that is this failure,
@@ -78,6 +82,19 @@ say which one you chose:
    messages and a moved caret.
 2. **Record it**, with evidence, in `docs/divergences.md`. Only when it genuinely
    cannot be fixed now, and the entry says why.
+
+**Either ending also carries a third obligation: close whatever should have
+caught this.** Ask it explicitly — *what would have failed if this were wrong?*
+If the answer is "nothing", or "something that exists but is too weak", that gap
+is part of the finding and lands in the same commit. It is not a follow-up and
+not a backlog row.
+
+This is not hypothetical. A diagnostic shipped with upstream's exact message
+anchored at an unrelated line, because the oracle asserting it matched message
+text and ignored position — a weakness already written down as a known item.
+Being recorded is what let it keep hiding defects. A regression test shipped
+pinning a bug with a *named* value when only an unnamed value reproduced it.
+In both cases the fix was correct and the detection stayed blind.
 
 Silence is not an option, and neither is a commit body. Before writing a new
 record, grep `docs/divergences.md`, `docs/future-work.md` and
