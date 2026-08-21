@@ -19,241 +19,84 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2564 (2559 distinct names). Recounted on 2026-08-21
-at the erased-callee `call` construction port's fix round 1 via the documented
-attribute-anchored grep below
-(`crates/llvmkit-ir` 1567 + `crates/llvmkit-asmparser` 975 +
-`crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The distinct-name total comes from the same
-attribute anchor followed to the next `fn` line:
-`awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2564 before `-u`, so the two matchers agree. The +12
-over the 2552 point before it is the erased-callee `call` construction port and
-its fix round 1. Fix round 1 added four: a divergence lock for the unported
-`Verifier::visitCallBase` operand-bundle loop (`docs/divergences.md` 125), two
-anchor locks in `parser_calls.rs` for the diagnostics the port re-anchored, and
-one `builder_call.rs` test for `CallSiteConfig::call_site_type`'s override
-branch on `call_erased`. The port itself added eight:
-seven `parser_calls.rs` tests — four vendored upstream fixtures (the
-already-vendored `callee-type-metadata.ll` plus `kcfi-operand-bundles.ll`,
-`ptrauth-operand-bundles.ll` and `inline-asm-indirect-operand.ll`), two
-llvmkit-authored rule anchors for the modifiers and the attribute halves, and
-one for `parseCall`'s mandatory `call` after a tail keyword — and one
-`builder_call.rs` test for `IrBuilder::call_erased` itself. The +7
-over the 2545 point before it is the `call addrspace(N)` / `invoke
-addrspace(N)` port: five `parser_calls.rs` tests — one per `RUN` line of the
-three vendored `*-nonzero-program-addrspace` fixtures, with the two `RUN` lines
-of `call-nonzero-program-addrspace.ll` split across two tests and the other two
-fixtures taking one test each, plus one for `parseCallBr`'s *absence* of an
-address space — and two `parser_types.rs` tests for the two newly registered
-`symbolic-addrspace*` split parts. The +6
-over the 2539 point before it is the vector-`getelementptr` work: two builder
-tests for `GetElementPtrInst::getGEPReturnType` and its `getIndexedType` gate,
-two parser tests for the printed form of a vector GEP instruction, and two
-verifier tests added in its fix round — the struct-source scalable-vector
-`Check` ported there, and the one reachable branch of the vector-width block.
-The +6 before that is the `shufflevector` port's six new
-`builder_aggregate_vector.rs` tests -- four with the port itself, one added in
-fix round 1 for the folder path it made reachable, and one in fix round 2 for
-the cross-module mask guard (its `parser_constants.rs` change is a rename, not
-an addition). The +9 before that is the operand-bundle work: ten
-tests added, one hand-trimmed subset test replaced. The last two are fix round
-4's `DIArgList` port — the vendored
-`test/DebugInfo/Generic/debug_value_list.ll` and the operand-bundle /
-exception-argument rule anchor beside it. The +1 before
-that is fix round 4's `wineh_missing_funclet_token_is_not_diagnosed` divergence lock; the +5 before
-that is the funclet commit's five ported `catchswitch` tests; the +10 before
-that is the two printer-parity commits — 6 for basic-block printing and
-ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
-program's waves 0-14. The figure agrees with the gate: a
-`cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2564 passed, 0 failed across 214 test binaries.
+## Counts, and why none is written here
 
-**Registry coverage is not total, and this is the honest count.** The table
-below carries **2131 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
-them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
-function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2123 rows give provenance for **2239 of
-the 2559 distinct `#[test]` functions**, leaving **320 with no row** and **zero
-rows naming a `#[test]` that no longer exists**. That last clause is scoped to
-test *names*, which is all the audit ever measured: fixture rows are excluded
-from the accounting above and were never in the audited population, so it said
-nothing about rows citing a deleted *file*. Seven such rows existed and were
-repaired in the 2026-08-20 fix-round-3 sweep -- two `medium_builder_phi.rs`
-rows repointed at `src/phi_raw_tests/medium.rs`, three `compile_fail/ssa_*.rs`
-rows repointed at the `ssa_builder.rs` runtime locks that replaced those
-retired fixtures, and two `compile_fail/*_pass_*.rs` rows deleted because the
-`PassPipelineInfo` / `*PassManager` machinery they exercised was itself deleted
-in `2f1f390` and has no successor. The 2214/320 split is the 2026-08-20
-hex-case audit's 2190/323 carried forward by arithmetic, not a fresh audit: the
-five rows added at the funclet-parity commit each name exactly one of the five
-tests added there (+5 covered, 0 unrowed), the three `ssa_*` repoints each
-name a test that previously carried no row at all (+3 covered, -3 unrowed), and
-fix round 4's one added test landed with its own row (+1 covered, 0 unrowed),
-the operand-bundle work added ten rowed tests and replaced one rowed test
-(+9 covered, 0 unrowed), the `shufflevector` `isValidOperands` port added
-six rowed tests across its three commits and renamed one rowed test
-(+6 covered, 0 unrowed), and the vector-`getelementptr` work added six rowed
-tests across its two commits (+6 covered, 0 unrowed).
-Re-running the full audit means expanding the group rows by hand (see the
-methodology note below); do not quote 2220 as a freshly derived number.
+**No test total, no row count, and no covered/unrowed split is recorded in this
+file.** Every one of them used to be, in a paragraph that also carried the
+arithmetic trail explaining how it had been reached — and that paragraph ended
+up stating three mutually inconsistent covered-counts at once, with its own
+addition chain contradicting the label attached to it. That is a failure this
+repo has corrected many times over, each time by writing a better claim, and
+each better claim went stale in turn. The figures are derivable; a stale figure
+is worse than no figure; so they are derived, not stored.
 
-> **Methodology, because the previous header's numbers are not comparable.**
-> Through Wave 11 the audit matched rows to tests by looking for a
-> `path.rs::name` reference, which silently skipped the rows that cover a group
-> --- `` `…/module_ownership.rs` (whole file) ``,
-> `` `…/parser_vector_select.rs` (all seven) ``,
-> `` `…::is_splat_value_00` … `is_splat_value_select_binop` ``,
-> `` `…/global_value.rs` (the five `*_display_and_from_str_round_trip` tests) ``
-> and 15 more. Those rows are real provenance, so this recount expands them
-> against the file they cite. That, not a burst of new rows, is most of the
-> 469 -> 323 move: rows grew by 83, credited tests by 219. Recounting the old
-> way at the Wave 14 point (`3a6d379`) gave 2037 covered and 466 unrowed
-> (2037 + 466 = 2503, that commit's distinct-name total) --- so 143 of the 146
-> closed are the group rows finally being credited, not new provenance. That
-> figure is a **dated measurement, not a baseline for this commit**: it was
-> taken at `3a6d379`, the matcher it used is unrecorded, and the distinct-name
-> total has since moved to 2534. Do not subtract it from today's numbers; if
-> you want a live figure, re-derive it and state the matcher alongside it.
+Derive the test total with the **attribute-anchored** matcher, never a bare
+`grep -c '#\[test\]'`: the unanchored form also matches the literal `#[test]`
+written inside module-doc prose ("Each `#[test]` cites its upstream source"),
+which has inflated a header figure before.
 
-The gap is inherited, not new: it accumulated across the type-safety and
-pass-API programs, where whole test files landed without rows, and it sits in
-`llvmkit-ir` (`src/pass_context.rs` 20, `src/fp_class.rs` 19,
-`constant_folding_analysis.rs` 18, `analysis_preservation.rs` 17,
-`module_brands.rs` 15, `id_roundtrip.rs` 14, `block_args_terminators.rs` 13)
-rather than in the parser crates, whose waves add rows per commit. 56 files
-contain at least one unrowed test. Until the gap closes, read a missing row as
-missing *provenance* -- not as a claim that no upstream counterpart exists.
+```
+grep -rEc "^\s*#\[test\]" --include="*.rs" crates/ llvmkit/ | awk -F: '{sum+=$2} END {print sum}'
+```
 
-One row is stale in its sub-count rather than its target:
-`` `crates/llvmkit-asmparser/tests/dwarf_def_drift.rs` (12 tests) `` --- the
-file now holds 13.
+Distinct test *names* — the population this registry covers — come from the same
+anchor followed to the next `fn` line:
 
-An earlier recount (2026-08-14) removed 26 rows naming tests that no longer exist, each
-traced to the commit that deleted it: the pass-API v2 cutover (`2f1f390`,
-fourteen rows across `pass_manager_basic.rs`, `pass_instrumentation_basic.rs`,
-`pass_pipeline_data.rs`, `scalar_cleanup_passes.rs`, `type_safety_brand.rs`),
-the type-safety cycles (`295723c`, `09610dc`, `df52530`, `51bd441`,
-`2362691`), the constant-fold parity fixes (`0d73468`, `9a1f0c0`), and the
-LLParser-parity W6 calling-convention work (`4cfeea6`, where `from_raw` became
-infallible and took `rejects_out_of_range` with it).
+```
+awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l
+```
 
-The paragraph below describes the 2204 Wave 12 point that the 2235 point
-superseded.
-Waves 1b and 12 added no `#[test]`
-functions — 1b renamed enum variants only, and 12 is the docs-reconciliation
-wave: its `AllocaInst::is_inalloca` / `is_swifterror` readers are asserted
-from the existing `tests/builder_alloca_flags.rs` tests (bodies extended, names
-untouched), and its `IntoIterator for &NumberedValues<T>` follows Wave 9's
-three sibling impls, which likewise shipped untested because each is a
-delegation to an `iter()` the file already covers. The total is therefore
-unchanged from the Wave 11a point below, and the breakdown is identical.
-Wave 11a's own
-contribution is the +34 over the 2170 Wave 11b point (11a
-landed after 11b on this branch): four `Display`/`FromStr` drift-lock tests
-in `crates/llvmkit-support/src/{span,source_map}.rs`, seventeen more across
-`crates/llvmkit-ir/src/{cmp_predicate,calling_conv,global_value,unnamed_addr,
-comdat,atomic_ordering,sync_scope}.rs`, two in
-`crates/llvmkit-ir/tests/data_layout_round_trip.rs`, the seven of the new
-`crates/llvmkit-ir/tests/common_traits.rs`, and four ordering tests in
-`crates/llvmkit-ir/tests/branded_derive.rs` (rows below). The new
-`compile_fail/branded_ord_needs_eq_and_partial_ord.rs` fixture is a trybuild
-`fn main()` program, not a `#[test]`, so it does not move this count. The
-2170 point was recounted on 2026-08-06 at the
-`feature-70/api-idioms` Wave 11b point via the documented attribute-anchored
-grep below (`crates/llvmkit-ir` 1497 + `crates/llvmkit-asmparser` 655 +
-`crates/llvmkit-support` 8 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1).
-Wave 11b's own contribution is the +4 over the 2166 Wave 7 point, all in
-`crates/llvmkit-asmparser`: `parse_error.rs::tests`'
-`diagnostics_match_upstream_wording` and `io_errors_keep_their_kind`,
-`ll_token.rs::tests::token_display_names_the_family`, and
-`ll_lexer_tests.rs::eof_repeats_while_the_iterator_fuses` (rows below). The
-2166 point was recounted on 2026-08-06 at the
-`feature-70/api-idioms` Wave 7 point via the documented attribute-anchored
-grep below (`crates/llvmkit-ir` 1497 + `crates/llvmkit-asmparser` 651 +
-`crates/llvmkit-support` 8 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1) —
-Wave 7 landed after Wave 8 on this branch, so its +42 sits on the 2124 Wave
-8 point: `crates/llvmkit-ir/tests/module_flags.rs` (9, the typed
-module-flags API) and `crates/llvmkit-ir/tests/verifier_module_flags.rs`
-(33, the `Verifier::visitModuleFlags` port; rows below). The 2124 point was
-recounted on 2026-08-06 at the
-`feature-70/api-idioms` Wave 8 point via the documented attribute-anchored
-grep below (`crates/llvmkit-ir` 1455 + `crates/llvmkit-asmparser` 651 +
-`crates/llvmkit-support` 8 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1). Wave
-8's own contribution is the +7 over the 2117 Wave 6 point: the two
-`fixed_metadata_kinds_drift.rs` guards, `attribute_td_drift.rs`'s
-`str_bool_attributes_have_typed_readers` and
-`complex_str_attributes_are_typed`,
-`parser_calls.rs::deactivation_symbol_bundle_round_trips`,
-`parser_remaining_opcodes.rs::fence_syncscope_system_round_trips`, and
-`crates/llvmkit-ir/tests/parameter_attributes.rs::
-str_bool_attribute_reads_true_false_and_absent` (rows below; Wave 8 also
-back-fills the missing rows for `attribute_td_drift.rs`'s three pre-existing
-guards, which moved no count). The 2117 point was recounted on 2026-08-06 at
-the Wave 6 point (`crates/llvmkit-ir` 1454 + `crates/llvmkit-asmparser` 645 +
-`crates/llvmkit-support` 8 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1). Wave
-6's own contribution: `tests/module_ownership.rs::
-a_named_metadata_id_from_another_module_is_refused` (its compile-fail sibling
-`cross_module_named_metadata_id.rs` is a trybuild `fn main()` program, not a
-`#[test]`, so it does not move this count). Correction to the chain: the Wave
-11c note below wrote 2117 for its own point, but the tree at that commit
-genuinely held 2116 (`crates/llvmkit-ir` 1453) — recounted from that commit on
-2026-08-06 — so 2117 first became true with Wave 6's test; a recount pasted a
-row early is still not arithmetic to trust. The 2116 Wave 11c point retired
-the two `OUT_DIR`-inference packaging guards in
-`crates/llvmkit-tablegen/src/lib.rs::tests` (their build-script mode is gone
-with the library API) and added `generate_verifies_until_corrupted` there plus
-`llvmkit/tests/umbrella_surface.rs`'s umbrella smoke test (rows below); the
-rest of the growth since the 1517 point is the API-idioms program's earlier
-waves landing their tests. The 1517 point was recounted on 2026-07-16 at the
-`feature-22/generic-narrowing` tip (`crates/llvmkit-ir` 1079 +
-`crates/llvmkit-asmparser` 430 + `crates/llvmkit-support` 8); that branch's
-own contribution was the four `accept_folded_*` hostile-folder tests, the two
-`def_*_var` forged-handle tests, and the pointer address-space rows, all in
-`crates/llvmkit-ir/src/{ir_builder,ssa_builder}.rs::tests`, plus
-`tests/constant_folder_builder.rs::external_narrow_override_wrong_width_rejected_by_accept_folded_int`,
-which drives the same acceptor from outside the crate.
+Row count — a data row is a line opening with a pipe, a space and a backtick:
 
-**Recount on touch; never do incremental arithmetic.** The evidence that this
-rule is load-bearing, rather than pedantry: the prior 1372 header was genuine on
-2026-07-10 but was never updated as later branches landed their tests, so it
-understated the tree by 138 -- and even on this branch, figures written a few
-commits apart went stale before the branch ended. A count only ever adjusted by
-whoever remembers to is a count that is wrong. Rerun the grep below; do not add.
-The 1372 point was
-recounted on 2026-07-10 via the documented
-attribute-anchored grep below; the 1344 point (2026-07-09,
-`feature-4/pass-api-v2` tip) removed the retired effect-typed
-`typed_pipeline_basic.rs`'s 9 tests and its 3 stale `src/*.rs::tests::*`
-companions (superseded by the capability-graded pass API traits) while
-adding `pipeline_basic.rs`, `dyn_pipeline.rs`, `matchers.rs`,
-`instruction_typed_operands.rs`, `analysis_preservation.rs`, and one new
-`scalar_cleanup_passes.rs` worklist-cascade test, for a net +28 since that
-point. Recounted on 2026-07-09 at the
-`feature-4/pass-api-v2` tip via the documented attribute-anchored grep below;
-the capability-graded pass API branch added executed pass-driver, pipeline, and
-`#[function_pass]`/`#[module_pass]` authoring tests (`single_pass_driver.rs`,
-`macro_passes.rs`, and friends) that moved the total up from 1337. The five new
-Capability-graded pass API compile-fail fixtures are trybuild `fn main()` programs, not
-`#[test]` functions, so they do not move this count. The prior 1337 was
-genuinely recounted (not incremental arithmetic) on 2026-07-07 at the
-`feature-2/typed-pass-core` tip after the
-final-review fix wave (base commit 136fbde; the prior 1332 header from the
-Task 5 point drifted upward as Tasks 6-7 landed `typed_pipeline_basic.rs`'s
-function/module/dyn-interop pipeline tests, Task 8's compile-fail fixtures
-closed out the phase, and the final-review fix wave added the in-crate
-module-leaf `TypedModulePass` test -- the compile-fail fixtures themselves
-are trybuild `fn main()` programs, not `#[test]` functions, so they do not
-move this count), via the attribute-anchored
-`grep -rEc "^\s*#\[test\]" --include="*.rs" crates/ llvmkit/ | awk -F: '{sum+=$2} END {print sum}'`
-(matches counting every attribute line, one per test). A prior count used
-the unanchored `grep -rc '#\[test\]' --include='*.rs' crates llvmkit`, which
-also matches the literal string `#[test]` inside `//!` module-doc-comment
-PROSE (e.g. "Each `#[test]` cites its upstream source") -- 25 such prose
-mentions across the then-1256-test tree inflated that count to 1267, a
-number that recount's genuine total matched only by coincidence; the
-attribute-anchored form above counts only real `#[test]` attribute lines
-and is the number to trust going forward.
+```
+grep -cE '^\| `' UPSTREAM.md
+```
+
+A few rows name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
+function; those fixtures are `fn main()` programs and are outside the
+test-function accounting.
+
+**The covered/unrowed split has no one-liner, and that is the honest reason it
+is absent.** Matching rows to tests by their `path.rs::name` segment silently
+misses every row that covers a *group* — `` `…/module_ownership.rs` (whole
+file) ``, `` `…/parser_vector_select.rs` (whole file) ``, `` `…::is_splat_value_00`
+… `is_splat_value_select_binop` `` and others in that shape. There are enough of
+them to dominate the answer: a naive `sort -u` of the `::name` segments reports
+whole covered files as unrowed. A real audit means expanding those rows against
+the files they cite, by hand. Do that if you need the number, and publish the
+matcher beside it.
+
+**Recount on touch; never do incremental arithmetic.** The evidence that this is
+load-bearing rather than pedantry: a header figure was genuine when written,
+then never updated as later branches landed tests, and drifted far enough that
+the correction was larger than several waves' worth of new tests; and on a
+single branch, figures written a few commits apart went stale before the branch
+ended. A count only ever adjusted by whoever remembers to is a count that is
+wrong.
+
+## Registry coverage is not total
+
+Coverage is **not** complete, and this file does not pretend otherwise. The
+residue is inherited — it accumulated across the type-safety and pass-API
+programs, where whole test files landed without rows — and sits in `llvmkit-ir`
+rather than in the parser crates, whose waves add rows per commit. Until it
+closes, read a missing row as missing *provenance*, not as a claim that no
+upstream counterpart exists.
+
+Two failure modes are worth naming, because both have shipped:
+
+- **Rows citing a test that moved file.** Eleven rows pointed at
+  `crates/llvmkit-ir/tests/{builder_typestate_termination,constant_folding_analysis,verifier_basic}.rs`
+  for tests living in `crates/llvmkit-ir/src/phi_raw_tests/`, and survived
+  earlier sweeps because each sat beside siblings that still resolved. Repaired
+  2026-08-22, and now mechanically checked:
+  `crates/llvmkit-ir/tests/upstream_registry_drift.rs` fails if any row names a
+  file that is not in the tree, or a test the cited file does not define.
+- **Rows citing an upstream fixture that does not exist.** That check is *not*
+  mechanical and the drift test says nothing about it; it is tracked as a
+  finding in `docs/fixture-coverage.md`, which also explains why no count is
+  given for it.
+
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -627,7 +470,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-support/src/span.rs::spanned_map_preserves_span` | `-` | llvmkit-specific |
 | `crates/llvmkit-support/src/span.rs::spanned_as_ref_borrows` | `-` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_typestate_termination.rs::cond_br_terminator_terminates_block` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | port |
-| `crates/llvmkit-ir/tests/builder_typestate_termination.rs::phi_range_iterates_three_phis` | `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` | port |
+| `crates/llvmkit-ir/src/phi_raw_tests/typestate.rs::phi_range_iterates_three_phis` | `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` | port |
 | `crates/llvmkit-ir/tests/builder_typestate_termination.rs::termination_typestate_does_not_change_asm_output` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/typestate_compile_fail.rs::typestate_compile_fail` | `lib/IR/Verifier.cpp::visitBasicBlock` + `visitPHINode` (runtime forms); sealed `BlockCursor` and lifecycle-remint fixtures pull `lib/IR/Instruction.cpp::Instruction::eraseFromParent`, `removeFromParent`, `insertBefore`, `insertAfter` plus `lib/IR/Verifier.cpp::visitSwitchInst`, `visitIndirectBrInst`, and `visitLandingPadInst` runtime checks forward to compile time; llvmkit-specific D7/D8 compile-fail fixtures. Cross-module brand fixtures (`cross_module_value_brand`, `cross_module_global_initializer_brand`, `cross_module_branch_target`, `cross_module_select_arm`, `custom_folder_wrong_brand`) are not 1:1 ports: they pull LLVM runtime provenance checks forward to compile time, with closest anchors `lib/IR/Verifier.cpp::visitGlobalValue`, `lib/IR/Verifier.cpp::visitTerminator`, `lib/IR/Verifier.cpp::visitSelectInst`, `lib/IR/Globals.cpp::GlobalVariable::GlobalVariable` / `setInitializer`, and `llvm/include/llvm/IR/IRBuilderFolder.h::IRBuilderFolder`; typed-function fixtures (`typed_function_params_reject_wrong_binding.rs`, `typed_function_params_require_facade.rs`, `typed_function_params_token_cannot_escape.rs`) cite `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` and llvmkit D4/D7 compile-time tightening; intrinsic fixtures (`intrinsic_id_raw_constructor_private.rs`, `binary_folder_rejects_non_binary_intrinsic.rs`) cite `llvm/include/llvm/IR/Intrinsics.h::ID` and `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldBinaryIntrinsic`; `select_arm_forge.rs` closes the `SelectArm::from_select_value` forging hole (D2 evidence-token capability, follows the `ValidatedStructValue` precedent in `struct_schema.rs`) with closest anchor `llvm/include/llvm/IR/IRBuilder.h::IRBuilderBase::CreateSelect`; `compile_fail/extract_value_dyn_empty_slice_compiles.rs` is registered via `t.pass(...)` (not `t.compile_fail`) purely to flip `trybuild::cargo`'s `if project.has_pass { "build" } else { "check" }` switch to `build` for the whole harness -- without it, `extract_value_empty_indices.rs`'s `const { assert!(N > 0) }` (a monomorphisation/codegen-time diagnostic) would never surface under `cargo check`'s type-check-only pass; the fixture itself has no independent upstream citation beyond the `extract_value_dyn` runtime-check rows above; typed-call compile-fail fixtures (`typed_call_wrong_arity.rs`, `typed_call_wrong_arg_type.rs`, `typed_call_wrong_arg_type_lifted.rs`, `typed_call_void_result_use.rs`) push `lib/IR/Instructions.cpp::CallInst::init`'s "Calling a function with a bad signature!" arity/type assertion and LLVM's runtime `CallInst::getType() == void` result-use hazard forward to compile time via the `CallArgs`/`IntoCallArg` bounds on `IrBuilder::call` and the `CallResult` GAT on `TypedCallInst::result`; `typed_call_wrong_arg_type.rs` locks `IntoCallArg`'s own `#[diagnostic::on_unimplemented]` message using a `String` argument against a struct-schema parameter slot, the only `FunctionParam` family whose `IntoCallArg` blanket is constrained on concrete source types rather than an unconstrained `V` (int/float/`Ptr` slots cannot produce a zero-candidate report: their blankets are unconstrained over `V`, so rustc always finds one as a syntactic candidate and reports its inner `IntoIntValue`/`IntoFloatValue`/`IntoPointerValue` bound instead, verified empirically), while `typed_call_wrong_arg_type_lifted.rs` locks that root `IntoIntValue<'_, i32, _>` bound failure for a lifted-wrong-type (`FloatValue<f64>`) argument against an `i32` slot, one level below `IntoCallArg` in rustc's root-bound reporting; `typed_call_cross_module_arg.rs` mirrors `cross_module_value_brand.rs`'s shape, applying the same D7 cross-module-brand rejection to a typed call-argument slot; the capability-graded pass-API compile-fail fixtures (Task 9) each lock one rung/verdict guarantee whose primary error is one of llvmkit's OWN stable messages (an `E0599` absent-method, an `E0382` use-of-moved-value, a `#[diagnostic::on_unimplemented]`, or a `syn::Error`) rather than a rustc-version-drifting one -- upstream LLVM has no compile-time capability grading on its pass types (`llvm/include/llvm/IR/PassManager.h`, where any `FunctionPass` can mutate anything and `AnalysisManager::getResult` computes any analysis ID a pass names at runtime): `inspect_pass_cannot_mutate.rs` proves `FnCx::mutate` is structurally absent from an `Inspect` context (the read-only rung has no `MutatingFn` impl, so `cx.mutate()` is `E0599`), so a pass cannot mutate while claiming only to inspect; `claim_preserved_after_mutate.rs` proves the all-preserved `unchanged()` report is unspellable once `cx.mutate()` has consumed `cx` by value (`E0382` use of moved value), so a mutating pass cannot over-claim `PreservedAnalyses::all()` -- the branch's honesty thesis as a compile-fail, modeled on `retained_open_phi_cannot_add_after_finish.rs`'s consumed-then-used-again shape; `function_pass_wrong_level_access.rs` proves `RewriteModule` (a module-only `ModAccess` rung, not `FnAccess`) fails the `FunctionPass::Access: FnAccess` bound, so a whole-module capability cannot be smuggled onto a function pass; `function_pass_missing_name.rs` proves the `#[function_pass]` front-end (`pass_macro_shared.rs`) rejects an attribute omitting `name` with llvmkit's own `syn::Error`/`compile_error!` before it emits any impl, since a pass with no `NAME` has no instrumentation identity; `undeclared_analysis_in_pass_body.rs` proves `cx.analysis::<DominatorTreeAnalysis, _>()` does not compile inside a pass whose `type Requires = ()` (only analyses listed in `Requires` have an `AnalysisSelector` impl, so the accessor's `R: AnalysisSelector<..>` bound is unmet), carrying our stable `#[diagnostic::on_unimplemented]` message -- the capability-graded re-expression of the retired old-API undeclared-analysis lock, replacing `AnalysisManager::getResult`'s runtime "analysis not registered" null-deref hazard; `patchbody_cannot_erase_terminator.rs` proves `FnPatch::erase` accepts only a `NonTerminator` (from `InstructionView::as_non_terminator`, which returns `None` for a terminator), so handing it a raw `InstructionView` -- and thus erasing a terminator, which would break a `PatchBody` pass's CFG-preserved floor -- is a type error rather than a runtime rejection; `reshape_stale_cfg_analysis_across_edit.rs` (Package 4) proves a CFG analysis read through `FnReshape::analysis_repaired` (a reference tied to the `&mut self` receiver) cannot be held across a later `split_block` edit that reborrows the mutator (borrow-check error; `FnReshape` deliberately does not `Deref` to `FnPatch`, so the longer-lived `FnPatch::analysis` borrow is unreachable), so the classic mid-reshape stale read -- read a dominator tree, reshape the CFG, then use the now-stale tree -- cannot be written down; `mutating_pass_cannot_enter_readonly_dyn.rs` proves `DcePass` (`type Access = PatchBody`) fails `DynReadOnlyFunctionPipeline::push`'s `P::Access: ReadOnlyFn` bound (implemented for the `Inspect` rung only, with our own `#[diagnostic::on_unimplemented]`), so a mutating pass cannot enter a read-only runtime pipeline container and the `Module<Verified>` output guarantee is enforced at composition time, never at runtime; `module_analysis_readonly_globals.rs` proves a `ModuleAnalysis::run` handed a read-only `ModuleView` cannot mutate a global it enumerates (`global.set_linkage(Linkage::Internal)` off a read-only view is a type error), so an analysis cannot smuggle an IR edit; and `function_analysis_wrong_brand.rs` extends the D7 cross-module-brand family to the analysis managers -- a `FunctionAnalysisManager::result` built for one named brand cannot be queried with a function from a different one. Cycle C4 note: with the generative lifetime brand deleted, every cross-brand fixture in this suite now separates its two modules by *named* brand types (`Left` / `Right`), so the manifestation is an unsatisfied trait bound / `E0308` reporting `expected `Left`, found `Right`` rather than the former `E0521` borrowed-data-escapes-closure via `Brand<'_>` invariance -- same doctrine, clearer diagnostic. C4 also adds two fixtures with no upstream analogue (C++ has neither compile-time module identity nor auto traits): `cross_named_brand_id_view.rs` extends the same D7 rejection to the *storable id* form -- a `FunctionId<Dyn, Left>` is not a `ViewIn<'_, Right>`, so a `'static` id that outlived its module still cannot be resolved against a differently branded one, the compile-time twin of the runtime stale-generation check in `tests/module_ownership.rs`; and `not_send_brand_is_really_not_send.rs` pins the premise of that file's `Send` compile-assert -- the brand type used there is genuinely `!Send`, so asserting `Module<NotSendBrand, S>: Send` (which holds because the brand rides as `PhantomData<fn(B) -> B>`) is not vacuous. W6 adds `cross_module_named_metadata_id.rs`, extending the same D7 rejection to the *named*-metadata currency (`NamedMetadataId<B>`, formerly a bare `usize` list index) -- no upstream counterpart: `Module::getOrInsertNamedMetadata` (`lib/IR/Module.cpp`) returns a bare `NamedMDNode *` whose identity is the pointer itself, so nothing records which module owns it; the runtime same-brand/`DynBrand` half is `tests/module_ownership.rs::a_named_metadata_id_from_another_module_is_refused` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/type_safety_brand.rs::user_owned_value_tables_remain_usable` | llvmkit-specific D7 module-brand value-table usability | llvmkit-specific |
@@ -870,12 +713,12 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/cfg_basic.rs::catchret_cfg_edge_is_target_block` | `IR/CFG.h` successors; `IR/Instructions.h::CatchReturnInst::getSuccessor` | mirror |
 | `crates/llvmkit-ir/tests/cfg_basic.rs::cleanupret_cfg_edge_is_optional_unwind_dest` | `IR/CFG.h` successors; `llvm/lib/IR/Verifier.cpp` cleanupret unwind destination validation | mirror |
 | `crates/llvmkit-ir/tests/cfg_basic.rs::catchswitch_cfg_edges_are_handlers_then_unwind_dest` | `IR/CFG.h` successors; `IR/Instructions.h::CatchSwitchInst` handler/unwind destination semantics | mirror |
-| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_switch_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` switch successor semantics | mirror |
-| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_switch_rejects_missing_edge` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` switch successor semantics | mirror |
-| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_invoke_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` invoke successor semantics | mirror |
-| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_invoke_rejects_wrong_block` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` invoke successor semantics | mirror |
-| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_callbr_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` callbr successor semantics | mirror |
-| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_callbr_rejects_missing_edge` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` callbr successor semantics | mirror |
+| `crates/llvmkit-ir/src/phi_raw_tests/verifier_basic.rs::verify_phi_predecessors_through_switch_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` switch successor semantics | mirror |
+| `crates/llvmkit-ir/src/phi_raw_tests/verifier_basic.rs::verify_phi_predecessors_through_switch_rejects_missing_edge` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` switch successor semantics | mirror |
+| `crates/llvmkit-ir/src/phi_raw_tests/verifier_basic.rs::verify_phi_predecessors_through_invoke_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` invoke successor semantics | mirror |
+| `crates/llvmkit-ir/src/phi_raw_tests/verifier_basic.rs::verify_phi_predecessors_through_invoke_rejects_wrong_block` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` invoke successor semantics | mirror |
+| `crates/llvmkit-ir/src/phi_raw_tests/verifier_basic.rs::verify_phi_predecessors_through_callbr_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` callbr successor semantics | mirror |
+| `crates/llvmkit-ir/src/phi_raw_tests/verifier_basic.rs::verify_phi_predecessors_through_callbr_rejects_missing_edge` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` callbr successor semantics | mirror |
 | `crates/llvmkit-ir/tests/dominator_tree_basic.rs::reachable_and_unreachable_block_dominance` | `unittests/IR/DominatorTreeTest.cpp::TEST(DominatorTree, Unreachable)` | port |
 | `crates/llvmkit-ir/tests/dominator_tree_basic.rs::same_block_instruction_order_and_unreachable_use_semantics` | `unittests/IR/DominatorTreeTest.cpp::TEST(DominatorTree, Unreachable)` | port |
 | `crates/llvmkit-ir/tests/dominator_tree_basic.rs::phi_operands_are_dominated_on_incoming_edges` | `unittests/IR/DominatorTreeTest.cpp::TEST(DominatorTree, PHIs)`; `llvm/lib/IR/Dominators.cpp::DominatorTree::dominates(const BasicBlock*, const Use&)` | port |
@@ -884,7 +727,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_cross_block_dominated_use_passes` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` | mirror |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_cross_block_branch_value_used_after_join_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` | mirror |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_incoming_edge_dominance_passes` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` PHI incoming-edge semantics | mirror |
-| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_incoming_edge_dominance_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` PHI incoming-edge semantics | mirror |
+| `crates/llvmkit-ir/src/phi_raw_tests/verifier_basic.rs::verify_phi_incoming_edge_dominance_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` PHI incoming-edge semantics | mirror |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_invoke_result_used_on_unwind_edge_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` invoke normal-edge semantics | mirror |
 | `crates/llvmkit-ir/tests/analysis_basic.rs::preserved_analyses_checker_behavior` | `unittests/IR/PassManagerTest.cpp::TEST(PreservedAnalysesTest, Basic/Preserve/PreserveSets/Intersect/Abandon)` (raw `AnalysisKey` checker omitted; no llvmkit API) | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/analysis_basic.rs::preserved_analyses_explicit_keys_intersect_and_abandon` | `llvm/include/llvm/IR/Analysis.h::PreservedAnalyses` explicit-key APIs and abandoned-ID precedence | mirror |
@@ -1555,7 +1398,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::the_remaining_specialized_classes_parse_and_round_trip` | the `VISIT_MD_FIELDS` blocks of `LLParser::parse{DILexicalBlock,DILexicalBlockFile,DICommonBlock,DIImportedEntity,DILabel,DIMacro,DIMacroFile,GenericDINode,DISubrangeType,DIGenericSubrange,DIFixedPointType,DIStringType,DIObjCProperty}` and `parseDIAssignID` (`LLParser.cpp`) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diassignid_requires_distinct` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIAssignID` (rejects a uniqued node before reading the parens) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::every_specialized_kind_round_trips_its_name` | `llvm/IR/Metadata.def`'s `HANDLE_SPECIALIZED_MDNODE_LEAF` list (completeness lock for the modelled set) | llvmkit-specific |
-| `crates/llvmkit-asmparser/tests/dwarf_def_drift.rs` (12 tests) | `llvm/BinaryFormat/Dwarf.def` and `llvm/IR/DebugInfoFlags.def` (vendored), against `dwarf::{getTag,getAttributeEncoding,getLanguage,getSourceLanguageName,getCallingConvention,getVirtuality,getOperationEncoding,getMacinfo}` (`lib/BinaryFormat/Dwarf.cpp`) and `DINode::getFlag` / `DISubprogram::getFlag` (`lib/IR/DebugInfoMetadata.cpp`) | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/dwarf_def_drift.rs` (whole file) | `llvm/BinaryFormat/Dwarf.def` and `llvm/IR/DebugInfoFlags.def` (vendored), against `dwarf::{getTag,getAttributeEncoding,getLanguage,getSourceLanguageName,getCallingConvention,getVirtuality,getOperationEncoding,getMacinfo}` (`lib/BinaryFormat/Dwarf.cpp`) and `DINode::getFlag` / `DISubprogram::getFlag` (`lib/IR/DebugInfoMetadata.cpp`) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::keyword_families_reject_a_spelling_upstream_does_not_know` | the keyword-family `LLParser::parseMDField` overloads (`LLParser.cpp`): `DwarfTagField`, `DwarfAttEncodingField`, `DwarfVirtualityField`, `DwarfLangField`, `DwarfCCField`, `DwarfMacinfoTypeField`, `DIFlagField`, `DISPFlagField`, `ChecksumKindField` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::keyword_families_accept_the_spellings_upstream_knows` | the same overloads' accepting path | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::unsigned_metadata_fields_are_range_checked` | `LLParser::parseMDField(MDUnsignedField&)` and the `LineField` / `ColumnField` narrowings | mirror |
@@ -1723,9 +1566,9 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::load_from_const_ptr_oob_returns_poison` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldLoadFromConst` out-of-bounds poison behavior | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::ppc_fp128_bitcast_requires_datalayout_path` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldLoadThroughBitcast`; `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` PPC_FP128 DataLayout path | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::dynamic_denormal_mode_declines_flush` | `llvm/lib/Analysis/ConstantFolding.cpp::FlushFPConstant` dynamic denormal mode no-fold behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_folding_analysis.rs::phi_same_constant_folds` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldInstOperands` PHI same-constant behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_folding_analysis.rs::phi_poison_and_undef_incomings_fold_to_undef` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldInstruction` PHI arm: `isa<UndefValue>` skip includes poison; all-skipped folds to undef | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_folding_analysis.rs::phi_poison_beside_constant_folds_to_the_constant` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldInstruction` PHI arm: poison incoming skipped, common constant wins | llvmkit-specific subset |
+| `crates/llvmkit-ir/src/phi_raw_tests/constant_folding.rs::phi_same_constant_folds` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldInstOperands` PHI same-constant behavior | llvmkit-specific subset |
+| `crates/llvmkit-ir/src/phi_raw_tests/constant_folding.rs::phi_poison_and_undef_incomings_fold_to_undef` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldInstruction` PHI arm: `isa<UndefValue>` skip includes poison; all-skipped folds to undef | llvmkit-specific subset |
+| `crates/llvmkit-ir/src/phi_raw_tests/constant_folding.rs::phi_poison_beside_constant_folds_to_the_constant` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldInstruction` PHI arm: poison incoming skipped, common constant wins | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::interposable_constant_global_load_declines_to_fold` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldLoadFromConstPtr`; `llvm/include/llvm/IR/GlobalValue.h::hasDefinitiveInitializer` interposable-linkage no-fold | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::foldable_libcall_sqrt_folds_constant` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldScalarCall` modelled sqrt libcall fold behavior | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::llvm_null_libcall_case_declines_fold` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldScalarCall` unavailable TargetLibraryInfo no-fold behavior | llvmkit-specific subset |
@@ -2236,7 +2079,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/strip_null_test.rs::the_idiom_matches_at_a_twenty_bit_shift` | the same file's `ceil_shift_should_infer_ge_zero`, reduced to the idiom match (its own point is a range inference needing a dominating branch) | port (subset) |
 | `crates/llvmkit-asmparser/tests/strip_null_test.rs::the_idiom_declines_when_the_mask_does_not_match_the_shift` | the same file's `; negative tests` — `ceil_shift_not_mask_1`, `ceil_shift_not_mask_2`, `ceil_shift_not_add_or` — plus `ceil_shift0`, which InstCombine folds by constant folding rather than by this idiom (`APInt::isMask()` is false for zero) | port |
 | `crates/llvmkit-asmparser/tests/strip_null_test.rs::is_known_non_zero_retries_through_the_stripped_operand` | the `stripNullTest` tail of `llvm/lib/Analysis/ValueTracking.cpp::isKnownNonZero`; **no upstream unit test** — the idiom's shift and mask are `ceil_shift_should_infer_ge_zero`'s, the base is llvmkit's so known bits alone settle it | llvmkit-specific |
-| `crates/llvmkit-asmparser/tests/collect_possible_values.rs` (all five tests) | `llvm/lib/Analysis/ValueTracking.cpp::collectPossibleValues`; **no upstream unit test** — its only caller is `SLPVectorizer`/`SimplifyCFG`, so the fixtures are llvmkit's and the expectations are read off the implementation (select/phi arms, the recurrence fast path, `MaxCount`, and the give-up cases) | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/collect_possible_values.rs` (whole file) | `llvm/lib/Analysis/ValueTracking.cpp::collectPossibleValues`; **no upstream unit test** — its only caller is `SLPVectorizer`/`SimplifyCFG`, so the fixtures are llvmkit's and the expectations are read off the implementation (select/phi arms, the recurrence fast path, `MaxCount`, and the give-up cases) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/assumptions.rs::is_implied_condition_and` | `llvm/unittests/Analysis/ValueTrackingTest.cpp::TEST_F(ValueTrackingTest, IsImpliedConditionAnd)`, IR and all three expectations unchanged | port |
 | `crates/llvmkit-asmparser/tests/assumptions.rs::is_implied_condition_and_select` | the same file's `IsImpliedConditionAnd2` | port |
 | `crates/llvmkit-asmparser/tests/assumptions.rs::is_implied_condition_and_vector` | the same file's `IsImpliedConditionAndVec` | port |
@@ -2293,19 +2136,19 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/vector_utils_splat.rs::get_splat_value_elt0` | the same file's `getSplatValueElt0` | port |
 | `crates/llvmkit-asmparser/tests/vector_utils_splat.rs::get_splat_value_elt_mismatch` | the same file's `getSplatValueEltMismatch` | port |
 | `crates/llvmkit-asmparser/tests/vector_utils_splat.rs::get_splat_value_elt1` | the same file's `getSplatValueElt1`, which upstream marks `TODO: This is a splat, but we don't recognize it` | port |
-| `crates/llvmkit-asmparser/tests/parser_vector_select.rs` (all seven) | `llvm/lib/IR/Instructions.cpp::SelectInst::areInvalidOperands` — one case per diagnostic it returns, plus round trips for the shapes it accepts. No upstream unit test covers vector `select` through the parser; the round-trip half (parse → verify → print) is llvmkit's parser/printer contract | llvmkit-specific (rules from the named function) |
-| `crates/llvmkit-asmparser/tests/shuffle_splat_fast_path.rs` (both) | the `if (Value *Splat = getSplatValue(V))` head of `case Instruction::ShuffleVector:` in `llvm/lib/Analysis/ValueTracking.cpp`'s `computeKnownBits` and `computeKnownFPClass`. No upstream unit test isolates it — `ValueTrackingTest.cpp` only reaches shuffles through clean masks, and `ComputeKnownFPClassTest` has no shuffle case — so the oracle is the broadcast scalar's own analysis, which the fast path exists to reach | llvmkit-specific (upstream code path, no upstream fixture) |
+| `crates/llvmkit-asmparser/tests/parser_vector_select.rs` (whole file) | `llvm/lib/IR/Instructions.cpp::SelectInst::areInvalidOperands` — one case per diagnostic it returns, plus round trips for the shapes it accepts. No upstream unit test covers vector `select` through the parser; the round-trip half (parse → verify → print) is llvmkit's parser/printer contract | llvmkit-specific (rules from the named function) |
+| `crates/llvmkit-asmparser/tests/shuffle_splat_fast_path.rs` (whole file) | the `if (Value *Splat = getSplatValue(V))` head of `case Instruction::ShuffleVector:` in `llvm/lib/Analysis/ValueTracking.cpp`'s `computeKnownBits` and `computeKnownFPClass`. No upstream unit test isolates it — `ValueTrackingTest.cpp` only reaches shuffles through clean masks, and `ComputeKnownFPClassTest` has no shuffle case — so the oracle is the broadcast scalar's own analysis, which the fast path exists to reach | llvmkit-specific (upstream code path, no upstream fixture) |
 | `crates/llvmkit-ir/tests/vector_utils_masks.rs::narrow_shuffle_mask_elts` | `llvm/unittests/Analysis/VectorUtilsTest.cpp::TEST_F(BasicTest, narrowShuffleMaskElts)`. Upstream's `{3,2,0,-2}` case uses an X86 codegen sentinel llvmkit's mask alphabet cannot hold; the `-1` spelling of the same `scale == 1` behaviour stands in, and the file header records the substitution | port (one assertion unrepresentable, recorded) |
 | `crates/llvmkit-ir/tests/vector_utils_masks.rs::widen_shuffle_mask_elts` | the same file's `widenShuffleMaskElts`, every assertion except the two `{-1,-2,-1,-1}` / `{-2,-2,-3,-3}` cases, which test that distinct negative sentinels stay distinct — out of scope, since llvmkit models no target | port (two assertions unrepresentable, recorded) |
 | `crates/llvmkit-ir/tests/vector_utils_masks.rs::get_shuffle_mask_with_widest_elts` | the same file's `getShuffleMaskWithWidestElts`, likewise minus its two sentinel assertions | port (two assertions unrepresentable, recorded) |
 | `crates/llvmkit-ir/tests/vector_utils_masks.rs::get_shuffle_demanded_elts` | the same file's `getShuffleDemandedElts`, all six cases unchanged. Ported late — `shuffle_demanded_elements` shipped without it | port |
 | `crates/llvmkit-ir/tests/vector_utils_masks.rs::get_horizontal_demanded_elts_for_first_operand` | `llvm/unittests/Analysis/VectorUtilsTest.cpp::TEST_F(BasicTest, getHorizontalDemandedEltsForFirstOperand)`, all five cases unchanged | port |
-| `crates/llvmkit-ir/tests/vector_utils_parity.rs` (all three) | no upstream counterpart — a coverage ledger is an artifact of being a reimplementation. Anchors `llvm/lib/Analysis/VectorUtils.cpp` and its header; follows the design of `value_tracking_parity.rs` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/vector_utils_intrinsics.rs` (eight) | `llvm/lib/Analysis/VectorUtils.cpp::isTriviallyVectorizable`, `isTriviallyScalarizable`, `isVectorIntrinsicWithStructReturnOverloadAtField`, `getInterleaveIntrinsicFactor` and `getDeinterleaveIntrinsicFactor`. **No upstream unit test exists for any of the five** — nothing under `unittests/` names them; upstream reaches them only through whole-pass lit tests for the scalarizer and loop vectorizer, which are not an oracle for a predicate. The expectations are therefore read off the five switch bodies. `the_vectorizable_table_holds_exactly_the_upstream_names` is llvmkit's own guard for llvmkit's own hazard: matching `case Intrinsic::sqrt:` as a `base_name` string trades a compile error for a silent never-match, so the ids answering `true` across the whole 16k-entry space are counted against the number of labels the C++ switch lists | llvmkit-specific (rules from the named functions; no upstream test to port) |
+| `crates/llvmkit-ir/tests/vector_utils_parity.rs` (whole file) | no upstream counterpart — a coverage ledger is an artifact of being a reimplementation. Anchors `llvm/lib/Analysis/VectorUtils.cpp` and its header; follows the design of `value_tracking_parity.rs` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/vector_utils_intrinsics.rs` (whole file) | `llvm/lib/Analysis/VectorUtils.cpp::isTriviallyVectorizable`, `isTriviallyScalarizable`, `isVectorIntrinsicWithStructReturnOverloadAtField`, `getInterleaveIntrinsicFactor` and `getDeinterleaveIntrinsicFactor`. **No upstream unit test exists for any of the five** — nothing under `unittests/` names them; upstream reaches them only through whole-pass lit tests for the scalarizer and loop vectorizer, which are not an oracle for a predicate. The expectations are therefore read off the five switch bodies. `the_vectorizable_table_holds_exactly_the_upstream_names` is llvmkit's own guard for llvmkit's own hazard: matching `case Intrinsic::sqrt:` as a `base_name` string trades a compile error for a silent never-match, so the ids answering `true` across the whole 16k-entry space are counted against the number of labels the C++ switch lists | llvmkit-specific (rules from the named functions; no upstream test to port) |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_select_over_struct_and_array_arms` | `llvm/lib/AsmParser/LLParser.cpp::parseSelect`, which delegates wholly to `SelectInst::areInvalidOperands` — that names no arm restriction beyond token, so aggregate arms parse. No upstream unit test covers them; the rule is read off the named function | llvmkit-specific (rule from the named function) |
-| `crates/llvmkit-asmparser/tests/constant_expression_splat.rs` (six) | the closing `dyn_cast<ConstantExpr>` block of `llvm/lib/IR/Constants.cpp::Constant::getSplatValue`. `ConstantsTest.cpp` has no `getSplatValue` case at all, so the expectations are read off that block. Two of the six pin llvmkit-side facts instead: that a fixed-width expression folds before the arm is reached, and that a scalable splat of `undef` keeps its whole-vector spelling | llvmkit-specific (rules from the named function) |
-| `crates/llvmkit-asmparser/tests/scalable_vector_splat_printing.rs` (six) | `llvm/lib/IR/AsmParser/../AsmWriter.cpp::writeConstantInternal`'s `splat (…)` shorthand and its `isa<ConstantInt> \|\| isa<ConstantFP>` guard. No upstream counterpart for the scalable half: `ConstantVector::get` takes a fixed element count, so LLVM cannot build a scalable vector constant from an element list and never has to decide how to print one. The two fixed-vector cases pin that upstream's restriction is unchanged there | llvmkit-specific (upstream rule kept for fixed vectors, extended where LLVM has no case) |
-| `crates/llvmkit-asmparser/tests/parser_vector_fp_ops.rs` (nine) | `llvm/lib/AsmParser/LLParser.cpp::parseArithmetic` and `parseCompare`, which delegate to `BinaryOperator::Create` / `CmpInst::Create` and so accept a float vector wherever they accept a float; the two rejections come from `BinaryOperator::Create`'s same-type assertion and the verifier's `FloatOpNonFloatOperand` rule. No upstream unit test spans the five FP binary operators over vectors — the round-trip half (parse → verify → print) is llvmkit's parser/printer contract | llvmkit-specific (rules from the named functions) |
+| `crates/llvmkit-asmparser/tests/constant_expression_splat.rs` (whole file) | the closing `dyn_cast<ConstantExpr>` block of `llvm/lib/IR/Constants.cpp::Constant::getSplatValue`. `ConstantsTest.cpp` has no `getSplatValue` case at all, so the expectations are read off that block. Two of the six pin llvmkit-side facts instead: that a fixed-width expression folds before the arm is reached, and that a scalable splat of `undef` keeps its whole-vector spelling | llvmkit-specific (rules from the named function) |
+| `crates/llvmkit-asmparser/tests/scalable_vector_splat_printing.rs` (whole file) | `llvm/lib/IR/AsmParser/../AsmWriter.cpp::writeConstantInternal`'s `splat (…)` shorthand and its `isa<ConstantInt> \|\| isa<ConstantFP>` guard. No upstream counterpart for the scalable half: `ConstantVector::get` takes a fixed element count, so LLVM cannot build a scalable vector constant from an element list and never has to decide how to print one. The two fixed-vector cases pin that upstream's restriction is unchanged there | llvmkit-specific (upstream rule kept for fixed vectors, extended where LLVM has no case) |
+| `crates/llvmkit-asmparser/tests/parser_vector_fp_ops.rs` (whole file) | `llvm/lib/AsmParser/LLParser.cpp::parseArithmetic` and `parseCompare`, which delegate to `BinaryOperator::Create` / `CmpInst::Create` and so accept a float vector wherever they accept a float; the two rejections come from `BinaryOperator::Create`'s same-type assertion and the verifier's `FloatOpNonFloatOperand` rule. No upstream unit test spans the five FP binary operators over vectors — the round-trip half (parse → verify → print) is llvmkit's parser/printer contract | llvmkit-specific (rules from the named functions) |
 | `crates/llvmkit-asmparser/tests/attribute_td_drift.rs` (the three pre-existing guards: `vendored_attributes_td_is_parseable`, `no_unmodeled_attribute_is_silently_missing`, `not_yet_modeled_list_has_no_stale_entries`) | no upstream counterpart — upstream's lexer and parser `#include` the TableGen-generated `Attributes.inc` (`LLLexer.cpp`, `LLParser.cpp`), so their keyword table structurally cannot drift; the vendored `llvm/include/llvm/IR/Attributes.td` is the anchor. Rows back-filled at the Wave 8 point — the tests predate them | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/attribute_td_drift.rs::str_bool_attributes_have_typed_readers` | no upstream counterpart — upstream reads these via `getFnAttribute(...).getValueAsBool()` on raw strings (`llvm/lib/IR/Attributes.cpp::Attribute::getValueAsBool`); the `StrBoolAttr` declarations of the vendored `llvm/include/llvm/IR/Attributes.td` are the anchor, locked against llvmkit's `StrBoolAttrKind` reader enum both ways | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/attribute_td_drift.rs::complex_str_attributes_are_typed` | no upstream counterpart — pins the `ComplexStrAttr` set of the vendored `llvm/include/llvm/IR/Attributes.td` to the two keys llvmkit types via `DenormalMode` (`llvm/lib/IR/Function.cpp::Function::getDenormalModeRaw` / `getDenormalModeF32Raw`), so a new upstream `ComplexStrAttr` demands a typed reader | llvmkit-specific |
@@ -2327,7 +2170,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/module_flags.rs::add_module_flag_prints_as_the_upstream_tuples` | no upstream unit test — locks the storage promise: `add_module_flag` builds exactly `Module::addModuleFlag`'s `Ops[3]` tuple (`lib/IR/Module.cpp`) inside `!llvm.module.flags`, checked through the printed `.ll` text | llvmkit-specific |
 | `crates/llvmkit-ir/tests/module_flags.rs::module_flags_decodes_entries_and_skips_malformed` | `Module::getModuleFlagsMetadata` (`lib/IR/Module.cpp`) — entry decoding in operand order plus the read path's documented tolerance ("The verifier will catch errors, so no need to check them here"); no upstream unit test drives it directly | llvmkit-specific (rule from the named function) |
 | `crates/llvmkit-ir/tests/module_flags.rs::add_appends_but_set_replaces_in_place` | `Module::addModuleFlag` vs `Module::setModuleFlag` (`lib/IR/Module.cpp`; `Module.h` documents the latter as "Like addModuleFlag but replaces the old module flag if it already exists") — append-vs-replace-in-position, no upstream unit test drives the contrast directly | llvmkit-specific (rule from the named functions) |
-| `crates/llvmkit-ir/tests/verifier_module_flags.rs` (the seventeen `module-flags-1.ll` ports: `incorrect_number_of_operands_in_module_flag`, `behavior_operand_must_be_a_constant_integer`, `behavior_operand_constant_out_of_range`, `id_operand_must_be_a_metadata_string`, `require_value_must_be_a_metadata_pair`, `require_value_pair_must_have_two_operands`, `require_pair_first_operand_must_be_a_string`, `flag_identifiers_must_be_unique`, `distinct_ids_and_a_satisfied_requirement_verify`, `append_value_must_be_a_metadata_node`, `append_with_a_node_value_verifies`, `max_value_must_be_a_constant_integer`, `min_value_must_be_a_constant_integer`, `min_value_must_be_non_negative`, `requirement_on_an_absent_flag_is_invalid`, `requirement_with_a_different_value_is_invalid`, `requirement_with_the_required_value_verifies`) | `llvm/test/Verifier/module-flags-1.ll` — one test per numbered metadata line, same operands, asserted message = that line's `CHECK:` text (the `*_verify`/`*_verifies` tests are its `CHECK-NOT` lines). Programmatic rather than a checked-in fixture: upstream drives the fixture through `not llvm-as`, and the check under test is the verifier's, so the flag tuples are rebuilt operand-for-operand through the typed metadata API (the parser route stays with the asmparser corpus, off-limits to this wave) | mirror (programmatic, recorded) |
+| `crates/llvmkit-ir/tests/verifier_module_flags.rs` (the `module-flags-1.ll` ports: `incorrect_number_of_operands_in_module_flag`, `behavior_operand_must_be_a_constant_integer`, `behavior_operand_constant_out_of_range`, `id_operand_must_be_a_metadata_string`, `require_value_must_be_a_metadata_pair`, `require_value_pair_must_have_two_operands`, `require_pair_first_operand_must_be_a_string`, `flag_identifiers_must_be_unique`, `distinct_ids_and_a_satisfied_requirement_verify`, `append_value_must_be_a_metadata_node`, `append_with_a_node_value_verifies`, `max_value_must_be_a_constant_integer`, `min_value_must_be_a_constant_integer`, `min_value_must_be_non_negative`, `requirement_on_an_absent_flag_is_invalid`, `requirement_with_a_different_value_is_invalid`, `requirement_with_the_required_value_verifies`) | `llvm/test/Verifier/module-flags-1.ll` — one test per numbered metadata line, same operands, asserted message = that line's `CHECK:` text (the `*_verify`/`*_verifies` tests are its `CHECK-NOT` lines). Programmatic rather than a checked-in fixture: upstream drives the fixture through `not llvm-as`, and the check under test is the verifier's, so the flag tuples are rebuilt operand-for-operand through the typed metadata API (the parser route stays with the asmparser corpus, off-limits to this wave) | mirror (programmatic, recorded) |
 | `crates/llvmkit-ir/tests/verifier_module_flags.rs::null_behavior_operand_is_rejected` | `llvm/test/Verifier/module-flags-2.ll` (`!{null, null, null}`), same `CHECK` message | mirror (programmatic, recorded) |
 | `crates/llvmkit-ir/tests/verifier_module_flags.rs::null_id_operand_is_rejected` | `llvm/test/Verifier/module-flags-3.ll` (`!{i32 1, null, null}`), same `CHECK` message | mirror (programmatic, recorded) |
 | `crates/llvmkit-ir/tests/verifier_module_flags.rs::semantic_interposition_requires_a_constant_integer` | `llvm/test/Verifier/module-flags-semantic-interposition.ll` (`float 1.` value), same `CHECK` message | mirror (programmatic, recorded) |
@@ -2335,7 +2178,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/verifier_module_flags.rs::linker_options_flag_requires_the_upgraded_named_metadata` | `Verifier::visitModuleFlag`'s `"Linker Options"` arm (`lib/IR/Verifier.cpp`) — no dedicated upstream `.ll` fixture; both halves (rejected without `llvm.linker.options`, verifies with it) are that arm's stated rule | llvmkit-specific (rule from the named function) |
 | `crates/llvmkit-ir/tests/verifier_module_flags.rs::pauthabi_platform_without_version_is_rejected` / `pauthabi_version_without_platform_is_rejected` | `llvm/test/Verifier/module-flags-note-gnu-property-elf-pauthabi.ll` (`err1.ll` / `err2.ll`), same `CHECK` message | mirror (programmatic, recorded) |
 | `crates/llvmkit-ir/tests/verifier_module_flags.rs::pauthabi_pair_verifies` | the valid complement of the same fixture's rule ("either both or no ...") — no upstream `CHECK` line spells the both-present case; pinned so the pairing predicate cannot degrade to "never" | llvmkit-specific |
-| `crates/llvmkit-ir/tests/verifier_module_flags.rs` (the eight `cg_profile_*` tests) | `llvm/test/Verifier/module-flags-cgprofile.ll` — one test per list entry: `!2` the valid triple (no `CHECK` names it), `!3`/`!4`/`!""` the "expected a MDNode triple" `CHECK`s, `!5`/`!6` the "expected a Function or null" `CHECK`s, `!7`/`!8` the "expected an integer constant" `CHECK`s; `ptr @a`/`ptr @b` are declared functions as `as_global_constant_ptr` metadata constants | mirror (programmatic, recorded) |
+| `crates/llvmkit-ir/tests/verifier_module_flags.rs` (the `cg_profile_*` tests) | `llvm/test/Verifier/module-flags-cgprofile.ll` — one test per list entry: `!2` the valid triple (no `CHECK` names it), `!3`/`!4`/`!""` the "expected a MDNode triple" `CHECK`s, `!5`/`!6` the "expected a Function or null" `CHECK`s, `!7`/`!8` the "expected an integer constant" `CHECK`s; `ptr @a`/`ptr @b` are declared functions as `as_global_constant_ptr` metadata constants | mirror (programmatic, recorded) |
 | `crates/llvmkit-support/src/span.rs::span_contains_is_half_open` | no upstream counterpart — `llvm::SMRange` carries `SMLoc` pointers and its `contains` is a header one-liner with no unit test; the shape is that one-liner, and llvmkit's own `FileLocRange::contains_loc` (`crates/llvmkit-asmparser/src/file_loc.rs`) is the hand-rolled form this replaces | llvmkit-specific |
 | `crates/llvmkit-support/src/span.rs::span_join_is_the_hull` | no upstream counterpart — `LLLexer`/`LLParser` widen a diagnostic range by constructing `SMRange(Start, End)` inline; there is no named `join` to port and no test of one | llvmkit-specific |
 | `crates/llvmkit-support/src/span.rs::spanned_orders_by_span_first` | no upstream counterpart — LLVM tags diagnostics with an `SMLoc` but never sorts the pairs. Locks llvmkit's own decision to hand-write `Ord`/`PartialOrd` span-first rather than derive them, since a derive orders by declaration order (`value` before `span`) and would sort spanned tokens by token rather than by position | llvmkit-specific |
@@ -2346,7 +2189,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/src/calling_conv.rs::display_and_from_str_round_trip_over_the_whole_id_space` | no upstream counterpart — `PrintCallingConv` (`lib/IR/AsmWriter.cpp`) and `LLParser::parseOptionalCallingConv` read the same `CallingConv.h` enum. The llvmkit analogue of `attribute_td_drift.rs`, checked over the entire `0..=MaxID` space so all three printer branches (mnemonic, `riscv_vls_cc(N)`, `cc N`) are covered without a variant list that could go stale | llvmkit-specific |
 | `crates/llvmkit-ir/src/calling_conv.rs::unknown_calling_convention_text_is_rejected` | `LLParser::parseOptionalCallingConv`'s failure path (`lib/AsmParser/LLParser.cpp`) plus the `MaxID = 1023` bound in `include/llvm/IR/CallingConv.h`; no upstream unit test isolates either | llvmkit-specific (rules from the named function) |
 | `crates/llvmkit-ir/src/calling_conv.rs::into_u32_is_the_raw_id` | `using ID = unsigned` in `include/llvm/IR/CallingConv.h` — the infallible direction of `from_raw` | llvmkit-specific |
-| `crates/llvmkit-ir/src/global_value.rs` (the five `*_display_and_from_str_round_trip` tests: `linkage_`, `visibility_`, `dll_storage_class_`, `dso_locality_`, `thread_local_mode_`) | no upstream counterpart — `lib/IR/AsmWriter.cpp`'s linkage/visibility/DLL-storage/thread-local printers and `lib/AsmParser/LLLexer.cpp`'s keyword table both derive from the `GlobalValue.h` enums and cannot drift. The llvmkit analogue of `attribute_td_drift.rs`, one per enum: an exhaustive `match` makes a new variant a compile error, `parse` of `display` is the identity over `VARIANTS`, and the keyword-less variant round-trips through the empty string | llvmkit-specific |
+| `crates/llvmkit-ir/src/global_value.rs` (the `*_display_and_from_str_round_trip` tests: `linkage_`, `visibility_`, `dll_storage_class_`, `dso_locality_`, `thread_local_mode_`) | no upstream counterpart — `lib/IR/AsmWriter.cpp`'s linkage/visibility/DLL-storage/thread-local printers and `lib/AsmParser/LLLexer.cpp`'s keyword table both derive from the `GlobalValue.h` enums and cannot drift. The llvmkit analogue of `attribute_td_drift.rs`, one per enum: an exhaustive `match` makes a new variant a compile error, `parse` of `display` is the identity over `VARIANTS`, and the keyword-less variant round-trips through the empty string | llvmkit-specific |
 | `crates/llvmkit-ir/src/global_value.rs::unknown_global_value_keywords_are_rejected` | the `LLParser` entry points that reject an unrecognised keyword outright (`lib/AsmParser/LLParser.cpp`); no upstream unit test isolates them. Also pins that a bare TLS model name (`localdynamic`) is not a printed form and so is not accepted | llvmkit-specific (rules from the named functions) |
 | `crates/llvmkit-ir/src/unnamed_addr.rs::unnamed_addr_display_and_from_str_round_trip` | no upstream counterpart — same reasoning as the `global_value.rs` family; the anchor is `GlobalValue::UnnamedAddr` (`include/llvm/IR/GlobalValue.h`) and the `unnamed_addr` / `local_unnamed_addr` keyword pair in `lib/AsmParser/LLLexer.cpp` | llvmkit-specific |
 | `crates/llvmkit-ir/src/comdat.rs::selection_kind_display_and_from_str_round_trip` | no upstream counterpart — `Comdat::print` (`lib/IR/AsmWriter.cpp`) and `LLParser::parseComdat` switch on the same `Comdat::SelectionKind` (`include/llvm/IR/Comdat.h`) | llvmkit-specific |
@@ -2354,8 +2197,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/src/sync_scope.rs::from_str_resolves_the_well_known_scope_names` | `LLVMContext::LLVMContext` / `getOrInsertSyncScopeID` (`lib/IR/LLVMContext.cpp`), which seed `"singlethread"` and the empty name as the two well-known IDs and intern every other name; no upstream unit test drives that partition directly. `SyncScope` is excluded from the `Display` round-trip locks above because its `Display` prints the `syncscope(...)` *wrapper* (`AsmWriter::writeAtomic`), so `FromStr` inverts the context lookup, not the printer — which this test states explicitly | llvmkit-specific (rule from the named function) |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::from_str_agrees_with_parse` | `static Expected<DataLayout> DataLayout::parse(StringRef)` (`lib/IR/DataLayout.cpp`) — C++ has no `FromStr`, so there is nothing to port; locks that the trait impl delegates to the named entry point, error included | llvmkit-specific |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::equal_layouts_hash_equal` | `llvm::DataLayout::operator==` (`include/llvm/IR/DataLayout.h`) — upstream has no hash for a layout, so there is nothing to port; locks that llvmkit's new `Hash` agrees with the `Eq` it ships beside, which is what makes a layout usable as a cache key | llvmkit-specific |
-| `crates/llvmkit-ir/tests/common_traits.rs` (all seven) | no upstream counterpart — C++ has no `Debug`, no `Hash` derive and no `#[must_use]`; LLVM's `print`/`dump` are the analogue of `Display`, not of `Debug`. These lock Rust API properties (C-COMMON-TRAITS): a user struct holding a `Module` can derive `Debug`; `Module`'s own `Debug` is a summary rather than the `.ll` text `Display` prints, and names the verification typestate; the pass/analysis surface is `Debug`; a `Debug` reaching through a `RefCell` uses `try_borrow` and cannot panic mid-debug-session; `IrError` de-duplicates in a `HashSet`; and the id family's lexicographic `(ModuleId, slot)` order keys a `BTreeMap` deterministically, within one module and across modules. Closest functional references: `Module::print` (`lib/IR/AsmWriter.cpp`) for the summary-vs-IR split, and upstream's own use of slot numbers rather than `Value*` addresses wherever pass output must be deterministic | llvmkit-specific |
-| `crates/llvmkit-ir/tests/branded_derive.rs` (the four ordering tests: `struct_ordering_is_lexicographic`, `struct_ordering_agrees_with_equality`, `enum_ordering_ranks_by_declaration_then_payload`, `partial_ord_without_ord_stays_partial`) | no upstream counterpart — `#[derive(Branded)]` exists because std's derive cannot express bound-free trait impls, and C++ has no equivalent of either. Lock the opt-in `PartialOrd`/`Ord` expansion: field-order lexicographic for structs, declaration-order-then-payload for enums (matching the std derive's semantics without its bounds and without an `as` cast on the discriminant), `cmp` agreeing with `eq`, and a partial order staying partial when a field is incomparable | llvmkit-specific |
+| `crates/llvmkit-ir/tests/common_traits.rs` (whole file) | no upstream counterpart — C++ has no `Debug`, no `Hash` derive and no `#[must_use]`; LLVM's `print`/`dump` are the analogue of `Display`, not of `Debug`. These lock Rust API properties (C-COMMON-TRAITS): a user struct holding a `Module` can derive `Debug`; `Module`'s own `Debug` is a summary rather than the `.ll` text `Display` prints, and names the verification typestate; the pass/analysis surface is `Debug`; a `Debug` reaching through a `RefCell` uses `try_borrow` and cannot panic mid-debug-session; `IrError` de-duplicates in a `HashSet`; and the id family's lexicographic `(ModuleId, slot)` order keys a `BTreeMap` deterministically, within one module and across modules. Closest functional references: `Module::print` (`lib/IR/AsmWriter.cpp`) for the summary-vs-IR split, and upstream's own use of slot numbers rather than `Value*` addresses wherever pass output must be deterministic | llvmkit-specific |
+| `crates/llvmkit-ir/tests/branded_derive.rs` (the ordering tests: `struct_ordering_is_lexicographic`, `struct_ordering_agrees_with_equality`, `enum_ordering_ranks_by_declaration_then_payload`, `partial_ord_without_ord_stays_partial`) | no upstream counterpart — `#[derive(Branded)]` exists because std's derive cannot express bound-free trait impls, and C++ has no equivalent of either. Lock the opt-in `PartialOrd`/`Ord` expansion: field-order lexicographic for structs, declaration-order-then-payload for enums (matching the std derive's semantics without its bounds and without an `as` cast on the discriminant), `cmp` agreeing with `eq`, and a partial order staying partial when a field is incomparable | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::dso_local_dllimport_mismatch_matches_upstream_text` | `test/Assembler/dllimport-dsolocal-diag.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalLinkage` (the `DSOLocal && DLLImportStorageClass` rejection) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::dso_local_precedes_visibility_and_dll_storage` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalLinkage` clause order + `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printFunction` (`printDSOLocation` / `printVisibility` / `printDLLStorageClass`) -- no upstream fixture combines `dso_local` with a visibility keyword, so the emitted order is the anchor | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::icmp_accepts_pointer_operands` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCompare` (`isIntOrIntVectorTy() \|\| isPtrOrPtrVectorTy()`); addrspace spelling from `test/Verifier/statepoint.ll::@test2` | mirror |
@@ -2405,3 +2248,5 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs::struct_path_tbaa_tag_is_left_alone` | `llvm/lib/IR/AutoUpgrade.cpp::llvm::UpgradeTBAANode` -- its `isa<MDNode>(MD.getOperand(0)) && NumOperands >= 3` early return | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs::empty_tbaa_tag_is_left_alone` | `llvm/lib/IR/AutoUpgrade.cpp::llvm::UpgradeTBAANode` -- its `NumOperands == 0` guard ("Invalid, punt to a verifier error") | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs::a_module_without_flags_is_untouched` | `llvm/lib/IR/AutoUpgrade.cpp::llvm::UpgradeModuleFlags` -- its `if (!ModFlags) return false;` opening guard; no upstream fixture asserts "nothing happens" | llvmkit-specific |
+| `crates/llvmkit-ir/tests/upstream_registry_drift.rs::every_registry_row_names_a_file_in_the_tree` | none -- LLVM keeps no per-test provenance registry, so it has nothing to keep honest. Closest functional reference: `llvm/utils/lit`, which resolves a test path before running it and errors on a missing file | llvmkit-specific |
+| `crates/llvmkit-ir/tests/upstream_registry_drift.rs::every_registry_row_names_a_test_its_cited_file_defines` | none -- as above. Written after eleven rows were found naming tests that had moved to `crates/llvmkit-ir/src/phi_raw_tests/`, a drift no earlier sweep caught | llvmkit-specific |

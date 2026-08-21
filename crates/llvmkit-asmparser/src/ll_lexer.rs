@@ -57,7 +57,7 @@ pub const INT_TY_MAX_BITS: u64 = 1u64 << 23; // 8_388_608
 // expressed as a rank — a lexer message outranks a parser one, so where a
 // message exists it is what a reader sees.
 //
-// Two caveats, both recorded in `docs/divergences.md`:
+// Two caveats, both recorded in `docs/divergences.md` entry 101:
 //
 //   * Six of upstream's `LexError(...)` calls are **non-fatal** — the lexer
 //     records the message and returns a real token, so `llvm-as` builds a

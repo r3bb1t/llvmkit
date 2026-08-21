@@ -821,8 +821,15 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
             TypeData::Metadata => f.write_str("metadata"),
             TypeData::Token => f.write_str("token"),
             TypeData::Integer { bits } => write!(f, "i{bits}"),
-            TypeData::Pointer { addr_space: 0 } => f.write_str("ptr"),
-            TypeData::Pointer { addr_space } => write!(f, "ptr addrspace({addr_space})"),
+            // `case Type::PointerTyID:` in `TypePrinting::print` — `OS <<
+            // "ptr"` then `printAddressSpace(M, PTy->getAddressSpace(), OS)`
+            // with the routine's default prefix `" "` and empty suffix. Shared
+            // with the four other call sites so the unported
+            // `PrintAddrspaceName` branch stays a one-place fix.
+            TypeData::Pointer { addr_space } => {
+                f.write_str("ptr")?;
+                crate::asm_writer::print_address_space(f, *addr_space, " ", "", false)
+            }
             TypeData::Function {
                 ret,
                 params,

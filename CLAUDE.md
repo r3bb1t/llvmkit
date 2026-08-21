@@ -15,7 +15,7 @@ Out of scope: code generation, target backends, linking. In scope and merely unf
 Every gate runs on the pinned toolchain. CI installs rustc 1.96.0; an unpinned run rewords trybuild `.stderr` diagnostics and produces mismatches that look like regressions and are not. If you see a `.stderr` diff, re-run on `+1.96.0` before touching a fixture.
 
 ```bash
-cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (2564 tests, 214 binaries)
+cargo +1.96.0 test --workspace --all-targets --all-features    # full suite
 cargo +1.96.0 test -p llvmkit-ir --test ap_float               # one integration file
 cargo +1.96.0 test <substring>                                 # one test by name
 cargo +1.96.0 clippy --workspace --all-targets --all-features -- -D warnings
@@ -25,7 +25,7 @@ cargo +1.96.0 test --workspace --doc --all-features            # doctests
 cargo audit
 ```
 
-The CI gate is exactly that list plus a per-package license check. Baseline on the pin: **0 trybuild failures of 87 registered fixtures** (86 `compile_fail` + 1 `pass`). All fixtures live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in `tests/typestate_compile_fail.rs`; a fixture that is not registered there does not run.
+The CI gate is exactly that list plus a per-package license check. Baseline on the pin: **zero failures, zero warnings**. Trybuild fixtures live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in `tests/typestate_compile_fail.rs`; a fixture that is not registered there does not run — so the registration list, not the directory listing, is what to read. No suite, fixture or registry totals are written in this file: they moved on almost every commit and were wrong more often than not. Run the gate.
 
 - **Do not set `CARGO_INCREMENTAL=0`.** Leave the cache alone; other work may be running on this machine.
 - `llvmkit-ir` has a `build.rs` — it expands the vendored `crates/llvmkit-tablegen/tablegen/` `.td` files into intrinsic tables (~2 s). Keep it; the `.td` input is 6× smaller than its output.
@@ -121,8 +121,8 @@ Each entry names the question it answers — read the section, not the file.
 - `ROADMAP.md` — milestones, release sequence, the crates.io checklist.
 - `docs/future-work.md` — the live backlog: what is known-missing, what was deferred, and **why** in each case. Read before proposing work that looks unfinished; it is often deliberate.
 - `docs/divergences.md` — the behavioural-difference ledger: every place llvmkit's observable behaviour differs from the vendored tree, graded by severity (`rejects-valid` is the worst). Distinct from `future-work.md`, which is unimplemented features. Every entry **and its evidence block** is a hypothesis with a citation, not a fact.
-- `docs/fixture-coverage.md` — all 500 `llvm/test/Assembler` fixtures classified `ported` / `blocked-model` / `N/A`, each blocked row naming its gap. The completeness proof behind the corpus manifest.
-- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2564 tests, 2131 rows, 320 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
+- `docs/fixture-coverage.md` — every `llvm/test/Assembler` fixture classified `ported` / `blocked-model` / `N/A`, each blocked row naming its gap. The completeness proof behind the corpus manifest, and the one place the per-class and per-gap tallies are derived rather than restated.
+- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so, without a figure: the residue is inherited from the type-safety and pass-API programs, and the header names the commands to derive any count you need. A missing row means missing *provenance*, never "no upstream counterpart". `crates/llvmkit-ir/tests/upstream_registry_drift.rs` keeps the rows' own targets resolvable.
 - `docs/inkwell-migration.md` — per-API delta against inkwell.
 
 ## Before you start

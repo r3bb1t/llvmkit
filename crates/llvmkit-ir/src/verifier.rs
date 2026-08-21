@@ -2662,7 +2662,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// "GEP is not of right type for indices!", and the trailing address-space
     /// `Check`. A third, the `isIntOrIntVectorTy` re-check inside the vector
     /// loop, is upstream's own duplicate of the earlier one. See
-    /// docs/divergences.md.
+    /// `docs/divergences.md` entry 120.
     fn check_gep(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -2746,7 +2746,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // and the `PtrTy` half of `Check(PtrTy && GEP.getResultElementType()
         // == ElTy, "GEP is not of right type for indices!")`. The second half
         // has no counterpart: `GepInstData` stores no result element type, so
-        // there is nothing to disagree with `ElTy` (docs/divergences.md).
+        // there is nothing to disagree with `ElTy` (`docs/divergences.md`
+        // entry 120).
         let result_ty = inst.ty().id;
         if !self
             .module
@@ -2799,7 +2800,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // same as the pointer operand's"), and both `IrBuilder::gep_inner` and
         // `IrBuilder::gep_erased` derive the result type from that operand via
         // `getGEPReturnType`, so the two are the same interned slot by
-        // construction (docs/divergences.md).
+        // construction (`docs/divergences.md` entry 120).
         Ok(())
     }
 

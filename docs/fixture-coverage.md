@@ -1,14 +1,31 @@
 # `llvm/test/Assembler` coverage
 
 Every `.ll` fixture in `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/Assembler/`,
-classified against what llvmkit actually does with it. **500 fixtures, no
-exceptions and no sampling.**
+classified against what llvmkit actually does with it — **no exceptions and no
+sampling**: the row count below equals
+`ls orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/Assembler/*.ll | wc -l`,
+against the vendored tag `llvmorg-22.1.4` (no repo commit pins `orig_cpp/`,
+which is gitignored).
 
-| Class | Fixtures | Meaning |
-|---|---|---|
-| `ported` | 405 | Every unit of the fixture runs — normally as a row in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` driven by `parser_corpus.rs`, and where upstream's `RUN` line passes a flag the manifest has no spelling for, in a named test the row's Detail column points at. |
-| `blocked-model` | 94 | At least one unit is held back by a named llvmkit gap. The gap is named per row and catalogued below. |
-| `N/A` | 1 | The fixture's contract needs a tool or flag llvmkit does not model, and there is nothing left about the parse for llvmkit to assert. |
+| Class | Meaning |
+|---|---|
+| `ported` | Every unit of the fixture runs — normally as a row in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` driven by `parser_corpus.rs`, and where upstream's `RUN` line passes a flag the manifest has no spelling for, in a named test the row's Detail column points at. |
+| `blocked-model` | At least one unit is held back by a named llvmkit gap. The gap is named per row and catalogued below. |
+| `N/A` | The fixture's contract needs a tool or flag llvmkit does not model, and there is nothing left about the parse for llvmkit to assert. |
+
+**The per-class tallies are not written here.** They moved on every commit that
+closed a gap, and each rewrite seeded a stale copy somewhere else. Derive them
+from the tables below instead — the classification is the data, a tally is not:
+
+```
+grep -oE '\| (ported|blocked-model|N/A) \|' docs/fixture-coverage.md | sort | uniq -c
+```
+
+(The pattern needs a pipe, a space, a bare class name and a space before the
+next pipe. Written inside the alternation above, each class name is flanked by a
+parenthesis or a pipe with no space, so the command does not count its own
+quotation — the trap that once returned 92 where the truth was 91. Do not
+restate the pattern anywhere in this file in a spelling that *would* match.)
 
 ## How this was measured
 
@@ -44,30 +61,34 @@ and the answer recorded:
 
 ## What "ported" asserts, and what it does not
 
-A `ported` negative asserts the parse **fails**, and — for 302 of the 307
-`reject` rows — that the message contains upstream's own `FileCheck` text. 52 of
-those additionally pin upstream's `<stdin>:LINE:COL:`. Every one of those 354
-pins was re-derived from the cited upstream file, not from llvmkit's output.
+A `ported` negative asserts the parse **fails**, and on almost every `reject`
+row also that the message contains upstream's own `FileCheck` text. A smaller
+subset additionally pins upstream's `<stdin>:LINE:COL:` through a `loc=` option.
+Each of those pins was re-derived from the cited upstream file, not from
+llvmkit's output.
 
 That is a **containment lock, not a text-parity measure**: the harness matches
-with `rendered.contains(pin)` (`parser_corpus.rs:204`), so a message that wraps
-upstream's satisfies the row, and a message *shorter* than upstream's is
-invisible too, since the pin is itself `FileCheck` text and `FileCheck` matches
-substrings. The 52 `loc=` rows additionally assert the caret
-(`parser_corpus.rs:209-226`); on the other 250 the anchor is unchecked. Five
-rows are known to pass while diverging in text — three genuine (entry 114's
+with `rendered.contains(pin)`
+(`parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures`), so a message
+that wraps upstream's satisfies the row, and a message *shorter* than upstream's
+is invisible too, since the pin is itself `FileCheck` text and `FileCheck`
+matches substrings. Only the `loc=` rows assert the caret; on the rest the
+anchor is unchecked. Some rows pass while diverging in text — entry 114's
 `zeroinit-error`, and `musttail-invalid-1` / `invalid-datalayout-override` under
-**G17** below) and two where llvmkit is exactly right and the pin is a truncated
-`FileCheck` fragment. See the corpus-oracle item in `docs/future-work.md`, which
-carries the derivation.
+**G17** below, plus rows where llvmkit is exactly right and the pin is a
+truncated `FileCheck` fragment. See the corpus-oracle item in
+`docs/future-work.md`, which carries the derivation.
 
-The 302 / 307 / 52 / 354 figures were re-derived at the commit that added this
-paragraph, by splitting `parser_corpus_manifest.txt` on `|` field-exactly as
-`parse_manifest_entry` (`parser_corpus.rs:68-99`) does — skipping blank and `#`
-lines and reading only `status=` / `error=` / `loc=` options. A plain
-`grep -c 'status=reject'` answers 308; the field-exact split is why the method
-has to be stated. Same pass: 502 rows total, 5 `reject` rows with no `error=`,
-0 `error=` on a non-`reject` status.
+**No manifest tallies are written here any more.** They were, in five figures,
+and every one of them was stale within a commit or two of being written — the
+manifest gains rows whenever a gap closes. If you need them, split
+`parser_corpus_manifest.txt` on `|` field-exactly as `parse_manifest_entry`
+does — skipping blank and `#` lines and reading only `status=` / `error=` /
+`loc=` / `config=` options, each recognised by `strip_prefix`. A plain
+`grep -c 'status=reject'` over the file answers higher, because the manifest's
+own `#` documentation header explains the option and the grep counts that line
+too; the parser skips `#` lines. That discrepancy, not any particular number, is
+the thing worth knowing before counting this manifest.
 
 A `ported` positive asserts the fixture **parses**, **verifies**, and is
 **round-trip stable** (print → re-parse → print reproduces the first print byte
@@ -99,113 +120,106 @@ The reason `N/A` is one row and not fifty: `test/Assembler` is overwhelmingly
 
 ## Gap catalogue
 
-Each `blocked-model` row names one of these.
+Each `blocked-model` row names one of these. The per-gap fixture counts are the
+lists under *Which fixture sits on which gap* — a separate tally column stood
+here and drifted from those lists, so it is gone. A letter missing from this
+table carries no meaning: one closed gap was retained as a `Closed.` row and
+another was deleted outright, so the letters are not a stable namespace.
 
-| Gap | Fixtures | What is missing |
-|---|---|---|
-| **G1** | 13 | `AutoUpgrade` is not ported: an intrinsic name or signature upstream silently rewrites is rejected instead. |
-| **G2** | 5 | Target-specific intrinsic tables (`llvm.amdgcn.*`, `llvm.nvvm.*`, `llvm.wasm.*`, `llvm.aarch64.*`) are not modelled. |
-| **G3** | 6 | An unknown `llvm.`-prefixed declaration is rejected; `LLParser::parseFunctionHeader` keeps it and leaves the complaint to the Verifier. |
-| **G4** | 5 | An alias/ifunc aliasee may be a constant expression (`getelementptr`, `addrspacecast`); llvmkit's `parse_alias_or_ifunc` sends everything through the TYPE VALUE branch where `LLParser::parseAliasOrIFunc` branches on the aliasee's *first token* and routes those keywords through a bare `parseValID`. This is the "self-typed aliasee does not parse" entry already in [`future-work.md`](future-work.md), and these five fixtures are what it costs. |
-| **G6** | 1 | Symbolic address-space **printing** (`llvm-dis --print-addrspace-name=true`) is not modelled: `printAddressSpace`'s `PrintAddrspaceName` branch is `static cl::opt<bool>`-gated and llvmkit has no printer-option layer, so it has no reachable trigger. Parsing `addrspace("A"/"G"/"P")` and `addrspace("<datalayout name>")` is ported, and the data the branch would print is modelled (`DataLayout::address_space_name`). |
-| **G7** | 0 | *Closed.* `getelementptr` with a vector-of-pointers base or vector indices is now modelled (`IrBuilder::gep_erased`, `GetElementPtrInst::getGEPReturnType`). The gap letter is kept so the numbering of the others is stable. |
-| **G8** | 3 | Metadata fields that take a value or a brace list (`!DITemplateValueParameter(value: i32 7)`, `!GenericDINode(operands: {...})`) are not parsed. |
-| **G9** | 2 | Metadata strings and metadata names are required to be UTF-8; LLVM allows arbitrary bytes. |
-| **G10** | 1 | `!DIEnumerator` values wider than i128 are rejected; upstream stores an `APInt` of any width. |
-| **G11** | 1 | A global variable's trailing `"key" = "value"` attribute list is not parsed. |
-| **G12** | 1 | `fpext` (and its siblings) reject a scalable-vector source. |
-| **G13** | 2 | A forward-referenced function whose later definition/ifunc has the same name is rejected instead of resolved. |
-| **G14** | 1 | `-allow-incomplete-ir`'s `dropUnknownMetadataReferences` half is not implemented (recorded in docs/divergences.md). |
-| **G15** | 2 | A forward reference to an explicitly numbered global (`@6`) is not resolved. |
-| **G16** | 2 | The `typeidCompatibleVTable:` module-summary entry kind is not parsed. |
-| **G17** | 15 | Diagnostic text differs from upstream's: llvmkit routes a complete upstream message through an `expected ...` wrapper, or words the check differently. |
-| **G18** | 17 | The check runs at a different stage than upstream's, or not at all: upstream's `llvm-as` rejects at parse/verify time and llvmkit accepts. |
-| **G19** | 11 | Print / re-parse is not idempotent: printing the module and re-parsing the print yields different text. |
-| **G20** | 2 | A function or global used as a `ptr` constant keeps its function type instead of pointer type, so the print does not re-parse. |
-| **G21** | 1 | `!DIFile(source: ...)` and neighbouring fields in a summary-bearing module are not accepted. |
-| **G22** | 2 | llvmkit's Verifier does not exempt **unreachable** blocks: `Verifier::verifyDominatesUse` returns early when `!DT.isReachableFromEntry(...)`, so upstream accepts a self-referencing or out-of-order instruction in a block with no path from entry, and llvmkit rejects it. |
-| **G23** | 1 | A `@name` / `@N` call-family callee is looked up only among functions: `resolve_direct_callee`'s `Name` arm consults `Module::function_dyn` and its `Id` arm accepts only `GlobalRef::Function`, where `convertValIDToValue` -> `getGlobalVal` accepts any `GlobalValue`. An **ifunc** callee collides with the forward-declaration arm ([`divergences.md`](divergences.md) 122). |
+| Gap | What is missing |
+|---|---|
+| **G1** | `AutoUpgrade` is not ported: an intrinsic name or signature upstream silently rewrites is rejected instead. |
+| **G2** | Target-specific intrinsic tables (`llvm.amdgcn.*`, `llvm.nvvm.*`, `llvm.wasm.*`, `llvm.aarch64.*`) are not modelled. |
+| **G3** | An unknown `llvm.`-prefixed declaration is rejected; `LLParser::parseFunctionHeader` keeps it and leaves the complaint to the Verifier. |
+| **G4** | An alias/ifunc aliasee may be a constant expression (`getelementptr`, `addrspacecast`); llvmkit's `parse_alias_or_ifunc` sends everything through the TYPE VALUE branch where `LLParser::parseAliasOrIFunc` branches on the aliasee's *first token* and routes those keywords through a bare `parseValID`. This is the "self-typed aliasee does not parse" entry already in [`future-work.md`](future-work.md), and these five fixtures are what it costs. |
+| **G6** | Symbolic address-space **printing** (`llvm-dis --print-addrspace-name=true`) is not modelled: `printAddressSpace`'s `PrintAddrspaceName` branch is `static cl::opt<bool>`-gated and llvmkit has no printer-option layer, so it has no reachable trigger. Parsing `addrspace("A"/"G"/"P")` and `addrspace("<datalayout name>")` is ported, and the data the branch would print is modelled (`DataLayout::address_space_name`). |
+| **G7** | *Closed.* `getelementptr` with a vector-of-pointers base or vector indices is now modelled (`IrBuilder::gep_erased`, `GetElementPtrInst::getGEPReturnType`). Kept as a row so a reader meeting the letter in an older commit message finds it; see the note above about letters that are simply absent. |
+| **G8** | Metadata fields that take a value or a brace list (`!DITemplateValueParameter(value: i32 7)`, `!GenericDINode(operands: {...})`) are not parsed. |
+| **G9** | Metadata strings and metadata names are required to be UTF-8; LLVM allows arbitrary bytes. |
+| **G10** | `!DIEnumerator` values wider than i128 are rejected; upstream stores an `APInt` of any width. |
+| **G11** | A global variable's trailing `"key" = "value"` attribute list is not parsed. |
+| **G12** | `fpext` (and its siblings) reject a scalable-vector source. |
+| **G13** | A forward-referenced function whose later definition/ifunc has the same name is rejected instead of resolved. |
+| **G14** | `-allow-incomplete-ir`'s `dropUnknownMetadataReferences` half is not implemented (recorded in docs/divergences.md). |
+| **G15** | A forward reference to an explicitly numbered global (`@6`) is not resolved. |
+| **G16** | The `typeidCompatibleVTable:` module-summary entry kind is not parsed. |
+| **G17** | Diagnostic text differs from upstream's: llvmkit routes a complete upstream message through an `expected ...` wrapper, or words the check differently. |
+| **G18** | The check runs at a different stage than upstream's, or not at all: upstream's `llvm-as` rejects at parse/verify time and llvmkit accepts. |
+| **G19** | Print / re-parse is not idempotent: printing the module and re-parsing the print yields different text. |
+| **G20** | A **function** used as a `ptr` constant keeps its function type instead of its pointer type. `Function::getType()` upstream *is* a `PointerType` and only `getValueType()` is the `FunctionType`, so this both **rejects valid input** — `declare void @f()` with `call void @use(ptr @f)` answers `call argument #0 type mismatch: expected ptr, got void ()` — and breaks the print: `call void @f() [ "foo"(ptr @f) ]` prints `[ "foo"(void () @f) ]`, which re-parses to `functions are not values, refer to them as pointers`. **Globals are not affected** — `@gv = global i32 0` used as `call void @use(ptr @gv)` parses, prints and re-parses; the row said "function or global" and the global half was never true. All three probed at 2026-08-22 with `target/release/examples/parse_file.exe`. |
+| **G21** | `!DIFile(source: ...)` and neighbouring fields in a summary-bearing module are not accepted. |
+| **G22** | llvmkit's Verifier does not exempt **unreachable** blocks: `Verifier::verifyDominatesUse` returns early when `!DT.isReachableFromEntry(...)`, so upstream accepts a self-referencing or out-of-order instruction in a block with no path from entry, and llvmkit rejects it. |
+| **G23** | A `@name` / `@N` call-family callee is looked up only among functions: `resolve_direct_callee`'s `Name` arm consults `Module::function_dyn` and its `Id` arm accepts only `GlobalRef::Function`, where `convertValIDToValue` -> `getGlobalVal` accepts any `GlobalValue`. An **ifunc** callee collides with the forward-declaration arm ([`divergences.md`](divergences.md) 122). |
 
 Which fixture sits on which gap:
 
-- **G1** (13): `auto_upgrade_intrinsics.ll`, `autoupgrade-invalid-masked-align.ll`, `autoupgrade-invalid-mem-intrinsics.ll`, `autoupgrade-invalid-name-mangling.ll`, `autoupgrade-lifetime-intrinsics.ll`, `implicit-intrinsic-declaration-invalid.ll`, `implicit-intrinsic-declaration-invalid3.ll`, `implicit-intrinsic-declaration.ll`, `invalid-vecreduce.ll`, `metadata.ll`, `opaque-ptr-intrinsic-remangling.ll`, `remangle.ll`, `struct-ret-without-upgrade.ll`
-- **G2** (5): `amdgcn-unreachable.ll`, `amdgpu-image-atomic-attributes.ll`, `auto_upgrade_nvvm_intrinsics.ll`, `autoupgrade-thread-pointer.ll`, `autoupgrade-wasm-intrinsics.ll`
-- **G3** (6): `immarg-param-attribute.ll`, `invalid-immarg.ll`, `invalid-immarg4.ll`, `invalid-immarg5.ll`, `metadata-function-local.ll`, `token.ll`
-- **G4** (5): `ConstantExprNoFold.ll`, `addrspacecast-alias.ll`, `alias-use-list-order.ll`, `getelementptr.ll`, `uselistorder.ll`
-- **G6** (1): `symbolic-addrspace-datalayout.ll`
-- **G7** (0): closed
-- **G8** (3): `DIDefaultTemplateParam.ll`, `ditemplateparameter.ll`, `generic-debug-node.ll`
-- **G9** (2): `difile-escaped-chars.ll`, `named-metadata.ll`
-- **G10** (1): `DIEnumeratorBig.ll`
-- **G11** (1): `globalvariable-attributes.ll`
-- **G12** (1): `fast-math-flags.ll`
-- **G13** (2): `2003-05-15-AssemblerProblem.ll`, `ifunc-use-list-order.ll`
-- **G14** (1): `incomplete-ir-metadata.ll`
-- **G15** (2): `opaque-ptr.ll`, `skip-value-numbers-globals.ll`
-- **G16** (2): `index-value-order.ll`, `thinlto-vtable-summary.ll`
-- **G17** (15): `2007-01-16-CrashOnBadCast.ll`, `alias-redefinition.ll`, `dicompileunit-invalid-language.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `opaque-ptr-invalid-forward-ref.ll`, `ptrtoaddr-invalid.ll`
-- **G18** (17): `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-dicompileunit-emissionkind-bad.ll`, `invalid-dicompileunit-language-overflow.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid-generic-debug-node-tag-overflow.ll`, `invalid-generic-debug-node-tag-wrong-type.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
-- **G19** (11): `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
-- **G20** (2): `MultipleReturnValueType.ll`, `anon-functions.ll`
-- **G21** (1): `thinlto-summary.ll`
-- **G22** (2): `2004-02-27-SelfUseAssertError.ll`, `2004-06-07-VerifierBug.ll`
-- **G23** (1): `ifunc-program-addrspace.ll`
+- **G1**: `auto_upgrade_intrinsics.ll`, `autoupgrade-invalid-masked-align.ll`, `autoupgrade-invalid-mem-intrinsics.ll`, `autoupgrade-invalid-name-mangling.ll`, `autoupgrade-lifetime-intrinsics.ll`, `implicit-intrinsic-declaration-invalid.ll`, `implicit-intrinsic-declaration-invalid3.ll`, `implicit-intrinsic-declaration.ll`, `invalid-vecreduce.ll`, `metadata.ll`, `opaque-ptr-intrinsic-remangling.ll`, `remangle.ll`, `struct-ret-without-upgrade.ll`
+- **G2**: `amdgcn-unreachable.ll`, `amdgpu-image-atomic-attributes.ll`, `auto_upgrade_nvvm_intrinsics.ll`, `autoupgrade-thread-pointer.ll`, `autoupgrade-wasm-intrinsics.ll`
+- **G3**: `immarg-param-attribute.ll`, `invalid-immarg.ll`, `invalid-immarg4.ll`, `invalid-immarg5.ll`, `metadata-function-local.ll`, `token.ll`
+- **G4**: `ConstantExprNoFold.ll`, `addrspacecast-alias.ll`, `alias-use-list-order.ll`, `getelementptr.ll`, `uselistorder.ll`
+- **G6**: `symbolic-addrspace-datalayout.ll`
+- **G7**: closed
+- **G8**: `DIDefaultTemplateParam.ll`, `ditemplateparameter.ll`, `generic-debug-node.ll`
+- **G9**: `difile-escaped-chars.ll`, `named-metadata.ll`
+- **G10**: `DIEnumeratorBig.ll`
+- **G11**: `globalvariable-attributes.ll`
+- **G12**: `fast-math-flags.ll`
+- **G13**: `2003-05-15-AssemblerProblem.ll`, `ifunc-use-list-order.ll`
+- **G14**: `incomplete-ir-metadata.ll`
+- **G15**: `opaque-ptr.ll`, `skip-value-numbers-globals.ll`
+- **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
+- **G17**: `2007-01-16-CrashOnBadCast.ll`, `alias-redefinition.ll`, `dicompileunit-invalid-language.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `opaque-ptr-invalid-forward-ref.ll`, `ptrtoaddr-invalid.ll`
+- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-dicompileunit-emissionkind-bad.ll`, `invalid-dicompileunit-language-overflow.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid-generic-debug-node-tag-overflow.ll`, `invalid-generic-debug-node-tag-wrong-type.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
+- **G19**: `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
+- **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
+- **G21**: `thinlto-summary.ll`
+- **G22**: `2004-02-27-SelfUseAssertError.ll`, `2004-06-07-VerifierBug.ll`
+- **G23**: `ifunc-program-addrspace.ll`
 
 ## Findings this classification produced
 
 These came out of the measurement and are recorded here rather than buried:
 
-1. **34 citations in the tree name `test/Assembler/*.ll` files that do not
-   exist.** `call.ll`, `phi.ll`, `switch.ll`, `invoke.ll`, `catchpad.ll`,
-   `datalayout.ll`, `bitcast.ll`, `freeze.ll`, `declare.ll`, `named-types.ll`,
-   `target-triple.ll`, `vaarg.ll`, `global-variable-attributes.ll`,
-   `declare-variadic.ll`, `cleanupret.ll` and 19 more. Eight of them
-   (`catchpad`, `cleanupret`, `declare-variadic`, `declare`,
-   `global-variable-attributes`, `named-types`, `target-triple`, `vaarg`) do not
-   exist anywhere under `llvm/test/`. They appear in `UPSTREAM.md` rows and in
-   rustdoc on `ll_parser.rs` tests. The tests themselves are real; their
-   *provenance* is not. Repointing them is not part of this stage.
+1. **Citations in the tree name `test/Assembler/*.ll` files that do not
+   exist.** `call.ll`, `phi.ll`, `switch.ll`, `datalayout.ll`, `bitcast.ll`,
+   `freeze.ll` and others in the same shape, in `UPSTREAM.md` rows and in
+   rustdoc on `ll_parser.rs` tests. Some of those filenames exist nowhere under
+   `llvm/test/` at all. The tests themselves are real; their *provenance* is
+   not. Repointing them is not part of this stage.
 
-   *Update, 2026-08-20 (funclet parity).* Ten of these were repointed at the
-   Windows-EH funclet commit — `catchpad.ll`, `catchswitch.ll`, `catchret.ll`,
-   `cleanuppad.ll` (twice), `cleanupret.ll`, `resume.ll` (twice),
-   `landingpad.ll` and `invoke.ll` — because that commit rewrote the routines
-   and tests they annotated, and leaving a false citation on a line being
-   edited was not defensible. The rest stay deferred as this finding says.
-   **The figure of 34 does not reproduce at that commit under any obvious
-   recount**: sweeping every tracked `*.rs` and `*.md` file, **counting only
-   citations of `test/Assembler/*.ll` and checking existence at the cited
-   path**, gives **57** phantom citations across **36** distinct nonexistent
-   filenames (37/28 counting only `crates/`, 18/15 counting only
-   `UPSTREAM.md`). That scope restriction is what makes the numbers reproduce
-   and was missing when they were first written down.
+   *Update, 2026-08-20 (funclet parity).* The phantoms carried by the routines
+   and tests the Windows-EH funclet commit rewrote — `catchpad.ll`,
+   `catchswitch.ll`, `catchret.ll`, `cleanuppad.ll`, `cleanupret.ll`,
+   `resume.ll`, `landingpad.ll` and `invoke.ll` — were repointed there, because
+   leaving a false citation on a line being edited was not defensible. The rest
+   stay deferred as this finding says. A later round repaired one of a different
+   kind: `builder_icmp_named.rs` cited a path carrying a literal `...` elision
+   for a fixture that **does** exist, at
+   `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` — a mis-pathed citation of a
+   real file, not a citation of a nonexistent one. Genuine `test/CodeGen/*`
+   phantoms are also on record, in `UPSTREAM.md`'s rows for
+   `call_with_metadata_argument_roundtrip` and
+   `call_with_metadata_and_value_argument_roundtrip` and in the rustdoc on the
+   former; the nearest real register fixtures live under `test/CodeGen/AMDGPU/`.
 
-   The same sweep over **every** `test/` path gives **61** across **40**
-   distinct filenames (39/30, 20/17). The four extra hits are not one class.
-   Three are genuine `test/CodeGen/*` phantoms — `UPSTREAM.md`'s rows for
-   `call_with_metadata_argument_roundtrip`
-   (`test/CodeGen/X86/read-register.ll`) and
-   `call_with_metadata_and_value_argument_roundtrip`
-   (`test/CodeGen/X86/write-register.ll`), plus the rustdoc on the former
-   (`test/CodeGen/Generic/read-write-register.ll`); none exists upstream, and
-   the nearest real register fixtures live under `test/CodeGen/AMDGPU/`. The
-   fourth was a different failure mode entirely: `builder_icmp_named.rs` cited
-   `test/Clang/CodeGen/.../auto_upgrade_nvvm_intrinsics.ll`, a path with a
-   literal `...` elision, for a fixture that **does** exist — at
-   `test/Assembler/auto_upgrade_nvvm_intrinsics.ll`. That one was a mis-pathed
-   citation of a real file, not a citation of a nonexistent one, and it was
-   repaired in the 2026-08-20 fix round rather than left on record. That round
-   also repointed the last `test/Assembler/` residue of the four filenames the
-   funclet commit fixed: `ll_parser.rs::parse_invoke`'s rustdoc cited
-   `invoke.ll`, and now cites `@instructions.terminators` by symbol.
+   **No count is given for this finding, deliberately.** It carried one, then a
+   correction to it, then a correction to that correction, and each figure was
+   dead on arrival. The reason is structural and does not go away: this
+   paragraph, and the rustdoc it describes, *quote* phantom paths in order to
+   name them, and no regex sweep can tell a citation from a disclaimer, so any
+   command counts its own prose. Anyone who needs a number must fix the scope
+   first — which trees, `*.rs` only or `*.md` too, citations of
+   `test/Assembler/` only or of every `test/` path — exclude the prose that
+   discusses a phantom rather than relying on one, and publish that scope beside
+   the figure. Three attempts without it produced three numbers that meant
+   nothing.
 
-   **Both figures above are dated to `b369431`, and a naive re-run will no
-   longer reproduce them** — for the same reason the original 34 did not. This
-   paragraph and that rustdoc now *quote* five nonexistent paths in order to
-   name them, and a regex sweep cannot tell a citation from a disclaimer, so
-   the same commands give 57/36 and 64/40 here. Re-derive with an exclusion for
-   prose that is discussing the phantom rather than relying on it, and state
-   the scope, before quoting any of these numbers again.
+   *(What a sweep like that no longer has to find: `UPSTREAM.md`'s rows are now
+   checked mechanically for the half that is checkable —
+   `crates/llvmkit-ir/tests/upstream_registry_drift.rs` fails if a row's own
+   `path.rs::test` target does not resolve in this tree. It says nothing about
+   the upstream citation in the second column, which is where the phantoms
+   live.)*
 2. **`AssemblyWriter` printed named metadata after numbered metadata**, where
    `AssemblyWriter::printModule` runs the `M->named_metadata()` loop *before*
    `writeAllMDNodes()`. Fixed here. It was also the cause of 12 of the 24

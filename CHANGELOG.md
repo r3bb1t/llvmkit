@@ -19,6 +19,92 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — the tracked documentation stops storing counts, and one of them is now enforced
+
+Documentation pass over the divergence-closing branch. The recurring failure it
+addresses is not any one wrong number: it is that every tally written into a
+tracked file is re-derived by nothing, and successive rounds that tried to fix
+it by writing *better* claims each seeded a new one. This round deletes them
+instead.
+
+- **`UPSTREAM.md`'s header is replaced.** It had grown into a long arithmetic
+  chain — every wave's `+N`, each carried forward from the last — and had
+  reached the point of stating three mutually inconsistent covered-counts in
+  one paragraph, with its own addition trail contradicting the label attached to
+  it. The header now records **no** test total, row count or covered/unrowed
+  split, and instead names the commands: the attribute-anchored `#[test]` grep
+  (a bare `grep -c '#\[test\]'` also matches the literal written in module-doc
+  prose), the distinct-name `awk`, and a row-count `grep`. It also
+  says plainly why the covered/unrowed split has no one-liner: group rows
+  (`(whole file)` and friends) are invisible to a `path.rs::name` match, and a
+  naive derivation reports whole covered files as unrowed.
+- **`crates/llvmkit-ir/tests/upstream_registry_drift.rs` is new** and makes the
+  half of the registry that *is* mechanically checkable fail loudly: every row's
+  cited file must exist, and where a row names a test, the cited file must
+  define it. Eleven rows did not — they named
+  `crates/llvmkit-ir/tests/{builder_typestate_termination,constant_folding_analysis,verifier_basic}.rs`
+  for tests living in `crates/llvmkit-ir/src/phi_raw_tests/`, and survived two
+  earlier sweeps because each sat beside siblings that still resolved. Repaired
+  here. Group rows that carried a bare count (`(12 tests)`, `(all seven)`) are
+  `(whole file)` now; one of them was already wrong.
+- **`docs/fixture-coverage.md` drops its tallies.** The per-class column, the
+  per-gap column, the `(N)` on each gap's fixture list, and the five manifest
+  figures in *What `ported` asserts* are gone; the file names the derivation
+  command instead, written so it does not count its own quotation. Its
+  phantom-citation finding gives no figure either, and now says why it cannot:
+  the paragraph quotes the phantom paths in order to name them, so any sweep
+  counts its own prose. Successive figures were written there, each retracted by
+  the next.
+- **`docs/future-work.md` stops restating another file's numbers.** Its
+  `test/Assembler` section and its `UPSTREAM.md` section point at the source
+  file rather than copying tallies out of it — the copy is what rots.
+- `CLAUDE.md` and `AGENTS.md` lose their suite totals, doctest figures and
+  trybuild fixture count; `ROADMAP.md` loses a "42 keywords" claim that the
+  guarding test's own list has been empty of for some time.
+
+**Ledger corrections, all verified against the tree:**
+
+- Entry **121** asserted that no `test/Verifier` fixture is driven through
+  llvmkit's verifier by message text. `parser_metadata.rs::upstream_invalid_range_metadata_fixture_messages_match`
+  does exactly that against the vendored `Verifier/range-1.ll`, asserting
+  upstream's own `Check` literals — so the `!range` rules are a counterexample,
+  and they settle the entry's open "register question": the literal belongs in
+  `IrError::VerifierFailure`'s `message`. The entry's scope check had searched
+  `docs/` and never `crates/`.
+- Entries **114** and **116** carried the same enumeration of the types reaching
+  `zero_initializer_constant`'s catch-all, verbatim in both places and wrong in
+  both directions — `Function` never reaches it, `label` does on the constant
+  path. The list now exists once, in 116, probed rather than reasoned; 114
+  points at it.
+- Entry **117** claimed the phi rule was `Verifier.cpp`'s only token rule; there
+  are five `isTokenLikeTy` `Check` sites. The verdict survives, the sentence did
+  not.
+- Entry **115** gets the `FIXED` marker the file's convention calls for.
+- Entry **122**'s stated blocker (a "fourth `ParsedCallee` shape") does not
+  exist: `Indirect(PointerValue)` is already produced from an erased value.
+  Entry **124**'s stated prerequisites are already in the tree; the real blocker
+  is that the same narrow predicate gates the builder's fast-math paths.
+- Gap **G20** was wrong in one half and understated in the other: globals are
+  fine, functions are not, and it is **rejects-valid**, not merely a print/
+  re-parse break.
+- New entry **127**: `parse_call` threads a `musttail` forwarding ellipsis into
+  the call-site type where `LLParser::resolveFunctionType` hardcodes
+  `isVarArg=false`. `parse_invoke` and `parse_callbr` already match upstream.
+  The entry records why the one-token change is *not* the fix on its own.
+
+**Two parity items found by the same pass:**
+
+- `TypePrinting::print`'s pointer arm is upstream's fifth `printAddressSpace`
+  call site and was hand-rolled in `r#type.rs`. It routes through
+  `asm_writer::print_address_space` now, so the unported `PrintAddrspaceName`
+  branch stays a one-place fix. Bytes unchanged.
+- `print_shuffle_mask` guarded both splat arms on a non-empty mask;
+  `printShuffleMask`'s `all_of` over an empty `ArrayRef` is vacuously true
+  upstream. Guards removed, deviation gone from a routine whose comment claimed
+  a mirror.
+- `verifier.rs::check_gep`'s three `docs/divergences.md` citations name entry
+  120, as the tree's convention requires.
+
 ### Fixed — two ValueTracking arms that answered more than upstream does
 
 **Breaking (analysis answers).**

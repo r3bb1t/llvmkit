@@ -106,51 +106,57 @@ row in [`fixture-coverage.md`](fixture-coverage.md). (Its `-2.ll` sibling is
 `ported` — under `-non-global-value-max-name-size=5` it only checks that
 inlining does not *generate* an over-long label, which parses either way.)
 
-### `UPSTREAM.md` — 320 tests still have no provenance row
+### `UPSTREAM.md` — tests still without a provenance row
 
-The registry recount that this wave owed is done. At the W14d commit it read
-2508 `#[test]` functions (2503 distinct), 2077 rows, 2180 distinct tests
-covered, **323 with no row**, zero rows naming a `#[test]` that no longer
-exists — *scoped to test names, which is all the recount measured; the
-2026-08-20 fix-round-3 sweep found seven rows citing a deleted **file**, five
-repointed and two deleted.* At `4e27ae7` the same figures read 2523 `#[test]`
-functions (2518 distinct), 2090 rows, 2198 covered, **320 with no row**; the
-2198/320 split is arithmetic carried forward, not a fresh audit, and
-`UPSTREAM.md`'s header says why. The residue is inherited from the
-type-safety and pass-API programs and sits in `llvmkit-ir` —
-`src/pass_context.rs` (20), `src/fp_class.rs` (19),
-`constant_folding_analysis.rs` (18), `analysis_preservation.rs` (17),
-`module_brands.rs` (15), `id_roundtrip.rs` (14), `block_args_terminators.rs`
-(13) — across 56 files in all. See `UPSTREAM.md`'s header for why 469 -> 323 is
-mostly a counting fix rather than 146 new rows.
+The registry recount that this wave owed is done. The residue is real and
+inherited from the type-safety and pass-API programs; a missing row means
+missing *provenance*, never "no upstream counterpart".
 
-## `llvm/test/Assembler` — 102 of 500 fixtures blocked, on 21 named gaps (measured 2026-08-16, LLParser parity W14c)
+**Its size is not stated here, and no longer in `UPSTREAM.md`'s header either.**
+Every version of that figure was carried forward by arithmetic from an older
+audit rather than re-derived, and successive carries ended up disagreeing with
+each other inside one paragraph. Nor is a naive re-derivation available: a
+`sort -u` of the rows' `::name` segments against the `#[test]` attributes counts
+every test covered by a *group* row — `` `…/module_ownership.rs` (whole file) ``
+and its kind — as unrowed, and there are enough of those to dominate the answer.
+A fresh audit means expanding those rows against the files they cite, by hand.
+`UPSTREAM.md`'s header says the same and names what it would take.
+
+What *is* mechanically checked, since 2026-08-22, is the half that can be:
+`crates/llvmkit-ir/tests/upstream_registry_drift.rs` fails if any row names a
+file that does not exist, or a test its cited file does not define — the failure
+mode that had put eleven rows on the wrong file and survived earlier sweeps.
+
+## `llvm/test/Assembler` — the blocked fixtures, by gap
 
 [`fixture-coverage.md`](fixture-coverage.md) classifies every fixture in
-`llvm/test/Assembler` as `ported` (397), `blocked-model` (102) or `N/A` (1), and
-each blocked row names one of 21 catalogued gaps. **That file is the backlog for
-this area** — this section exists so the backlog points at it rather than
-restating 102 rows.
+`llvm/test/Assembler` as `ported`, `blocked-model` or `N/A`, and each blocked
+row names one of its catalogued gaps. **That file is the backlog for this
+area** — this section exists so the backlog points at it rather than restating
+it, so no tally is repeated here. It used to repeat three, and they were a
+branch out of date within a week of being written: the gap catalogue moves
+whenever a gap closes, and only one file can be the source. Counts, per-gap
+lists and the derivation command all live there.
 
-The three largest gaps, by fixture count:
+The gaps with the most fixtures behind them, and why each is worth pulling out:
 
-- **G18** (19) — a check upstream's `llvm-as` performs at parse or verify time
+- **G18** — a check upstream's `llvm-as` performs at parse or verify time
   that llvmkit does not: `MDField` range bounds (`count`, `lowerBound`,
   `emissionKind`, `language`, `tag`), attribute applicability (`align` on a
   function, `byval` on an unsized type, `captures(none)` on a non-pointer), and
   target-extension-type legality.
-- **G17** (15) — diagnostic text that differs from upstream's. Most of it is one
+- **G17** — diagnostic text that differs from upstream's. Most of it is one
   wording bug: a complete upstream message routed through llvmkit's
   `expected …` wrapper (`expected invalid type for null constant`, `expected
   valid mask value for 'nofpclass'`, `expected intrinsic signature mismatch`),
   where upstream reaches it through `error(...)` rather than
   `tokError("expected …")`. This is the cheapest parity work left in the
   directory.
-- **G1** (13) — `AutoUpgrade` coverage, which the section below tracks in its
+- **G1** — `AutoUpgrade` coverage, which the section below tracks in its
   own right.
 
-One more worth pulling out because it is small and self-contained: **G22** — two
-fixtures (`2004-02-27-SelfUseAssertError.ll`, `2004-06-07-VerifierBug.ll`) that
+One more worth pulling out because it is small and self-contained: **G22** — the two
+fixtures `2004-02-27-SelfUseAssertError.ll` and `2004-06-07-VerifierBug.ll`, which
 `llvm-as` accepts and llvmkit's Verifier rejects, because
 `Verifier::verifyDominatesUse` returns early when
 `!DT.isReachableFromEntry(...)` and llvmkit's dominance/self-use checks have no
@@ -158,10 +164,12 @@ such exemption. Both fixtures exist precisely to pin that unreachable-block
 behaviour.
 
 `docs/fixture-coverage.md` also records the provenance defect this measurement
-turned up: **34 citations in the tree name `test/Assembler/*.ll` files that do
-not exist** in the vendored tree, eight of which exist nowhere under
-`llvm/test/`. The tests are real; their cited source is not. Repointing them is
-open work.
+turned up: citations in the tree name `test/Assembler/*.ll` files that do not
+exist in the vendored tree, some of them nowhere under `llvm/test/` at all. The
+tests are real; their cited source is not. Repointing them is open work. That
+entry deliberately carries **no figure** — three were written and all three were
+wrong, because the prose naming the phantom paths is itself counted by any sweep
+that looks for them — so no figure is repeated here either.
 
 ## AutoUpgrade — six of nine `validateEndOfModule` call sites still open (measured 2026-08-16, LLParser parity W13d)
 
@@ -294,7 +302,7 @@ lever.
 `trybuild` (1.0.116) does not compile fixtures in-process. It synthesises a
 scratch package — `target/tests/trybuild/llvmkit-ir/`, named
 `llvmkit-ir-tests` — and shells out to `cargo build` inside it **with no
-profile flag**, so the 87 registered fixtures always build `dev`. The gate
+profile flag**, so every registered fixture always builds `dev`. The gate
 output says so in the middle of a `--release` run:
 
 ```text

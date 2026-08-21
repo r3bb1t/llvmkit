@@ -2239,7 +2239,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `GetCommonFunctionType` answers null and it emits an `i8` global
     /// instead. llvmkit has already built the function by then and has no way
     /// to unbuild it, so the first call site's signature survives
-    /// (`docs/divergences.md`).
+    /// (`docs/divergences.md` entry 15).
     fn validate_forward_function_decls(&mut self, allow_incomplete_ir: bool) -> ParseResult<()> {
         if allow_incomplete_ir {
             self.forward_function_decls.clear();
@@ -3065,7 +3065,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `expected top-level entity` there. llvmkit still accepts one, through
     /// [`Self::parse_late_target_definition`]; a late `target datalayout` is
     /// therefore validated and installed immediately and never reaches the
-    /// callback (`docs/divergences.md`).
+    /// callback (`docs/divergences.md` D15).
     fn parse_target_definitions(&mut self, config: &ParserConfig<'_>) -> ParseResult<()> {
         // `std::string TentativeDLStr = M->getDataLayoutStr();`
         let mut tentative_layout = self.module.data_layout().to_string();
@@ -16597,7 +16597,7 @@ where
 ///   the token kind is wrong**, so on an error token the quoted name is
 ///   whatever the previous token happened to leave in `StrVal`. llvmkit does
 ///   not carry a stale `StrVal`, so it cannot reproduce that string
-///   (`docs/divergences.md`).
+///   (`docs/divergences.md` entry 34, its `ChecksumKindField` note).
 fn expected_for_metadata_field_kind(kind: llvmkit_ir::metadata::MetadataFieldKind) -> &'static str {
     use llvmkit_ir::metadata::MetadataFieldKind;
     match kind {

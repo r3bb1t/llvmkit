@@ -955,7 +955,12 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
 /// in `docs/fixture-coverage.md`, which is where an unimplemented *feature*
 /// belongs — with the flag at its `cl::init(false)` default the printed bytes
 /// match, so it is not a behavioural divergence.
-fn print_address_space(
+///
+/// `pub(crate)` because upstream's fifth call site is the pointer arm of the
+/// *type* printer (`TypePrinting::print`, `case Type::PointerTyID`), which
+/// lives in `r#type.rs` here. Routing it through this one routine is what
+/// keeps the `PrintAddrspaceName` gap above a single-site fix.
+pub(crate) fn print_address_space(
     f: &mut fmt::Formatter<'_>,
     addr_space: u32,
     prefix: &str,
@@ -1829,8 +1834,12 @@ fn print_shuffle_mask<B: ModuleBrand>(
         f.write_str("vscale x ")?;
     }
     write!(f, "{} x i32> ", mask.len())?;
-    let all_zero = !mask.is_empty() && mask.iter().all(|e| *e == ShuffleMaskElem::Lane(0));
-    let all_poison = !mask.is_empty() && mask.iter().all(|e| *e == ShuffleMaskElem::Poison);
+    // `all_of` over an empty `ArrayRef` is vacuously true upstream, so an empty
+    // mask takes the `zeroinitializer` arm there. These two used to carry an
+    // `!mask.is_empty() &&` guard that would have printed `<>` instead; it was
+    // an unannounced deviation inside a routine whose comment claims a mirror.
+    let all_zero = mask.iter().all(|e| *e == ShuffleMaskElem::Lane(0));
+    let all_poison = mask.iter().all(|e| *e == ShuffleMaskElem::Poison);
     if all_zero {
         f.write_str("zeroinitializer")?;
     } else if all_poison {

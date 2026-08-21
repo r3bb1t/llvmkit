@@ -586,7 +586,7 @@ did not match upstream's.
   - `%r = call fast { float, float } @h()` — `fast-math-flags specified for call without floating-point scalar or vector return type`, exit 1.
   - `%r = call fast [2 x float] @a()` — the same message, exit 1.
 - **Why:** never noticed. llvmkit's `is_fp_or_fp_vector_type` was written against `isFPOrFPVectorTy`, which is the right predicate at the two *other* call sites that use it (`parseCompare`'s `FCmp` arm and `parseAtomicRMW`'s floating-point-operand check, both of which really do ask `isFPOrFPVectorTy` upstream); the FMF guards were then pointed at the same helper.
-- **Fix:** port `FPMathOperator::isComposedOfHomogeneousFloatingPointTypes` and `isSupportedFloatingPointType` as their own named functions and call the latter from the three fast-math guards, leaving the `fcmp` and `atomicrmw` sites on `is_fp_or_fp_vector_type`. That needs llvmkit counterparts for `StructType::isLiteral` and `containsHomogeneousTypes`, and a decision about whether the builders that set fast-math flags gain the same widened gate — which is why it is recorded rather than folded into the `call` construction commit that found it.
+- **Fix:** port `FPMathOperator::isComposedOfHomogeneousFloatingPointTypes` and `isSupportedFloatingPointType` as their own named functions and call the latter from the three fast-math guards, leaving the `fcmp` and `atomicrmw` sites on `is_fp_or_fp_vector_type`. The two helpers upstream leans on are **already in the tree**: `StructName::is_literal` is in `crates/llvmkit-ir/src/type.rs`, and `containsHomogeneousTypes`' body (`!ElementTys.empty() && all_equal(ElementTys)`) is already spelled inline inside `contains_homogeneous_scalable_vector_types` in the same file — this entry used to lead with needing them, which is not the blocker. The blocker is the *surface*: the same narrow predicate gates fast-math flags on the builder side too (`crates/llvmkit-ir/src/instructions.rs` and `src/ir_builder.rs`, where `is_float_or_float_vector` guards the `set_fast_math_flags` paths), so a parser-only widening would leave the parser accepting what the builder still refuses. That is why it is recorded rather than folded into the `call` construction commit that found it.
 
 ### 1. `u0x…` and >64-bit literals are rejected wherever a `uint64` is wanted
 
@@ -889,10 +889,12 @@ reach the routine's `_` catch-all (entry 116).
   `token none` spelling of the identical constant, so this is a parse-stage gap,
   not a model gap.
 - **Scope of the verification:** established at the parser layer against
-  `convertValIDToValue` and `Constant::getNullValue`. `llvm-as` was not run;
-  `Verifier.cpp`'s only token rule is
-  `Check(!PN.getType()->isTokenLikeTy(), "PHI nodes cannot have token type!")`,
-  so nothing found would reject the surrounding `freeze`.
+  `convertValIDToValue` and `Constant::getNullValue`. `llvm-as` was not run.
+  `grep -n 'isTokenLikeTy' lib/IR/Verifier.cpp` at the vendored tag
+  `llvmorg-22.1.4` returns five `Check` sites — argument type, function return
+  type, phi type, and the call parameter and indirect-call return types — and
+  none of them reaches a `freeze` operand. (This bullet used to name the phi
+  rule as the *only* token rule in the file, which the same command falsifies.)
 - **Not the same verdict for `metadata` / `x86_amx`:** both also pass
   `isFirstClassType`, but `getNullValue` has no case for either and traps in its
   `llvm_unreachable` default. llvmkit's rejection there is hardening; see entry
@@ -922,12 +924,16 @@ Found 2026-08-21 while porting `call addrspace(N)` / `invoke addrspace(N)`.
   Note the contrast: `resolve_global_name_as_value` — llvmkit's port of
   `getGlobalVal` for an ordinary operand — *does* consult globals, aliases and
   ifuncs. Only the callee position is narrow.
-- **Why:** `ParsedCallee` has three shapes (`Function`, `InlineAsm`,
-  `Indirect`) and the builder's direct-call entry point takes a
-  `FunctionValue`. Routing an alias/ifunc/global-variable callee means either a
-  fourth shape or sending it through the indirect path as a `ptr` constant,
-  which is entangled with entry 15 (a forward-referenced callee is a typed
-  `Function`) and with the `GlobalValueRef` interning of D3.
+- **Why:** never noticed — the narrowness is in the *lookup*, not in the shapes.
+  `ParsedCallee::Indirect(PointerValue)` already exists and is already produced
+  from an erased value by `resolve_direct_callee`'s `ParsedDirectCallee::Value`
+  arm, which does the `PointerValue::try_from` and nothing else; an ifunc
+  reached through a `ptr` (`%p = load ptr, ptr @f` then `call void %p()`) parses
+  and prints at this commit. So the fix does **not** need a fourth
+  `ParsedCallee` shape, and this entry used to say it did. What is genuinely
+  open is which lookup order the `Name` and `Id` arms should use and how a
+  forward-referenced name interacts with entry 15 once it can resolve to
+  something other than a `Function`.
 - **Cost:** `test/Assembler/ifunc-program-addrspace.ll` stays `blocked-model`,
   on this gap rather than the address-space one.
 - **Fix:** Give `resolve_direct_callee` the same lookup order
@@ -955,6 +961,20 @@ fire. Disclosed until now only in those tests' rustdoc.
 - **Fix:** port the loop whole — it is one `for` over the bundle list with one `if`/`else if` chain, and `CallAttributeData::operand_bundles_slice()` already carries the data on `call`, `invoke` and `callbr`. `verifyAttachedCallBundle`, which the `clang.arc.attachedcall` arm calls, is a second routine and can follow. The `funclet` arm's `isa<FuncletPadInst>` check overlaps entry 112, which is about `visitIntrinsicCall`'s *missing*-funclet rule rather than a malformed one; they are separate arms and neither subsumes the other.
 
 **Live, self-checking:** `crates/llvmkit-asmparser/tests/parser_calls.rs::call_operand_bundle_rules_are_not_diagnosed` parses both vendored fixtures, calls `Module::verify_borrowed` and asserts `is_ok()` on each. It is green in the gate, so this entry's "llvmkit accepts them" half is pinned by a test rather than quoted from a probe, and it fails the moment any of the six rules lands.
+
+### 127. `resolveFunctionType` builds a **vararg** call-site type for a short-syntax `musttail` forwarding call
+
+*parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_call`, its `resolveFunctionType` arm)
+
+Found 2026-08-22 in the documentation pass over the divergence-closing branch,
+walking `LLParser::resolveFunctionType` arm for arm. Pre-existing — the same
+argument is threaded at `f07f817` — and unrecorded until now.
+
+- **LLVM:** `LLParser::resolveFunctionType` builds the call-site signature from the *argument* types with the variadic bit hardcoded off: `FuncTy = FunctionType::get(RetType, ParamTypes, false);`. A trailing `...` in a `musttail` argument list is consumed by `parseParameterList` and contributes no `ParamInfo`, so it never reaches `ParamTypes` and never sets the bit. `AsmWriter` then prints `TypePrinter.print(FTy->isVarArg() ? FTy : RetTy, Out)` — the short form — and `verifyMustTailCall` rejects the module, because `CallerTy->isVarArg() == CalleeTy->isVarArg()` fails against the vararg caller.
+- **llvmkit:** `parse_call` passes its own `var_args` flag — set by the trailing `...` — into `function_type_with_variadic`, so the call-site type keeps the variadic bit. `parse_invoke` and `parse_callbr` do **not**: both bind `let var_args = false;` and reject a forwarding ellipsis outright, which is upstream's shape. Only the `call` arm diverges.
+- **Consequence:** accepts-invalid, plus different printed bytes on the same input. Probed at this commit with `target/release/examples/parse_file.exe` on `declare void @f(i32, ...)` / `define void @g(i32 %a, ...)` / `musttail call void @f(i32 %a, ...)`: llvmkit parses, verifies and prints `musttail call void (i32, ...) @f(i32 %a, ...)`, where upstream's `llvm-as` rejects the module at verification. Reachable only from the **short** syntax — with an explicit function type (`musttail call void (i32, ...) @f(...)`) the `AnyTypeEnum::Function` arm is taken and `resolveFunctionType` is not involved, which is the form every in-tree musttail test and every vendored fixture uses (`rg --no-ignore -n -- "musttail call.*\.\.\." orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` returns only explicit-function-type forms).
+- **Why:** llvmkit has no `verifyMustTailCall`, so keeping the variadic bit is what makes the printed form re-parse. Passing `false` here in isolation is **not** the fix: the call-site type would become `void (i32)`, the printer would drop the `...` as upstream's does, and re-parsing that output would then hit `parse_call`'s own `expected '...' at end of argument list for musttail call in varargs function`. It would trade an accepts-invalid for a round-trip break.
+- **Fix:** both halves in one change — hardcode `false` the way `resolveFunctionType` does, *and* port `Verifier::verifyMustTailCall`'s `isVarArg` agreement `Check`, so llvmkit rejects the input at verification instead of printing something upstream never produces. Neither half stands alone.
 
 ### 21. An inline-asm call's per-operand `elementtype` rules are not verified
 
@@ -1379,12 +1399,13 @@ a complete upstream message routed through an `expected ...` wrapper.
   survives**, and it is what the heading names.
 - **Consequence:** both text and column differ from `llvm-as` on every
   `target(...)` `zeroinitializer` whose type lacks `HasZeroInit`. The verdict is
-  the same. The wrapper is **not** confined to this arm — the routine's `_`
-  catch-all (`ll_parser.rs:8347`) raises the same `ParseError::Expected` at the
-  same `self.loc()` for Token, Metadata, X86Amx, WasmExnRef and Function, and
-  the opaque-`Struct` arm (`ll_parser.rs:8321-8328`) is the only one that
-  already raises `ParseError::Message`. Those siblings, and a guard the
-  constant path drops, are entries 116 and 117.
+  the same. The wrapper is **not** confined to this arm — `zero_initializer_constant`'s
+  `_` catch-all raises the same `ParseError::Expected` at the same location,
+  where the opaque-`Struct` arm already raises `ParseError::Message`. **Which
+  types reach that catch-all is stated in entry 116 and deliberately not
+  restated here**: it was, and the two copies drifted into agreeing on a list
+  that was wrong in both directions. The `token` case that should not reach it
+  at all is entry 117.
 - **Why:** `Module::target_ext_none` answers `IrError::InvalidOperation` with a
   message that is already upstream's complete sentence, and the arm reuses
   `ParseError::Expected` to carry it rather than `ParseError::Message`, which
@@ -1401,16 +1422,16 @@ a complete upstream message routed through an `expected ...` wrapper.
   any wrapper that only *adds* text around upstream's message satisfies it, and
   neither row sets `loc=`, so the anchor is unchecked too. That is a property of
   the harness, not of these two rows; it is recorded in `docs/future-work.md`.
-  A third pin is a unit test, `parser_constants.rs:742-744`
-  (`target_ext_zeroinitializer_requires_zero_init_property`), which asserts the
-  divergent `ParseError::Expected` variant by name.
+  A third pin is a unit test,
+  `parser_constants.rs::target_ext_zeroinitializer_requires_zero_init_property`,
+  which asserts the divergent `ParseError::Expected` variant by name.
 - **Fix, in three parts:**
-  - Raise `ParseError::Message` from the `TargetExt` arm
-    (`ll_parser.rs:8340-8346`) rather than wrapping
-    `IrError::InvalidOperation`'s sentence in `ParseError::Expected`.
-  - Update `parser_constants.rs:742-744` to expect `ParseError::Message`. It is
-    the only in-tree pin the change breaks — the corpus rows assert on rendered
-    text, not on the variant.
+  - Raise `ParseError::Message` from `zero_initializer_constant`'s `TargetExt`
+    arm rather than wrapping `IrError::InvalidOperation`'s sentence in
+    `ParseError::Expected`.
+  - Update `parser_constants.rs::target_ext_zeroinitializer_requires_zero_init_property`
+    to expect `ParseError::Message`. The corpus rows assert on rendered text,
+    not on the variant, so they need no change.
   - The anchor half is a separate port of upstream's `ValID::Loc`, not an arm
     edit: llvmkit's `ValId` is a bare enum with no location field, and neither
     `convert_val_id_to_value` nor `convert_val_id_to_constant` takes one, so
@@ -1455,7 +1476,7 @@ type for null constant");`. Harness read from
 
 </details>
 
-### 115. `nofpclass`'s paren diagnostics carried a suffix upstream does not print
+### 115. `nofpclass`'s paren diagnostics carried a suffix upstream does not print — **FIXED (2026-08-20)**
 
 *parser — attributes* — crates/llvmkit-asmparser/src/ll_parser.rs
 (`parse_nofpclass_attribute`)
@@ -1475,10 +1496,10 @@ oracle.
   `"'(' in nofpclass attribute"` and `"')' in nofpclass attribute"`, so the
   rendered messages were `expected '(' in nofpclass attribute` and
   `expected ')' in nofpclass attribute`.
-- **Consequence:** nine corpus rows printed text `llvm-as` does not print, with
-  correct anchors — `nofpclass_0_noparens`, `_1_noparens`, `_closeparen`,
-  `_name_follows_int`, `_nan_noparens`, `_nnan_noparens`, `_only_keyword`,
-  `_two_numbers`, `_two_numbers_bar`. The verdict was the same in all nine.
+- **Consequence:** these corpus rows printed text `llvm-as` does not print, with
+  correct anchors and the same verdict — `nofpclass_0_noparens`, `_1_noparens`,
+  `_closeparen`, `_name_follows_int`, `_nan_noparens`, `_nnan_noparens`,
+  `_only_keyword`, `_two_numbers`, `_two_numbers_bar`.
 - **Not gap G17.** G17 is "a complete upstream message routed through an
   `expected …` wrapper"; here the wrapper was correct and a suffix had been
   added to the label. `docs/fixture-coverage.md` records the sibling
@@ -1486,12 +1507,13 @@ oracle.
 - **llvmkit was inconsistent with itself:** `byref-parse-error-0.ll` and
   `sret-parse-error0.ll` reach `LLParser::parseRequiredTypeAttr`'s equally bare
   `expected '('` and rendered it bare, which is why they matched exactly.
-- **Why it stayed hidden:** `parser_corpus.rs` matches an `error=` pin with
-  `rendered.contains(pin)`, and a suffix satisfies containment. No `loc=` is set
-  on any of the nine, and none of the nine is reachable by the `{{$}}` equality
-  tier `docs/future-work.md` describes, because
-  `test/Assembler/nofpclass-invalid.ll` writes no end anchor on its `CHECK`
-  lines. This instance was found by a one-off equality sweep, not by a gate.
+- **Why it stayed hidden:** the corpus oracle cannot see a wrapper or a suffix.
+  That weakness is `docs/future-work.md` § *Tests — the corpus `error=` oracle
+  cannot see a wrapper or an anchor*, which carries the derivation; not restated
+  here. What is specific to this fixture: `test/Assembler/nofpclass-invalid.ll`
+  writes no `{{$}}` end anchor on its `CHECK` lines, so the equality tier that
+  section describes does not reach it either. This instance was found by a
+  one-off equality sweep, not by a gate.
 - **Fix (applied):** both labels are now bare, which is also the house idiom at
   every other `expect_punct(PunctKind::LParen, "'('")` site.
 
@@ -1529,23 +1551,30 @@ to the `TargetExt` arm. It is not.
   `TargetExtType::HasZeroInit` with the same bare message.
   `LLParser::parseConstantValue` routes `t_Zero` through the same routine with
   `PFS = nullptr`, so the first guard runs on the constant path too.
-- **llvmkit, defect 1:** `zero_initializer_constant`'s `_` catch-all
-  (`ll_parser.rs:8347`) is
-  `Err(self.expected("zeroinitializer for a zeroable type"))` — the same
-  `ParseError::Expected` shape at the same `self.loc()`, carrying a production
-  string upstream never emits. It is reached for Token, Metadata, X86Amx,
-  WasmExnRef and Function.
-- **llvmkit, defect 2:** `convert_val_id_to_constant`'s `ValId::Zero` arm
-  (`ll_parser.rs:8546`) does not call `check_undef_like_type`, while its own
-  `Undef` (`:8547`) and `Poison` (`:8551`) siblings do, and the value path
-  (`:8475`) does for `Zero`. So a global initializer skips upstream's first
-  guard: `@g = global label zeroinitializer` reports
-  `2:1: expected zeroinitializer for a zeroable type` where upstream reports
+- **llvmkit, defect 1:** `zero_initializer_constant`'s `_` catch-all is
+  `Err(self.expected_at(loc, "zeroinitializer for a zeroable type"))` — the same
+  `ParseError::Expected` shape at the same location, carrying a production
+  string upstream never emits. **This is the one place the reachable set is
+  written down** (entry 114 points here rather than restating it): on the
+  *value* path `check_undef_like_type` runs first, so the catch-all sees
+  `metadata`, `token`, `x86_amx` and `exnref`; on the *constant* path, which
+  skips that guard, `label` reaches it too. `void` and a function type never do
+  — both are refused earlier, `void` at the type position and a function type
+  by `functions are not values, refer to them as pointers`. Probed at this
+  commit with `target/release/examples/parse_file.exe` on
+  `@g = global label zeroinitializer` (catch-all),
+  `@g = global void () zeroinitializer` (`functions are not values…`) and
+  `@g = global void zeroinitializer` (`void type only allowed for function
+  results`).
+- **llvmkit, defect 2:** `convert_val_id_to_constant`'s `ValId::Zero` arm does
+  not call `check_undef_like_type`, while its own `Undef` and `Poison` siblings
+  do, and the value path does for `Zero`. So a global initializer skips
+  upstream's first guard: `@g = global label zeroinitializer` reports
+  `1:19: expected zeroinitializer for a zeroable type` where upstream reports
   `invalid type for null constant`.
-- **Not affected:** the opaque-`Struct` arm (`ll_parser.rs:8321-8328`) already
-  raises `ParseError::Message` with the bare text, which is why
-  `2004-11-28-InvalidTypeCrash.ll` renders exactly and is the one arm entry
-  114's original scope sentence was true about.
+- **Not affected:** the opaque-`Struct` arm already raises `ParseError::Message`
+  with the bare text, which is why `2004-11-28-InvalidTypeCrash.ll` renders
+  exactly and is the one arm entry 114's original scope sentence was true about.
 - **Hardening, not a gap:** `metadata` and `x86_amx` `zeroinitializer` pass
   upstream's first-class guard and fall to `Constant::getNullValue`'s
   `default: llvm_unreachable("Cannot create a null constant of that type!")`, so
@@ -1654,14 +1683,17 @@ a `call` argument gives `3:38: invalid metadata-value-metadata roundtrip`; and
 
 - **LLVM:** `Verifier`'s `Check(cond, "…", V)` macro hands its literal to `CheckFailed`, which prints that string verbatim ahead of the offending value. The literal *is* the diagnostic: `llvm/test/Verifier/*.ll` `CHECK` lines match it, so it is contractual the same way a parser diagnostic is.
 - **llvmkit:** a verifier failure is `IrError::VerifierFailure { rule, function, block, message }`. `rule` is a `VerifierRule` whose `Display` is a house label written in the enum's own register (lower-case, no trailing `!`, named after the invariant rather than the sentence), and `message` is a `format!` written at the check site, usually naming the offending type or operand index. Neither reproduces upstream's literal. Four pairs from `check_gep` alone, upstream first: `GEP base pointer is not a vector or a vector of pointers` / `getelementptr base operand has type {} (expected pointer)`; `GEP into unsized type!` / `getelementptr source element type {} is unsized`; `GEP indexes must be integers` / `getelementptr index #{slot} has type {} (expected integer)`; `Invalid indices for GEP pointer type!` / `getelementptr indices do not index into source type {}`. The newer GEP rules were written to the same convention, so the divergence is the convention, not any one rule.
-- **Why:** The rule enum, not the string, is llvmkit's diagnostic API — a caller matches `VerifierRule::…` and the text is for humans — so the strings were written for that surface rather than copied. Nothing enforces the convention and nothing measures the drift: no `test/Verifier` fixture is driven through llvmkit's verifier by message text, so the wording has never been compared arm by arm against `Verifier.cpp`.
-- **Consequence:** the accept/reject verdict is unaffected — this is text only. But it means a `test/Verifier/*.ll` fixture cannot be ported the way a `test/Assembler` one is: its `CHECK` line will not match, so any such port has to assert the `VerifierRule` instead and say so.
-- **Fix:** One sweep, not a per-rule patch: give every `VerifierRule` its upstream `Check` literal (the enum doc comments already name most of them), keep the `format!` detail as a suffix rather than a replacement, and then drive the `test/Verifier` fixtures by text the way `parser_corpus.rs` drives `test/Assembler`. Decide the register question once — whether `rule`'s `Display` or `message` carries upstream's literal — because they render in different places.
+- **Why:** The rule enum, not the string, is llvmkit's diagnostic API — a caller matches `VerifierRule::…` and the text is for humans — so the strings were written for that surface rather than copied. Nothing enforces the convention and nothing measures the drift *across* the verifier: there is no `test/Verifier` counterpart to the manifest `parser_corpus.rs` drives, so the wording is compared against `Verifier.cpp` only where a hand-written test happens to do it.
+- **The `!range` rules are the counterexample, and they answer the register question.** `crates/llvmkit-asmparser/tests/parser_metadata.rs::upstream_invalid_range_metadata_fixture_messages_match` `include_str!`s the vendored `tests/fixtures/upstream/Verifier/range-1.ll`, cuts out each of its functions with its `!range` node, runs `Module::verify_borrowed` over each, and `assert_eq!`s the result against upstream's own `Check` literal for that case (`Ranges are only for loads, calls and invokes!`, `It should have at least one range!`, `Intervals are overlapping`, …), read off `IrError::VerifierFailure`'s **`message`** field. So the divergence is not universal, a `test/Verifier` fixture *can* be ported by message text where the rule already carries upstream's string, and where the literal lives is settled: in `message`, not in `rule`'s `Display`.
+- **Consequence:** the accept/reject verdict is unaffected — this is text only. But porting a `test/Verifier/*.ll` fixture by its `CHECK` lines works only for a rule already written to upstream's literal; elsewhere the `CHECK` line will not match and the port has to assert the `VerifierRule` instead and say so.
+- **Fix:** One sweep, not a per-rule patch: give every `VerifierRule` its upstream `Check` literal in `message` (the enum doc comments already name most of them), keep the `format!` detail as a suffix rather than a replacement, and then drive the `test/Verifier` fixtures by text the way `parser_corpus.rs` drives `test/Assembler` — which is also the gate whose absence let this entry state a negative that one in-tree test already falsified.
 - **Not covered here:** the parser's diagnostics, which *are* upstream's literals and are pinned as such; and the individual entries in this section that record a *parser* message differing from upstream's. `VerifierRule::PhiEmptyInReachableBlock` is also out of scope, but for a reason this entry is the wrong place to state — entry 8 works out when it pre-empts an upstream `Check` and when there is none to pre-empt. Read it there rather than trusting a summary here.
 
 <details><summary>Verification evidence (2026-08-21)</summary>
 
 Upstream read at the vendored tag `llvmorg-22.1.4`; the repo commit does not pin `orig_cpp/`, which is gitignored. `llvm/lib/IR/Verifier.cpp` — the `Check` macro expands to `CheckFailed(__VA_ARGS__); return;`, and `Verifier::visitGetElementPtrInst` carries the four literals quoted above. llvmkit at this commit: `crates/llvmkit-ir/src/error.rs` — `IrError::VerifierFailure`'s `message` field is documented "Human-readable description mirroring `Verifier::CheckFailed`", and `VerifierRule`'s `Display` arm for each GEP rule renders the house label (`"getelementptr base is not a pointer"`, `"getelementptr source element type is unsized"`, `"getelementptr index operand is not an integer"`, `"getelementptr indices are invalid for the source type"`); `crates/llvmkit-ir/src/verifier.rs::check_gep` carries the four `format!` strings quoted above. Scope check before opening this entry: `grep -niE "verifier.*(wording|reworded|message text|diagnostic text|Check string)" docs/divergences.md docs/future-work.md` found no class-level entry, and the two entries that mention verifier wording (the `PhiNotAtTop` text and the `callbr` "carrying upstream's wording" fix sketch) are per-rule remarks inside entries about a different divergence. The claim here is deliberately not quantified over every rule: four pairs were read and quoted, and the sentence says the convention diverges, not that every rule does.
+
+**Correction, 2026-08-22.** That scope check searched `docs/` and never `crates/`, and the entry then asserted an absence over the tree it had not looked at: it said no `test/Verifier` fixture is driven through llvmkit's verifier by message text. `grep -rln 'fixtures/upstream/Verifier' crates/` finds the `range-1.ll` test named in the bullet above, which does exactly that and passes. Both the Why and the Consequence are rewritten; the `!range` rules are the in-tree counterexample.
 
 </details>
 
@@ -2401,7 +2433,7 @@ Files read: `C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_lexe
 
 - **LLVM:** n/a — this is llvmkit's completeness proof, not an upstream behaviour. Upstream's `test/Assembler` holds exactly 500 `.ll` files: 257 `not llvm-as` negatives and 175 `llvm-as | llvm-dis` round-trips.
 - **llvmkit:** closed in W14c. The manifest now carries a row per ported fixture, most `status=reject` rows pinning upstream's diagnostic through `error=` and many the reported span through `loc=` (`grep -c 'status=' crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` and the same per field, re-derive rather than copy). `parser_corpus.rs`'s module doc documents every status plus the `error=` FileCheck-substring rule and the `loc=` span rule.
-- **Why:** recorded as W14's "mass fixture port — the proof": classify every upstream fixture as `ported` / `blocked-model` / `N/A` with a one-line rationale. That classification shipped as [`fixture-coverage.md`](fixture-coverage.md) — 397 ported, 102 blocked, 1 N/A.
+- **Why:** recorded as W14's "mass fixture port — the proof": classify every upstream fixture as `ported` / `blocked-model` / `N/A` with a one-line rationale. That classification shipped as [`fixture-coverage.md`](fixture-coverage.md), which holds the per-class and per-gap tallies and the command that derives them; no copy is kept here.
 - **Residue:** none left in the manifest — the three `status=xfail-parse` rows were upstream negatives misfiled as llvmkit gaps and are `reject` rows now, with the duplicate row and its duplicate fixture file deleted. The live coverage index is `fixture-coverage.md`, not this entry.
 - **Two standing traps, still true:** an upstream `CHECK` block is a *pipeline's* output — check the `RUN` line before treating a mismatch as a bug — and an `xfail` reason is a hypothesis; unblocking one has twice revealed an unrelated defect.
 - **Correction from verification (2026-08-20, fix round 3):** every number this entry stated was falsified by the tree, including inside its own evidence block, which is why that block was deleted rather than repaired. "9 manifest entries" against 502; "116 lines" for a 270-line driver; a status vocabulary with no `reject`/`error=`/`loc=`; "124 fixtures on disk with 115 unmanaged" and a later correction of "238 fixture `.ll` files, 233 under `fixtures/upstream/`, unmanaged count 229" against **754** `.ll` files on disk with 747 under `upstream/` (`find crates/llvmkit-asmparser/tests/fixtures -name '*.ll' | wc -l`, and the same restricted to `.../fixtures/upstream`, re-derived at this commit and unchanged since `ea57b14`; the correction as first written said 749/742, which was this round's *base* `b369431` and was already stale when written — commit `4e27ae7` of the same round vendored the five `Verifier/` and `compatibility/` fixtures that make up the delta); and a cited path, `crates/llvmkit-asmparser/tests/parser_corpus_manifest.txt`, that does not exist — the file is one level down under `tests/fixtures/`, which the entry's own correction flagged while leaving the header uncorrected. Only "500 upstream `test/Assembler` files" survived. The `Fix:` line described work that had already shipped, so a reader planning the next corpus wave would have re-done W14's completeness proof.
@@ -2597,26 +2629,20 @@ Ran `~/.claude/plans/llparser-tools/ledger_v2.py` against the current tree: outp
 
 </details>
 
-### 98. UPSTREAM.md provenance debt: 323 tests with no row (was 469; recounted W14d)
+### 98. `UPSTREAM.md` provenance debt: tests with no row
 
 *tests / provenance* — UPSTREAM.md, crates/llvmkit-ir/tests/, crates/llvmkit-ir/src/
 
 - **LLVM:** n/a — D11 house law: every `#[test]` cites its upstream source and gets an `UPSTREAM.md` row in the same commit.
-- **llvmkit:** 2435 tests against 1994 rows, leaving 469 tests unrowed (measured at the W7 boundary as 470 tests / 1930 rows, plus 26 rows naming tests deleted long ago, removed in that recount).
-- **Why:** Recorded in both documents and in `UPSTREAM.md`'s own header: the debt is inherited from the type-safety and pass-API programs — it sits in `llvmkit-ir` (`verifier_module_flags.rs`, `analysis_preservation.rs`, `module_brands.rs`, `id_roundtrip.rs`, `phi_raw_tests/`, `src/pass_context.rs`, `src/fp_class.rs`), not in the parser crates. The parity waves have added a row per commit. Nothing in CI counts these files.
-- **Fix:** W14's recount item: enforce the per-wave rule (a row in the same commit) and clear the backlog file by file. A missing row means missing *provenance*, never "no upstream counterpart" — so each backfill has to name a real source or say explicitly that the test is llvmkit-specific.
-- **W14d update — recounted.** At the W14d commit: 2508 `#[test]` functions (2503 distinct), 2077 rows, 2180 distinct tests covered, **323 unrowed**, zero rows naming a `#[test]` that no longer exists. *(That last clause is scoped to test names, which is all the recount measured. Fixture rows were excluded from the population, and the 2026-08-20 fix-round-3 sweep found seven rows citing a deleted **file** — five repointed, two deleted. See `UPSTREAM.md`'s header for the current split.)* Most of the 469 -> 323 move is a counting fix, not new rows: the pre-W14 audit matched only `path.rs::name` references and therefore ignored the 19 rows that cover a whole file or a named run (`(whole file)`, `(all seven)`, `` `a` … `z` ``, `` `*_display_and_from_str_round_trip` ``), which are real provenance. Counting the old way at this commit gives 2037 covered / 466 unrowed, so 143 of the 146 is methodology and 3 is genuine new rows. The correction above — that the arithmetic must be distinct-tests minus distinct-rowed-names, and that ~30 file-scoped rows name no test function — is what motivated the change; the file-scoped rows are now expanded rather than discarded, and the 13 that point at `tests/compile_fail/*.rs` trybuild fixtures are counted separately since those contain no `#[test]` at all. One row is stale in its sub-count only: `dwarf_def_drift.rs` is labelled `(12 tests)` and now holds 13. Concentration is unchanged and still in `llvmkit-ir`: `src/pass_context.rs` 20, `src/fp_class.rs` 19, `constant_folding_analysis.rs` 18, `analysis_preservation.rs` 17, `module_brands.rs` 15, `id_roundtrip.rs` 14, `block_args_terminators.rs` 13; 56 files in all.
-- **Correction from verification:** Substantively accurate and still present, with two precision fixes. (1) "1994 rows" is the distinct-reference count, not the literal row count: UPSTREAM.md carries 1995 data rows, one of which -- the file-scoped `crates/llvmkit-ir/tests/verifier_module_flags.rs` row -- appears twice verbatim. Moreover only 1961 rows name a test function; the other 30 are file-scoped rows with no `::test` suffix (several point at `tests/compile_fail/*.rs` trybuild fixtures, which contain no `#[test]` at all). So the correct arithmetic is 2430 distinct tests minus 1961 distinct rowed test names = 469 unrowed, not 2435 minus 1994. (2) The "470 at the W7 boundary vs 469 today" drift is an artifact of instance-vs-distinct counting, not a real change: both the W7 point and HEAD are 470 unrowed instances / 469 distinct names. UPSTREAM.md's own header narrative ("the figure has moved by one since the Wave 9 recount") makes the same mis-comparison -- commit 2337a0f states "470 `#[test]` functions (469 distinct names) with no row", identical to today. Everything else verifies exactly: 2435 tests / 2430 distinct at HEAD, 469 distinct unrowed, zero orphan rows, and the W7 recount (04545ad) did carry 1930 rows and did drop exactly 26 dead rows (parent 61e378f had 1956).
-
-<details><summary>Verification evidence</summary>
-
-Measured at HEAD (2ac3e3a) independently of UPSTREAM.md's self-reported header, using the counting method the file itself documents. Tests: `grep -rEc "^\s*#\[test\]" --include="*.rs" crates/ llvmkit/` = 2435, per-crate llvmkit-ir 1553 / llvmkit-asmparser 860 / llvmkit-support 12 / llvmkit-tablegen 9 / llvmkit 1 -- the exact breakdown the header states; awk extraction of the `fn NAME` following each attribute gives 2435 instances / 2430 distinct, matching "2435 (2430 distinct names)". Rows: 1995 data rows matching `^\| ` + backtick in C:/Users/olegg/Desktop/llvmkit/UPSTREAM.md (table starts line 171); `sort | uniq -d` shows the single duplicated ref is the file-scoped `crates/llvmkit-ir/tests/verifier_module_flags.rs`. Splitting rows on `::` gives 1965 test-scoped rows naming 1961 distinct test functions plus 30 file-scoped rows; `comm -13` against the tree's distinct names returns 0 (zero orphan rows, confirming the header), and `comm -23` returns exactly 469. Re-derived a second time purely from `git show HEAD:UPSTREAM.md` after discovering a concurrent session was editing the working tree mid-analysis -- identical result (1995 rows, 1961 named, 0 orphans, 469 unrowed). Concentration by file (470 unrowed instances): verifier_module_flags.rs 26 of its 33 tests, vector_utils_splat.rs 25, src/pass_context.rs 20, src/fp_class.rs 19, analysis_preservation.rs 17, module_brands.rs 15 (zero rows), id_roundtrip.rs 14 (zero rows); by crate 352 llvmkit-ir vs 118 llvmkit-asmparser, 0 in support/tablegen -- matching the header's claim that the gap sits in llvmkit-ir rather than the parser crates. Historical parenthetical verified via git: `git log -- UPSTREAM.md` identifies 04545ad "docs(tests): recount UPSTREAM.md at the W7 boundary and drop 26 dead rows"; row counts across history give 61e378f=1956 -> 04545ad=1930 (delta exactly -26), and 04545ad's header reads "the table below carries 1930 rows ... leaves **470 `#[test]` functions (469 distinct names) with no row**". D11 confirmed as binding house law in AGENTS.md ("a test without a citation is a defect, not a stylistic gap"; "Every new `#[test]` gets its `UPSTREAM.md` row in the same commit") and README.md line 983. Current working tree (in-flux W12 uselistorder work) sits at 2450 distinct tests / 2000 rowed names / still 469 unrowed -- the parser waves add rows in lockstep, but none of the inherited llvmkit-ir backlog has been paid down.
-
-</details>
+- **llvmkit:** a residue of tests carry no row. The debt is inherited from the type-safety and pass-API programs and sits in `llvmkit-ir` rather than in the parser crates, whose waves add rows per commit.
+- **No figure is recorded here, and none in `UPSTREAM.md`'s header either.** This entry carried one, then a recount of it, then a correction to the recount, and the header carried three at once that did not agree with each other. The split also has no honest one-liner: matching rows to tests by their `path.rs::name` segment counts every whole-file *group* row's tests as unrowed. `UPSTREAM.md`'s header names the commands and says what a real audit costs; read it there.
+- **Fix:** enforce the per-wave rule — a row in the same commit — and clear the backlog file by file. A missing row means missing *provenance*, never "no upstream counterpart", so each backfill has to name a real source or say explicitly that the test is llvmkit-specific.
+- **What is now mechanically checked (2026-08-22):** `crates/llvmkit-ir/tests/upstream_registry_drift.rs` fails if a row names a file absent from the tree, or a test its cited file does not define. That closes the failure mode this entry's earlier prose kept having to scope around — rows naming a file the test had moved out of, which a name-only audit cannot see. Eleven such rows existed and are repaired. It does **not** check the upstream citation in the second column; that is `docs/fixture-coverage.md`'s phantom-citation finding.
 
 ## Checked and found already closed
 
-Three of the 102 swept candidates did not survive verification. They are kept so nobody re-derives them; each was a recorded belief that the tree no longer supports.
+The entries below did not survive verification. They are kept so nobody
+re-derives them; each was a recorded belief that the tree no longer supports.
 
 ### A parsed module's summary index is not attached to the module, so `Display` never emits `^N`
 

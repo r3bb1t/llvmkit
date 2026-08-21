@@ -1489,9 +1489,11 @@ fn parse_verify_and_render_with_data_layout(src: &[u8], layout: &str) -> String 
 /// `convertValIDToValue(PointerType::get(Context, CallAddrSpace), …)` reaching
 /// `PerFunctionState::getVal` and `LLParser::checkValidVariableType`.
 ///
-/// The fixture's `[[@LINE-1]]:25` column pin is not asserted: llvmkit's
-/// `convert_val_id_to_value` anchors at the token after the ValID rather than
-/// at `ID.Loc` (`docs/divergences.md`).
+/// The fixture's `[[@LINE-1]]:25` column pin **is** asserted. It used to be
+/// skipped, on the ground that `convert_val_id_to_value` anchored at the token
+/// after the ValID rather than at `ID.Loc`; the `ValID::Loc` port closed that,
+/// and this comment outlived it. Asserting the column is what keeps the port
+/// from regressing silently on a fixture whose whole point is the column.
 #[test]
 fn call_in_zero_program_addrspace_rejects_a_nonzero_callee() {
     const FIXTURE: &[u8] =
@@ -1502,6 +1504,16 @@ fn call_in_zero_program_addrspace_rejects_a_nonzero_callee() {
         FIXTURE,
         "'%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'",
     );
+
+    let src = std::str::from_utf8(FIXTURE).expect("fixture is UTF-8");
+    let err = parse_fixture_err(
+        "call_in_zero_program_addrspace_rejects_a_nonzero_callee_loc",
+        FIXTURE,
+    );
+    // `; CHECK: …:[[@LINE-1]]:25:` on the line after `%call_no_as = call i8
+    // %fnptr42(i32 0)` — upstream's `ID.Loc`, the `%fnptr42` token.
+    assert_eq!(error_line_col(src, &err), (10, 25));
+    assert_eq!(error_token(src, &err), "%fnptr42");
 }
 
 /// `test/Assembler/call-nonzero-program-addrspace.ll`, second `RUN` line
