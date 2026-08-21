@@ -920,10 +920,9 @@ fn indirect_call_parameter_attribute_round_trips() {
 /// call in it is indirect and every one carries a `"kcfi"` operand bundle.
 ///
 /// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
-/// so only the parse/print half is portable: llvmkit's verifier has no kcfi
-/// bundle rules (`Verifier::visitCallBase`'s `Multiple kcfi operand bundles` /
-/// `Kcfi bundle operand must be an i32 constant` are unported, so the fixture's
-/// two `CHECK:` diagnostic lines have no llvmkit counterpart to match). Each
+/// so only the parse/print half is portable: the fixture's `CHECK:` diagnostic
+/// lines have no llvmkit counterpart, which is `docs/divergences.md` entry 125
+/// and is pinned by [`call_operand_bundle_rules_are_not_diagnosed`]. Each
 /// `CHECK-NEXT` line is the offending instruction as `AsmWriter` prints it,
 /// which is what this asserts — as a `Check::Line`, because the diagnostic the
 /// `-NEXT` counts from is not printed here.
@@ -949,12 +948,13 @@ fn indirect_call_kcfi_operand_bundles_round_trip() {
 /// same bundle — the direct/indirect contrast in one fixture, which is why it
 /// is ported alongside the kcfi one rather than instead of it.
 ///
-/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`;
-/// llvmkit's verifier has none of the ptrauth bundle rules, so only the
-/// parse/print half is ported and the fixture's `CHECK:` diagnostic lines have
-/// no llvmkit counterpart. The `CHECK-NEXT` lines are `AsmWriter` output of the
-/// offending instruction, asserted here as `Check::Line` for the same reason as
-/// [`indirect_call_kcfi_operand_bundles_round_trip`].
+/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
+/// so as with [`indirect_call_kcfi_operand_bundles_round_trip`] only the
+/// parse/print half is ported; the unmatched `CHECK:` diagnostic lines are
+/// `docs/divergences.md` entry 125, pinned by
+/// [`call_operand_bundle_rules_are_not_diagnosed`]. The `CHECK-NEXT` lines are
+/// `AsmWriter` output of the offending instruction, asserted here as
+/// `Check::Line` for the same reason.
 #[test]
 fn indirect_call_ptrauth_operand_bundles_round_trip() {
     const FIXTURE: &[u8] =
@@ -975,6 +975,136 @@ fn indirect_call_ptrauth_operand_bundles_round_trip() {
             Check::Line(r#"call void %arg2() [ "ptrauth"(i32 42, i64 %arg0) ]"#),
         ],
     );
+}
+
+/// The `(line, column)` a diagnostic points at, computed the way
+/// `parse_file.rs` computes it for its `<path>:LINE:COL:` prefix — the same
+/// coordinates `llvm-as` prints as `<stdin>:LINE:COL:`.
+fn error_line_col(src: &str, err: &ParseError) -> (u32, u32) {
+    let span = err.loc().expect("diagnostic carries a location").span;
+    llvmkit_support::SourceMap::new(src.as_bytes()).line_col(span.start)
+}
+
+/// The source text the diagnostic's span opens on, for asserting *which token*
+/// an anchor landed on rather than only where it landed.
+fn error_token<'a>(src: &'a str, err: &ParseError) -> &'a str {
+    let span = err.loc().expect("diagnostic carries a location").span;
+    let start = usize::try_from(span.start).expect("offset fits usize");
+    let end = usize::try_from(span.end).expect("offset fits usize");
+    &src[start..end.min(src.len())]
+}
+
+/// **Anchor lock, llvmkit-authored source; no upstream counterpart.**
+/// `LLParser::parseCall` raises this one as `error(CallLoc, …)`, not
+/// `tokError`, so it must point at `CallLoc` and not at whatever token the
+/// parser has reached by the time the return type is known — which, because
+/// the guard runs after the whole call has been consumed, is the *next*
+/// instruction's first token.
+///
+/// `CallLoc` is `parseCall`'s `Lex.getLoc()` taken before
+/// `EatFastMathFlagsIfPresent()`, and `parseInstruction` has already eaten the
+/// `call` keyword, so for a plain `call` it is the first fast-math keyword.
+/// The message is `LLParser.cpp`'s, verbatim; no `.ll` under `test/Assembler`,
+/// `test/Verifier` or `test/Feature` pins it (`grep -rl "fast-math-flags
+/// specified for call"` over those three directories of the vendored
+/// `llvmorg-22.1.4` tree returns nothing), so the rule is the anchor (D11).
+#[test]
+fn fast_math_flags_on_a_non_fp_call_report_at_call_loc() {
+    const SRC: &str = "declare void @g(i32)\n\
+                       define void @f() {\n  \
+                       call nnan void @g(i32 5)\n  \
+                       ret void\n\
+                       }\n";
+
+    let err = parse_fixture_err(
+        "fast_math_flags_on_a_non_fp_call_report_at_call_loc",
+        SRC.as_bytes(),
+    );
+    assert_eq!(
+        err.to_string(),
+        "fast-math-flags specified for call without floating-point scalar or vector return type"
+    );
+    assert_eq!(error_line_col(SRC, &err), (3, 8));
+    assert_eq!(error_token(SRC, &err), "nnan");
+}
+
+/// **Anchor lock, llvmkit-authored source; no upstream counterpart.**
+/// `LLParser::parseInstruction` eats one keyword before dispatching, so
+/// `parseCall`'s `LocTy CallLoc = Lex.getLoc()` — its last statement before
+/// `parseToken(lltok::kw_call, …)` — lands on a *different* token in the two
+/// spellings: the token after `call` for a plain call, and the `call` keyword
+/// itself after `tail` / `musttail` / `notail`. `error(CallLoc, "not enough
+/// parameters specified for call")` is the cheapest of the three diagnostics
+/// anchored on it to reach, so it is the one this pins; the same anchor serves
+/// the fast-math guard (above) and the `llvm.dbg` guard.
+///
+/// Both spellings are asserted together because the law is the *relation*
+/// between them; a lock on either alone would survive `CallLoc` drifting back
+/// to a single uniform token. `musttail` rather than `tail` so the two columns
+/// differ.
+#[test]
+fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
+    const PLAIN: &str = "declare void @g(i32, i32, i32)\n\
+                         define void @f() {\n  \
+                         call void (i32, i32, i32) @g(i32 1, i32 2)\n  \
+                         ret void\n\
+                         }\n";
+    const MUSTTAIL: &str = "declare void @g(i32, i32, i32)\n\
+                            define void @f() {\n  \
+                            musttail call void (i32, i32, i32) @g(i32 1, i32 2)\n  \
+                            ret void\n\
+                            }\n";
+
+    let plain = parse_fixture_err("call_loc_plain", PLAIN.as_bytes());
+    assert_eq!(
+        plain.to_string(),
+        "not enough parameters specified for call"
+    );
+    assert_eq!(error_line_col(PLAIN, &plain), (3, 8));
+    assert_eq!(error_token(PLAIN, &plain), "void");
+
+    let musttail = parse_fixture_err("call_loc_musttail", MUSTTAIL.as_bytes());
+    assert_eq!(
+        musttail.to_string(),
+        "not enough parameters specified for call"
+    );
+    assert_eq!(error_line_col(MUSTTAIL, &musttail), (3, 12));
+    assert_eq!(error_token(MUSTTAIL, &musttail), "call");
+}
+
+/// **Divergence lock for `docs/divergences.md` entry 125**, in the shape
+/// `parser_eh_funclet.rs::wineh_missing_funclet_token_is_not_diagnosed` uses
+/// for entry 112: it asserts what llvmkit *does*, so the entry stops being a
+/// quoted probe and starts being a test that fails when the gap closes.
+///
+/// Both fixtures are `RUN: not opt -passes=verify` upstream — every module in
+/// them is invalid IR, and between them their `CHECK:` lines pin six
+/// `Verifier::visitCallBase` operand-bundle diagnostics. llvmkit has no
+/// counterpart to that routine's bundle loop, so it accepts both. **This test
+/// asserts the divergence, not a rule**; when the loop is ported it must fail,
+/// and the two round-trip tests above then gain their verdict halves.
+#[test]
+fn call_operand_bundle_rules_are_not_diagnosed() {
+    const KCFI: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/kcfi-operand-bundles.ll");
+    const PTRAUTH: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/ptrauth-operand-bundles.ll");
+
+    for (name, fixture) in [
+        ("kcfi-operand-bundles", KCFI),
+        ("ptrauth-operand-bundles", PTRAUTH),
+    ] {
+        let module = Module::dynamic(name);
+        Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        assert!(
+            module.verify_borrowed().is_ok(),
+            "divergence 125 assumes llvmkit accepts {name}; it no longer does: {:?}",
+            module.verify_borrowed().err()
+        );
+    }
 }
 
 /// `test/Verifier/inline-asm-indirect-operand.ll`, verbatim (the whole file).

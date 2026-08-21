@@ -506,13 +506,15 @@ direct/indirect/inline-asm distinction anywhere.
 llvmkit's `resolve_direct_callee` returns `ParsedCallee::{Function, InlineAsm,
 Indirect}` and hands the fork to its caller. `parse_call` no longer forks — it
 calls `ParsedCallee::as_erased` and then one `IrBuilder::call_erased` — but
-`parse_invoke` and `parse_callbr` still `match` on the variant and dispatch to
-three builder entry points each.
+`parse_invoke` and `parse_callbr` still `match` on the variant and dispatch
+per callee shape — to a separate builder entry point each, except
+`parse_callbr`'s `Indirect` arm, which calls no builder at all and rejects
+(entry 27).
 
 The remaining fork has no observable behaviour of its own, so it is recorded
-here rather than in [`divergences.md`](divergences.md): all six of those entry
-points carry a `CallSiteConfig`, so the same information reaches the
-instruction on every path. The risk is structural, and it is not hypothetical
+here rather than in [`divergences.md`](divergences.md): every builder entry
+point those two arms reach takes a `CallSiteConfig`, so the same information
+reaches the instruction on every path that builds one. The risk is structural, and it is not hypothetical
 — it is the shape that let `parse_call` lose every call-site attribute on two
 of its three arms without a compiler warning, because `call_attrs` *was* moved
 into the one arm that used it.

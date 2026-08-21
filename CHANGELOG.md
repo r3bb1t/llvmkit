@@ -89,6 +89,16 @@ cut, entries accumulate under **Unreleased**.
   `containsHomogeneousTypes` counterparts and touches two guards outside
   `parse_call`.
 
+- **Recorded, not fixed: `docs/divergences.md` entry 125** —
+  `Verifier::visitCallBase`'s operand-bundle loop has no counterpart, so no
+  bundle rule is enforced on `call`, `invoke` or `callbr`. Making bundles reach
+  an indirect call is what put it in reach: the two fixtures vendored here,
+  `test/Verifier/kcfi-operand-bundles.ll` and
+  `test/Verifier/ptrauth-operand-bundles.ll`, are `RUN: not opt -passes=verify`
+  and llvmkit accepts both. Pinned as a divergence lock by
+  `parser_calls.rs::call_operand_bundle_rules_are_not_diagnosed`, which fails
+  when the loop lands.
+
 - **Corrected: `docs/divergences.md` entry 85's verification block.** It stated
   that an inline-asm call with `ptr elementtype(i32) %p` "parses, stores, and
   re-prints today". It did not re-print — the attribute was dropped on the way
