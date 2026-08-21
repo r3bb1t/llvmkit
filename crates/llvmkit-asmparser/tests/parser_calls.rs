@@ -4,6 +4,17 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
+mod support;
+
+// `canonicalize_horizontal_whitespace` is `FileCheck::CanonicalizeFile`
+// (`llvm/lib/FileCheck/FileCheck.cpp`), which is what lets
+// `test/Bitcode/operand-bundles.ll`'s `CHECK` text be quoted as written:
+// several of its lines spell `float  0.000000e+00` with two spaces, because
+// that is how the fixture's *input* spells it, and canonicalization is why
+// they still match `llvm-dis`'s single space. That fixture's `RUN` line does
+// not pass `--strict-whitespace`, so upstream canonicalizes there too.
+use support::{Check, canonicalize_horizontal_whitespace, check_directives};
+
 fn parse_and_render(src: &str) -> String {
     parse_and_render_bytes("parser_calls", src.as_bytes())
 }
@@ -356,41 +367,6 @@ entry:\n\
             "%r = call range(i8 0, 64) i8 @callee()",
         ],
     );
-}
-
-/// `FileCheck::CanonicalizeFile` (`llvm/lib/FileCheck/FileCheck.cpp`), both
-/// halves of its loop body: drop the `\r` of a `\r\n` pair, then collapse each
-/// run of ' ' / '\t' to a single ' '. FileCheck applies it to the check file
-/// *and* the input file unless `--strict-whitespace` is given, and
-/// `test/Bitcode/operand-bundles.ll`'s `RUN` line does not give it. Porting it
-/// is what lets that fixture's `CHECK` text be quoted as written: several of
-/// its lines spell `float  0.000000e+00` with two spaces, because that is how
-/// the fixture's *input* spells it, and canonicalization is why they still
-/// match `llvm-dis`'s single space.
-///
-/// This is a second copy of the routine in
-/// `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs`; items do not cross
-/// integration-test binaries, and the `tests/support/` refactor that would
-/// remove both copies is recorded in `docs/future-work.md`.
-fn canonicalize_horizontal_whitespace(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        // Eliminate trailing dosish `\r`.
-        if c == '\r' && chars.peek() == Some(&'\n') {
-            continue;
-        }
-        if c != ' ' && c != '\t' {
-            out.push(c);
-            continue;
-        }
-        // Otherwise, add one space and advance over neighboring space.
-        out.push(' ');
-        while let Some(' ' | '\t') = chars.peek() {
-            chars.next();
-        }
-    }
-    out
 }
 
 /// `test/Bitcode/operand-bundles.ll`, vendored whole, asserting its `CHECK`
@@ -1156,21 +1132,25 @@ fn call_in_zero_program_addrspace_rejects_a_nonzero_callee() {
 /// `maybePrintCallAddrSpace` printing `addrspace(0)` because
 /// `ForcePrintAddrSpace` is set, and printing `addrspace(42)` because it is
 /// non-zero.
+///
+/// The fixture's `PROGAS42` block is asserted as upstream writes it, `-NEXT`
+/// included, through [`check_directives`].
 #[test]
 fn call_addrspace_round_trips_under_a_nonzero_program_addrspace() {
     const FIXTURE: &[u8] =
         include_bytes!("fixtures/upstream/assembler-corpus/call-nonzero-program-addrspace.ll");
 
     let text = parse_verify_and_render_with_data_layout(FIXTURE, "P42");
-    assert_check_lines(
+    check_directives(
         &text,
         &[
-            "target datalayout = \"P42\"",
-            "define i8 @test(ptr %fnptr0, ptr addrspace(42) %fnptr42) addrspace(42) {",
-            "%explicit_as_0 = call addrspace(0) i8 %fnptr0(i32 0)",
-            "%explicit_as_42 = call addrspace(42) i8 %fnptr42(i32 0)",
-            "%call_no_as = call addrspace(42) i8 %fnptr42(i32 0)",
-            "ret i8 0",
+            Check::Line("target datalayout = \"P42\""),
+            Check::Line("define i8 @test(ptr %fnptr0, ptr addrspace(42) %fnptr42) addrspace(42) {"),
+            Check::Next("%explicit_as_0 = call addrspace(0) i8 %fnptr0(i32 0)"),
+            Check::Next("%explicit_as_42 = call addrspace(42) i8 %fnptr42(i32 0)"),
+            Check::Next("%call_no_as = call addrspace(42) i8 %fnptr42(i32 0)"),
+            Check::Next("ret i8 0"),
+            Check::Next("}"),
         ],
     );
 }
@@ -1179,7 +1159,8 @@ fn call_addrspace_round_trips_under_a_nonzero_program_addrspace() {
 /// numbered-value twin of the pair above: `parseValID`'s `t_LocalID` arm
 /// reaches `PerFunctionState::getVal(unsigned, …)`, and the printed slot
 /// numbers are upstream's (`%0`/`%1` arguments, `%2` the entry block, results
-/// from `%3`).
+/// from `%3`). Its `PROGAS42` block is asserted with `-NEXT` where upstream
+/// writes it, through [`check_directives`].
 #[test]
 fn numbered_callee_addrspace_matches_upstream_in_both_program_addrspaces() {
     const FIXTURE: &[u8] =
@@ -1192,15 +1173,16 @@ fn numbered_callee_addrspace_matches_upstream_in_both_program_addrspaces() {
     );
 
     let text = parse_verify_and_render_with_data_layout(FIXTURE, "P42");
-    assert_check_lines(
+    check_directives(
         &text,
         &[
-            "target datalayout = \"P42\"",
-            "define i8 @test_unnamed(ptr %0, ptr addrspace(42) %1) addrspace(42) {",
-            "%3 = call addrspace(0) i8 %0(i32 0)",
-            "%4 = call addrspace(42) i8 %1(i32 0)",
-            "%5 = call addrspace(42) i8 %1(i32 0)",
-            "ret i8 0",
+            Check::Line("target datalayout = \"P42\""),
+            Check::Line("define i8 @test_unnamed(ptr %0, ptr addrspace(42) %1) addrspace(42) {"),
+            Check::Next("%3 = call addrspace(0) i8 %0(i32 0)"),
+            Check::Next("%4 = call addrspace(42) i8 %1(i32 0)"),
+            Check::Next("%5 = call addrspace(42) i8 %1(i32 0)"),
+            Check::Next("ret i8 0"),
+            Check::Next("}"),
         ],
     );
 }
@@ -1209,6 +1191,9 @@ fn numbered_callee_addrspace_matches_upstream_in_both_program_addrspaces() {
 /// `LLParser::parseInvoke` carries its own `parseOptionalProgramAddrSpace`
 /// (upstream's `InvokeAddrSpace`) and `AssemblyWriter`'s `InvokeInst` arm is
 /// `maybePrintCallAddrSpace`'s second and last caller.
+///
+/// Every directive in this fixture's `PROGAS200` block is a plain `PROGAS200:`
+/// — upstream writes no `-NEXT` here — so all seven are [`Check::Line`].
 #[test]
 fn invoke_addrspace_matches_upstream_in_both_program_addrspaces() {
     const FIXTURE: &[u8] =
@@ -1221,15 +1206,18 @@ fn invoke_addrspace_matches_upstream_in_both_program_addrspaces() {
     );
 
     let text = parse_verify_and_render_with_data_layout(FIXTURE, "P200");
-    assert_check_lines(
+    check_directives(
         &text,
         &[
-            "target datalayout = \"P200\"",
-            "define i8 @test_invoke(ptr %fnptr0, ptr addrspace(200) %fnptr200) addrspace(200) personality ptr addrspace(200) @__gxx_personality_v0 {",
-            "%explicit_as_0 = invoke addrspace(0) i8 %fnptr0(i32 0)",
-            "%explicit_as_42 = invoke addrspace(200) i8 %fnptr200(i32 0)",
-            "%no_as = invoke addrspace(200) i8 %fnptr200(i32 0)",
-            "ret i8 0",
+            Check::Line("target datalayout = \"P200\""),
+            Check::Line(
+                "define i8 @test_invoke(ptr %fnptr0, ptr addrspace(200) %fnptr200) addrspace(200) personality ptr addrspace(200) @__gxx_personality_v0 {",
+            ),
+            Check::Line("%explicit_as_0 = invoke addrspace(0) i8 %fnptr0(i32 0)"),
+            Check::Line("%explicit_as_42 = invoke addrspace(200) i8 %fnptr200(i32 0)"),
+            Check::Line("%no_as = invoke addrspace(200) i8 %fnptr200(i32 0)"),
+            Check::Line("ret i8 0"),
+            Check::Line("}"),
         ],
     );
 }
@@ -1243,7 +1231,7 @@ fn invoke_addrspace_matches_upstream_in_both_program_addrspaces() {
 #[test]
 fn callbr_does_not_accept_an_address_space() {
     const FIXTURE: &[u8] =
-        include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_rejects_addrspace.ll");
+        include_bytes!("fixtures/upstream/LLParser-parseCallBr/callbr_rejects_addrspace.ll");
 
     assert_fixture_rejected(
         "callbr_does_not_accept_an_address_space",

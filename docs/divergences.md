@@ -874,7 +874,7 @@ reach the routine's `_` catch-all (entry 116).
   116.
 - **Fix:** add a `Token` arm returning the module's `token none` constant.
 
-### 122. A `call` / `invoke` / `callbr` callee may only be a function
+### 122. A `@name` / `@N` callee is looked up only among functions
 
 *parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs (`resolve_direct_callee`)
 

@@ -584,6 +584,36 @@ accepts, so llvmkit's output round-trips here **and** remains valid input to
 `llvm-as`. This is the one place the byte-for-byte printer rule is
 deliberately broken, and it is broken in the safe direction.
 
+## Printer — no option surface, so `printAddressSpace`'s symbolic branch cannot be reached (found 2026-08-21, `call addrspace(N)` port)
+
+`printAddressSpace` (`lib/IR/AsmWriter.cpp`) prints `addrspace("global")`
+instead of `addrspace(2)` when the datalayout named that address space *and*
+`PrintAddrspaceName` is set — `static cl::opt<bool> PrintAddrspaceName(
+"print-addrspace-name", cl::Hidden, cl::init(false), …)`, which `llvm-dis`
+exposes as `--print-addrspace-name`. llvmkit's `print_address_space`
+(`crates/llvmkit-ir/src/asm_writer.rs`) ports the `else` half only, and drops
+upstream's `const Module *M` parameter, which exists solely to feed the branch.
+
+**Not a divergence.** The flag's default is `false`, so no llvmkit input yields
+different bytes from `llvm-dis`'s default; this is a feature llvmkit does not
+have, which is why it lives here and not in
+[`divergences.md`](divergences.md). The *data* is modelled —
+`DataLayout::address_space_name` mirrors `getAddressSpaceName` and is tested by
+`data_layout_round_trip.rs::address_space_name`, a port of
+`unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, AddressSpaceName)`. What is
+missing is a printer-option surface, which is a design question a one-flag port
+should not settle unilaterally: a `PrintOptions` struct threaded through
+`Display`? a second entry point beside `format!("{module}")`? The `Display`
+impls are the whole public printer API today and take no arguments.
+
+**Cost:** the `--print-addrspace-name=true` parts of
+`test/Assembler/symbolic-addrspace-datalayout.ll` stay blocked, as gap **G6**
+in [`fixture-coverage.md`](fixture-coverage.md) records.
+
+**Fix:** decide the option surface first. The branch itself is then four lines:
+`let name = module.data_layout().address_space_name(addr_space); if
+!name.is_empty() { write!(f, "\"{name}\"") } else { write!(f, "{addr_space}") }`.
+
 ## Printer — function attributes are never hoisted into an attribute group (found 2026-08-13, LLParser parity W5)
 
 `AssemblyWriter` prints function attributes **inline on the header**
@@ -2477,15 +2507,22 @@ items below are the deferred / known-remaining points.
 ## Tests — two CHECK oracles in one crate, and the ordered one cannot express CHECK-NEXT (found 2026-08-20, fix round 3)
 
 `crates/llvmkit-asmparser/tests` carries two substitutes for FileCheck.
-`check_directives` (parser_eh_funclet.rs) implements `CHECK` and `CHECK-NEXT`
-against `FileCheckString::Check` / `FileCheckString::CheckNext` /
-`Pattern::match` / `FileCheck::CanonicalizeFile`. `assert_check_lines` — four
-byte-identical copies at parser_calls.rs, parser_constants.rs,
-parser_modifiers.rs and parser_remaining_opcodes.rs — has upstream's byte cursor
-but **no CHECK-NEXT concept**, so an upstream `CHECK-NEXT` ported into one of
-those files silently becomes an unordered "somewhere later" check. That is a
-false-pass risk, strictly worse than the symptom the fix round repaired in
-`check_directives`.
+`check_directives` implements `CHECK` and `CHECK-NEXT` against
+`FileCheckString::Check` / `FileCheckString::CheckNext` / `Pattern::match` /
+`FileCheck::CanonicalizeFile`. `assert_check_lines` — byte-identical copies at
+parser_calls.rs, parser_constants.rs, parser_modifiers.rs and
+parser_remaining_opcodes.rs — has upstream's byte cursor but **no CHECK-NEXT
+concept**, so an upstream `CHECK-NEXT` ported into one of those files silently
+becomes an unordered "somewhere later" check. That is a false-pass risk,
+strictly worse than the symptom the fix round repaired in `check_directives`.
+
+**Partly done (2026-08-21, `call addrspace(N)` port).** `check_directives`,
+`Check`, `canonicalize_horizontal_whitespace` and `count_newlines_between` now
+live in `crates/llvmkit-asmparser/tests/support/mod.rs`, `mod`-included by
+parser_eh_funclet.rs and parser_calls.rs. That is the shared home this item
+asked for, and it removed the second `canonicalize_horizontal_whitespace` copy.
+What remains is the routing: the `assert_check_lines` copies are untouched and
+`parser_calls.rs` still drives its older fixtures through one.
 
 Five fixtures those files drive carry `CHECK-NEXT` today:
 `insertextractvalue/{extractvalue,insertvalue}_round_trips.ll`,
@@ -2504,11 +2541,10 @@ also copied `canonicalize_horizontal_whitespace` into `parser_calls.rs`, since
 that fixture's `CHECK` text carries a doubled space; there are now two copies of
 that routine as well, and the refactor below deletes both.
 
-The work: move `check_directives` into a shared `tests/support/` module, route
-all five call sites through it, delete the four `assert_check_lines` copies and
-the second `canonicalize_horizontal_whitespace`, and re-widen the five flattened
-needle lists to their fixtures' own CHECK blocks — using `Check::Next` where
-upstream writes `CHECK-NEXT`. The operand-bundle fixture needs no re-widening,
+The work that is left: route the `assert_check_lines` call sites through
+`support::check_directives`, delete the `assert_check_lines` copies, and
+re-widen the flattened needle lists to their fixtures' own CHECK blocks — using
+`Check::Next` where upstream writes `CHECK-NEXT`. The operand-bundle fixture needs no re-widening,
 since it already carries every directive; it needs only the `Check::Next` and
 `CHECK-LABEL` conversion. Doing that also unblocks
 pointing `parser_calls.rs::callbr_successor_structure_round_trips` at the whole
@@ -2539,64 +2575,60 @@ renders `expected invalid type for null constant` at a later token, while
 renders the bare text exactly — its anchor is wrong, which containment cannot
 see either. The hole is the harness's, not those rows'.
 
-**How big it actually is, measured.** Bucketing the 302 `error=` rows by
-comparing the rendered message against the pin gives **302/302 failing and
-containing their pin; 297 exact, 1 adding a suffix, 4 containing the pin
-mid-message, 0 non-containing**. So an equality oracle would flag **5 rows**,
-`starts_with` would flag **4**. Of the 5, **3 are genuine defects** —
-`zeroinit-error` (entry 114), `musttail-invalid-1` and
-`invalid-datalayout-override` (both **G17** in
-[`fixture-coverage.md`](fixture-coverage.md), with the fix stated there) — and
-**2 are false positives of an equality oracle**, where llvmkit's text is
-upstream's and the pin is a truncated `FileCheck` fragment:
-`2003-04-15-ConstantInitAssertion.ll` pins `struct initializer doesn't match
-struct element type` while `LLParser::convertValIDToValue` prints
+**How big it is.** No figure is given here on purpose. The population is every
+`error=` row in `parser_corpus_manifest.txt`, which grows with the corpus, and a
+number written into a backlog paragraph is re-derived by nothing. Derive it when
+you do the work: run `target/release/examples/parse_file.exe` over each `error=`
+row's fixture, take the first stderr line, strip the `<path>:<line>:<col>: `
+prefix (which yields exactly the harness's `rendered`, since
+`examples/parse_file.rs` prints `eprintln!("{path}:{line}:{col}: {err}")` and the
+harness compares `format!("{error}")`), and bucket against the pin.
+
+Two things that sweep will show, and they are the point of it. First, the sweep
+is small and per-*site* rather than per-row: the rows that fail an equality
+oracle cluster on a handful of code sites, which is why this was never worth its
+own cycle. Second, a flagged row is not automatically a defect. Some are llvmkit
+printing upstream's text verbatim beside a pin that is a truncated `FileCheck`
+fragment: `2003-04-15-ConstantInitAssertion.ll` pins `struct initializer doesn't
+match struct element type` while `LLParser::convertValIDToValue` prints
 `element 0 of struct initializer doesn't match struct element type`, and
 `2007-03-18-InvalidNumberedVar.ll` pins `'%0' defined with type 'i1'` while
 `LLParser::checkValidVariableType` prints
 `'%0' defined with type 'i1' but expected 'i32'`. Being *stricter* than the
 fixture's own `RUN` line is a divergence exactly as being weaker is, so neither
-of those two rows is work — the pin is what would change if a strict tier ever
-covered them.
-
-Derivation, at the commit that wrote this paragraph: run
-`target/release/examples/parse_file.exe` over each `error=` row's fixture, take
-the first stderr line, strip the `<path>:<line>:<col>: ` prefix (which yields
-exactly the harness's `rendered`, since `examples/parse_file.rs` prints
-`eprintln!("{path}:{line}:{col}: {err}")` and the harness compares
-`format!("{error}")`), and compare to the pin. Nine rows that added a suffix at the
-parent commit were `nofpclass-invalid` parts and were fixed in this one —
-`docs/divergences.md` entry 115 — which is what moved the exact bucket from
-288 to 297.
+of those is work — the pin is what would change if a strict tier ever covered
+them. Genuine defects the sweep has surfaced so far are recorded where they
+belong: `zeroinit-error` in [`divergences.md`](divergences.md),
+`musttail-invalid-1` and `invalid-datalayout-override` under **G17** in
+[`fixture-coverage.md`](fixture-coverage.md), with the fix stated there.
 
 **The work, in three tiers.** Not one switch: the oracle has to come from each
 fixture's own `FileCheck` line, not from a house preference.
 
-- **Equality, safe today.** Where the upstream directive line carrying the pin
-  ends in `{{$}}`, upstream itself demands the message end there. Measured at
-  the commit that wrote this paragraph by scanning each row's upstream original
-  for a line containing the pin and ending in `{{$}}`: **exactly 14 rows** —
-  `byref-parse-error-0` through `-10` (11), `byval-parse-error0`,
-  `inalloca-parse-error0`, `sret-parse-error0`. All 14 already render exactly,
-  so the tier switches on at zero cost. **The `symbolic-addrspace/bad-*` family
-  is *not* anchored**: `test/Assembler/symbolic-addrspace.ll` writes
+- **Equality, where upstream anchors.** Where the upstream directive line
+  carrying the pin ends in `{{$}}`, upstream itself demands the message end
+  there, so equality *is* that fixture's contract. Find them by scanning each
+  row's upstream original for a line containing the pin and ending in `{{$}}`.
+  The `*-parse-error*` attribute family (`byref`, `byval`, `inalloca`, `sret`)
+  is written that way and already renders exactly, so the tier switches on at no
+  cost. **The `symbolic-addrspace/bad-*` family is *not* anchored**:
+  `test/Assembler/symbolic-addrspace.ll` writes
   `; ERR-BAD-CHAR: [[#@LINE-1]]:26: error: invalid symbolic addrspace 'D'` with
-  no end anchor, and the only `{{$}}` in that file belongs to four
+  no end anchor, and the only `{{$}}` in that file belongs to
   `ALLOCA-IN-GLOBALS` lines of a `status=pass` row. Putting those in an equality
   tier would be the defect this item exists to prevent.
 - **`loc=`, the real remedy for the rest.** Add `loc=` wherever the upstream
-  `CHECK` carries a column. Measured at the same commit with the matcher
-  "a line of the upstream original that contains the pin and also matches
-  `:[0-9]+: *error:` **or** `\]\]:[0-9]+:`": **114 column-carrying rows, 52
-  already pinned, 62 missing**. A `grep`-based pass answers **112**, and the
-  gap is *not* regex width — narrow and wide both answer 112. The two rows it
-  drops are `test/Assembler/invalid-name.ll` and `invalid-name2.ll`, each of
-  which contains a literal NUL byte, so GNU `grep` prints
-  `Binary file … matches` instead of the matching line and a piped second
-  `grep` then sees no `:N: error:`. `grep -a` restores 114 exactly. Widening
-  the regex does not. Do record the matcher beside any figure all the same:
-  the spellings upstream uses include `[[@LINE+1]]:1:`, `[[#@LINE-1]]:26:` and
-  the bare `; ERR0: :41:` of the `invalid-atomicrmw-scalable` rows.
+  `CHECK` carries a column — which is most reject rows, and many more than
+  carry one today. The matcher is "a line of the upstream original that
+  contains the pin and also matches `:[0-9]+: *error:` **or**
+  `\]\]:[0-9]+:`", and it has to be run with `grep -a`:
+  `test/Assembler/invalid-name.ll` and `invalid-name2.ll` each contain a
+  literal NUL byte, so GNU `grep` prints `Binary file … matches` instead of the
+  matching line and a piped second `grep` then sees no `:N: error:` — the rows
+  vanish. Widening the regex does not fix that; `-a` does. Record the matcher
+  beside any figure you derive: the spellings upstream uses include
+  `[[@LINE+1]]:1:`, `[[#@LINE-1]]:26:` and the bare `; ERR0: :41:` of the
+  `invalid-atomicrmw-scalable` rows.
 - **`contains` everywhere else, deliberately.** The pin is upstream's
   `FileCheck` text and `FileCheck` matches substrings, so containment *is* that
   fixture's contract. Tightening it without an end anchor invents a stricter
@@ -2604,11 +2636,11 @@ fixture's own `FileCheck` line, not from a house preference.
 
 A blanket equality switch is what this item used to propose, on the reasoning
 that it would "surface every wrapper in one run" and so deserved its own cycle.
-That reasoning was wrong twice over: the sweep is 3 rows across roughly three
-code sites, not a large one, and a blanket switch breaks 2 correct rows. The
-prefix shortcut was wrong too — it flags only the 4 mid-message rows (1 of them
-a false alarm) and would have missed all 9 `nofpclass` rows, the largest genuine
-group at the time, because those added a *suffix*.
+That reasoning was wrong twice over: the genuine sweep is a handful of rows
+across roughly three code sites, not a large one, and a blanket switch breaks
+correct rows. The prefix shortcut was wrong too — it flags only the mid-message
+rows and would have missed the `nofpclass` rows, the largest genuine group at
+the time, because those added a *suffix*.
 
 ## Docs — the cite-by-symbol sweep (found 2026-08-20, fix round 3)
 

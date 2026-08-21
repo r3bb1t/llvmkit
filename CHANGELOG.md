@@ -86,12 +86,13 @@ space is zero prints byte-identically.
 - **Recorded, not fixed:** two new `docs/divergences.md` entries.
   `convert_val_id_to_value` anchors its diagnostics at the token *after* the
   ValID rather than at upstream's `ID.Loc` (entry 123), which is why the three
-  new reject rows carry `error=` without `loc=`. And `resolve_direct_callee`
-  looks up only functions, so an **ifunc** callee is still not resolvable
-  (entry 122) — which is what now blocks
+  new reject rows carry `error=` without `loc=`. And a `@name` / `@N` callee is
+  looked up only among functions, so an **ifunc** callee is still not
+  resolvable (entry 122) — which is what now blocks
   `test/Assembler/ifunc-program-addrspace.ll`, on a different gap than before.
-  A third residual is a missing *feature*, not a behavioural difference, and
-  stays in `docs/fixture-coverage.md` as the narrowed gap **G6**:
+  A third residual is a missing *feature*, not a behavioural difference, and is
+  recorded in `docs/future-work.md` and as the narrowed gap **G6** in
+  `docs/fixture-coverage.md`:
   `printAddressSpace`'s `PrintAddrspaceName` branch prints
   `addrspace("global")` instead of `addrspace(2)`, and its `static
   cl::opt<bool>` trigger has no counterpart in a library with no printer-option

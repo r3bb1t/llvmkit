@@ -124,7 +124,7 @@ Each `blocked-model` row names one of these.
 | **G20** | 2 | A function or global used as a `ptr` constant keeps its function type instead of pointer type, so the print does not re-parse. |
 | **G21** | 1 | `!DIFile(source: ...)` and neighbouring fields in a summary-bearing module are not accepted. |
 | **G22** | 2 | llvmkit's Verifier does not exempt **unreachable** blocks: `Verifier::verifyDominatesUse` returns early when `!DT.isReachableFromEntry(...)`, so upstream accepts a self-referencing or out-of-order instruction in a block with no path from entry, and llvmkit rejects it. |
-| **G23** | 1 | A `call` / `invoke` / `callbr` callee may only be a function: `resolve_direct_callee` consults `Module::function_dyn` only, where `convertValIDToValue` -> `getGlobalVal` accepts any `GlobalValue`. An **ifunc** callee collides with the forward-declaration arm ([`divergences.md`](divergences.md) 122). |
+| **G23** | 1 | A `@name` / `@N` call-family callee is looked up only among functions: `resolve_direct_callee`'s `Name` arm consults `Module::function_dyn` and its `Id` arm accepts only `GlobalRef::Function`, where `convertValIDToValue` -> `getGlobalVal` accepts any `GlobalValue`. An **ifunc** callee collides with the forward-declaration arm ([`divergences.md`](divergences.md) 122). |
 
 Which fixture sits on which gap:
 

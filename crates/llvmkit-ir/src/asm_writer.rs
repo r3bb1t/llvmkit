@@ -944,8 +944,8 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
 /// command-line-option layer for a printer, so the branch has no reachable
 /// trigger and upstream's `M` parameter — which exists only to feed it — is
 /// dropped. The data is modelled (`DataLayout::address_space_name`); only the
-/// option surface is not. Recorded as gap **G6** in
-/// `docs/fixture-coverage.md`, which is where an unimplemented *feature*
+/// option surface is not. Recorded in `docs/future-work.md` and as gap **G6**
+/// in `docs/fixture-coverage.md`, which is where an unimplemented *feature*
 /// belongs — with the flag at its `cl::init(false)` default the printed bytes
 /// match, so it is not a behavioural divergence.
 fn print_address_space(
