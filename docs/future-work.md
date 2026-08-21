@@ -2702,6 +2702,63 @@ fixture's own `FileCheck` line, not from a house preference.
   fixture's contract. Tightening it without an end anchor invents a stricter
   test than upstream runs.
 
+**Landed 2026-08-21 (caret-anchor fix round): the location half, for the rows
+upstream can adjudicate — and nothing else.**
+
+Note first what did *not* need building. `loc=` already existed, in
+`parse_manifest_entry` and in the harness's
+`assert_eq!(line_and_column(&source, offset), (line, column), …)`, and rows were
+already using it. What was missing was **application**: rows whose upstream
+original pins a column while the manifest row pinned only text. So this is not a
+new capability; it is the existing one reaching a place it had not reached.
+
+What was applied, and the boundary: the rows exercising
+`LLParser::convertValIDToValue` / `getGlobalVal` / `checkValidVariableType` —
+the routine whose anchor was being fixed — were enumerated from the manifest by
+their pinned message, and each one's vendored fixture was checked for a column.
+Exactly the `*-nonzero-program-addrspace` family carries one
+(`[[@LINE-1]]:25`, `[[@LINE-1]]:11`, `[[@LINE-1]]:22`); those rows now pin it,
+and llvmkit reports those columns exactly. Every other row in that group —
+`2007-03-18-InvalidNumberedVar.ll`, `invalid-uselistorder-type.ll`,
+`getelementptr_vec_idx1.ll` / `_idx3.ll`, `2008-02-18-IntPointerCrash.ll`,
+`2006-09-28-CrashOnInvalid.ll`, `range-attribute-invalid-type.ll`, the
+`constant-splat-diagnostics` trio — has **no** upstream column at all. Pinning
+those would bless llvmkit's own output as ground truth, which is the failure
+this file exists to prevent, so they stay on text alone.
+
+Cross-check run at the same time, and it is the reason to trust the three: every
+row that *already* carried `loc=` and whose fixture also carries its own pin was
+compared against it. No disagreement.
+
+**A caution this round paid for.** The first sweep for "rows whose fixture pins
+a column" used a regex matching only `[[@LINE-N]]` and `<stdin>:L:C`, and
+reported a set of three for the whole corpus. That was wrong: upstream also
+writes `[[@LINE+1]]`, `[[@LINE+2]]` and `[[#@LINE-1]]`, and the corrected
+matcher — the one this item already records above, which exists precisely
+because of these spellings — returns a much larger population. The narrow regex
+made a large backlog look finished. Use the recorded matcher, with `-a`.
+
+**Still open, unchanged by this round:**
+
+- **`contains` rather than equality**, everywhere. None of the three tiers above
+  switched. The location half and the containment half are separate weaknesses;
+  only the first moved, and only for the rows named above.
+- **`loc=` for the rest of the corpus.** Most reject rows whose fixture carries
+  a column still pin text alone. That is the retrofit the `loc=` bullet
+  describes and it was deliberately not attempted here.
+- **Diagnostics with no vendored fixture get no location oracle from this
+  harness at all.** `getGlobalVal`'s `"@" + Name` / `"@" + Twine(ID)` spellings
+  are exactly that case — the vendored tree pins the `%`-spelling only — so
+  `crates/llvmkit-asmparser/tests/parser_val_id.rs::assert_diagnostic` asserts
+  message *and* caret directly instead. `line_and_column` moved from
+  `parser_corpus.rs` into `crates/llvmkit-asmparser/tests/support/mod.rs` so the
+  two harnesses share one copy rather than growing a second.
+
+**Why the location half was worth doing alone.** A wrong caret shipped behind a
+green corpus: the message was upstream's verbatim while the caret pointed at an
+unrelated *line*. Containment saw the first half and nothing at all saw the
+second.
+
 A blanket equality switch is what this item used to propose, on the reasoning
 that it would "surface every wrapper in one run" and so deserved its own cycle.
 That reasoning was wrong twice over: the genuine sweep is a handful of rows

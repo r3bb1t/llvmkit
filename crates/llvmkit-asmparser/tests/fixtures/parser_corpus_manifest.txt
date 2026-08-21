@@ -162,8 +162,8 @@ upstream/assembler-corpus/byval-parse-error0.ll | test/Assembler/byval-parse-err
 upstream/assembler-corpus/byval-type-attr.ll | test/Assembler/byval-type-attr.ll | status=pass
 upstream/assembler-corpus/c-style-comment.ll | test/Assembler/c-style-comment.ll | status=pass
 upstream/assembler-corpus/call-arg-is-callee.ll | test/Assembler/call-arg-is-callee.ll | status=pass
-upstream/assembler-corpus/call-nonzero-program-addrspace-2.ll | test/Assembler/call-nonzero-program-addrspace-2.ll | status=reject | error='%1' defined with type 'ptr addrspace(42)' but expected 'ptr'
-upstream/assembler-corpus/call-nonzero-program-addrspace.ll | test/Assembler/call-nonzero-program-addrspace.ll | status=reject | error='%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'
+upstream/assembler-corpus/call-nonzero-program-addrspace-2.ll | test/Assembler/call-nonzero-program-addrspace-2.ll | status=reject | loc=11:11 | error='%1' defined with type 'ptr addrspace(42)' but expected 'ptr'
+upstream/assembler-corpus/call-nonzero-program-addrspace.ll | test/Assembler/call-nonzero-program-addrspace.ll | status=reject | loc=10:25 | error='%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'
 upstream/assembler-corpus/callbr.ll | test/Assembler/callbr.ll | status=pass
 upstream/assembler-corpus/callee-type-metadata.ll | test/Assembler/callee-type-metadata.ll | status=pass
 upstream/assembler-corpus/captures-errors/duplicate-ret.ll | test/Assembler/captures-errors.ll split-file part duplicate-ret.ll | status=reject | error=duplicate 'ret' location
@@ -405,7 +405,7 @@ upstream/assembler-corpus/invalid-uselistorder_bb-not-bb.ll | test/Assembler/inv
 upstream/assembler-corpus/invalid-uselistorder_bb-not-func.ll | test/Assembler/invalid-uselistorder_bb-not-func.ll | status=reject | error=expected function name in uselistorder_bb
 upstream/assembler-corpus/invalid-uselistorder_bb-numbered.ll | test/Assembler/invalid-uselistorder_bb-numbered.ll | status=reject | error=invalid numeric label in uselistorder_bb
 upstream/assembler-corpus/invalid_cast4.ll | test/Assembler/invalid_cast4.ll | status=reject | error=invalid cast opcode for cast from 'i64' to 'i64'
-upstream/assembler-corpus/invoke-nonzero-program-addrspace.ll | test/Assembler/invoke-nonzero-program-addrspace.ll | status=reject | error='%fnptr200' defined with type 'ptr addrspace(200)' but expected 'ptr'
+upstream/assembler-corpus/invoke-nonzero-program-addrspace.ll | test/Assembler/invoke-nonzero-program-addrspace.ll | status=reject | loc=11:22 | error='%fnptr200' defined with type 'ptr addrspace(200)' but expected 'ptr'
 upstream/assembler-corpus/large-comdat.ll | test/Assembler/large-comdat.ll | status=pass
 upstream/assembler-corpus/local-unnamed-addr.ll | test/Assembler/local-unnamed-addr.ll | status=pass
 upstream/assembler-corpus/lround.ll | test/Assembler/lround.ll | status=pass

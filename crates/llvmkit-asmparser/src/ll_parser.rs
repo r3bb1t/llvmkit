@@ -769,7 +769,7 @@ impl ParsedApsInt {
 
 #[derive(Branded)]
 #[branded(Debug)]
-enum ValId<'ctx, B: ModuleBrand> {
+enum ValIdKind<'ctx, B: ModuleBrand> {
     LocalId(u32),
     GlobalId(u32),
     LocalName(String),
@@ -792,6 +792,21 @@ enum ValId<'ctx, B: ModuleBrand> {
     /// `<{ ... }>`, kept distinct so the packedness check has something to
     /// compare against.
     PackedConstantStruct(Vec<llvmkit_ir::Constant<'ctx, B>>),
+}
+
+/// `LLParser::ValID` — the value form together with the location
+/// `parseValID` records as its **first** statement, `ID.Loc = Lex.getLoc();`.
+///
+/// Upstream keeps both in one struct, and every diagnostic
+/// `convertValIDToValue` raises reports at `ID.Loc` — the ValID's own first
+/// token, not wherever the lexer has since advanced to. llvmkit spells the
+/// `Kind`-plus-payload half as a Rust enum ([`ValIdKind`]), so the `Loc`
+/// member travels beside it here rather than inside it. It is a field and not
+/// a parameter on purpose: a parameter is what was being passed wrongly.
+struct ValId<'ctx, B: ModuleBrand> {
+    kind: ValIdKind<'ctx, B>,
+    /// `ValID::Loc`.
+    loc: Span,
 }
 
 /// `Function::getValueSymbolTable()->lookup(Name)` — one lookup across every
@@ -1885,7 +1900,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let deferred = std::mem::take(&mut self.deferred_alias_targets);
         for item in deferred {
             let target = self
-                .resolve_global_name_as_constant(item.name.clone(), item.ty)
+                .resolve_global_name_as_constant(item.loc, item.name.clone(), item.ty)
                 .map_err(|err| match err {
                     ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
                         kind,
@@ -1910,7 +1925,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let deferred = std::mem::take(&mut self.deferred_personality_fns);
         for item in deferred {
             let personality = self
-                .resolve_global_name_as_constant(item.name.clone(), item.ty)
+                .resolve_global_name_as_constant(item.loc, item.name.clone(), item.ty)
                 .map_err(|err| match err {
                     ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
                         kind,
@@ -2405,26 +2420,32 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // fixed set. Everything outside it — a local or global name, inline
         // asm, `[]` — is `expected a constant value`, even where
         // `convertValIDToValue` would have had something to say.
-        let value = match id {
-            ValId::ApsInt(_)
-            | ValId::ApFloat(_)
-            | ValId::Undef
-            | ValId::Poison
-            | ValId::Zero
-            | ValId::Constant(_)
-            | ValId::ConstantSplat(_)
-            | ValId::ConstantStruct(_)
-            | ValId::PackedConstantStruct(_) => self.convert_val_id_to_constant(ty, id)?,
+        let value = match id.kind {
+            ValIdKind::ApsInt(_)
+            | ValIdKind::ApFloat(_)
+            | ValIdKind::Undef
+            | ValIdKind::Poison
+            | ValIdKind::Zero
+            | ValIdKind::Constant(_)
+            | ValIdKind::ConstantSplat(_)
+            | ValIdKind::ConstantStruct(_)
+            | ValIdKind::PackedConstantStruct(_) => self.convert_val_id_to_constant(
+                ty,
+                ValId {
+                    kind: id.kind,
+                    loc: id.loc,
+                },
+            )?,
             // Upstream takes `Constant::getNullValue(Ty)` directly here rather
             // than going through the conversion, so `null` at a non-pointer
             // type is the type's zero rather than a diagnostic.
-            ValId::Null => self.zero_initializer_constant(ty)?,
-            ValId::LocalId(_)
-            | ValId::LocalName(_)
-            | ValId::GlobalId(_)
-            | ValId::GlobalName(_)
-            | ValId::EmptyArray
-            | ValId::Value(_) => {
+            ValIdKind::Null => self.zero_initializer_constant(id.loc, ty)?,
+            ValIdKind::LocalId(_)
+            | ValIdKind::LocalName(_)
+            | ValIdKind::GlobalId(_)
+            | ValIdKind::GlobalName(_)
+            | ValIdKind::EmptyArray
+            | ValIdKind::Value(_) => {
                 return Err(ParseError::Message {
                     message: "expected a constant value".into(),
                     loc: DiagLoc::span(loc),
@@ -5427,9 +5448,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // Check the function. `M->getNamedValue` / `NumberedVals.get` answer
         // with any global value, so "not a function" and "not defined yet" are
         // separate verdicts with separate texts.
-        let global = match &function_id {
-            ValId::GlobalName(name) => self.named_global_value(name),
-            ValId::GlobalId(id) => self.numbered_globals.get(*id).copied(),
+        let global = match &function_id.kind {
+            ValIdKind::GlobalName(name) => self.named_global_value(name),
+            ValIdKind::GlobalId(id) => self.numbered_globals.get(*id).copied(),
             _ => {
                 return Err(self.expected_at(function_loc, "function name in uselistorder_bb"));
             }
@@ -5451,11 +5472,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // Check the basic block. Upstream looks the label up in the function's
         // *value* symbol table, which holds arguments and named instructions
         // too — hence the "found, but not a block" arm.
-        let name = match &label_id {
-            ValId::LocalId(_) => {
+        let name = match &label_id.kind {
+            ValIdKind::LocalId(_) => {
                 return Err(self.message_at(label_loc, "invalid numeric label in uselistorder_bb"));
             }
-            ValId::LocalName(name) => name,
+            ValIdKind::LocalName(name) => name,
             _ => {
                 return Err(self.expected_at(label_loc, "basic block name in uselistorder_bb"));
             }
@@ -7936,11 +7957,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `LLParser::parseValID`, whose first statement is
+    /// `ID.Loc = Lex.getLoc();`. The location is recorded here, before any
+    /// token is consumed, so it survives everything the body goes on to read.
     fn parse_val_id(
         &mut self,
         pfs: Option<&PerFunctionState<'ctx, B>>,
         expected_ty: Option<Type<'ctx, B>>,
     ) -> ParseResult<ValId<'ctx, B>> {
+        let loc = self.loc();
+        let kind = self.parse_val_id_kind(pfs, expected_ty)?;
+        Ok(ValId { kind, loc })
+    }
+
+    /// The `switch (Lex.getKind())` half of `parseValID`. Split out only so
+    /// that [`Self::parse_val_id`] can record `ID.Loc` around it; every arm is
+    /// upstream's.
+    fn parse_val_id_kind(
+        &mut self,
+        pfs: Option<&PerFunctionState<'ctx, B>>,
+        expected_ty: Option<Type<'ctx, B>>,
+    ) -> ParseResult<ValIdKind<'ctx, B>> {
         let loc = self.loc();
         match self.peek() {
             Token::Kw(Keyword::Asm) => {
@@ -7976,34 +8013,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("local SSA name"))?;
                 self.bump()?;
-                Ok(ValId::LocalName(name))
+                Ok(ValIdKind::LocalName(name))
             }
             Token::LocalVarId(id) => {
                 let id = *id;
                 self.bump()?;
-                Ok(ValId::LocalId(id))
+                Ok(ValIdKind::LocalId(id))
             }
             Token::GlobalVar(_) => {
                 let name = self
                     .current_str_payload()
                     .ok_or_else(|| self.expected("global variable name"))?;
                 self.bump()?;
-                Ok(ValId::GlobalName(name))
+                Ok(ValIdKind::GlobalName(name))
             }
             Token::GlobalId(id) => {
                 let id = *id;
                 self.bump()?;
-                Ok(ValId::GlobalId(id))
+                Ok(ValIdKind::GlobalId(id))
             }
-            Token::IntegerLit(_) => self.parse_int_literal().map(ValId::ApsInt),
-            Token::FloatLit(_) => self.parse_fp_literal().map(ValId::ApFloat),
+            Token::IntegerLit(_) => self.parse_int_literal().map(ValIdKind::ApsInt),
+            Token::FloatLit(_) => self.parse_fp_literal().map(ValIdKind::ApFloat),
             Token::Kw(Keyword::True) => {
                 let ty = expected_ty.ok_or_else(|| self.expected("i1 type for boolean literal"))?;
                 if ty != self.module.i1_type().as_type() {
                     return Err(self.expected("i1 type for boolean literal"));
                 }
                 self.bump()?;
-                Ok(ValId::ApsInt(ParsedApsInt {
+                Ok(ValIdKind::ApsInt(ParsedApsInt {
                     value: ApInt::from_words(1, &[1]),
                     signedness: Signedness::Unsigned,
                 }))
@@ -8014,32 +8051,32 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Err(self.expected("i1 type for boolean literal"));
                 }
                 self.bump()?;
-                Ok(ValId::ApsInt(ParsedApsInt {
+                Ok(ValIdKind::ApsInt(ParsedApsInt {
                     value: ApInt::zero(1),
                     signedness: Signedness::Unsigned,
                 }))
             }
             Token::Kw(Keyword::Null) => {
                 self.bump()?;
-                Ok(ValId::Null)
+                Ok(ValIdKind::Null)
             }
             Token::Kw(Keyword::Zeroinitializer) => {
                 self.bump()?;
-                Ok(ValId::Zero)
+                Ok(ValIdKind::Zero)
             }
             Token::Kw(Keyword::Undef) => {
                 self.bump()?;
-                Ok(ValId::Undef)
+                Ok(ValIdKind::Undef)
             }
             Token::Kw(Keyword::Poison) => {
                 self.bump()?;
-                Ok(ValId::Poison)
+                Ok(ValIdKind::Poison)
             }
             Token::Kw(Keyword::None) => {
                 let ty = expected_ty.ok_or_else(|| self.expected("type for none constant"))?;
                 self.bump()?;
                 match ty.into_type_enum() {
-                    AnyTypeEnum::Token(_) => Ok(ValId::Constant(self.module.token_none())),
+                    AnyTypeEnum::Token(_) => Ok(ValIdKind::Constant(self.module.token_none())),
                     _ => Err(self.message("invalid type for none constant")),
                 }
             }
@@ -8053,7 +8090,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if values.is_empty() {
                     // Upstream's `t_EmptyArray`: with no elements there is no
                     // element type to derive, so the check is deferred.
-                    return Ok(ValId::EmptyArray);
+                    return Ok(ValIdKind::EmptyArray);
                 }
                 self.check_aggregate_elements(&values, "array", first_elt_loc)?;
                 let element_ty = values[0].ty();
@@ -8063,7 +8100,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .array_type(element_ty, len)
                     .const_array(values)
                     .map_err(|e| self.builder_err("array constant", e))?;
-                Ok(ValId::Constant(c.as_constant()))
+                Ok(ValIdKind::Constant(c.as_constant()))
             }
             Token::Less => {
                 // `LLParser::parseValID`'s `less` arm: `<{ ... }>` is a packed
@@ -8077,7 +8114,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 self.expect_punct(PunctKind::Greater, "end of constant")?;
                 if is_packed_struct {
-                    return Ok(ValId::PackedConstantStruct(values));
+                    return Ok(ValIdKind::PackedConstantStruct(values));
                 }
                 if values.is_empty() {
                     return Err(self.message("constant vector must not be empty"));
@@ -8099,7 +8136,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .vector_type(element_ty, len)
                     .const_vector(values)
                     .map_err(|e| self.builder_err("vector constant", e))?;
-                Ok(ValId::Constant(c.as_constant()))
+                Ok(ValIdKind::Constant(c.as_constant()))
             }
             Token::LBrace => {
                 // `LLParser::parseValID`'s `lbrace` arm. Every check against
@@ -8107,7 +8144,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 let values = self.parse_global_value_vector()?;
                 self.expect_punct(PunctKind::RBrace, "end of struct constant")?;
-                Ok(ValId::ConstantStruct(values))
+                Ok(ValIdKind::ConstantStruct(values))
             }
             Token::Kw(Keyword::C) => {
                 // `ConstantDataArray::getString` always builds `[N x i8]`;
@@ -8130,43 +8167,43 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .array_type(i8_ty, u64::try_from(values.len()).unwrap_or(u64::MAX))
                     .const_array(values)
                     .map_err(|e| self.builder_err("c\"...\" constant", e))?;
-                Ok(ValId::Constant(c.as_constant()))
+                Ok(ValIdKind::Constant(c.as_constant()))
             }
             Token::Kw(Keyword::Blockaddress) => {
                 let ty =
                     expected_ty.ok_or_else(|| self.expected("pointer type for blockaddress"))?;
                 self.parse_blockaddress_constant(loc, ty, pfs)
-                    .map(ValId::Constant)
+                    .map(ValIdKind::Constant)
             }
             Token::Kw(Keyword::DsoLocalEquivalent) => self
                 .parse_dso_local_equivalent_constant()
-                .map(ValId::Constant),
-            Token::Kw(Keyword::NoCfi) => self.parse_no_cfi_constant().map(ValId::Constant),
+                .map(ValIdKind::Constant),
+            Token::Kw(Keyword::NoCfi) => self.parse_no_cfi_constant().map(ValIdKind::Constant),
             Token::MetadataVar(_) => {
                 let ty = expected_ty.ok_or_else(|| self.expected("metadata operand type"))?;
                 if !ty.is_metadata() {
                     return Err(self.expected("`metadata` type for a metadata operand"));
                 }
-                Ok(ValId::Value(self.parse_metadata_value_operand(pfs)?))
+                Ok(ValIdKind::Value(self.parse_metadata_value_operand(pfs)?))
             }
             Token::Exclaim => {
                 let ty = expected_ty.ok_or_else(|| self.expected("metadata operand type"))?;
                 if !ty.is_metadata() {
                     return Err(self.expected("`metadata` type for a metadata operand"));
                 }
-                Ok(ValId::Value(self.parse_metadata_value_operand(pfs)?))
+                Ok(ValIdKind::Value(self.parse_metadata_value_operand(pfs)?))
             }
-            Token::Kw(Keyword::Ptrauth) => self.parse_ptrauth_constant().map(ValId::Constant),
+            Token::Kw(Keyword::Ptrauth) => self.parse_ptrauth_constant().map(ValIdKind::Constant),
             Token::Kw(Keyword::Splat) => {
                 self.expect_keyword(Keyword::Splat, "'splat'")?;
                 self.expect_punct(PunctKind::LParen, "'(' in splat constant")?;
                 let scalar = self.parse_global_type_and_value()?;
                 self.expect_punct(PunctKind::RParen, "')' in splat constant")?;
-                Ok(ValId::ConstantSplat(scalar))
+                Ok(ValIdKind::ConstantSplat(scalar))
             }
             Token::Instruction(op) if is_supported_constant_expr_opcode(*op) => {
                 let ty = expected_ty.ok_or_else(|| self.unsupported_constant_value_form_at(loc))?;
-                self.parse_constant_expr(ty).map(ValId::Constant)
+                self.parse_constant_expr(ty).map(ValIdKind::Constant)
             }
             // `LLParser::parseValID`'s default arm.
             _ => Err(self.expected("value token")),
@@ -8184,14 +8221,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// semantics back to a `FloatType`.
     fn float_literal_constant(
         &self,
+        loc: Span,
         ty: Type<'ctx, B>,
         value: ApFloat,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         let AnyTypeEnum::Float(float_ty) = ty.into_type_enum() else {
-            return Err(self.message("floating point constant invalid for type"));
+            return Err(self.message_at(loc, "floating point constant invalid for type"));
         };
         if !llvmkit_ir::float_value_is_valid_for_type(ty, &value) {
-            return Err(self.message("floating point constant invalid for type"));
+            return Err(self.message_at(loc, "floating point constant invalid for type"));
         }
 
         // "The lexer has no type info, so builds all half, bfloat, float, and
@@ -8230,12 +8268,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if value.semantics() != float_ty.semantics() {
             return Err(ParseError::Message {
                 message: format!("floating point constant does not have type '{ty}'").into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: DiagLoc::span(loc),
             });
         }
         Ok(float_ty
             .const_ap_float(&value)
-            .map_err(|e| self.builder_err("float constant", e))?
+            .map_err(|e| self.builder_err_at(loc, "float constant", e))?
             .as_constant())
     }
 
@@ -8244,6 +8282,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// element type is still unknown.
     fn empty_array_constant(
         &self,
+        loc: Span,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         let is_zero_length_array = match ty.into_type_enum() {
@@ -8251,7 +8290,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => false,
         };
         if !is_zero_length_array {
-            return Err(self.message("invalid empty array initializer"));
+            return Err(self.message_at(loc, "invalid empty array initializer"));
         }
         Ok(ty.poison().as_constant())
     }
@@ -8264,46 +8303,48 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// carry.
     fn struct_initializer_constant(
         &self,
+        loc: Span,
         ty: Type<'ctx, B>,
         values: &[llvmkit_ir::Constant<'ctx, B>],
         is_packed_initializer: bool,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         let AnyTypeEnum::Struct(struct_ty) = ty.into_type_enum() else {
-            return Err(self.message("constant expression type mismatch"));
+            return Err(self.message_at(loc, "constant expression type mismatch"));
         };
         if struct_ty.field_count() != values.len() {
-            return Err(self.message("initializer with struct type has wrong # elements"));
+            return Err(self.message_at(loc, "initializer with struct type has wrong # elements"));
         }
         if struct_ty.is_packed() != is_packed_initializer {
-            return Err(self.message("packed'ness of initializer and type don't match"));
+            return Err(self.message_at(loc, "packed'ness of initializer and type don't match"));
         }
         for (index, value) in values.iter().enumerate() {
-            let field_ty = struct_ty
-                .field_type(index)
-                .ok_or_else(|| self.message("initializer with struct type has wrong # elements"))?;
+            let field_ty = struct_ty.field_type(index).ok_or_else(|| {
+                self.message_at(loc, "initializer with struct type has wrong # elements")
+            })?;
             if value.ty() != field_ty {
                 return Err(ParseError::Message {
                     message: format!(
                         "element {index} of struct initializer doesn't match struct element type"
                     )
                     .into(),
-                    loc: DiagLoc::span(self.loc()),
+                    loc: DiagLoc::span(loc),
                 });
             }
         }
         struct_ty
             .const_struct(values.to_vec())
             .map(|c| c.as_constant())
-            .map_err(|e| self.builder_err("struct constant", e))
+            .map_err(|e| self.builder_err_at(loc, "struct constant", e))
     }
 
     fn expand_splat_constant(
         &self,
+        loc: Span,
         ty: Type<'ctx, B>,
         scalar: llvmkit_ir::Constant<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         let AnyTypeEnum::Vector(vec_ty) = ty.into_type_enum() else {
-            return Err(self.message("vector constant must have vector type"));
+            return Err(self.message_at(loc, "vector constant must have vector type"));
         };
         // Upstream compares against `Ty->getScalarType()`, which for a vector
         // is its element type.
@@ -8315,22 +8356,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     "constant expression type mismatch: got type '{scalar_ty}' but expected '{element_ty}'"
                 )
                 .into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: DiagLoc::span(loc),
             });
         }
         let len = usize::try_from(vec_ty.min_len()).map_err(|_| ParseError::Expected {
             expected: "vector type for splat constant".into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: DiagLoc::span(loc),
         })?;
         let elements = vec![scalar; len];
         vec_ty
             .const_vector(elements)
             .map(|c| c.as_constant())
-            .map_err(|e| self.builder_err("splat constant", e))
+            .map_err(|e| self.builder_err_at(loc, "splat constant", e))
     }
 
     fn zero_initializer_constant(
         &self,
+        loc: Span,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         match ty.into_type_enum() {
@@ -8340,57 +8382,57 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AnyTypeEnum::Array(t) => {
                 let len = usize::try_from(t.len()).map_err(|_| ParseError::Expected {
                     expected: "array zeroinitializer length fits in usize".into(),
-                    loc: DiagLoc::span(self.loc()),
+                    loc: DiagLoc::span(loc),
                 })?;
                 let element = t.element();
                 let mut elements = Vec::with_capacity(len);
                 for _ in 0..len {
-                    elements.push(self.zero_initializer_constant(element)?);
+                    elements.push(self.zero_initializer_constant(loc, element)?);
                 }
                 t.const_array(elements)
                     .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err("array zeroinitializer", e))
+                    .map_err(|e| self.builder_err_at(loc, "array zeroinitializer", e))
             }
             AnyTypeEnum::Vector(t) => {
                 let len = usize::try_from(t.min_len()).map_err(|_| ParseError::Expected {
                     expected: "vector zeroinitializer length fits in usize".into(),
-                    loc: DiagLoc::span(self.loc()),
+                    loc: DiagLoc::span(loc),
                 })?;
                 let element = t.element();
                 let mut elements = Vec::with_capacity(len);
                 for _ in 0..len {
-                    elements.push(self.zero_initializer_constant(element)?);
+                    elements.push(self.zero_initializer_constant(loc, element)?);
                 }
                 t.const_vector(elements)
                     .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err("vector zeroinitializer", e))
+                    .map_err(|e| self.builder_err_at(loc, "vector zeroinitializer", e))
             }
             AnyTypeEnum::Struct(t) => {
                 if t.is_opaque() {
                     return Err(ParseError::Message {
                         message: "invalid type for null constant".into(),
-                        loc: DiagLoc::span(self.loc()),
+                        loc: DiagLoc::span(loc),
                     });
                 }
                 let mut elements = Vec::with_capacity(t.field_count());
                 for idx in 0..t.field_count() {
-                    let field_ty = t
-                        .field_type(idx)
-                        .ok_or_else(|| self.expected("struct field type for zeroinitializer"))?;
-                    elements.push(self.zero_initializer_constant(field_ty)?);
+                    let field_ty = t.field_type(idx).ok_or_else(|| {
+                        self.expected_at(loc, "struct field type for zeroinitializer")
+                    })?;
+                    elements.push(self.zero_initializer_constant(loc, field_ty)?);
                 }
                 t.const_struct(elements)
                     .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err("struct zeroinitializer", e))
+                    .map_err(|e| self.builder_err_at(loc, "struct zeroinitializer", e))
             }
             AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
                 IrError::InvalidOperation { message } => ParseError::Expected {
                     expected: message.into(),
-                    loc: DiagLoc::span(self.loc()),
+                    loc: DiagLoc::span(loc),
                 },
-                other => self.builder_err("target extension none", other),
+                other => self.builder_err_at(loc, "target extension none", other),
             }),
-            _ => Err(self.expected("zeroinitializer for a zeroable type")),
+            _ => Err(self.expected_at(loc, "zeroinitializer for a zeroable type")),
         }
     }
 
@@ -8433,9 +8475,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// the very top of `LLParser::convertValIDToValue`, before any `ValID`
     /// arm runs. A function *type* in value position is always this error,
     /// whatever the value turned out to be.
-    fn reject_function_typed_value(&self, ty: Type<'ctx, B>) -> ParseResult<()> {
+    fn reject_function_typed_value(&self, loc: Span, ty: Type<'ctx, B>) -> ParseResult<()> {
         if matches!(ty.kind(), llvmkit_ir::TypeKind::Function) {
-            return Err(self.message("functions are not values, refer to them as pointers"));
+            return Err(self.message_at(loc, "functions are not values, refer to them as pointers"));
         }
         Ok(())
     }
@@ -8443,11 +8485,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// The first-class-and-not-label guard the `t_Undef`, `t_Poison` and
     /// `t_Zero` arms share. Upstream carries a `FIXME` about `LabelTy` being
     /// first-class at all, which is why the label test is separate.
-    fn check_undef_like_type(&self, ty: Type<'ctx, B>, what: &'static str) -> ParseResult<()> {
+    fn check_undef_like_type(
+        &self,
+        loc: Span,
+        ty: Type<'ctx, B>,
+        what: &'static str,
+    ) -> ParseResult<()> {
         if !ty.is_first_class() || ty.is_label() {
             return Err(ParseError::Message {
                 message: format!("invalid type for {what} constant").into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: DiagLoc::span(loc),
             });
         }
         Ok(())
@@ -8462,6 +8509,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// address space rather than the surrounding expression.
     fn checked_constant_type(
         &self,
+        loc: Span,
         ty: Type<'ctx, B>,
         constant: llvmkit_ir::Constant<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
@@ -8472,32 +8520,43 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     "constant expression type mismatch: got type '{got}' but expected '{ty}'"
                 )
                 .into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: DiagLoc::span(loc),
             });
         }
         Ok(constant)
     }
 
+    /// `LLParser::convertValIDToValue`. Every arm reports at `id.loc` —
+    /// upstream's `ID.Loc`, the ValID's own **first** token — because that is
+    /// what upstream passes: `getGlobalVal(ID.StrVal, Ty, ID.Loc)`,
+    /// `PFS->getVal(ID.UIntVal, Ty, ID.Loc)`,
+    /// `error(ID.Loc, "integer constant must have integer type")`, and so on
+    /// for every arm. Reporting at `self.loc()` here anchored each of them at
+    /// whatever token the lexer had already advanced to, which for a value at
+    /// the end of a line is a caret on the *next* line.
     fn convert_val_id_to_value(
         &mut self,
         ty: Type<'ctx, B>,
         id: ValId<'ctx, B>,
         pfs: Option<&PerFunctionState<'ctx, B>>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        self.reject_function_typed_value(ty)?;
-        match id {
-            ValId::LocalName(name) => pfs
-                .ok_or_else(|| self.message("invalid use of function-local name"))?
-                .get_val(self.module, LocalRef::Named(&name), ty, self.loc()),
-            ValId::LocalId(id) => pfs
-                .ok_or_else(|| self.message("invalid use of function-local name"))?
-                .get_val(self.module, LocalRef::Numbered(id), ty, self.loc()),
-            ValId::GlobalName(name) => self.resolve_global_name_as_value(name, ty),
-            ValId::GlobalId(id) => self.resolve_global_id_as_value(id, ty),
-            ValId::ApsInt(parsed) => {
+        let loc = id.loc;
+        self.reject_function_typed_value(loc, ty)?;
+        match id.kind {
+            ValIdKind::LocalName(name) => pfs
+                .ok_or_else(|| self.message_at(loc, "invalid use of function-local name"))?
+                .get_val(self.module, LocalRef::Named(&name), ty, loc),
+            ValIdKind::LocalId(id) => pfs
+                .ok_or_else(|| self.message_at(loc, "invalid use of function-local name"))?
+                .get_val(self.module, LocalRef::Numbered(id), ty, loc),
+            ValIdKind::GlobalName(name) => self.resolve_global_name_as_value(loc, name, ty),
+            ValIdKind::GlobalId(id) => self.resolve_global_id_as_value(loc, id, ty),
+            ValIdKind::ApsInt(parsed) => {
                 let int_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Int(t) => t,
-                    _ => return Err(self.message("integer constant must have integer type")),
+                    _ => {
+                        return Err(self.message_at(loc, "integer constant must have integer type"));
+                    }
                 };
                 // `convertValIDToValue`'s `t_APSInt` arm: the literal is
                 // widened *or truncated* to the demanded type, so `i8 300` is
@@ -8505,60 +8564,70 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let bits = parsed.extend_or_truncate(int_ty.bit_width());
                 let c = int_ty
                     .const_ap_int(&bits)
-                    .map_err(|e| self.builder_err("integer constant", e))?;
+                    .map_err(|e| self.builder_err_at(loc, "integer constant", e))?;
                 Ok(c.as_erased())
             }
-            ValId::ApFloat(value) => self
-                .float_literal_constant(ty, value)
+            ValIdKind::ApFloat(value) => self
+                .float_literal_constant(loc, ty, value)
                 .map(|c| c.as_erased()),
-            ValId::Null => {
+            ValIdKind::Null => {
                 let pty = match ty.into_type_enum() {
                     AnyTypeEnum::Pointer(t) => t,
-                    _ => return Err(self.message("null must be a pointer type")),
+                    _ => return Err(self.message_at(loc, "null must be a pointer type")),
                 };
                 Ok(pty.const_null().as_erased())
             }
-            ValId::Zero => {
-                self.check_undef_like_type(ty, "null")?;
-                self.zero_initializer_constant(ty).map(|c| c.as_erased())
+            ValIdKind::Zero => {
+                self.check_undef_like_type(loc, ty, "null")?;
+                self.zero_initializer_constant(loc, ty)
+                    .map(|c| c.as_erased())
             }
-            ValId::Undef => {
-                self.check_undef_like_type(ty, "undef")?;
+            ValIdKind::Undef => {
+                self.check_undef_like_type(loc, ty, "undef")?;
                 Ok(ty.undef().as_erased())
             }
-            ValId::Poison => {
-                self.check_undef_like_type(ty, "poison")?;
+            ValIdKind::Poison => {
+                self.check_undef_like_type(loc, ty, "poison")?;
                 Ok(ty.poison().as_erased())
             }
-            ValId::Constant(c) => self.checked_constant_type(ty, c).map(|c| c.as_erased()),
-            ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c).map(|c| c.as_erased()),
-            ValId::EmptyArray => self.empty_array_constant(ty).map(|c| c.as_erased()),
-            ValId::ConstantStruct(values) => self
-                .struct_initializer_constant(ty, &values, false)
+            ValIdKind::Constant(c) => self
+                .checked_constant_type(loc, ty, c)
                 .map(|c| c.as_erased()),
-            ValId::PackedConstantStruct(values) => self
-                .struct_initializer_constant(ty, &values, true)
+            ValIdKind::ConstantSplat(c) => self
+                .expand_splat_constant(loc, ty, c)
                 .map(|c| c.as_erased()),
-            ValId::Value(v) => Ok(v),
+            ValIdKind::EmptyArray => self.empty_array_constant(loc, ty).map(|c| c.as_erased()),
+            ValIdKind::ConstantStruct(values) => self
+                .struct_initializer_constant(loc, ty, &values, false)
+                .map(|c| c.as_erased()),
+            ValIdKind::PackedConstantStruct(values) => self
+                .struct_initializer_constant(loc, ty, &values, true)
+                .map(|c| c.as_erased()),
+            ValIdKind::Value(v) => Ok(v),
         }
     }
 
+    /// The constant-only half of `convertValIDToValue`; same anchoring rule as
+    /// [`Self::convert_val_id_to_value`].
     fn convert_val_id_to_constant(
         &mut self,
         ty: Type<'ctx, B>,
         id: ValId<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        self.reject_function_typed_value(ty)?;
-        match id {
+        let loc = id.loc;
+        self.reject_function_typed_value(loc, ty)?;
+        match id.kind {
             // The pointer-type demand is `getGlobalVal`'s own opening guard,
             // so it lives in the resolver — where the *value* spelling of the
             // same arm reaches it too.
-            ValId::GlobalName(name) => self.resolve_global_name_as_constant(name, ty),
-            ValId::GlobalId(id) => self.resolve_global_id_as_constant(id, ty),
-            ValId::ApsInt(parsed) => {
+            ValIdKind::GlobalName(name) => self.resolve_global_name_as_constant(loc, name, ty),
+            ValIdKind::GlobalId(id) => self.resolve_global_id_as_constant(loc, id, ty),
+            ValIdKind::ApsInt(parsed) => {
                 let int_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Int(t) => t,
-                    _ => return Err(self.message("integer constant must have integer type")),
+                    _ => {
+                        return Err(self.message_at(loc, "integer constant must have integer type"));
+                    }
                 };
                 // `convertValIDToValue`'s `t_APSInt` arm: the literal is
                 // widened *or truncated* to the demanded type, so `i8 300` is
@@ -8568,40 +8637,41 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .const_ap_int(&bits)
                     .map_err(|e| ParseError::Expected {
                         expected: format!("valid integer constant: {e}").into(),
-                        loc: DiagLoc::span(self.loc()),
+                        loc: DiagLoc::span(loc),
                     })?;
                 Ok(c.as_constant())
             }
-            ValId::ApFloat(value) => self.float_literal_constant(ty, value),
-            ValId::Null => {
+            ValIdKind::ApFloat(value) => self.float_literal_constant(loc, ty, value),
+            ValIdKind::Null => {
                 let ptr_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Pointer(t) => t,
-                    _ => return Err(self.message("null must be a pointer type")),
+                    _ => return Err(self.message_at(loc, "null must be a pointer type")),
                 };
                 Ok(ptr_ty.const_null().as_constant())
             }
-            ValId::Zero => self.zero_initializer_constant(ty),
-            ValId::Undef => {
-                self.check_undef_like_type(ty, "undef")?;
+            ValIdKind::Zero => self.zero_initializer_constant(loc, ty),
+            ValIdKind::Undef => {
+                self.check_undef_like_type(loc, ty, "undef")?;
                 Ok(ty.undef().as_constant())
             }
-            ValId::Poison => {
-                self.check_undef_like_type(ty, "poison")?;
+            ValIdKind::Poison => {
+                self.check_undef_like_type(loc, ty, "poison")?;
                 Ok(ty.poison().as_constant())
             }
-            ValId::Constant(c) => self.checked_constant_type(ty, c),
-            ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c),
-            ValId::EmptyArray => self.empty_array_constant(ty),
-            ValId::ConstantStruct(values) => self.struct_initializer_constant(ty, &values, false),
-            ValId::PackedConstantStruct(values) => {
-                self.struct_initializer_constant(ty, &values, true)
+            ValIdKind::Constant(c) => self.checked_constant_type(loc, ty, c),
+            ValIdKind::ConstantSplat(c) => self.expand_splat_constant(loc, ty, c),
+            ValIdKind::EmptyArray => self.empty_array_constant(loc, ty),
+            ValIdKind::ConstantStruct(values) => {
+                self.struct_initializer_constant(loc, ty, &values, false)
             }
-            ValId::LocalId(_) | ValId::LocalName(_) | ValId::Value(_) => {
-                Err(self.expected("constant value"))
+            ValIdKind::PackedConstantStruct(values) => {
+                self.struct_initializer_constant(loc, ty, &values, true)
+            }
+            ValIdKind::LocalId(_) | ValIdKind::LocalName(_) | ValIdKind::Value(_) => {
+                Err(self.expected_at(loc, "constant value"))
             }
         }
     }
-
     fn parse_global_value(
         &mut self,
         ty: Type<'ctx, B>,
@@ -8617,10 +8687,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_personality_fn(&mut self) -> ParseResult<ParsedPersonalityFn<'ctx, B>> {
         let ty = self.parse_type(false)?;
-        let value_loc = self.loc();
         let id = self.parse_val_id(None, Some(ty))?;
-        if let ValId::GlobalName(name) = id {
-            match self.convert_val_id_to_constant(ty, ValId::GlobalName(name.clone())) {
+        // `ValID::Loc`, so a deferred reference is reported at the same token
+        // an immediately-resolved one is.
+        let value_loc = id.loc;
+        if let ValIdKind::GlobalName(name) = id.kind {
+            let retry = ValId {
+                kind: ValIdKind::GlobalName(name.clone()),
+                loc: value_loc,
+            };
+            match self.convert_val_id_to_constant(ty, retry) {
                 Ok(constant) => Ok(ParsedPersonalityFn::Resolved(constant)),
                 Err(ParseError::UndefinedSymbol { .. }) if ty.is_pointer() => {
                     Ok(ParsedPersonalityFn::ForwardName {
@@ -8632,8 +8708,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Err(err) => Err(err),
             }
         } else {
-            self.convert_val_id_to_constant(ty, id)
-                .map(ParsedPersonalityFn::Resolved)
+            self.convert_val_id_to_constant(
+                ty,
+                ValId {
+                    kind: id.kind,
+                    loc: value_loc,
+                },
+            )
+            .map(ParsedPersonalityFn::Resolved)
         }
     }
 
@@ -8664,13 +8746,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `PointerType *PTy = dyn_cast<PointerType>(Ty); if (!PTy) …`, which runs
     /// *before* any symbol-table lookup and so fires even for a name the
     /// module already defines.
-    fn check_global_reference_pointer_type(&self, ty: Type<'ctx, B>) -> ParseResult<()> {
+    fn check_global_reference_pointer_type(&self, loc: Span, ty: Type<'ctx, B>) -> ParseResult<()> {
         if ty.is_pointer() {
             return Ok(());
         }
         Err(ParseError::Message {
             message: "global variable reference must have pointer type".into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: DiagLoc::span(loc),
         })
     }
 
@@ -8679,7 +8761,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `docs/divergences.md` entry 37. Kept where it was, after
     /// [`Self::check_global_reference_pointer_type`], so upstream's own guard
     /// still reports first.
-    fn reject_intrinsic_non_callee(&self, name: &str) -> ParseResult<()> {
+    fn reject_intrinsic_non_callee(&self, loc: Span, name: &str) -> ParseResult<()> {
         if matches!(
             resolve_intrinsic_name(name),
             IntrinsicNameResolution::NonIntrinsic
@@ -8688,7 +8770,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         Err(ParseError::Message {
             message: "intrinsic can only be used as callee".into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: DiagLoc::span(loc),
         })
     }
 
@@ -8720,6 +8802,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// spelling of the very same routine.
     fn check_resolved_global_type(
         &self,
+        loc: Span,
         reference: &str,
         ty: Type<'ctx, B>,
         resolved: GlobalRef<'ctx, B>,
@@ -8731,7 +8814,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             GlobalRef::Ifunc(i) => i.address_space(),
         };
         check_valid_variable_type(
-            self.loc(),
+            loc,
             reference,
             ty,
             self.module.ptr_type(address_space).as_type(),
@@ -8740,64 +8823,63 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn resolve_global_name_as_value(
         &mut self,
+        loc: Span,
         name: String,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        self.check_global_reference_pointer_type(ty)?;
-        self.reject_intrinsic_non_callee(&name)?;
+        self.check_global_reference_pointer_type(loc, ty)?;
+        self.reject_intrinsic_non_callee(loc, &name)?;
         if let Some(resolved) = self.global_symbol_lookup(&name) {
-            self.check_resolved_global_type(&format!("@{name}"), ty, resolved)?;
+            self.check_resolved_global_type(loc, &format!("@{name}"), ty, resolved)?;
             return Ok(self.global_ref_to_value(resolved));
         }
-        let loc = self.loc();
         self.global_forward_ref(Some(&name), None, ty, loc)
             .map(|c| c.as_erased())
     }
 
     fn resolve_global_id_as_value(
         &mut self,
+        loc: Span,
         id: u32,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        self.check_global_reference_pointer_type(ty)?;
+        self.check_global_reference_pointer_type(loc, ty)?;
         if let Some(resolved) = self.numbered_globals.get(id).copied() {
-            self.check_resolved_global_type(&format!("@{id}"), ty, resolved)?;
+            self.check_resolved_global_type(loc, &format!("@{id}"), ty, resolved)?;
             return Ok(self.global_ref_to_value(resolved));
         }
-        let loc = self.loc();
         self.global_forward_ref(None, Some(id), ty, loc)
             .map(|c| c.as_erased())
     }
 
     fn resolve_global_name_as_constant(
         &mut self,
+        loc: Span,
         name: String,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        self.check_global_reference_pointer_type(ty)?;
-        self.reject_intrinsic_non_callee(&name)?;
+        self.check_global_reference_pointer_type(loc, ty)?;
+        self.reject_intrinsic_non_callee(loc, &name)?;
         if let Some(resolved) = self.global_symbol_lookup(&name) {
-            self.check_resolved_global_type(&format!("@{name}"), ty, resolved)?;
+            self.check_resolved_global_type(loc, &format!("@{name}"), ty, resolved)?;
             return Ok(self.global_ref_to_constant(resolved));
         }
-        let loc = self.loc();
         self.global_forward_ref(Some(&name), None, ty, loc)
     }
 
     fn resolve_global_id_as_constant(
         &mut self,
+        loc: Span,
         id: u32,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        self.check_global_reference_pointer_type(ty)?;
+        self.check_global_reference_pointer_type(loc, ty)?;
         if let Some(resolved) = self.numbered_globals.get(id).copied() {
-            self.check_resolved_global_type(&format!("@{id}"), ty, resolved)?;
+            self.check_resolved_global_type(loc, &format!("@{id}"), ty, resolved)?;
             return Ok(self.global_ref_to_constant(resolved));
         }
-        let loc = self.loc();
         self.global_forward_ref(None, Some(id), ty, loc)
     }
-
     fn global_ref_to_value(&self, r: GlobalRef<'ctx, B>) -> llvmkit_ir::Value<'ctx, B> {
         match r {
             GlobalRef::Function(f) => f.as_erased(),
@@ -15353,6 +15435,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.expect_punct(PunctKind::RSquare, "']' to close pad argument list")?;
         Ok(args)
+    }
+
+    /// [`Self::builder_err`] at an explicit location — upstream's
+    /// `error(Loc, …)` beside its `tokError(…)`.
+    fn builder_err_at(&self, loc: Span, label: &str, e: IrError) -> ParseError {
+        ParseError::Expected {
+            expected: format!("{label}: {e}").into(),
+            loc: DiagLoc::span(loc),
+        }
     }
 
     fn builder_err(&self, label: &str, e: IrError) -> ParseError {

@@ -149,3 +149,21 @@ pub fn check_directives(text: &str, checks: &[Check<'_>]) {
         cursor += found + needle.len();
     }
 }
+
+/// 1-based line and column of `offset` within `src`, the coordinates
+/// `SourceMgr::PrintMessage` prints for an `SMLoc` and that upstream's
+/// `<stdin>:LINE:COL:` / `<file>:[[@LINE-N]]:COL:` `FileCheck` lines pin.
+///
+/// Shared rather than duplicated: the corpus harness needs it for `loc=` rows
+/// and the routine-anchored diagnostic tests need it for the positions no
+/// vendored fixture covers.
+pub fn line_and_column(src: &[u8], offset: usize) -> (u32, u32) {
+    let consumed = &src[..offset.min(src.len())];
+    let line = consumed.iter().filter(|byte| **byte == b'\n').count() + 1;
+    let column = match consumed.iter().rposition(|byte| *byte == b'\n') {
+        Some(newline) => offset - newline,
+        None => offset + 1,
+    };
+    let narrow = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+    (narrow(line), narrow(column))
+}

@@ -1378,9 +1378,19 @@ a complete upstream message routed through an `expected ...` wrapper.
   parity, only the diagnostic and the anchor are not.
 - **llvmkit:** the `TargetExt` arm of `zero_initializer_constant` maps
   `IrError::InvalidOperation`'s message into `ParseError::Expected`, whose
-  rendering prefixes `expected `, and anchors it at `self.loc()` — the
-  lookahead token, reached after the failing value was consumed. So llvmkit
-  prints `expected invalid type for null constant` at a later token.
+  rendering prefixes `expected `. So llvmkit prints
+  `expected invalid type for null constant` where upstream prints the bare text.
+- **The anchor half of this entry is CLOSED (2026-08-21).** It used to read
+  "and anchors it at `self.loc()` — the lookahead token, reached after the
+  failing value was consumed", and pointed at the (now deleted) entry on
+  `convertValIDToValue`'s anchoring for the port. That port landed:
+  `LLParser::ValID`'s `Loc` member is now carried by llvmkit's `ValId` and every
+  arm of `convert_val_id_to_value` / `convert_val_id_to_constant` reports at it,
+  `zero_initializer_constant` included. Probed at the closing commit:
+  `2004-11-28-InvalidTypeCrash.ll` reports `5:39`, the `zeroinitializer` token,
+  and `target-type-properties/zeroinit-error.ll` reports `3:48` — both the
+  columns this entry derived for upstream. **Only the `expected ` wrapper
+  survives**, and it is what the heading names.
 - **Consequence:** both text and column differ from `llvm-as` on every
   `target(...)` `zeroinitializer` whose type lacks `HasZeroInit`. The verdict is
   the same. The wrapper is **not** confined to this arm — the routine's `_`
@@ -1668,38 +1678,6 @@ a `call` argument gives `3:38: invalid metadata-value-metadata roundtrip`; and
 Upstream read at the vendored tag `llvmorg-22.1.4`; the repo commit does not pin `orig_cpp/`, which is gitignored. `llvm/lib/IR/Verifier.cpp` — the `Check` macro expands to `CheckFailed(__VA_ARGS__); return;`, and `Verifier::visitGetElementPtrInst` carries the four literals quoted above. llvmkit at this commit: `crates/llvmkit-ir/src/error.rs` — `IrError::VerifierFailure`'s `message` field is documented "Human-readable description mirroring `Verifier::CheckFailed`", and `VerifierRule`'s `Display` arm for each GEP rule renders the house label (`"getelementptr base is not a pointer"`, `"getelementptr source element type is unsized"`, `"getelementptr index operand is not an integer"`, `"getelementptr indices are invalid for the source type"`); `crates/llvmkit-ir/src/verifier.rs::check_gep` carries the four `format!` strings quoted above. Scope check before opening this entry: `grep -niE "verifier.*(wording|reworded|message text|diagnostic text|Check string)" docs/divergences.md docs/future-work.md` found no class-level entry, and the two entries that mention verifier wording (the `PhiNotAtTop` text and the `callbr` "carrying upstream's wording" fix sketch) are per-rule remarks inside entries about a different divergence. The claim here is deliberately not quantified over every rule: four pairs were read and quoted, and the sentence says the convention diverges, not that every rule does.
 
 </details>
-
-### 123. `convertValIDToValue` diagnostics are anchored one token late
-
-*parser — value resolution* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_val_id`, `convert_val_id_to_value`, `convert_val_id_to_constant`)
-
-Found 2026-08-21 while porting `call addrspace(N)` / `invoke addrspace(N)`.
-
-- **LLVM:** `LLParser::ValID` carries a `Loc` member, set by `parseValID` at the
-  ValID's **first** token, and every diagnostic `convertValIDToValue` raises
-  reports at `ID.Loc` — `getGlobalVal(ID.StrVal, Ty, ID.Loc)`,
-  `PFS->getVal(ID.UIntVal, Ty, ID.Loc)`, `error(ID.Loc, "integer constant must
-  have integer type")` among them.
-- **llvmkit:** `ValId` carries no location. `convert_val_id_to_value` passes
-  `self.loc()`, which by then is the token *after* the ValID, because
-  `parse_val_id` has already bumped it.
-- **Evidence:** `test/Assembler/call-nonzero-program-addrspace.ll` pins
-  `[[@LINE-1]]:25` — the `%fnptr42` token — and llvmkit reports column 33, the
-  `(` that follows. Same shape on `call-nonzero-program-addrspace-2.ll`
-  (upstream `11:11`, llvmkit `11:13`) and `invoke-nonzero-program-addrspace.ll`
-  (upstream `11:22`, llvmkit `11:31`). The message text matches upstream's
-  exactly in all three; only the anchor moves. Probed with
-  `target/release/examples/parse_file.exe` on the three vendored fixtures.
-- **Why:** Not introduced by the address-space work — it predates it and shows
-  on every `convertValIDToValue` arm. Entry 114 defers its own anchor half to
-  this port rather than restating it, and entry 110 is the same shape one layer
-  up (instruction result names).
-- **Cost:** the three `*-nonzero-program-addrspace` corpus rows carry `error=`
-  without `loc=`, joining the `loc=` backlog `future-work.md` already carries.
-- **Fix:** Add `loc: Span` alongside `ValId` — upstream's `ValID::Loc` — set it
-  in `parse_val_id`, thread it through `convert_val_id_to_value` /
-  `convert_val_id_to_constant`, then re-derive every `loc=` pin in
-  `parser_corpus_manifest.txt` and add the three above.
 
 ## Different printed bytes
 

@@ -19,6 +19,53 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### `convertValIDToValue` diagnostics are anchored at the ValID's own token (divergence 123)
+
+- **Fixed: every diagnostic `convertValIDToValue` raises reported at the wrong
+  token, and often on the wrong line.** `LLParser::ValID` carries a `Loc`
+  member that `parseValID` fills as its first statement, and upstream reports
+  every arm at `ID.Loc` — the ValID's own first token. llvmkit's `ValId` carried
+  no location and the converters passed `self.loc()`, which by then is the token
+  *after* the value. For `@p = global ptr addrspace(3) @g` followed by another
+  global, the caret landed on **the next line's first token**, an unrelated
+  definition; upstream's own fixtures pin the correct columns
+  (`test/Assembler/call-nonzero-program-addrspace.ll` writes
+  `[[@LINE-1]]:25:`) and llvmkit reported 33.
+
+- **The fix is the location, not a per-message patch.** `ValId` is now a struct
+  pairing the form (`ValIdKind`, the old enum) with `loc: Span` —
+  upstream's `ValID::Loc` — recorded by `parse_val_id` before any token is
+  consumed. `convert_val_id_to_value`, `convert_val_id_to_constant`, the four
+  `getGlobalVal` resolvers, `PerFunctionState::get_val` and the eight
+  constant-building helpers they call all report at it. A field rather than a
+  parameter on purpose: a parameter is what was being passed wrongly.
+
+- **Verified against upstream, not against expectation.** The three
+  `*-nonzero-program-addrspace` fixtures pin `10:25`, `11:11` and `11:22` in
+  their own `CHECK` lines; llvmkit now reports exactly those, and the corpus
+  rows carry the pins as `loc=` so a future drift fails the suite.
+
+- **The oracle gap that let it ship is half closed, and only half.** `loc=`
+  already existed in the corpus manifest and harness — what was missing was
+  applying it where upstream supplies a column. The rows exercising this routine
+  were enumerated and the ones upstream can adjudicate now pin a location; the
+  rest of that routine's rows carry no upstream column at all, so pinning them
+  would bless llvmkit's own output. The **`contains`-not-equality** half of the
+  same oracle is untouched. `docs/future-work.md` says exactly which half moved.
+
+- **Removed: `docs/divergences.md` entry 123**, which recorded this anchoring
+  and whose stated fix is what landed. **Entry 114's anchor half closed with
+  it** — `2004-11-28-InvalidTypeCrash.ll` now reports at the `zeroinitializer`
+  token and `target-type-properties/zeroinit-error.ll` at the column that entry
+  derived for upstream. Only 114's `expected ` wrapper survives, which is what
+  its heading names.
+
+- **`line_and_column` moved to `crates/llvmkit-asmparser/tests/support/mod.rs`**
+  so the corpus harness and the routine-anchored diagnostic tests share one
+  copy; `parser_val_id.rs` asserts message **and** caret for every position it
+  covers, because a message-only assertion is what passed while the caret was
+  wrong.
+
 ### Printed IR that could not be re-parsed, a skipped `checkValidVariableType`, and `printModule`'s blank lines
 
 - **Fixed: an unnamed local inside a `metadata` operand printed `%<unnumbered>`,
