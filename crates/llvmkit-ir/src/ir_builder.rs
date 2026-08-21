@@ -5810,6 +5810,128 @@ where
         self.gep_inner(source_ty, ptr, indices, flags, name)
     }
 
+    /// The IR type a `getelementptr` produces. Port of
+    /// `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`), branch
+    /// for branch and in upstream's order.
+    ///
+    /// `index_tys` carries the index operands' *types* rather than the
+    /// operands: the routine reads nothing but `Index->getType()`, so hoisting
+    /// that projection is a spelling change, and it lets the caller pass the
+    /// values it has already lifted without a second borrow.
+    fn gep_return_type<Indices>(
+        &self,
+        pointer_ty: Type<'ctx, B>,
+        index_tys: Indices,
+    ) -> Type<'ctx, B>
+    where
+        Indices: IntoIterator<Item = Type<'ctx, B>>,
+    {
+        // Vector GEP
+        let ty = pointer_ty;
+        if ty.data().as_vector().is_some() {
+            return ty;
+        }
+        for index_ty in index_tys {
+            if let Some((_, lanes, scalable)) = index_ty.data().as_vector() {
+                // `ElementCount EltCount = IndexVTy->getElementCount();`
+                // `return VectorType::get(Ty, EltCount);` -- `ElementCount` is
+                // the (minimum lane count, scalable) pair destructured above.
+                let id =
+                    self.module
+                        .context()
+                        .vector_type_with_scalability(ty.id(), lanes, scalable);
+                return Type::new(id, ModuleRef::<B>::new(self.module));
+            }
+        }
+        // Scalar GEP
+        ty
+    }
+
+    /// `getelementptr FLAGS <source-ty>, <base>, <indices>` on erased
+    /// operands -- the base may be a `ptr` **or** a `<N x ptr>`, and any index
+    /// may be a scalar `iN` or an `<N x iM>`.
+    ///
+    /// The erased counterpart of [`Self::gep_with_flags`], which pins the base
+    /// through the scalar-only `IntoPointerValue` and each index through
+    /// `IntoIntValue<'ctx, IntDyn, B>`: a `<N x ptr>` is no
+    /// [`crate::PointerValue`] and a `<N x iM>` is no [`crate::IntValue`], so
+    /// a vector `getelementptr` can use neither half -- the same split
+    /// [`Self::int_binop_erased`] and [`Self::int_cmp_erased`] already make.
+    /// Upstream needs no split because `LLParser::parseGetElementPtr` hands
+    /// its operands straight to `GetElementPtrInst::Create`.
+    ///
+    /// The result type is `GetElementPtrInst::getGEPReturnType`
+    /// (`IR/Instructions.h`), ported in `Self::gep_return_type`: a vector base
+    /// gives the result the base's own type, otherwise the first vector index
+    /// lends its element count to the scalar pointer type, otherwise the
+    /// result is that scalar pointer type.
+    ///
+    /// Validation is exactly `GetElementPtrInst`'s constructor and no more.
+    /// Upstream's constructor initialises
+    /// `ResultElementType(getIndexedType(PointeeType, IdxList))`, which may be
+    /// null; llvmkit has no null type to store, so a null walk is rejected
+    /// here as [`IrError::GepInvalidIndices`] -- the same substitution
+    /// [`Self::gep_with_flags`] already makes. The base-is-a-pointer,
+    /// index-is-an-integer and lane-agreement rules are *not* checked here,
+    /// because upstream does not check them here either: they belong to
+    /// `LLParser::parseGetElementPtr` and `Verifier::visitGetElementPtrInst`.
+    ///
+    /// Returns the erased [`ValueId`] rather than a [`crate::PointerValueId`]
+    /// because the result may be a `<N x ptr>`, which is not a pointer type.
+    pub fn gep_erased<T, P, I, V, Name>(
+        &self,
+        source_ty: T,
+        ptr: P,
+        indices: I,
+        flags: GepNoWrapFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        T: IrType<'ctx, B>,
+        P: IntoErasedValue<'ctx, B>,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+    {
+        // `SourceElementType(PointeeType)`.
+        let source_ty = source_ty.as_type();
+        let source_ty_id = source_ty.id();
+        // `init(Ptr, IdxList, NameStr)`'s operand lifting.
+        let ptr_value = ptr.into_erased_value(ModuleRef::new(self.module))?;
+        let mut index_ids = Vec::new();
+        let mut index_values = Vec::new();
+        for index in indices {
+            let index = index.into_erased_value(ModuleRef::new(self.module))?;
+            index_values.push(index);
+            index_ids.push(index.slot());
+        }
+        // `ResultElementType(getIndexedType(PointeeType, IdxList))`. Upstream
+        // stores the null and lets `Verifier::visitGetElementPtrInst`'s
+        // `Check(ElTy, "Invalid indices for GEP pointer type!")` report it;
+        // llvmkit has no null type to store, so the null is spelled as a
+        // rejection here -- the same substitution `Self::gep_inner` makes.
+        if crate::constants::gep_indexed_type(self.module, source_ty_id, &index_ids).is_none() {
+            return Err(IrError::GepInvalidIndices);
+        }
+        // `Instruction(getGEPReturnType(Ptr, IdxList), GetElementPtr, ...)`.
+        let result_ty =
+            self.gep_return_type(ptr_value.ty(), index_values.iter().map(|index| index.ty()));
+        if let Some(folded) =
+            self.folder
+                .fold_gep_dyn(source_ty, ptr_value, &index_values, flags)?
+        {
+            return Ok(self.checked_folded_value(folded, result_ty.id())?.id());
+        }
+        let payload = GepInstData::new(
+            source_ty_id,
+            ptr_value.id,
+            index_ids.into_boxed_slice(),
+            flags,
+        );
+        let inst = self.append_instruction(result_ty.id(), InstructionKindData::Gep(payload), name);
+        Ok(inst.to_erased().id())
+    }
+
     fn gep_inner<T, P, I, V, N>(
         &self,
         source_ty: T,
@@ -5842,11 +5964,14 @@ where
         if crate::constants::gep_indexed_type(self.module, source_ty_id, &idx_ids).is_none() {
             return Err(IrError::GepInvalidIndices);
         }
-        // Mirrors `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`):
-        // for the scalar (non-vector-of-pointers) case the result type is
-        // exactly the base pointer's type, i.e. it lives in the SAME address
-        // space as `ptr`, not always address space 0.
-        let result_ptr_ty = ModuleView::<B>::new(self.module).ptr_type(p.ty().address_space());
+        // `GetElementPtrInst::getGEPReturnType`'s scalar branch, `return Ty` --
+        // the result type is exactly the base pointer's type, so it lives in
+        // the SAME address space as `ptr`, not always address space 0. The
+        // routine's other two branches are statically unreachable here:
+        // `IntoPointerValue` admits no `<N x ptr>` base and
+        // `IntoIntValue<IntDyn>` no `<N x iM>` index. All three branches are
+        // ported in `Self::gep_return_type`, which `Self::gep_erased` uses.
+        let result_ptr_ty = p.ty();
         let result_ty = result_ptr_ty.as_type().id();
         if let Some(folded) = self
             .folder

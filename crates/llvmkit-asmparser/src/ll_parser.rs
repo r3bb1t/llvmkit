@@ -12902,7 +12902,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// `getelementptr FLAGS SOURCE_TY, ptr P, INDEX, INDEX, ...` where
     /// FLAGS is any-order `inbounds` / `nusw` / `nuw`.
-    /// Mirrors `LLParser::parseGetElementPtr` (LLParser.cpp ~8900).
+    /// Mirrors `LLParser::parseGetElementPtr` (LLParser.cpp).
     fn parse_gep(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
@@ -12935,12 +12935,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `dyn_cast<PointerType>(BaseType->getScalarType())` — a *vector* of
         // pointers is a legal base, which is why upstream asks the scalar
         // type rather than the type itself.
-        let mut gep_width = vector_shape_type(ptr_v.ty());
         if pointer_address_space_or_vector_element(ptr_v.ty()).is_none() {
             return Err(self.message_at(base_loc, "base of getelementptr must be a pointer"));
         }
         let mut index_values: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
-        let mut index_locs: Vec<Span> = Vec::new();
+        // `ElementCount GEPWidth = BaseType->isVectorTy()
+        //      ? cast<VectorType>(BaseType)->getElementCount()
+        //      : ElementCount::getFixed(0);` — `None` is the `getFixed(0)`
+        // sentinel, which no real vector type can produce upstream either
+        // (`VectorType::get` asserts a non-zero element count).
+        let mut gep_width = vector_shape_type(ptr_v.ty());
         while matches!(self.peek(), Token::Comma) {
             let saved_lex = self.lex.clone();
             let saved_current = self.current.clone();
@@ -12973,7 +12977,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 gep_width = Some(index_shape);
             }
             index_values.push(idx_v);
-            index_locs.push(elt_loc);
         }
 
         // `parseGetElementPtr`'s three tail checks. Note the scalable rule
@@ -12994,30 +12997,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.message_at(base_loc, "invalid getelementptr indices"));
         }
 
-        // Only now, once every one of upstream's rules has answered, does the
-        // *builder* shape matter. A vector base or a vector index is
-        // upstream-valid but not yet expressible — `gep_with_flags` takes a
-        // scalar `PointerValue` and `IntValue<IntDyn>` indices — so the
-        // conversion sits after the checks rather than before them, and the
-        // recorded IR gap is all that is left here. See `docs/future-work.md`.
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v.try_into().map_err(|_| {
-            self.message_at(
-                base_loc,
-                "a vector-of-pointers getelementptr base is not yet supported",
-            )
-        })?;
-        let mut indices: Vec<llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B>> =
-            Vec::with_capacity(index_values.len());
-        for (index, loc) in index_values.iter().zip(&index_locs) {
-            indices.push((*index).try_into().map_err(|_| {
-                self.message_at(*loc, "vector getelementptr indices are not yet supported")
-            })?);
-        }
+        // `GetElementPtrInst *GEP = GetElementPtrInst::Create(Ty, Ptr, Indices);
+        //  Inst = GEP; GEP->setNoWrapFlags(NW);` — the erased entry point,
+        // because a `<N x ptr>` base and `<N x iM>` indices are both legal
+        // here and neither is a `PointerValue` / `IntValue`. Every one of
+        // upstream's rules has already answered above, in upstream's order.
         let name = result_name.as_str();
         let v = b
-            .gep_with_flags(source_ty, ptr, indices, flags, name)
+            .gep_erased(source_ty, ptr_v, index_values, flags, name)
             .map_err(|e| self.builder_err("getelementptr", e))?;
-        Ok(b.view(v).as_erased())
+        Ok(b.view(v))
     }
 
     /// `select i1 COND, TYPE TRUE, TYPE FALSE`, and the `<N x i1>` condition

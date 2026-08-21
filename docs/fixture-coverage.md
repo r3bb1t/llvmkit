@@ -6,8 +6,8 @@ exceptions and no sampling.**
 
 | Class | Fixtures | Meaning |
 |---|---|---|
-| `ported` | 397 | Every unit of the fixture runs in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`, driven by `parser_corpus.rs`. |
-| `blocked-model` | 102 | At least one unit is held back by a named llvmkit gap. The gap is named per row and catalogued below. |
+| `ported` | 401 | Every unit of the fixture runs in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`, driven by `parser_corpus.rs`. |
+| `blocked-model` | 98 | At least one unit is held back by a named llvmkit gap. The gap is named per row and catalogued below. |
 | `N/A` | 1 | The fixture's contract needs a tool or flag llvmkit does not model, and there is nothing left about the parse for llvmkit to assert. |
 
 ## How this was measured
@@ -109,7 +109,7 @@ Each `blocked-model` row names one of these.
 | **G4** | 5 | An alias/ifunc aliasee may be a constant expression (`getelementptr`, `addrspacecast`); llvmkit's `parse_alias_or_ifunc` sends everything through the TYPE VALUE branch where `LLParser::parseAliasOrIFunc` branches on the aliasee's *first token* and routes those keywords through a bare `parseValID`. This is the "self-typed aliasee does not parse" entry already in [`future-work.md`](future-work.md), and these five fixtures are what it costs. |
 | **G5** | 4 | `call`/`invoke` do not accept `addrspace(N)` — upstream's `parseOptionalProgramAddrSpace` on a call site, and `maybePrintCallAddrSpace` on the printer side. Already in [`divergences.md`](divergences.md) with a verified correction (`callbr` is *not* part of it). |
 | **G6** | 2 | Symbolic address spaces (`addrspace("global")`, datalayout `A`/`G`/`P` names, `llvm-dis --print-addrspace-name`) are not modelled. |
-| **G7** | 5 | `getelementptr` with a vector-of-pointers base or vector indices is not modelled. |
+| **G7** | 0 | *Closed.* `getelementptr` with a vector-of-pointers base or vector indices is now modelled (`IrBuilder::gep_erased`, `GetElementPtrInst::getGEPReturnType`). The gap letter is kept so the numbering of the others is stable. |
 | **G8** | 3 | Metadata fields that take a value or a brace list (`!DITemplateValueParameter(value: i32 7)`, `!GenericDINode(operands: {...})`) are not parsed. |
 | **G9** | 2 | Metadata strings and metadata names are required to be UTF-8; LLVM allows arbitrary bytes. |
 | **G10** | 1 | `!DIEnumerator` values wider than i128 are rejected; upstream stores an `APInt` of any width. |
@@ -117,7 +117,7 @@ Each `blocked-model` row names one of these.
 | **G12** | 1 | `fpext` (and its siblings) reject a scalable-vector source. |
 | **G13** | 2 | A forward-referenced function whose later definition/ifunc has the same name is rejected instead of resolved. |
 | **G14** | 1 | `-allow-incomplete-ir`'s `dropUnknownMetadataReferences` half is not implemented (recorded in docs/divergences.md). |
-| **G15** | 1 | A forward reference to an explicitly numbered global (`@6`) is not resolved. |
+| **G15** | 2 | A forward reference to an explicitly numbered global (`@6`) is not resolved. |
 | **G16** | 2 | The `typeidCompatibleVTable:` module-summary entry kind is not parsed. |
 | **G17** | 15 | Diagnostic text differs from upstream's: llvmkit routes a complete upstream message through an `expected ...` wrapper, or words the check differently. |
 | **G18** | 17 | The check runs at a different stage than upstream's, or not at all: upstream's `llvm-as` rejects at parse/verify time and llvmkit accepts. |
@@ -134,7 +134,7 @@ Which fixture sits on which gap:
 - **G4** (5): `ConstantExprNoFold.ll`, `addrspacecast-alias.ll`, `alias-use-list-order.ll`, `getelementptr.ll`, `uselistorder.ll`
 - **G5** (4): `call-nonzero-program-addrspace-2.ll`, `call-nonzero-program-addrspace.ll`, `ifunc-program-addrspace.ll`, `invoke-nonzero-program-addrspace.ll`
 - **G6** (2): `symbolic-addrspace-datalayout.ll`, `symbolic-addrspace.ll`
-- **G7** (5): `flags.ll`, `getelementptr_vec_idx1.ll`, `getelementptr_vec_idx2.ll`, `getelementptr_vec_idx3.ll`, `opaque-ptr.ll`
+- **G7** (0): closed
 - **G8** (3): `DIDefaultTemplateParam.ll`, `ditemplateparameter.ll`, `generic-debug-node.ll`
 - **G9** (2): `difile-escaped-chars.ll`, `named-metadata.ll`
 - **G10** (1): `DIEnumeratorBig.ll`
@@ -142,7 +142,7 @@ Which fixture sits on which gap:
 - **G12** (1): `fast-math-flags.ll`
 - **G13** (2): `2003-05-15-AssemblerProblem.ll`, `ifunc-use-list-order.ll`
 - **G14** (1): `incomplete-ir-metadata.ll`
-- **G15** (1): `skip-value-numbers-globals.ll`
+- **G15** (2): `opaque-ptr.ll`, `skip-value-numbers-globals.ll`
 - **G16** (2): `index-value-order.ll`, `thinlto-vtable-summary.ll`
 - **G17** (15): `2007-01-16-CrashOnBadCast.ll`, `alias-redefinition.ll`, `dicompileunit-invalid-language.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `opaque-ptr-invalid-forward-ref.ll`, `ptrtoaddr-invalid.ll`
 - **G18** (17): `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-dicompileunit-emissionkind-bad.ll`, `invalid-dicompileunit-language-overflow.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid-generic-debug-node-tag-overflow.ll`, `invalid-generic-debug-node-tag-wrong-type.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
@@ -477,7 +477,7 @@ collision.
 | `extractvalue-invalid-idx.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `extractvalue-no-idx.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `fast-math-flags.ll` | blocked-model | **G12** — rejected at 52:3: `expected float-typed source for fpext` |
-| `flags.ll` | blocked-model | **G7** — rejected at 353:37: `a vector-of-pointers getelementptr base is not yet supported` |
+| `flags.ll` | ported | 1 pass |
 | `fp-intrinsics-attr.ll` | ported | 1 pass |
 | `function-operand-uselistorder.ll` | ported | 1 pass |
 | `generic-debug-node.ll` | blocked-model | **G8** — rejected at 11:64: `expected metadata field value` |
@@ -486,9 +486,9 @@ collision.
 | `getelementptr_struct.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `getelementptr_vec_ce.ll` | ported | 1 pass |
 | `getelementptr_vec_ce2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `getelementptr_vec_idx1.ll` | blocked-model | **G7** — reported `vector getelementptr indices are not yet supported`, upstream `'%w' defined with type '<2 x ptr>` |
-| `getelementptr_vec_idx2.ll` | blocked-model | **G7** — reported `a vector-of-pointers getelementptr base is not yet supported`, upstream `getelementptr vector index has a wrong number of elements` |
-| `getelementptr_vec_idx3.ll` | blocked-model | **G7** — reported `vector getelementptr indices are not yet supported`, upstream `'%w' defined with type '<2 x ptr>'` |
+| `getelementptr_vec_idx1.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
+| `getelementptr_vec_idx2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
+| `getelementptr_vec_idx3.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `getelementptr_vec_idx4.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `getelementptr_vec_struct.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `getelementptr_vscale_struct.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
@@ -694,7 +694,7 @@ collision.
 | `opaque-ptr-invalid-forward-ref-2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `opaque-ptr-invalid-forward-ref.ll` | blocked-model | **G17** — reported `forward reference and definition of global have different types`, upstream `invalid forward reference to function 'f' with wrong type: expected 'ptr' but was 'ptr addrspace(1)'` |
 | `opaque-ptr-struct-types.ll` | ported | 1 pass |
-| `opaque-ptr.ll` | blocked-model | **G7** — rejected at 70:36: `vector getelementptr indices are not yet supported` |
+| `opaque-ptr.ll` | blocked-model | **G15** — rejected at 173:13: `use of undefined global '@0'` |
 | `phi-first-class-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `pr119818.ll` | ported | 1 pass |
 | `private-hidden-alias.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

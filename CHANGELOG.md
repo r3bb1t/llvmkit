@@ -19,6 +19,68 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Vector `getelementptr` instructions are constructible (divergences 5 / 9 / 17)
+
+A vector-of-pointers base and vector indices are valid LLVM IR that llvmkit
+rejected — with two invented messages, raised only after `parse_gep` had run
+every one of upstream's rules. Three `docs/divergences.md` rows recorded the one
+gap; all three are deleted.
+
+- **Added: `IrBuilder::gep_erased`**, the fully-erased third tier beside `gep`
+  / `inbounds_gep` / `gep_with_flags`. It accepts a `<N x ptr>` base and
+  `<N x iM>` indices, and returns the erased `ValueId`, because a vector GEP's
+  result is a `<N x ptr>` and no `PointerValueId` describes one. Same move the
+  vector binops (`int_binop_erased`), compares (`int_cmp_erased`), casts
+  (`int_cast_erased`) and `select_erased` already made.
+
+- **Added: `GetElementPtrInst::getGEPReturnType` is ported as a named routine**
+  rather than inlined — a vector base gives the result the base's own type,
+  otherwise the first vector index lends its element count to the scalar
+  pointer type, otherwise the result is that pointer type. `gep_inner`'s scalar
+  path is that routine's third branch, `return Ty`, and now says so and spells
+  it that way rather than re-deriving the pointer type from its address space.
+
+- **Fixed: the `.ll` parser builds vector GEPs instead of diagnosing them.**
+  `parse_gep` loses the two messages llvmkit invented — `a vector-of-pointers
+  getelementptr base is not yet supported` and `vector getelementptr indices
+  are not yet supported` — neither of which occurs anywhere in LLVM. Every
+  upstream rule already ran before them and is untouched.
+
+- **Fixed (breaking): `GepInst::pointer` returns `Value`, not `PointerValue`.**
+  It minted the pointer handle unchecked, so the moment a `<2 x ptr>` base
+  became constructible it would have handed out a `PointerValue` wrapping a
+  vector — silently, until `gep.pointer().ty().address_space()` panicked in
+  `PointerType::address_space`. Upstream's own accessor is
+  `GetElementPtrInst::getPointerOperand`, returning a bare `Value *`; the GEP
+  grammar guarantees pointer-*or-vector-of-pointer*, so that is what the type
+  now says.
+
+- **Fixed: the verifier's vector-GEP block.** `Verifier::visitGetElementPtrInst`
+  checks that a vector GEP's result width matches its vector base and each of
+  its vector indices; the block was vacuous while no vector GEP existed and is
+  not any more, so it is ported, along with the `PtrTy` half of "GEP is not of
+  right type for indices!". Two new `VerifierRule` variants
+  (`GepNonPointerResult`, `GepVectorWidthMismatch`); the enum is
+  `#[non_exhaustive]`, so that half is additive.
+
+- **Fixed: four upstream fixtures now reach upstream's answer.**
+  `getelementptr_vec_idx1.ll` and `getelementptr_vec_idx3.ll` pin
+  `'%w' defined with type '<2 x ptr>'` — a diagnostic raised on the *use* of a
+  vector GEP, unreachable until the GEP could be built — and
+  `getelementptr_vec_idx2.ll` pins the lane-disagreement message its own
+  `@test1` carries, behind two functions its comments mark "This code is
+  correct". All three join the parser corpus verbatim, as does the whole of
+  `test/Assembler/flags.ll`, which now parses, verifies and round-trips.
+  `opaque-ptr.ll` moves off this gap onto the numbered-global forward-reference
+  one.
+
+- **Recorded, not fixed:** what is left of `Verifier::visitGetElementPtrInst` —
+  the `getResultElementType() == ElTy` half of its result-type `Check` has no
+  counterpart, because llvmkit stores no result element type to disagree; the
+  struct-source scalable-vector `Check` remains a pre-existing omission whose
+  upstream fixture the parser already answers; and the address-space `Check` is
+  vacuous by construction. One new `docs/divergences.md` entry covers all three.
+
 ### `shufflevector` gets its `isValidOperands` port, and stops rejecting the scalable splat
 
 Closes two `docs/divergences.md` rows with one port: **10** (rejects-valid) and **102**

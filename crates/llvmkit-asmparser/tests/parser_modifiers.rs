@@ -196,6 +196,24 @@ fn gep_nusw_nuw_round_trips() {
     );
 }
 
+/// getelementptr nusw nuw on a vector base —
+/// `test/Assembler/flags.ll::gep_nusw_nuw_vec`, the one upstream fixture
+/// pairing a `<N x ptr>` base with the no-wrap flags. It locks that
+/// `GepNoWrapFlags` printing is unaffected by the vector shape, and that the
+/// scalar index survives unsplatted: `GetElementPtrInst::Create` does no
+/// splatting, unlike `ConstantExpr::getGetElementPtr`.
+#[test]
+fn gep_nusw_nuw_vec_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/flags/gep_nusw_nuw_vec_round_trips.ll");
+
+    let text = parse_fixture("gep_nusw_nuw_vec_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["%gep = getelementptr nusw nuw i8, <2 x ptr> %p, i64 %idx"],
+    );
+}
+
 /// getelementptr nuw nusw inbounds — `test/Assembler/flags.ll::gep_nuw_nusw_inbounds`:
 /// GEP flags parse in ANY order (upstream `LLParser::parseGetElementPtr`
 /// loops) and re-print canonically, with nusw suppressed under inbounds.

@@ -1869,6 +1869,12 @@ pub fn constant_fold_get_element_ptr<'ctx, B: ModuleBrand + 'ctx>(
     Ok(None)
 }
 
+/// The result type of a constant-expression `getelementptr`, i.e.
+/// `ConstantExpr::getGetElementPtr`'s `ReqTy` — `getGEPReturnType` plus the
+/// lane agreement that routine's caller asserts
+/// (`"getelementptr index type missmatch"`, `Constants.cpp`). llvmkit ports
+/// no crash: the disagreement is an `IrError` instead, which is hardening
+/// rather than divergence — the input is IR the Verifier rejects either way.
 pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx>(
     pointer_ty: Type<'ctx, B>,
     indices: &[Constant<'ctx, B>],

@@ -1267,12 +1267,10 @@ fn cmpxchg_validates_its_orderings_and_operands() {
 /// `invalid-gep-missing-explicit-type.ll`, `getelementptr_vscale_struct.ll`
 /// and `getelementptr_vec_struct.ll`, all verbatim.
 ///
-/// The last two have **vector** bases and indices, which llvmkit's builder
-/// cannot yet express — but they still reach upstream's answer, because
-/// `parseGetElementPtr`'s rules all run before the instruction is built. That
-/// ordering is the point: the conversion to the builder's scalar shape sits
-/// *after* every check, so a recorded IR gap costs coverage only where the
-/// input is otherwise valid.
+/// The last two have **vector** bases and indices, which
+/// [`llvmkit_ir::IrBuilder::gep_erased`] now builds; they still reach
+/// upstream's answer for upstream's own reason — `parseGetElementPtr`'s rules
+/// all run before `GetElementPtrInst::Create`.
 ///
 /// The scalable rule here differs from the constant-expression arm's, which
 /// W4 landed: an instruction asks only whether the source type is a struct
@@ -1327,6 +1325,45 @@ fn getelementptr_validates_its_base_and_indices() {
         ),
         "getelementptr index must be an integer"
     );
+}
+
+/// The vector-GEP **instruction** functions of `test/Assembler/opaque-ptr.ll`
+/// (`@gep_vec1`, `@gep_vec2`), excerpted verbatim with upstream's own CHECK
+/// lines as the assertions.
+///
+/// `@gep_vec1` is `GetElementPtrInst::getGEPReturnType`'s second branch — a
+/// scalar base and a vector index, so the first vector index lends its
+/// `ElementCount` to the pointer type. `@gep_vec2` is its first branch — a
+/// vector base, whose type becomes the result type unchanged, with the scalar
+/// index left exactly as written. Pairing them is the point of the test:
+/// `ConstantExpr::getGetElementPtr` splats a scalar index into the result's
+/// lane count and `GetElementPtrInst::Create` does not, which is why
+/// upstream's `@gep_vec2` CHECK keeps `i32 2` where `@gep_constexpr_vec2`'s
+/// prints `splat (i32 3)`.
+#[test]
+fn vector_getelementptr_instructions_round_trip() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/opaque-ptr/vector_gep_instructions_round_trips.ll");
+
+    let printed = parse_and_print(FIXTURE);
+    assert!(
+        printed.contains("define <2 x ptr> @gep_vec1(ptr %a)"),
+        "got:\n{printed}"
+    );
+    assert!(
+        printed.contains("%res = getelementptr i8, ptr %a, <2 x i32> <i32 1, i32 2>\n"),
+        "got:\n{printed}"
+    );
+    assert!(
+        printed.contains("define <2 x ptr> @gep_vec2(<2 x ptr> %a)"),
+        "got:\n{printed}"
+    );
+    assert!(
+        printed.contains("%res = getelementptr i8, <2 x ptr> %a, i32 2\n"),
+        "got:\n{printed}"
+    );
+    assert!(printed.contains("ret <2 x ptr> %res\n"), "got:\n{printed}");
+    parse_and_verify(FIXTURE);
 }
 
 /// The four terminator routines' operand rules — `parseRet`, `parseBr`,

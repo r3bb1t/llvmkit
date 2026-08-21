@@ -2050,9 +2050,12 @@ deferred it.
 - **`[F; N]` `IrField` arrays** -- fixed-size array fields in `#[derive(IrStruct)]`
   schemas; would let derived structs model `[i32; 4]`-shaped LLVM array
   members directly instead of requiring a hand-written wrapper.
-- **Vector-of-pointer GEP bases** -- `gep`/`field_gep` currently
-  assume a scalar pointer base; vectorized GEP (`<N x ptr>` base, per-lane
-  offsets) is unmodeled.
+- **Typed vector-GEP handles** -- `IrBuilder::gep_erased` builds a `<N x ptr>`
+  base and `<N x iM>` indices, and returns the erased `ValueId` because a
+  vector GEP's result is no `PointerValue`. The typed tier (`gep`,
+  `gep_with_flags`, `field_gep`) still takes a scalar `IntoPointerValue` base
+  and `IntoIntValue<IntDyn>` indices; a `VectorValue`-shaped typed door on top
+  of `gep_erased` is mechanical follow-up.
 - **Derive-generated field-index consts** -- `field_gep::<S, I>` takes
   the field index as a bare `const I: u32`; the derive macro could emit named
   constants (e.g. `Point::X_INDEX`) so call sites read `field_gep::<Point,
@@ -2145,14 +2148,12 @@ deliberately deferred; each cites its upstream anchor.
   `FoldExactBinOp(.., false)`). Identical results with the shipped folders;
   observable only by third-party folders that override just the
   no-wrap/exact hooks.
-- **Vector-of-pointer GEP bases** -- `gep` / the parser assume a scalar
-  pointer base; `<N x ptr>` vector GEP bases (`getGEPReturnType`'s vector arm)
-  are unmodeled (documented earlier in this file). Consequence for the new GEP
-  index validation: the struct-index-must-be-`i32` check (`StructType::indexValid`,
-  upstream `isIntOrIntVectorTy(32)`) is enforced for scalar indices only; the
-  `<N x i32>` vector-index case is unreachable here because a vector-index GEP
-  requires a vector base, which is rejected earlier. Revisit the check when
-  vector GEP bases land.
+- **Vector-GEP `computeKnownBits` coverage** -- `gep_known_bits`
+  (`value_tracking.rs`) runs on vector GEPs now that `IrBuilder::gep_erased`
+  builds them, conflating lanes the way upstream's `computeKnownBits` does and
+  bailing to unknown wherever an index is not a scalar `ApInt`. No upstream
+  `ValueTracking` fixture covers a vector GEP, so there is nothing to port;
+  the behaviour is reasoned, not pinned.
 
 ## Pass API — deferred
 

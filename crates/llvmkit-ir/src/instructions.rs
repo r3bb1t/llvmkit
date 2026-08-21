@@ -693,13 +693,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
     pub fn source_element_type(self) -> Type<'ctx, B> {
         Type::new(self.payload().source_ty, self.module)
     }
-    /// Pointer operand. Statically a pointer for this opcode, so returned
-    /// as [`PointerValue`] rather than the erased [`Value`].
-    pub fn pointer(self) -> PointerValue<'ctx, B> {
+    /// Pointer operand. Mirrors `GetElementPtrInst::getPointerOperand`, which
+    /// returns a bare `Value *`: a GEP base is a `ptr` **or** a `<N x ptr>`
+    /// (`getGEPReturnType`'s vector arm, [`crate::IrBuilder::gep_erased`]), so
+    /// this is erased. Narrowing it to [`PointerValue`] would forge a pointer
+    /// claim over a vector -- `PointerValue::from_value_unchecked` checks
+    /// nothing, and neither does the `PointerType` that handle's `ty()` hands
+    /// back, so the mislabelling stays silent until `PointerType::address_space`
+    /// panics on it.
+    pub fn pointer(self) -> Value<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
+        Value::from_parts(id, self.module, data.ty)
     }
     pub fn indices(
         self,

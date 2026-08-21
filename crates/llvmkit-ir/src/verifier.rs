@@ -2655,12 +2655,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// `Verifier::visitGetElementPtrInst`. Constructive subset.
+    /// `Verifier::visitGetElementPtrInst`. Ports every check except the
+    /// struct-source scalable-vector `Check`, the
+    /// `getResultElementType() == ElTy` half of "GEP is not of right type for
+    /// indices!" (no stored result element type to compare against), and the
+    /// trailing address-space `Check` (vacuous here: the result type is
+    /// derived from the base operand by `GetElementPtrInst::getGEPReturnType`,
+    /// so the two address spaces are the same interned slot -- upstream's own
+    /// comment on `GetElementPtrInst::getAddressSpace` says as much). See
+    /// docs/divergences.md.
     fn check_gep(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        inst: &InstructionView<'ctx, B>,
         g: &GepInstData,
     ) -> IrResult<()> {
         let base_ty = self.value_type(g.ptr.get());
@@ -2715,6 +2723,56 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     self.type_label(g.source_ty)
                 ),
             ));
+        }
+        // `PointerType *PtrTy = dyn_cast<PointerType>(GEP.getType()->getScalarType());`
+        // and the `PtrTy` half of `Check(PtrTy && GEP.getResultElementType()
+        // == ElTy, "GEP is not of right type for indices!")`. The second half
+        // has no counterpart: `GepInstData` stores no result element type, so
+        // there is nothing to disagree with `ElTy` (docs/divergences.md).
+        let result_ty = inst.ty().id;
+        if !self
+            .module
+            .context()
+            .type_data(scalar_type_id(self.module, result_ty))
+            .is_pointer_data()
+        {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::GepNonPointerResult,
+                format!(
+                    "getelementptr result type {} is not a pointer",
+                    self.type_label(result_ty)
+                ),
+            ));
+        }
+        // "Additional checks for vector GEPs."
+        if let Some(gep_width) = vector_shape(self.module, result_ty) {
+            if let Some(base_width) = vector_shape(self.module, base_ty)
+                && base_width != gep_width
+            {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::GepVectorWidthMismatch,
+                    "vector getelementptr result width doesn't match operand's".to_string(),
+                ));
+            }
+            for (position, idx_id) in g.indices.iter().map(|c| c.get()).enumerate() {
+                // Upstream re-asks `IndexTy->isIntOrIntVectorTy()` inside this
+                // loop; the `GepNonIntegerIndex` loop above already answered it
+                // and returned on the first failure, so a second copy is dead.
+                if let Some(index_width) = vector_shape(self.module, self.value_type(idx_id))
+                    && index_width != gep_width
+                {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::GepVectorWidthMismatch,
+                        format!("invalid getelementptr index #{position} vector width"),
+                    ));
+                }
+            }
         }
         Ok(())
     }

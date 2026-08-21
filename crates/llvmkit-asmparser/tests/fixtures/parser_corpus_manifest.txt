@@ -232,12 +232,16 @@ upstream/assembler-corpus/dso_local_equivalent.ll | test/Assembler/dso_local_equ
 upstream/assembler-corpus/externally-initialized.ll | test/Assembler/externally-initialized.ll | status=pass
 upstream/assembler-corpus/extractvalue-invalid-idx.ll | test/Assembler/extractvalue-invalid-idx.ll | status=reject | error=invalid indices for extractvalue
 upstream/assembler-corpus/extractvalue-no-idx.ll | test/Assembler/extractvalue-no-idx.ll | status=reject | error=expected index
+upstream/assembler-corpus/flags.ll | test/Assembler/flags.ll | status=pass
 upstream/assembler-corpus/fp-intrinsics-attr.ll | test/Assembler/fp-intrinsics-attr.ll | status=pass
 upstream/assembler-corpus/function-operand-uselistorder.ll | test/Assembler/function-operand-uselistorder.ll | status=pass
 upstream/assembler-corpus/getelementptr_invalid_ptr.ll | test/Assembler/getelementptr_invalid_ptr.ll | status=reject | error=base of getelementptr must be a pointer
 upstream/assembler-corpus/getelementptr_struct.ll | test/Assembler/getelementptr_struct.ll | status=reject | error=invalid getelementptr indices
 upstream/assembler-corpus/getelementptr_vec_ce.ll | test/Assembler/getelementptr_vec_ce.ll | status=pass
 upstream/assembler-corpus/getelementptr_vec_ce2.ll | test/Assembler/getelementptr_vec_ce2.ll | status=reject | error=getelementptr vector index has a wrong number of elements
+upstream/assembler-corpus/getelementptr_vec_idx1.ll | test/Assembler/getelementptr_vec_idx1.ll | status=reject | error='%w' defined with type '<2 x ptr>
+upstream/assembler-corpus/getelementptr_vec_idx2.ll | test/Assembler/getelementptr_vec_idx2.ll | status=reject | error=getelementptr vector index has a wrong number of elements
+upstream/assembler-corpus/getelementptr_vec_idx3.ll | test/Assembler/getelementptr_vec_idx3.ll | status=reject | error='%w' defined with type '<2 x ptr>'
 upstream/assembler-corpus/getelementptr_vec_idx4.ll | test/Assembler/getelementptr_vec_idx4.ll | status=reject | error=getelementptr vector index has a wrong number of elements
 upstream/assembler-corpus/getelementptr_vec_struct.ll | test/Assembler/getelementptr_vec_struct.ll | status=reject | error=invalid getelementptr indices
 upstream/assembler-corpus/getelementptr_vscale_struct.ll | test/Assembler/getelementptr_vscale_struct.ll | status=reject | error=invalid getelementptr indices

@@ -644,7 +644,7 @@ where
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
         let view = InstructionView::try_from(value).ok()?;
         match view.kind()? {
-            InstructionKind::Gep(gep) => self.0.try_match(gep.pointer().as_erased()),
+            InstructionKind::Gep(gep) => self.0.try_match(gep.pointer()),
             _ => None,
         }
     }

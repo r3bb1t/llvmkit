@@ -263,6 +263,18 @@ pub enum VerifierRule {
     /// non-aggregate). Mirrors `Verifier::visitGetElementPtrInst`
     /// ("Invalid indices for GEP pointer type!").
     GepInvalidIndices,
+    /// `getelementptr` result type's scalar type is not a pointer. Mirrors
+    /// the `PtrTy` half of `Verifier::visitGetElementPtrInst`'s
+    /// `Check(PtrTy && GEP.getResultElementType() == ElTy, "GEP is not of
+    /// right type for indices!")`; the `getResultElementType() == ElTy` half
+    /// has no counterpart, since `GepInstData` stores no result element type
+    /// (docs/divergences.md).
+    GepNonPointerResult,
+    /// A vector `getelementptr`'s result width disagrees with its vector base
+    /// or with one of its vector indices. Mirrors
+    /// `Verifier::visitGetElementPtrInst`'s "Vector GEP result width doesn't
+    /// match operand's" and "Invalid GEP index vector width".
+    GepVectorWidthMismatch,
     /// `alloca` allocated type is unsized (function/void/label/...).
     /// Mirrors `Verifier::visitAllocaInst`.
     AllocaUnsizedType,
@@ -499,6 +511,10 @@ impl fmt::Display for VerifierRule {
             Self::GepUnsizedSourceType => "getelementptr source element type is unsized",
             Self::GepNonIntegerIndex => "getelementptr index operand is not an integer",
             Self::GepInvalidIndices => "getelementptr indices are invalid for the source type",
+            Self::GepNonPointerResult => "getelementptr result type is not a pointer",
+            Self::GepVectorWidthMismatch => {
+                "vector getelementptr width does not match its operands"
+            }
             Self::AllocaUnsizedType => "alloca allocated type is unsized",
             Self::AllocaNonIntegerCount => "alloca num-elements operand is not an integer",
             Self::SwiftErrorAlloca => "swifterror alloca must be a non-array pointer allocation",

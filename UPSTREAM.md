@@ -19,16 +19,19 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2539 (2534 distinct names). Recounted on 2026-08-21
-at the `shufflevector` `isValidOperands` port (fix round 2) via the documented
+Total `#[test]` functions: 2543 (2538 distinct names). Recounted on 2026-08-21
+at the vector-`getelementptr` commit via the documented
 attribute-anchored grep below
-(`crates/llvmkit-ir` 1561 + `crates/llvmkit-asmparser` 956 +
+(`crates/llvmkit-ir` 1563 + `crates/llvmkit-asmparser` 958 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
 `crates/llvmkit-macros` has none). The distinct-name total comes from the same
 attribute anchor followed to the next `fn` line:
 `awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2539 before `-u`, so the two matchers agree. The +6
-over the 2533 point before it is the `shufflevector` port's six new
+— which also reproduces 2543 before `-u`, so the two matchers agree. The +4
+over the 2539 point before it is the vector-`getelementptr` work: two builder
+tests for `GetElementPtrInst::getGEPReturnType` and its `getIndexedType` gate,
+and two parser tests for the printed form of a vector GEP instruction. The +6
+before that is the `shufflevector` port's six new
 `builder_aggregate_vector.rs` tests -- four with the port itself, one added in
 fix round 1 for the folder path it made reachable, and one in fix round 2 for
 the cross-module mask guard (its `parser_constants.rs` change is a rename, not
@@ -43,14 +46,14 @@ that is the two printer-parity commits — 6 for basic-block printing and
 ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
 program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2539 passed, 0 failed across 214 test binaries.
+this commit reports 2543 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2106 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2110 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2098 rows give provenance for **2214 of
-the 2534 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2102 rows give provenance for **2218 of
+the 2538 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -67,11 +70,12 @@ tests added there (+5 covered, 0 unrowed), the three `ssa_*` repoints each
 name a test that previously carried no row at all (+3 covered, -3 unrowed), and
 fix round 4's one added test landed with its own row (+1 covered, 0 unrowed),
 the operand-bundle work added ten rowed tests and replaced one rowed test
-(+9 covered, 0 unrowed), and the `shufflevector` `isValidOperands` port added
+(+9 covered, 0 unrowed), the `shufflevector` `isValidOperands` port added
 six rowed tests across its three commits and renamed one rowed test
-(+6 covered, 0 unrowed).
+(+6 covered, 0 unrowed), and the vector-`getelementptr` commit added four rowed
+tests (+4 covered, 0 unrowed).
 Re-running the full audit means expanding the group rows by hand (see the
-methodology note below); do not quote 2214 as a freshly derived number.
+methodology note below); do not quote 2218 as a freshly derived number.
 
 > **Methodology, because the previous header's numbers are not comparable.**
 > Through Wave 11 the audit matched rows to tests by looking for a
@@ -331,6 +335,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/builder_gep.rs::gep_inbounds` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)` | port |
 | `crates/llvmkit-ir/tests/builder_gep.rs::struct_gep` | `test/Assembler/getelementptr.ll` (positive struct-GEP print form, e.g. `%B = getelementptr {i32, i32}, ptr %t, i92 %n, i32 0`; `getelementptr_struct.ll` is a NEGATIVE fixture -- invalid indices, `not llvm-as` -- and is not an accurate print-form anchor) + `test/Assembler/flags.ll` `@gep_inbounds_nuw` (`inbounds nuw` flag print form); `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (passes `GEPNoWrapFlags::inBounds() \| GEPNoWrapFlags::noUnsignedWrap()`) | mirror |
 | `crates/llvmkit-ir/tests/builder_gep.rs::gep_zero_index` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, ZeroIndexGEP)` | port |
+| `crates/llvmkit-ir/tests/builder_gep.rs::gep_erased_ports_gep_return_type` | `llvm/include/llvm/IR/Instructions.h::GetElementPtrInst::getGEPReturnType`, all three branches; the two vector shapes are `test/Assembler/opaque-ptr.ll::gep_vec1` / `::gep_vec2` and the scalar one `test/Assembler/getelementptr.ll` | port |
+| `crates/llvmkit-ir/tests/builder_gep.rs::gep_erased_rejects_invalid_indices` | `llvm/lib/IR/Instructions.cpp::GetElementPtrInst::getIndexedType` returning null, as `GetElementPtrInst`'s constructor stores it into `ResultElementType`; shape from `test/Assembler/getelementptr_vec_struct.ll` (vector struct index with disagreeing lanes) | mirror |
 | `crates/llvmkit-ir/tests/builder_gep_addrspace.rs::gep_result_preserves_base_pointer_address_space` | `test/Assembler/2007-12-11-AddressSpaces.ll`; `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`) | mirror |
 | `crates/llvmkit-ir/tests/builder_int_div_rem.rs::udiv_plain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)` | mirror |
 | `crates/llvmkit-ir/tests/builder_int_div_rem.rs::sdiv_plain` | `test/Assembler/flags.ll` | mirror |
@@ -972,6 +978,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::load_align_round_trips` | `test/Assembler/align-inst.ll` constructive load alignment excerpt; `LLParser::parseLoad` align arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_inbounds_nuw_round_trips` | `test/Assembler/flags.ll` `@gep_inbounds_nuw`; `LLParser::parseGetElementPtr` inbounds/nuw arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_nusw_nuw_round_trips` | `test/Assembler/flags.ll` `@gep_nusw_nuw` (AsmWriter's canonical GEP flag order); `LLParser::parseGetElementPtr` any-order flag loop | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_nusw_nuw_vec_round_trips` | `test/Assembler/flags.ll` `@gep_nusw_nuw_vec`, excerpt vendored verbatim with its CHECK line (the no-wrap flags on a `<N x ptr>` base) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_reversed_flag_order_round_trips` | `test/Assembler/flags.ll` `@gep_nuw_nusw_inbounds` (any-order parse, canonical re-print with nusw suppressed under inbounds) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::samesign_icmp_round_trips` | `test/Assembler/flags.ll`; `LLParser::parseCompare` `samesign` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::disjoint_or_round_trips` | `test/Assembler/flags.ll` `@test_or`; `LLParser::parseArithmetic` `disjoint` arm | mirror |
@@ -1122,6 +1129,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::an_empty_operand_bundle_set_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalOperandBundles`, whose emptiness check runs before the `]` is eaten and reports at the `[` — no `test/Assembler` fixture pins it | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::a_callbr_indirect_destination_list_is_mandatory` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCallBr`, whose `\|\|` chain ends with `parseToken(lltok::lsquare, "expected '[' in callbr")` — the list is mandatory and takes no leading comma | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::getelementptr_validates_its_base_and_indices` | `test/Assembler/getelementptr_struct.ll`, `getelementptr_invalid_ptr.ll`, `invalid-gep-missing-explicit-type.ll`, `getelementptr_vscale_struct.ll` and `getelementptr_vec_struct.ll`, all vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGetElementPtr`. The sized, scalable-struct and integer-index rules have no upstream fixture and cite the routine | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::vector_getelementptr_instructions_round_trip` | `test/Assembler/opaque-ptr.ll::gep_vec1` and `::gep_vec2`, excerpt vendored verbatim with their CHECK lines; `llvm/include/llvm/IR/Instructions.h::GetElementPtrInst::getGEPReturnType` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::terminators_validate_their_operands` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseRet`, `parseBr`, `parseSwitch` and `parseIndirectBr` — their six operand rules, and the ordering by which `parseSwitch` / `parseIndirectBr` demand the `[` before checking the condition or address. No `test/Assembler` fixture pins any of them | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::aggregate_index_lists_and_operands_are_validated` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseIndexList` (shared by `parseExtractValue` and `parseInsertValue`, and requiring the first comma) plus those two routines' aggregate and field-type checks | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::instruction_operand_rules_match_upstream_text` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parsePHI`, `parseVAArg`, `parseArithmetic` / `parseLogical` (which differ only in wording), `parseCmpPredicate`, and the `isValidOperands` predicates of `ExtractElementInst` / `InsertElementInst` / `ShuffleVectorInst` (`llvm/lib/IR/Instructions.cpp`) | llvmkit-specific (rule anchor) |
@@ -1271,7 +1279,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_round_trips` | `test/Assembler/pr119818.ll`; `test/Assembler/uselistorder_bb.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_uses_function_address_space` | `llvm/lib/IR/Constants.cpp::BlockAddress::get(Function*, BasicBlock*)` uses the parent function pointer type | mirror |
 | `crates/llvmkit-ir/tests/constants_expr.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` over 502 fixtures; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`, one row per upstream file or `split-file` part, and the classification of the whole of `llvm/test/Assembler` (500 fixtures, ported / blocked-model / N/A) in `docs/fixture-coverage.md` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` over 506 fixtures; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`, one row per upstream file or `split-file` part, and the classification of the whole of `llvm/test/Assembler` (500 fixtures, ported / blocked-model / N/A) in `docs/fixture-coverage.md` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_linkage_definition_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` linkage prefix | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_local_unnamed_addr_round_trips` | `test/Assembler/unnamed-addr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` optional unnamed-address arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::extern_weak_declaration_with_unnamed_addr_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` declaration linkage validation | mirror |
