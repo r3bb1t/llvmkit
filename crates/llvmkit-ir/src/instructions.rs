@@ -2727,6 +2727,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
         }
 
         // Check to see if Mask is valid.
+        //
+        // No upstream counterpart: upstream's three operands are `Value *`s in
+        // one `LLVMContext`, while a shared brand ([`DynBrand`], or a re-issued
+        // named brand) lets a handle from another module reach here with a slot
+        // that means something else in this arena. The two operand types are
+        // already covered — `Type`'s equality compares the `ModuleId` as well as
+        // the slot — but the mask's slot is read against V1's module below, so
+        // it needs the tag test the crate spells `IrError::ForeignValueId`
+        // elsewhere. A predicate has no error channel, and a mask belonging to a
+        // different module is not a valid operand of this shuffle, so it joins
+        // the routine's other rejections.
+        if mask.module.id() != v1.module.id() {
+            return false;
+        }
         crate::constants::valid_shufflevector_mask_constant(
             v1.ty().module().core_ref(),
             mask.slot(),

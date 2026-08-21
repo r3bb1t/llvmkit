@@ -518,6 +518,57 @@ fn shuffle_vector_rejects_an_out_of_range_mask_lane() -> Result<(), IrError> {
     Ok(())
 }
 
+/// Ports `test/Assembler/constant-splat.ll`'s `@ret_scalable_vector_ptr`
+/// through the builder rather than the parser. Upstream writes
+/// `ret <vscale x 4 x ptr> splat (ptr @my_global)` and its CHECK pins the
+/// expansion, which is the constant expression this test builds directly:
+/// `shufflevector (<vscale x 4 x ptr> insertelement (<vscale x 4 x ptr> poison, ptr @my_global, i64 0), <vscale x 4 x ptr> poison, <vscale x 4 x i32> zeroinitializer)`.
+///
+/// The point is the *unfolded* scalable shuffle. `ConstantFoldShuffleVectorInstruction`'s
+/// all-zero-mask arm folds to `ConstantAggregateZero` only when lane 0 is null,
+/// and reaches `ConstantVector::getSplat` only for a fixed mask; a scalable
+/// operand with a non-null lane 0 therefore falls through to its
+/// `if (isa<ScalableVectorType>(V1VTy)) return nullptr;` and the expression
+/// survives. `printShuffleMask` then writes the mask as `zeroinitializer`.
+///
+/// Reachable through `IrBuilder::shuffle_vector` only since
+/// `ShuffleVectorInst::isValidOperands` was ported -- before that the builder
+/// refused every scalable operand, so the folder branch was dead here and the
+/// shape existed only on the constant-expression path.
+#[test]
+fn shuffle_vector_scalable_constant_operand_survives_folding() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let my_global = m.add_global_uninitialized("my_global", i32_ty.as_type())?;
+    let global_ptr = m.view(my_global).as_global_constant_ptr();
+    let vec_ty = m.scalable_vector_type(global_ptr.ty(), 4);
+    let no_parameters: [llvmkit_ir::Type<'_, _>; 0] = [];
+    let fn_ty = m.function_type(vec_ty.as_type(), no_parameters);
+    let f = m.add_function_dyn("ret_scalable_vector_ptr", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let poison = vec_ty.as_type().poison();
+    let inserted = b.insert_element(poison, global_ptr, i64_ty.const_int(0_i64), "")?;
+    let shuffled = b.shuffle_vector(
+        m.view(inserted),
+        poison,
+        &[Lane(0), Lane(0), Lane(0), Lane(0)],
+        "",
+    )?;
+    b.ret(m.view(shuffled))?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "ret <vscale x 4 x ptr> shufflevector (<vscale x 4 x ptr> insertelement (<vscale x 4 x ptr> poison, ptr @my_global, i64 0), <vscale x 4 x ptr> poison, <vscale x 4 x i32> zeroinitializer)
+"
+        ),
+        "got:
+{text}"
+    );
+    Ok(())
+}
+
 // Suppress unused-import warning if a marker drifts.
 const _: fn() = || {
     let _ = std::any::TypeId::of::<IntValue<'static, i32, DynBrand>>();

@@ -489,7 +489,7 @@ fn vscale_round_trip_fixture_matches_upstream() {
     assert_check_lines(
         &text,
         &[
-            "define <vscale x 4 x i32> @const_shufflevector()",
+            "define <vscale x 4 x i32> @const_shufflevector(",
             "<vscale x 4 x i32> zeroinitializer",
             "define <vscale x 4 x i32> @const_shufflevector_ex()",
             "<vscale x 4 x i32> zeroinitializer",

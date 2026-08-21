@@ -1582,10 +1582,10 @@ fn vector_splat_constant(
     Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
 }
 /// Ports the mask-value tail of `ShuffleVectorInst::isValidOperands(const
-/// Value *V1, const Value *V2, const Value *Mask)` (`Instructions.cpp`):
-/// every statement from its
+/// Value *V1, const Value *V2, const Value *Mask)` (`Instructions.cpp`),
+/// beginning at its
 /// `if (isa<UndefValue>(Mask) || isa<ConstantAggregateZero>(Mask)) return true;`
-/// early return through the closing `return false`.
+/// early return.
 ///
 /// The head of that routine — the two type checks — is
 /// `ShuffleVectorInst::is_valid_operands_with_constant_mask`,
@@ -1605,20 +1605,33 @@ pub(crate) fn valid_shufflevector_mask_constant(
     lhs_lanes: u32,
     lhs_scalable: bool,
 ) -> bool {
+    // `if (isa<UndefValue>(Mask) || isa<ConstantAggregateZero>(Mask)) return true;`
     match &module.context().value_data(mask).kind {
-        ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => true,
+        ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => return true,
         ValueKindData::Constant(ConstantData::Aggregate(_))
             if constant_id_is_null_value(module, mask) =>
         {
-            true
+            return true;
         }
+        _ => {}
+    }
+
+    // NOTE: Through vector ConstantInt we have the potential to support more
+    // than just zero splat masks but that requires a LangRef change.
+    //
+    // `if (isa<ScalableVectorType>(MaskTy)) return false;` — reads V1's flag,
+    // which the head has already proved equal to `MaskTy`'s.
+    if lhs_scalable {
+        return false;
+    }
+
+    // `unsigned V1Size = cast<FixedVectorType>(V1->getType())->getNumElements();`
+    // and the `V1Size * 2` every arm below compares against. `unsigned`
+    // arithmetic upstream; widened to `u64` so the product cannot wrap.
+    let bound = u64::from(lhs_lanes) * 2;
+
+    match &module.context().value_data(mask).kind {
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            if lhs_scalable {
-                return false;
-            }
-            let Some(bound) = u64::from(lhs_lanes).checked_mul(2) else {
-                return false;
-            };
             elements.iter().all(|element| {
                 if constant_id_is_undef_or_poison(module, *element) {
                     return true;

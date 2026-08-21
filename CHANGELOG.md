@@ -82,6 +82,16 @@ hand-rolled spellings — two of them wrong.
   `@non_const_shufflevector` did not parse. It does now, so the excerpt is replaced by a
   byte-for-byte copy of the upstream file, and `@const_select` comes with it.
 
+- **Covered: the constant-folder path the port made reachable.** With a scalable
+  operand now constructible, `IrBuilder::shuffle_vector`'s folder hop can reach a
+  scalable `shufflevector` constant expression that survives folding — the shape
+  `test/Assembler/constant-splat.ll`'s `@ret_scalable_vector_ptr` pins, where
+  `ConstantFoldShuffleVectorInstruction`'s all-zero-mask arm reaches
+  `ConstantVector::getSplat` only for a fixed mask and `ConstantAggregateZero`
+  only for a null lane 0, so a scalable operand with a non-null lane 0 falls
+  through. Verified to print upstream's bytes and to re-parse; it had no
+  builder-side test, and now has one.
+
 - **Recorded: `docs/divergences.md` 119** — a scalable shuffle answers "nothing known" from
   `computeKnownBits` / `computeKnownFPClass` where LLVM propagates the demanded set into
   both operands. Conservative-safe and pre-existing, but unreachable until now.

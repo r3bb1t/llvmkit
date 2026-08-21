@@ -19,18 +19,19 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2537 (2532 distinct names). Recounted on 2026-08-21
-at the `shufflevector` `isValidOperands` port via the documented
+Total `#[test]` functions: 2538 (2533 distinct names). Recounted on 2026-08-21
+at the `shufflevector` `isValidOperands` port (fix round 1) via the documented
 attribute-anchored grep below
-(`crates/llvmkit-ir` 1559 + `crates/llvmkit-asmparser` 956 +
+(`crates/llvmkit-ir` 1560 + `crates/llvmkit-asmparser` 956 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
 `crates/llvmkit-macros` has none). The distinct-name total comes from the same
 attribute anchor followed to the next `fn` line:
 `awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2537 before `-u`, so the two matchers agree. The +4
-over the 2533 point before it is the `shufflevector` port's four new
-`builder_aggregate_vector.rs` tests (its `parser_constants.rs` change is a
-rename, not an addition). The +9 before that is the operand-bundle work: ten
+— which also reproduces 2538 before `-u`, so the two matchers agree. The +5
+over the 2533 point before it is the `shufflevector` port's five new
+`builder_aggregate_vector.rs` tests -- four with the port itself and one added
+in fix round 1 for the folder path it made reachable (its
+`parser_constants.rs` change is a rename, not an addition). The +9 before that is the operand-bundle work: ten
 tests added, one hand-trimmed subset test replaced. The last two are fix round
 4's `DIArgList` port — the vendored
 `test/DebugInfo/Generic/debug_value_list.ll` and the operand-bundle /
@@ -41,14 +42,14 @@ that is the two printer-parity commits — 6 for basic-block printing and
 ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
 program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2537 passed, 0 failed across 214 test binaries.
+this commit reports 2538 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2104 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2105 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2096 rows give provenance for **2212 of
-the 2532 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2097 rows give provenance for **2213 of
+the 2533 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -58,7 +59,7 @@ rows repointed at `src/phi_raw_tests/medium.rs`, three `compile_fail/ssa_*.rs`
 rows repointed at the `ssa_builder.rs` runtime locks that replaced those
 retired fixtures, and two `compile_fail/*_pass_*.rs` rows deleted because the
 `PassPipelineInfo` / `*PassManager` machinery they exercised was itself deleted
-in `2f1f390` and has no successor. The 2212/320 split is the 2026-08-20
+in `2f1f390` and has no successor. The 2213/320 split is the 2026-08-20
 hex-case audit's 2190/323 carried forward by arithmetic, not a fresh audit: the
 five rows added at the funclet-parity commit each name exactly one of the five
 tests added there (+5 covered, 0 unrowed), the three `ssa_*` repoints each
@@ -66,9 +67,10 @@ name a test that previously carried no row at all (+3 covered, -3 unrowed), and
 fix round 4's one added test landed with its own row (+1 covered, 0 unrowed),
 the operand-bundle work added ten rowed tests and replaced one rowed test
 (+9 covered, 0 unrowed), and the `shufflevector` `isValidOperands` port added
-four rowed tests and renamed one rowed test (+4 covered, 0 unrowed).
+five rowed tests across its two commits and renamed one rowed test
+(+5 covered, 0 unrowed).
 Re-running the full audit means expanding the group rows by hand (see the
-methodology note below); do not quote 2212 as a freshly derived number.
+methodology note below); do not quote 2213 as a freshly derived number.
 
 > **Methodology, because the previous header's numbers are not comparable.**
 > Through Wave 11 the audit matched rows to tests by looking for a
@@ -85,7 +87,7 @@ methodology note below); do not quote 2212 as a freshly derived number.
 > closed are the group rows finally being credited, not new provenance. That
 > figure is a **dated measurement, not a baseline for this commit**: it was
 > taken at `3a6d379`, the matcher it used is unrecorded, and the distinct-name
-> total has since moved to 2532. Do not subtract it from today's numbers; if
+> total has since moved to 2533. Do not subtract it from today's numbers; if
 > you want a live figure, re-derive it and state the matcher alongside it.
 
 The gap is inherited, not new: it accumulated across the type-safety and
@@ -639,6 +641,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_poison_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable branch's `Mask[0] != PoisonMaskElem` half and `ShuffleVectorInst::convertShuffleMaskForBitcode`'s scalable `PoisonValue::get` arm; no upstream `.ll` fixture writes a scalable poison mask | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_rejects_a_non_splat_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable branch, both disjuncts of `(Mask[0] != 0 && Mask[0] != PoisonMaskElem) \|\| !all_equal(Mask)`; upstream has no `.ll` or gtest fixture for it | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_rejects_an_out_of_range_mask_lane` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` mask-range clause `Elem >= V1Size * 2`; the constant-expression twin is `parser_constants.rs::constant_expr_shufflevector_rejects_out_of_range_mask` | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_constant_operand_survives_folding` | `test/Assembler/constant-splat.ll::@ret_scalable_vector_ptr`, whose CHECK pins the expanded `shufflevector (... insertelement ..., poison, <vscale x 4 x i32> zeroinitializer)`, built through the builder's folder instead of the parser; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction` scalable fall-through and `llvm/lib/IR/AsmWriter.cpp::printShuffleMask` | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic.rs::fence_system_scope_orderings` | `test/Bitcode/compatibility.ll` lines 893-898 | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic.rs::fence_singlethread_seq_cst` | `test/Bitcode/compatibility.ll` line 899 | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic.rs::cmpxchg_no_align_monotonic_monotonic` | `test/Bitcode/compatibility.ll` line 810 | mirror |
