@@ -257,7 +257,11 @@ wrong argument count or type with `IrError::CallArgumentCountMismatch` /
 function-pointer schema `Sig` instead of taking it by hand; `varargs_call`
 lowers a fixed, schema-typed prefix the same way `call` does and appends
 an erased `...` tail, matching LLVM's own no-static-check contract on variadic
-arguments.
+arguments. `call_erased` is the third tier under all of them: the callee is an
+already-erased `Value` and the call site carries its own `FunctionType`, so a
+named function, an inline-asm value and a computed function pointer reach one
+construction — LLVM's `IRBuilder::CreateCall(FunctionType*, Value*, ...)`.
+`indirect_call_dyn` and `inline_asm_call` forward to it.
 
 Derived struct schemas let you derive the schema on a plain Rust struct, use the
 generated `<Struct>Value<'ctx, B>` wrapper in IR, and call field

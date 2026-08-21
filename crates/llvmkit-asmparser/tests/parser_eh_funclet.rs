@@ -339,17 +339,9 @@ fn wineh_missing_funclet_token_is_not_diagnosed() {
 /// funclet rule, but a missing rule can only make llvmkit more permissive, so
 /// it can never turn this fixture's contract into a false failure; what the
 /// oracle does cover is `Verifier::check_call` and `check_invoke` over the
-/// rest of the file. The two `contains` assertions below are llvmkit's own,
+/// rest of the file. The three `contains` assertions below are llvmkit's own,
 /// pinning the `catchswitch`/`catchpad` spelling on top. The file is the
 /// vendored fixture, whole rather than reduced to the one function.
-///
-/// Deliberately **not** a round trip. `@preallocated_indirect`'s
-/// `call void %f(ptr preallocated(i32) %x) ["preallocated"(token %cs)]` prints
-/// back as `call void %f(ptr %x)`: llvmkit drops parameter attributes and
-/// operand bundles on an *indirect* call, where the direct-callee form in
-/// `@preallocated` round-trips correctly. That is divergence **108** in
-/// `docs/divergences.md` and is not fixed here; when it is, this test can gain
-/// the round trip.
 #[test]
 fn catchswitch_in_preallocated_teardown() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/preallocated-valid.ll");
@@ -360,6 +352,13 @@ fn catchswitch_in_preallocated_teardown() {
         "got:\n{text}"
     );
     assert!(text.contains("%p = catchpad within %s []"), "got:\n{text}");
+    // `@preallocated_indirect` keeps its parameter attribute and its operand
+    // bundle now that `parse_call` builds every callee shape through one
+    // `CallInst::Create`. It used to print `call void %f(ptr %x)`.
+    assert!(
+        text.contains(r#"call void %f(ptr preallocated(i32) %x) [ "preallocated"(token %cs) ]"#),
+        "got:\n{text}"
+    );
 }
 
 /// **No upstream counterpart.** This pins the parser/printer contract that the

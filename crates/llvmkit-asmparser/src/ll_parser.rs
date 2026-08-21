@@ -656,6 +656,22 @@ enum ParsedCallee<'ctx, B: ModuleBrand> {
     Indirect(llvmkit_ir::PointerValue<'ctx, B>),
 }
 
+impl<'ctx, B: ModuleBrand> ParsedCallee<'ctx, B> {
+    /// The one `Value *Callee` that `LLParser::convertValIDToValue` writes
+    /// through its out-parameter. Upstream's switch over `ValID::Kind` ends in
+    /// a single erased value and every call/invoke/callbr construction site
+    /// downstream sees only that; llvmkit keeps the variants because
+    /// `parse_callbr` still needs the directness distinction
+    /// (`docs/divergences.md` entry 27), so the collapse is spelled here.
+    fn as_erased(&self) -> llvmkit_ir::Value<'ctx, B> {
+        match self {
+            ParsedCallee::Function(f) => IsValue::as_erased(*f),
+            ParsedCallee::InlineAsm(asm) => asm.as_erased(),
+            ParsedCallee::Indirect(p) => IsValue::as_erased(*p),
+        }
+    }
+}
+
 /// What an attribute list yields besides the attributes themselves — the two
 /// out-parameters of `LLParser::parseFnAttributeValuePairs`, returned rather
 /// than written through (ported-type design law 6).
@@ -13733,14 +13749,32 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             llvmkit_ir::instr_types::TailCallKind::None
         };
-        if matches!(self.peek(), Token::Instruction(Opcode::Call)) {
+        // `LocTy CallLoc = Lex.getLoc();` is `LLParser::parseCall`'s last
+        // statement before `parseToken(lltok::kw_call, …)`, and so before
+        // `EatFastMathFlagsIfPresent()` too. `parseInstruction` has already
+        // eaten the opcode keyword, so for a plain `call` this is the token
+        // after `call`, and for `tail`/`musttail`/`notail` it is the `call`
+        // token itself. llvmkit eats the tail keyword here rather than in the
+        // dispatcher, so this is the equivalent point. Three diagnostics are
+        // anchored on it: `not enough parameters specified for call`, the
+        // fast-math guard and the `llvm.dbg` guard.
+        let call_loc = self.loc();
+        // `if (TCK != CallInst::TCK_None && parseToken(lltok::kw_call, …))
+        // return true;` — after a tail keyword the `call` keyword is
+        // mandatory, and its absence is a diagnostic rather than a silent
+        // continue. For a plain `call` there is nothing to eat here: llvmkit's
+        // instruction dispatch has already consumed it, which is upstream's
+        // `parseInstruction` `Lex.Lex(); // Eat the keyword.`
+        if !matches!(tail_kind, llvmkit_ir::instr_types::TailCallKind::None) {
+            if !matches!(self.peek(), Token::Instruction(Opcode::Call)) {
+                return Err(self.expected("'tail call', 'musttail call', or 'notail call'"));
+            }
             self.bump()?;
         }
         // `LLParser::parseCall` eats the flags here, before the calling
         // convention, and rejects them below when the return type is not
         // floating-point.
         let fmf = self.parse_optional_fmf()?;
-        let call_loc = self.loc();
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
         // `LLParser::parseCall` reads the call site's address space here, in
@@ -13846,9 +13880,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // — so a bad callee is reported ahead of a bad argument.
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty, call_addr_space)?;
         self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
-        // `LLParser::parseCall`'s FMF guard, with its own wording.
+        // `LLParser::parseCall`'s FMF guard. Upstream builds the `CallInst`
+        // first and runs `if (FMF.any()) { if (!isa<FPMathOperator>(CI)) {
+        // CI->deleteValue(); return error(CallLoc, …); } }`. llvmkit has no
+        // orphan-then-delete — `append_instruction` attaches — so the guard
+        // runs before construction instead. Observably identical: nothing
+        // between the two points can fail, and this guard still precedes the
+        // `llvm.dbg` guard exactly as upstream's does. The anchor is
+        // upstream's `CallLoc`, not the current token.
         if !fmf.is_empty() && !is_fp_or_fp_vector_type(parsed_fn_ty.return_type()) {
-            return Err(self.message(
+            return Err(self.message_at(
+                call_loc,
                 "fast-math-flags specified for call without floating-point scalar or vector return type",
             ));
         }
@@ -13866,48 +13908,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             self.seen_old_dbg_info_format = true;
         }
-        let name = result_name.as_str();
-        let v = match callee {
-            ParsedCallee::Function(callee) => {
-                let mut builder = b
-                    .call_builder(callee)
-                    .call_site_type(parsed_fn_ty)
+        // `CallInst::Create(Ty, Callee, Args, BundleList)` — ONE construction
+        // site, because `convertValIDToValue` hands `parseCall` one
+        // `Value *Callee` and `parseCall` has no direct/indirect fork. The
+        // three `ParsedCallee` variants differ only in how the operand is
+        // erased, which is `convertValIDToValue`'s switch, not a second
+        // instruction shape. `setTailCallKind`, `setCallingConv` and
+        // `setAttributes` ride along.
+        let call = b
+            .call_erased::<llvmkit_ir::Dyn, _, _>(
+                parsed_fn_ty,
+                callee.as_erased(),
+                args,
+                tail_kind,
+                llvmkit_ir::CallSiteConfig::new(result_name.as_str())
                     .calling_conv(calling_conv)
-                    .call_attributes(call_attrs);
-                builder = match tail_kind {
-                    llvmkit_ir::instr_types::TailCallKind::None => builder,
-                    llvmkit_ir::instr_types::TailCallKind::Tail => builder.tail(),
-                    llvmkit_ir::instr_types::TailCallKind::MustTail => builder.must_tail(),
-                    llvmkit_ir::instr_types::TailCallKind::NoTail => builder.no_tail(),
-                };
-                for arg in args {
-                    builder = builder.arg(arg);
-                }
-                let call = builder
-                    .name(name)
-                    .build()
-                    .map_err(|e| self.builder_err("call", e))?;
-                b.view(call).to_erased()
-            }
-            ParsedCallee::InlineAsm(asm) => {
-                let call = b
-                    .inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
-                    .map_err(|e| self.builder_err("call", e))?;
-                b.view(call).to_erased()
-            }
-            ParsedCallee::Indirect(callee) => {
-                let call = b
-                    .indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _, _>(
-                        parsed_fn_ty,
-                        callee,
-                        args,
-                        name,
-                    )
-                    .map_err(|e| self.builder_err("indirect call", e))?;
-                b.view(call).to_erased()
-            }
-        };
-        Ok(v)
+                    .attrs(call_attrs),
+            )
+            .map_err(|e| self.builder_err("call", e))?;
+        Ok(b.view(call).to_erased())
     }
 
     /// `LLParser::parseOptionalCallingConv`, whole. An absent convention is

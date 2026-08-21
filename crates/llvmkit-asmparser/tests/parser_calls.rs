@@ -870,6 +870,213 @@ fn indirect_call_undef_callee_round_trips() {
     assert_check_lines(&text, &["call void undef()"]);
 }
 
+/// **No upstream counterpart** — no fixture under `test/Assembler`,
+/// `test/Verifier` or `test/Feature` pins this diagnostic
+/// (`grep -rl "notail call'"` over those three directories of the vendored
+/// `llvmorg-22.1.4` tree returns nothing), so the rule is the anchor (D11):
+/// `LLParser::parseCall`'s first guard,
+/// `if (TCK != CallInst::TCK_None && parseToken(lltok::kw_call, "expected
+/// 'tail call', 'musttail call', or 'notail call'")) return true;`. Upstream
+/// reaches `parseCall` from `parseInstruction`'s `kw_tail` / `kw_musttail` /
+/// `kw_notail` arms with only the tail keyword eaten, so the `call` that
+/// follows is mandatory.
+#[test]
+fn tail_keyword_without_call_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/tail_keyword_without_call_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "tail_keyword_without_call_rejected",
+        FIXTURE,
+        "expected 'tail call', 'musttail call', or 'notail call'",
+    );
+}
+
+/// `test/Assembler/callee-type-metadata.ll`, asserting its own `; CHECK:` line.
+/// Upstream's `RUN` line is `llvm-as < %s | llvm-dis | FileCheck %s`, so that
+/// line is `AsmWriter` output byte for byte, and the `llvm-as` half verifies.
+///
+/// The fixture is already in `parser_corpus_manifest.txt`, but `parser_corpus.rs`
+/// asserts parse / verify / print-reparse-print stability and never reads a
+/// fixture's `CHECK` lines — which is how the dropped `signext` survived a
+/// `status=pass` row. This test is the missing half.
+#[test]
+fn indirect_call_parameter_attribute_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/callee-type-metadata.ll");
+
+    let text =
+        parse_verify_and_render_bytes("indirect_call_parameter_attribute_round_trips", FIXTURE);
+    check_directives(
+        &text,
+        &[Check::Line(
+            "%call = call i32 %fptr(i8 signext %x_val), !callee_type !1",
+        )],
+    );
+}
+
+/// `test/Verifier/kcfi-operand-bundles.ll`, verbatim (the whole file). Every
+/// call in it is indirect and every one carries a `"kcfi"` operand bundle.
+///
+/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
+/// so only the parse/print half is portable: llvmkit's verifier has no kcfi
+/// bundle rules (`Verifier::visitCallBase`'s `Multiple kcfi operand bundles` /
+/// `Kcfi bundle operand must be an i32 constant` are unported, so the fixture's
+/// two `CHECK:` diagnostic lines have no llvmkit counterpart to match). Each
+/// `CHECK-NEXT` line is the offending instruction as `AsmWriter` prints it,
+/// which is what this asserts — as a `Check::Line`, because the diagnostic the
+/// `-NEXT` counts from is not printed here.
+#[test]
+fn indirect_call_kcfi_operand_bundles_round_trip() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/kcfi-operand-bundles.ll");
+
+    let text = parse_and_render_bytes("indirect_call_kcfi_operand_bundles_round_trip", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line(r#"call void %arg2() [ "kcfi"(i32 42), "kcfi"(i32 42) ]"#),
+            Check::Line(r#"call void %arg2() [ "kcfi"(i64 42) ]"#),
+            Check::Line(r#"call void %arg2() [ "kcfi"(i32 42) ]"#),
+            Check::Line(r#"call void %arg2() [ "kcfi"(i32 42) ]"#),
+        ],
+    );
+}
+
+/// `test/Verifier/ptrauth-operand-bundles.ll`, verbatim (the whole file). Five
+/// indirect calls with `"ptrauth"` bundles plus one **direct** call with the
+/// same bundle — the direct/indirect contrast in one fixture, which is why it
+/// is ported alongside the kcfi one rather than instead of it.
+///
+/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`;
+/// llvmkit's verifier has none of the ptrauth bundle rules, so only the
+/// parse/print half is ported and the fixture's `CHECK:` diagnostic lines have
+/// no llvmkit counterpart. The `CHECK-NEXT` lines are `AsmWriter` output of the
+/// offending instruction, asserted here as `Check::Line` for the same reason as
+/// [`indirect_call_kcfi_operand_bundles_round_trip`].
+#[test]
+fn indirect_call_ptrauth_operand_bundles_round_trip() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/ptrauth-operand-bundles.ll");
+
+    let text = parse_and_render_bytes("indirect_call_ptrauth_operand_bundles_round_trip", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line(
+                r#"call void %arg2() [ "ptrauth"(i32 42, i64 100), "ptrauth"(i32 42, i64 %arg0) ]"#,
+            ),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i32 %arg1, i64 120) ]"#),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i64 42, i64 120) ]"#),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i32 42, i32 120) ]"#),
+            Check::Line(r#"call void @g() [ "ptrauth"(i32 42, i64 120) ]"#),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i32 42, i64 120) ]"#),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i32 42, i64 %arg0) ]"#),
+        ],
+    );
+}
+
+/// `test/Verifier/inline-asm-indirect-operand.ll`, verbatim (the whole file).
+/// The inline-asm `call`, `invoke` and `callbr` forms of an argument carrying
+/// `elementtype(i32)`.
+///
+/// Upstream's `RUN` line is `not llvm-as < %s -o /dev/null 2>&1 | FileCheck %s`
+/// — `llvm-as` runs the verifier, and the rejection is
+/// `Verifier::verifyInlineAsmCall`'s per-operand half, which llvmkit does not
+/// port (`docs/divergences.md` entry 85). So only the parse/print half is
+/// ported: the `CHECK-NEXT` lines are the offending instruction as `AsmWriter`
+/// prints it, and `@okay`'s call is the positive case with no `CHECK` of its
+/// own. That llvmkit accepts the module is entry 85's divergence, not this
+/// test's claim.
+#[test]
+fn inline_asm_call_elementtype_argument_attribute_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/inline-asm-indirect-operand.ll");
+
+    let text = parse_and_render_bytes(
+        "inline_asm_call_elementtype_argument_attribute_round_trips",
+        FIXTURE,
+    );
+    check_directives(
+        &text,
+        &[
+            // `@okay` — the positive case, which carries no upstream `CHECK`
+            // line of its own; the attribute must survive here too or the
+            // fixture means nothing.
+            Check::Line(
+                r#"call void asm "addl $1, $0", "=*rm,r"(ptr elementtype(i32) %p, i32 %x)"#,
+            ),
+            Check::Line(r#"call void asm "addl $1, $0", "=*rm,r"(i32 %p, i32 %x)"#),
+            Check::Line(
+                r#"call void asm "addl $1, $0", "=*rm,r"(ptr elementtype(i32) %p, ptr elementtype(i32) %x)"#,
+            ),
+            Check::Line(r#"call void asm "addl $1, $0", "=*rm,r"(ptr %p, i32 %x)"#),
+            Check::Line(r#"invoke void asm "addl $1, $0", "=*rm,r"(i32 %p, i32 %x)"#),
+            Check::Line(r#"callbr void asm "addl $1, $0", "=*rm,r"(i32 %p, i32 %x)"#),
+        ],
+    );
+}
+
+/// **No upstream counterpart.** The rule anchor is `LLParser::parseCall`'s
+/// post-construction statements — `CI->setTailCallKind(TCK)`,
+/// `CI->setCallingConv(CC)` and `CI->setFastMathFlags(FMF)` — which run on the
+/// single `Value *Callee` that `convertValIDToValue` resolved, with no
+/// direct/indirect distinction anywhere; and
+/// `AssemblyWriter::printInstruction`'s `CallInst` arm, which prints all three
+/// without consulting the callee's shape.
+///
+/// The fixture is llvmkit-authored: it spells a tail-call kind, a calling
+/// convention and fast-math flags on a non-`@` callee.
+#[test]
+fn indirect_call_modifiers_round_trip() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_modifiers_round_trip.ll"
+    );
+
+    let text = parse_and_render_bytes("indirect_call_modifiers_round_trip", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line("tail call void %fp(i32 %v)"),
+            Check::Next("notail call void %fp(i32 %v)"),
+            Check::Next("call fastcc void %fp(i32 %v)"),
+            Check::Next("call cc 99 void %fp(i32 %v)"),
+            Check::Next("%a = call nnan ninf float %fp(float %fv)"),
+            Check::Next("%b = call fast float %fp(float %fv)"),
+        ],
+    );
+}
+
+/// **No upstream counterpart** for the `#N` and return-attribute halves — see
+/// [`indirect_call_modifiers_round_trip`] for the shape. (The
+/// *parameter*-attribute half does have one, ported as
+/// [`indirect_call_parameter_attribute_round_trips`].)
+///
+/// The rule anchor is `LLParser::parseCall`'s `CI->setAttributes(PAL)` and
+/// `ForwardRefAttrGroups[CI] = FwdRefAttrGrps`, both of which run on the single
+/// resolved `Value *Callee`. A dropped `#0` is doubly visible: the call loses
+/// the reference *and* the module keeps an `attributes #0 = { … }` line nothing
+/// refers to, which is why the definition is asserted too.
+#[test]
+fn indirect_call_attributes_round_trip() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_attributes_round_trip.ll"
+    );
+
+    let text = parse_and_render_bytes("indirect_call_attributes_round_trip", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line("call void %fp(i32 noundef %v)"),
+            Check::Next("call void %fp(ptr nonnull align 8 %p)"),
+            Check::Next("call void %fp(i32 %v) #0"),
+            Check::Next("%r = call zeroext i8 %fp(i32 %v)"),
+            Check::Line("attributes #0 = { nounwind }"),
+        ],
+    );
+}
+
 /// Mirrors `LLParser::PerFunctionState::getVal`'s type check at the callee
 /// position: a non-pointer local cannot be a callee, because
 /// `convertValIDToValue` asks `getVal` for the name at pointer type and

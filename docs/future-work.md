@@ -48,8 +48,11 @@ paragraph used to count under "funclet EH terminators", plus
 `expected 'from' after catchret` — the example this paragraph used to lead
 with. That is 8 of the 46 by this paragraph's own arithmetic, so the live
 figure should be 38; it has **not** been re-derived, because `ledger_v2.py` is
-not in the tree (`find . -name 'ledger*.py'` returns nothing). Re-run the
-ledger before quoting either number. This overlaps gap **G17** in [`fixture-coverage.md`](fixture-coverage.md)
+not in the tree (`find . -name 'ledger*.py'` returns nothing). One further
+message closed after that, on 2026-08-21: `expected 'tail call', 'musttail
+call', or 'notail call'`, when `LLParser::parseCall`'s first guard was ported
+(it had been not merely missing but a verdict difference — llvmkit accepted
+`tail void @f()`). Re-run the ledger before quoting either number. This overlaps gap **G17** in [`fixture-coverage.md`](fixture-coverage.md)
 but is not the same set: G17 counts *fixtures* that fail on wording, this counts
 *messages*. The full per-message list, with llvmkit's current spelling beside
 each, is the classification section of the parity ledger.
@@ -491,6 +494,66 @@ changes the anchor column of `multiple definition of local value named '…'`,
 and `instruction forward referenced with type '…'` across the whole parser.
 That blast radius wants its own diagnostic-span audit and a re-bless of
 whatever pins those columns, not a rider on a funclet fix.
+
+## Parser — `resolve_direct_callee` returns a three-way sum where `convertValIDToValue` returns one `Value *` (found 2026-08-21, divergence-closing task 6)
+
+`LLParser::convertValIDToValue` switches over `ValID::Kind` internally and
+writes **one** `Value *Callee` through its out-parameter. `parseCall`,
+`parseInvoke` and `parseCallBr` each then run a single construction tail —
+`CallInst::Create` / `InvokeInst::Create` / `CallBrInst::Create` — with no
+direct/indirect/inline-asm distinction anywhere.
+
+llvmkit's `resolve_direct_callee` returns `ParsedCallee::{Function, InlineAsm,
+Indirect}` and hands the fork to its caller. `parse_call` no longer forks — it
+calls `ParsedCallee::as_erased` and then one `IrBuilder::call_erased` — but
+`parse_invoke` and `parse_callbr` still `match` on the variant and dispatch to
+three builder entry points each.
+
+The remaining fork has no observable behaviour of its own, so it is recorded
+here rather than in [`divergences.md`](divergences.md): all six of those entry
+points carry a `CallSiteConfig`, so the same information reaches the
+instruction on every path. The risk is structural, and it is not hypothetical
+— it is the shape that let `parse_call` lose every call-site attribute on two
+of its three arms without a compiler warning, because `call_attrs` *was* moved
+into the one arm that used it.
+
+**The fix:** change `resolve_direct_callee`'s return type to
+`llvmkit_ir::Value<'ctx, B>` and delete `enum ParsedCallee` along with the two
+remaining `match`es. `ParsedCallee::as_erased` is the transitional shim and
+goes with it.
+
+**Why it is deferred:** `parse_callbr` needs the directness distinction to keep
+[`divergences.md`](divergences.md) entry 27's deliberate parse-time rejection
+of an indirect `callbr`. Collapsing `ParsedCallee` to a bare `Value` therefore
+requires closing entry 27 first — giving the callbr builder an indirect-callee
+form and moving the rejection into the verifier.
+
+## IR builder — three call-site builders accept a `call_site_type` override and ignore it (found 2026-08-21, divergence-closing task 6)
+
+`IrBuilder::indirect_invoke_dyn_with_config`,
+`IrBuilder::inline_asm_invoke_with_config` and
+`IrBuilder::inline_asm_callbr_with_config` each take a `CallSiteConfig`, which
+carries an optional call-site function type set by
+`CallSiteConfig::call_site_type`. None of the three reads it: the
+indirect-invoke form uses its own `fn_ty` parameter and the two inline-asm
+forms use `asm.function_type()`. A caller that sets the override gets no error
+and no effect — the exact shape `CLAUDE.md` bans ("never a silent no-op or
+swallowed error"). The declared-callee siblings `invoke_dyn_seeded` and
+`callbr_with_config` do honour it, through `resolve_call_site_type`, and
+`call_erased` honours it through `resolve_call_site_type_for_erased_callee`.
+
+This is llvmkit's own API surface rather than an upstream behaviour, and no
+caller in the tree sets `call_site_type` on those three paths — `parse_invoke`
+and `parse_callbr` pass the call-site type positionally — so it is recorded
+here rather than in [`divergences.md`](divergences.md). It is reachable by any
+external caller.
+
+**The fix:** route the three through `resolve_call_site_type_for_erased_callee`,
+with `asm.function_type()` as the fallback for the two inline-asm forms.
+
+**Why it is deferred:** that is a behaviour change for any caller that was
+setting the field, on three entry points unrelated to the `call` construction
+the same commit rewrote. It wants its own commit rather than a rider.
 
 ## Parser — a forward-referenced function is a *typed* `Function`, so a later definition may not change its signature (found 2026-08-14, LLParser parity W8)
 

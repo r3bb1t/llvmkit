@@ -19,6 +19,98 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### An indirect or inline-asm `call` no longer drops its call-site information (divergence 108)
+
+- **Fixed: `call` through a function pointer or an inline-asm value kept none of
+  it.** Parameter attributes, return attributes, the inline function-attribute
+  set, the `#N` attribute-group reference, operand bundles, the calling
+  convention, the tail-call kind and the fast-math flags were all parsed,
+  checked, and then thrown away; `tail call fastcc void %fp() #0` printed back
+  as `call void %fp()`, and the module verified. The direct-callee path kept
+  everything, and `invoke` and `callbr` kept everything on every callee shape,
+  so the loss was specific to two of `parse_call`'s three arms. The module
+  llvmkit produced meant something different from the one it read, with no
+  diagnostic.
+
+- **Removed: `docs/divergences.md` entry 108**, which recorded the parameter
+  attributes and the operand bundles. The other six kinds of loss, and the
+  inline-asm callee entirely, were outside what that entry described.
+
+- **Root cause: a fork upstream does not have.** `LLParser::parseCall` resolves
+  its callee with one `convertValIDToValue` into a bare `Value *` and then runs
+  a single tail — `CallInst::Create`, `setTailCallKind`, `setCallingConv`, the
+  fast-math guard, `setAttributes`, `ForwardRefAttrGroups`. llvmkit split that
+  tail three ways by callee shape and only one of the three branches could carry
+  a call-site configuration; the other two compiled clean because `call_attrs`
+  *was* moved, into the arm that used it. The fix removes the fork rather than
+  copying the plumbing into the other two branches.
+
+- **Added: `IrBuilder::call_erased`** — the erased-callee call primitive,
+  mirroring `IRBuilder::CreateCall(FunctionType*, Value*, ...)`. It takes the
+  call-site function type, an already-erased `Value` callee, the arguments, a
+  tail-call kind and a `CallSiteConfig`. `indirect_call_dyn` and
+  `inline_asm_call` are now thin forwarders onto it with a default
+  configuration, the same way `invoke_dyn` forwards to `invoke_dyn_with_config`;
+  both keep their signatures and their behaviour. Not a breaking change.
+
+- **The tail-call kind is a parameter, not a `CallSiteConfig` field.**
+  `CallSiteConfig` is shared with `invoke` and `callbr`, and LLVM has no tail
+  form for either, so a field there would be an option those builders accept and
+  ignore — the shape `CLAUDE.md` bans and the shape this entry is about.
+
+- **Fixed: the fast-math diagnostic was anchored at the wrong token.** Upstream
+  reports `fast-math-flags specified for call without floating-point scalar or
+  vector return type` at `CallLoc`; llvmkit reported it at the current token,
+  which by then was the first token of the *next* instruction. It now uses the
+  same anchor as its two neighbours.
+
+- **Fixed: `CallLoc` was captured one to two tokens late.**
+  `LLParser::parseCall` takes `Lex.getLoc()` before the `call` keyword and
+  before the fast-math flags. llvmkit took it after both, so `tail call ...` and
+  any call carrying fast-math flags mis-anchored three diagnostics
+  (`not enough parameters specified for call`, the fast-math guard, and the
+  `llvm.dbg` guard).
+
+- **Fixed: `tail` / `musttail` / `notail` with the `call` missing was accepted.**
+  `LLParser::parseCall` opens with
+  `if (TCK != CallInst::TCK_None && parseToken(lltok::kw_call, "expected 'tail
+  call', 'musttail call', or 'notail call'")) return true;`. llvmkit ate the
+  `call` keyword only if it happened to be there, so `tail void @f()` parsed and
+  printed as `tail call void @f()` — well-formed IR from input `llvm-as`
+  rejects. Found by building the arm table for the routine; upstream's message
+  is now emitted at upstream's token.
+
+- **Recorded, not fixed: `docs/divergences.md` entry 124** — the three
+  fast-math guards (`call`, `select`, `phi`) test `isFPOrFPVectorTy` where
+  upstream tests `FPMathOperator`'s `isSupportedFloatingPointType`, which also
+  admits a literal homogeneous floating-point struct and an array of them. So
+  `call fast { float, float } @h()` is rejected here and accepted by `llvm-as`.
+  Found in the same arm table; closing it needs `StructType::isLiteral` and
+  `containsHomogeneousTypes` counterparts and touches two guards outside
+  `parse_call`.
+
+- **Corrected: `docs/divergences.md` entry 85's verification block.** It stated
+  that an inline-asm call with `ptr elementtype(i32) %p` "parses, stores, and
+  re-prints today". It did not re-print — the attribute was dropped on the way
+  in, by the same defect above. The entry's own preceding sentence
+  (`inline_asm_call` hardcodes `CallAttributeData::default()`) was right and
+  contradicted the conclusion. The claim is now true; the per-operand
+  `elementtype` *verifier* check remains unported, which is what entry 85 is
+  actually about.
+
+- **Corrected: `test/Assembler/callee-type-metadata.ll` was marked `ported` on a
+  passing corpus row while its own `; CHECK` line did not hold.**
+  `parser_corpus.rs` asserts parse, verify and print/re-parse/print stability; it
+  never reads a fixture's `CHECK` lines, so a `status=pass` row said nothing
+  about the `signext` the fixture exists to pin. The line is now asserted by a
+  dedicated test.
+
+- **Recorded in `docs/future-work.md`, not fixed here:** the callee fork that
+  survives in `parse_invoke` / `parse_callbr` (no observable behaviour — it
+  cannot collapse until divergence 27's deliberate indirect-`callbr` rejection
+  is closed), and three call-site builders that accept a `call_site_type`
+  override and ignore it.
+
 ### `call addrspace(N)` and `invoke addrspace(N)` parse and print (divergence 12)
 
 Breaking for anyone who prints a module whose `target datalayout` sets a

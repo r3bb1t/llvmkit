@@ -7,8 +7,9 @@
 //! fixture) it ports.
 
 use llvmkit_ir::{
-    CallingConv, Dyn, FloatValue, IntValue, IntrinsicDescriptor, IntrinsicId, IrBuilder, IrError,
-    Linkage, Ptr, module_new,
+    AttrIndex, AttrKind, Attribute, AttributeStorage, CallAttributeData, CallSiteConfig,
+    CallingConv, Dyn, DynBrand, FloatValue, InlineAsmOptions, IntValue, IntrinsicDescriptor,
+    IntrinsicId, IrBuilder, IrError, Linkage, Ptr, instr_types::TailCallKind, module_new,
 };
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)`
@@ -517,5 +518,89 @@ fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<()
         text.contains("%r = call i32 (i32, ...) @sum_varargs(i32 %0, i32 10, float 2.500000e+00)"),
         "got:\n{text}"
     );
+    Ok(())
+}
+
+/// `IrBuilder::call_erased` is the port of
+/// `IRBuilder::CreateCall(FunctionType *FTy, Value *Callee, ArrayRef<Value *> Args,
+/// ArrayRef<OperandBundleDef> OpBundles, const Twine &Name)`: the callee is a
+/// bare `Value` and the call site carries its own `FunctionType`. **No upstream
+/// unit-test counterpart** -- `unittests/IR/IRBuilderTest.cpp` exercises the
+/// typed `FunctionCallee` overloads only; the anchor is that overload plus
+/// `CallInst::Create(Ty, Callee, Args, BundleList)` and the
+/// `setTailCallKind` / `setCallingConv` / `setAttributes` triple
+/// `LLParser::parseCall` runs after it.
+///
+/// The law under test is that one construction accepts a named function, an
+/// inline-asm value and a function pointer, and that the call-site
+/// configuration survives on all three -- which is what makes
+/// `LLParser::parseCall`'s single tail expressible.
+#[test]
+fn call_erased_carries_the_call_site_configuration_for_every_callee_shape() -> Result<(), IrError> {
+    let m = module_new!("c")?;
+    let void_ty = m.void_type();
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let callee_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]);
+
+    // declare void @g(i32)
+    let g = m.add_function_dyn("g", callee_ty, Linkage::External)?;
+    // The same signature, spelled as inline asm.
+    let asm = m.inline_asm(callee_ty, "nop", "r", InlineAsmOptions::new());
+
+    // define void @caller(ptr %fp, i32 %v)
+    let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type(), i32_ty.as_type()]);
+    let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let fp = llvmkit_ir::PointerValue::try_from(m.view(caller).param(0)?)?;
+    let v = m.view(caller).param(1)?;
+
+    // One configuration, reused verbatim on all three callee shapes: `fastcc`
+    // (`setCallingConv`) plus a `noundef` on the single argument
+    // (`setAttributes`), with `tail` (`setTailCallKind`) passed alongside.
+    let mut arg_attr = AttributeStorage::new();
+    arg_attr.add(
+        AttrIndex::Param(0),
+        Attribute::<DynBrand>::enum_attr(AttrKind::NoUndef).expect("noundef is enum"),
+    );
+    let config = || {
+        CallSiteConfig::new("")
+            .calling_conv(CallingConv::FAST)
+            .attrs(CallAttributeData::new(
+                AttributeStorage::new(),
+                Box::new([arg_attr.clone()]),
+                AttributeStorage::new(),
+            ))
+    };
+
+    b.call_erased::<Dyn, _, _>(
+        callee_ty,
+        m.view(g).as_erased(),
+        [v],
+        TailCallKind::Tail,
+        config(),
+    )?;
+    b.call_erased::<Dyn, _, _>(
+        callee_ty,
+        asm.as_erased(),
+        [v],
+        TailCallKind::Tail,
+        config(),
+    )?;
+    b.call_erased::<Dyn, _, _>(callee_ty, fp.as_erased(), [v], TailCallKind::Tail, config())?;
+    b.ret_void()?;
+
+    let text = format!("{m}");
+    for expected in [
+        "tail call fastcc void @g(i32 noundef %1)",
+        r#"tail call fastcc void asm "nop", "r"(i32 noundef %1)"#,
+        "tail call fastcc void %0(i32 noundef %1)",
+    ] {
+        assert!(
+            text.contains(expected),
+            "missing `{expected}`; got:\n{text}"
+        );
+    }
     Ok(())
 }

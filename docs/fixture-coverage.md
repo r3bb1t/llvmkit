@@ -414,7 +414,7 @@ collision.
 | `call-nonzero-program-addrspace-2.ll` | ported | 1 reject; the `-data-layout=P42` unit runs in `parser_calls.rs::numbered_callee_addrspace_matches_upstream_in_both_program_addrspaces` |
 | `call-nonzero-program-addrspace.ll` | ported | 1 reject; the `-data-layout=P42` unit runs in `parser_calls.rs::call_addrspace_round_trips_under_a_nonzero_program_addrspace` |
 | `callbr.ll` | ported | 1 pass |
-| `callee-type-metadata.ll` | ported | 1 pass |
+| `callee-type-metadata.ll` | ported | 1 pass; the `; CHECK` line is asserted in `parser_calls.rs::indirect_call_parameter_attribute_round_trips` |
 | `captures-errors.ll` | blocked-model | **G18** — 1/9 parts blocked. llvmkit accepts it; upstream reports `Attribute 'captures(none)' applied to incompatible type!` |
 | `captures.ll` | ported | 1 pass |
 | `cmpxchg-ordering-2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

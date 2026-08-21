@@ -5479,6 +5479,88 @@ where
         }
     }
 
+    /// ERASED call — the primitive every other `call` form is a special case
+    /// of. Mirrors `IRBuilder::CreateCall(FunctionType *FTy, Value *Callee,
+    /// ArrayRef<Value *> Args, ArrayRef<OperandBundleDef> OpBundles, const
+    /// Twine &Name)` and the `CallInst::Create(Ty, Callee, Args, BundleList)`
+    /// it wraps: the callee is a bare [`Value`] and the call site carries its
+    /// own [`FunctionType`], exactly as `CallBase` does.
+    ///
+    /// This is the third tier of the suffix vocabulary. The callee is already
+    /// erased when it arrives — spell the widen at the call site with
+    /// `as_erased()` — so a named function, an [`InlineAsm`] and a computed
+    /// function pointer all reach the same construction, which is what
+    /// `LLParser::parseCall` does after `convertValIDToValue` collapses its
+    /// switch to one `Value *`.
+    ///
+    /// `tail_call_kind` is `CallInst::setTailCallKind`, which
+    /// `LLParser::parseCall` calls unconditionally on the instruction it just
+    /// built. It is a parameter rather than a [`CallSiteConfig`] field because
+    /// `invoke` and `callbr` share that config and LLVM has no tail form for
+    /// either, so a config field would be an option those builders accept and
+    /// ignore.
+    ///
+    /// `fn_ty` is the call site's function type; a
+    /// [`CallSiteConfig::call_site_type`] override still wins over it, per
+    /// `resolve_call_site_type_for_erased_callee`, so the field is never
+    /// silently ignored here. The caller picks the return marker `R2` to match
+    /// the resolved return type; a mismatch fails with
+    /// [`IrError::ReturnTypeMismatch`], the same gate
+    /// [`indirect_call_dyn`](Self::indirect_call_dyn) applies.
+    ///
+    /// Arguments are checked against `fn_ty` by `validate_call_site_args`; the
+    /// *callee pointer's* real pointee type is an indirect-call trust boundary
+    /// LLVM does not statically check either.
+    ///
+    /// `CallBuilder`'s `validate_intrinsic_descriptor_args` has no counterpart
+    /// here, and needs none: that check is a no-op unless the builder carries
+    /// an intrinsic descriptor, and this entry point has no way to set one. A
+    /// future caller that wants a descriptor on an erased call site must bring
+    /// the check with it.
+    pub fn call_erased<R2, I, V>(
+        &self,
+        fn_ty: FunctionType<'ctx, B>,
+        callee: Value<'ctx, B>,
+        args: I,
+        tail_call_kind: TailCallKind,
+        config: CallSiteConfig,
+    ) -> IrResult<CallInstId<R2, B>>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+    {
+        let (fn_ty, return_ty) = self.resolve_call_site_type_for_erased_callee(fn_ty, &config);
+        let ret_data = self.module.context().type_data(return_ty);
+        if !crate::function::signature_matches_marker::<R2>(ret_data) {
+            return Err(IrError::ReturnTypeMismatch {
+                expected: crate::marker::marker_kind_label::<R2>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
+                got: fn_ty.return_type().kind_label(),
+            });
+        }
+        let mut arg_ids: Vec<ValueSlot> = Vec::new();
+        for arg in args {
+            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
+            arg_ids.push(v.id);
+        }
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
+        // `CallInst::Create` then `setTailCallKind` / `setCallingConv` /
+        // `setAttributes`: llvmkit's payload constructor takes all four at
+        // once, so the four upstream statements land as one.
+        let (name, calling_conv, attrs) = config.into_parts();
+        let payload = CallInstData::new_with_attrs(
+            callee.id,
+            fn_ty.as_type().id(),
+            arg_ids.into_boxed_slice(),
+            calling_conv,
+            tail_call_kind,
+            attrs,
+        );
+        let inst = self.append_instruction(return_ty, InstructionKindData::Call(payload), name);
+        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
+    }
+
     /// TYPED indirect call through a function-pointer value: the
     /// callee's function type is constructed from the `Sig` schema, so
     /// it is never spelled by hand and can never drift from
@@ -5539,6 +5621,11 @@ where
     ///
     /// `fn_ty` is the callee's signature; `callee` is the function pointer; the
     /// caller picks the return marker `R2` to match `fn_ty`'s return type.
+    ///
+    /// Forwards to [`call_erased`](Self::call_erased) with a default
+    /// [`CallSiteConfig`]: no calling convention, no tail-call kind, no
+    /// attributes and no operand bundles. Reach for `call_erased` directly when
+    /// the call site carries any of those.
     pub fn indirect_call_dyn<R2, I, V, Callee, Name>(
         &self,
         fn_ty: FunctionType<'ctx, B>,
@@ -5554,34 +5641,13 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        let callee_v = IsValue::as_erased(callee);
-        let ret_data = self.module.context().type_data(fn_ty.return_type().id());
-        if !crate::function::signature_matches_marker::<R2>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: crate::marker::marker_kind_label::<R2>()
-                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got: fn_ty.return_type().kind_label(),
-            });
-        }
-        let mut arg_ids: Vec<ValueSlot> = Vec::new();
-        for arg in args {
-            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.id);
-        }
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = CallInstData::new(
-            callee_v.id,
-            fn_ty.as_type().id(),
-            arg_ids.into_boxed_slice(),
-            crate::CallingConv::C,
+        self.call_erased(
+            fn_ty,
+            IsValue::as_erased(callee),
+            args,
             TailCallKind::None,
-        );
-        let inst = self.append_instruction(
-            fn_ty.return_type().id(),
-            InstructionKindData::Call(payload),
-            name,
-        );
-        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
+            CallSiteConfig::new(name.as_ref()),
+        )
     }
 
     /// Produce a `call` whose callee is an inline-assembly value. Mirrors
@@ -5596,6 +5662,11 @@ where
     /// return type; a mismatch fails with
     /// [`IrError::ReturnTypeMismatch`]. The calling convention is `C`,
     /// matching what LLVM emits for an inline-asm call.
+    ///
+    /// Forwards to [`call_erased`](Self::call_erased) with a default
+    /// [`CallSiteConfig`]: no tail-call kind, no attributes and no operand
+    /// bundles, and the `C` convention `CallSiteConfig::new` seeds. Reach for
+    /// `call_erased` directly when the call site carries any of those.
     pub fn inline_asm_call<R2, I, V, Name>(
         &self,
         asm: InlineAsm<'ctx, B>,
@@ -5608,39 +5679,14 @@ where
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
     {
-        let asm_v = asm.as_erased();
         let fn_ty = asm.function_type();
-        // Reject a return-marker / signature mismatch up front, mirroring
-        // the `signature_matches_marker` gate on the typed lookup path
-        // (`Module::function`).
-        let ret_data = self.module.context().type_data(fn_ty.return_type().id());
-        if !crate::function::signature_matches_marker::<R2>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: crate::marker::marker_kind_label::<R2>()
-                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got: fn_ty.return_type().kind_label(),
-            });
-        }
-        let mut arg_ids: Vec<ValueSlot> = Vec::new();
-        for arg in args {
-            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.id);
-        }
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = CallInstData::new_with_attrs(
-            asm_v.id,
-            fn_ty.as_type().id(),
-            arg_ids.into_boxed_slice(),
-            crate::CallingConv::C,
+        self.call_erased(
+            fn_ty,
+            asm.as_erased(),
+            args,
             TailCallKind::None,
-            CallAttributeData::default(),
-        );
-        let inst = self.append_instruction(
-            fn_ty.return_type().id(),
-            InstructionKindData::Call(payload),
-            name,
-        );
-        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
+            CallSiteConfig::new(name.as_ref()),
+        )
     }
 
     // ---- GEP ----
@@ -8243,6 +8289,29 @@ where
                 (ft, ret)
             }
             None => (callee.signature(), callee.return_type().id()),
+        }
+    }
+
+    /// The `(function_type, return_type)` a call site with an **erased** callee
+    /// should carry. `spelled_fn_ty` is the caller's explicit type — the
+    /// `FunctionType *` half of `IRBuilder::CreateCall(FunctionType*, Value*, …)`,
+    /// which is the only source available when the callee is a bare
+    /// [`Value`] with no declaration to read. A
+    /// [`CallSiteConfig::call_site_type`] override still wins, so the field is
+    /// never silently ignored; that is the same precedence
+    /// `resolve_call_site_type` applies for a declared callee.
+    fn resolve_call_site_type_for_erased_callee(
+        &self,
+        spelled_fn_ty: FunctionType<'ctx, B>,
+        config: &CallSiteConfig,
+    ) -> (FunctionType<'ctx, B>, TypeSlot) {
+        match config.call_site_fn_ty() {
+            Some(id) => {
+                let ft = FunctionType::<'ctx, B>::new(id, ModuleRef::<B>::new(self.module));
+                let ret = ft.return_type().id();
+                (ft, ret)
+            }
+            None => (spelled_fn_ty, spelled_fn_ty.return_type().id()),
         }
     }
 

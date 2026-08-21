@@ -563,6 +563,21 @@ that found them instead of a verifier's evidence block.
 
 llvmkit refuses IR that LLVM accepts — the worst kind, a parser that cannot read LLVM's own output.
 
+### 124. The fast-math guards test `isFPOrFPVectorTy`, where upstream tests `isSupportedFloatingPointType`
+
+*parser* — crates/llvmkit-asmparser/src/ll_parser.rs — `is_fp_or_fp_vector_type`, `Parser::parse_call`'s and `Parser::parse_select`'s fast-math guards, and `Parser::parse_phi`'s (which spells the same predicate as `Type::is_float_or_float_vector`)
+
+Found 2026-08-21 while porting `LLParser::parseCall`'s construction tail, by
+building the arm table for that routine: the guard is arm C19 and its predicate
+did not match upstream's.
+
+- **LLVM:** all three guards ask `isa<FPMathOperator>(Inst)`. `FPMathOperator::classof`'s `Instruction::Call` / `Select` / `PHI` arm is `isSupportedFloatingPointType(V->getType())`, which is `Ty->isFPOrFPVectorTy() || isComposedOfHomogeneousFloatingPointTypes(Ty)`. The second disjunct accepts a **literal** struct whose elements are all the same floating-point type (`StructType::containsHomogeneousTypes` is `!ElementTys.empty() && all_equal(ElementTys)`) and an array, however nested, whose innermost element type is FP-or-FP-vector.
+- **llvmkit:** the guards test only the first disjunct, so a call, select or phi whose type is such a struct or array is rejected. Probes at `393137a` + this change, `target/release/examples/parse_file.exe`:
+  - `%r = call fast { float, float } @h()` — `fast-math-flags specified for call without floating-point scalar or vector return type`, exit 1.
+  - `%r = call fast [2 x float] @a()` — the same message, exit 1.
+- **Why:** never noticed. llvmkit's `is_fp_or_fp_vector_type` was written against `isFPOrFPVectorTy`, which is the right predicate at the two *other* call sites that use it (`parseCompare`'s `FCmp` arm and `parseAtomicRMW`'s floating-point-operand check, both of which really do ask `isFPOrFPVectorTy` upstream); the FMF guards were then pointed at the same helper.
+- **Fix:** port `FPMathOperator::isComposedOfHomogeneousFloatingPointTypes` and `isSupportedFloatingPointType` as their own named functions and call the latter from the three fast-math guards, leaving the `fcmp` and `atomicrmw` sites on `is_fp_or_fp_vector_type`. That needs llvmkit counterparts for `StructType::isLiteral` and `containsHomogeneousTypes`, and a decision about whether the builders that set fast-math flags gain the same widened gate — which is why it is recorded rather than folded into the `call` construction commit that found it.
+
 ### 1. `u0x…` and >64-bit literals are rejected wherever a `uint64` is wanted
 
 *parser* — crates/llvmkit-asmparser/src/ll_parser.rs:2244 (`parse_uint64`), :2216 (`parse_uint32`)
@@ -2041,29 +2056,6 @@ CONFIRMED, still present at HEAD (2ac3e3a; `git diff --stat` on both cited files
 - **Upstream's fourth `<badref>` site is a different divergence, not this one.** `AsmWriter.cpp` writes `<badref>` in exactly four places: `writeAsOperandInternal`, `printInstruction`, `printBasicBlock` (already fixed) and `printNamedMDNode`, whose metadata arm is `int Slot = Machine.getMetadataSlot(Op); if (Slot == -1) Out << "<badref>"; else Out << '!' << Slot;`. llvmkit's counterpart does not print an `<unnumbered>` spelling at all — it falls back to the node's raw arena index, `write!(f, "!{}", id.index())` — so closing this entry does not touch it and a grep for `<unnumbered>` will never surface it. Noted here so the enumeration of upstream's `<badref>` sites is complete.
 - **Out of scope, deliberately** (three further `<unnumbered>` sites with no upstream `<badref>` twin, listed so the next reader does not re-derive it): the function-signature argument printer in `fmt_function_with_use_lists`, whose upstream counterpart `AssemblyWriter::printArgument` has no failure spelling at all — it is `int Slot = Machine.getLocalSlot(Arg); assert(Slot != -1 && "expect argument in function here"); Out << " %" << Slot;`; the anonymous identified-struct number in the type-identity block, where `printTypeIdentities` writes `Out << '%' << I << " = type "` from a `NumberedTypes` **index** and so cannot fail; and the same struct case in `type.rs`'s `Display`.
 
-### 108. An **indirect** call silently drops parameter attributes and operand bundles
-
-*parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_call`, the indirect-callee path)
-
-Found 2026-08-20 while porting `test/Verifier/preallocated-valid.ll` for the
-`catchswitch` work (0.0.4 funclet parity). Data loss, not a wording difference.
-
-- **LLVM:** `LLParser::parseCall` builds the argument list and the operand
-  bundles the same way whichever form the callee takes, and `AsmWriter` prints
-  both back.
-- **llvmkit:** the direct-callee form round-trips correctly; the indirect form
-  loses both. Probe, from `@preallocated_indirect` in that fixture:
-  - in  — `call void %f(ptr preallocated(i32) %x) ["preallocated"(token %cs)]`
-  - out — `call void %f(ptr %x)`
-- **Why:** not recorded. The two callee forms take different paths through
-  `parse_call` and only the direct one carries the attribute and bundle
-  plumbing.
-- **Fix:** route the indirect path through the same argument-attribute and
-  operand-bundle construction as the direct one. This violates the *no silent
-  erasure* and *fallibility honesty* rules in `CLAUDE.md` and is reachable from
-  an upstream fixture llvmkit already parses, so it should be fixed before any
-  round-trip corpus fixture is written over that file.
-
 ## Model gaps
 
 A public query answers differently from its LLVM counterpart, or a structure LLVM has is missing.
@@ -2453,7 +2445,7 @@ crates/llvmkit-ir/src/constant_range_list.rs (343 lines, read in full, unmodifie
 - **llvmkit:** The label rules and all nine `InlineAsm::verify` messages are reachable, but the `elementtype` half is absent.
 - **Why:** Recorded in docs/future-work.md (W4): the call surface cannot spell per-operand `elementtype` attributes yet, so the check has nothing to read. The `Flag` / `ConstraintCode` bit encodings from the same header are recorded as backend serialization and deliberately out of scope.
 - **Fix:** Grow the call-building surface to carry per-operand attribute sets, then port the `elementtype` arm of `verifyInlineAsmCall`.
-- **Correction from verification:** Accurate as stated — the divergence is real and still present — with one factual refinement to the *reason* llvmkit records for it. Confirmed: `Verifier::verifyInlineAsmCall`'s per-operand loop has three Check messages ("Operand for indirect constraint must have pointer type", "Operand for indirect constraint must have elementtype attribute", "Elementtype attribute can only be applied for indirect constraints"). None of the three strings exists anywhere in the llvmkit tree. Only the two label rules are ported (call arm and callbr arm), and llvmkit marks the rest deferred in an inline comment. All nine `InlineAsm::verify` messages are indeed present and reachable (`InlineAsmVerifyError` has exactly nine variants; `verify_inline_asm` is called from `ll_parser.rs:13391`), as the claim says. Refinement: the stated blocker — "the current call surface cannot spell per-operand elementtype attrs" (verifier.rs comment, echoed in docs/future-work.md) — is true only of the *typed builder* helper, not of the call surface generally. `IrBuilder::inline_asm_call` hardcodes `CallAttributeData::default()`, so that one path cannot attach arg attributes. But `CallInstData` already carries `attrs: CallAttributeData` with `arg_attrs: Box<[AttributeStorage]>`; `LLParser::parse_call` collects per-argument attributes via `parse_optional_param_attrs` into exactly that field; `elementtype` is a live `AttrKind` parsed by the lexer/parser (`ll_parser.rs:9613`, `attributes.rs:389`); and the AsmWriter prints per-arg attrs back out. So a `.ll` inline-asm call with `ptr elementtype(i32) %p` parses, stores, and re-prints today, and the verifier simply never reads `c.attrs.arg_attrs()` for the inline-asm case. The elementtype half is blocked by the builder ergonomics only; the data model and parser already support it, so the deferral rationale on record understates what is available.
+- **Correction from verification:** Accurate as stated — the divergence is real and still present — with one factual refinement to the *reason* llvmkit records for it. Confirmed: `Verifier::verifyInlineAsmCall`'s per-operand loop has three Check messages ("Operand for indirect constraint must have pointer type", "Operand for indirect constraint must have elementtype attribute", "Elementtype attribute can only be applied for indirect constraints"). None of the three strings exists anywhere in the llvmkit tree. Only the two label rules are ported (call arm and callbr arm), and llvmkit marks the rest deferred in an inline comment. All nine `InlineAsm::verify` messages are indeed present and reachable (`InlineAsmVerifyError` has exactly nine variants; `verify_inline_asm` is called from `ll_parser.rs:13391`), as the claim says. Refinement: the stated blocker — "the current call surface cannot spell per-operand elementtype attrs" (verifier.rs comment, echoed in docs/future-work.md) — is true only of the *typed builder* helper, not of the call surface generally. `IrBuilder::inline_asm_call` hardcodes `CallAttributeData::default()`, so that one path cannot attach arg attributes. But `CallInstData` already carries `attrs: CallAttributeData` with `arg_attrs: Box<[AttributeStorage]>`; `LLParser::parse_call` collects per-argument attributes via `parse_optional_param_attrs` into exactly that field; `elementtype` is a live `AttrKind` parsed by the lexer/parser (`ll_parser.rs:9613`, `attributes.rs:389`); and the AsmWriter prints per-arg attrs back out. That claim was wrong until the indirect/inline-asm call attribute loss was closed: an inline-asm call's argument attributes were parsed and then discarded by `IrBuilder::inline_asm_call`'s hardcoded `CallAttributeData::default()`, so `ptr elementtype(i32) %p` printed back as `ptr %p` (`test/Verifier/inline-asm-indirect-operand.ll`, fed verbatim). Since that fix the attribute does parse, store and re-print, and what remains unported is only the *verifier* half — llvmkit never reads `c.attrs.arg_attrs()` for the inline-asm case, which is what this entry is about. Pinned by `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_call_elementtype_argument_attribute_round_trips`. The elementtype half is blocked by the builder ergonomics only; the data model and parser already support it, so the deferral rationale on record understates what is available.
 
 <details><summary>Verification evidence</summary>
 

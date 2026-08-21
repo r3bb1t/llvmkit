@@ -19,15 +19,22 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2552 (2547 distinct names). Recounted on 2026-08-21
-at the `call addrspace(N)` / `invoke addrspace(N)` port via the documented
+Total `#[test]` functions: 2560 (2555 distinct names). Recounted on 2026-08-21
+at the erased-callee `call` construction port via the documented
 attribute-anchored grep below
-(`crates/llvmkit-ir` 1565 + `crates/llvmkit-asmparser` 965 +
+(`crates/llvmkit-ir` 1566 + `crates/llvmkit-asmparser` 972 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
 `crates/llvmkit-macros` has none). The distinct-name total comes from the same
 attribute anchor followed to the next `fn` line:
 `awk '/^[[:space:]]*#\[test\]/{want=1;next} want && /fn [a-zA-Z0-9_]+/{match($0,/fn [a-zA-Z0-9_]+/); print substr($0,RSTART+3,RLENGTH-3); want=0}' $(find crates llvmkit -name '*.rs') | sort -u | wc -l`
-— which also reproduces 2552 before `-u`, so the two matchers agree. The +7
+— which also reproduces 2560 before `-u`, so the two matchers agree. The +8
+over the 2552 point before it is the erased-callee `call` construction port:
+seven `parser_calls.rs` tests — four vendored upstream fixtures (the
+already-vendored `callee-type-metadata.ll` plus `kcfi-operand-bundles.ll`,
+`ptrauth-operand-bundles.ll` and `inline-asm-indirect-operand.ll`), two
+llvmkit-authored rule anchors for the modifiers and the attribute halves, and
+one for `parseCall`'s mandatory `call` after a tail keyword — and one
+`builder_call.rs` test for `IrBuilder::call_erased` itself. The +7
 over the 2545 point before it is the `call addrspace(N)` / `invoke
 addrspace(N)` port: five `parser_calls.rs` tests — one per `RUN` line of the
 three vendored `*-nonzero-program-addrspace` fixtures, with the two `RUN` lines
@@ -55,14 +62,14 @@ that is the two printer-parity commits — 6 for basic-block printing and
 ordering, 4 for hex case; the +273 that reached 2508 is the LLParser-parity
 program's waves 0-14. The figure agrees with the gate: a
 `cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
-this commit reports 2552 passed, 0 failed across 214 test binaries.
+this commit reports 2560 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries **2119 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
+below carries **2127 rows** (recounted, `grep -cE '^\| \`' UPSTREAM.md`). 8 of
 them name a trybuild `compile_fail/*.rs` fixture rather than a `#[test]`
 function -- those fixtures are `fn main()` programs and are not part of the
-test-function accounting. The remaining 2111 rows give provenance for **2227 of
-the 2547 distinct `#[test]` functions**, leaving **320 with no row** and **zero
+test-function accounting. The remaining 2119 rows give provenance for **2235 of
+the 2555 distinct `#[test]` functions**, leaving **320 with no row** and **zero
 rows naming a `#[test]` that no longer exists**. That last clause is scoped to
 test *names*, which is all the audit ever measured: fixture rows are excluded
 from the accounting above and were never in the audited population, so it said
@@ -1472,6 +1479,14 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_vararg_fn_ptr_round_trips` | `llvm/test/Assembler/call-arg-is-callee.ll` `@call`; `llvm/lib/AsmParser/LLParser.cpp::resolveFunctionType` explicit-type branch through an indirect callee | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_null_callee_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::convertValIDToValue` `t_Null` with pointer target type; no upstream lit coverage of the spelling at 22.1.4, rule shape is the anchor | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_undef_callee_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::convertValIDToValue` `t_Undef`; positive guard for llvmkit's retired dedicated undef-callee arm | llvmkit-specific regression |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::tail_keyword_without_call_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall` -- `parseToken(lltok::kw_call, "expected 'tail call', 'musttail call', or 'notail call'")`, its first guard; no upstream `.ll` writes a tail keyword with the `call` missing, so the rule is the anchor | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_parameter_attribute_round_trips` | `test/Assembler/callee-type-metadata.ll` (already-vendored fixture, asserting its own `; CHECK` line; `RUN` is `llvm-as \| llvm-dis \| FileCheck`, so the line is `AsmWriter` output) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_kcfi_operand_bundles_round_trip` | `test/Verifier/kcfi-operand-bundles.ll` (whole file verbatim; parse/print half only -- upstream's `RUN` is `not opt -passes=verify`, and the kcfi bundle rules are unported) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_ptrauth_operand_bundles_round_trip` | `test/Verifier/ptrauth-operand-bundles.ll` (whole file verbatim; parse/print half only -- upstream's `RUN` is `not opt -passes=verify`, and the ptrauth bundle rules are unported) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_call_elementtype_argument_attribute_round_trips` | `test/Verifier/inline-asm-indirect-operand.ll` (whole file verbatim; parse/print half only -- upstream's `RUN` is `not llvm-as`, and `Verifier::verifyInlineAsmCall`'s per-operand half is unported, `docs/divergences.md` entry 85) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_modifiers_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall` -- `CI->setTailCallKind(TCK)` / `CI->setCallingConv(CC)` / `CI->setFastMathFlags(FMF)` on the single resolved `Value *Callee`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printInstruction` CallInst arm | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_attributes_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall` -- `CI->setAttributes(PAL)` and `ForwardRefAttrGroups[CI] = FwdRefAttrGrps` on the single resolved `Value *Callee` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-ir/tests/builder_call.rs::call_erased_carries_the_call_site_configuration_for_every_callee_shape` | `llvm/include/llvm/IR/IRBuilder.h::IRBuilder::CreateCall(FunctionType*, Value*, ArrayRef<Value*>, ArrayRef<OperandBundleDef>, const Twine&)` and `llvm/include/llvm/IR/Instructions.h::CallInst::Create(Ty, Callee, Args, BundleList)`; `unittests/IR/IRBuilderTest.cpp` covers only the typed `FunctionCallee` overloads | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_non_pointer_callee_rejected` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::getVal` type check ("'%x' defined with type 'i32' but expected 'ptr'"); no upstream lit coverage of the diagnostic at 22.1.4, rule shape is the anchor | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::invoke_indirect_callee_round_trips` | `llvm/test/Assembler/call-arg-is-callee.ll` `@invoke` (indirect invoke through a function pointer; `LLParser::parseInvoke` shares parseCall's callee path; valid IR) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::callbr_indirect_callee_rejected` | `llvm/lib/IR/Verifier.cpp::visitCallBrInst` ("Callbr: indirect function / invalid signature") — upstream parses, then rejects in the verifier; llvmkit rejects at parse time | llvmkit-specific |
