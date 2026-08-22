@@ -19,6 +19,33 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — predecessor order, and a scalable shuffle's demanded elements
+
+- **`FunctionCfg::predecessors` answers in use-list order.** `predecessors(BB)`
+  is `PredIterator` over `BB->user_begin()`, and `Use::addToList` head-inserts,
+  so upstream reads newest-first — the order `AssemblyWriter`'s `; preds = …`
+  comment, the verifier and the dominator-tree builder all see. `FunctionCfg`
+  built its map by walking the block list and pushing each block onto its
+  successors' lists, which answers in block order. The two disagree on any
+  block with more than one distinct predecessor.
+
+  The use-list walk now lives in `cfg.rs` and has one caller shape: the
+  printer, the verifier and the dominator tree all read `FunctionCfg`. Both of
+  the latter used to re-derive the map by transposing the edge list, which is
+  what kept the difference invisible.
+- **A scalable `shufflevector` propagates its sources' known bits.**
+  `getShuffleDemandedElts` opens with a scalable arm that *succeeds*, both
+  sources demanded, so `computeKnownBits` recurses. llvmkit answered "nothing
+  known" instead.
+- **A CFG edit updates the target blocks' use lists.** Upstream retargets a
+  successor through `Use::set`, which unlinks from the old block's use list and
+  links into the new one's, so `predecessors(BB)` is never stale. llvmkit
+  stores successors as plain slots and registered the use only at construction,
+  so after `remove_successor` / `redirect_successor` the block still listed the
+  predecessor it had lost — visible in `AssemblyWriter::printBasicBlock`'s
+  `; preds = …` comment as well as in the analysis. Found by making
+  `FunctionCfg` read the use list, which is what the two had to disagree for.
+
 ### Fixed — the comdat block, and `<badref>`
 
 Two printer differences from `llvm-dis`.

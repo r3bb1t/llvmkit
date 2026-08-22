@@ -3555,20 +3555,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 // --------------------------------------------------------------------------
 
 /// CFG predecessor map for one function. Mirrors LLVM's `pred_iterator`
-/// exposed via `BasicBlock::pred_begin`; shared successor semantics live in
-/// [`crate::cfg::FunctionCfg`] so every terminator family is handled in one place.
+/// exposed via `BasicBlock::pred_begin`.
+///
+/// Read straight off [`crate::cfg::FunctionCfg`] rather than re-derived by
+/// transposing its edge list: the edge list is in block order and
+/// `pred_iterator` is a use-list view, and re-deriving here is what let the
+/// two disagree unnoticed.
 fn build_predecessors<B: ModuleBrand>(
     f: FunctionValue<'_, Dyn, B>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
     let cfg = FunctionCfg::new(f);
-    let mut preds: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
-    for edge in cfg.edges() {
-        preds
-            .entry(edge.end().slot())
-            .or_default()
-            .push(edge.start().slot());
-    }
-    preds
+    f.basic_blocks()
+        .map(|bb| {
+            (
+                bb.slot(),
+                cfg.predecessors(&bb.as_dyn())
+                    .map(|pred| pred.slot())
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 // --------------------------------------------------------------------------
@@ -3863,7 +3869,25 @@ mod tests {
     ) -> ValueSlot {
         let m = m.core_ref();
         let v = build_instruction_value(result_ty, bb_id, kind, None);
+        // `IrBuilder::append_instruction`'s use registration, verbatim —
+        // `operand_ids()` extended with `block_operand_ids()`. Fabricating
+        // without it left the block use-lists empty, so a `br` built here was
+        // no predecessor at all to `predecessors(BB)` and to
+        // `AssemblyWriter::printBasicBlock`'s `; preds = …`.
+        let operand_ids = match &v.kind {
+            ValueKindData::Instruction(i) => {
+                let mut ids = i.kind.operand_ids();
+                ids.extend(i.kind.block_operand_ids());
+                ids
+            }
+            _ => Vec::new(),
+        };
         let id = m.context().push_value(v);
+        for op in operand_ids {
+            m.context()
+                .value_data(op)
+                .add_use(crate::value::ValueUse::Instruction(id));
+        }
         let bb_data = match &m.context().value_data(bb_id).kind {
             ValueKindData::BasicBlock(b) => b,
             _ => panic!("fabricate_instruction: bb_id is not a basic block"),

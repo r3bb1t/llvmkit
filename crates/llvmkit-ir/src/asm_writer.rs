@@ -67,7 +67,7 @@ use super::module_summary_index::{
 };
 use super::sync_scope::SyncScope;
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
-use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueUse};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot};
 use super::{ApInt, AttrIndex, Signedness};
 
 /// What `AsmWriter.cpp` prints where a value has no slot: `Out << "<badref>"`.
@@ -3167,51 +3167,6 @@ fn pad_to_column(f: &mut fmt::Formatter<'_>, new_column: usize, column: usize) -
     Ok(())
 }
 
-/// `predecessors(BB)` (`llvm/IR/CFG.h`): `PredIterator` walks
-/// `BB->user_begin()` and its `advancePastNonTerminators` skips every user
-/// that is not an `Instruction` — "Loop to ignore non-terminator uses (for
-/// example BlockAddresses)" — then `assert`s `Inst->isTerminator()` and stops.
-/// It yields `cast<Instruction>(*It)->getParent()`.
-///
-/// So upstream filters on *being an instruction* and only asserts the
-/// terminator half; the `is_terminator()` test below is llvmkit's spelling of
-/// that assertion, and it is sound for the same reason upstream's assert
-/// holds: the only non-terminator that could name a block is a `PHINode`, and
-/// `InstructionKindData::block_operand_ids`'s `Phi` arm yields nothing —
-/// mirroring `PHINode`'s hung-off block array, which is reached by
-/// `block_begin` and is not a use list. A phi therefore never registers a
-/// block use to filter out. The repo bans runtime panics, so the dead branch
-/// is a `filter` rather than an assert; it can never change the result.
-///
-/// Not sorted and not deduplicated — a terminator naming the same successor
-/// twice yields it twice, exactly as upstream. The use list is the ordering
-/// authority: `ValueData::add_use` head-inserts, mirroring `Use::addToList`,
-/// so this reads newest-first the way `Value::uses()` does. `FunctionCfg`'s
-/// predecessor map is deliberately *not* used here — it is built by walking
-/// the block list, so it answers in block order.
-fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(block: Value<'ctx, B>) -> Vec<ValueSlot> {
-    let context = block.module().context();
-    block
-        .data()
-        .use_list
-        .borrow()
-        .iter()
-        .filter_map(|edge| match edge {
-            ValueUse::Instruction(user) => Some(*user),
-            _ => None,
-        })
-        .filter_map(|user| {
-            let ValueKindData::Instruction(instruction) = &context.value_data(user).kind else {
-                return None;
-            };
-            if !instruction.kind.is_terminator() {
-                return None;
-            }
-            Some(instruction.parent.get())
-        })
-        .collect()
-}
-
 /// `AssemblyWriter::printBasicBlock`.
 ///
 /// `is_entry_block` is upstream's `bool IsEntryBlock = BB->getParent() &&
@@ -3256,7 +3211,7 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
         pad_to_column(f, PREDECESSOR_COMMENT_COLUMN, label.len())?;
         f.write_str(";")?;
         let erased = bb.to_erased();
-        let predecessors = block_predecessors(erased);
+        let predecessors = super::cfg::block_predecessors(erased);
         if predecessors.is_empty() {
             // `Out << " No predecessors!";`
             f.write_str(" No predecessors!")?;

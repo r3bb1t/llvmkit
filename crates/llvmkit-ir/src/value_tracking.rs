@@ -5406,12 +5406,40 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     allow_undefined_elements: bool,
 ) -> Option<(Value<'ctx, B>, ApInt, Value<'ctx, B>, ApInt)> {
+    let lhs = value_from_slot(value, data.lhs.get());
+    let rhs = value_from_slot(value, data.rhs.get());
+
+    // `getShuffleDemandedElts`' first statement, on the **result** type:
+    //
+    //     if (isa<ScalableVectorType>(Shuf->getType())) {
+    //       assert(DemandedElts == APInt(1, 1));
+    //       DemandedLHS = DemandedRHS = DemandedElts;
+    //       return true;
+    //     }
+    //
+    // A scalable shuffle succeeds with both sources fully demanded, so the
+    // caller recurses into the operands instead of answering "nothing known".
+    // The `assert` holds because `computeKnownBits`' no-`DemandedElts` entry
+    // point seeds `APInt(1, 1)` for anything that is not a `FixedVectorType`;
+    // `ApInt::all_ones(1)` is that value, and it is spelled here because
+    // `demanded_elements_for` answers `None` for a scalable vector rather than
+    // carrying a width. Nothing downstream reads the width: every recursion
+    // re-derives its own demanded set through `demanded_elements_for` /
+    // `demanded_lanes`, and both answer `None` — or fall back — for a scalable
+    // operand.
+    let (_, result_scalable) = vector_shape(value)?;
+    if result_scalable {
+        let demanded = ApInt::all_ones(1);
+        return Some((lhs, demanded.clone(), rhs, demanded));
+    }
+
     let result_lanes = u32::try_from(data.mask.len()).ok()?;
     let demanded =
         demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(result_lanes));
-    let lhs = value_from_slot(value, data.lhs.get());
-    let rhs = value_from_slot(value, data.rhs.get());
-    // Both operands share a type, so one width describes each of them.
+    // Both operands share a type, so one width describes each of them. The
+    // `false` patterns are `cast<FixedVectorType>(Shuf->getOperand(0)->getType())`
+    // — upstream's unchecked cast, which the guard above has already made
+    // sound, spelled as a refusal because the repo bans runtime panics.
     let (source_width, false) = vector_shape(lhs)? else {
         return None;
     };
@@ -5971,7 +5999,22 @@ mod tests {
     ) -> ValueSlot {
         let core = m.core_ref();
         let value = build_instruction_value(result_ty, bb_id, kind, None);
+        // `IrBuilder::append_instruction`'s use registration, verbatim — see
+        // the twin helper in `verifier.rs`.
+        let operand_ids = match &value.kind {
+            ValueKindData::Instruction(i) => {
+                let mut ids = i.kind.operand_ids();
+                ids.extend(i.kind.block_operand_ids());
+                ids
+            }
+            _ => Vec::new(),
+        };
         let id = core.context().push_value(value);
+        for op in operand_ids {
+            core.context()
+                .value_data(op)
+                .add_use(crate::value::ValueUse::Instruction(id));
+        }
         let ValueKindData::BasicBlock(bb_data) = &core.context().value_data(bb_id).kind else {
             panic!("fabricate_instruction: bb_id is not a basic block");
         };
