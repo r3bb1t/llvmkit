@@ -73,10 +73,13 @@ with `rendered.contains(pin)`
 that wraps upstream's satisfies the row, and a message *shorter* than upstream's
 is invisible too, since the pin is itself `FileCheck` text and `FileCheck`
 matches substrings. Only the `loc=` rows assert the caret; on the rest the
-anchor is unchecked. Some rows pass while diverging in text — entry 114's
-`zeroinit-error`, and `musttail-invalid-1` / `invalid-datalayout-override` under
-**G17** below, plus rows where llvmkit is exactly right and the pin is a
-truncated `FileCheck` fragment. See the corpus-oracle item in
+anchor is unchecked. Some rows pass while diverging in text —
+`musttail-invalid-1` / `invalid-datalayout-override` under **G17** below, plus
+rows where llvmkit is exactly right and the pin is a truncated `FileCheck`
+fragment. `target-type-properties.ll`'s `zeroinit-error` split was the worked
+example until its wrapper was removed; the row that hid it is unchanged, and
+what now pins that arm is a unit test asserting the `ParseError` variant and
+the column. See the corpus-oracle item in
 `docs/future-work.md`, which carries the derivation.
 
 **No manifest tallies are written here any more.** They were, in five figures,
@@ -251,7 +254,7 @@ These came out of the measurement and are recorded here rather than buried:
    ok, as it's unreachable!*") and `2004-06-07-VerifierBug.ll`. llvmkit rejects
    both. Gap **G22**.
 7. **A recurring wording bug: a complete upstream message routed through an
-   `expected …` wrapper.** `expected invalid type for null constant`, `expected
+   `expected …` wrapper.** `expected
    unexpected ellipsis in argument list for musttail call in non-varargs
    function`, `expected valid datalayout: address space must be a 24-bit
    integer`, `expected valid mask value for 'nofpclass'`, `expected valid

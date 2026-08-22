@@ -5785,6 +5785,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         pfs: Option<&PerFunctionState<'ctx, B>>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        let id = self.parse_metadata(pfs)?;
+        // `parseMetadataAsValue`'s second statement,
+        // `V = MetadataAsValue::get(Context, MD);`.
+        Ok(own_metadata(self.module.metadata_as_value(id)))
+    }
+
+    /// Mirrors `LLParser::parseMetadata(Metadata *&MD, PerFunctionState *PFS)`
+    /// on its own — the routine `parseMetadataAsValue` wraps and
+    /// `parseDebugRecord` calls **unwrapped**, for a `Metadata *` rather than
+    /// a `MetadataAsValue`.
+    fn parse_metadata(
+        &mut self,
+        pfs: Option<&PerFunctionState<'ctx, B>>,
+    ) -> ParseResult<MetadataId<B>> {
         if matches!(self.peek(), Token::MetadataVar(_)) {
             // `// DIArgLists are a special case, as they are a list of
             // ValueAsMetadata and so parsing this requires a Function State.`
@@ -5800,12 +5814,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let Some(pfs) = pfs else {
                     return Err(self.message("found DIArgList outside of function"));
                 };
-                let id = self.parse_di_arg_list(pfs)?;
-                return Ok(own_metadata(self.module.metadata_as_value(id)));
+                return self.parse_di_arg_list(pfs);
             }
             let kind = self.parse_md_node_after_bang(false)?;
-            let id = own_metadata(self.module.metadata_node(kind));
-            return Ok(own_metadata(self.module.metadata_as_value(id)));
+            return Ok(own_metadata(self.module.metadata_node(kind)));
         }
 
         // `parseMetadata`'s fallthrough — `if (Lex.getKind() != lltok::exclaim)
@@ -5815,10 +5827,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // operands (`llvm.dbg.value(metadata i32 %a, …)`). llvmkit demanded the
         // sigil here and so could not parse them at all.
         if !matches!(self.peek(), Token::Exclaim) {
-            let id = self.parse_value_as_metadata("metadata operand", pfs)?;
-            // `parseMetadataAsValue`'s second statement,
-            // `V = MetadataAsValue::get(Context, MD);`.
-            return Ok(own_metadata(self.module.metadata_as_value(id)));
+            return self.parse_value_as_metadata("metadata operand", pfs);
         }
 
         self.expect_exclaim("'!' in metadata operand")?;
@@ -5851,7 +5860,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.resolve_md_slot(slot, loc)
             }
         };
-        Ok(own_metadata(self.module.metadata_as_value(id)))
+        Ok(id)
     }
 
     fn parse_metadata_attachment_operand(&mut self) -> ParseResult<MetadataId<B>> {
@@ -6637,23 +6646,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `parseDebugRecord`'s `if (parseMetadata(ValLocMD, &PFS)) return true;`
+    /// — the whole routine, not a re-implementation of it.
+    ///
+    /// Upstream holds one `Metadata *`; llvmkit's [`DebugMetadataOperand`]
+    /// splits it into the `!`-spelled node and the `ValueAsMetadata` that a
+    /// bare `<type> <value>` builds, because the printer spells the two
+    /// differently. Which of the two `parseMetadata` will build is decided by
+    /// its own dispatch token, so the fork is read off the lookahead *before*
+    /// the call rather than guessed from the node afterwards — a `!N` slot
+    /// that happens to resolve to a `ValueAsMetadata` is still the `!N`
+    /// spelling.
     fn parse_debug_metadata_operand(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
     ) -> ParseResult<DebugMetadataOperand<B>> {
-        if self.peek_is_di_arg_list() {
-            return Ok(DebugMetadataOperand::Metadata(
-                self.parse_di_arg_list(state)?,
-            ));
+        let is_value_as_metadata = !matches!(self.peek(), Token::Exclaim | Token::MetadataVar(_));
+        let md = self.parse_metadata(Some(state))?;
+        if !is_value_as_metadata {
+            return Ok(DebugMetadataOperand::Metadata(md));
         }
-        if matches!(self.peek(), Token::Exclaim | Token::MetadataVar(_)) {
-            let id = self.parse_metadata_attachment_operand()?;
-            return Ok(DebugMetadataOperand::Metadata(id));
-        }
-
-        let ty = self.parse_type(false)?;
-        let value = self.parse_value(state, ty)?;
-        Ok(DebugMetadataOperand::Value(value.id()))
+        // `parseMetadata`'s non-`!` fall-through is
+        // `parseValueAsMetadata(MD, "expected metadata operand", PFS)`, whose
+        // only success statement is `MD = ValueAsMetadata::get(V);`, so the
+        // `else` is dead by construction — the same unwrap
+        // `parse_di_arg_list` performs on the same routine.
+        let Some(MetadataKind::Constant(value_id)) = self.module.metadata_get(md) else {
+            unreachable!("parse_value_as_metadata yields MetadataKind::Constant")
+        };
+        Ok(DebugMetadataOperand::Value(value_id))
     }
 
     fn parse_debug_record(
@@ -8466,14 +8487,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // `t_Zero` guards on the way here; the constant it builds is the
             // one the `token none` spelling builds.
             AnyTypeEnum::Token(_) => Ok(self.module.token_none()),
+            // `if (auto *TETy = dyn_cast<TargetExtType>(Ty)) if
+            //  (!TETy->hasProperty(TargetExtType::HasZeroInit)) return
+            //  error(ID.Loc, "invalid type for null constant");`
+            //
+            // `Module::target_ext_none` answers with upstream's complete
+            // sentence already, so it goes into `ParseError::Message`, which
+            // adds nothing — `Expected` prefixed it with `expected `.
             AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
-                IrError::InvalidOperation { message } => ParseError::Expected {
-                    expected: message.into(),
+                IrError::InvalidOperation { message } => ParseError::Message {
+                    message: message.into(),
                     loc: DiagLoc::span(loc),
                 },
                 other => self.builder_err_at(loc, "target extension none", other),
             }),
-            _ => Err(self.expected_at(loc, "zeroinitializer for a zeroable type")),
+            // `default: llvm_unreachable("Cannot create a null constant of
+            // that type!")`. The repo bans a runtime panic in a production
+            // path, so the arm rejects instead — and it carries the message of
+            // the guard that *should* have stopped the type earlier, because
+            // that is the only text upstream associates with `t_Zero` at all.
+            //
+            // What reaches it is what upstream traps on: `metadata`, `x86_amx`
+            // and `exnref` pass `convertValIDToValue`'s first-class/label
+            // guard and have no `Constant::getNullValue` case. `label` reaches
+            // it from neither path — the guard runs on both now. Probed at
+            // this commit with `target/release/examples/parse_file.exe` on
+            // `@g = global <T> zeroinitializer` and
+            // `%v = freeze <T> zeroinitializer` for each of the four.
+            _ => Err(self.message_at(loc, "invalid type for null constant")),
         }
     }
 
@@ -8690,7 +8731,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 };
                 Ok(ptr_ty.const_null().as_constant())
             }
-            ValIdKind::Zero => self.zero_initializer_constant(loc, ty),
+            // `parseConstantValue` routes `t_Zero` through
+            // `convertValIDToValue(Ty, ID, V, /*PFS=*/nullptr)`, so the
+            // `!Ty->isFirstClassType() || Ty->isLabelTy()` guard runs on the
+            // constant path exactly as it does on the value path.
+            ValIdKind::Zero => {
+                self.check_undef_like_type(loc, ty, "null")?;
+                self.zero_initializer_constant(loc, ty)
+            }
             ValIdKind::Undef => {
                 self.check_undef_like_type(loc, ty, "undef")?;
                 Ok(ty.undef().as_constant())

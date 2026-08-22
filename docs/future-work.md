@@ -147,7 +147,7 @@ The gaps with the most fixtures behind them, and why each is worth pulling out:
   target-extension-type legality.
 - **G17** — diagnostic text that differs from upstream's. Most of it is one
   wording bug: a complete upstream message routed through llvmkit's
-  `expected …` wrapper (`expected invalid type for null constant`, `expected
+  `expected …` wrapper (`expected
   valid mask value for 'nofpclass'`, `expected intrinsic signature mismatch`),
   where upstream reaches it through `error(...)` rather than
   `tokError("expected …")`. This is the cheapest parity work left in the
@@ -2605,13 +2605,15 @@ row while the printed diagnostic differs from `llvm-as`. Rows that set no
 `loc=` leave the caret column unchecked as well, so an anchor that drifts to a
 later token is invisible too.
 
-That is how `docs/divergences.md` entry 114 survived. Two rows pin
-`error=invalid type for null constant` and both are green, but only one of them
-is green *because of* the oracle: `target-type-properties/zeroinit-error.ll`
-renders `expected invalid type for null constant` at a later token, while
+The worked example was `zeroinitializer`'s wrapper, which survived for
+exactly this reason. Two rows pin `error=invalid type for null constant` and
+both are green, but only one of them was green *because of* the oracle:
+`target-type-properties/zeroinit-error.ll` rendered
+`expected invalid type for null constant`, while
 `2004-11-28-InvalidTypeCrash.ll` takes a different arm of the same routine and
-renders the bare text exactly — its anchor is wrong, which containment cannot
-see either. The hole is the harness's, not those rows'.
+rendered the bare text exactly. The wrapper is gone and both arms are pinned by
+`parser_constants.rs` on variant and column; the two rows are unchanged, so the
+hole they leave is the harness's, not those rows'.
 
 **How big it is.** No figure is given here on purpose. The population is every
 `error=` row in `parser_corpus_manifest.txt`, which grows with the corpus, and a

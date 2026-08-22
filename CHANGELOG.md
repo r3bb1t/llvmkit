@@ -19,6 +19,36 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `zeroinitializer` and a `#dbg_*` value operand carry upstream's own text
+
+Two parser sites that re-worded a complete upstream message, and one that
+re-implemented a routine instead of calling it.
+
+- **`zeroinitializer` of an unzeroable type reports `invalid type for null
+  constant`.** `convertValIDToValue`'s `case ValID::t_Zero:` raises that bare
+  sentence from both its guards, and `Constant::getNullValue` traps past them.
+  llvmkit answered `expected zeroinitializer for a zeroable type` from the arm
+  standing in for the trap, and `expected invalid type for null constant` from
+  the target-extension guard — a complete message inside an `expected `
+  wrapper.
+- **A global initializer runs the first guard too.** `parseConstantValue`
+  routes `t_Zero` through the same routine with `PFS = nullptr`, so
+  `@g = global label zeroinitializer` is `invalid type for null constant`
+  upstream. llvmkit ran the guard on the value path only.
+- **A `#dbg_*` record's value operand goes through `parseMetadata`.**
+  `parseDebugRecord` calls it whole; llvmkit had a hand-rolled
+  `parse_type` + `parse_value` tail carrying neither
+  `parseValueAsMetadata`'s `TypeMsg` nor its
+  `invalid metadata-value-metadata roundtrip` guard. `#dbg_value(42, …)` said
+  `expected type` and `#dbg_value(metadata %a, …)` blamed `%a`. llvmkit's
+  `parseMetadata` port is now a routine of its own, and
+  `parseMetadataAsValue` is the two-statement wrapper upstream writes.
+
+The oracle that could not see any of this: `parser_corpus.rs` compares an
+`error=` pin with `contains`, so a wrapper that only adds text keeps the row
+green, and a row without `loc=` leaves the column unchecked. Both new tests
+assert the message and the reported offset.
+
 ### Fixed — every basic-block lookup goes through one `getVal`
 
 `LLParser::PerFunctionState::getBB` is `dyn_cast_or_null<BasicBlock>(getVal(…,

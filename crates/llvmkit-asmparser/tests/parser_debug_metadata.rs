@@ -125,6 +125,73 @@ entry:
     );
 }
 
+/// `parseDebugRecord` parses its value field with
+/// `parseMetadata(ValLocMD, &PFS)` — the whole routine — whose non-`!`
+/// fall-through is
+/// `parseValueAsMetadata(MD, "expected metadata operand", PFS)`, i.e.
+/// `parseType(Ty, TypeMsg, Loc)`, then
+/// `if (Ty->isMetadataTy()) return error(Loc, "invalid metadata-value-metadata
+/// roundtrip");`, then `parseValue`.
+///
+/// llvmkit wrote that tail out instead of delegating, so it carried neither
+/// the `TypeMsg` nor the roundtrip guard: a non-type reported `parse_type`'s
+/// own `expected type`, and `metadata i32 %a` ran on into the value parse and
+/// blamed `%a` for the inner type. The same shape as a `call` argument was
+/// already correct, because that path calls the routine.
+///
+/// No `test/Assembler` fixture writes a bad value operand in a `#dbg_*`
+/// record — the `dbg-record-invalid-*.ll` family covers a bad record *type*
+/// and wrong operand *counts*. The routines are the anchor, and the two
+/// columns are `parseType`'s current token and `parseType`'s out-parameter
+/// `Loc` respectively.
+#[test]
+fn a_debug_record_value_operand_goes_through_parse_metadata() {
+    const HEADER: &str = "define void @f() !dbg !3 {\nentry:\n  %a = add i32 0, 0\n";
+    const TRAILER: &str = concat!(
+        "  ret void\n}\n\n",
+        "!0 = !DIFile(filename: \"a.c\", directory: \"/tmp\")\n",
+        "!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, producer: \"llvmkit\")\n",
+        "!2 = !DISubroutineType(types: !{null})\n",
+        "!3 = distinct !DISubprogram(name: \"f\", file: !0, type: !2, unit: !1)\n",
+        "!4 = !DILocation(line: 1, column: 1, scope: !3)\n",
+        "!5 = !DILocalVariable(name: \"x\", scope: !3, type: !6)\n",
+        "!6 = !DIBasicType(name: \"int\", size: 32, encoding: DW_ATE_signed)\n",
+    );
+    // `Ty->isMetadataTy()`, anchored at the *type* `parseType` just read.
+    let roundtrip =
+        format!("{HEADER}  #dbg_value(metadata %a, !5, !DIExpression(), !4)\n{TRAILER}");
+    let err = parse_err(&roundtrip);
+    assert_eq!(err.to_string(), "invalid metadata-value-metadata roundtrip");
+    assert_eq!(
+        reported_offset(&err),
+        roundtrip
+            .find("metadata %a")
+            .expect("the fixture writes one")
+    );
+    // `parseType(Ty, TypeMsg, Loc)` with `TypeMsg = "expected metadata
+    // operand"`, anchored at the token that is not a type.
+    let not_a_type = format!("{HEADER}  #dbg_value(42, !5, !DIExpression(), !4)\n{TRAILER}");
+    let err = parse_err(&not_a_type);
+    assert_eq!(err.to_string(), "expected metadata operand");
+    assert_eq!(
+        reported_offset(&err),
+        not_a_type.find("42").expect("the fixture writes one")
+    );
+}
+
+/// Byte offset a rejection reports, for comparison against a needle's own
+/// offset — the same "text alone cannot see the anchor" guard
+/// `parser_module_level.rs` spells with line and column.
+fn reported_offset(err: &ParseError) -> usize {
+    usize::try_from(
+        err.loc()
+            .expect("a rejection reports a location")
+            .span
+            .start,
+    )
+    .expect("span start fits in usize")
+}
+
 /// Regression (broad-review Critical): an align-less alloca with attached
 /// `!dbg` metadata parses. The metadata comma must not be mis-consumed as an
 /// array size (`LLParser::parseAlloc` branches on `MetadataVar` before the

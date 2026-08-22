@@ -760,8 +760,10 @@ define void @f() {
 /// `llvm/lib/IR/Type.cpp`'s `getTargetTypeInfo`, so
 /// `LLParser::convertValIDToValue`'s `ValID::t_Zero` arm rejects
 /// `target("spirv.Image") zeroinitializer` upstream too, with
-/// `invalid type for null constant`. llvmkit rejects it as well — see
-/// `docs/divergences.md` entry 114 for the wording and anchor it uses.
+/// `invalid type for null constant`. llvmkit rejects it as well, with that
+/// text at that token —
+/// `parser_constants.rs::zeroinitializer_of_an_unzeroable_type_is_an_invalid_null_constant`
+/// pins the arm.
 #[test]
 fn a_target_extension_type_is_a_legal_metadata_tuple_operand() {
     let (_, text) = parse_snippet("!0 = !{ target(\"spirv.Image\") poison }\n");
