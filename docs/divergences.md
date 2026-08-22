@@ -865,46 +865,6 @@ parity); a direct consequence of the split instruction dispatch recorded in
   terminator `match` and delete `parse_lhs_before_invoke`. Not fixable in
   isolation without duplicating the lookahead.
 
-### 122. A `@name` / `@N` callee is looked up only among functions
-
-*parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs (`resolve_direct_callee`)
-
-Found 2026-08-21 while porting `call addrspace(N)` / `invoke addrspace(N)`.
-
-- **LLVM:** `convertValIDToValue`'s `t_GlobalName` arm is
-  `getGlobalVal(ID.StrVal, Ty, ID.Loc)`, which looks the name up in
-  `M->getValueSymbolTable()` and accepts **any** `GlobalValue` — function,
-  alias, ifunc or global variable — then type-checks it as a pointer. The
-  call's own `FunctionType` lives on the `CallBase`, not on the callee.
-- **llvmkit:** `resolve_direct_callee`'s `Name` arm consults only
-  `Module::function_dyn`; its `Id` arm accepts only `GlobalRef::Function`.
-  Anything else falls into the forward-declaration arm and collides with the
-  existing global.
-- **Evidence:** `test/Assembler/ifunc-program-addrspace.ll`, whose
-  `addrspace` half now parses, reports
-  `24:26: expected forward function declaration: a function named "ifunc_as0"
-  already exists in this module` on `call addrspace(0) void @ifunc_as0()`.
-  Probed with `target/release/examples/parse_file.exe` on the upstream fixture.
-  Note the contrast: `resolve_global_name_as_value` — llvmkit's port of
-  `getGlobalVal` for an ordinary operand — *does* consult globals, aliases and
-  ifuncs. Only the callee position is narrow.
-- **Why:** never noticed — the narrowness is in the *lookup*, not in the shapes.
-  `ParsedCallee::Indirect(PointerValue)` already exists and is already produced
-  from an erased value by `resolve_direct_callee`'s `ParsedDirectCallee::Value`
-  arm, which does the `PointerValue::try_from` and nothing else; an ifunc
-  reached through a `ptr` (`%p = load ptr, ptr @f` then `call void %p()`) parses
-  and prints at this commit. So the fix does **not** need a fourth
-  `ParsedCallee` shape, and this entry used to say it did. What is genuinely
-  open is which lookup order the `Name` and `Id` arms should use and how a
-  forward-referenced name interacts with entry 15 once it can resolve to
-  something other than a `Function`.
-- **Cost:** `test/Assembler/ifunc-program-addrspace.ll` stays `blocked-model`,
-  on this gap rather than the address-space one.
-- **Fix:** Give `resolve_direct_callee` the same lookup order
-  `resolve_global_name_as_value` uses, and resolve a non-function global callee
-  through the indirect path with its `GlobalValue::getType` pointer, as
-  `convertValIDToValue` does.
-
 ## Accepts invalid input
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.

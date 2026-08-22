@@ -264,7 +264,9 @@ upstream/assembler-corpus/hex-float-overflow/half.ll | test/Assembler/hex-float-
 upstream/assembler-corpus/huge-array.ll | test/Assembler/huge-array.ll | status=pass
 upstream/assembler-corpus/ifunc-asm.ll | test/Assembler/ifunc-asm.ll | status=pass
 upstream/assembler-corpus/ifunc-dsolocal.ll | test/Assembler/ifunc-dsolocal.ll | status=pass
+upstream/assembler-corpus/ifunc-program-addrspace.ll | test/Assembler/ifunc-program-addrspace.ll | status=pass
 upstream/assembler-corpus/ifunc-stripPointerCastsAndAliases.ll | test/Assembler/ifunc-stripPointerCastsAndAliases.ll | status=pass
+upstream/assembler-corpus/ifunc-use-list-order.ll | test/Assembler/ifunc-use-list-order.ll | status=pass
 upstream/assembler-corpus/implicit-intrinsic-declaration-invalid2.ll | test/Assembler/implicit-intrinsic-declaration-invalid2.ll | status=reject | error=intrinsic can only be used as callee
 upstream/assembler-corpus/inalloca-parse-error0.ll | test/Assembler/inalloca-parse-error0.ll | status=reject | loc=4:40 | error=expected '('
 upstream/assembler-corpus/inalloca.ll | test/Assembler/inalloca.ll | status=pass

@@ -30,6 +30,21 @@ cut, entries accumulate under **Unreleased**.
   spellings now build the same interned constant, as upstream's do. No `.ll`
   under the vendored tree spells `token zeroinitializer`, so the routine is the
   anchor.
+- **A call-family callee may be any `GlobalValue`, not only a function.**
+  `convertValIDToValue`'s `t_GlobalName` / `t_GlobalID` arms are
+  `getGlobalVal`, one lookup in `M->getValueSymbolTable()` (or `NumberedVals`)
+  that accepts a function, global variable, alias or ifunc alike; the call's own
+  `FunctionType` lives on the `CallBase`, so the callee never has to be a
+  `Function`. llvmkit consulted only its function table, so `call void
+  @some_ifunc()` fell through to the forward-declaration arm and collided with
+  the ifunc already in the module. `resolve_direct_callee` now runs the same
+  lookup and keeps a non-function global as the bare pointer upstream returns.
+  `test/Assembler/ifunc-program-addrspace.ll` and
+  `test/Assembler/ifunc-use-list-order.ll` are corpus fixtures now, with the
+  first's `CHECK` block asserted; gap **G23** in `docs/fixture-coverage.md` is
+  closed. The second was classified on the *forward-reference* gap and was never
+  blocked on it — its ifunc is defined above its caller — which is a
+  misclassification this fix uncovered.
 
 ### Changed — the tracked documentation stops storing counts, and one of them is now enforced
 

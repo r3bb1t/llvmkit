@@ -8921,6 +8921,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             GlobalRef::Ifunc(i) => i.as_global_constant_ptr(),
         }
     }
+    /// The bare `ptr` a `GlobalValue` *is* when it stands in value position.
+    /// Upstream's `getGlobalVal` returns the `GlobalValue *` itself and
+    /// `Value::getType` answers `PointerType::get(C, GV->getAddressSpace())`;
+    /// `as_global_constant_ptr` mints that constant here (`docs/divergences.md`
+    /// D3 is why the pointer is rebuilt rather than read off the arena type).
+    ///
+    /// The narrowing cannot fail — every arm of `global_ref_to_constant` builds
+    /// its constant *at* a `PointerType`. It is spelled as a checked conversion
+    /// because `PointerValue`'s unchecked constructor is private to
+    /// `llvmkit-ir`, not because a pointer is in doubt.
+    fn global_ref_as_pointer(
+        &self,
+        loc: Span,
+        r: GlobalRef<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, B>> {
+        llvmkit_ir::PointerValue::try_from(self.global_ref_to_constant(r).as_erased())
+            .map_err(|e| self.builder_err_at(loc, "global value as a pointer", e))
+    }
+
     fn resolve_global_name_as_ref(&self, name: String) -> ParseResult<GlobalRef<'ctx, B>> {
         self.global_symbol_lookup(&name)
             .ok_or_else(|| ParseError::UndefinedSymbol {
@@ -14320,25 +14339,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<ParsedCallee<'ctx, B>> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
-                if let Some(f) = self
-                    .module
-                    .function_dyn(&name)
-                    .map(|id| self.module.view(id))
-                {
-                    // `getGlobalVal(Name, Ty, Loc)`: a symbol-table (or
-                    // forward-ref-table) hit goes through
-                    // `checkValidVariableType(Loc, "@" + Name, Ty, Val)` before
-                    // anything else looks at it. `Val->getType()` is
-                    // `GlobalValue::getType` — `PointerType::get(C,
-                    // GV->getAddressSpace())` — which llvmkit rebuilds from the
-                    // function's own address space, because a global's arena
-                    // type here is its *value* type (`docs/divergences.md` D3).
-                    check_valid_variable_type(
+                // `getGlobalVal(Name, Ty, Loc)` is **one** lookup, in
+                // `M->getValueSymbolTable()`, and it accepts any
+                // `GlobalValue` — function, global variable, alias or ifunc.
+                // A symbol-table (or forward-ref-table) hit goes through
+                // `checkValidVariableType(Loc, "@" + Name, Ty, Val)` before
+                // anything else looks at it. `Val->getType()` is
+                // `GlobalValue::getType` — `PointerType::get(C,
+                // GV->getAddressSpace())` — which llvmkit rebuilds from the
+                // symbol's own address space, because a global's arena type
+                // here is its *value* type (`docs/divergences.md` D3); that
+                // hoist is `check_resolved_global_type`, shared with
+                // `resolve_global_name_as_value`, llvmkit's port of the same
+                // routine for an ordinary operand.
+                if let Some(resolved) = self.global_symbol_lookup(&name) {
+                    self.check_resolved_global_type(
                         loc,
                         &format!("@{name}"),
                         self.module.ptr_type(callee_addr_space).as_type(),
-                        self.module.ptr_type(f.address_space()).as_type(),
+                        resolved,
                     )?;
+                    let GlobalRef::Function(f) = resolved else {
+                        // A non-function `GlobalValue` callee stays the bare
+                        // pointer `getGlobalVal` handed back: the call's own
+                        // `FunctionType` lives on the `CallBase`, not on the
+                        // callee, so nothing downstream needs a `Function`.
+                        return Ok(ParsedCallee::Indirect(
+                            self.global_ref_as_pointer(loc, resolved)?,
+                        ));
+                    };
                     match resolve_intrinsic_name(&name) {
                         // A non-intrinsic direct callee resolves to the
                         // function regardless of whether the call-site type
@@ -14432,28 +14461,31 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
             ParsedDirectCallee::Id { id, loc } => {
-                let f = self
-                    .numbered_globals
-                    .get(id)
-                    .and_then(|r| match r {
-                        GlobalRef::Function(f) => Some(*f),
-                        _ => None,
-                    })
-                    .ok_or_else(|| ParseError::UndefinedSymbol {
+                // `getGlobalVal(unsigned ID, Ty, Loc)` reads `NumberedVals`,
+                // which holds every `GlobalValue` kind, exactly as the named
+                // overload reads the symbol table.
+                let resolved = self.numbered_globals.get(id).copied().ok_or_else(|| {
+                    ParseError::UndefinedSymbol {
                         kind: SymbolKind::Global,
                         id: SymbolId::Numbered(id),
                         loc: DiagLoc::span(loc),
-                    })?;
-                // `getGlobalVal(unsigned ID, Ty, Loc)` -> `checkValidVariableType(
-                // Loc, "@" + Twine(ID), Ty, Val)`. See the named arm above for
-                // why this reduces to an address-space comparison.
-                check_valid_variable_type(
+                    }
+                })?;
+                // `checkValidVariableType(Loc, "@" + Twine(ID), Ty, Val)`. See
+                // the named arm above for why this reduces to an address-space
+                // comparison.
+                self.check_resolved_global_type(
                     loc,
                     &format!("@{id}"),
                     self.module.ptr_type(callee_addr_space).as_type(),
-                    self.module.ptr_type(f.address_space()).as_type(),
+                    resolved,
                 )?;
-                Ok(ParsedCallee::Function(f))
+                match resolved {
+                    GlobalRef::Function(f) => Ok(ParsedCallee::Function(f)),
+                    other => Ok(ParsedCallee::Indirect(
+                        self.global_ref_as_pointer(loc, other)?,
+                    )),
+                }
             }
             ParsedDirectCallee::InlineAsm(data) => Ok(ParsedCallee::InlineAsm({
                 // `convertValIDToValue`'s `t_InlineAsm` arm verifies before it

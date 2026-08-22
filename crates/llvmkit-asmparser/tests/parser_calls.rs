@@ -1630,3 +1630,110 @@ fn callbr_does_not_accept_an_address_space() {
         "expected type",
     );
 }
+
+/// `test/Assembler/ifunc-program-addrspace.ll`, whole and verbatim, with its
+/// own `CHECK` / `CHECK-NEXT` block. Upstream's `RUN` line is
+/// `llvm-as < %s | llvm-dis | FileCheck %s`, so [`parse_verify_and_render_bytes`]
+/// is the whole pipeline.
+///
+/// What it pins: `LLParser::convertValIDToValue`'s `t_GlobalName` arm is
+/// `getGlobalVal(ID.StrVal, Ty, ID.Loc)`, one lookup in
+/// `M->getValueSymbolTable()` that accepts **any** `GlobalValue`. An `ifunc`
+/// callee therefore resolves to the ifunc, at the ifunc's own address space —
+/// which for `@ifunc_as1` is 1, because `parseAliasOrIFunc` takes
+/// `AddrSpace = PTy->getAddressSpace()` from the resolver constant. The call's
+/// own `FunctionType` lives on the `CallBase`, so nothing needs the callee to
+/// be a `Function`.
+///
+/// The same fixture also drives the corpus manifest, which asserts what
+/// `check_directives` cannot: that the module verifies and that printing it,
+/// re-parsing the print and printing again is a fixed point.
+#[test]
+fn ifunc_callee_resolves_at_the_ifuncs_own_program_address_space() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/ifunc-program-addrspace.ll");
+
+    let text = parse_verify_and_render_bytes(
+        "ifunc_callee_resolves_at_the_ifuncs_own_program_address_space",
+        FIXTURE,
+    );
+    check_directives(
+        &text,
+        &[
+            Check::Line("@ifunc_as0 = ifunc void (), ptr @resolver_as0"),
+            Check::Line("@ifunc_as1 = ifunc void (), ptr addrspace(1) @resolver_as1"),
+            Check::Line("define ptr @resolver_as0() addrspace(0) {"),
+            Check::Line("define ptr @resolver_as1() addrspace(1) {"),
+            Check::Line("define void @call_ifunc_as0() addrspace(1) {"),
+            Check::Next("call addrspace(0) void @ifunc_as0()"),
+            Check::Line("define void @call_ifunc_as1() addrspace(1) {"),
+            Check::Next("call addrspace(1) void @ifunc_as1()"),
+        ],
+    );
+}
+
+/// `test/Assembler/ifunc-use-list-order.ll`, whole and verbatim. Upstream's
+/// `RUN` line is `verify-uselistorder < %s`, which has no `CHECK` block, so
+/// what is portable is the half `docs/fixture-coverage.md` maps that tool onto:
+/// the module parses and prints. The lines asserted here are the two call sites
+/// — one to an ifunc, one to an ordinary function — because they are what the
+/// `getGlobalVal` lookup decides.
+///
+/// This fixture was classified `blocked-model` on the forward-reference gap.
+/// It was not blocked on that: `@foo_ifunc` is *defined above* `@bar`, so the
+/// callee lookup finds it in the symbol table and the forward-declaration arm
+/// is never reached. Its blocker was the narrow callee lookup, the same one
+/// [`ifunc_callee_resolves_at_the_ifuncs_own_program_address_space`] pins.
+#[test]
+fn a_call_to_an_already_defined_ifunc_resolves_to_the_ifunc() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/ifunc-use-list-order.ll");
+
+    let text = parse_verify_and_render_bytes(
+        "a_call_to_an_already_defined_ifunc_resolves_to_the_ifunc",
+        FIXTURE,
+    );
+    check_directives(
+        &text,
+        &[
+            Check::Line("@foo_ifunc = ifunc void (), ptr @foo_resolver"),
+            Check::Line("define void @bar() {"),
+            Check::Line("call void @foo_ifunc()"),
+            Check::Line("define void @bar2() {"),
+            Check::Line("call void @bar()"),
+        ],
+    );
+}
+
+/// **llvmkit-authored fixture; the rule is the anchor (D11).** No `.ll` in the
+/// vendored tree spells a bare call to an alias, a global variable or a
+/// numbered global: `rg '= alias '` over `test/Assembler`, `test/Verifier`,
+/// `test/Feature` and `test/Bitcode`, intersected with the files that carry a
+/// `call`/`invoke`, leaves `test/Feature/aliases.ll` as the only one with a
+/// bare alias callee (`%tmp4 = call %FunTy @bar_f()`) — and it is written in
+/// typed-pointer syntax LLVM 22.1.4 no longer parses.
+///
+/// The rule: `LLParser::getGlobalVal`'s lookup is
+/// `cast_or_null<GlobalValue>(M->getValueSymbolTable().lookup(Name))`, and its
+/// numbered twin reads `NumberedVals`. Both accept **any** `GlobalValue`, and
+/// the call's own `FunctionType` lives on the `CallBase`, so the callee never
+/// has to be a `Function`. The ifunc arm of that same rule is pinned by two
+/// upstream fixtures; these three kinds have none, which is why they are here.
+#[test]
+fn a_non_function_global_callee_resolves_through_the_symbol_table() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-getGlobalVal/non_function_global_callees.ll");
+
+    let text = parse_verify_and_render_bytes(
+        "a_non_function_global_callee_resolves_through_the_symbol_table",
+        FIXTURE,
+    );
+    check_directives(
+        &text,
+        &[
+            Check::Line("call void @a()"),
+            Check::Next("call void @gv()"),
+            Check::Next("call void @0()"),
+        ],
+    );
+}

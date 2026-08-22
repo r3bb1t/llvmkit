@@ -149,7 +149,7 @@ another was deleted outright, so the letters are not a stable namespace.
 | **G20** | A **function** used as a `ptr` constant keeps its function type instead of its pointer type. `Function::getType()` upstream *is* a `PointerType` and only `getValueType()` is the `FunctionType`, so this both **rejects valid input** — `declare void @f()` with `call void @use(ptr @f)` answers `call argument #0 type mismatch: expected ptr, got void ()` — and breaks the print: `call void @f() [ "foo"(ptr @f) ]` prints `[ "foo"(void () @f) ]`, which re-parses to `functions are not values, refer to them as pointers`. **Globals are not affected** — `@gv = global i32 0` used as `call void @use(ptr @gv)` parses, prints and re-parses; the row said "function or global" and the global half was never true. All three probed at 2026-08-22 with `target/release/examples/parse_file.exe`. |
 | **G21** | `!DIFile(source: ...)` and neighbouring fields in a summary-bearing module are not accepted. |
 | **G22** | llvmkit's Verifier does not exempt **unreachable** blocks: `Verifier::verifyDominatesUse` returns early when `!DT.isReachableFromEntry(...)`, so upstream accepts a self-referencing or out-of-order instruction in a block with no path from entry, and llvmkit rejects it. |
-| **G23** | A `@name` / `@N` call-family callee is looked up only among functions: `resolve_direct_callee`'s `Name` arm consults `Module::function_dyn` and its `Id` arm accepts only `GlobalRef::Function`, where `convertValIDToValue` -> `getGlobalVal` accepts any `GlobalValue`. An **ifunc** callee collides with the forward-declaration arm ([`divergences.md`](divergences.md) 122). |
+| **G23** | *Closed.* A `@name` / `@N` call-family callee was looked up only among functions; `resolve_direct_callee` now runs `getGlobalVal`'s own lookup — the symbol table for a name, `NumberedVals` for a number — and keeps a non-function `GlobalValue` as the bare pointer upstream returns. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 
 Which fixture sits on which gap:
 
@@ -164,7 +164,7 @@ Which fixture sits on which gap:
 - **G10**: `DIEnumeratorBig.ll`
 - **G11**: `globalvariable-attributes.ll`
 - **G12**: `fast-math-flags.ll`
-- **G13**: `2003-05-15-AssemblerProblem.ll`, `ifunc-use-list-order.ll`
+- **G13**: `2003-05-15-AssemblerProblem.ll`
 - **G14**: `incomplete-ir-metadata.ll`
 - **G15**: `opaque-ptr.ll`, `skip-value-numbers-globals.ll`
 - **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
@@ -174,7 +174,7 @@ Which fixture sits on which gap:
 - **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
 - **G21**: `thinlto-summary.ll`
 - **G22**: `2004-02-27-SelfUseAssertError.ll`, `2004-06-07-VerifierBug.ll`
-- **G23**: `ifunc-program-addrspace.ll`
+- **G23**: closed
 
 ## Findings this classification produced
 
@@ -516,9 +516,9 @@ collision.
 | `huge-array.ll` | ported | 1 pass |
 | `ifunc-asm.ll` | ported | 1 pass |
 | `ifunc-dsolocal.ll` | ported | 1 pass |
-| `ifunc-program-addrspace.ll` | blocked-model | **G23** — `call addrspace(0) void @ifunc_as0()` reports `24:26: expected forward function declaration: a function named "ifunc_as0" already exists in this module`; the `addrspace` half is ported |
+| `ifunc-program-addrspace.ll` | ported | 1 pass |
 | `ifunc-stripPointerCastsAndAliases.ll` | ported | 1 pass |
-| `ifunc-use-list-order.ll` | blocked-model | **G13** — rejected at 19:13: `expected forward function declaration: a function named "foo_ifunc" already exists in this module` |
+| `ifunc-use-list-order.ll` | ported | 1 pass |
 | `immarg-param-attribute.ll` | blocked-model | **G3** — rejected at 4:14: `expected unknown intrinsic` |
 | `implicit-intrinsic-declaration-invalid.ll` | blocked-model | **G1** — reported `expected intrinsic signature mismatch`, upstream `invalid intrinsic signature` |
 | `implicit-intrinsic-declaration-invalid2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
