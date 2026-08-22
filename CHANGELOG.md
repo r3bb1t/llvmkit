@@ -19,6 +19,18 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — three `rejects-valid` divergences: IR llvmkit refused and LLVM accepts
+
+- **`token zeroinitializer` parses.** `Constant::getNullValue`'s
+  `case Type::TokenTyID` returns `ConstantTokenNone::get`, and
+  `convertValIDToValue`'s `t_Zero` arm reaches it — a token type is first-class
+  and is neither a label nor a `TargetExtType`. llvmkit's port of that routine
+  had no `Token` arm, so the request fell to its catch-all and answered
+  `expected zeroinitializer for a zeroable type`. The arm is ported; the two
+  spellings now build the same interned constant, as upstream's do. No `.ll`
+  under the vendored tree spells `token zeroinitializer`, so the routine is the
+  anchor.
+
 ### Changed — the tracked documentation stops storing counts, and one of them is now enforced
 
 Documentation pass over the divergence-closing branch. The recurring failure it

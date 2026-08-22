@@ -363,6 +363,29 @@ fn token_none_round_trips() {
     assert_eq!(format!("{}", parsed.as_erased()), "token none");
 }
 
+/// **llvmkit-authored source; no upstream `.ll` counterpart.** `grep -rlna
+/// "token zeroinitializer" test/ unittests/ lib/` over the vendored
+/// `llvmorg-22.1.4` tree returns nothing, so the routine is the anchor (D11):
+/// `Constant::getNullValue`'s `case Type::TokenTyID` returns
+/// `ConstantTokenNone::get`, the very constant the `token none` spelling
+/// builds, and `convertValIDToValue`'s `t_Zero` arm reaches it because a token
+/// type is first-class and is neither a label nor a `TargetExtType`.
+///
+/// Uniquing is asserted alongside the text: upstream's two spellings are one
+/// `ConstantTokenNone`, not two constants that happen to print alike.
+#[test]
+fn token_zeroinitializer_is_the_token_none_constant() {
+    let module = module_new!("parser_constants_token_zero").expect("fresh module");
+    let token_ty = module.token_type().as_type();
+
+    let zero = parser::parse_constant_value(b"zeroinitializer", &module, token_ty)
+        .expect("token zeroinitializer parses");
+    assert_eq!(format!("{}", zero.as_erased()), "token none");
+
+    let none = parser::parse_constant_value(b"none", &module, token_ty).expect("token none parses");
+    assert_eq!(zero.as_erased().id(), none.as_erased().id());
+}
+
 /// Exact `ptrtoaddr` constant expression from `test/Assembler/ptrtoaddr.ll`.
 #[test]
 fn ptrtoaddr_constant_expr_round_trips() {

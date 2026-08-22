@@ -8381,6 +8381,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(loc, "splat constant", e))
     }
 
+    /// Mirrors `Constant::getNullValue`, which `convertValIDToValue`'s
+    /// `t_Zero` arm and `parseConstantValue`'s `t_Null` arm both end in.
+    ///
+    /// llvmkit has no `ConstantAggregateZero`, so the three arms upstream
+    /// routes through it build the zero element-wise instead; every other arm
+    /// is one upstream `case`. The `_` catch-all stands in for upstream's
+    /// `llvm_unreachable` default, which llvmkit reports rather than traps.
     fn zero_initializer_constant(
         &self,
         loc: Span,
@@ -8436,6 +8443,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .map(|c| c.as_constant())
                     .map_err(|e| self.builder_err_at(loc, "struct zeroinitializer", e))
             }
+            // `case Type::TokenTyID: return ConstantTokenNone::get(...)`. A
+            // token type is first-class, is neither a label nor a
+            // `TargetExtType`, and so passes both of `convertValIDToValue`'s
+            // `t_Zero` guards on the way here; the constant it builds is the
+            // one the `token none` spelling builds.
+            AnyTypeEnum::Token(_) => Ok(self.module.token_none()),
             AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
                 IrError::InvalidOperation { message } => ParseError::Expected {
                     expected: message.into(),

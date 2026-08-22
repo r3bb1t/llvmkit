@@ -865,42 +865,6 @@ parity); a direct consequence of the split instruction dispatch recorded in
   terminator `match` and delete `parse_lhs_before_invoke`. Not fixable in
   isolation without duplicating the lookahead.
 
-### 117. `token zeroinitializer` is rejected; upstream builds `ConstantTokenNone`
-
-*parser — constants* — crates/llvmkit-asmparser/src/ll_parser.rs
-(`zero_initializer_constant`)
-
-Found 2026-08-20 in the operand-bundle close-out, while grading which types
-reach the routine's `_` catch-all (entry 116).
-
-- **LLVM:** `Type::isFirstClassType` returns true for `TokenTyID` (its `switch`
-  returns false only for `FunctionTyID`, `VoidTyID` and an opaque `StructTyID`),
-  and a token type is neither a label nor a `TargetExtType`, so
-  `LLParser::convertValIDToValue`'s `t_Zero` case passes both guards and reaches
-  `Constant::getNullValue`, whose
-  `case Type::TokenTyID: return ConstantTokenNone::get(...)` builds the same
-  constant the `token none` spelling builds.
-- **llvmkit:** `zero_initializer_constant` has no `Token` arm, so the request
-  falls to the `_` catch-all and reports
-  `expected zeroinitializer for a zeroable type`. Probed at this commit:
-  `%v = freeze token zeroinitializer` -> `3:3: expected zeroinitializer for a
-  zeroable type`.
-- **Consequence:** rejects-valid. llvmkit already accepts and prints the
-  `token none` spelling of the identical constant, so this is a parse-stage gap,
-  not a model gap.
-- **Scope of the verification:** established at the parser layer against
-  `convertValIDToValue` and `Constant::getNullValue`. `llvm-as` was not run.
-  `grep -n 'isTokenLikeTy' lib/IR/Verifier.cpp` at the vendored tag
-  `llvmorg-22.1.4` returns five `Check` sites — argument type, function return
-  type, phi type, and the call parameter and indirect-call return types — and
-  none of them reaches a `freeze` operand. (This bullet used to name the phi
-  rule as the *only* token rule in the file, which the same command falsifies.)
-- **Not the same verdict for `metadata` / `x86_amx`:** both also pass
-  `isFirstClassType`, but `getNullValue` has no case for either and traps in its
-  `llvm_unreachable` default. llvmkit's rejection there is hardening; see entry
-  116.
-- **Fix:** add a `Token` arm returning the module's `token none` constant.
-
 ### 122. A `@name` / `@N` callee is looked up only among functions
 
 *parser — call family* — crates/llvmkit-asmparser/src/ll_parser.rs (`resolve_direct_callee`)
@@ -1404,8 +1368,10 @@ a complete upstream message routed through an `expected ...` wrapper.
   where the opaque-`Struct` arm already raises `ParseError::Message`. **Which
   types reach that catch-all is stated in entry 116 and deliberately not
   restated here**: it was, and the two copies drifted into agreeing on a list
-  that was wrong in both directions. The `token` case that should not reach it
-  at all is entry 117.
+  that was wrong in both directions. `token` no longer reaches it at all: the
+  arm `Constant::getNullValue`'s `case Type::TokenTyID` calls for is ported, and
+  `parser_constants.rs::token_zeroinitializer_is_the_token_none_constant` pins
+  it.
 - **Why:** `Module::target_ext_none` answers `IrError::InvalidOperation` with a
   message that is already upstream's complete sentence, and the arm reuses
   `ParseError::Expected` to carry it rather than `ParseError::Message`, which
@@ -1557,8 +1523,10 @@ to the `TargetExt` arm. It is not.
   string upstream never emits. **This is the one place the reachable set is
   written down** (entry 114 points here rather than restating it): on the
   *value* path `check_undef_like_type` runs first, so the catch-all sees
-  `metadata`, `token`, `x86_amx` and `exnref`; on the *constant* path, which
-  skips that guard, `label` reaches it too. `void` and a function type never do
+  `metadata`, `x86_amx` and `exnref`; on the *constant* path, which
+  skips that guard, `label` reaches it too. `token` used to be in that set and
+  is not any more — the `case Type::TokenTyID` arm of `Constant::getNullValue`
+  is ported, so it never reaches the catch-all. `void` and a function type never do
   — both are refused earlier, `void` at the type position and a function type
   by `functions are not values, refer to them as pointers`. Probed at this
   commit with `target/release/examples/parse_file.exe` on
@@ -1602,11 +1570,12 @@ llvmkit read from `crates/llvmkit-asmparser/src/ll_parser.rs`: the `_` arm at
 `check_undef_like_type(ty, "null")` at :8475-8477, and the constant path's bare
 `ValId::Zero => self.zero_initializer_constant(ty)` at :8546. Probed with
 `target/release/examples/parse_file.exe` at this commit:
-`%v = freeze token zeroinitializer` -> `3:3: expected zeroinitializer for a
-zeroable type`; `@g = global label zeroinitializer` -> `2:1: expected
+`@g = global label zeroinitializer` -> `2:1: expected
 zeroinitializer for a zeroable type`;
 `crates/llvmkit-asmparser/tests/fixtures/upstream/assembler-corpus/2004-11-28-InvalidTypeCrash.ll`
--> `6:1: invalid type for null constant`.
+-> `6:1: invalid type for null constant`. A third probe stood here,
+`%v = freeze token zeroinitializer`, and was removed rather than re-blessed when
+the `case Type::TokenTyID` arm landed: that input parses now.
 
 </details>
 
