@@ -12132,6 +12132,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             } else {
                 seen_non_phi = true;
             }
+            // `LocTy Loc = Lex.getLoc();` — `parseInstruction` takes it before
+            // `Lex.Lex()` eats the keyword, and the `kw_select` and `kw_phi`
+            // fast-math guards anchor their diagnostics on it.
+            let opcode_loc = self.loc();
             self.bump()?;
             let b_ref = borrow_live_builder(&builder, self.loc())?;
             let value = match opcode {
@@ -12164,7 +12168,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Opcode::Alloca => self.parse_alloca(state, b_ref, &result_name)?,
                 Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
                 Opcode::GetElementPtr => self.parse_gep(state, b_ref, &result_name)?,
-                Opcode::Select => self.parse_select(state, b_ref, &result_name)?,
+                Opcode::Select => self.parse_select(state, b_ref, &result_name, opcode_loc)?,
                 Opcode::FpToUi => {
                     self.parse_fp_to_int(state, b_ref, FpToInt::FpToUi, &result_name)?
                 }
@@ -12187,7 +12191,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Opcode::ShuffleVector => self.parse_shufflevector(state, b_ref, &result_name)?,
                 Opcode::ExtractValue => self.parse_extractvalue(state, b_ref, &result_name)?,
                 Opcode::InsertValue => self.parse_insertvalue(state, b_ref, &result_name)?,
-                Opcode::Phi => self.parse_phi(state, b_ref, &result_name)?,
+                Opcode::Phi => self.parse_phi(state, b_ref, &result_name, opcode_loc)?,
                 Opcode::Call => self.parse_call(state, b_ref, &result_name)?,
                 Opcode::VaArg => self.parse_vaarg(state, b_ref, &result_name)?,
                 Opcode::Freeze => self.parse_freeze(state, b_ref, &result_name)?,
@@ -13240,11 +13244,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         state: &PerFunctionState<'ctx, B>,
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
+        opcode_loc: Span,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         // `LLParser::parseInstruction`'s `kw_select` arm eats fast-math flags
         // before calling `parseSelect`, then applies them to the result --
         // rejecting them outright when the result is not floating-point.
-        let fmf_loc = self.loc();
         let fmf = self.parse_optional_fmf()?;
         let cond_ty = self.parse_type(false)?;
         let cond_v = self.parse_value(state, cond_ty)?;
@@ -13275,9 +13279,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if matches!(true_ty.into_type_enum(), AnyTypeEnum::Token(_)) {
             return Err(self.expected("select arms of a type other than token"));
         }
-        if !fmf.is_empty() && !is_fp_or_fp_vector_type(true_ty) {
+        // `if (!isa<FPMathOperator>(Inst))`, whose `Select` arm is
+        // `FPMathOperator::isSupportedFloatingPointType(V->getType())` — wider
+        // than `isFPOrFPVectorTy`, which is why this is not
+        // `is_fp_or_fp_vector_type`. The anchor is upstream's `Loc`, taken in
+        // `parseInstruction` *before* the opcode keyword is eaten.
+        if !fmf.is_empty() && !llvmkit_ir::is_supported_floating_point_type(true_ty) {
             return Err(self.message_at(
-                fmf_loc,
+                opcode_loc,
                 "fast-math-flags specified for select without floating-point scalar or vector return type",
             ));
         }
@@ -13751,13 +13760,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         state: &mut PerFunctionState<'ctx, B>,
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
+        opcode_loc: Span,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         // `LLParser::parseInstruction`'s `kw_phi` arm eats fast-math flags
         // before calling `parsePHI`, then applies them -- rejecting them when
         // the phi's result type is not floating-point. They used to be parsed
         // and dropped here, so `phi fast float ...` round-tripped without its
         // flags.
-        let fmf_loc = self.loc();
         let fmf = self.parse_optional_fmf()?;
         let type_loc = self.loc();
         let ty = self.parse_type(false)?;
@@ -13765,9 +13774,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !ty.is_first_class() {
             return Err(self.message_at(type_loc, "phi node must have first class type"));
         }
-        if !fmf.is_empty() && !ty.is_float_or_float_vector() {
+        // `if (!isa<FPMathOperator>(Inst))`, whose `PHI` arm is
+        // `FPMathOperator::isSupportedFloatingPointType(V->getType())`. The
+        // anchor is upstream's `Loc`, taken in `parseInstruction` *before* the
+        // opcode keyword is eaten.
+        if !fmf.is_empty() && !llvmkit_ir::is_supported_floating_point_type(ty) {
             return Err(self.message_at(
-                fmf_loc,
+                opcode_loc,
                 "fast-math-flags specified for phi without floating-point scalar or vector return type",
             ));
         }
@@ -14072,7 +14085,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // between the two points can fail, and this guard still precedes the
         // `llvm.dbg` guard exactly as upstream's does. The anchor is
         // upstream's `CallLoc`, not the current token.
-        if !fmf.is_empty() && !is_fp_or_fp_vector_type(parsed_fn_ty.return_type()) {
+        // `isa<FPMathOperator>(CI)`'s `Call` arm is
+        // `FPMathOperator::isSupportedFloatingPointType(V->getType())`, so a
+        // homogeneous floating-point aggregate return type is an
+        // `FPMathOperator` and may carry the flags.
+        if !fmf.is_empty()
+            && !llvmkit_ir::is_supported_floating_point_type(parsed_fn_ty.return_type())
+        {
             return Err(self.message_at(
                 call_loc,
                 "fast-math-flags specified for call without floating-point scalar or vector return type",

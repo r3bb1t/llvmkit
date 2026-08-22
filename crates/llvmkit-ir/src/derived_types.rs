@@ -1074,6 +1074,16 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
             .identity
             .name()
     }
+    /// `true` for a literal struct — `{ i32, float }`, the anonymous
+    /// structurally-uniqued form. Mirrors `StructType::isLiteral`.
+    pub fn is_literal(self) -> bool {
+        self.module
+            .type_data(self.id)
+            .as_struct()
+            .expect("StructType invariant: wraps Struct")
+            .identity
+            .is_literal()
+    }
     /// `true` for an *opaque* identified struct (body unset). Always
     /// `false` for literal structs.
     pub fn is_opaque(self) -> bool {
@@ -1108,6 +1118,20 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
             .as_ref()
             .map(|b| b.elements.len())
             .unwrap_or(0)
+    }
+    /// `true` for a non-empty body whose fields are all the same type.
+    /// Mirrors `StructType::containsHomogeneousTypes`; `false` for an opaque
+    /// struct, which has no body and so no non-empty element list.
+    pub fn contains_homogeneous_types(self) -> bool {
+        let s = self
+            .module
+            .type_data(self.id)
+            .as_struct()
+            .expect("StructType invariant: wraps Struct");
+        let borrowed = s.body.borrow();
+        borrowed
+            .as_ref()
+            .is_some_and(|body| crate::r#type::contains_homogeneous_types(&body.elements))
     }
     /// Field type at `index`, or `None` if out of bounds (or opaque).
     pub fn field_type(self, index: usize) -> Option<Type<'ctx, B>> {

@@ -698,7 +698,7 @@ collision.
 | `named-metadata.ll` | blocked-model | **G9** — rejected at 28:1: `expected valid UTF-8 metadata name` |
 | `no-mdstring-upgrades.ll` | ported | 1 pass |
 | `noalias-addrspace-md.ll` | ported | 1 pass |
-| `nofpclass-invalid.ll` | blocked-model | **G17** — 8/18 parts blocked. reported `expected valid mask value for 'nofpclass'`, upstream `invalid mask value for 'nofpclass'`. The ten ported parts include nine that carried a second, distinct defect until 2026-08-20: `expected '(' in nofpclass attribute` / `expected ')' in nofpclass attribute` where `LLParser::parseNoFPClassAttr` prints the labels bare. That was not G17 (the wrapper was right, the label had a suffix) and is recorded as `docs/divergences.md` entry 115; the two labels are now bare. |
+| `nofpclass-invalid.ll` | blocked-model | **G17** — 8/18 parts blocked. reported `expected valid mask value for 'nofpclass'`, upstream `invalid mask value for 'nofpclass'`. The ten ported parts include nine that carried a second, distinct defect until 2026-08-20: `expected '(' in nofpclass attribute` / `expected ')' in nofpclass attribute` where `LLParser::parseNoFPClassAttr` prints the labels bare. That was not G17 (the wrapper was right, the label had a suffix); the two labels are bare now, and `parser_nofpclass.rs::the_nofpclass_paren_diagnostics_are_upstreams_exact_text_and_anchor` compares them for equality — which the corpus `error=` rows, being `Pattern::match`'s substring test, cannot do. |
 | `nofpclass.ll` | ported | 1 pass |
 | `non-global-value-max-name-size-2.ll` | ported | 1 pass |
 | `non-global-value-max-name-size.ll` | N/A | Contract is `opt -non-global-value-max-name-size=N`, a value-naming knob llvmkit has no equivalent for; nothing about the parse is under test. |

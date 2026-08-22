@@ -573,21 +573,6 @@ that found them instead of a verifier's evidence block.
 
 llvmkit refuses IR that LLVM accepts — the worst kind, a parser that cannot read LLVM's own output.
 
-### 124. The fast-math guards test `isFPOrFPVectorTy`, where upstream tests `isSupportedFloatingPointType`
-
-*parser* — crates/llvmkit-asmparser/src/ll_parser.rs — `is_fp_or_fp_vector_type`, `Parser::parse_call`'s and `Parser::parse_select`'s fast-math guards, and `Parser::parse_phi`'s (which spells the same predicate as `Type::is_float_or_float_vector`)
-
-Found 2026-08-21 while porting `LLParser::parseCall`'s construction tail, by
-building the arm table for that routine: the guard is arm C19 and its predicate
-did not match upstream's.
-
-- **LLVM:** all three guards ask `isa<FPMathOperator>(Inst)`. `FPMathOperator::classof`'s `Instruction::Call` / `Select` / `PHI` arm is `isSupportedFloatingPointType(V->getType())`, which is `Ty->isFPOrFPVectorTy() || isComposedOfHomogeneousFloatingPointTypes(Ty)`. The second disjunct accepts a **literal** struct whose elements are all the same floating-point type (`StructType::containsHomogeneousTypes` is `!ElementTys.empty() && all_equal(ElementTys)`) and an array, however nested, whose innermost element type is FP-or-FP-vector.
-- **llvmkit:** the guards test only the first disjunct, so a call, select or phi whose type is such a struct or array is rejected. Probes at `393137a` + this change, `target/release/examples/parse_file.exe`:
-  - `%r = call fast { float, float } @h()` — `fast-math-flags specified for call without floating-point scalar or vector return type`, exit 1.
-  - `%r = call fast [2 x float] @a()` — the same message, exit 1.
-- **Why:** never noticed. llvmkit's `is_fp_or_fp_vector_type` was written against `isFPOrFPVectorTy`, which is the right predicate at the two *other* call sites that use it (`parseCompare`'s `FCmp` arm and `parseAtomicRMW`'s floating-point-operand check, both of which really do ask `isFPOrFPVectorTy` upstream); the FMF guards were then pointed at the same helper.
-- **Fix:** port `FPMathOperator::isComposedOfHomogeneousFloatingPointTypes` and `isSupportedFloatingPointType` as their own named functions and call the latter from the three fast-math guards, leaving the `fcmp` and `atomicrmw` sites on `is_fp_or_fp_vector_type`. The two helpers upstream leans on are **already in the tree**: `StructName::is_literal` is in `crates/llvmkit-ir/src/type.rs`, and `containsHomogeneousTypes`' body (`!ElementTys.empty() && all_equal(ElementTys)`) is already spelled inline inside `contains_homogeneous_scalable_vector_types` in the same file — this entry used to lead with needing them, which is not the blocker. The blocker is the *surface*: the same narrow predicate gates fast-math flags on the builder side too (`crates/llvmkit-ir/src/instructions.rs` and `src/ir_builder.rs`, where `is_float_or_float_vector` guards the `set_fast_math_flags` paths), so a parser-only widening would leave the parser accepting what the builder still refuses. That is why it is recorded rather than folded into the `call` construction commit that found it.
-
 ### 1. `u0x…` and >64-bit literals are rejected wherever a `uint64` is wanted
 
 *parser* — crates/llvmkit-asmparser/src/ll_parser.rs:2244 (`parse_uint64`), :2216 (`parse_uint32`)
@@ -1399,67 +1384,6 @@ type for null constant");`. Harness read from
 `crates/llvmkit-asmparser/tests/parser_corpus.rs`: the `error=` assertion is
 `rendered.contains(pin)`; the manifest rows for both fixtures carry
 `error=invalid type for null constant` and no `loc=`.
-
-</details>
-
-### 115. `nofpclass`'s paren diagnostics carried a suffix upstream does not print — **FIXED (2026-08-20)**
-
-*parser — attributes* — crates/llvmkit-asmparser/src/ll_parser.rs
-(`parse_nofpclass_attribute`)
-
-Found 2026-08-20 in the operand-bundle close-out, by comparing every corpus
-`error=` pin against the rendered message rather than testing containment.
-Pre-existing and unrecorded. **Fixed in the same commit that recorded it**; the
-entry stays because the class it belongs to is still invisible to the corpus
-oracle.
-
-- **LLVM:** `LLParser::parseNoFPClassAttr` emits bare strings for both parens —
-  `tokError("expected '('")` when the `(` is missing, and
-  `error(Lex.getLoc(), "expected ')'")` after the integer spelling. Upstream's
-  own `test/Assembler/nofpclass-invalid.ll` pins them bare:
-  `error: expected '('` / `error: expected ')'`.
-- **llvmkit (before the fix):** the two `expect_punct` calls passed
-  `"'(' in nofpclass attribute"` and `"')' in nofpclass attribute"`, so the
-  rendered messages were `expected '(' in nofpclass attribute` and
-  `expected ')' in nofpclass attribute`.
-- **Consequence:** these corpus rows printed text `llvm-as` does not print, with
-  correct anchors and the same verdict — `nofpclass_0_noparens`, `_1_noparens`,
-  `_closeparen`, `_name_follows_int`, `_nan_noparens`, `_nnan_noparens`,
-  `_only_keyword`, `_two_numbers`, `_two_numbers_bar`.
-- **Not gap G17.** G17 is "a complete upstream message routed through an
-  `expected …` wrapper"; here the wrapper was correct and a suffix had been
-  added to the label. `docs/fixture-coverage.md` records the sibling
-  *mask-value* wrapper for this fixture, which is G17 and is still open.
-- **llvmkit was inconsistent with itself:** `byref-parse-error-0.ll` and
-  `sret-parse-error0.ll` reach `LLParser::parseRequiredTypeAttr`'s equally bare
-  `expected '('` and rendered it bare, which is why they matched exactly.
-- **Why it stayed hidden:** the corpus oracle cannot see a wrapper or a suffix.
-  That weakness is `docs/future-work.md` § *Tests — the corpus `error=` oracle
-  cannot see a wrapper or an anchor*, which carries the derivation; not restated
-  here. What is specific to this fixture: `test/Assembler/nofpclass-invalid.ll`
-  writes no `{{$}}` end anchor on its `CHECK` lines, so the equality tier that
-  section describes does not reach it either. This instance was found by a
-  one-off equality sweep, not by a gate.
-- **Fix (applied):** both labels are now bare, which is also the house idiom at
-  every other `expect_punct(PunctKind::LParen, "'('")` site.
-
-<details><summary>Verification evidence (verified 2026-08-20)</summary>
-
-Upstream read from `lib/AsmParser/LLParser.cpp::parseNoFPClassAttr` — the two
-literals are `tokError("expected '('")` and
-`error(Lex.getLoc(), "expected ')'")` with nothing appended — and from
-`test/Assembler/nofpclass-invalid.ll`, whose `ONLYKEYWORD` / `NOPARENS0` /
-`NOPARENS-ONE` / `NOPARENS-NAN` / `NOPARENS-NNAN` / `CLOSEPAREN` lines read
-`error: expected '('` and whose `TWONUMBERS` / `TWONUMBERSBAR` /
-`NAME-FOLLOWS-INT` lines read `error: expected ')'`, none of them with a
-trailing `{{$}}`. Probed with `target/release/examples/parse_file.exe` after the
-fix: `float nofpclass %x` -> `1:53: expected '('`;
-`float nofpclass(2 4) %x` -> `1:54: expected ')'`. Sweep that found it, re-run
-at this commit: the 302 `error=` rows of `parser_corpus_manifest.txt`, bucketed
-by comparing the rendered message (the first stderr line of `parse_file` with
-the `<path>:<line>:<col>: ` prefix stripped) against the pin, give 297 exact /
-1 suffix / 4 mid-message / 0 non-containing — up from 288 exact / 10 suffix /
-4 mid-message before these two labels were fixed.
 
 </details>
 

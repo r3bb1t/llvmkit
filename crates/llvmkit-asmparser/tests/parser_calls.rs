@@ -1737,3 +1737,55 @@ fn a_non_function_global_callee_resolves_through_the_symbol_table() {
         ],
     );
 }
+
+/// **llvmkit-authored; the rule is the anchor (D11).** The three arms of
+/// `FPMathOperator::isComposedOfHomogeneousFloatingPointTypes` that answer
+/// *false* on an aggregate, each of which upstream's `llvm-as` rejects the
+/// same way and none of which any `.ll` in the vendored tree spells:
+///
+/// * a literal struct whose fields are not all one type — `containsHomogeneousTypes`
+///   is `!ElementTys.empty() && all_equal(ElementTys)`;
+/// * an **identified** struct, homogeneous or not — the routine opens with
+///   `if (!StructTy->isLiteral() || …) return false`;
+/// * the empty literal struct — the `!ElementTys.empty()` half.
+///
+/// The positive arms are `test/Bitcode/compatibility.ll`'s
+/// `@fastMathFlagsForArrayCalls` / `@fastMathFlagsForStructCalls`, vendored
+/// under `fixtures/upstream/compatibility/` and driven by the corpus manifest.
+#[test]
+fn fast_math_flags_on_a_non_homogeneous_aggregate_call_are_rejected() {
+    const MESSAGE: &str =
+        "fast-math-flags specified for call without floating-point scalar or vector return type";
+    const CASES: &[(&str, &str)] = &[
+        (
+            "mixed_literal_struct",
+            "declare { float, i32 } @m()\n\
+             define void @f() {\n  \
+             %r = call fast { float, i32 } @m()\n  \
+             ret void\n\
+             }\n",
+        ),
+        (
+            "identified_struct",
+            "%named = type { float, float }\n\
+             declare %named @n()\n\
+             define void @f() {\n  \
+             %r = call fast %named @n()\n  \
+             ret void\n\
+             }\n",
+        ),
+        (
+            "empty_literal_struct",
+            "declare {} @e()\n\
+             define void @f() {\n  \
+             %r = call fast {} @e()\n  \
+             ret void\n\
+             }\n",
+        ),
+    ];
+
+    for (name, source) in CASES {
+        let err = parse_fixture_err(name, source.as_bytes());
+        assert_eq!(err.to_string(), MESSAGE, "case {name}");
+    }
+}

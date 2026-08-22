@@ -15,6 +15,10 @@
 
 use llvmkit_asmparser::parser;
 
+pub mod support;
+
+use support::line_and_column;
+
 /// Parse, verify, print, and require the text back byte-identically.
 fn round_trip(source: &str) {
     let module = match parser::parse_dynamic(source) {
@@ -127,4 +131,51 @@ fn a_malformed_nofpclass_is_rejected() {
         "declare void @f(float nofpclass nan %x)",
         "a mask with no parentheses",
     );
+}
+
+/// `LLParser::parseNoFPClassAttr`'s two paren diagnostics, compared for
+/// **equality** and with their carets asserted.
+///
+/// Upstream emits them bare — `tokError("expected '('")` and
+/// `error(Lex.getLoc(), "expected ')'")`, nothing appended — and both anchor
+/// at the current token: the token after `nofpclass` for the first, the token
+/// after the integer for the second. `test/Assembler/nofpclass-invalid.ll`
+/// pins them as `error: expected '('` / `error: expected ')'` and writes no
+/// `{{$}}` end anchor and no column, so its own `CHECK` lines — and the corpus
+/// `error=` rows carrying them, which are `Pattern::match`'s substring test by
+/// design — stay green against a *longer* message at a *different* token.
+/// Both labels once carried an ` in nofpclass attribute` suffix and every one
+/// of those rows passed anyway; that is what this test exists to catch, so it
+/// must not be relaxed to containment.
+///
+/// The inputs are the vendored `split-file` parts, unmodified.
+#[test]
+fn the_nofpclass_paren_diagnostics_are_upstreams_exact_text_and_anchor() {
+    const ONLY_KEYWORD: &str = include_str!(
+        "fixtures/upstream/assembler-corpus/nofpclass-invalid/nofpclass_only_keyword.ll"
+    );
+    const TWO_NUMBERS: &str = include_str!(
+        "fixtures/upstream/assembler-corpus/nofpclass-invalid/nofpclass_two_numbers.ll"
+    );
+
+    for (source, message, token) in [
+        (ONLY_KEYWORD, "expected '('", "%x) {"),
+        (TWO_NUMBERS, "expected ')'", "4) %x) {"),
+    ] {
+        let error = parser::parse_dynamic(source).expect_err("upstream runs `not llvm-as` on this");
+        assert_eq!(format!("{error}"), message);
+
+        let start = error
+            .loc()
+            .expect("diagnostic carries a location")
+            .span
+            .start;
+        let offset = usize::try_from(start).unwrap_or(usize::MAX);
+        let expected = source.find(token).expect("the fixture spells this token");
+        assert_eq!(
+            line_and_column(source.as_bytes(), offset),
+            line_and_column(source.as_bytes(), expected),
+            "caret should sit on `{token}` for `{message}`"
+        );
+    }
 }

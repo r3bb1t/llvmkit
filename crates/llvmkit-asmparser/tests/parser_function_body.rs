@@ -5,6 +5,10 @@
 
 use llvmkit_asmparser::parser;
 
+pub mod support;
+
+use support::line_and_column;
+
 fn parse_and_print(src: &str) -> String {
     parser::parse_assembly(src, |module, _parsed| format!("{module}")).expect("parse")
 }
@@ -20,6 +24,25 @@ fn parse_expect_error(src: &str) -> String {
         Ok(()) => panic!("expected parse to fail, but it succeeded"),
         Err(e) => format!("{e}"),
     }
+}
+
+/// [`parse_expect_error`] plus the 1-based line and column the diagnostic is
+/// anchored at — the coordinates `SourceMgr::PrintMessage` prints. A message
+/// oracle that ignores position cannot see a caret that has drifted to another
+/// token, which is how a diagnostic carrying upstream's exact text shipped
+/// here anchored at an unrelated line.
+fn parse_expect_error_at(src: &str) -> (String, (u32, u32)) {
+    let error = match parser::parse_assembly(src, |_module, _parsed| ()) {
+        Ok(()) => panic!("expected parse to fail, but it succeeded"),
+        Err(e) => e,
+    };
+    let start = error
+        .loc()
+        .expect("diagnostic carries a location")
+        .span
+        .start;
+    let offset = usize::try_from(start).unwrap_or(usize::MAX);
+    (format!("{error}"), line_and_column(src.as_bytes(), offset))
 }
 
 /// Mirrors `LLParser::parseRet`'s `void` arm on the smallest body shape:
@@ -947,29 +970,77 @@ fn fast_math_flags_round_trip_on_select_phi_and_fp_casts() {
 
 /// The two rejections `LLParser::parseInstruction` pairs with those arms:
 /// flags are only legal when the result is an `FPMathOperator`.
+///
+/// **The anchor is asserted, not only the text.** Both arms report at `Loc`,
+/// which `parseInstruction` takes with `LocTy Loc = Lex.getLoc();` *before*
+/// `Lex.Lex()` eats the opcode keyword, so the caret is on `select` / `phi` —
+/// column 8 in each source below — and not on the first fast-math keyword.
+/// Upstream ships no `.ll` pinning either column, so the routine is the
+/// anchor (D11). This test compared the message alone and stayed green while
+/// the caret sat one token to the right of upstream's.
 #[test]
 fn fast_math_flags_on_non_fp_select_or_phi_are_rejected() {
-    assert_eq!(
-        parse_expect_error(
-            "define i32 @f(i1 %c, i32 %a, i32 %b) {\nentry:\n  \
-               %r = select fast i1 %c, i32 %a, i32 %b\n  \
-               ret i32 %r\n\
-             }\n",
-        ),
-        "fast-math-flags specified for select without floating-point scalar or vector return type"
+    let (message, position) = parse_expect_error_at(
+        "define i32 @f(i1 %c, i32 %a, i32 %b) {\nentry:\n  \
+           %r = select fast i1 %c, i32 %a, i32 %b\n  \
+           ret i32 %r\n\
+         }\n",
     );
     assert_eq!(
-        parse_expect_error(
-            "define i32 @f(i1 %cmp, i32 %a, i32 %b) {\nentry:\n  \
-               br i1 %cmp, label %t, label %r\n\
-             t:\n  \
-               br label %r\n\
-             r:\n  \
-               %v = phi fast i32 [ %a, %t ], [ %b, %entry ]\n  \
-               ret i32 %v\n\
-             }\n",
-        ),
+        message,
+        "fast-math-flags specified for select without floating-point scalar or vector return type"
+    );
+    assert_eq!(position, (3, 8));
+
+    let (message, position) = parse_expect_error_at(
+        "define i32 @f(i1 %cmp, i32 %a, i32 %b) {\nentry:\n  \
+           br i1 %cmp, label %t, label %r\n\
+         t:\n  \
+           br label %r\n\
+         r:\n  \
+           %v = phi fast i32 [ %a, %t ], [ %b, %entry ]\n  \
+           ret i32 %v\n\
+         }\n",
+    );
+    assert_eq!(
+        message,
         "fast-math-flags specified for phi without floating-point scalar or vector return type"
+    );
+    assert_eq!(position, (7, 8));
+}
+
+/// **llvmkit-authored; the rule is the anchor (D11).** `isa<FPMathOperator>`'s
+/// `Select` and `PHI` arms are `isSupportedFloatingPointType(V->getType())` —
+/// `isFPOrFPVectorTy() || isComposedOfHomogeneousFloatingPointTypes()` — so a
+/// `select` or `phi` whose result is a homogeneous floating-point *aggregate*
+/// is an `FPMathOperator`, and its flags survive to the printer. No `.ll` in
+/// the vendored tree spells one: `test/Bitcode/compatibility.ll`, the fixture
+/// that covers this predicate, exercises only the `call` arm (vendored under
+/// `tests/fixtures/upstream/compatibility/` and driven by the corpus).
+#[test]
+fn fast_math_flags_on_a_homogeneous_aggregate_select_or_phi_round_trip() {
+    let printed = parse_and_print(
+        "declare { float, float } @s()\n\
+         define void @f(i1 %c) {\nentry:\n  \
+           %v = call { float, float } @s()\n  \
+           %r = select fast i1 %c, { float, float } %v, { float, float } %v\n  \
+           br i1 %c, label %t, label %j\n\
+         t:\n  \
+           br label %j\n\
+         j:\n  \
+           %p = phi reassoc [2 x float] [ zeroinitializer, %entry ], [ zeroinitializer, %t ]\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%r = select fast i1 %c, { float, float } %v, { float, float } %v"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "%p = phi reassoc [2 x float] [ zeroinitializer, %entry ], [ zeroinitializer, %t ]"
+        ),
+        "{printed}"
     );
 }
 

@@ -2226,7 +2226,13 @@ where
             }
         }
 
-        if !fmf.is_empty() && !self.is_float_or_float_vector(true_v.ty()) {
+        // `isa<FPMathOperator>(SelectInst)` is
+        // `FPMathOperator::isSupportedFloatingPointType(getType())`, not
+        // `isFPOrFPVectorTy` — a homogeneous floating-point aggregate arm is
+        // an `FPMathOperator` too. The narrower predicate below stays where
+        // upstream really asks `isFPOrFPVectorTy`: the `fadd`-family, `fcmp`
+        // and `fneg` operand checks.
+        if !fmf.is_empty() && !crate::operator::is_supported_floating_point_type(true_v.ty()) {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point select result",
             });

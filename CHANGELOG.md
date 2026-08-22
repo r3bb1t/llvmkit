@@ -45,6 +45,40 @@ cut, entries accumulate under **Unreleased**.
   closed. The second was classified on the *forward-reference* gap and was never
   blocked on it — its ifunc is defined above its caller — which is a
   misclassification this fix uncovered.
+- **A `call`, `select` or `phi` returning a homogeneous floating-point
+  aggregate may carry fast-math flags.** All three of `LLParser`'s fast-math
+  guards ask `isa<FPMathOperator>`, whose `Call` / `Select` / `PHI` arm is
+  `FPMathOperator::isSupportedFloatingPointType` —
+  `isFPOrFPVectorTy() || isComposedOfHomogeneousFloatingPointTypes()`, the
+  second disjunct accepting a *literal* struct whose fields are all one type
+  and an array of any nesting whose innermost element is FP-or-FP-vector.
+  llvmkit tested only the first disjunct, at the parser *and* at the builder,
+  so `call fast { float, float } @h()` was rejected. `isSupportedFloatingPointType`
+  and its private helper are ported as their own functions in
+  `llvmkit_ir::operator`, together with `StructType::isLiteral` and
+  `StructType::containsHomogeneousTypes`; all three fast-math guards and the
+  builder's `select` / `phi` flag setters call the ported predicate. The `fcmp`
+  and `atomicrmw` operand checks stay on `isFPOrFPVectorTy`, which is what
+  upstream asks *there*. `containsHomogeneousScalableVectorTypes` now calls
+  `containsHomogeneousTypes` instead of restating its body.
+  `test/Bitcode/compatibility.ll`'s `@fastMathFlagsForArrayCalls` and
+  `@fastMathFlagsForStructCalls` are a corpus fixture with a golden print.
+- **The `select` and `phi` fast-math diagnostics moved to upstream's token.**
+  Found while porting the predicate above: `parseInstruction` takes
+  `LocTy Loc = Lex.getLoc();` *before* `Lex.Lex()` eats the opcode, and both
+  guards report at `Loc` — the caret belongs on `select` / `phi`. llvmkit
+  anchored on the first fast-math keyword, one token to the right. The
+  regression test that covered these two diagnostics compared the message and
+  ignored the position, which is why it stayed green; it asserts both now.
+- **`nofpclass`'s two paren diagnostics are pinned by equality.** The messages
+  themselves were corrected earlier; what was missing was anything that could
+  see a regression. `test/Assembler/nofpclass-invalid.ll` writes no `{{$}}` end
+  anchor and no column, so its `CHECK` lines and the corpus `error=` rows that
+  carry them are substring tests, and a re-added suffix or a drifted caret
+  would pass all of them —
+  `parser_nofpclass.rs::the_nofpclass_paren_diagnostics_are_upstreams_exact_text_and_anchor`
+  compares the rendered message for equality and asserts the token each caret
+  sits on.
 
 ### Changed — the tracked documentation stops storing counts, and one of them is now enforced
 

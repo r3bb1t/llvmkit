@@ -1527,7 +1527,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     /// `fast-math-flags specified for phi without floating-point scalar or
     /// vector return type`.
     pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
-        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+        if !fmf.is_empty()
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
+        {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
             });
@@ -1790,7 +1792,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     /// specified for phi without floating-point scalar or vector return
     /// type`.
     pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
-        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+        if !fmf.is_empty()
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
+        {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
             });
@@ -2218,7 +2222,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     /// specified for phi without floating-point scalar or vector return
     /// type`.
     pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
-        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+        if !fmf.is_empty()
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
+        {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
             });

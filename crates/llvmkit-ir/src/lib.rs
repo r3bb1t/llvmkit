@@ -304,7 +304,9 @@ pub use module::{
 };
 pub use module_flags::{ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey};
 pub use named_md_node::{NamedMetadataId, NamedMetadataName};
-pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
+pub use operator::{
+    OverflowingBinaryOperator, PossiblyExactOperator, is_supported_floating_point_type,
+};
 pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
     OptimizationLevelMarker, ThinOrFullLtoPhase,
