@@ -69,6 +69,39 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
     Ok(())
 }
 
+/// No upstream counterpart as a fixture: `BasicBlock::print`
+/// (`lib/IR/AsmWriter.cpp`) builds an `AssemblyWriter` over the block's module
+/// and calls `printBasicBlock` directly, so a block's own text is the module
+/// printer's, not a parallel one. `IsEntryBlock` is
+/// `BB->getParent() && BB->isEntryBlock()`, so a *non-entry* block printed on
+/// its own still carries the leading newline and the predecessors comment the
+/// module printer gives it. This is the block twin of
+/// `function_value_define_matches_module_output`.
+#[test]
+fn basic_block_display_matches_the_module_printer() -> Result<(), IrError> {
+    let m = module_new!("block_display")?;
+    let void = m.void_type();
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let exit = m.view(f).append_basic_block(&m, "exit");
+
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.br(&exit)?;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+    b.ret_void()?;
+
+    let exit_block = m.view(f).basic_blocks().nth(1).expect("two blocks");
+    let printed = format!("{exit_block}");
+    let expected =
+        "\nexit:                                             ; preds = %entry\n  ret void\n";
+    assert_eq!(printed, expected, "got:\n{printed}");
+
+    let module_text = format!("{m}");
+    assert!(module_text.contains(&printed), "got:\n{module_text}");
+    Ok(())
+}
+
 // --------------------------------------------------------------------------
 // GlobalVariable -- definition line, matching its GlobalAlias/GlobalIfunc
 // siblings rather than the `ptr @g` operand form

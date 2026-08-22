@@ -6,7 +6,23 @@
 //! for. Each `#[test]` cites the upstream anchor it ports.
 
 use llvmkit_asmparser::ll_parser::Parser;
+use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::{AnyTypeEnum, Module, ModuleBrand, module_new};
+
+pub mod support;
+
+/// Project a rejected fixture's reported span back onto its source as
+/// `(line, column)`, the coordinates upstream's `SourceMgr` prints as
+/// `<stdin>:LINE:COL:`. Comparing only `ParseError`'s rendered text leaves a
+/// diagnostic free to carry upstream's exact message from the wrong token.
+fn reported_line_and_column(source: &[u8], err: &ParseError) -> (u32, u32) {
+    let start = err
+        .loc()
+        .expect("a rejected fixture reports a location")
+        .span
+        .start;
+    support::line_and_column(source, usize::try_from(start).unwrap_or(usize::MAX))
+}
 
 fn parse_into<B: ModuleBrand>(src: &str, m: &Module<B>) {
     Parser::new(src.as_bytes(), m)
@@ -265,6 +281,48 @@ fn a_redefined_global_is_rejected_but_a_forward_reference_is_not() {
     assert!(format!("{m}").contains("@p = global ptr @g"), "{m}");
 }
 
+/// Mirrors `test/Assembler/2008-10-14-QuoteInName.ll` — `@"a\22quote"`, read
+/// from the vendored copy, round tripped through `printLLVMName` ->
+/// `llvm::printEscapedString`, whose first RUN line is
+/// `llvm-as < %s | llvm-dis | FileCheck %s` — extended to a byte whose escape
+/// has a *letter* digit, `\7F`, which is where `hexdigit`'s uppercase default
+/// becomes observable: `hexdigit(unsigned X, bool LowerCase = false)` indexes
+/// `"0123456789ABCDEF"` unmodified.
+///
+/// **What each half is actually pinned by.** The fixture's only directive is
+/// the bare substring `; CHECK: quote`, which matches `@"a\x22quote"`,
+/// `@"a\22quote"` or anything else containing `quote` — so upstream pins the
+/// name's round-trip *survival*, not the spelling of either escape. The
+/// spelling authority for both is `printEscapedString` plus
+/// `hexdigit(unsigned X, bool LowerCase = false)`
+/// (`lib/Support/StringExtras.cpp`, `ADT/StringExtras.h`), whose lookup table
+/// is `"0123456789ABCDEF"`.
+///
+/// The letter-digit half of that rule **is** pinned upstream, through the same
+/// `printEscapedString`, by `test/Assembler/difile-escaped-chars.ll`'s
+/// FileCheck-verified `!0 = !DIFile(filename: "\00\01\02\80\81\82\FD\FE\FF",
+/// directory: "/dir")`. That fixture is blocked here as gap **G9** in
+/// `docs/fixture-coverage.md` (`expected UTF-8 string constant`), so it is on
+/// record rather than ported. What no upstream fixture carries is a
+/// letter-digit escape **in a quoted global name** —
+/// `2008-10-14-QuoteInName.ll` is the only `test/Assembler` fixture with any
+/// hex escape in one and it uses `\22` — so `@"t\7Fag"` is a carrier stand-in
+/// until G9 closes.
+#[test]
+fn quoted_global_name_hex_escapes_print_uppercase() {
+    const QUOTE_IN_NAME: &str =
+        include_str!("fixtures/upstream/assembler-corpus/2008-10-14-QuoteInName.ll");
+
+    let m = llvmkit_ir::Module::dynamic("quoted_names");
+    let src = format!("{QUOTE_IN_NAME}\n@\"t\\7Fag\" = global i32 0\n");
+    parse_into(&src, &m);
+    let text = format!("{m}");
+    // The upstream fixture's own name, round-tripped.
+    assert!(text.contains(r#"@"a\22quote" = global i32 0"#), "{text}");
+    // The letter-digit carrier: uppercase, not `\7f`.
+    assert!(text.contains(r#"@"t\7Fag" = global i32 0"#), "{text}");
+}
+
 /// An `ifunc` accepts metadata attachments and an alias does not.
 ///
 /// `parseAliasOrIFunc`'s property loop guards that arm with
@@ -450,16 +508,73 @@ fn source_filename_round_trips_through_asm_writer() {
 }
 /// Mirrors `LLParser::parseComdat`: a top-level `$name = comdat <kind>`
 /// directive creates the module COMDAT entry and AsmWriter re-emits it.
+///
+/// A global object has to reference it for the second half to hold.
+/// `AssemblyWriter`'s constructor fills `Comdats` from
+/// `TheModule->global_objects()`, so an unreferenced comdat parses and is
+/// stored but is not printed — `llvm-as | llvm-dis` loses it. This test used
+/// to write the directive alone and assert it came back.
 #[test]
 fn top_level_comdat_round_trips() {
     let printed = {
         let m = module_new!("comdat_module").expect("fresh module");
-        parse_into("$foo = comdat largest\n", &m);
+        parse_into(
+            "$foo = comdat largest\n@g = global i32 0, comdat($foo)\n",
+            &m,
+        );
         format!("{m}")
     };
     assert!(
         printed.contains("$foo = comdat largest\n"),
         "AsmWriter output: {printed}"
+    );
+    assert!(
+        printed.contains("@g = global i32 0, comdat($foo)\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+
+/// `AssemblyWriter`'s constructor is
+/// `for (const GlobalObject &GO : TheModule->global_objects()) if (const
+/// Comdat *C = GO.getComdat()) Comdats.insert(C);`, over
+/// `Module::global_objects() = concat<GlobalObject>(functions(), globals())`
+/// and into a `SetVector`. So the printed block is first-use order with
+/// **functions first**, each comdat once, and an unreferenced comdat absent.
+///
+/// llvmkit walked its own comdat table instead — declaration order,
+/// unreferenced entries included — so the two disagreed on any module whose
+/// declaration order is not its first-use order. No `test/Assembler` or
+/// `test/Bitcode` fixture writes one: `test/Bitcode/compatibility.ll` attaches
+/// its five comdats to functions and globals in the order it declares them,
+/// which is why its `CHECK` block passed either way. This input is written to
+/// separate them.
+#[test]
+fn the_comdat_block_is_first_use_order_over_functions_then_globals() {
+    let printed = {
+        let m = module_new!("comdat_order").expect("fresh module");
+        parse_into(
+            "$a = comdat any\n\
+             $b = comdat largest\n\
+             $orphan = comdat exactmatch\n\
+             @g = global i32 0, comdat($a)\n\
+             define void @f() comdat($b) {\n\
+             entry:\n\
+             \x20 ret void\n\
+             }\n",
+            &m,
+        );
+        format!("{m}")
+    };
+    let b = printed
+        .find("$b = comdat largest")
+        .expect("the referenced comdats print");
+    let a = printed
+        .find("$a = comdat any")
+        .expect("the referenced comdats print");
+    assert!(b < a, "functions come first in global_objects(): {printed}");
+    assert!(
+        !printed.contains("$orphan"),
+        "an unreferenced comdat is not in the SetVector: {printed}"
     );
 }
 /// Mirrors the `externally_initialized` flag in `LLParser::parseGlobal`.
@@ -705,13 +820,22 @@ fn unknown_top_level_entity_is_typed_error() {
 
 // ── parseFunctionHeader / parseArgumentList ───────────────────────────────
 
-fn header_err(src: &str) -> String {
+/// The rendered message **and** the `(line, column)` upstream's `SourceMgr`
+/// would print. Text alone is what let a diagnostic carry upstream's exact
+/// wording from an unrelated token; a caller that cares about the anchor uses
+/// this, and [`header_err`] is the projection for the ones that do not.
+fn header_err_at(src: &str) -> (String, (u32, u32)) {
     let m = llvmkit_ir::Module::dynamic("function_header");
-    Parser::new(src.as_bytes(), &m)
+    let err = Parser::new(src.as_bytes(), &m)
         .expect("lexer primes")
         .parse_module()
-        .expect_err("malformed function header is rejected")
-        .to_string()
+        .expect_err("malformed function header is rejected");
+    let at = reported_line_and_column(src.as_bytes(), &err);
+    (err.to_string(), at)
+}
+
+fn header_err(src: &str) -> String {
+    header_err_at(src).0
 }
 
 /// `parseFunctionHeader` runs its checks in one fixed order, and the order is
@@ -1039,29 +1163,40 @@ fn the_function_body_frame_matches_upstream_text() {
     }
 
     // `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll`
+    let unclosed =
+        include_bytes!("fixtures/upstream/2004-03-30-UnclosedFunctionCrash.ll").as_slice();
     let m = llvmkit_ir::Module::dynamic("unclosed_function");
-    let err = Parser::new(
-        include_bytes!("fixtures/upstream/2004-03-30-UnclosedFunctionCrash.ll").as_slice(),
-        &m,
-    )
-    .expect("lexer primes")
-    .parse_module()
-    .expect_err("fixture is rejected")
-    .to_string();
-    assert_eq!(err, "found end of file when expecting more instructions");
+    let err = Parser::new(unclosed, &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("fixture is rejected");
+    assert_eq!(
+        err.to_string(),
+        "found end of file when expecting more instructions"
+    );
+    assert_eq!(reported_line_and_column(unclosed, &err), (6, 1));
 
     // `test/Assembler/2003-11-24-SymbolTableCrash.ll`. Note upstream spells
     // the name **without** a `%`, unlike its `redefinition of ...` family.
+    let symbol_table_crash =
+        include_bytes!("fixtures/upstream/2003-11-24-SymbolTableCrash.ll").as_slice();
     let m = llvmkit_ir::Module::dynamic("symbol_table_crash");
-    let err = Parser::new(
-        include_bytes!("fixtures/upstream/2003-11-24-SymbolTableCrash.ll").as_slice(),
-        &m,
-    )
-    .expect("lexer primes")
-    .parse_module()
-    .expect_err("fixture is rejected")
-    .to_string();
-    assert_eq!(err, "multiple definition of local value named 'tmp.1'");
+    let err = Parser::new(symbol_table_crash, &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("fixture is rejected");
+    assert_eq!(
+        err.to_string(),
+        "multiple definition of local value named 'tmp.1'"
+    );
+    // Line 8 column 2 is the redefining `%tmp.1`, one tab in —
+    // `parseBasicBlock`'s `NameLoc`, taken before the result name is stripped
+    // and handed to `setInstName`, which raises this message. Neither
+    // fixture's `CHECK` block carries a `<stdin>:LINE:COL:` pin, so the
+    // position is **derived** from those two routines rather than read off
+    // upstream's output; it is asserted here because comparing rendered text
+    // alone is what let the anchor sit on `add` unnoticed.
+    assert_eq!(reported_line_and_column(symbol_table_crash, &err), (8, 2));
 
     // No upstream fixture pins the empty body; the routine is the anchor.
     assert_eq!(
@@ -1101,27 +1236,115 @@ fn uselistorder_directives_come_after_every_block() {
 }
 
 /// `PerFunctionState::defineBB` reaches a named block through
-/// `getVal(Name, LabelTy)`, so blocks and local values share one namespace: a
-/// label whose name is already an instruction result cannot be created.
+/// `getBB(Name, Loc)`, which is `getVal(Name, LabelTy, Loc)`, so blocks and
+/// local values share one namespace: a label whose name is already taken by a
+/// local cannot be created, and `defineBB` overwrites `getVal`'s
+/// `'%x' is not a basic block` with `unable to create block named '<n>'` at
+/// the same `Loc`.
 ///
 /// llvmkit keeps blocks in a map of their own, so it used to create *both* —
 /// a value `%x` and a block `%x` in the same function.
 ///
-/// The label must carry no forward reference: `br label %x` would reach
-/// `getVal` first and fail there instead, with
-/// `'%x' defined with type 'i32' but expected 'label'`.
+/// **Both of `getVal`'s tables reach the message**, and the second half was
+/// missing until the `getVal` lookup was made one routine: `Val` comes from
+/// `F.getValueSymbolTable()` *or* from `ForwardRefVals`, so a name held only
+/// by a **pending forward reference** — never defined at all — collides just
+/// as a defined one does. That case used to be accepted, and the function
+/// then failed far away with `use of undefined value '%y'`.
 ///
-/// The numbered twin (`unable to create block numbered '<N>'`) is not tested:
-/// `defineBB` runs `checkValueID` first, so a numbered label that collides
-/// has already failed with `label expected to be numbered 'N' or greater`,
-/// and no `test/Assembler` fixture reaches it.
+/// No `test/Assembler` fixture pins either message or its column, so both
+/// positions are **derived** from `defineBB`'s `Loc` argument, which
+/// `parseBasicBlock` takes at the label token. They are asserted because
+/// comparing rendered text alone cannot tell the two apart.
 #[test]
 fn a_block_may_not_take_a_local_value_name() {
+    // `Val` from the function symbol table.
     assert_eq!(
-        header_err(
+        header_err_at(
             "define void @f() {\nentry:\n  %x = add i32 0, 0\n  ret void\nx:\n  ret void\n}\n"
         ),
-        "unable to create block named 'x'"
+        ("unable to create block named 'x'".to_owned(), (5, 1))
+    );
+    // `Val` from `ForwardRefVals`.
+    assert_eq!(
+        header_err_at(
+            "define void @f() {\nentry:\n  %z = add i32 %y, 1\n  ret void\ny:\n  ret void\n}\n"
+        ),
+        ("unable to create block named 'y'".to_owned(), (5, 1))
+    );
+}
+
+/// The numbered twin of [`a_block_may_not_take_a_local_value_name`], reached
+/// through `getBB(unsigned ID, LocTy)`.
+///
+/// `defineBB` runs `checkValueID` before `getBB`, and `checkValueID` only
+/// rejects `ID < NextID` — it says nothing about an id at or above `NextID`
+/// that already carries a pending forward reference. So `%5` referenced as an
+/// `i32` while `NumberedVals.getNext()` is still 1 leaves
+/// `ForwardRefValIDs[5]` holding an `Argument(i32)`; the label `5:` clears
+/// `checkValueID`, fails `checkValidVariableType` inside `getVal`, and
+/// `defineBB` reports `unable to create block numbered '5'`.
+///
+/// The message was recorded as unreachable-upstream and therefore deliberately
+/// absent from llvmkit. It is neither: the premise confused `checkValueID`'s
+/// guard with `getVal`'s. No `test/Assembler` fixture reaches it, so the
+/// position is derived from `defineBB`'s `Loc` as above.
+#[test]
+fn a_numbered_block_may_not_take_a_pending_local_value_slot() {
+    assert_eq!(
+        header_err_at(
+            "define void @f() {\nentry:\n  %0 = add i32 %5, 1\n  ret void\n5:\n  ret void\n}\n"
+        ),
+        ("unable to create block numbered '5'".to_owned(), (5, 1))
+    );
+}
+
+/// A numbered label may not re-use a slot, and the message is
+/// `checkValueID`'s — not a redefinition.
+///
+/// `defineBB`'s numbered branch opens with
+/// `P.checkValueID(Loc, "label", "", NumberedVals.getNext(), NameID)`, and a
+/// re-used id is necessarily below `NumberedVals.getNext()`, so that guard is
+/// what fires. llvmkit had a `defined_numbered_blocks` membership test in
+/// front of it raising `redefinition of label '%1'`, a message
+/// `LLParser.cpp` never emits — no `redefinition of` site in it takes a label
+/// (`grep -n "redefinition of" lib/AsmParser/LLParser.cpp` at the vendored
+/// tag `llvmorg-22.1.4` names only comdat, global, type, function and
+/// argument).
+///
+/// `test/Assembler/skip-value-numbers-invalid.ll`'s `block_smaller_id` split
+/// pins the same message for a *forward* backwards-slot and is driven by the
+/// corpus manifest; this one covers the re-use shape, which no upstream
+/// fixture writes, and pins the column that separates the definition site
+/// from the reference site.
+#[test]
+fn a_re_used_numbered_label_is_a_backwards_slot() {
+    assert_eq!(
+        header_err_at("define void @f() {\n1:\n  br label %1\n1:\n  ret void\n}\n"),
+        (
+            "label expected to be numbered '2' or greater".to_owned(),
+            (4, 1)
+        )
+    );
+}
+
+/// `label %x` is parsed by `parseTypeAndBasicBlock` -> `parseTypeAndValue` ->
+/// `getVal(Name, LabelTy, Loc)`, so a *reference* to a name already bound to
+/// a non-block local fails in `checkValidVariableType`'s `Ty->isLabelTy()`
+/// arm — the un-overwritten half of the message
+/// [`a_block_may_not_take_a_local_value_name`] sees.
+///
+/// llvmkit's block map was consulted alone here, so `br label %x` with `%x`
+/// an `i32` result silently appended a *second* block and renamed it `x1`:
+/// an accepts-invalid that printed IR upstream refuses to read. No upstream
+/// fixture writes this shape; the routine is the anchor.
+#[test]
+fn a_label_reference_to_a_local_value_is_not_a_basic_block() {
+    assert_eq!(
+        header_err_at(
+            "define void @f() {\nentry:\n  %x = add i32 0, 0\n  br label %x\nx:\n  ret void\n}\n"
+        ),
+        ("'%x' is not a basic block".to_owned(), (4, 12))
     );
 }
 
@@ -1216,5 +1439,76 @@ fn end_of_module_checks_run_in_upstream_order() {
             "!named = !{!7}\n",
         )),
         "use of undefined comdat '$never_defined'"
+    );
+}
+
+/// Mirrors the module-asm arm of `AssemblyWriter::printModule`, which opens
+/// `if (!M->getModuleInlineAsm().empty()) { Out << '\n'; … }` — llvmkit had
+/// the guard and the `do`/`while (!Asm.empty())` loop but not the leading
+/// blank line.
+///
+/// **Anchored on the routine, not on a fixture**: FileCheck cannot pin a blank
+/// line.
+#[test]
+fn module_asm_block_is_preceded_by_a_blank_line() {
+    let m = module_new!("module_asm_blank").expect("fresh module");
+    parse_into(
+        "module asm \"first line\"\nmodule asm \"second line\"\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert_eq!(
+        printed,
+        "; ModuleID = 'module_asm_blank'\n\
+\n\
+module asm \"first line\"\n\
+module asm \"second line\"\n",
+        "got:\n{printed}"
+    );
+}
+
+/// Mirrors `AssemblyWriter::printModule`'s comdat loop:
+///
+/// ```text
+/// if (!Comdats.empty()) Out << '\n';
+/// for (const Comdat *C : Comdats) {
+///   printComdat(C);
+///   if (C != Comdats.back()) Out << '\n';
+/// }
+/// ```
+///
+/// `Comdat::print` already ends in `'\n'`, so the trailing guard puts a
+/// **blank** line between consecutive comdats and none after the last.
+/// llvmkit emitted the leading blank line and then ran the comdats together.
+///
+/// Both comdats here are referenced, by globals, in declaration order, so
+/// this input says nothing about *which* comdats reach the loop or in what
+/// order — [`the_comdat_block_is_first_use_order_over_functions_then_globals`]
+/// is the test written to separate those.
+///
+/// **Anchored on the routine, not on a fixture**: FileCheck cannot pin a blank
+/// line.
+#[test]
+fn consecutive_comdats_are_separated_by_a_blank_line() {
+    let m = module_new!("comdat_separator").expect("fresh module");
+    parse_into(
+        "$a = comdat any\n\
+$b = comdat largest\n\
+@g = global i32 0, comdat($a)\n\
+@h = global i32 0, comdat($b)\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert_eq!(
+        printed,
+        "; ModuleID = 'comdat_separator'\n\
+\n\
+$a = comdat any\n\
+\n\
+$b = comdat largest\n\
+\n\
+@g = global i32 0, comdat($a)\n\
+@h = global i32 0, comdat($b)\n",
+        "got:\n{printed}"
     );
 }

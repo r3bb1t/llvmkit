@@ -26,7 +26,7 @@ fn build_icmp_eq_emits_icmp_eq() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Clang/CodeGen/.../auto_upgrade_nvvm_intrinsics.ll`
+/// Mirrors `test/Assembler/auto_upgrade_nvvm_intrinsics.ll`
 /// (`icmp ne i32 %z, 0`). We use the simpler shape in our smaller
 /// fixture but the IR pattern is identical.
 #[test]

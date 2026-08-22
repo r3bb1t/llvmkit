@@ -8,6 +8,8 @@ use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError, parser};
 use llvmkit_ir::Module;
 use llvmkit_ir::module_new;
 
+pub mod support;
+
 fn parse_and_render(module_name: &str, src: &[u8]) -> String {
     let module = Module::dynamic(module_name);
     Parser::new(src, &module)
@@ -363,6 +365,29 @@ fn token_none_round_trips() {
     assert_eq!(format!("{}", parsed.as_erased()), "token none");
 }
 
+/// **llvmkit-authored source; no upstream `.ll` counterpart.** `grep -rlna
+/// "token zeroinitializer" test/ unittests/ lib/` over the vendored
+/// `llvmorg-22.1.4` tree returns nothing, so the routine is the anchor (D11):
+/// `Constant::getNullValue`'s `case Type::TokenTyID` returns
+/// `ConstantTokenNone::get`, the very constant the `token none` spelling
+/// builds, and `convertValIDToValue`'s `t_Zero` arm reaches it because a token
+/// type is first-class and is neither a label nor a `TargetExtType`.
+///
+/// Uniquing is asserted alongside the text: upstream's two spellings are one
+/// `ConstantTokenNone`, not two constants that happen to print alike.
+#[test]
+fn token_zeroinitializer_is_the_token_none_constant() {
+    let module = module_new!("parser_constants_token_zero").expect("fresh module");
+    let token_ty = module.token_type().as_type();
+
+    let zero = parser::parse_constant_value(b"zeroinitializer", &module, token_ty)
+        .expect("token zeroinitializer parses");
+    assert_eq!(format!("{}", zero.as_erased()), "token none");
+
+    let none = parser::parse_constant_value(b"none", &module, token_ty).expect("token none parses");
+    assert_eq!(zero.as_erased().id(), none.as_erased().id());
+}
+
 /// Exact `ptrtoaddr` constant expression from `test/Assembler/ptrtoaddr.ll`.
 #[test]
 fn ptrtoaddr_constant_expr_round_trips() {
@@ -468,24 +493,35 @@ fn constant_expr_shufflevector_rejects_out_of_range_mask() {
     );
 }
 
-/// Exact scalable constant-expression shufflevector excerpt from
-/// `test/Bitcode/vscale-round-trip.ll` `const_shufflevector` cases.
+/// `test/Bitcode/vscale-round-trip.ll`, the whole file, asserting each of its
+/// four `CHECK-LABEL` / `CHECK` pairs in file order.
+///
+/// Upstream's RUN line is `llvm-as < %s | llvm-dis | FileCheck %s`, so the
+/// CHECK lines are what the printer emits after a bitcode round trip. Three of
+/// the four functions are constant-expression cases;
+/// `@non_const_shufflevector` is the instruction form, which needs
+/// `ShuffleVectorInst::isValidOperands`' scalable branch —
+/// `(Mask[0] != 0 && Mask[0] != PoisonMaskElem) || !all_equal(Mask)` — to
+/// admit an all-zero mask, and the `ShuffleVectorInst(Value *, Value *,
+/// ArrayRef<int>, ...)` constructor's
+/// `VectorType::get(EltTy, Mask.size(), isa<ScalableVectorType>(V1->getType()))`
+/// to give it a scalable result type.
 #[test]
-fn constant_expr_scalable_shufflevector_zero_mask_fixture_matches_upstream() {
-    const FIXTURE: &[u8] =
-        include_bytes!("fixtures/upstream/vscale-round-trip/const_shufflevector.ll");
+fn vscale_round_trip_fixture_matches_upstream() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/vscale-round-trip.ll");
 
-    let text = parse_and_render(
-        "constant_expr_scalable_shufflevector_zero_mask_fixture_matches_upstream",
-        FIXTURE,
-    );
+    let text = parse_and_render("vscale_round_trip_fixture_matches_upstream", FIXTURE);
     assert_check_lines(
         &text,
         &[
-            "define <vscale x 4 x i32> @const_shufflevector()",
-            "ret <vscale x 4 x i32> zeroinitializer",
+            "define <vscale x 4 x i32> @const_shufflevector(",
+            "<vscale x 4 x i32> zeroinitializer",
             "define <vscale x 4 x i32> @const_shufflevector_ex()",
-            "ret <vscale x 4 x i32> zeroinitializer",
+            "<vscale x 4 x i32> zeroinitializer",
+            "define <vscale x 4 x i32> @non_const_shufflevector(",
+            "%res = shufflevector <vscale x 4 x i32>",
+            "define <vscale x 4 x i32> @const_select()",
+            "select <vscale x 4 x i1>",
         ],
     );
     assert_parse_print_parse_stable(&text);
@@ -712,6 +748,16 @@ fn none_is_token_only() {
 /// llvmkit-specific subset of `test/Assembler/target-types.ll` and
 /// `Type.cpp::getTargetTypeInfo`: target-extension zeroinitializer requires the
 /// zero-initializable property.
+///
+/// The rejection is `convertValIDToValue`'s second `t_Zero` guard,
+/// `error(ID.Loc, "invalid type for null constant")` — the *bare* sentence.
+/// It used to travel in `ParseError::Expected`, which renders `expected ` in
+/// front of it, and `test/Assembler/target-type-properties.ll`'s
+/// `zeroinit-error.ll` split stayed green throughout because the corpus driver
+/// compares an `error=` pin with `contains`, which a wrapper that only adds
+/// text satisfies. Asserting the *variant* is what pins the absence of the
+/// prefix; the same guard's other arms are covered by
+/// [`zeroinitializer_of_an_unzeroable_type_is_an_invalid_null_constant`].
 #[test]
 fn target_ext_zeroinitializer_requires_zero_init_property() {
     let module = module_new!("parser_constants_target_zero").expect("fresh module");
@@ -739,10 +785,87 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
     let err = parser::parse_constant_value(b"zeroinitializer", &module, image_ty)
         .expect_err("non-zero-initializable target extension is rejected");
     match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "invalid type for null constant")
+        ParseError::Message { message, .. } => {
+            assert_eq!(message, "invalid type for null constant")
         }
         other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// `convertValIDToValue`'s `case ValID::t_Zero:` opens
+/// `if (!Ty->isFirstClassType() || Ty->isLabelTy()) return error(ID.Loc,
+/// "invalid type for null constant");` — a guard `parseConstantValue` reaches
+/// too, because it routes `t_Zero` through the same routine with
+/// `PFS = nullptr`. llvmkit ran it on the value path only, so a global
+/// initializer of `label` type skipped it.
+///
+/// Past that guard, upstream's `Constant::getNullValue` ends in
+/// `default: llvm_unreachable("Cannot create a null constant of that type!")`.
+/// `metadata`, `x86_amx` and `exnref` are first-class, are not labels and have
+/// no `getNullValue` case, so they are what reaches it. Rejecting rather than
+/// trapping is hardening; the message is the enclosing guard's, because
+/// upstream associates no other text with `t_Zero`. That arm invented
+/// `expected zeroinitializer for a zeroable type` instead.
+///
+/// The remaining two rejecting arms of `Constant::getNullValue`'s llvmkit
+/// counterpart are covered here as well, so that one test pins every way out
+/// of `t_Zero`: the opaque struct (`!Ty->isFirstClassType()`) and the
+/// target-extension type without `HasZeroInit`.
+///
+/// `test/Assembler/2004-11-28-InvalidTypeCrash.ll` and
+/// `target-type-properties.ll`'s `zeroinit-error.ll` split pin those two by
+/// message and are driven by the corpus manifest, but on `contains`, and
+/// neither sets a column — which is how `expected invalid type for null
+/// constant` stayed green. No upstream fixture writes the other four types
+/// with `zeroinitializer` at all; the routine is the anchor.
+#[test]
+fn zeroinitializer_of_an_unzeroable_type_is_an_invalid_null_constant() {
+    for source in [
+        // `parseConstantValue`'s path — a global initializer.
+        "@g = global label zeroinitializer\n",
+        "@g = global metadata zeroinitializer\n",
+        "@g = global x86_amx zeroinitializer\n",
+        "@g = global exnref zeroinitializer\n",
+        "%s = type opaque\n@g = global %s zeroinitializer\n",
+        // `convertValIDToValue`'s path — an instruction operand.
+        "define void @f() {\nentry:\n  %v = freeze label zeroinitializer\n  ret void\n}\n",
+        "define void @f() {\nentry:\n  %v = freeze metadata zeroinitializer\n  ret void\n}\n",
+        "define void @f() {\nentry:\n  %v = freeze x86_amx zeroinitializer\n  ret void\n}\n",
+        "define void @f() {\nentry:\n  %v = freeze exnref zeroinitializer\n  ret void\n}\n",
+        "define void @f() {\nentry:\n  %v = freeze target(\"unknown_target_type\") zeroinitializer\n  ret void\n}\n",
+    ] {
+        let module = module_new!("parser_constants_unzeroable").expect("fresh module");
+        let err = Parser::new(source.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("an unzeroable type is rejected");
+        match &err {
+            ParseError::Message { message, .. } => {
+                assert_eq!(message, "invalid type for null constant", "for {source:?}")
+            }
+            other => panic!("unexpected error variant for {source:?}: {other:?}"),
+        }
+        // `error(ID.Loc, …)`, and `parseValID`'s first statement is
+        // `ID.Loc = Lex.getLoc()` — the `zeroinitializer` token, not the type
+        // in front of it and not the lookahead behind it. Derived from those
+        // two routines; the fixtures that pin this message pin text only.
+        let start = usize::try_from(
+            err.loc()
+                .expect("a rejection reports a location")
+                .span
+                .start,
+        )
+        .expect("span start fits in usize");
+        assert_eq!(
+            support::line_and_column(source.as_bytes(), start),
+            support::line_and_column(
+                source.as_bytes(),
+                source
+                    .find("zeroinitializer")
+                    .expect("the fixture writes one"),
+            ),
+            "for {source:?}"
+        );
     }
 }
 

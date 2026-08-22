@@ -70,6 +70,15 @@ use super::r#type::{StructBody, Type, TypeData, TypeSlot};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
 use super::{ApInt, AttrIndex, Signedness};
 
+/// What `AsmWriter.cpp` prints where a value has no slot: `Out << "<badref>"`.
+///
+/// One spelling, because upstream writes one — in `writeAsOperandInternal`
+/// (both the `'@'` and the `'%'` prefix branches), in `printInstruction`'s
+/// unnamed-result arm, in `printBasicBlock`'s label arm and in
+/// `printNamedMDNode`'s metadata arm. Note what it is *not*: the sigil is
+/// printed only on the success side, so the failure spelling is bare.
+const BAD_REF: &str = "<badref>";
+
 // --------------------------------------------------------------------------
 // SlotTracker
 // --------------------------------------------------------------------------
@@ -229,18 +238,20 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
     let data = v.data();
     match &data.kind {
         ValueKindData::Function(_) => fmt_global_value_ref(f, v),
+        // `if (Slot != -1) Out << Prefix << Slot; else Out << "<badref>";` —
+        // the failure spelling carries **no** sigil, in either arm.
         ValueKindData::BasicBlock(_) => match v.name() {
             Some(n) => fmt_llvm_name(f, "%", &n),
             None => match slots.and_then(|s| s.block(v.id)) {
                 Some(slot) => write!(f, "%{slot}"),
-                None => f.write_str("%<unnumbered>"),
+                None => f.write_str(BAD_REF),
             },
         },
         ValueKindData::Argument { .. } | ValueKindData::Instruction(_) => match v.name() {
             Some(n) => fmt_llvm_name(f, "%", &n),
             None => match slots.and_then(|s| s.local(v.id)) {
                 Some(slot) => write!(f, "%{slot}"),
-                None => f.write_str("%<unnumbered>"),
+                None => f.write_str(BAD_REF),
             },
         },
         ValueKindData::GlobalVariable(_)
@@ -249,11 +260,18 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
         ValueKindData::Constant(c) => fmt_constant(f, v, c),
         // `MetadataAsValue` delegates to the metadata printer. MDStrings
         // print inline as `!"..."`; MDNodes print as their numbered slot.
+        //
+        // `slots` travels with the delegation because a `ValueAsMetadata`
+        // bottoms out in `writeAsOperandInternal(Out, V->getValue(),
+        // WriterCtx, /*PrintType=*/true)`, and upstream's `AsmWriterContext`
+        // carries `Machine` all the way down — an unnamed local reached
+        // through `metadata i32 %1` is numbered by the same tracker that
+        // numbers the enclosing instruction's operands.
         ValueKindData::MetadataAsValue(id) => {
             let module_view = v.module();
             let module = module_view.core_ref();
             let md = module_view.metadata_store();
-            fmt_metadata_operand(f, *id, module, &md, &metadata_slot_map(md.nodes()))
+            fmt_metadata_operand(f, *id, module, &md, &metadata_slot_map(md.nodes()), slots)
         }
         // An inline-asm value only ever appears as a `call` callee, where
         // `fmt_call` short-circuits to the `asm "...", "..."` form before
@@ -934,6 +952,97 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
     expr.result_ty
 }
 
+/// Mirrors `printAddressSpace` (`lib/IR/AsmWriter.cpp`).
+///
+/// One branch of the upstream routine is **not** ported: the
+/// `PrintAddrspaceName && M ? M->getDataLayout().getAddressSpaceName(AS) : ""`
+/// path that prints `addrspace("global")` instead of `addrspace(2)`.
+/// `PrintAddrspaceName` is `static cl::opt<bool> PrintAddrspaceName(
+/// "print-addrspace-name", cl::Hidden, cl::init(false), …)`; llvmkit has no
+/// command-line-option layer for a printer, so the branch has no reachable
+/// trigger and upstream's `M` parameter — which exists only to feed it — is
+/// dropped. The data is modelled (`DataLayout::address_space_name`); only the
+/// option surface is not. Recorded in `docs/future-work.md` and as gap **G6**
+/// in `docs/fixture-coverage.md`, which is where an unimplemented *feature*
+/// belongs — with the flag at its `cl::init(false)` default the printed bytes
+/// match, so it is not a behavioural divergence.
+///
+/// `pub(crate)` because upstream's fifth call site is the pointer arm of the
+/// *type* printer (`TypePrinting::print`, `case Type::PointerTyID`), which
+/// lives in `r#type.rs` here. Routing it through this one routine is what
+/// keeps the `PrintAddrspaceName` gap above a single-site fix.
+pub(crate) fn print_address_space(
+    f: &mut fmt::Formatter<'_>,
+    addr_space: u32,
+    prefix: &str,
+    suffix: &str,
+    force_print: bool,
+) -> fmt::Result {
+    if addr_space == 0 && !force_print {
+        return Ok(());
+    }
+    write!(f, "{prefix}addrspace({addr_space}){suffix}")
+}
+
+/// `Value::getType()->getPointerAddressSpace()` for a call-family callee
+/// operand, as `maybePrintCallAddrSpace` reads it.
+///
+/// llvmkit stores a global object's arena type as its **value** type
+/// (`GlobalValue::getValueType`), not as the pointer `GlobalValue::getType`
+/// hands back, so for a global the address space comes from the object's own
+/// field (`docs/divergences.md` D3). An `InlineAsm` callee is address space 0
+/// because `InlineAsm::InlineAsm` builds it with
+/// `PointerType::getUnqual(FTy->getContext())`. Everything else — an SSA
+/// pointer value, or the interned `GlobalValueRef` constant, whose arena type
+/// is already `GlobalValue::getType`'s pointer — reads its own type.
+///
+/// `None` means the operand is not pointer-typed. The builders make that
+/// unconstructible (`call_builder` takes a `FunctionValue`, `indirect_call_dyn`
+/// a `PointerValue`, `inline_asm_call` an `InlineAsm`), so it is llvmkit's
+/// stand-in for upstream's `Operand == nullptr` guard, which a `Cell<ValueSlot>`
+/// can never satisfy.
+fn callee_pointer_address_space<B: ModuleBrand>(
+    module: ModuleView<'_, B>,
+    callee: ValueSlot,
+) -> Option<u32> {
+    let data = module.context().value_data(callee);
+    match &data.kind {
+        ValueKindData::Function(function) => Some(*function.address_space.borrow()),
+        ValueKindData::GlobalAlias(alias) => Some(alias.address_space),
+        ValueKindData::GlobalIfunc(ifunc) => Some(ifunc.address_space),
+        ValueKindData::GlobalVariable(global) => Some(global.address_space),
+        ValueKindData::InlineAsm(_) => Some(0),
+        _ => match module.context().type_data(data.ty) {
+            TypeData::Pointer { addr_space } => Some(*addr_space),
+            _ => None,
+        },
+    }
+}
+
+/// Mirrors `maybePrintCallAddrSpace` (`lib/IR/AsmWriter.cpp`), whose only two
+/// callers are the `CallInst` and `InvokeInst` arms of
+/// `AssemblyWriter::printInstruction` — never `CallBrInst`, which resolves its
+/// callee at address space 0 unconditionally.
+///
+/// Nothing is stored on the instruction: the address space is re-derived from
+/// the callee operand's pointer type, exactly as upstream does.
+fn maybe_print_call_addr_space<B: ModuleBrand>(
+    f: &mut fmt::Formatter<'_>,
+    module: ModuleView<'_, B>,
+    callee: ValueSlot,
+) -> fmt::Result {
+    let Some(call_addr_space) = callee_pointer_address_space(module, callee) else {
+        return f.write_str(" <cannot get addrspace!>");
+    };
+
+    // We print the address space of the call if it is non-zero. We also print
+    // it if it is zero but not equal to the program address space, so the
+    // resulting file parses even without a datalayout string. llvmkit has no
+    // `!Mod` case: an instruction always has a module.
+    let force_print_addr_space = module.data_layout().program_addr_space() != 0;
+    print_address_space(f, call_addr_space, " ", "", force_print_addr_space)
+}
+
 fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Type<'ctx, B> {
     match &value.data().kind {
         ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
@@ -1055,6 +1164,33 @@ fn low_u64(bits: u128) -> u64 {
     ])
 }
 
+/// `Out << format_hex(N, 0, /*Upper=*/true)` — `llvm::format_hex` with a zero
+/// width and the `0x` prefix, as `writeConstantInternal`'s `double` arm uses
+/// it.
+///
+/// `format_hex(N, Width, Upper)` builds a `FormattedNumber` that
+/// `raw_ostream::operator<<` routes to
+/// `write_hex(S, N, HexPrintStyle::PrefixUpper, Width)`, whose body
+/// (`lib/Support/NativeFormatting.cpp`) computes
+/// `Nibbles = (bit_width(N) + 3) / 4` and
+/// `NumChars = max(W, max(1, Nibbles) + PrefixChars)` over a `'0'`-prefilled
+/// buffer. With `Width == 0` and `PrefixChars == 2` that is the `0x` prefix
+/// plus `max(1, Nibbles)` uppercase digits and **no** padding to sixteen —
+/// which is why a small value such as `0x427F4000` prints in eight digits.
+fn write_hex_prefixed_upper(f: &mut fmt::Formatter<'_>, value: u64) -> fmt::Result {
+    // `unsigned Nibbles = (llvm::bit_width(N) + 3) / 4;` —
+    // `u64::BITS - leading_zeros()` *is* `bit_width`, and `(x + 3) / 4` is
+    // spelled `div_ceil(4)` here because clippy rejects the open form.
+    let bit_width = u64::BITS - value.leading_zeros();
+    let nibbles = bit_width.div_ceil(4);
+    // `NumChars = max(W, max(1u, Nibbles) + PrefixChars)` with `W == 0`,
+    // expressed as the digit count after the prefix. `nibbles <= 16` always,
+    // so the `unwrap_or` is dead; it is spelled fallibly because `as` casts
+    // are banned, and 16 would still be correct by zero-padding.
+    let digits = usize::try_from(nibbles.max(1)).unwrap_or(16);
+    write!(f, "0x{value:0digits$X}")
+}
+
 fn fmt_float_constant<B: ModuleBrand>(
     f: &mut fmt::Formatter<'_>,
     ty: Type<'_, B>,
@@ -1069,14 +1205,14 @@ fn fmt_float_constant<B: ModuleBrand>(
                 return Ok(());
             }
             let as_double_bits = f64::from(value).to_bits();
-            write!(f, "0x{as_double_bits:016x}")
+            write_hex_prefixed_upper(f, as_double_bits)
         }
         TypeData::Double => {
             let value = f64::from_bits(low_u64(bits));
             if value.is_finite() && try_write_finite_float_decimal(f, value)? {
                 return Ok(());
             }
-            write!(f, "0x{:016x}", value.to_bits())
+            write_hex_prefixed_upper(f, value.to_bits())
         }
         TypeData::X86Fp80 => {
             let lo = low_u64(bits);
@@ -1106,7 +1242,13 @@ fn fmt_float_constant<B: ModuleBrand>(
 /// Mirrors `llvm::printEscapedString` in
 /// `lib/Support/StringExtras.cpp`. Used both for c-string array
 /// constants and for `section`/`partition` attributes on globals.
-fn print_escaped_string(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+///
+/// Generic over [`core::fmt::Write`] rather than taking a
+/// [`fmt::Formatter`]: `printBasicBlock`'s `PadToColumn(50)` needs the width
+/// of a label that this helper produced, and a `Formatter` cannot be built
+/// over a `String`. Every existing caller still passes a `Formatter`, which
+/// implements the trait.
+fn print_escaped_string<W: fmt::Write>(f: &mut W, bytes: &[u8]) -> fmt::Result {
     for &c in bytes {
         if c == b'\\' {
             f.write_str("\\\\")?;
@@ -1116,7 +1258,10 @@ fn print_escaped_string(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result
                     .unwrap_or_else(|_| unreachable!("printable ASCII is valid UTF-8")),
             )?;
         } else {
-            write!(f, "\\{:02x}", c)?;
+            // `Out << '\\' << hexdigit(C >> 4) << hexdigit(C & 0x0F)` —
+            // `hexdigit`'s `LowerCase` parameter defaults to `false`, so the
+            // digits come from `"0123456789ABCDEF"` unmodified.
+            write!(f, "\\{c:02X}")?;
         }
     }
     Ok(())
@@ -1127,12 +1272,16 @@ fn fmt_llvm_name(f: &mut fmt::Formatter<'_>, prefix: &str, name: &str) -> fmt::R
     fmt_llvm_name_without_prefix(f, name)
 }
 
-fn fmt_llvm_name_without_prefix(f: &mut fmt::Formatter<'_>, name: &str) -> fmt::Result {
+/// `printLLVMName(Out, Name, NoPrefix)` (`lib/IR/AsmWriter.cpp`).
+///
+/// Generic over [`core::fmt::Write`] for the reason
+/// [`print_escaped_string`] is.
+fn fmt_llvm_name_without_prefix<W: fmt::Write>(f: &mut W, name: &str) -> fmt::Result {
     let bytes = name.as_bytes();
     let needs_quotes = bytes.first().is_some_and(u8::is_ascii_digit)
         || bytes
             .iter()
-            .any(|c| !c.is_ascii_alphanumeric() && !matches!(*c, b'-' | b'.' | b'_' | b'$'));
+            .any(|c| !c.is_ascii_alphanumeric() && !matches!(*c, b'-' | b'.' | b'_'));
     if !needs_quotes {
         return f.write_str(name);
     }
@@ -1149,7 +1298,9 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
         Some(name) => fmt_llvm_name(f, "@", &name),
         None => match module_global_slot(v.module().core_ref(), v.id) {
             Some(slot) => write!(f, "@{slot}"),
-            None => f.write_str("@<unnumbered>"),
+            // `writeAsOperandInternal`'s `Prefix = '@'` branch reaches the
+            // same unsigilled `<badref>`.
+            None => f.write_str(BAD_REF),
         },
     }
 }
@@ -1358,9 +1509,11 @@ pub(super) fn fmt_instruction(
                 fmt_llvm_name(f, "%", &n)?;
                 f.write_str(" = ")?;
             }
+            // `if (SlotNum == -1) Out << "<badref> = "; else Out << '%' <<
+            //  SlotNum << " = ";`
             None => match slots.local(inst.slot()) {
                 Some(slot) => write!(f, "%{slot} = ")?,
-                None => f.write_str("%<unnumbered> = ")?,
+                None => write!(f, "{BAD_REF} = ")?,
             },
         }
     }
@@ -1432,6 +1585,7 @@ pub(super) fn fmt_instruction(
         module_view.core_ref(),
         &md,
         &md_slots,
+        Some(slots),
         ", ",
     )
 }
@@ -1695,8 +1849,12 @@ fn print_shuffle_mask<B: ModuleBrand>(
         f.write_str("vscale x ")?;
     }
     write!(f, "{} x i32> ", mask.len())?;
-    let all_zero = !mask.is_empty() && mask.iter().all(|e| *e == ShuffleMaskElem::Lane(0));
-    let all_poison = !mask.is_empty() && mask.iter().all(|e| *e == ShuffleMaskElem::Poison);
+    // `all_of` over an empty `ArrayRef` is vacuously true upstream, so an empty
+    // mask takes the `zeroinitializer` arm there. These two used to carry an
+    // `!mask.is_empty() &&` guard that would have printed `<>` instead; it was
+    // an unannounced deviation inside a routine whose comment claims a mirror.
+    let all_zero = mask.iter().all(|e| *e == ShuffleMaskElem::Lane(0));
+    let all_poison = mask.iter().all(|e| *e == ShuffleMaskElem::Poison);
     if all_zero {
         f.write_str("zeroinitializer")?;
     } else if all_poison {
@@ -1911,12 +2069,10 @@ fn fmt_alloca(
     if let Some(al) = a.align.align() {
         write!(f, ", align {}", al.value())?;
     }
-    // Mirrors AsmWriter's AllocaInst arm: the address space is printed
-    // (after align) only when non-zero.
-    if a.addr_space != 0 {
-        write!(f, ", addrspace({})", a.addr_space)?;
-    }
-    Ok(())
+    // Mirrors AsmWriter's AllocaInst arm:
+    // `printAddressSpace(AI->getModule(), AI->getAddressSpace(), Out,
+    // /*Prefix=*/", ")` — empty suffix, no force.
+    print_address_space(f, a.addr_space, ", ", "", false)
 }
 
 fn fmt_load(
@@ -2029,15 +2185,25 @@ fn fmt_call(
     if !fmf.is_empty() {
         write!(f, " {fmf}")?;
     }
-    f.write_str(" ")?;
+    // Upstream's `CallInst` arm writes a *leading* space with each optional
+    // piece — `if (…) { Out << " "; printCallingConv(…); }`,
+    // `if (PAL.hasRetAttrs()) Out << ' ' << …` — and only then the single
+    // `Out << ' '` that precedes the type. llvmkit used to front-load that
+    // space instead; the byte stream is the same either way, but
+    // `maybePrintCallAddrSpace` sits between the return attributes and the
+    // type and calls `printAddressSpace` with `Prefix=" "`, so the separator
+    // has to belong to each piece for the port to be 1:1.
     if c.calling_conv != crate::CallingConv::C {
-        write!(f, "{} ", c.calling_conv)?;
+        write!(f, " {}", c.calling_conv)?;
     }
     let module = inst.module();
-    fmt_attribute_set(f, c.attrs.return_attrs(), AttrIndex::Return, false, module)?;
     if c.attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
+    fmt_attribute_set(f, c.attrs.return_attrs(), AttrIndex::Return, false, module)?;
+    // Only print addrspace(N) if necessary:
+    maybe_print_call_addr_space(f, module, c.callee.get())?;
+    f.write_str(" ")?;
     // LLVM prints the callee function type for varargs call sites so the
     // fixed parameter prefix is preserved (`call i32 (ptr, ...) @printf(...)`).
     // Non-varargs direct calls keep the compact result-type spelling.
@@ -2249,34 +2415,57 @@ fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
     }
 }
 
+/// Mirrors `AssemblyWriter::writeOperandBundles` (`lib/IR/AsmWriter.cpp`)
+/// statement for statement, including the spaces inside `" [ "` and `" ]"`
+/// that make the printed list `call void @g() [ "tag"(i32 0) ]`.
+///
+/// Upstream's `if (Input == nullptr) Out << "<null operand bundle!>";` has no
+/// counterpart and cannot have one: an input is a bare arena index, not an
+/// optional pointer, so a null input is unrepresentable. The branch is
+/// recorded here rather than invented as a dead arm.
 fn fmt_operand_bundles(
     f: &mut fmt::Formatter<'_>,
     bundles: &[OperandBundleData],
     module: &ModuleCore,
     slots: &SlotTracker,
 ) -> fmt::Result {
+    // `if (!Call->hasOperandBundles()) return;`
     if bundles.is_empty() {
         return Ok(());
     }
-    f.write_str(" [")?;
+    // `Out << " [ ";`
+    f.write_str(" [ ")?;
+    // `ListSeparator LS;` — its default separator is ", " and its first use
+    // emits the empty prefix, which is what the `idx != 0` guard renders.
     for (idx, bundle) in bundles.iter().enumerate() {
+        // `Out << LS`
         if idx != 0 {
             f.write_str(", ")?;
         }
+        // `Out << '"'`
         f.write_str("\"")?;
+        // `printEscapedString(BU.getTagName(), Out)`
         print_escaped_string(f, operand_bundle_tag_name(bundle.tag()).as_bytes())?;
-        f.write_str("\"(")?;
+        // `Out << '"'`
+        f.write_str("\"")?;
+        // `Out << '('`
+        f.write_str("(")?;
+        // `ListSeparator InnerLS;`
         for (input_idx, id) in bundle.inputs().enumerate() {
+            // `Out << InnerLS`
             if input_idx != 0 {
                 f.write_str(", ")?;
             }
+            // `writeAsOperandInternal(Out, Input, WriterCtx, /*PrintType=*/true)`
             let data = module.context().value_data(id);
             let value = Value::<DynBrand>::from_parts(id, module, data.ty);
             fmt_operand(f, value, Some(slots))?;
         }
+        // `Out << ')'`
         f.write_str(")")?;
     }
-    f.write_str("]")
+    // `Out << " ]";`
+    f.write_str(" ]")
 }
 
 fn fmt_landingpad(
@@ -2464,15 +2653,19 @@ fn fmt_invoke(
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `invoke [<cc>] <ret-ty> <callee>(<args>)\n          to label %normal unwind label %unwind`
-    f.write_str("invoke ")?;
+    f.write_str("invoke")?;
+    // Leading-space convention, and why — see `fmt_call`.
     if d.calling_conv != crate::CallingConv::C {
-        write!(f, "{} ", d.calling_conv)?;
+        write!(f, " {}", d.calling_conv)?;
     }
     let module = inst.module();
-    fmt_attribute_set(f, d.attrs.return_attrs(), AttrIndex::Return, false, module)?;
     if d.attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
+    fmt_attribute_set(f, d.attrs.return_attrs(), AttrIndex::Return, false, module)?;
+    // Only print addrspace(N) if necessary:
+    maybe_print_call_addr_space(f, module, d.callee.get())?;
+    f.write_str(" ")?;
     // LLVM prints the callee function type for varargs call sites so the
     // fixed parameter prefix is preserved; non-varargs call sites keep the
     // compact result-type spelling (same rule as `fmt_call`).
@@ -2866,7 +3059,7 @@ fn fmt_debug_metadata_operand(
 ) -> fmt::Result {
     match operand {
         DebugMetadataOperand::Metadata(md) => {
-            fmt_metadata_operand(f, md.slot(), module, store, md_slots)
+            fmt_metadata_operand(f, md.slot(), module, store, md_slots, Some(slots))
         }
         DebugMetadataOperand::Value(id) => {
             let slot = id.slot();
@@ -2894,12 +3087,26 @@ fn fmt_debug_record(
             write!(f, "#dbg_{}(", record.kind().name())?;
             fmt_debug_metadata_operand(f, record.location(), module, store, md_slots, slots)?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, record.variable().slot(), module, store, md_slots)?;
+            fmt_metadata_operand(
+                f,
+                record.variable().slot(),
+                module,
+                store,
+                md_slots,
+                Some(slots),
+            )?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, record.expression().slot(), module, store, md_slots)?;
+            fmt_metadata_operand(
+                f,
+                record.expression().slot(),
+                module,
+                store,
+                md_slots,
+                Some(slots),
+            )?;
             f.write_str(", ")?;
             if let Some(assign_id) = record.assign_id() {
-                fmt_metadata_operand(f, assign_id.slot(), module, store, md_slots)?;
+                fmt_metadata_operand(f, assign_id.slot(), module, store, md_slots, Some(slots))?;
                 f.write_str(", ")?;
             }
             if let Some(address_location) = record.address_location() {
@@ -2907,39 +3114,125 @@ fn fmt_debug_record(
                 f.write_str(", ")?;
             }
             if let Some(address_expression) = record.address_expression() {
-                fmt_metadata_operand(f, address_expression.slot(), module, store, md_slots)?;
+                fmt_metadata_operand(
+                    f,
+                    address_expression.slot(),
+                    module,
+                    store,
+                    md_slots,
+                    Some(slots),
+                )?;
                 f.write_str(", ")?;
             }
-            fmt_metadata_operand(f, record.debug_loc().slot(), module, store, md_slots)?;
+            fmt_metadata_operand(
+                f,
+                record.debug_loc().slot(),
+                module,
+                store,
+                md_slots,
+                Some(slots),
+            )?;
             f.write_str(")")
         }
         DebugRecord::Label { label, debug_loc } => {
             f.write_str("#dbg_label(")?;
-            fmt_metadata_operand(f, label.slot(), module, store, md_slots)?;
+            fmt_metadata_operand(f, label.slot(), module, store, md_slots, Some(slots))?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, debug_loc.slot(), module, store, md_slots)?;
+            fmt_metadata_operand(f, debug_loc.slot(), module, store, md_slots, Some(slots))?;
             f.write_str(")")
         }
     }
 }
 
+/// The column `AssemblyWriter::printBasicBlock` pads its predecessors comment
+/// to — `Out.PadToColumn(50)`.
+const PREDECESSOR_COMMENT_COLUMN: usize = 50;
+
+/// `formatted_raw_ostream::PadToColumn(NewCol)`
+/// (`lib/Support/FormattedStream.cpp`), whose body is
+/// `indent(std::max(int(NewCol - getColumn()), 1))` — so it writes at least
+/// one space and never fewer, including when the column is already at or past
+/// `NewCol`.
+///
+/// llvmkit's writer is a [`fmt::Formatter`] and keeps no column state, so the
+/// caller passes the column it has just produced. That is exact rather than an
+/// approximation: everything emitted since the last `'\n'` was written by
+/// [`fmt_basic_block`] itself, and `printLLVMName` escapes every byte it emits
+/// into `0x20..=0x7e` — the range where `formatted_raw_ostream::UpdatePosition`
+/// counts one display column per byte.
+fn pad_to_column(f: &mut fmt::Formatter<'_>, new_column: usize, column: usize) -> fmt::Result {
+    for _ in 0..new_column.saturating_sub(column).max(1) {
+        f.write_str(" ")?;
+    }
+    Ok(())
+}
+
+/// `AssemblyWriter::printBasicBlock`.
+///
+/// `is_entry_block` is upstream's `bool IsEntryBlock = BB->getParent() &&
+/// BB->isEntryBlock();` — false for a parentless block, which is why a
+/// detached block printed on its own still carries a predecessors comment
+/// where an entry block inside a function does not.
 pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     f: &mut fmt::Formatter<'_>,
     bb: BasicBlock<'_, Dyn, S, impl ModuleBrand>,
     slots: &SlotTracker,
-    is_first: bool,
+    is_entry_block: bool,
 ) -> fmt::Result {
-    if !is_first {
+    // `if (BB->hasName()) { Out << "\n"; printLLVMName(Out, BB->getName(),
+    //  LabelPrefix); Out << ':'; } else if (!IsEntryBlock) { Out << "\n";
+    //  int Slot = Machine.getLocalSlot(BB); if (Slot != -1) Out << Slot << ":";
+    //  else Out << "<badref>:"; }`
+    //
+    // The label text is rendered into a buffer first because `PadToColumn`
+    // below needs the column it leaves behind, and a `fmt::Formatter` cannot
+    // be asked for one.
+    let name = bb.name();
+    let mut label = String::new();
+    if let Some(name) = &name {
+        fmt_llvm_name_without_prefix(&mut label, name)?;
+        label.push(':');
+    } else if !is_entry_block {
+        match slots.block(bb.slot()) {
+            Some(slot) => write!(label, "{slot}:")?,
+            None => {
+                label.push_str(BAD_REF);
+                label.push(':');
+            }
+        }
+    }
+    if name.is_some() || !is_entry_block {
         f.write_str("\n")?;
+        f.write_str(&label)?;
     }
-    if let Some(name) = bb.name() {
-        fmt_llvm_name_without_prefix(f, &name)?;
-        f.write_str(":")?;
-    } else if let Some(slot) = slots.block(bb.slot()) {
-        write!(f, "{slot}:")?;
-    } else {
-        f.write_str("<unnamed>:")?;
+
+    // `if (!IsEntryBlock) { Out.PadToColumn(50); Out << ";"; … }`
+    if !is_entry_block {
+        pad_to_column(f, PREDECESSOR_COMMENT_COLUMN, label.len())?;
+        f.write_str(";")?;
+        let erased = bb.to_erased();
+        let predecessors = super::cfg::block_predecessors(erased);
+        if predecessors.is_empty() {
+            // `Out << " No predecessors!";`
+            f.write_str(" No predecessors!")?;
+        } else {
+            // `Out << " preds = ";` then a `ListSeparator` — whose default
+            // separator is `", "` — and `writeOperand(Pred,
+            // /*PrintType=*/false)` for each predecessor.
+            f.write_str(" preds = ")?;
+            for (index, predecessor) in predecessors.into_iter().enumerate() {
+                if index > 0 {
+                    f.write_str(", ")?;
+                }
+                // Every basic block carries the module's label type, so the
+                // erased block's own type slot is the predecessor's too.
+                let predecessor_value = Value::from_parts(predecessor, erased.module, erased.ty);
+                fmt_operand_ref(f, predecessor_value, Some(slots))?;
+            }
+        }
     }
+
+    // `Out << "\n";` — shared by every branch above.
     f.write_str("\n")?;
     let module_view = bb.module();
     let md = module_view.metadata_store();
@@ -2993,6 +3286,10 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
             module_view.core_ref(),
             &md,
             &md_slots,
+            // `printFunction` runs `Machine.incorporateFunction(F)` *before*
+            // it prints either attachment position, so a function-local value
+            // reached through an attachment is numbered here too.
+            Some(&slots),
             " ",
         )?;
     }
@@ -3071,9 +3368,7 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
     // prints without its `addrspace(0)` and re-parses into the program address
     // space instead. llvmkit has no `!Mod` case: a function always has one.
     let force_address_space = func.module().data_layout().program_addr_space() != 0;
-    if func.address_space() != 0 || force_address_space {
-        write!(f, " addrspace({})", func.address_space())?;
-    }
+    print_address_space(f, func.address_space(), " ", "", force_address_space)?;
     for group in func.function_attr_groups() {
         write!(f, " #{group}")?;
     }
@@ -3131,17 +3426,24 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
             module_view.core_ref(),
             &md,
             &md_slots,
+            // `printFunction` runs `Machine.incorporateFunction(F)` *before*
+            // it prints either attachment position, so a function-local value
+            // reached through an attachment is numbered here too.
+            Some(&slots),
             " ",
         )?;
     }
     if header == "declare" {
         return f.write_str("\n");
     }
-    f.write_str(" {\n")?;
-    let mut first_block = true;
+    // `printFunction` writes `Out << " {"` and lets `printBasicBlock` own the
+    // newline: that is how a *named* entry block still yields `{\nentry:\n`
+    // while an unnamed one yields `{\n` and no label line at all.
+    f.write_str(" {")?;
+    let mut is_entry_block = true;
     for bb in func.basic_blocks() {
-        fmt_basic_block(f, bb, &slots, first_block)?;
-        first_block = false;
+        fmt_basic_block(f, bb, &slots, is_entry_block)?;
+        is_entry_block = false;
     }
     fmt_use_lists(f, func.module().core_ref(), use_lists, Some(&slots))?;
     f.write_str("}\n")
@@ -3185,7 +3487,13 @@ pub(super) fn fmt_module_with_options(
     preserve_use_list_order: bool,
 ) -> fmt::Result {
     let use_lists = preserve_use_list_order.then(|| predict_use_list_order(m));
-    writeln!(f, "; ModuleID = '{}'", m.name())?;
+    // `if (!M->getModuleIdentifier().empty() &&
+    //      M->getModuleIdentifier().find('\n') == std::string::npos)`, whose
+    // own comment explains the second half: "Don't print the ID if it will
+    // start a new line (which would require a comment char before it)."
+    if !m.name().is_empty() && !m.name().contains('\n') {
+        writeln!(f, "; ModuleID = '{}'", m.name())?;
+    }
     if let Some(source_filename) = m.source_filename() {
         f.write_str("source_filename = \"")?;
         print_escaped_string(f, source_filename.as_bytes())?;
@@ -3210,30 +3518,77 @@ pub(super) fn fmt_module_with_options(
 
     // Module-level inline assembly: one `module asm "<line>"` per
     // newline-split entry. Mirrors the `do { ... } while (!Asm.empty())`
-    // loop in `printModule`.
+    // loop in `printModule`, which is preceded by an unconditional
+    // `Out << '\n'` inside the same `if (!M->getModuleInlineAsm().empty())`.
     {
         let asm = m.module_asm();
         if !asm.is_empty() {
-            for line in asm.split('\n') {
-                if line.is_empty() {
-                    continue;
-                }
+            f.write_str("\n")?;
+            // `StringRef::split('\n')` yields (everything, "") when there is
+            // no separator left, and the loop is a `do`/`while (!Asm.empty())`
+            // — so an interior empty line prints as `module asm ""` while a
+            // single trailing newline does not add a line.
+            let mut rest = asm.as_str();
+            loop {
+                let (front, remainder) = match rest.split_once('\n') {
+                    Some(split) => split,
+                    None => (rest, ""),
+                };
                 f.write_str("module asm \"")?;
-                print_escaped_string(f, line.as_bytes())?;
+                print_escaped_string(f, front.as_bytes())?;
                 f.write_str("\"\n")?;
+                if remainder.is_empty() {
+                    break;
+                }
+                rest = remainder;
             }
         }
     }
 
-    // Comdats. Mirrors `AssemblyWriter::printModuleSummaryIndex`'s
-    // comdat-emission loop in `lib/IR/AsmWriter.cpp` (the bare-module
-    // path: a leading blank line if any comdats exist, then one line
-    // per comdat).
-    let mut comdats_iter = m.iter_comdats();
-    if comdats_iter.len() > 0 {
+    // Comdats. Mirrors `AssemblyWriter::printModule`'s comdat loop:
+    //
+    //     if (!Comdats.empty()) Out << '\n';
+    //     for (const Comdat *C : Comdats) {
+    //       printComdat(C);
+    //       if (C != Comdats.back()) Out << '\n';
+    //     }
+    //
+    // `Comdat::print` already ends in `'\n'`, so the trailing guard puts a
+    // *blank* line between consecutive comdats and none after the last.
+    //
+    // Which comdats reach the loop is the `AssemblyWriter` *constructor*:
+    //
+    //     if (!TheModule) return;
+    //     for (const GlobalObject &GO : TheModule->global_objects())
+    //       if (const Comdat *C = GO.getComdat())
+    //         Comdats.insert(C);
+    //
+    // `Comdats` is a `SetVector`, so each comdat appears once at its first
+    // use, and `Module::global_objects()` is
+    // `concat<GlobalObject>(functions(), globals())` — functions first. A
+    // comdat no global object references is never printed at all, which is
+    // why an `llvm-as | llvm-dis` round trip loses one. An alias and an ifunc
+    // are `GlobalValue`s but not `GlobalObject`s, so neither is walked.
+    let mut comdats: Vec<ComdatRef<'_, DynBrand>> = Vec::new();
+    for c in m
+        .iter_functions::<DynBrand>()
+        .filter_map(FunctionValue::comdat)
+        .chain(
+            m.iter_globals::<DynBrand>()
+                .filter_map(GlobalVariable::comdat),
+        )
+    {
+        if !comdats.iter().any(|seen| seen.id == c.id) {
+            comdats.push(c);
+        }
+    }
+    if !comdats.is_empty() {
         f.write_str("\n")?;
-        for c in comdats_iter.by_ref() {
-            fmt_comdat(f, c)?;
+        for (position, c) in comdats.iter().enumerate() {
+            fmt_comdat(f, *c)?;
+            if position + 1 != comdats.len() {
+                f.write_str("\n")?;
+            }
         }
     }
 
@@ -3296,13 +3651,11 @@ pub(super) fn fmt_module_with_options(
         }
     }
 
-    let mut first = true;
+    // `for (const Function &F : *M) { Out << '\n'; printFunction(&F); }` —
+    // the blank line is unconditional, so a module whose first section is its
+    // function list still opens with one.
     for func in m.iter_functions::<DynBrand>() {
-        if !first || !m.global_empty() || !m.alias_empty() || !m.ifunc_empty() || has_named_structs
-        {
-            f.write_str("\n")?;
-        }
-        first = false;
+        f.write_str("\n")?;
         fmt_function_with_use_lists(
             f,
             func,
@@ -3372,7 +3725,9 @@ pub(super) fn fmt_module_with_options(
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, op.slot(), m, &md, &slots)?;
+                    // `printNamedMDNode` runs under `printModule`'s
+                    // `Machine`, with no function incorporated.
+                    fmt_metadata_operand(f, op.slot(), m, &md, &slots, None)?;
                 }
                 f.write_str("}\n")?;
             }
@@ -3392,7 +3747,8 @@ pub(super) fn fmt_module_with_options(
             for (i, node) in nodes.iter().enumerate() {
                 if let Some(slot) = slots[i] {
                     write!(f, "!{slot} = ")?;
-                    fmt_metadata_node(f, node, m, &md, &slots)?;
+                    // `writeAllMDNodes`, likewise at module scope.
+                    fmt_metadata_node(f, node, m, &md, &slots, None)?;
                     f.write_str("\n")?;
                 }
             }
@@ -3415,12 +3771,17 @@ fn fmt_md_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 ///
 /// Tuple MDString operands are printed *inline* (`!{!"rsp"}`) because LLVM
 /// never assigns standalone metadata slots to `MDString`s.
+///
+/// `value_slots` is `AsmWriterContext::Machine` — present wherever upstream's
+/// writer has incorporated a function, `None` at module scope where upstream's
+/// module-level `SlotTracker` has no local numbering either.
 fn fmt_metadata_node(
     f: &mut fmt::Formatter<'_>,
     node: &MetadataKind<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    value_slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     use super::metadata::MetadataKind;
     match node {
@@ -3435,13 +3796,15 @@ fn fmt_metadata_node(
                 if i > 0 {
                     f.write_str(", ")?;
                 }
-                fmt_metadata_operand(f, op.slot(), module, store, slots)?;
+                fmt_metadata_operand(f, op.slot(), module, store, slots, value_slots)?;
             }
             f.write_str("}")
         }
-        MetadataKind::Ref(id) => fmt_metadata_operand(f, id.slot(), module, store, slots),
+        MetadataKind::Ref(id) => {
+            fmt_metadata_operand(f, id.slot(), module, store, slots, value_slots)
+        }
         MetadataKind::Specialized(node) => {
-            fmt_specialized_metadata_node(f, node, module, store, slots)
+            fmt_specialized_metadata_node(f, node, module, store, slots, value_slots)
         }
         // `AsmWriter::writeDIArgList` — each operand printed as a typed value,
         // which is what makes the list a `ValueAsMetadata` list rather than a
@@ -3458,7 +3821,7 @@ fn fmt_metadata_node(
                     module.context().value_data(argument.slot()).ty,
                 );
                 write!(f, "{} ", value.ty())?;
-                fmt_operand_ref(f, value, None)?;
+                fmt_operand_ref(f, value, value_slots)?;
             }
             f.write_str(")")
         }
@@ -3466,7 +3829,7 @@ fn fmt_metadata_node(
             let slot = id.slot();
             let data = module.context().value_data(slot);
             let value = Value::<DynBrand>::from_parts(slot, module, data.ty);
-            fmt_operand(f, value, None)
+            fmt_operand(f, value, value_slots)
         }
     }
 }
@@ -3476,6 +3839,7 @@ fn fmt_specialized_metadata_node(
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    value_slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     use super::metadata::MetadataFieldValue;
     if node.is_distinct() {
@@ -3512,7 +3876,7 @@ fn fmt_specialized_metadata_node(
             }
             MetadataFieldValue::Enum(s) => f.write_str(s)?,
             MetadataFieldValue::Metadata(md) => {
-                fmt_metadata_operand(f, md.slot(), module, store, slots)?
+                fmt_metadata_operand(f, md.slot(), module, store, slots, value_slots)?
             }
             MetadataFieldValue::MetadataList(items) => {
                 f.write_str("!{")?;
@@ -3520,7 +3884,7 @@ fn fmt_specialized_metadata_node(
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, md.slot(), module, store, slots)?;
+                    fmt_metadata_operand(f, md.slot(), module, store, slots, value_slots)?;
                 }
                 f.write_str("}")?;
             }
@@ -3538,11 +3902,12 @@ fn fmt_metadata_attachments(
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    value_slots: Option<&SlotTracker>,
     separator: &str,
 ) -> fmt::Result {
     for (kind, id) in attachments.iter() {
         write!(f, "{separator}!{} ", kind.name())?;
-        fmt_metadata_operand(f, id.slot(), module, store, slots)?;
+        fmt_metadata_operand(f, id.slot(), module, store, slots, value_slots)?;
     }
     Ok(())
 }
@@ -3556,13 +3921,14 @@ fn fmt_metadata_operand(
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    value_slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     if let Some(node) = store.get(id) {
         if let MetadataKind::String(s) = node {
             return fmt_md_string(f, s);
         }
         if is_inline_metadata_node(node) {
-            return fmt_metadata_node(f, node, module, store, slots);
+            return fmt_metadata_node(f, node, module, store, slots, value_slots);
         }
     }
     match slots.get(id.index()).and_then(|slot| *slot) {
@@ -3654,11 +4020,9 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         f.write_str(" ")?;
     }
 
-    // Address space. Mirrors `printAddressSpace(M, AS, Out, "",
-    // " ")` for non-zero AS.
-    if g.address_space() != 0 {
-        write!(f, "addrspace({}) ", g.address_space())?;
-    }
+    // Mirrors `printAddressSpace(GV->getParent(),
+    // GV->getType()->getAddressSpace(), Out, /*Prefix=*/"", /*Suffix=*/" ")`.
+    print_address_space(f, g.address_space(), "", " ", false)?;
 
     if g.is_externally_initialized() {
         f.write_str("externally_initialized ")?;
@@ -3734,6 +4098,10 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         g.module().core_ref(),
         &md,
         &md_slots,
+        // Module scope: upstream's `printGlobal` / `printAlias` / `printIFunc`
+        // run under `printModule`'s `Machine`, which has no function
+        // incorporated, so there is no local numbering to hand down either.
+        None,
         ", ",
     )
 }
@@ -3786,6 +4154,10 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
         a.module().core_ref(),
         &md,
         &md_slots,
+        // Module scope: upstream's `printGlobal` / `printAlias` / `printIFunc`
+        // run under `printModule`'s `Machine`, which has no function
+        // incorporated, so there is no local numbering to hand down either.
+        None,
         ", ",
     )?;
     f.write_str("\n")
@@ -3827,6 +4199,10 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
         i.module().core_ref(),
         &md,
         &md_slots,
+        // Module scope: upstream's `printGlobal` / `printAlias` / `printIFunc`
+        // run under `printModule`'s `Machine`, which has no function
+        // incorporated, so there is no local numbering to hand down either.
+        None,
         ", ",
     )?;
     f.write_str("\n")

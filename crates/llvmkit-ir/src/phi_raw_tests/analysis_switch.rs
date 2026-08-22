@@ -179,6 +179,15 @@ fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
         !printed.contains(", %entry ]"),
         "merge's phi must have dropped the entry incoming, got:\n{printed}"
     );
+    // The `; preds = …` comment reads `merge`'s **use list**, which upstream
+    // maintains through `Use::set` as part of retargeting a successor and
+    // llvmkit has to restore explicitly. Left stale, the removed predecessor
+    // stays listed here and in `FunctionCfg::predecessors`, while the phi it
+    // must agree with has already dropped it.
+    assert!(
+        printed.contains("; preds = %dflt\n"),
+        "merge's predecessors comment must name only dflt, got:\n{printed}"
+    );
     Ok(())
 }
 

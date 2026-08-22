@@ -559,10 +559,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// Mirrors `isFPOrFPVectorTy` — a floating-point type, or a fixed or
     /// scalable vector whose element is one.
     ///
-    /// This is the predicate that decides whether an instruction is an
-    /// `FPMathOperator`, and therefore whether it may carry fast-math flags:
-    /// `LLParser::parseInstruction` tests it before applying flags to a
-    /// `select` or a `phi`.
+    /// This is **not** the predicate that decides whether a `call`, `select`
+    /// or `phi` is an `FPMathOperator` and may therefore carry fast-math
+    /// flags: `FPMathOperator::classof` asks
+    /// [`is_supported_floating_point_type`](crate::operator::is_supported_floating_point_type),
+    /// which also accepts a homogeneous floating-point aggregate. It *is* the
+    /// predicate `parseCompare`'s `FCmp` arm and `parseAtomicRMW`'s
+    /// floating-point-operand check ask.
     pub fn is_float_or_float_vector(self) -> bool {
         match self.data() {
             TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
@@ -821,8 +824,15 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
             TypeData::Metadata => f.write_str("metadata"),
             TypeData::Token => f.write_str("token"),
             TypeData::Integer { bits } => write!(f, "i{bits}"),
-            TypeData::Pointer { addr_space: 0 } => f.write_str("ptr"),
-            TypeData::Pointer { addr_space } => write!(f, "ptr addrspace({addr_space})"),
+            // `case Type::PointerTyID:` in `TypePrinting::print` — `OS <<
+            // "ptr"` then `printAddressSpace(M, PTy->getAddressSpace(), OS)`
+            // with the routine's default prefix `" "` and empty suffix. Shared
+            // with the four other call sites so the unported
+            // `PrintAddrspaceName` branch stays a one-place fix.
+            TypeData::Pointer { addr_space } => {
+                f.write_str("ptr")?;
+                crate::asm_writer::print_address_space(f, *addr_space, " ", "", false)
+            }
             TypeData::Function {
                 ret,
                 params,
@@ -988,9 +998,19 @@ fn struct_is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot
     })
 }
 
-/// Mirrors `StructType::containsHomogeneousScalableVectorTypes`: a non-empty
-/// body whose first element is a scalable vector and whose elements are all
-/// the same type. Types are uniqued, so `all_equal` is slot equality.
+/// Mirrors `StructType::containsHomogeneousTypes`:
+/// `!ElementTys.empty() && all_equal(ElementTys)`. Types are uniqued, so
+/// `all_equal` is slot equality.
+pub(crate) fn contains_homogeneous_types(elements: &[TypeSlot]) -> bool {
+    let Some(first) = elements.first() else {
+        return false;
+    };
+    elements.iter().all(|elem| elem == first)
+}
+
+/// Mirrors `StructType::containsHomogeneousScalableVectorTypes`, which is a
+/// first-element test followed by a `containsHomogeneousTypes()` call — so
+/// this is that call, not a second copy of its body.
 fn contains_homogeneous_scalable_vector_types(module: &ModuleCore, elements: &[TypeSlot]) -> bool {
     let Some(first) = elements.first() else {
         return false;
@@ -1001,7 +1021,7 @@ fn contains_homogeneous_scalable_vector_types(module: &ModuleCore, elements: &[T
     ) {
         return false;
     }
-    elements.iter().all(|elem| elem == first)
+    contains_homogeneous_types(elements)
 }
 
 /// Mirrors `Type::isScalableTy` and `StructType::isScalableTy`, including

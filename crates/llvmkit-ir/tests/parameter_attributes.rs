@@ -79,6 +79,7 @@ fn function_with_noundef_param_and_return() -> Result<(), IrError> {
 
     let text = format!("{m}");
     let expected = "; ModuleID = 'p'\n\
+        \n\
         define noundef i32 @identity(i32 noundef %x) {\n\
         entry:\n\
         \x20\x20ret i32 %x\n\

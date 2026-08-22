@@ -9,7 +9,8 @@ use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 // catchswitch + catchpad
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1351:
+/// Ports `test/Bitcode/compatibility.ll::@instructions.win_eh.1` block
+/// `catchswitch1:` —
 /// `%cs1 = catchswitch within none [label %catchpad1] unwind to caller`.
 /// Locks the `catchswitch within none` print form with one handler and
 /// `unwind to caller`.
@@ -38,7 +39,8 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 1354:
+/// Ports `test/Bitcode/compatibility.ll::@instructions.win_eh.1` block
+/// `catchpad1:` —
 /// `catchpad within %cs1 []`. Locks the empty-args print form.
 #[test]
 fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
@@ -70,7 +72,8 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
 // cleanuppad + cleanupret
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1378:
+/// Ports `test/Bitcode/compatibility.ll::@instructions.win_eh.1` block
+/// `cleanuppad1:` —
 /// `%clean.1 = cleanuppad within none []`.
 #[test]
 fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
@@ -90,7 +93,8 @@ fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 1397:
+/// Ports `test/Bitcode/compatibility.ll::@instructions.win_eh.2` block
+/// `cleanup:` —
 /// `cleanupret from %clean unwind to caller`. Locks the print form
 /// for the unwind-to-caller variant of `cleanupret`.
 #[test]
@@ -115,7 +119,8 @@ fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
 // catchret
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1412:
+/// Ports `test/Bitcode/compatibility.ll::@instructions.win_eh.2` block
+/// `body:` —
 /// `catchret from %catch to label %return`. Uses a placeholder catchpad
 /// since the upstream fixture builds one inside an
 /// invoke-funclet-protected block.

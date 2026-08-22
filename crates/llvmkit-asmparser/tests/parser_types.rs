@@ -6,6 +6,10 @@
 use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError};
 use llvmkit_ir::Module;
 
+pub mod support;
+
+use support::{Check, check_directives};
+
 fn parse_render(module_name: &str, src: &[u8]) -> String {
     let module = Module::dynamic(module_name);
     Parser::new(src, &module)
@@ -375,6 +379,63 @@ fn symbolic_address_spaces_resolve_through_the_data_layout() {
         "{text}"
     );
     assert!(text.contains("ptr addrspace(3)"), "{text}");
+}
+
+/// `test/Assembler/symbolic-addrspace.ll` `split-file` part `valid.ll`, whose
+/// `RUN` line is `llvm-as < %t/valid.ll | llvm-dis | FileCheck %s`. The `A` /
+/// `G` / `P` arms of `LLParser::parseOptionalAddrSpace`'s `ParseAddrspaceValue`
+/// lambda, reached from a global, an `alloca`, a function header and — the
+/// part llvmkit could not parse until now — a `call`'s
+/// `parseOptionalProgramAddrSpace`. Upstream's own note applies: these do not
+/// round-trip as symbols, the parser folds them to numbers.
+///
+/// Every directive in this part's `CHECK` block is a plain `CHECK:` — upstream
+/// writes no `-NEXT` here — so all five are [`Check::Line`].
+#[test]
+fn symbolic_a_g_p_address_spaces_resolve_including_on_a_call() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/symbolic-addrspace/valid.ll");
+
+    let text = parse_render("symbolic_a_g_p_address_spaces", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line("target datalayout = \"A1-G2-P3\""),
+            Check::Line("@str = private addrspace(2) constant [4 x i8] c\"str\\00\""),
+            Check::Line("%alloca = alloca i32, align 4, addrspace(1)"),
+            Check::Line("define void @bar() addrspace(3) {"),
+            Check::Line("call addrspace(3) void @foo()"),
+        ],
+    );
+}
+
+/// `test/Assembler/symbolic-addrspace-datalayout.ll` `split-file` part
+/// `sym-to-num.ll`, whose `RUN` line is
+/// `llvm-as | llvm-dis --print-addrspace-name=false`, i.e.
+/// `PrintAddrspaceName`'s own `cl::init(false)` default. The rule is the fourth
+/// arm of `LLParser::parseOptionalAddrSpace`'s `ParseAddrspaceValue` lambda,
+/// `M->getDataLayout().getNamedAddressSpace(AddrSpaceStr)`, which resolves a
+/// name the datalayout gave an address space (`p2(global):32:8` makes
+/// `addrspace("global")` mean 2).
+///
+/// Its `CHECK` block is plain `CHECK:` throughout, like `valid.ll`'s.
+#[test]
+fn datalayout_named_address_spaces_resolve_to_their_numbers() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/assembler-corpus/symbolic-addrspace-datalayout/sym-to-num.ll"
+    );
+
+    let text = parse_render("datalayout_named_address_spaces", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line("target datalayout = \"P11-p2(global):32:8-p8(stack):8:8-p11(code):8:8\""),
+            Check::Line("@str = private addrspace(2) constant [4 x i8] c\"str\\00\""),
+            Check::Line("%alloca = alloca i32, align 4, addrspace(8)"),
+            Check::Line("define void @bar() addrspace(11)"),
+            Check::Line("call addrspace(11) void @foo()"),
+        ],
+    );
 }
 
 /// An unknown symbolic spelling is `invalid symbolic addrspace 'X'`.

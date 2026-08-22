@@ -15,7 +15,7 @@ Out of scope: code generation, target backends, linking. In scope and merely unf
 Every gate runs on the pinned toolchain. CI installs rustc 1.96.0; an unpinned run rewords trybuild `.stderr` diagnostics and produces mismatches that look like regressions and are not. If you see a `.stderr` diff, re-run on `+1.96.0` before touching a fixture.
 
 ```bash
-cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (2508 tests, 214 binaries)
+cargo +1.96.0 test --workspace --all-targets --all-features    # full suite
 cargo +1.96.0 test -p llvmkit-ir --test ap_float               # one integration file
 cargo +1.96.0 test <substring>                                 # one test by name
 cargo +1.96.0 clippy --workspace --all-targets --all-features -- -D warnings
@@ -25,7 +25,7 @@ cargo +1.96.0 test --workspace --doc --all-features            # doctests
 cargo audit
 ```
 
-The CI gate is exactly that list plus a per-package license check. Baseline on the pin: **0 trybuild failures of 87 registered fixtures** (86 `compile_fail` + 1 `pass`). All fixtures live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in `tests/typestate_compile_fail.rs`; a fixture that is not registered there does not run.
+The CI gate is exactly that list plus a per-package license check. Baseline on the pin: **zero failures, zero warnings**. Trybuild fixtures live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in `tests/typestate_compile_fail.rs`; a fixture that is not registered there does not run — so the registration list, not the directory listing, is what to read. No suite, fixture or registry totals are written in this file: they moved on almost every commit and were wrong more often than not. Run the gate.
 
 - **Do not set `CARGO_INCREMENTAL=0`.** Leave the cache alone; other work may be running on this machine.
 - `llvmkit-ir` has a `build.rs` — it expands the vendored `crates/llvmkit-tablegen/tablegen/` `.td` files into intrinsic tables (~2 s). Keep it; the `.td` input is 6× smaller than its output.
@@ -82,6 +82,9 @@ These are not style preferences. Each has a lint, a test, or a reviewer behind i
 - **No silent erasure.** A typed handle or id never widens to an erased one implicitly. Erasure is spelled `as_dyn()` / `as_erased()`, or a `_dyn` or `_erased` method. The suffix vocabulary is three-tier: typed forms carry no suffix (`int_add`); `_dyn` is the `Dyn`-marker member of a typed/erased pair (`IntDyn` / `FloatDyn` / `LenDyn` / `Dyn` — `int_load_dyn`); `_erased` is the fully-erased third tier — `Value` operands plus a runtime opcode, the vector-capable forms (`int_binop_erased`).
 - **Full words, no abbreviations**: `instruction` not `inst`, `predecessor` not `pred`. Internal indices are `*Slot`; public tagged ids are `*Id`. Do not blur them. Lookups are bare nouns (`global(name)`, `function::<R>(name)` — C-GETTER); `get_` appears only in the std-consistent `get_or_insert_*` entry points, and accessors never take a `get_` prefix.
 - **Cite upstream by symbol, never line number** — in comments, rustdoc, tests, `UPSTREAM.md`, `CHANGELOG.md`, and `docs/`. `// Mirrors LLParser::parseTopLevelEntities (LLParser.cpp)`. Line numbers rot the moment the vendored tree moves.
+- **Counts and completeness claims carry their derivation.** Any number, or any "all / every / none / now say so" claim, written into `docs/`, `UPSTREAM.md`, `CHANGELOG.md` or a test doc comment names the command that produced it and the commit it was measured at. Nothing in CI checks these — re-derive rather than copy, this file included. Procedure, and the tool-hazard table that makes a count wrong before you write it: the `claims-and-counts` skill. Full rule in `AGENTS.md` under **Testing & QA**.
+- **Resolve, don't patch — and this binds hardest on the small findings.** A fix lands with whatever should have caught the bug. Ask it out loud: *what would have failed if this were wrong?* If the answer is "nothing", or "something that exists but is too weak", that gap is part of the finding and lands in the same commit — not as a follow-up, not as a backlog row. **A recorded weakness is not a resolved one**; being written down in `docs/future-work.md` is precisely what lets one keep hiding defects. Two shipped this way: a diagnostic carrying upstream's exact message anchored at an unrelated line, because the oracle asserting it matched text and ignored position; and a regression test pinning a bug with a *named* value when only an unnamed value reproduced it. Both fixes were correct and both detections stayed blind. The severity of a finding sets how loudly it is reported, never how deeply it is fixed.
+- **Assertions of absence are claims, and need a command.** "This is unrecorded", "nothing pins this", "no caller does X", "there is no entry to delete" — run the search and paste it, or do not write the sentence. This has shipped twice, once in a task brief that declared a defect unrecorded while `docs/divergences.md` had named it for a day. And when a search *does* find something, read what it actually covers: an entry that names your defect may cover a fraction of it. Recorded ≠ covered.
 - **Doctrine D1–D11** governs every public API (full prose in `README.md`, short list in `AGENTS.md`). Cite ids in commits and reviews.
 
 ## Testing
@@ -89,6 +92,8 @@ These are not style preferences. Each has a lint, a test, or a reviewer behind i
 **Tests are ported, not invented** (D11). Source them from `orig_cpp/.../llvm/test/{Assembler,Verifier}/*.ll` or `unittests/{IR,ADT}/*Test.cpp`.
 
 **Port faithfully — no deviation in logic.** Same inputs, built the way upstream builds them; same expected results, spelled the way upstream spells them; same comparison. Do not substitute your own oracle — precomputing expectations by another route tests your derivation instead of LLVM's answer, and produces an invention that looks like a port. If the port is blocked because llvmkit cannot express what the fixture is written in, *that gap is the finding*: close it or record it, do not route around it.
+
+The same standard binds the **routine** you are porting, not only its tests — same control flow, same branch order, same guards, each diagnostic at the same point and token. See the `porting-from-orig-cpp` skill.
 
 Genuinely llvmkit-specific tests (an internal representation choice, a parse/print idempotence law) are legitimate — but must say they have no upstream counterpart rather than implying one.
 
@@ -100,13 +105,24 @@ Test shapes in use: unit tests per module, manifest-driven round-trip corpus, tr
 
 Conventional Commits — `type(scope): summary`, `!` after the scope for a breaking change. Cite the doctrine id when a change turns on one. Every user-visible change gets a `CHANGELOG.md` entry; the project is pre-1.0, so breaking changes are expected and flagged inline. Version labels must not overclaim — pre-1.0 means the next patch version, never a marketing number.
 
+## Skills
+
+Project skills live in `.claude/skills/`. Reach for them by the moment you are in, not by topic:
+
+- about to read `orig_cpp/` to decide what llvmkit should do — a port, a diagnostic change, a parity review, or explaining why the two answer differently → `porting-from-orig-cpp`
+- about to write a number, or an "all / every / none" sentence, into a tracked file, a commit message or a report → `claims-and-counts`
+
 ## Where the detail lives
 
-- `AGENTS.md` — full API laws, Rust translation idioms, workstream history, the porting anchor tables for each LLVM subsystem.
+Each entry names the question it answers — read the section, not the file.
+
+- `AGENTS.md` § *Rust Idioms & Translation Patterns* — how a C++ sentinel, out-parameter, union or `assert` is spelled here. Also: full API laws, workstream history, the porting anchor tables for each LLVM subsystem.
 - `README.md` — user-facing docs, authoritative Doctrine D1–D11 prose.
 - `ROADMAP.md` — milestones, release sequence, the crates.io checklist.
 - `docs/future-work.md` — the live backlog: what is known-missing, what was deferred, and **why** in each case. Read before proposing work that looks unfinished; it is often deliberate.
-- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2508 tests, 2077 rows, 323 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
+- `docs/divergences.md` — the behavioural-difference ledger: every place llvmkit's observable behaviour differs from the vendored tree, graded by severity (`rejects-valid` is the worst). Distinct from `future-work.md`, which is unimplemented features. Every entry **and its evidence block** is a hypothesis with a citation, not a fact.
+- `docs/fixture-coverage.md` — every `llvm/test/Assembler` fixture classified `ported` / `blocked-model` / `N/A`, each blocked row naming its gap. The completeness proof behind the corpus manifest, and the one place the per-class and per-gap tallies are derived rather than restated.
+- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so, without a figure: the residue is inherited from the type-safety and pass-API programs, and the header names the commands to derive any count you need. A missing row means missing *provenance*, never "no upstream counterpart". `crates/llvmkit-ir/tests/upstream_registry_drift.rs` keeps the rows' own targets resolvable.
 - `docs/inkwell-migration.md` — per-API delta against inkwell.
 
 ## Before you start

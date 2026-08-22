@@ -92,7 +92,7 @@ use super::instruction::{
 use super::instructions::FenceInst;
 use super::instructions::{
     CallBrInst, CallInst, CatchPadInst, CatchSwitchInst, CleanupPadInst, IndirectBrInst,
-    InvokeInst, LandingPadInst, StoreInst, SwitchInst,
+    InvokeInst, LandingPadInst, ShuffleVectorInst, StoreInst, SwitchInst,
 };
 use super::int_width::WiderThan;
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
@@ -2226,7 +2226,13 @@ where
             }
         }
 
-        if !fmf.is_empty() && !self.is_float_or_float_vector(true_v.ty()) {
+        // `isa<FPMathOperator>(SelectInst)` is
+        // `FPMathOperator::isSupportedFloatingPointType(getType())`, not
+        // `isFPOrFPVectorTy` — a homogeneous floating-point aggregate arm is
+        // an `FPMathOperator` too. The narrower predicate below stays where
+        // upstream really asks `isFPOrFPVectorTy`: the `fadd`-family, `fcmp`
+        // and `fneg` operand checks.
+        if !fmf.is_empty() && !crate::operator::is_supported_floating_point_type(true_v.ty()) {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point select result",
             });
@@ -3621,6 +3627,11 @@ where
     /// `IRBuilder::CreateShuffleVector`. Each mask element is a
     /// [`ShuffleMaskElem`]: `Lane(n)` selects lane `n` of the two operands
     /// taken as one concatenated vector, and `Poison` is upstream's `-1`.
+    ///
+    /// The validity rule is `ShuffleVectorInst::isValidOperands`'s
+    /// `ArrayRef<int>` overload — including its scalable branch, under which a
+    /// scalable operand admits an all-`Lane(0)` or all-`Poison` mask and
+    /// nothing else.
     pub fn shuffle_vector<L, Rhs2, Name>(
         &self,
         lhs: L,
@@ -3635,32 +3646,43 @@ where
     {
         let l = lhs.into_erased_value(ModuleRef::new(self.module))?;
         let r = rhs.into_erased_value(ModuleRef::new(self.module))?;
-        if l.ty != r.ty {
+        // `VectorType::get(cast<VectorType>(V1->getType())->getElementType(),
+        //  Mask.size(), isa<ScalableVectorType>(V1->getType()))` — the
+        // `ShuffleVectorInst(Value *, Value *, ArrayRef<int>, ...)`
+        // constructor's own result type, computed in its initializer list.
+        // That runs *before* the body's `assert(isValidOperands(...))`, so it
+        // is written first here too: scalability comes from V1, the lane count
+        // from the mask length.
+        //
+        // `cast<VectorType>` is unchecked upstream; a crate with no runtime
+        // panics has to answer a non-vector first operand instead of aborting.
+        let Some((elem, _, scalable)) = self.module.context().type_data(l.ty).as_vector() else {
             return Err(IrError::TypeMismatch {
-                expected: l.ty().kind_label(),
-                got: r.ty().kind_label(),
+                expected: TypeKindLabel::FixedVector,
+                got: l.ty().kind_label(),
             });
-        }
-        let elem = match self.module.context().type_data(l.ty).as_vector() {
-            Some((e, _, scalable)) => {
-                if scalable {
-                    return Err(IrError::InvalidOperation {
-                        message: "shufflevector with scalable input is not yet supported",
-                    });
-                }
-                e
-            }
-            None => {
-                return Err(IrError::TypeMismatch {
-                    expected: TypeKindLabel::FixedVector,
-                    got: l.ty().kind_label(),
-                });
-            }
         };
         let mask_len = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
             message: "shufflevector mask too large",
         })?;
-        let result_ty_id = self.module.context().fixed_vector_type(elem, mask_len);
+        let result_ty_id = self
+            .module
+            .context()
+            .vector_type_with_scalability(elem, mask_len, scalable);
+        // `assert(isValidOperands(V1, V2, Mask) && "Invalid shuffle vector
+        // instruction operands!")`. `IRBuilderBase::CreateShuffleVector` runs
+        // `Folder.FoldShuffleVector` first, but that path asserts the same
+        // predicate one call down, in `ConstantExpr::getShuffleVector`, so the
+        // single check here is on both of upstream's branches. The text is
+        // `LLParser::parseShuffleVector`'s, which is what a user of the same
+        // rejection reads; upstream's assert string is not a diagnostic. The
+        // parser never surfaces this one, because — exactly as upstream — it
+        // runs its own `isValidOperands` before constructing.
+        if !ShuffleVectorInst::is_valid_operands(l, r, mask) {
+            return Err(IrError::InvalidOperation {
+                message: "invalid shufflevector operands",
+            });
+        }
         if let Some(folded) = self.folder.fold_shuffle_vector_dyn(l, r, mask)? {
             return self
                 .checked_folded_value(folded, result_ty_id)
@@ -5463,6 +5485,88 @@ where
         }
     }
 
+    /// ERASED call — the primitive every other `call` form is a special case
+    /// of. Mirrors `IRBuilder::CreateCall(FunctionType *FTy, Value *Callee,
+    /// ArrayRef<Value *> Args, ArrayRef<OperandBundleDef> OpBundles, const
+    /// Twine &Name)` and the `CallInst::Create(Ty, Callee, Args, BundleList)`
+    /// it wraps: the callee is a bare [`Value`] and the call site carries its
+    /// own [`FunctionType`], exactly as `CallBase` does.
+    ///
+    /// This is the third tier of the suffix vocabulary. The callee is already
+    /// erased when it arrives — spell the widen at the call site with
+    /// `as_erased()` — so a named function, an [`InlineAsm`] and a computed
+    /// function pointer all reach the same construction, which is what
+    /// `LLParser::parseCall` does after `convertValIDToValue` collapses its
+    /// switch to one `Value *`.
+    ///
+    /// `tail_call_kind` is `CallInst::setTailCallKind`, which
+    /// `LLParser::parseCall` calls unconditionally on the instruction it just
+    /// built. It is a parameter rather than a [`CallSiteConfig`] field because
+    /// `invoke` and `callbr` share that config and LLVM has no tail form for
+    /// either, so a config field would be an option those builders accept and
+    /// ignore.
+    ///
+    /// `fn_ty` is the call site's function type; a
+    /// [`CallSiteConfig::call_site_type`] override still wins over it, per
+    /// `resolve_call_site_type_for_erased_callee`, so the field is never
+    /// silently ignored here. The caller picks the return marker `R2` to match
+    /// the resolved return type; a mismatch fails with
+    /// [`IrError::ReturnTypeMismatch`], the same gate
+    /// [`indirect_call_dyn`](Self::indirect_call_dyn) applies.
+    ///
+    /// Arguments are checked against `fn_ty` by `validate_call_site_args`; the
+    /// *callee pointer's* real pointee type is an indirect-call trust boundary
+    /// LLVM does not statically check either.
+    ///
+    /// `CallBuilder`'s `validate_intrinsic_descriptor_args` has no counterpart
+    /// here, and needs none: that check is a no-op unless the builder carries
+    /// an intrinsic descriptor, and this entry point has no way to set one. A
+    /// future caller that wants a descriptor on an erased call site must bring
+    /// the check with it.
+    pub fn call_erased<R2, I, V>(
+        &self,
+        fn_ty: FunctionType<'ctx, B>,
+        callee: Value<'ctx, B>,
+        args: I,
+        tail_call_kind: TailCallKind,
+        config: CallSiteConfig,
+    ) -> IrResult<CallInstId<R2, B>>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+    {
+        let (fn_ty, return_ty) = self.resolve_call_site_type_for_erased_callee(fn_ty, &config);
+        let ret_data = self.module.context().type_data(return_ty);
+        if !crate::function::signature_matches_marker::<R2>(ret_data) {
+            return Err(IrError::ReturnTypeMismatch {
+                expected: crate::marker::marker_kind_label::<R2>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
+                got: fn_ty.return_type().kind_label(),
+            });
+        }
+        let mut arg_ids: Vec<ValueSlot> = Vec::new();
+        for arg in args {
+            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
+            arg_ids.push(v.id);
+        }
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
+        // `CallInst::Create` then `setTailCallKind` / `setCallingConv` /
+        // `setAttributes`: llvmkit's payload constructor takes all four at
+        // once, so the four upstream statements land as one.
+        let (name, calling_conv, attrs) = config.into_parts();
+        let payload = CallInstData::new_with_attrs(
+            callee.id,
+            fn_ty.as_type().id(),
+            arg_ids.into_boxed_slice(),
+            calling_conv,
+            tail_call_kind,
+            attrs,
+        );
+        let inst = self.append_instruction(return_ty, InstructionKindData::Call(payload), name);
+        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
+    }
+
     /// TYPED indirect call through a function-pointer value: the
     /// callee's function type is constructed from the `Sig` schema, so
     /// it is never spelled by hand and can never drift from
@@ -5523,6 +5627,11 @@ where
     ///
     /// `fn_ty` is the callee's signature; `callee` is the function pointer; the
     /// caller picks the return marker `R2` to match `fn_ty`'s return type.
+    ///
+    /// Forwards to [`call_erased`](Self::call_erased) with a default
+    /// [`CallSiteConfig`]: no calling convention, no tail-call kind, no
+    /// attributes and no operand bundles. Reach for `call_erased` directly when
+    /// the call site carries any of those.
     pub fn indirect_call_dyn<R2, I, V, Callee, Name>(
         &self,
         fn_ty: FunctionType<'ctx, B>,
@@ -5538,34 +5647,13 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        let callee_v = IsValue::as_erased(callee);
-        let ret_data = self.module.context().type_data(fn_ty.return_type().id());
-        if !crate::function::signature_matches_marker::<R2>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: crate::marker::marker_kind_label::<R2>()
-                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got: fn_ty.return_type().kind_label(),
-            });
-        }
-        let mut arg_ids: Vec<ValueSlot> = Vec::new();
-        for arg in args {
-            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.id);
-        }
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = CallInstData::new(
-            callee_v.id,
-            fn_ty.as_type().id(),
-            arg_ids.into_boxed_slice(),
-            crate::CallingConv::C,
+        self.call_erased(
+            fn_ty,
+            IsValue::as_erased(callee),
+            args,
             TailCallKind::None,
-        );
-        let inst = self.append_instruction(
-            fn_ty.return_type().id(),
-            InstructionKindData::Call(payload),
-            name,
-        );
-        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
+            CallSiteConfig::new(name.as_ref()),
+        )
     }
 
     /// Produce a `call` whose callee is an inline-assembly value. Mirrors
@@ -5580,6 +5668,11 @@ where
     /// return type; a mismatch fails with
     /// [`IrError::ReturnTypeMismatch`]. The calling convention is `C`,
     /// matching what LLVM emits for an inline-asm call.
+    ///
+    /// Forwards to [`call_erased`](Self::call_erased) with a default
+    /// [`CallSiteConfig`]: no tail-call kind, no attributes and no operand
+    /// bundles, and the `C` convention `CallSiteConfig::new` seeds. Reach for
+    /// `call_erased` directly when the call site carries any of those.
     pub fn inline_asm_call<R2, I, V, Name>(
         &self,
         asm: InlineAsm<'ctx, B>,
@@ -5592,39 +5685,14 @@ where
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
     {
-        let asm_v = asm.as_erased();
         let fn_ty = asm.function_type();
-        // Reject a return-marker / signature mismatch up front, mirroring
-        // the `signature_matches_marker` gate on the typed lookup path
-        // (`Module::function`).
-        let ret_data = self.module.context().type_data(fn_ty.return_type().id());
-        if !crate::function::signature_matches_marker::<R2>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: crate::marker::marker_kind_label::<R2>()
-                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got: fn_ty.return_type().kind_label(),
-            });
-        }
-        let mut arg_ids: Vec<ValueSlot> = Vec::new();
-        for arg in args {
-            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.id);
-        }
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = CallInstData::new_with_attrs(
-            asm_v.id,
-            fn_ty.as_type().id(),
-            arg_ids.into_boxed_slice(),
-            crate::CallingConv::C,
+        self.call_erased(
+            fn_ty,
+            asm.as_erased(),
+            args,
             TailCallKind::None,
-            CallAttributeData::default(),
-        );
-        let inst = self.append_instruction(
-            fn_ty.return_type().id(),
-            InstructionKindData::Call(payload),
-            name,
-        );
-        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
+            CallSiteConfig::new(name.as_ref()),
+        )
     }
 
     // ---- GEP ----
@@ -5794,6 +5862,128 @@ where
         self.gep_inner(source_ty, ptr, indices, flags, name)
     }
 
+    /// The IR type a `getelementptr` produces. Port of
+    /// `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`), branch
+    /// for branch and in upstream's order.
+    ///
+    /// `index_tys` carries the index operands' *types* rather than the
+    /// operands: the routine reads nothing but `Index->getType()`, so hoisting
+    /// that projection is a spelling change, and it lets the caller pass the
+    /// values it has already lifted without a second borrow.
+    fn gep_return_type<Indices>(
+        &self,
+        pointer_ty: Type<'ctx, B>,
+        index_tys: Indices,
+    ) -> Type<'ctx, B>
+    where
+        Indices: IntoIterator<Item = Type<'ctx, B>>,
+    {
+        // Vector GEP
+        let ty = pointer_ty;
+        if ty.data().as_vector().is_some() {
+            return ty;
+        }
+        for index_ty in index_tys {
+            if let Some((_, lanes, scalable)) = index_ty.data().as_vector() {
+                // `ElementCount EltCount = IndexVTy->getElementCount();`
+                // `return VectorType::get(Ty, EltCount);` -- `ElementCount` is
+                // the (minimum lane count, scalable) pair destructured above.
+                let id =
+                    self.module
+                        .context()
+                        .vector_type_with_scalability(ty.id(), lanes, scalable);
+                return Type::new(id, ModuleRef::<B>::new(self.module));
+            }
+        }
+        // Scalar GEP
+        ty
+    }
+
+    /// `getelementptr FLAGS <source-ty>, <base>, <indices>` on erased
+    /// operands -- the base may be a `ptr` **or** a `<N x ptr>`, and any index
+    /// may be a scalar `iN` or an `<N x iM>`.
+    ///
+    /// The erased counterpart of [`Self::gep_with_flags`], which pins the base
+    /// through the scalar-only `IntoPointerValue` and each index through
+    /// `IntoIntValue<'ctx, IntDyn, B>`: a `<N x ptr>` is no
+    /// [`crate::PointerValue`] and a `<N x iM>` is no [`crate::IntValue`], so
+    /// a vector `getelementptr` can use neither half -- the same split
+    /// [`Self::int_binop_erased`] and [`Self::int_cmp_erased`] already make.
+    /// Upstream needs no split because `LLParser::parseGetElementPtr` hands
+    /// its operands straight to `GetElementPtrInst::Create`.
+    ///
+    /// The result type is `GetElementPtrInst::getGEPReturnType`
+    /// (`IR/Instructions.h`), ported in `Self::gep_return_type`: a vector base
+    /// gives the result the base's own type, otherwise the first vector index
+    /// lends its element count to the scalar pointer type, otherwise the
+    /// result is that scalar pointer type.
+    ///
+    /// Validation is exactly `GetElementPtrInst`'s constructor and no more.
+    /// Upstream's constructor initialises
+    /// `ResultElementType(getIndexedType(PointeeType, IdxList))`, which may be
+    /// null; llvmkit has no null type to store, so a null walk is rejected
+    /// here as [`IrError::GepInvalidIndices`] -- the same substitution
+    /// [`Self::gep_with_flags`] already makes. The base-is-a-pointer,
+    /// index-is-an-integer and lane-agreement rules are *not* checked here,
+    /// because upstream does not check them here either: they belong to
+    /// `LLParser::parseGetElementPtr` and `Verifier::visitGetElementPtrInst`.
+    ///
+    /// Returns the erased [`ValueId`] rather than a [`crate::PointerValueId`]
+    /// because the result may be a `<N x ptr>`, which is not a pointer type.
+    pub fn gep_erased<T, P, I, V, Name>(
+        &self,
+        source_ty: T,
+        ptr: P,
+        indices: I,
+        flags: GepNoWrapFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        T: IrType<'ctx, B>,
+        P: IntoErasedValue<'ctx, B>,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+    {
+        // `SourceElementType(PointeeType)`.
+        let source_ty = source_ty.as_type();
+        let source_ty_id = source_ty.id();
+        // `init(Ptr, IdxList, NameStr)`'s operand lifting.
+        let ptr_value = ptr.into_erased_value(ModuleRef::new(self.module))?;
+        let mut index_ids = Vec::new();
+        let mut index_values = Vec::new();
+        for index in indices {
+            let index = index.into_erased_value(ModuleRef::new(self.module))?;
+            index_values.push(index);
+            index_ids.push(index.slot());
+        }
+        // `ResultElementType(getIndexedType(PointeeType, IdxList))`. Upstream
+        // stores the null and lets `Verifier::visitGetElementPtrInst`'s
+        // `Check(ElTy, "Invalid indices for GEP pointer type!")` report it;
+        // llvmkit has no null type to store, so the null is spelled as a
+        // rejection here -- the same substitution `Self::gep_inner` makes.
+        if crate::constants::gep_indexed_type(self.module, source_ty_id, &index_ids).is_none() {
+            return Err(IrError::GepInvalidIndices);
+        }
+        // `Instruction(getGEPReturnType(Ptr, IdxList), GetElementPtr, ...)`.
+        let result_ty =
+            self.gep_return_type(ptr_value.ty(), index_values.iter().map(|index| index.ty()));
+        if let Some(folded) =
+            self.folder
+                .fold_gep_dyn(source_ty, ptr_value, &index_values, flags)?
+        {
+            return Ok(self.checked_folded_value(folded, result_ty.id())?.id());
+        }
+        let payload = GepInstData::new(
+            source_ty_id,
+            ptr_value.id,
+            index_ids.into_boxed_slice(),
+            flags,
+        );
+        let inst = self.append_instruction(result_ty.id(), InstructionKindData::Gep(payload), name);
+        Ok(inst.to_erased().id())
+    }
+
     fn gep_inner<T, P, I, V, N>(
         &self,
         source_ty: T,
@@ -5826,11 +6016,14 @@ where
         if crate::constants::gep_indexed_type(self.module, source_ty_id, &idx_ids).is_none() {
             return Err(IrError::GepInvalidIndices);
         }
-        // Mirrors `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`):
-        // for the scalar (non-vector-of-pointers) case the result type is
-        // exactly the base pointer's type, i.e. it lives in the SAME address
-        // space as `ptr`, not always address space 0.
-        let result_ptr_ty = ModuleView::<B>::new(self.module).ptr_type(p.ty().address_space());
+        // `GetElementPtrInst::getGEPReturnType`'s scalar branch, `return Ty` --
+        // the result type is exactly the base pointer's type, so it lives in
+        // the SAME address space as `ptr`, not always address space 0. The
+        // routine's other two branches are statically unreachable here:
+        // `IntoPointerValue` admits no `<N x ptr>` base and
+        // `IntoIntValue<IntDyn>` no `<N x iM>` index. All three branches are
+        // ported in `Self::gep_return_type`, which `Self::gep_erased` uses.
+        let result_ptr_ty = p.ty();
         let result_ty = result_ptr_ty.as_type().id();
         if let Some(folded) = self
             .folder
@@ -8102,6 +8295,29 @@ where
                 (ft, ret)
             }
             None => (callee.signature(), callee.return_type().id()),
+        }
+    }
+
+    /// The `(function_type, return_type)` a call site with an **erased** callee
+    /// should carry. `spelled_fn_ty` is the caller's explicit type — the
+    /// `FunctionType *` half of `IRBuilder::CreateCall(FunctionType*, Value*, …)`,
+    /// which is the only source available when the callee is a bare
+    /// [`Value`] with no declaration to read. A
+    /// [`CallSiteConfig::call_site_type`] override still wins, so the field is
+    /// never silently ignored; that is the same precedence
+    /// `resolve_call_site_type` applies for a declared callee.
+    fn resolve_call_site_type_for_erased_callee(
+        &self,
+        spelled_fn_ty: FunctionType<'ctx, B>,
+        config: &CallSiteConfig,
+    ) -> (FunctionType<'ctx, B>, TypeSlot) {
+        match config.call_site_fn_ty() {
+            Some(id) => {
+                let ft = FunctionType::<'ctx, B>::new(id, ModuleRef::<B>::new(self.module));
+                let ret = ft.return_type().id();
+                (ft, ret)
+            }
+            None => (spelled_fn_ty, spelled_fn_ty.return_type().id()),
         }
     }
 

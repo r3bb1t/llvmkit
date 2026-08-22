@@ -5,6 +5,10 @@
 
 use llvmkit_asmparser::parser;
 
+pub mod support;
+
+use support::line_and_column;
+
 fn parse_and_print(src: &str) -> String {
     parser::parse_assembly(src, |module, _parsed| format!("{module}")).expect("parse")
 }
@@ -20,6 +24,25 @@ fn parse_expect_error(src: &str) -> String {
         Ok(()) => panic!("expected parse to fail, but it succeeded"),
         Err(e) => format!("{e}"),
     }
+}
+
+/// [`parse_expect_error`] plus the 1-based line and column the diagnostic is
+/// anchored at — the coordinates `SourceMgr::PrintMessage` prints. A message
+/// oracle that ignores position cannot see a caret that has drifted to another
+/// token, which is how a diagnostic carrying upstream's exact text shipped
+/// here anchored at an unrelated line.
+fn parse_expect_error_at(src: &str) -> (String, (u32, u32)) {
+    let error = match parser::parse_assembly(src, |_module, _parsed| ()) {
+        Ok(()) => panic!("expected parse to fail, but it succeeded"),
+        Err(e) => e,
+    };
+    let start = error
+        .loc()
+        .expect("diagnostic carries a location")
+        .span
+        .start;
+    let offset = usize::try_from(start).unwrap_or(usize::MAX);
+    (format!("{error}"), line_and_column(src.as_bytes(), offset))
 }
 
 /// Mirrors `LLParser::parseRet`'s `void` arm on the smallest body shape:
@@ -115,9 +138,19 @@ fn parses_implicit_unnamed_blocks_with_shared_numbering() {
         printed.contains("br i1 %cond, label %0, label %1\n"),
         "{printed}"
     );
-    assert!(printed.contains("0:\n  br label %1\n"), "{printed}");
+    // Block `1`'s predecessors read `%0, %entry`: `predecessors(BB)` walks the
+    // use list, which `Value::addUse` head-inserts, so the newer user (block
+    // `0`'s `br label %1`) comes before the older one (the entry's `br i1`).
     assert!(
-        printed.contains("1:\n  %2 = add i32 %x, 1\n  ret i32 %2\n"),
+        printed.contains(
+            "0:                                                ; preds = %entry\n  br label %1\n"
+        ),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "1:                                                ; preds = %0, %entry\n  %2 = add i32 %x, 1\n  ret i32 %2\n"
+        ),
         "{printed}"
     );
 }
@@ -172,11 +205,183 @@ fn parses_forward_numbered_block_in_definition_order() {
 
     parse_and_verify(src);
     let printed = parse_and_print(src);
-    let zero_pos = printed.find("0:\n  ret i32 %x").expect("prints block 0");
+    let zero_pos = printed
+        .find("0:                                                ; preds = %entry\n  ret i32 %x")
+        .expect("prints block 0");
     let one_pos = printed
-        .find("1:\n  %2 = add i32 %x, 1")
+        .find(
+            "1:                                                ; preds = %entry\n  %2 = add i32 %x, 1",
+        )
         .expect("prints block 1");
     assert!(zero_pos < one_pos, "{printed}");
+}
+
+/// Mirrors `test/Assembler/callbr.ll`, whose
+/// `RUN: llvm-as < %s | llvm-dis | FileCheck %s` makes its CHECK block
+/// `AssemblyWriter` output. The source defines `kill` before `cont` but the
+/// `callbr` names `cont` first, and upstream's CHECK order is
+/// `[[KILL:.*:]]` / `unreachable` / `[[CONT]]:` / `ret void` — definition
+/// order, because `LLParser::PerFunctionState::defineBB` ends with
+/// `F.splice(F.end(), &F, BB->getIterator())` under the comment "Move the
+/// block to the end of the function. Forward ref'd blocks are inserted
+/// wherever they happen to be referenced."
+#[test]
+fn forward_referenced_named_block_prints_in_definition_order() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/assembler-corpus/callbr.ll");
+
+    let printed = parse_and_print(FIXTURE);
+    let kill = printed.find("\nkill:").expect("prints block kill");
+    let cont = printed.find("\ncont:").expect("prints block cont");
+    assert!(kill < cont, "{printed}");
+}
+
+/// No upstream counterpart: this is llvmkit's own statement that block-list
+/// order drives the slot tracker's unnamed-value numbering, so the `defineBB`
+/// splice is what keeps a printed slot number equal to the one the source
+/// wrote. The rule source is `AsmWriter.cpp`'s `SlotTracker`, which walks
+/// `for (auto &BB : F)` and numbers unnamed blocks and unnamed instruction
+/// results from one shared counter; the shape here is distilled from
+/// `test/Assembler/callbr.ll`'s forward-reference pattern.
+#[test]
+fn out_of_order_named_blocks_do_not_renumber_unnamed_values() {
+    let printed = parse_and_print(
+        "define i32 @f(i1 %c) {\n\
+         entry:\n  br i1 %c, label %b, label %a\n\
+         a:\n  %0 = add i32 1, 2\n  ret i32 %0\n\
+         b:\n  %1 = add i32 3, 4\n  ret i32 %1\n\
+         }\n",
+    );
+    assert!(printed.contains("%0 = add i32 1, 2"), "{printed}");
+    assert!(printed.contains("%1 = add i32 3, 4"), "{printed}");
+}
+
+/// Mirrors `test/Assembler/block-labels.ll::@test2` against the vendored
+/// fixture, whose CHECK block is
+/// `; CHECK-LABEL: define void @test2(i32 %0, i32 %1) {` followed immediately
+/// by `; CHECK-NEXT:    ret void` — an explicitly written `2:` entry label is
+/// not printed, because `AssemblyWriter::printBasicBlock` takes the
+/// slot-label branch only when `!IsEntryBlock`, and `printFunction` writes
+/// `Out << " {"` without a newline so the block owns it.
+#[test]
+fn an_unnamed_entry_block_prints_no_label() {
+    let printed = parse_and_print(BLOCK_LABELS_FIXTURE);
+    assert!(
+        printed.contains("define void @test2(i32 %0, i32 %1) {\n  ret void\n"),
+        "{printed}"
+    );
+}
+
+/// `test/Assembler/block-labels.ll`, vendored whole and parsed whole. Its RUN
+/// line is
+/// `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s --match-full-lines`,
+/// so every `; CHECK` line in it is `AssemblyWriter` output and a legitimate
+/// byte oracle.
+const BLOCK_LABELS_FIXTURE: &str =
+    include_str!("fixtures/upstream/assembler-corpus/block-labels.ll");
+
+/// Mirrors `test/Assembler/block-labels.ll::@test1`'s CHECK block against the
+/// vendored fixture, all 17 lines of it. Each non-entry block carries
+/// `printBasicBlock`'s predecessors comment, and `printLLVMName` re-quotes the
+/// label the way it quotes any other name, which is what the `"2"`, `-3`,
+/// `-N-` and `$N` blocks are in the fixture to show: a quoted digit-only label
+/// stays quoted, a name that merely *looks* numeric or contains `-` prints
+/// bare, and `$` — outside `printLLVMNameWithoutPrefix`'s
+/// `isalnum || '-' || '.' || '_'` set — comes back quoted even though
+/// `LLLexer` took it bare on input.
+///
+/// FileCheck runs without `--strict-whitespace` and so canonicalizes the run
+/// of spaces in `; CHECK:      2:       ; preds = %0`; the column asserted
+/// here comes from `Out.PadToColumn(50)` itself, which the CHECK lines cannot
+/// pin.
+///
+/// CHECK lines 13-14 (`br label %"$N"` and `"$N":`) used to be skipped,
+/// because llvmkit printed `$N` bare. That is closed, so nothing in `@test1`
+/// is left out.
+#[test]
+fn non_entry_blocks_print_a_predecessors_comment() {
+    let printed = parse_and_print(BLOCK_LABELS_FIXTURE);
+
+    // `; CHECK-LABEL: define i32 @test1(i32 %X) {` / `; CHECK-NEXT:` x2 --
+    // the implicit entry label is not printed, and it keeps slot 0.
+    assert!(
+        printed
+            .contains("define i32 @test1(i32 %X) {\n  %1 = alloca i32, align 4\n  br label %2\n"),
+        "{printed}"
+    );
+
+    // The label / predecessors-comment pairs, each followed by the branch the
+    // fixture's `; CHECK-NEXT:` pins.
+    for (label_line, next_line) in [
+        (
+            "2:                                                ; preds = %0\n",
+            "  br label %3\n",
+        ),
+        (
+            "3:                                                ; preds = %2\n",
+            "  br label %\"2\"\n",
+        ),
+        (
+            "\"2\":                                              ; preds = %3\n",
+            "  br label %-3\n",
+        ),
+        (
+            "-3:                                               ; preds = %\"2\"\n",
+            "  br label %-N-\n",
+        ),
+        (
+            "-N-:                                              ; preds = %-3\n",
+            "  br label %\"$N\"\n",
+        ),
+        (
+            "\"$N\":                                             ; preds = %-N-\n",
+            "",
+        ),
+    ] {
+        let expected = format!("{label_line}{next_line}");
+        assert!(
+            printed.contains(&expected),
+            "missing {expected:?} in:\n{printed}"
+        );
+    }
+
+    // CHECK lines 15-17: `; CHECK-NEXT:   %4 = add i32 1, 1` /
+    // `; CHECK-NEXT:   ret i32 %4` / `; CHECK-NEXT: }`. These follow the `$N`
+    // block, so they are not reached by the loop above. Asserted as one
+    // contiguous run.
+    assert!(
+        printed.contains("  %4 = add i32 1, 1\n  ret i32 %4\n}\n"),
+        "{printed}"
+    );
+}
+
+/// Ports `test/Assembler/2002-08-15-ConstantExprProblem.ll` whole, from the
+/// vendored copy, as the oracle for `printBasicBlock`'s `pred_empty(BB)` arm
+/// and for the use-list order `predecessors(BB)` reads. Its **first** RUN line
+/// is `llvm-as %s -o /dev/null`, so its `; preds = %BB2, %0` and
+/// `; No predecessors!` comments are hand-written *input* rather than
+/// FileCheck-verified output — they document the spelling, and the rule source
+/// is `printBasicBlock` itself. The predecessor order is upstream's:
+/// `PredIterator` walks the block's use list, which `Use::addToList`
+/// head-inserts, so `BB2`'s later `br` prints before the entry block's.
+///
+/// The fixture has a **second** RUN line, `verify-uselistorder %s`, which has
+/// no llvmkit counterpart: nothing here re-materialises a use list from a
+/// shuffled `uselistorder` directive and compares. That half is unported, and
+/// this test covers the `llvm-as` half only.
+#[test]
+fn an_unreachable_block_prints_no_predecessors() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/assembler-corpus/2002-08-15-ConstantExprProblem.ll");
+
+    let printed = parse_and_print(FIXTURE);
+    assert!(
+        printed.contains("BB1:                                              ; preds = %BB2, %0\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("BB2:                                              ; No predecessors!\n"),
+        "{printed}"
+    );
 }
 
 /// Sub / mul arms of `parse_int_binop`. Mirrors the loop body of
@@ -195,21 +400,145 @@ fn parses_sub_and_mul() {
     assert!(printed.contains("%b = mul i32 %a, %x\n"));
 }
 
-/// Negative test: an unsupported opcode in this session is reported as a
-/// typed parse error, not a silent miss. Mirrors `LLParser`'s
-/// `tokError("expected instruction opcode")` site for the default arm.
-/// Uses `store` (no result) with an LHS `%x =` to trigger the `_` arm.
+/// `LLParser::parseInstruction`'s `default:` arm,
+/// `error(Loc, "expected instruction opcode")`, in the spelling that carries a
+/// result name: `Loc` is the token that failed to be an opcode, never the
+/// `%name` in front of it. `parseBasicBlock` has already stripped the name by
+/// the time the switch runs, so the two positions are different tokens.
+///
+/// The corpus drives the same arm from three upstream fixtures — `rg
+/// --no-ignore --hidden -a -l "expected instruction opcode"` over
+/// `orig_cpp/.../llvm/test/` returns `constant-splat-diagnostics.ll`,
+/// `dbg-record-invalid-0.ll` and `dbg-record-invalid-5.ll`, all in
+/// `parser_corpus_manifest.txt` — and the two `dbg-record-invalid-*` rows
+/// carry upstream's own `loc=` pin. None of the three writes a *named*
+/// unknown opcode, which is the position this test adds.
+///
+/// It replaces a test that reached an llvmkit-only
+/// `instruction opcode supported by this parser` arm with `%x = store`. That
+/// input is not upstream's default arm at all — `setInstName` answers it
+/// `instructions returning void cannot have a name` — and the arm no longer
+/// exists: the dispatch is exhaustive over `Opcode`, so an unported opcode is
+/// a compile error rather than a runtime message upstream never emits.
 #[test]
-fn unsupported_opcode_is_typed_error() {
-    let err = parser::parse_assembly(
-        "define i32 @f(i32 %a) {\nentry:\n  %x = store i32 %a, ptr null\n  ret i32 %a\n}\n",
-        |_module, _parsed| (),
-    )
-    .unwrap_err();
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("instruction opcode supported by this parser"),
-        "got: {msg}"
+fn an_unknown_opcode_is_reported_at_the_opcode_not_the_result_name() {
+    assert_eq!(
+        parse_expect_error_at(
+            "define void @f() {\nentry:\n  %x = frobnicate i32 1\n  ret void\n}\n"
+        ),
+        ("expected instruction opcode".to_string(), (3, 8))
+    );
+    // Same arm, no result name: `Loc` is unmoved because there was nothing in
+    // front of the opcode to move it off.
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  frobnicate i32 1\n  ret void\n}\n"),
+        ("expected instruction opcode".to_string(), (3, 3))
+    );
+}
+
+/// `LLParser::PerFunctionState::setInstName`'s first arm — `if
+/// (Inst->getType()->isVoidTy()) { if (NameID != -1 || !NameStr.empty())
+/// return P.error(NameLoc, "instructions returning void cannot have a
+/// name"); }` — reached from `parseBasicBlock`, which calls `setInstName` on
+/// *every* instruction it parses, terminators included.
+///
+/// **No upstream fixture pins this message:** `rg --no-ignore --hidden -a -l
+/// "returning void cannot have a name"` over `orig_cpp/.../llvm/test/`
+/// returns nothing. The rule and its `NameLoc` anchor are read off
+/// `setInstName` and `parseBasicBlock` directly.
+///
+/// Every void-typed spelling is written out because llvmkit reaches the rule
+/// through two code paths, not one: the instructions that mint a `Value` go
+/// through `bind_local`, and the terminators and `store` / `fence`, which
+/// mint none, call `reject_named_void` from their own dispatch arm. Probing
+/// one path would not have covered the other, and that is exactly how the
+/// gap survived — `%x = call void @g()` answered upstream's message all
+/// along, through `bind_local`, while every terminator and `store` / `fence`
+/// spelling above it answered an llvmkit-only `instruction opcode supported
+/// by this parser` until this commit.
+#[test]
+fn a_named_void_instruction_is_rejected_at_the_name() {
+    for body in [
+        "%x = ret void",
+        "%x = br label %b",
+        "%x = store i32 0, ptr null",
+        "%x = fence seq_cst",
+        "%x = unreachable",
+        "%x = switch i32 0, label %b []",
+        "%x = indirectbr ptr null, [label %b]",
+        "%x = call void @g()",
+    ] {
+        let src = format!(
+            "declare void @g()\ndefine void @f() {{\nentry:\n  {body}\nb:\n  ret void\n}}\n"
+        );
+        assert_eq!(
+            parse_expect_error_at(&src),
+            (
+                "instructions returning void cannot have a name".to_string(),
+                (4, 3)
+            ),
+            "body: {body}"
+        );
+    }
+    // `%0 =` is upstream's `NameID != -1` half of the same guard; the loop
+    // above only exercises the `!NameStr.empty()` half.
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %0 = ret void\n}\n"),
+        (
+            "instructions returning void cannot have a name".to_string(),
+            (3, 3)
+        )
+    );
+}
+
+/// `LLParser::parseInstruction`'s first statement — `if (Token ==
+/// lltok::Eof) return tokError("found end of file when expecting more
+/// instructions");` — which upstream reaches only *after* `parseBasicBlock`
+/// has stripped the optional `%name =`. Input that stops at `%x =` is
+/// therefore end-of-file, not a missing opcode.
+///
+/// `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll` pins the message on
+/// the spelling with no result name and is ported in
+/// `parser_module_level.rs::the_function_body_frame_matches_upstream_text`;
+/// `rg --no-ignore --hidden -a -l "found end of file when expecting more
+/// instructions"` over `orig_cpp/.../llvm/test/` returns that fixture alone,
+/// so the `%x =` spelling has no upstream fixture and is pinned here.
+#[test]
+fn input_ending_after_a_result_name_is_end_of_file() {
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %x ="),
+        (
+            "found end of file when expecting more instructions".to_string(),
+            (3, 7)
+        )
+    );
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %0 ="),
+        (
+            "found end of file when expecting more instructions".to_string(),
+            (3, 7)
+        )
+    );
+}
+
+/// The two `parseToken(lltok::equal, …)` messages `LLParser::parseBasicBlock`
+/// spells for its `lltok::LocalVar` and `lltok::LocalVarID` arms. They are
+/// different sentences — `instruction name` against `instruction id` — and
+/// llvmkit wrote a third and a fourth (`local SSA name` / `local SSA id`)
+/// until this commit.
+///
+/// **No upstream fixture pins either:** `rg --no-ignore --hidden -a -l
+/// "expected '=' after instruction"` over `orig_cpp/.../llvm/test/` returns
+/// nothing.
+#[test]
+fn a_result_name_without_its_equals_uses_upstreams_two_messages() {
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %x add i32 1, 2\n  ret void\n}\n"),
+        ("expected '=' after instruction name".to_string(), (3, 6))
+    );
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %0 add i32 1, 2\n  ret void\n}\n"),
+        ("expected '=' after instruction id".to_string(), (3, 6))
     );
 }
 
@@ -765,29 +1094,77 @@ fn fast_math_flags_round_trip_on_select_phi_and_fp_casts() {
 
 /// The two rejections `LLParser::parseInstruction` pairs with those arms:
 /// flags are only legal when the result is an `FPMathOperator`.
+///
+/// **The anchor is asserted, not only the text.** Both arms report at `Loc`,
+/// which `parseInstruction` takes with `LocTy Loc = Lex.getLoc();` *before*
+/// `Lex.Lex()` eats the opcode keyword, so the caret is on `select` / `phi` —
+/// column 8 in each source below — and not on the first fast-math keyword.
+/// Upstream ships no `.ll` pinning either column, so the routine is the
+/// anchor (D11). This test compared the message alone and stayed green while
+/// the caret sat one token to the right of upstream's.
 #[test]
 fn fast_math_flags_on_non_fp_select_or_phi_are_rejected() {
-    assert_eq!(
-        parse_expect_error(
-            "define i32 @f(i1 %c, i32 %a, i32 %b) {\nentry:\n  \
-               %r = select fast i1 %c, i32 %a, i32 %b\n  \
-               ret i32 %r\n\
-             }\n",
-        ),
-        "fast-math-flags specified for select without floating-point scalar or vector return type"
+    let (message, position) = parse_expect_error_at(
+        "define i32 @f(i1 %c, i32 %a, i32 %b) {\nentry:\n  \
+           %r = select fast i1 %c, i32 %a, i32 %b\n  \
+           ret i32 %r\n\
+         }\n",
     );
     assert_eq!(
-        parse_expect_error(
-            "define i32 @f(i1 %cmp, i32 %a, i32 %b) {\nentry:\n  \
-               br i1 %cmp, label %t, label %r\n\
-             t:\n  \
-               br label %r\n\
-             r:\n  \
-               %v = phi fast i32 [ %a, %t ], [ %b, %entry ]\n  \
-               ret i32 %v\n\
-             }\n",
-        ),
+        message,
+        "fast-math-flags specified for select without floating-point scalar or vector return type"
+    );
+    assert_eq!(position, (3, 8));
+
+    let (message, position) = parse_expect_error_at(
+        "define i32 @f(i1 %cmp, i32 %a, i32 %b) {\nentry:\n  \
+           br i1 %cmp, label %t, label %r\n\
+         t:\n  \
+           br label %r\n\
+         r:\n  \
+           %v = phi fast i32 [ %a, %t ], [ %b, %entry ]\n  \
+           ret i32 %v\n\
+         }\n",
+    );
+    assert_eq!(
+        message,
         "fast-math-flags specified for phi without floating-point scalar or vector return type"
+    );
+    assert_eq!(position, (7, 8));
+}
+
+/// **llvmkit-authored; the rule is the anchor (D11).** `isa<FPMathOperator>`'s
+/// `Select` and `PHI` arms are `isSupportedFloatingPointType(V->getType())` —
+/// `isFPOrFPVectorTy() || isComposedOfHomogeneousFloatingPointTypes()` — so a
+/// `select` or `phi` whose result is a homogeneous floating-point *aggregate*
+/// is an `FPMathOperator`, and its flags survive to the printer. No `.ll` in
+/// the vendored tree spells one: `test/Bitcode/compatibility.ll`, the fixture
+/// that covers this predicate, exercises only the `call` arm (vendored under
+/// `tests/fixtures/upstream/compatibility/` and driven by the corpus).
+#[test]
+fn fast_math_flags_on_a_homogeneous_aggregate_select_or_phi_round_trip() {
+    let printed = parse_and_print(
+        "declare { float, float } @s()\n\
+         define void @f(i1 %c) {\nentry:\n  \
+           %v = call { float, float } @s()\n  \
+           %r = select fast i1 %c, { float, float } %v, { float, float } %v\n  \
+           br i1 %c, label %t, label %j\n\
+         t:\n  \
+           br label %j\n\
+         j:\n  \
+           %p = phi reassoc [2 x float] [ zeroinitializer, %entry ], [ zeroinitializer, %t ]\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%r = select fast i1 %c, { float, float } %v, { float, float } %v"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "%p = phi reassoc [2 x float] [ zeroinitializer, %entry ], [ zeroinitializer, %t ]"
+        ),
+        "{printed}"
     );
 }
 
@@ -1076,12 +1453,10 @@ fn cmpxchg_validates_its_orderings_and_operands() {
 /// `invalid-gep-missing-explicit-type.ll`, `getelementptr_vscale_struct.ll`
 /// and `getelementptr_vec_struct.ll`, all verbatim.
 ///
-/// The last two have **vector** bases and indices, which llvmkit's builder
-/// cannot yet express — but they still reach upstream's answer, because
-/// `parseGetElementPtr`'s rules all run before the instruction is built. That
-/// ordering is the point: the conversion to the builder's scalar shape sits
-/// *after* every check, so a recorded IR gap costs coverage only where the
-/// input is otherwise valid.
+/// The last two have **vector** bases and indices, which
+/// [`llvmkit_ir::IrBuilder::gep_erased`] now builds; they still reach
+/// upstream's answer for upstream's own reason — `parseGetElementPtr`'s rules
+/// all run before `GetElementPtrInst::Create`.
 ///
 /// The scalable rule here differs from the constant-expression arm's, which
 /// W4 landed: an instruction asks only whether the source type is a struct
@@ -1136,6 +1511,45 @@ fn getelementptr_validates_its_base_and_indices() {
         ),
         "getelementptr index must be an integer"
     );
+}
+
+/// The vector-GEP **instruction** functions of `test/Assembler/opaque-ptr.ll`
+/// (`@gep_vec1`, `@gep_vec2`), excerpted verbatim with upstream's own CHECK
+/// lines as the assertions.
+///
+/// `@gep_vec1` is `GetElementPtrInst::getGEPReturnType`'s second branch — a
+/// scalar base and a vector index, so the first vector index lends its
+/// `ElementCount` to the pointer type. `@gep_vec2` is its first branch — a
+/// vector base, whose type becomes the result type unchanged, with the scalar
+/// index left exactly as written. Pairing them is the point of the test:
+/// `ConstantExpr::getGetElementPtr` splats a scalar index into the result's
+/// lane count and `GetElementPtrInst::Create` does not, which is why
+/// upstream's `@gep_vec2` CHECK keeps `i32 2` where `@gep_constexpr_vec2`'s
+/// prints `splat (i32 3)`.
+#[test]
+fn vector_getelementptr_instructions_round_trip() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/opaque-ptr/vector_gep_instructions_round_trips.ll");
+
+    let printed = parse_and_print(FIXTURE);
+    assert!(
+        printed.contains("define <2 x ptr> @gep_vec1(ptr %a)"),
+        "got:\n{printed}"
+    );
+    assert!(
+        printed.contains("%res = getelementptr i8, ptr %a, <2 x i32> <i32 1, i32 2>\n"),
+        "got:\n{printed}"
+    );
+    assert!(
+        printed.contains("define <2 x ptr> @gep_vec2(<2 x ptr> %a)"),
+        "got:\n{printed}"
+    );
+    assert!(
+        printed.contains("%res = getelementptr i8, <2 x ptr> %a, i32 2\n"),
+        "got:\n{printed}"
+    );
+    assert!(printed.contains("ret <2 x ptr> %res\n"), "got:\n{printed}");
+    parse_and_verify(FIXTURE);
 }
 
 /// The four terminator routines' operand rules — `parseRet`, `parseBr`,
@@ -1223,7 +1637,10 @@ fn aggregate_index_lists_and_operands_are_validated() {
 ///
 /// Each `isValidOperands` message covers *every* way its predicate can fail,
 /// which is why upstream needs one text where llvmkit had several invented
-/// per-operand labels.
+/// per-operand labels. The `shufflevector` rows spell out that breadth: the
+/// operand-type pair, the scalable-mask branch, the mask type's scalability,
+/// the `Elem >= V1Size * 2` range clause and a non-constant mask all produce
+/// the one message, at the first operand.
 #[test]
 fn instruction_operand_rules_match_upstream_text() {
     for (src, expected) in [
@@ -1261,6 +1678,33 @@ fn instruction_operand_rules_match_upstream_text() {
         (
             "define void @f(<2 x i32> %a, <4 x i32> %b) {\nentry:\n  \
              %v = shufflevector <2 x i32> %a, <4 x i32> %b, <2 x i32> zeroinitializer\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+        // `isValidOperands`' scalable branch: a scalable operand admits only
+        // an all-zero or all-poison mask. `splat (i32 1)` is neither.
+        (
+            "define void @f(<vscale x 4 x i32> %a, <vscale x 4 x i32> %b) {\nentry:\n  \
+             %v = shufflevector <vscale x 4 x i32> %a, <vscale x 4 x i32> %b, <vscale x 4 x i32> splat (i32 1)\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+        // `isa<ScalableVectorType>(MaskTy) != isa<ScalableVectorType>(V1->getType())`.
+        (
+            "define void @f(<vscale x 4 x i32> %a, <vscale x 4 x i32> %b) {\nentry:\n  \
+             %v = shufflevector <vscale x 4 x i32> %a, <vscale x 4 x i32> %b, <4 x i32> zeroinitializer\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+        // `Elem >= V1Size * 2` — a lane naming neither source.
+        (
+            "define void @f(<2 x i32> %a, <2 x i32> %b) {\nentry:\n  \
+             %v = shufflevector <2 x i32> %a, <2 x i32> %b, <4 x i32> <i32 0, i32 99, i32 2, i32 3>\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+        // The routine's closing `return false`: a mask that is not a constant
+        // at all. Upstream reads it with `parseTypeAndValue`, so it parses
+        // cleanly and `isValidOperands` is what refuses it.
+        (
+            "define void @f(<4 x i32> %a, <4 x i32> %b, <4 x i32> %m) {\nentry:\n  \
+             %v = shufflevector <4 x i32> %a, <4 x i32> %b, <4 x i32> %m\n  ret void\n}\n",
             "invalid shufflevector operands",
         ),
     ] {
@@ -1304,12 +1748,13 @@ fn eh_clause_and_scope_rules_match_upstream_text() {
             "  %cp = catchpad within 3 []\n  ret void\n",
             "expected scope value for catchpad",
         ),
-        // `catchswitch` is a *terminator*, so it ends its block. Written
-        // without an explicit `%cs =`: llvmkit dispatches the named form
-        // through a table that has no `CatchSwitch` arm, which is a
-        // pre-existing gap unrelated to this rule.
+        // `catchswitch` is a *terminator*, so it ends its block. Written in
+        // upstream's own spelling (`test/Verifier/invalid-eh.ll` uses `%cs =`
+        // throughout): the scope guard runs after `within`, so the result name
+        // is orthogonal to the rule under test — and writing it named keeps
+        // this a regression guard for the named-form dispatch.
         (
-            "  catchswitch within 3 [label %entry] unwind to caller\n",
+            "  %cs = catchswitch within 3 [label %entry] unwind to caller\n",
             "expected scope value for catchswitch",
         ),
     ] {

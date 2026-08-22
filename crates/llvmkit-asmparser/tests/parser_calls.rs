@@ -4,6 +4,17 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
+pub mod support;
+
+// `canonicalize_horizontal_whitespace` is `FileCheck::CanonicalizeFile`
+// (`llvm/lib/FileCheck/FileCheck.cpp`), which is what lets
+// `test/Bitcode/operand-bundles.ll`'s `CHECK` text be quoted as written:
+// several of its lines spell `float  0.000000e+00` with two spaces, because
+// that is how the fixture's *input* spells it, and canonicalization is why
+// they still match `llvm-dis`'s single space. That fixture's `RUN` line does
+// not pass `--strict-whitespace`, so upstream canonicalizes there too.
+use support::{Check, canonicalize_horizontal_whitespace, check_directives};
+
 fn parse_and_render(src: &str) -> String {
     parse_and_render_bytes("parser_calls", src.as_bytes())
 }
@@ -14,6 +25,23 @@ fn parse_and_render_bytes(module_name: &str, src: &[u8]) -> String {
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
+    format!("{module}")
+}
+
+/// `llvm-as < %s | llvm-dis` — both halves. `llvm-as.cpp`'s `main` guards a
+/// `verifyModule` call on `if (!DisableVerify)` and exits 1 with
+/// `assembly parsed, but does not verify as correct!` when it reports, so a
+/// `RUN` line piping through `llvm-as` asserts verification as well as
+/// parse-and-print; [`parse_and_render_bytes`] drops that half.
+fn parse_verify_and_render_bytes(module_name: &str, src: &[u8]) -> String {
+    let module = Module::dynamic(module_name);
+    Parser::new(src, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("`llvm-as` verifies this fixture, so llvmkit must too");
     format!("{module}")
 }
 
@@ -205,6 +233,13 @@ fn inline_asm_label_constraint_rules_are_verifier_rules() {
 
 /// Mirrors `test/Assembler/callbr.ll` successor structure with the upstream
 /// `@llvm.amdgcn.kill` intrinsic callee.
+///
+/// The needles are matched in order, and they now read in upstream's printed
+/// order — `[[KILL:.*:]]` / `unreachable` / `[[CONT]]:` / `ret void` — for the
+/// first time: the source defines `kill` before `cont` while the `callbr`
+/// names `cont` first, and `LLParser::PerFunctionState::defineBB` ends with
+/// `F.splice(F.end(), &F, BB->getIterator())`, so the printed order is
+/// definition order.
 #[test]
 fn callbr_successor_structure_round_trips() {
     const FIXTURE: &[u8] =
@@ -216,10 +251,10 @@ fn callbr_successor_structure_round_trips() {
         &[
             "callbr void @llvm.amdgcn.kill(i1 %c)",
             "to label %cont [label %kill]",
-            "cont:",
-            "ret void",
             "kill:",
             "unreachable",
+            "cont:",
+            "ret void",
         ],
     );
 }
@@ -334,21 +369,278 @@ entry:\n\
     );
 }
 
-/// llvmkit-specific subset of `test/Bitcode/operand-bundles.ll`: call/invoke
-/// operand-bundle lists are parsed into CallBase storage and printed after call-site attrs.
+/// `test/Bitcode/operand-bundles.ll`, vendored whole, asserting its `CHECK`
+/// directives in order.
+///
+/// Its `RUN` line is `llvm-as < %s | llvm-dis | FileCheck %s`, so the `CHECK`
+/// text is `AssemblyWriter` output with no bitcode round-trip loss in between
+/// — specifically `AssemblyWriter::writeOperandBundles`, whose `Out << " [ "`
+/// and `Out << " ]"` are the spaces this fixture pins. The fixture's
+/// typed-pointer spelling (`i32* %ptr`) parses and prints as `ptr %ptr`,
+/// exactly as `llvm-dis` does, and no directive pins it. The `llvm-as` half of
+/// that pipeline verifies the module — no `-disable-verify` here — so
+/// [`parse_verify_and_render_bytes`] is the oracle rather than parse-and-print.
+///
+/// **Harness gap, stated rather than papered over.** This binary's
+/// `assert_check_lines` is ordered fixed-substring matching over a byte
+/// cursor. That renders `CHECK:` faithfully, and with
+/// [`canonicalize_horizontal_whitespace`] applied to both buffers it renders
+/// FileCheck's whitespace handling too, so a directive can be quoted from the
+/// fixture as written rather than hand-collapsed. What it does **not** render
+/// is `CHECK-LABEL`'s block partitioning or `CHECK-NEXT`'s line-adjacency
+/// rule: those directives are asserted below as ordered `CHECK`es, which is
+/// weaker than FileCheck, not stricter. Nor can it evaluate a regex — `{{$}}`
+/// is rendered as a trailing `\n`, which is what end-of-line means for a fixed
+/// substring.
+/// `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::check_directives` is a
+/// faithful `CHECK`/`CHECK-NEXT` port, but items do not cross integration-test
+/// binaries; the `tests/support/` refactor that would let this test use it is
+/// recorded in `docs/future-work.md`.
+///
+/// This replaces a hand-trimmed subset whose header said llvmkit could not
+/// express the rest of the file. That premise was stale: the whole fixture
+/// parses.
 #[test]
-fn operand_bundles_round_trip() {
-    const FIXTURE: &[u8] =
-        include_bytes!("fixtures/upstream/operand-bundles/operand_bundles_round_trip.ll");
+fn operand_bundles_ll_matches_upstream_check_lines() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
 
-    let text = parse_and_render_bytes("operand_bundles_round_trip", FIXTURE);
+    // The fixture's own directives, in order, quoted from its `; CHECK…:`
+    // lines; `{{$}}` is rendered as the newline it stands for.
+    const DIRECTIVES: &[&str] = &[
+        // @f0
+        "@f0(",
+        "call void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"bar\"(float  0.000000e+00, i64 100, i32 %l) ]",
+        // @f1 --- one CHECK with `{{$}}`, then two CHECK-NEXT.
+        "@f1(",
+        "@callee0()\n",
+        "call void @callee0() [ \"foo\"() ]",
+        "call void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"bar\"(float  0.000000e+00, i64 100, i32 %l) ]",
+        // @f2
+        "@f2(",
+        "call void @callee0() [ \"foo\"() ]",
+        // @f3
+        "@f3(",
+        "call void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @f4
+        "@f4(",
+        "call void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @f5 --- the metadata-string bundle form, which llvmkit already accepted.
+        "call void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, metadata !\"abc\"), \"bar\"(metadata !\"abcde\", metadata !\"qwerty\") ]",
+        // @g0 --- the invoke twins of the above.
+        "@g0(",
+        "invoke void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"bar\"(float  0.000000e+00, i64 100, i32 %l) ]",
+        // @g1
+        "@g1(",
+        "invoke void @callee0()\n",
+        "invoke void @callee0() [ \"foo\"() ]",
+        "invoke void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @g2
+        "@g2(",
+        "invoke void @callee0() [ \"foo\"() ]",
+        // @g3
+        "@g3(",
+        "invoke void @callee0() [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @g4
+        "@g4(",
+        "invoke void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, i64 100, i32 %x), \"foo\"(i32 42, float  0.000000e+00, i32 %l) ]",
+        // @g5
+        "invoke void @callee1(i32 10, i32 %x) [ \"foo\"(i32 42, metadata !\"abc\"), \"bar\"(metadata !\"abcde\", metadata !\"qwerty\") ]",
+    ];
+
+    let text = parse_verify_and_render_bytes("operand_bundles_ll", FIXTURE);
+    let canonical_text = canonicalize_horizontal_whitespace(&text);
+    let canonical_directives: Vec<String> = DIRECTIVES
+        .iter()
+        .map(|directive| canonicalize_horizontal_whitespace(directive))
+        .collect();
+    let needles: Vec<&str> = canonical_directives.iter().map(String::as_str).collect();
+    assert_check_lines(&canonical_text, &needles);
+}
+
+/// A `ValueAsMetadata` operand-bundle input — `metadata i32 %a`,
+/// `metadata i32 42`, `metadata ptr @g`.
+///
+/// **Anchored on the routine, not on a fixture.** No `.ll` file was found to
+/// port this from — the metadata bundle inputs in the fixture vendored
+/// alongside it (`test/Bitcode/operand-bundles.ll` `@f5` and `@g5`) spell only
+/// the `metadata !"..."` form, which llvmkit already accepted. The rule is
+/// `LLParser::parseOptionalOperandBundles`, which routes a `metadata`-typed
+/// input through `parseMetadataAsValue` -> `parseMetadata`, whose non-`!`
+/// fall-through is `parseValueAsMetadata`, documented with exactly this
+/// grammar:
+///
+/// ```text
+/// /// parseValueAsMetadata
+/// ///  ::= i32 %local
+/// ///  ::= i32 @global
+/// ///  ::= i32 7
+/// ```
+///
+/// One input of each of the three spellings, plus the `!`-led forms in the
+/// same bundle set to show the branch did not regress them.
+#[test]
+fn value_as_metadata_operand_bundle_inputs_round_trip() {
+    let text = parse_and_render(
+        "@g = external global i8\n\
+declare void @callee()\n\
+define void @f(i32 %a) {\n\
+entry:\n\
+  call void @callee() [ \"tag\"(metadata i32 %a, metadata i32 7, metadata ptr @g) ]\n\
+  call void @callee() [ \"tag\"(metadata !0, metadata !\"abc\") ]\n\
+  ret void\n\
+}\n\
+!0 = !{i32 1}\n",
+    );
     assert_check_lines(
         &text,
         &[
-            "call void @callee0() [\"foo\"(i32 42, i32 %x), \"bar\"()]",
-            "invoke void @callee0() [\"foo\"(i32 %x)]\n          to label %ok unwind label %bad",
+            "call void @callee() [ \"tag\"(metadata i32 %a, metadata i32 7, metadata ptr @g) ]",
+            "call void @callee() [ \"tag\"(metadata !0, metadata !\"abc\") ]",
         ],
     );
+}
+
+/// The **unnamed**-local spelling of
+/// [`value_as_metadata_operand_bundle_inputs_round_trip`], which uses `%a`
+/// throughout and therefore could not see the printer defect below.
+///
+/// **Anchored on the routine, not on a fixture**, for the same reason that
+/// test gives. The rule is `AsmWriter.cpp`'s
+/// `writeAsOperandInternal(raw_ostream &, const Metadata *, AsmWriterContext &,
+/// bool)`, whose `ValueAsMetadata` tail is
+/// `writeAsOperandInternal(Out, V->getValue(), WriterCtx, /*PrintType=*/true)`
+/// — the *same* `AsmWriterContext`, so the same `Machine` numbers `%0` inside
+/// the bundle as numbers it outside. llvmkit's metadata sub-printer took no
+/// `SlotTracker` and printed the no-slot spelling here, which then failed to
+/// re-parse. Both halves are asserted: the bytes, and that they re-parse to the
+/// same bytes.
+#[test]
+fn value_as_metadata_operand_bundle_numbers_an_unnamed_local() {
+    let text = parse_and_render(
+        "declare void @callee()\n\
+define void @f(i32 %a) {\n\
+entry:\n\
+  %0 = add i32 %a, 1\n\
+  call void @callee() [ \"tag\"(metadata i32 %0) ]\n\
+  ret void\n\
+}\n",
+    );
+    check_directives(
+        &text,
+        &[
+            Check::Line("%0 = add i32 %a, 1"),
+            Check::Next("call void @callee() [ \"tag\"(metadata i32 %0) ]"),
+        ],
+    );
+    assert!(!text.contains("<badref>"), "{text}");
+    assert_eq!(
+        parse_and_render(&text),
+        text,
+        "printed module is not round-trip stable"
+    );
+}
+
+/// A `ValueAsMetadata` argument in a `cleanuppad` argument list.
+///
+/// **Anchored on the routine, not on a fixture**, for the same reason as
+/// [`value_as_metadata_operand_bundle_inputs_round_trip`]. The rule is
+/// `LLParser::parseExceptionArgs`, whose loop carries the same
+/// `if (ArgTy->isMetadataTy()) { parseMetadataAsValue } else { parseValue }`
+/// branch as `parseParameterList` and `parseOptionalOperandBundles`. Before
+/// the branch existed here, `metadata !0` parsed (through `parseValID`'s own
+/// metadata arms) and `metadata i32 %a` did not. The asserted printed form was
+/// pinned from a run.
+#[test]
+fn value_as_metadata_pad_arguments_round_trip() {
+    let text = parse_and_render(
+        "declare i32 @__gxx_personality_v0(...)\n\
+define void @f(i32 %a) personality ptr @__gxx_personality_v0 {\n\
+entry:\n\
+  ret void\n\
+cleanup:\n\
+  %cp = cleanuppad within none [metadata !0, metadata i32 %a]\n\
+  ret void\n\
+}\n\
+!0 = !{i32 1}\n",
+    );
+    assert_check_lines(
+        &text,
+        &["%cp = cleanuppad within none [metadata !0, metadata i32 %a]"],
+    );
+}
+
+/// `metadata metadata %x` — a metadata-typed inner type inside a
+/// `metadata`-typed operand.
+///
+/// `LLParser::parseValueAsMetadata` rejects it before it ever calls
+/// `parseValue`: `if (Ty->isMetadataTy()) return error(Loc, "invalid
+/// metadata-value-metadata roundtrip");`, anchored at the inner type. llvmkit
+/// carried that guard only on the `parseMDNodeVector` path
+/// (`test/Assembler/invalid-metadata-attachment-has-type.ll`, pinned by
+/// `parser_debug_metadata.rs`); this pins the `parseMetadataAsValue` path,
+/// which the operand-bundle metadata branch newly reaches. No `.ll` file was
+/// found spelling the operand form, so the rule is the anchor.
+#[test]
+fn metadata_value_metadata_roundtrip_in_an_operand_bundle_is_rejected() {
+    let src = "declare void @callee()\n\
+               define void @f(i32 %x) {\n\
+               entry:\n\
+                 call void @callee() [ \"tag\"(metadata metadata %x) ]\n\
+                 ret void\n\
+               }\n";
+    assert_fixture_rejected(
+        "metadata_value_metadata_roundtrip_bundle",
+        src.as_bytes(),
+        "invalid metadata-value-metadata roundtrip",
+    );
+}
+
+/// `parseValueAsMetadata`'s `TypeMsg` reaches the output in exactly one case,
+/// and this pins where the line is drawn.
+///
+/// `LLParser::parseValueAsMetadata` passes `"expected metadata operand"` to
+/// `LLParser::parseType(Type *&Result, const Twine &Msg, bool AllowVoid)`,
+/// which reads `Msg` only in the `default:` arm of its leading
+/// `switch (Lex.getKind())`. Every later arm, and every nested type routine it
+/// calls, raises its own text at its own token. So a `metadata` operand whose
+/// type is malformed must report the *type's* complaint, not the operand's —
+/// and only a token that begins no type at all gets `expected metadata
+/// operand`.
+///
+/// **Anchored on that policy, not on a fixture.** Upstream pins these message
+/// texts elsewhere (`test/Assembler/invalid-opaque-ptr.ll` for `ptr*`), but no
+/// `.ll` file was found that reaches them through a `metadata` operand, which
+/// is the position this task made reachable.
+#[test]
+fn a_malformed_metadata_operand_type_keeps_the_type_s_own_message() {
+    // (bundle input spelling, expected message)
+    const CASES: &[(&str, &str)] = &[
+        // `parseType`'s `default:` arm — the one place `TypeMsg` is read.
+        ("metadata , ", "expected metadata operand"),
+        // `parseStructBody`'s nested `parseType`, on the trailing comma.
+        ("metadata { i32, } %x", "expected type"),
+        // `parseType`'s suffix loop, `if (!AllowVoid && Result->isVoidTy())`.
+        (
+            "metadata void %x",
+            "void type only allowed for function results",
+        ),
+        // The `lltok::Type` arm's own `ptr*` guard.
+        ("metadata ptr* %x", "ptr* is invalid - use ptr instead"),
+        // The suffix loop's `lltok::star` arm, `Result->isLabelTy()`.
+        ("metadata label* %x", "basic block pointers are invalid"),
+    ];
+
+    for (input, expected) in CASES {
+        let src = format!(
+            "declare void @callee()\n\
+             define void @f(i32 %x) {{\n\
+             entry:\n\
+               call void @callee() [ \"tag\"({input}) ]\n\
+               ret void\n\
+             }}\n"
+        );
+        assert_fixture_rejected("malformed_metadata_operand_type", src.as_bytes(), expected);
+    }
 }
 
 /// llvmkit-specific subset of
@@ -367,7 +659,7 @@ fn deactivation_symbol_bundle_round_trips() {
     let text = parse_and_render_bytes("deactivation_symbol_bundle_round_trips", FIXTURE);
     assert_check_lines(
         &text,
-        &["call i64 @__emupac_autda(i64 %val, i64 1) [\"deactivation-symbol\"(ptr @ds1)]"],
+        &["call i64 @__emupac_autda(i64 %val, i64 1) [ \"deactivation-symbol\"(ptr @ds1) ]"],
     );
 }
 
@@ -618,6 +910,345 @@ fn indirect_call_undef_callee_round_trips() {
     assert_check_lines(&text, &["call void undef()"]);
 }
 
+/// **No upstream counterpart** — no fixture under `test/Assembler`,
+/// `test/Verifier` or `test/Feature` pins this diagnostic
+/// (`grep -rl "notail call'"` over those three directories of the vendored
+/// `llvmorg-22.1.4` tree returns nothing), so the rule is the anchor (D11):
+/// `LLParser::parseCall`'s first guard,
+/// `if (TCK != CallInst::TCK_None && parseToken(lltok::kw_call, "expected
+/// 'tail call', 'musttail call', or 'notail call'")) return true;`. Upstream
+/// reaches `parseCall` from `parseInstruction`'s `kw_tail` / `kw_musttail` /
+/// `kw_notail` arms with only the tail keyword eaten, so the `call` that
+/// follows is mandatory.
+#[test]
+fn tail_keyword_without_call_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/tail_keyword_without_call_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "tail_keyword_without_call_rejected",
+        FIXTURE,
+        "expected 'tail call', 'musttail call', or 'notail call'",
+    );
+}
+
+/// `test/Assembler/callee-type-metadata.ll`, asserting its own `; CHECK:` line.
+/// Upstream's `RUN` line is `llvm-as < %s | llvm-dis | FileCheck %s`, so that
+/// line is `AsmWriter` output byte for byte, and the `llvm-as` half verifies.
+///
+/// The fixture is already in `parser_corpus_manifest.txt`, but `parser_corpus.rs`
+/// asserts parse / verify / print-reparse-print stability and never reads a
+/// fixture's `CHECK` lines — which is how the dropped `signext` survived a
+/// `status=pass` row. This test is the missing half.
+#[test]
+fn indirect_call_parameter_attribute_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/callee-type-metadata.ll");
+
+    let text =
+        parse_verify_and_render_bytes("indirect_call_parameter_attribute_round_trips", FIXTURE);
+    check_directives(
+        &text,
+        &[Check::Line(
+            "%call = call i32 %fptr(i8 signext %x_val), !callee_type !1",
+        )],
+    );
+}
+
+/// `test/Verifier/kcfi-operand-bundles.ll`, verbatim (the whole file). Every
+/// call in it is indirect and every one carries a `"kcfi"` operand bundle.
+///
+/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
+/// so only the parse/print half is portable: the fixture's `CHECK:` diagnostic
+/// lines have no llvmkit counterpart, which is `docs/divergences.md` entry 125
+/// and is pinned by [`call_operand_bundle_rules_are_not_diagnosed`]. Each
+/// `CHECK-NEXT` line is the offending instruction as `AsmWriter` prints it,
+/// which is what this asserts — as a `Check::Line`, because the diagnostic the
+/// `-NEXT` counts from is not printed here.
+#[test]
+fn indirect_call_kcfi_operand_bundles_round_trip() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/kcfi-operand-bundles.ll");
+
+    let text = parse_and_render_bytes("indirect_call_kcfi_operand_bundles_round_trip", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line(r#"call void %arg2() [ "kcfi"(i32 42), "kcfi"(i32 42) ]"#),
+            Check::Line(r#"call void %arg2() [ "kcfi"(i64 42) ]"#),
+            Check::Line(r#"call void %arg2() [ "kcfi"(i32 42) ]"#),
+            Check::Line(r#"call void %arg2() [ "kcfi"(i32 42) ]"#),
+        ],
+    );
+}
+
+/// `test/Verifier/ptrauth-operand-bundles.ll`, verbatim (the whole file). Five
+/// indirect calls with `"ptrauth"` bundles plus one **direct** call with the
+/// same bundle — the direct/indirect contrast in one fixture, which is why it
+/// is ported alongside the kcfi one rather than instead of it.
+///
+/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
+/// so as with [`indirect_call_kcfi_operand_bundles_round_trip`] only the
+/// parse/print half is ported; the unmatched `CHECK:` diagnostic lines are
+/// `docs/divergences.md` entry 125, pinned by
+/// [`call_operand_bundle_rules_are_not_diagnosed`]. The `CHECK-NEXT` lines are
+/// `AsmWriter` output of the offending instruction, asserted here as
+/// `Check::Line` for the same reason.
+#[test]
+fn indirect_call_ptrauth_operand_bundles_round_trip() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/ptrauth-operand-bundles.ll");
+
+    let text = parse_and_render_bytes("indirect_call_ptrauth_operand_bundles_round_trip", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line(
+                r#"call void %arg2() [ "ptrauth"(i32 42, i64 100), "ptrauth"(i32 42, i64 %arg0) ]"#,
+            ),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i32 %arg1, i64 120) ]"#),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i64 42, i64 120) ]"#),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i32 42, i32 120) ]"#),
+            Check::Line(r#"call void @g() [ "ptrauth"(i32 42, i64 120) ]"#),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i32 42, i64 120) ]"#),
+            Check::Line(r#"call void %arg2() [ "ptrauth"(i32 42, i64 %arg0) ]"#),
+        ],
+    );
+}
+
+/// The `(line, column)` a diagnostic points at, computed the way
+/// `parse_file.rs` computes it for its `<path>:LINE:COL:` prefix — the same
+/// coordinates `llvm-as` prints as `<stdin>:LINE:COL:`.
+fn error_line_col(src: &str, err: &ParseError) -> (u32, u32) {
+    let span = err.loc().expect("diagnostic carries a location").span;
+    llvmkit_support::SourceMap::new(src.as_bytes()).line_col(span.start)
+}
+
+/// The source text the diagnostic's span opens on, for asserting *which token*
+/// an anchor landed on rather than only where it landed.
+fn error_token<'a>(src: &'a str, err: &ParseError) -> &'a str {
+    let span = err.loc().expect("diagnostic carries a location").span;
+    let start = usize::try_from(span.start).expect("offset fits usize");
+    let end = usize::try_from(span.end).expect("offset fits usize");
+    &src[start..end.min(src.len())]
+}
+
+/// **Anchor lock, llvmkit-authored source; no upstream counterpart.**
+/// `LLParser::parseCall` raises this one as `error(CallLoc, …)`, not
+/// `tokError`, so it must point at `CallLoc` and not at whatever token the
+/// parser has reached by the time the return type is known — which, because
+/// the guard runs after the whole call has been consumed, is the *next*
+/// instruction's first token.
+///
+/// `CallLoc` is `parseCall`'s `Lex.getLoc()` taken before
+/// `EatFastMathFlagsIfPresent()`, and `parseInstruction` has already eaten the
+/// `call` keyword, so for a plain `call` it is the first fast-math keyword.
+/// The message is `LLParser.cpp`'s, verbatim; no `.ll` under `test/Assembler`,
+/// `test/Verifier` or `test/Feature` pins it (`grep -rl "fast-math-flags
+/// specified for call"` over those three directories of the vendored
+/// `llvmorg-22.1.4` tree returns nothing), so the rule is the anchor (D11).
+#[test]
+fn fast_math_flags_on_a_non_fp_call_report_at_call_loc() {
+    const SRC: &str = "declare void @g(i32)\n\
+                       define void @f() {\n  \
+                       call nnan void @g(i32 5)\n  \
+                       ret void\n\
+                       }\n";
+
+    let err = parse_fixture_err(
+        "fast_math_flags_on_a_non_fp_call_report_at_call_loc",
+        SRC.as_bytes(),
+    );
+    assert_eq!(
+        err.to_string(),
+        "fast-math-flags specified for call without floating-point scalar or vector return type"
+    );
+    assert_eq!(error_line_col(SRC, &err), (3, 8));
+    assert_eq!(error_token(SRC, &err), "nnan");
+}
+
+/// **Anchor lock, llvmkit-authored source; no upstream counterpart.**
+/// `LLParser::parseInstruction` eats one keyword before dispatching, so
+/// `parseCall`'s `LocTy CallLoc = Lex.getLoc()` — its last statement before
+/// `parseToken(lltok::kw_call, …)` — lands on a *different* token in the two
+/// spellings: the token after `call` for a plain call, and the `call` keyword
+/// itself after `tail` / `musttail` / `notail`. `error(CallLoc, "not enough
+/// parameters specified for call")` is the cheapest of the three diagnostics
+/// anchored on it to reach, so it is the one this pins; the same anchor serves
+/// the fast-math guard (above) and the `llvm.dbg` guard.
+///
+/// Both spellings are asserted together because the law is the *relation*
+/// between them; a lock on either alone would survive `CallLoc` drifting back
+/// to a single uniform token. `musttail` rather than `tail` so the two columns
+/// differ.
+#[test]
+fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
+    const PLAIN: &str = "declare void @g(i32, i32, i32)\n\
+                         define void @f() {\n  \
+                         call void (i32, i32, i32) @g(i32 1, i32 2)\n  \
+                         ret void\n\
+                         }\n";
+    const MUSTTAIL: &str = "declare void @g(i32, i32, i32)\n\
+                            define void @f() {\n  \
+                            musttail call void (i32, i32, i32) @g(i32 1, i32 2)\n  \
+                            ret void\n\
+                            }\n";
+
+    let plain = parse_fixture_err("call_loc_plain", PLAIN.as_bytes());
+    assert_eq!(
+        plain.to_string(),
+        "not enough parameters specified for call"
+    );
+    assert_eq!(error_line_col(PLAIN, &plain), (3, 8));
+    assert_eq!(error_token(PLAIN, &plain), "void");
+
+    let musttail = parse_fixture_err("call_loc_musttail", MUSTTAIL.as_bytes());
+    assert_eq!(
+        musttail.to_string(),
+        "not enough parameters specified for call"
+    );
+    assert_eq!(error_line_col(MUSTTAIL, &musttail), (3, 12));
+    assert_eq!(error_token(MUSTTAIL, &musttail), "call");
+}
+
+/// **Divergence lock for `docs/divergences.md` entry 125**, in the shape
+/// `parser_eh_funclet.rs::wineh_missing_funclet_token_is_not_diagnosed` uses
+/// for entry 112: it asserts what llvmkit *does*, so the entry stops being a
+/// quoted probe and starts being a test that fails when the gap closes.
+///
+/// Both fixtures are `RUN: not opt -passes=verify` upstream — every module in
+/// them is invalid IR, and between them their `CHECK:` lines pin six
+/// `Verifier::visitCallBase` operand-bundle diagnostics. llvmkit has no
+/// counterpart to that routine's bundle loop, so it accepts both. **This test
+/// asserts the divergence, not a rule**; when the loop is ported it must fail,
+/// and the two round-trip tests above then gain their verdict halves.
+#[test]
+fn call_operand_bundle_rules_are_not_diagnosed() {
+    const KCFI: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/kcfi-operand-bundles.ll");
+    const PTRAUTH: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/ptrauth-operand-bundles.ll");
+
+    for (name, fixture) in [
+        ("kcfi-operand-bundles", KCFI),
+        ("ptrauth-operand-bundles", PTRAUTH),
+    ] {
+        let module = Module::dynamic(name);
+        Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        assert!(
+            module.verify_borrowed().is_ok(),
+            "divergence 125 assumes llvmkit accepts {name}; it no longer does: {:?}",
+            module.verify_borrowed().err()
+        );
+    }
+}
+
+/// `test/Verifier/inline-asm-indirect-operand.ll`, verbatim (the whole file).
+/// The inline-asm `call`, `invoke` and `callbr` forms of an argument carrying
+/// `elementtype(i32)`.
+///
+/// Upstream's `RUN` line is `not llvm-as < %s -o /dev/null 2>&1 | FileCheck %s`
+/// — `llvm-as` runs the verifier, and the rejection is
+/// `Verifier::verifyInlineAsmCall`'s per-operand half, which llvmkit does not
+/// port (`docs/divergences.md` entry 85). So only the parse/print half is
+/// ported: the `CHECK-NEXT` lines are the offending instruction as `AsmWriter`
+/// prints it, and `@okay`'s call is the positive case with no `CHECK` of its
+/// own. That llvmkit accepts the module is entry 85's divergence, not this
+/// test's claim.
+#[test]
+fn inline_asm_call_elementtype_argument_attribute_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/inline-asm-indirect-operand.ll");
+
+    let text = parse_and_render_bytes(
+        "inline_asm_call_elementtype_argument_attribute_round_trips",
+        FIXTURE,
+    );
+    check_directives(
+        &text,
+        &[
+            // `@okay` — the positive case, which carries no upstream `CHECK`
+            // line of its own; the attribute must survive here too or the
+            // fixture means nothing.
+            Check::Line(
+                r#"call void asm "addl $1, $0", "=*rm,r"(ptr elementtype(i32) %p, i32 %x)"#,
+            ),
+            Check::Line(r#"call void asm "addl $1, $0", "=*rm,r"(i32 %p, i32 %x)"#),
+            Check::Line(
+                r#"call void asm "addl $1, $0", "=*rm,r"(ptr elementtype(i32) %p, ptr elementtype(i32) %x)"#,
+            ),
+            Check::Line(r#"call void asm "addl $1, $0", "=*rm,r"(ptr %p, i32 %x)"#),
+            Check::Line(r#"invoke void asm "addl $1, $0", "=*rm,r"(i32 %p, i32 %x)"#),
+            Check::Line(r#"callbr void asm "addl $1, $0", "=*rm,r"(i32 %p, i32 %x)"#),
+        ],
+    );
+}
+
+/// **No upstream counterpart.** The rule anchor is `LLParser::parseCall`'s
+/// post-construction statements — `CI->setTailCallKind(TCK)`,
+/// `CI->setCallingConv(CC)` and `CI->setFastMathFlags(FMF)` — which run on the
+/// single `Value *Callee` that `convertValIDToValue` resolved, with no
+/// direct/indirect distinction anywhere; and
+/// `AssemblyWriter::printInstruction`'s `CallInst` arm, which prints all three
+/// without consulting the callee's shape.
+///
+/// The fixture is llvmkit-authored: it spells a tail-call kind, a calling
+/// convention and fast-math flags on a non-`@` callee.
+#[test]
+fn indirect_call_modifiers_round_trip() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_modifiers_round_trip.ll"
+    );
+
+    let text = parse_and_render_bytes("indirect_call_modifiers_round_trip", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line("tail call void %fp(i32 %v)"),
+            Check::Next("notail call void %fp(i32 %v)"),
+            Check::Next("call fastcc void %fp(i32 %v)"),
+            // `printCallingConv`'s default arm writes `cc99`; the fixture's
+            // spaced input is the same token stream after `LLLexer`'s rewind.
+            Check::Next("call cc99 void %fp(i32 %v)"),
+            Check::Next("%a = call nnan ninf float %fp(float %fv)"),
+            Check::Next("%b = call fast float %fp(float %fv)"),
+        ],
+    );
+}
+
+/// **No upstream counterpart** for the `#N` and return-attribute halves — see
+/// [`indirect_call_modifiers_round_trip`] for the shape. (The
+/// *parameter*-attribute half does have one, ported as
+/// [`indirect_call_parameter_attribute_round_trips`].)
+///
+/// The rule anchor is `LLParser::parseCall`'s `CI->setAttributes(PAL)` and
+/// `ForwardRefAttrGroups[CI] = FwdRefAttrGrps`, both of which run on the single
+/// resolved `Value *Callee`. A dropped `#0` is doubly visible: the call loses
+/// the reference *and* the module keeps an `attributes #0 = { … }` line nothing
+/// refers to, which is why the definition is asserted too.
+#[test]
+fn indirect_call_attributes_round_trip() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_attributes_round_trip.ll"
+    );
+
+    let text = parse_and_render_bytes("indirect_call_attributes_round_trip", FIXTURE);
+    check_directives(
+        &text,
+        &[
+            Check::Line("call void %fp(i32 noundef %v)"),
+            Check::Next("call void %fp(ptr nonnull align 8 %p)"),
+            Check::Next("call void %fp(i32 %v) #0"),
+            Check::Next("%r = call zeroext i8 %fp(i32 %v)"),
+            Check::Line("attributes #0 = { nounwind }"),
+        ],
+    );
+}
+
 /// Mirrors `LLParser::PerFunctionState::getVal`'s type check at the callee
 /// position: a non-pointer local cannot be a callee, because
 /// `convertValIDToValue` asks `getVal` for the name at pointer type and
@@ -685,6 +1316,29 @@ fn invoke_explicit_type_round_trips() {
     assert_check_lines(
         &text,
         &["invoke void @f(i32 1)", "to label %ok unwind label %lp"],
+    );
+}
+
+/// `LLParser::parseBasicBlock` strips the optional `%name =` **before**
+/// `parseInstruction` dispatches, so the token `parseInvoke` reads next is
+/// always `parseType`'s return type. A `%`-sigil token in that position is a
+/// named struct type, unambiguously — and stays one whether or not the
+/// instruction carries a result name.
+///
+/// **No upstream fixture writes it:** `rg --no-ignore --hidden -a -l "invoke
+/// %[A-Za-z_.]"` over `orig_cpp/.../llvm/test/` returns nothing (the only
+/// near miss, `test/Assembler/opaque-ptr.ll`, writes `invoke void %p()` — a
+/// named *callee*, not a named return type). llvmkit read the return type as
+/// a result name and rejected both spellings until this commit.
+#[test]
+fn invoke_named_struct_return_type_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/invoke_named_struct_return_type.ll");
+
+    let text = parse_and_render_bytes("invoke_named_struct_return_type", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["invoke %struct.S @f()", "%r = invoke %struct.S @f()"],
     );
 }
 
@@ -830,4 +1484,331 @@ fn a_callbr_indirect_destination_list_is_mandatory() {
          define void @f() {\nentry:\n  callbr void @g() to label %ok []\nok:\n  ret void\n}\n",
     );
     assert_check_lines(&text, &["callbr void @g()", "to label %ok []"]);
+}
+
+/// Parse with [`ParserConfig::data_layout_callback`] answering `layout`, which
+/// is how `llvm-as -data-layout=<layout>` reaches the parser: `llvm-as.cpp`
+/// wraps `ClDataLayout` in a `DataLayoutCallbackTy` and hands it to
+/// `parseAssemblyFileWithIndex`. The verify half is `llvm-as`'s own — see
+/// [`parse_verify_and_render_bytes`].
+fn parse_verify_and_render_with_data_layout(src: &[u8], layout: &str) -> String {
+    let callback = |_: &str, _: &str| Some(layout.to_owned());
+    let config = llvmkit_asmparser::parser::ParserConfig {
+        data_layout_callback: Some(&callback),
+        ..llvmkit_asmparser::parser::ParserConfig::DEFAULT
+    };
+    let module = llvmkit_asmparser::parser::parse_dynamic_with_config(src, &config)
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("`llvm-as` verifies this fixture, so llvmkit must too");
+    format!("{module}")
+}
+
+/// `test/Assembler/call-nonzero-program-addrspace.ll`, first `RUN` line
+/// (`not llvm-as %s`): with the file's own — zero — program address space, a
+/// callee held in `addrspace(42)` does not match the `ptr` the call site
+/// demands. The rule is `LLParser::parseCall`'s
+/// `convertValIDToValue(PointerType::get(Context, CallAddrSpace), …)` reaching
+/// `PerFunctionState::getVal` and `LLParser::checkValidVariableType`.
+///
+/// The fixture's `[[@LINE-1]]:25` column pin **is** asserted. It used to be
+/// skipped, on the ground that `convert_val_id_to_value` anchored at the token
+/// after the ValID rather than at `ID.Loc`; the `ValID::Loc` port closed that,
+/// and this comment outlived it. Asserting the column is what keeps the port
+/// from regressing silently on a fixture whose whole point is the column.
+#[test]
+fn call_in_zero_program_addrspace_rejects_a_nonzero_callee() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/call-nonzero-program-addrspace.ll");
+
+    assert_fixture_rejected(
+        "call_in_zero_program_addrspace_rejects_a_nonzero_callee",
+        FIXTURE,
+        "'%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'",
+    );
+
+    let src = std::str::from_utf8(FIXTURE).expect("fixture is UTF-8");
+    let err = parse_fixture_err(
+        "call_in_zero_program_addrspace_rejects_a_nonzero_callee_loc",
+        FIXTURE,
+    );
+    // `; CHECK: …:[[@LINE-1]]:25:` on the line after `%call_no_as = call i8
+    // %fnptr42(i32 0)` — upstream's `ID.Loc`, the `%fnptr42` token.
+    assert_eq!(error_line_col(src, &err), (10, 25));
+    assert_eq!(error_token(src, &err), "%fnptr42");
+}
+
+/// `test/Assembler/call-nonzero-program-addrspace.ll`, second `RUN` line
+/// (`llvm-as %s -data-layout=P42 | llvm-dis`), asserting its `PROGAS42`
+/// prefix. Three rules at once: `parseOptionalProgramAddrSpace` defaulting to
+/// the datalayout's program address space, `AssemblyWriter`'s
+/// `maybePrintCallAddrSpace` printing `addrspace(0)` because
+/// `ForcePrintAddrSpace` is set, and printing `addrspace(42)` because it is
+/// non-zero.
+///
+/// The fixture's `PROGAS42` block is asserted as upstream writes it, `-NEXT`
+/// included, through [`check_directives`].
+#[test]
+fn call_addrspace_round_trips_under_a_nonzero_program_addrspace() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/call-nonzero-program-addrspace.ll");
+
+    let text = parse_verify_and_render_with_data_layout(FIXTURE, "P42");
+    check_directives(
+        &text,
+        &[
+            Check::Line("target datalayout = \"P42\""),
+            Check::Line("define i8 @test(ptr %fnptr0, ptr addrspace(42) %fnptr42) addrspace(42) {"),
+            Check::Next("%explicit_as_0 = call addrspace(0) i8 %fnptr0(i32 0)"),
+            Check::Next("%explicit_as_42 = call addrspace(42) i8 %fnptr42(i32 0)"),
+            Check::Next("%call_no_as = call addrspace(42) i8 %fnptr42(i32 0)"),
+            Check::Next("ret i8 0"),
+            Check::Next("}"),
+        ],
+    );
+}
+
+/// `test/Assembler/call-nonzero-program-addrspace-2.ll`, both `RUN` lines. The
+/// numbered-value twin of the pair above: `parseValID`'s `t_LocalID` arm
+/// reaches `PerFunctionState::getVal(unsigned, …)`, and the printed slot
+/// numbers are upstream's (`%0`/`%1` arguments, `%2` the entry block, results
+/// from `%3`). Its `PROGAS42` block is asserted with `-NEXT` where upstream
+/// writes it, through [`check_directives`].
+#[test]
+fn numbered_callee_addrspace_matches_upstream_in_both_program_addrspaces() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/call-nonzero-program-addrspace-2.ll");
+
+    assert_fixture_rejected(
+        "numbered_callee_addrspace_rejected",
+        FIXTURE,
+        "'%1' defined with type 'ptr addrspace(42)' but expected 'ptr'",
+    );
+
+    let text = parse_verify_and_render_with_data_layout(FIXTURE, "P42");
+    check_directives(
+        &text,
+        &[
+            Check::Line("target datalayout = \"P42\""),
+            Check::Line("define i8 @test_unnamed(ptr %0, ptr addrspace(42) %1) addrspace(42) {"),
+            Check::Next("%3 = call addrspace(0) i8 %0(i32 0)"),
+            Check::Next("%4 = call addrspace(42) i8 %1(i32 0)"),
+            Check::Next("%5 = call addrspace(42) i8 %1(i32 0)"),
+            Check::Next("ret i8 0"),
+            Check::Next("}"),
+        ],
+    );
+}
+
+/// `test/Assembler/invoke-nonzero-program-addrspace.ll`, both `RUN` lines.
+/// `LLParser::parseInvoke` carries its own `parseOptionalProgramAddrSpace`
+/// (upstream's `InvokeAddrSpace`) and `AssemblyWriter`'s `InvokeInst` arm is
+/// `maybePrintCallAddrSpace`'s second and last caller.
+///
+/// Every directive in this fixture's `PROGAS200` block is a plain `PROGAS200:`
+/// — upstream writes no `-NEXT` here — so all seven are [`Check::Line`].
+#[test]
+fn invoke_addrspace_matches_upstream_in_both_program_addrspaces() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/invoke-nonzero-program-addrspace.ll");
+
+    assert_fixture_rejected(
+        "invoke_addrspace_rejected",
+        FIXTURE,
+        "'%fnptr200' defined with type 'ptr addrspace(200)' but expected 'ptr'",
+    );
+
+    let text = parse_verify_and_render_with_data_layout(FIXTURE, "P200");
+    check_directives(
+        &text,
+        &[
+            Check::Line("target datalayout = \"P200\""),
+            Check::Line(
+                "define i8 @test_invoke(ptr %fnptr0, ptr addrspace(200) %fnptr200) addrspace(200) personality ptr addrspace(200) @__gxx_personality_v0 {",
+            ),
+            Check::Line("%explicit_as_0 = invoke addrspace(0) i8 %fnptr0(i32 0)"),
+            Check::Line("%explicit_as_42 = invoke addrspace(200) i8 %fnptr200(i32 0)"),
+            Check::Line("%no_as = invoke addrspace(200) i8 %fnptr200(i32 0)"),
+            Check::Line("ret i8 0"),
+            Check::Line("}"),
+        ],
+    );
+}
+
+/// `LLParser::parseCallBr` is the one call-family routine with **no**
+/// `parseOptionalProgramAddrSpace` — its `||` chain goes return-attrs ->
+/// `parseType` — so `callbr addrspace(1) …` is a syntax error upstream too,
+/// and `AssemblyWriter`'s `CallBrInst` arm has no `maybePrintCallAddrSpace`
+/// call. LLVM 22.1.4 ships no `.ll` fixture pinning that absence, so the
+/// routine is the anchor (D11).
+#[test]
+fn callbr_does_not_accept_an_address_space() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCallBr/callbr_rejects_addrspace.ll");
+
+    assert_fixture_rejected(
+        "callbr_does_not_accept_an_address_space",
+        FIXTURE,
+        "expected type",
+    );
+}
+
+/// `test/Assembler/ifunc-program-addrspace.ll`, whole and verbatim, with its
+/// own `CHECK` / `CHECK-NEXT` block. Upstream's `RUN` line is
+/// `llvm-as < %s | llvm-dis | FileCheck %s`, so [`parse_verify_and_render_bytes`]
+/// is the whole pipeline.
+///
+/// What it pins: `LLParser::convertValIDToValue`'s `t_GlobalName` arm is
+/// `getGlobalVal(ID.StrVal, Ty, ID.Loc)`, one lookup in
+/// `M->getValueSymbolTable()` that accepts **any** `GlobalValue`. An `ifunc`
+/// callee therefore resolves to the ifunc, at the ifunc's own address space —
+/// which for `@ifunc_as1` is 1, because `parseAliasOrIFunc` takes
+/// `AddrSpace = PTy->getAddressSpace()` from the resolver constant. The call's
+/// own `FunctionType` lives on the `CallBase`, so nothing needs the callee to
+/// be a `Function`.
+///
+/// The same fixture also drives the corpus manifest, which asserts what
+/// `check_directives` cannot: that the module verifies and that printing it,
+/// re-parsing the print and printing again is a fixed point.
+#[test]
+fn ifunc_callee_resolves_at_the_ifuncs_own_program_address_space() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/ifunc-program-addrspace.ll");
+
+    let text = parse_verify_and_render_bytes(
+        "ifunc_callee_resolves_at_the_ifuncs_own_program_address_space",
+        FIXTURE,
+    );
+    check_directives(
+        &text,
+        &[
+            Check::Line("@ifunc_as0 = ifunc void (), ptr @resolver_as0"),
+            Check::Line("@ifunc_as1 = ifunc void (), ptr addrspace(1) @resolver_as1"),
+            Check::Line("define ptr @resolver_as0() addrspace(0) {"),
+            Check::Line("define ptr @resolver_as1() addrspace(1) {"),
+            Check::Line("define void @call_ifunc_as0() addrspace(1) {"),
+            Check::Next("call addrspace(0) void @ifunc_as0()"),
+            Check::Line("define void @call_ifunc_as1() addrspace(1) {"),
+            Check::Next("call addrspace(1) void @ifunc_as1()"),
+        ],
+    );
+}
+
+/// `test/Assembler/ifunc-use-list-order.ll`, whole and verbatim. Upstream's
+/// `RUN` line is `verify-uselistorder < %s`, which has no `CHECK` block, so
+/// what is portable is the half `docs/fixture-coverage.md` maps that tool onto:
+/// the module parses and prints. The lines asserted here are the two call sites
+/// — one to an ifunc, one to an ordinary function — because they are what the
+/// `getGlobalVal` lookup decides.
+///
+/// This fixture was classified `blocked-model` on the forward-reference gap.
+/// It was not blocked on that: `@foo_ifunc` is *defined above* `@bar`, so the
+/// callee lookup finds it in the symbol table and the forward-declaration arm
+/// is never reached. Its blocker was the narrow callee lookup, the same one
+/// [`ifunc_callee_resolves_at_the_ifuncs_own_program_address_space`] pins.
+#[test]
+fn a_call_to_an_already_defined_ifunc_resolves_to_the_ifunc() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/ifunc-use-list-order.ll");
+
+    let text = parse_verify_and_render_bytes(
+        "a_call_to_an_already_defined_ifunc_resolves_to_the_ifunc",
+        FIXTURE,
+    );
+    check_directives(
+        &text,
+        &[
+            Check::Line("@foo_ifunc = ifunc void (), ptr @foo_resolver"),
+            Check::Line("define void @bar() {"),
+            Check::Line("call void @foo_ifunc()"),
+            Check::Line("define void @bar2() {"),
+            Check::Line("call void @bar()"),
+        ],
+    );
+}
+
+/// **llvmkit-authored fixture; the rule is the anchor (D11).** No `.ll` in the
+/// vendored tree spells a bare call to an alias, a global variable or a
+/// numbered global: `rg '= alias '` over `test/Assembler`, `test/Verifier`,
+/// `test/Feature` and `test/Bitcode`, intersected with the files that carry a
+/// `call`/`invoke`, leaves `test/Feature/aliases.ll` as the only one with a
+/// bare alias callee (`%tmp4 = call %FunTy @bar_f()`) — and it is written in
+/// typed-pointer syntax LLVM 22.1.4 no longer parses.
+///
+/// The rule: `LLParser::getGlobalVal`'s lookup is
+/// `cast_or_null<GlobalValue>(M->getValueSymbolTable().lookup(Name))`, and its
+/// numbered twin reads `NumberedVals`. Both accept **any** `GlobalValue`, and
+/// the call's own `FunctionType` lives on the `CallBase`, so the callee never
+/// has to be a `Function`. The ifunc arm of that same rule is pinned by two
+/// upstream fixtures; these three kinds have none, which is why they are here.
+#[test]
+fn a_non_function_global_callee_resolves_through_the_symbol_table() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-getGlobalVal/non_function_global_callees.ll");
+
+    let text = parse_verify_and_render_bytes(
+        "a_non_function_global_callee_resolves_through_the_symbol_table",
+        FIXTURE,
+    );
+    check_directives(
+        &text,
+        &[
+            Check::Line("call void @a()"),
+            Check::Next("call void @gv()"),
+            Check::Next("call void @0()"),
+        ],
+    );
+}
+
+/// **llvmkit-authored; the rule is the anchor (D11).** The three arms of
+/// `FPMathOperator::isComposedOfHomogeneousFloatingPointTypes` that answer
+/// *false* on an aggregate, each of which upstream's `llvm-as` rejects the
+/// same way and none of which any `.ll` in the vendored tree spells:
+///
+/// * a literal struct whose fields are not all one type — `containsHomogeneousTypes`
+///   is `!ElementTys.empty() && all_equal(ElementTys)`;
+/// * an **identified** struct, homogeneous or not — the routine opens with
+///   `if (!StructTy->isLiteral() || …) return false`;
+/// * the empty literal struct — the `!ElementTys.empty()` half.
+///
+/// The positive arms are `test/Bitcode/compatibility.ll`'s
+/// `@fastMathFlagsForArrayCalls` / `@fastMathFlagsForStructCalls`, vendored
+/// under `fixtures/upstream/compatibility/` and driven by the corpus manifest.
+#[test]
+fn fast_math_flags_on_a_non_homogeneous_aggregate_call_are_rejected() {
+    const MESSAGE: &str =
+        "fast-math-flags specified for call without floating-point scalar or vector return type";
+    const CASES: &[(&str, &str)] = &[
+        (
+            "mixed_literal_struct",
+            "declare { float, i32 } @m()\n\
+             define void @f() {\n  \
+             %r = call fast { float, i32 } @m()\n  \
+             ret void\n\
+             }\n",
+        ),
+        (
+            "identified_struct",
+            "%named = type { float, float }\n\
+             declare %named @n()\n\
+             define void @f() {\n  \
+             %r = call fast %named @n()\n  \
+             ret void\n\
+             }\n",
+        ),
+        (
+            "empty_literal_struct",
+            "declare {} @e()\n\
+             define void @f() {\n  \
+             %r = call fast {} @e()\n  \
+             ret void\n\
+             }\n",
+        ),
+    ];
+
+    for (name, source) in CASES {
+        let err = parse_fixture_err(name, source.as_bytes());
+        assert_eq!(err.to_string(), MESSAGE, "case {name}");
+    }
 }

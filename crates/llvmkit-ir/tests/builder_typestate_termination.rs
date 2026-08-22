@@ -73,9 +73,10 @@ fn termination_typestate_does_not_change_asm_output() -> Result<(), IrError> {
     b.ret_void()?;
 
     let expected = "; ModuleID = 'termination_asm'\n\
+                    \n\
                     define void @g() {\n\
                     entry:\n  br label %exit\n\n\
-                    exit:\n  ret void\n}\n";
+                    exit:                                             ; preds = %entry\n  ret void\n}\n";
     assert_eq!(format!("{m}"), expected);
     Ok(())
 }

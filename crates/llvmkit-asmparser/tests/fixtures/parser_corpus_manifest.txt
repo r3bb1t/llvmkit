@@ -8,12 +8,20 @@
 #   status=reject       upstream runs `not llvm-as` / `not opt` over it: the
 #                       parse must fail.
 #   status=xfail-parse  llvmkit gap: upstream accepts it, llvmkit does not parse
-#                       it yet. Accounted for in docs/fixture-coverage.md.
+#                       it yet.
 #   status=xfail-verify llvmkit gap: parses, but does not verify.
 #   error=<text>        `reject` only. Upstream's FileCheck diagnostic text; the
 #                       rendered message must contain it, FileCheck's own rule.
 #   loc=<line>:<col>    `reject` only. Upstream's `<stdin>:LINE:COL:` pin.
 #   expect=<fixture>    golden print to compare against.
+#
+# The two xfail statuses have no rows: `grep 'status=xfail' ` over this file
+# matches only the two option lines above. A fixture llvmkit cannot handle is
+# classified `blocked-model` in docs/fixture-coverage.md and gets no row here
+# at all, so an xfail row is a state the driver can express and the corpus does
+# not currently occupy. The three rows that used to carry `xfail-parse` were
+# upstream *negatives*, not llvmkit gaps, and are `reject` rows now with their
+# diagnostic pinned.
 #
 # Fixtures under upstream/assembler-corpus/ are byte-for-byte copies of
 # llvm/test/Assembler/*.ll. A row citing `split-file part <p>` is the exact
@@ -22,17 +30,17 @@
 facade_minimal.ll | unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString) | status=pass
 corpus_flags_minimal.ll | test/Assembler/flags.ll | expect=corpus_flags_minimal.expected.ll | status=pass
 corpus_dbg_declare_value.ll | test/Assembler/dbg_declare_value.ll | expect=corpus_dbg_declare_value.expected.ll | status=pass
-corpus_dbg_record_after_terminator_invalid.ll | test/Assembler/dbg-record-invalid-0.ll | status=xfail-parse
+corpus_dbg_record_after_terminator_invalid.ll | test/Assembler/dbg-record-invalid-0.ll | status=reject | loc=6:1 | error=expected instruction opcode
+upstream/vscale-round-trip.ll | test/Bitcode/vscale-round-trip.ll (whole file) | status=pass
+upstream/compatibility/fast_math_flags_on_aggregate_calls.ll | test/Bitcode/compatibility.ll -- @fastMathFlagsForArrayCalls and @fastMathFlagsForStructCalls with their declares, verbatim | expect=upstream/compatibility/fast_math_flags_on_aggregate_calls.expected.ll | status=pass
 
-# Upstream fixtures checked in now, but expected-failing.
-# return_self_bad.ll is a *negative* fixture: its CHECK line pins
-# `constant expression type mismatch`, which needs W4's convertValIDToValue.
-upstream/vscale-round-trip/const_shufflevector.ll | test/Bitcode/vscale-round-trip.ll::const_shufflevector / const_shufflevector_ex | status=pass
+# `blockaddress-addrspace.ll`'s three split-file parts. `return_self_bad.ll`
+# is the negative one; its own `; CHECK` line carries the `[[#@LINE-1]]:24:`
+# pin this row reproduces.
 upstream/blockaddress-addrspace/return_self_good.ll | test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll | status=pass
-upstream/blockaddress-addrspace/return_self_bad.ll | test/Bitcode/blockaddress-addrspace.ll::return-self-bad.ll | status=xfail-parse
+upstream/blockaddress-addrspace/return_self_bad.ll | test/Bitcode/blockaddress-addrspace.ll::return-self-bad.ll | status=reject | loc=8:24 | error=constant expression type mismatch: got type 'ptr addrspace(1)' but expected 'ptr addrspace(2)'
 upstream/blockaddress-addrspace/global_fwddecl_good.ll | test/Bitcode/blockaddress-addrspace.ll::global-fwddecl-good.ll | status=pass
 upstream/pr119818.ll | test/Assembler/pr119818.ll | status=pass
-upstream/2004-11-28-InvalidTypeCrash.ll | test/Assembler/2004-11-28-InvalidTypeCrash.ll | status=xfail-parse
 upstream/2010-02-05-FunctionLocalMetadataBecomesNull/global_forward_gep.ll | test/Assembler/2010-02-05-FunctionLocalMetadataBecomesNull.ll global forward GEP excerpt | status=pass
 
 # ---------------------------------------------------------------------------
@@ -162,6 +170,8 @@ upstream/assembler-corpus/byval-parse-error0.ll | test/Assembler/byval-parse-err
 upstream/assembler-corpus/byval-type-attr.ll | test/Assembler/byval-type-attr.ll | status=pass
 upstream/assembler-corpus/c-style-comment.ll | test/Assembler/c-style-comment.ll | status=pass
 upstream/assembler-corpus/call-arg-is-callee.ll | test/Assembler/call-arg-is-callee.ll | status=pass
+upstream/assembler-corpus/call-nonzero-program-addrspace-2.ll | test/Assembler/call-nonzero-program-addrspace-2.ll | status=reject | loc=11:11 | error='%1' defined with type 'ptr addrspace(42)' but expected 'ptr'
+upstream/assembler-corpus/call-nonzero-program-addrspace.ll | test/Assembler/call-nonzero-program-addrspace.ll | status=reject | loc=10:25 | error='%fnptr42' defined with type 'ptr addrspace(42)' but expected 'ptr'
 upstream/assembler-corpus/callbr.ll | test/Assembler/callbr.ll | status=pass
 upstream/assembler-corpus/callee-type-metadata.ll | test/Assembler/callee-type-metadata.ll | status=pass
 upstream/assembler-corpus/captures-errors/duplicate-ret.ll | test/Assembler/captures-errors.ll split-file part duplicate-ret.ll | status=reject | error=duplicate 'ret' location
@@ -232,12 +242,16 @@ upstream/assembler-corpus/dso_local_equivalent.ll | test/Assembler/dso_local_equ
 upstream/assembler-corpus/externally-initialized.ll | test/Assembler/externally-initialized.ll | status=pass
 upstream/assembler-corpus/extractvalue-invalid-idx.ll | test/Assembler/extractvalue-invalid-idx.ll | status=reject | error=invalid indices for extractvalue
 upstream/assembler-corpus/extractvalue-no-idx.ll | test/Assembler/extractvalue-no-idx.ll | status=reject | error=expected index
+upstream/assembler-corpus/flags.ll | test/Assembler/flags.ll | status=pass
 upstream/assembler-corpus/fp-intrinsics-attr.ll | test/Assembler/fp-intrinsics-attr.ll | status=pass
 upstream/assembler-corpus/function-operand-uselistorder.ll | test/Assembler/function-operand-uselistorder.ll | status=pass
 upstream/assembler-corpus/getelementptr_invalid_ptr.ll | test/Assembler/getelementptr_invalid_ptr.ll | status=reject | error=base of getelementptr must be a pointer
 upstream/assembler-corpus/getelementptr_struct.ll | test/Assembler/getelementptr_struct.ll | status=reject | error=invalid getelementptr indices
 upstream/assembler-corpus/getelementptr_vec_ce.ll | test/Assembler/getelementptr_vec_ce.ll | status=pass
 upstream/assembler-corpus/getelementptr_vec_ce2.ll | test/Assembler/getelementptr_vec_ce2.ll | status=reject | error=getelementptr vector index has a wrong number of elements
+upstream/assembler-corpus/getelementptr_vec_idx1.ll | test/Assembler/getelementptr_vec_idx1.ll | status=reject | error='%w' defined with type '<2 x ptr>
+upstream/assembler-corpus/getelementptr_vec_idx2.ll | test/Assembler/getelementptr_vec_idx2.ll | status=reject | error=getelementptr vector index has a wrong number of elements
+upstream/assembler-corpus/getelementptr_vec_idx3.ll | test/Assembler/getelementptr_vec_idx3.ll | status=reject | error='%w' defined with type '<2 x ptr>'
 upstream/assembler-corpus/getelementptr_vec_idx4.ll | test/Assembler/getelementptr_vec_idx4.ll | status=reject | error=getelementptr vector index has a wrong number of elements
 upstream/assembler-corpus/getelementptr_vec_struct.ll | test/Assembler/getelementptr_vec_struct.ll | status=reject | error=invalid getelementptr indices
 upstream/assembler-corpus/getelementptr_vscale_struct.ll | test/Assembler/getelementptr_vscale_struct.ll | status=reject | error=invalid getelementptr indices
@@ -251,7 +265,9 @@ upstream/assembler-corpus/hex-float-overflow/half.ll | test/Assembler/hex-float-
 upstream/assembler-corpus/huge-array.ll | test/Assembler/huge-array.ll | status=pass
 upstream/assembler-corpus/ifunc-asm.ll | test/Assembler/ifunc-asm.ll | status=pass
 upstream/assembler-corpus/ifunc-dsolocal.ll | test/Assembler/ifunc-dsolocal.ll | status=pass
+upstream/assembler-corpus/ifunc-program-addrspace.ll | test/Assembler/ifunc-program-addrspace.ll | status=pass
 upstream/assembler-corpus/ifunc-stripPointerCastsAndAliases.ll | test/Assembler/ifunc-stripPointerCastsAndAliases.ll | status=pass
+upstream/assembler-corpus/ifunc-use-list-order.ll | test/Assembler/ifunc-use-list-order.ll | status=pass
 upstream/assembler-corpus/implicit-intrinsic-declaration-invalid2.ll | test/Assembler/implicit-intrinsic-declaration-invalid2.ll | status=reject | error=intrinsic can only be used as callee
 upstream/assembler-corpus/inalloca-parse-error0.ll | test/Assembler/inalloca-parse-error0.ll | status=reject | loc=4:40 | error=expected '('
 upstream/assembler-corpus/inalloca.ll | test/Assembler/inalloca.ll | status=pass
@@ -399,6 +415,7 @@ upstream/assembler-corpus/invalid-uselistorder_bb-not-bb.ll | test/Assembler/inv
 upstream/assembler-corpus/invalid-uselistorder_bb-not-func.ll | test/Assembler/invalid-uselistorder_bb-not-func.ll | status=reject | error=expected function name in uselistorder_bb
 upstream/assembler-corpus/invalid-uselistorder_bb-numbered.ll | test/Assembler/invalid-uselistorder_bb-numbered.ll | status=reject | error=invalid numeric label in uselistorder_bb
 upstream/assembler-corpus/invalid_cast4.ll | test/Assembler/invalid_cast4.ll | status=reject | error=invalid cast opcode for cast from 'i64' to 'i64'
+upstream/assembler-corpus/invoke-nonzero-program-addrspace.ll | test/Assembler/invoke-nonzero-program-addrspace.ll | status=reject | loc=11:22 | error='%fnptr200' defined with type 'ptr addrspace(200)' but expected 'ptr'
 upstream/assembler-corpus/large-comdat.ll | test/Assembler/large-comdat.ll | status=pass
 upstream/assembler-corpus/local-unnamed-addr.ll | test/Assembler/local-unnamed-addr.ll | status=pass
 upstream/assembler-corpus/lround.ll | test/Assembler/lround.ll | status=pass
@@ -482,12 +499,14 @@ upstream/assembler-corpus/sret-type-attr.ll | test/Assembler/sret-type-attr.ll |
 upstream/assembler-corpus/summary-flags.ll | test/Assembler/summary-flags.ll | status=pass
 upstream/assembler-corpus/summary-flags2.ll | test/Assembler/summary-flags2.ll | status=pass
 upstream/assembler-corpus/symbolic-addrspace-datalayout/invalid-name.ll | test/Assembler/symbolic-addrspace-datalayout.ll split-file part invalid-name.ll | status=reject | error=invalid symbolic addrspace 'global3'
+upstream/assembler-corpus/symbolic-addrspace-datalayout/sym-to-num.ll | test/Assembler/symbolic-addrspace-datalayout.ll split-file part sym-to-num.ll | status=pass
 upstream/assembler-corpus/symbolic-addrspace/alloca-in-other-as.ll | test/Assembler/symbolic-addrspace.ll split-file part alloca-in-other-as.ll | status=pass
 upstream/assembler-corpus/symbolic-addrspace/bad-multiple-valid-chars.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-multiple-valid-chars.ll | status=reject | error=invalid symbolic addrspace 'AG'
 upstream/assembler-corpus/symbolic-addrspace/bad-not-string.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-not-string.ll | status=reject | error=expected integer or string constant
 upstream/assembler-corpus/symbolic-addrspace/bad-number-in-quotes.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-number-in-quotes.ll | status=reject | error=invalid symbolic addrspace '10'
 upstream/assembler-corpus/symbolic-addrspace/bad-unknown-char.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-unknown-char.ll | status=reject | error=invalid symbolic addrspace 'D'
 upstream/assembler-corpus/symbolic-addrspace/bad-using-at-symbol.ll | test/Assembler/symbolic-addrspace.ll split-file part bad-using-at-symbol.ll | status=reject | error=expected integer or string constant
+upstream/assembler-corpus/symbolic-addrspace/valid.ll | test/Assembler/symbolic-addrspace.ll split-file part valid.ll | status=pass
 upstream/assembler-corpus/target-type-mangled.ll | test/Assembler/target-type-mangled.ll | status=pass
 upstream/assembler-corpus/target-type-param-errors/aarch64-svcount.ll | test/Assembler/target-type-param-errors.ll split-file part aarch64-svcount.ll | status=reject | error=target extension type aarch64.svcount should have no parameters
 upstream/assembler-corpus/target-type-param-errors/amdgcn-named-barrier.ll | test/Assembler/target-type-param-errors.ll split-file part amdgcn-named-barrier.ll | status=reject | error=target extension type amdgcn.named.barrier should have no type parameters and one integer parameter

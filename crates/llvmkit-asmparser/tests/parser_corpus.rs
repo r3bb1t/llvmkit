@@ -20,9 +20,11 @@
 //!   `<stdin>:LINE:COL:` as well, the row carries `loc=` and the reported span
 //!   must start there.
 //! - `xfail-parse` / `xfail-verify` --- llvmkit gaps: a fixture upstream
-//!   *accepts* that llvmkit does not yet parse or verify. These are the
-//!   explicit allowlist, and each one is accounted for in
-//!   `docs/fixture-coverage.md`.
+//!   *accepts* that llvmkit does not yet parse or verify. Neither has a row
+//!   today; a fixture llvmkit cannot handle is classified `blocked-model` in
+//!   `docs/fixture-coverage.md` and gets no manifest row at all. The three
+//!   rows that used to carry `xfail-parse` were upstream *negatives* misfiled
+//!   as llvmkit gaps, and are `reject` rows now.
 //!
 //! Fixtures under `fixtures/upstream/assembler-corpus/` are byte-for-byte copies of
 //! `llvm/test/Assembler/*.ll`; the ones in a subdirectory are the exact
@@ -33,6 +35,10 @@ use llvmkit_asmparser::parser;
 use llvmkit_ir::Module;
 use std::fs::{read, read_to_string};
 use std::path::{Path, PathBuf};
+
+pub mod support;
+
+use support::line_and_column;
 
 const CORPUS_MANIFEST: &str = include_str!("fixtures/parser_corpus_manifest.txt");
 
@@ -122,20 +128,6 @@ fn parse_loc(pin: &str, manifest_row: &str) -> (u32, u32) {
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
-
-/// 1-based line and column of `offset` within `src`, the coordinates
-/// `SourceMgr::PrintMessage` prints for an `SMLoc` and that upstream's
-/// `<stdin>:LINE:COL:` `FileCheck` lines pin.
-fn line_and_column(src: &[u8], offset: usize) -> (u32, u32) {
-    let consumed = &src[..offset.min(src.len())];
-    let line = consumed.iter().filter(|byte| **byte == b'\n').count() + 1;
-    let column = match consumed.iter().rposition(|byte| *byte == b'\n') {
-        Some(newline) => offset - newline,
-        None => offset + 1,
-    };
-    let narrow = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
-    (narrow(line), narrow(column))
 }
 
 /// Mirrors `llvm/lib/AsmParser/Parser.cpp` fixture loading behavior via
@@ -266,5 +258,40 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
                 );
             }
         }
+    }
+}
+
+/// **No upstream counterpart** — a guard on this manifest, not on LLVM.
+///
+/// Two rows may not name one fixture, and two fixtures may not hold identical
+/// bytes. The second half is the one with teeth: `2004-11-28-InvalidTypeCrash.ll`
+/// sat in the corpus twice, once at `upstream/` as `status=xfail-parse` and
+/// once at `upstream/assembler-corpus/` as `status=reject | error=…`. The two
+/// files were byte-identical, so the weaker row was asserting nothing the
+/// stronger one did not already assert, and the contradiction between their
+/// statuses went unnoticed for as long as nothing compared them.
+#[test]
+fn no_two_manifest_rows_name_or_hold_the_same_fixture() {
+    let fixture_dir = fixture_dir();
+    let mut by_path: Vec<&str> = Vec::new();
+    let mut by_content: Vec<(&str, Vec<u8>)> = Vec::new();
+
+    for entry in fixture_entries() {
+        assert!(
+            !by_path.contains(&entry.fixture),
+            "manifest names `{}` twice",
+            entry.fixture
+        );
+        by_path.push(entry.fixture);
+
+        let source = read(fixture_dir.join(entry.fixture))
+            .unwrap_or_else(|err| panic!("corpus fixture {} should read: {err}", entry.fixture));
+        if let Some((other, _)) = by_content.iter().find(|(_, bytes)| *bytes == source) {
+            panic!(
+                "corpus fixtures `{}` and `{}` are byte-identical; one row is redundant",
+                other, entry.fixture
+            );
+        }
+        by_content.push((entry.fixture, source));
     }
 }

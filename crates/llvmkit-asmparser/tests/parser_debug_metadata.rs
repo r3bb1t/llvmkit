@@ -14,6 +14,17 @@ fn parse_and_render(src: &str) -> String {
     format!("{module}")
 }
 
+/// `llvm-as | llvm-dis | llvm-as | llvm-dis` — **two** round trips, which is
+/// what `test/Assembler/debug-info.ll` and `test/Assembler/diexpression.ll`
+/// spell on their first `RUN` line. Their `CHECK` lines are therefore matched
+/// against the *second* `llvm-dis`, so a construct that survives one trip and
+/// not the next would still fail upstream. This is the parser/printer half of
+/// that pipeline; the fixtures' second `RUN` line, `verify-uselistorder %s`,
+/// has no llvmkit counterpart and is unported.
+fn parse_render_reparse(src: &str) -> String {
+    parse_and_render(&parse_and_render(src))
+}
+
 const DEBUG_MODULE: &str = r#"
 @g = global i32 0, !dbg !15
 
@@ -114,6 +125,73 @@ entry:
     );
 }
 
+/// `parseDebugRecord` parses its value field with
+/// `parseMetadata(ValLocMD, &PFS)` — the whole routine — whose non-`!`
+/// fall-through is
+/// `parseValueAsMetadata(MD, "expected metadata operand", PFS)`, i.e.
+/// `parseType(Ty, TypeMsg, Loc)`, then
+/// `if (Ty->isMetadataTy()) return error(Loc, "invalid metadata-value-metadata
+/// roundtrip");`, then `parseValue`.
+///
+/// llvmkit wrote that tail out instead of delegating, so it carried neither
+/// the `TypeMsg` nor the roundtrip guard: a non-type reported `parse_type`'s
+/// own `expected type`, and `metadata i32 %a` ran on into the value parse and
+/// blamed `%a` for the inner type. The same shape as a `call` argument was
+/// already correct, because that path calls the routine.
+///
+/// No `test/Assembler` fixture writes a bad value operand in a `#dbg_*`
+/// record — the `dbg-record-invalid-*.ll` family covers a bad record *type*
+/// and wrong operand *counts*. The routines are the anchor, and the two
+/// columns are `parseType`'s current token and `parseType`'s out-parameter
+/// `Loc` respectively.
+#[test]
+fn a_debug_record_value_operand_goes_through_parse_metadata() {
+    const HEADER: &str = "define void @f() !dbg !3 {\nentry:\n  %a = add i32 0, 0\n";
+    const TRAILER: &str = concat!(
+        "  ret void\n}\n\n",
+        "!0 = !DIFile(filename: \"a.c\", directory: \"/tmp\")\n",
+        "!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, producer: \"llvmkit\")\n",
+        "!2 = !DISubroutineType(types: !{null})\n",
+        "!3 = distinct !DISubprogram(name: \"f\", file: !0, type: !2, unit: !1)\n",
+        "!4 = !DILocation(line: 1, column: 1, scope: !3)\n",
+        "!5 = !DILocalVariable(name: \"x\", scope: !3, type: !6)\n",
+        "!6 = !DIBasicType(name: \"int\", size: 32, encoding: DW_ATE_signed)\n",
+    );
+    // `Ty->isMetadataTy()`, anchored at the *type* `parseType` just read.
+    let roundtrip =
+        format!("{HEADER}  #dbg_value(metadata %a, !5, !DIExpression(), !4)\n{TRAILER}");
+    let err = parse_err(&roundtrip);
+    assert_eq!(err.to_string(), "invalid metadata-value-metadata roundtrip");
+    assert_eq!(
+        reported_offset(&err),
+        roundtrip
+            .find("metadata %a")
+            .expect("the fixture writes one")
+    );
+    // `parseType(Ty, TypeMsg, Loc)` with `TypeMsg = "expected metadata
+    // operand"`, anchored at the token that is not a type.
+    let not_a_type = format!("{HEADER}  #dbg_value(42, !5, !DIExpression(), !4)\n{TRAILER}");
+    let err = parse_err(&not_a_type);
+    assert_eq!(err.to_string(), "expected metadata operand");
+    assert_eq!(
+        reported_offset(&err),
+        not_a_type.find("42").expect("the fixture writes one")
+    );
+}
+
+/// Byte offset a rejection reports, for comparison against a needle's own
+/// offset — the same "text alone cannot see the anchor" guard
+/// `parser_module_level.rs` spells with line and column.
+fn reported_offset(err: &ParseError) -> usize {
+    usize::try_from(
+        err.loc()
+            .expect("a rejection reports a location")
+            .span
+            .start,
+    )
+    .expect("span start fits in usize")
+}
+
 /// Regression (broad-review Critical): an align-less alloca with attached
 /// `!dbg` metadata parses. The metadata comma must not be mis-consumed as an
 /// array size (`LLParser::parseAlloc` branches on `MetadataVar` before the
@@ -157,11 +235,16 @@ fn parse_err(src: &str) -> ParseError {
         .expect_err("parse must fail")
 }
 
-/// Ports `test/Assembler/invalid-dilocation-field-bad.ll`, whose CHECK line is
-/// `error: invalid field 'bad'`.
+/// Ports `test/Assembler/invalid-dilocation-field-bad.ll` from the vendored
+/// copy, whose CHECK line is `error: invalid field 'bad'`. The fixture's
+/// `[[@LINE+1]]:18` column pin is asserted by that file's `loc=`/`error=` row
+/// in `parser_corpus_manifest.txt`; this test pins the typed variant.
 #[test]
 fn dilocation_rejects_a_field_its_class_does_not_declare() {
-    let err = parse_err("!0 = !DILocation(bad: 0)\n");
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/assembler-corpus/invalid-dilocation-field-bad.ll");
+
+    let err = parse_err(FIXTURE);
     assert!(
         matches!(
             &err,
@@ -354,13 +437,18 @@ fn debug_info_flag_disjunction_round_trips() {
     );
 }
 
-/// Ports `test/Assembler/diexpression.ll`, an `llvm-as | llvm-dis` round-trip
-/// whose `CHECK-SAME` lines are byte-identical to its input. Covers the empty
+/// Ports `test/Assembler/diexpression.ll`, whose `CHECK-SAME` lines are
+/// byte-identical to its input and are matched against the second `llvm-dis`
+/// of `llvm-as | llvm-dis | llvm-as | llvm-dis`; `parse_render_reparse` runs
+/// both trips. Covers the empty
 /// body, bare ops, op+literal sequences, and the `DW_OP_LLVM_convert` form that
 /// mixes in `DW_ATE_*` attribute encodings — the second keyword family
 /// `LLParser::parseDIExpressionBody` accepts.
 #[test]
 fn diexpression_forms_round_trip() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/assembler-corpus/diexpression.ll");
+
+    // The fixture's own nine `; CHECK-SAME:` needles.
     const FORMS: [&str; 9] = [
         "!DIExpression()",
         "!DIExpression(DW_OP_deref)",
@@ -372,11 +460,7 @@ fn diexpression_forms_round_trip() {
         "!DIExpression(DW_OP_LLVM_convert, 16, DW_ATE_unsigned, DW_OP_LLVM_convert, 32, DW_ATE_signed)",
         "!DIExpression(DW_OP_LLVM_tag_offset, 1)",
     ];
-    let mut src = String::from("!named = !{!0, !1, !2, !3, !4, !5, !6, !7, !8}\n");
-    for (i, form) in FORMS.iter().enumerate() {
-        src.push_str(&format!("!{i} = {form}\n"));
-    }
-    let text = parse_and_render(&src);
+    let text = parse_render_reparse(FIXTURE);
     for form in FORMS {
         assert!(text.contains(form), "missing {form} in:\n{text}");
     }
@@ -826,6 +910,9 @@ fn exact_word_kind_families_accept_every_spelling_the_lexer_produces() {
 // Debug records: `#dbg_*`, `!DIArgList`, and the debug-format intermix guard
 // --------------------------------------------------------------------------
 
+const DEBUG_VALUE_LIST: &str =
+    include_str!("fixtures/upstream/debug-value-list/debug_value_list.ll");
+
 const DBG_RECORD_INVALID_1: &str =
     include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-1.ll");
 const DBG_RECORD_INVALID_2: &str =
@@ -899,15 +986,25 @@ fn a_debug_record_missing_a_separator_reports_the_capital_e_label() {
     }
 }
 
-/// `!DIArgList(i32 %a, i32 %b)` in a `#dbg_value` record, which is the only
-/// place it can appear: its operands are a `ValueAsMetadata` list, so it needs
-/// a function state, which is why `parseMetadata` special-cases it ahead of
-/// `parseSpecializedMDNode` and why `parseNamedMetadata` refuses one outright.
+/// `!DIArgList(i32 %a, i32 %b)` in a `#dbg_value` record. Its operands are a
+/// `ValueAsMetadata` list, so it needs a function state, which is why
+/// `parseMetadata` special-cases it ahead of `parseSpecializedMDNode` and why
+/// `parseNamedMetadata` refuses one outright. The record is one of its
+/// spellings; `metadata !DIArgList(...)` in a call argument, an operand bundle
+/// or an exception-argument list is the other, covered by
+/// `upstream_debug_value_list_parses_with_di_arg_list_call_arguments` and
+/// `di_arg_list_reaches_the_other_parse_metadata_as_value_callers`.
 ///
-/// llvmkit-specific in its assembly — `test/Assembler` carries `!DIArgList`
-/// only inside the `dbg-record-invalid-*` negatives, where the parse never
-/// reaches the list — so the round trip is pinned against
+/// llvmkit-specific in its assembly, so the round trip is pinned against
 /// `AsmWriter::writeDIArgList`, which prints each operand as a typed value.
+///
+/// `test/Assembler`'s `dbg-record-invalid-*` fixtures do carry `!DIArgList`,
+/// but none pins an error raised *inside* the operand list: `-3.ll` and `-4.ll`
+/// fail at the record's head before the `(` — at the `#` itself
+/// (`LLParser::parseBasicBlock`'s hash loop) and at the record-type name
+/// (`LLParser::parseDebugRecord`'s opening check) respectively — while `-0.ll`,
+/// `-1.ll` and `-5.ll` parse the list to completion and fail at a token in the
+/// next IR line (`}`, the return type of the following `call`, and `}`).
 #[test]
 fn di_arg_list_round_trips_inside_a_debug_record() {
     let text = parse_and_render(
@@ -1018,6 +1115,32 @@ fn specialized_nodes_enforce_their_field_agreement_rules() {
     }
 }
 
+/// Mirrors `test/Assembler/debug-info.ll`'s
+/// `; CHECK-NEXT: !36 = !DIFile(filename: "file", directory: "dir", source: "int source() { }\0A")`
+/// (RUN: `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s`, so
+/// the CHECK line is the *second* `llvm-dis`'s output — `parse_render_reparse`
+/// runs both trips). `llvm::printEscapedString`
+/// writes `'\\' << hexdigit(C >> 4) << hexdigit(C & 0x0F)`, and `hexdigit`'s
+/// `LowerCase` parameter defaults to `false`, so the escape is `\0A` and not
+/// `\0a`.
+///
+/// The obvious fixture for this, `test/Assembler/difile-escaped-chars.ll`
+/// (`; CHECK: !0 = !DIFile(filename: "\00\01\02\80\81\82\FD\FE\FF", ...)`),
+/// cannot be ported: llvmkit rejects it with `expected UTF-8 string constant`.
+/// That is gap **G9** in `docs/fixture-coverage.md`, left on record rather
+/// than trimmed.
+#[test]
+fn metadata_string_hex_escapes_print_uppercase() {
+    // The vendored fixture whole, not a hand-typed excerpt: `UPSTREAM.md`'s
+    // audit rule requires a `mirror` row over an upstream `.ll` to load a
+    // checked-in copy. This is the same file `parser_corpus_manifest.txt`
+    // drives at `status=pass`; `!39` and `!40` are the two `source:` nodes.
+    const FIXTURE: &str = include_str!("fixtures/upstream/assembler-corpus/debug-info.ll");
+
+    let text = parse_render_reparse(FIXTURE);
+    assert!(text.contains(r#"source: "int source() { }\0A""#), "{text}");
+}
+
 /// Mirrors `LLParser::parseDIExpressionBody`, which looks each `DW_OP_*` and
 /// `DW_ATE_*` spelling up in its own table and rejects one the table does not
 /// carry — llvmkit used to store the name as written and print it straight
@@ -1037,5 +1160,150 @@ fn di_expression_validates_its_operands() {
     assert_eq!(
         parse_err("!0 = !DIExpression(18446744073709551616)\n").to_string(),
         "element too large, limit is 18446744073709551615"
+    );
+}
+
+/// `!DIArgList(metadata %a)` — a `metadata`-typed operand inside a
+/// `DIArgList`.
+///
+/// `LLParser::parseDIArgList` is the second direct caller of
+/// `parseValueAsMetadata`, alongside `parseMetadata`'s non-`!` fall-through,
+/// and it passes its own `TypeMsg`, `"expected value-as-metadata operand"`.
+/// Because it goes through that routine it inherits the
+/// `if (Ty->isMetadataTy())` guard, so a `metadata` operand is rejected at the
+/// *type* with `invalid metadata-value-metadata roundtrip`. llvmkit had
+/// inlined the routine's body here without the guard, so the parse ran on and
+/// complained about the value instead.
+///
+/// **Anchored on the routine, not on a fixture.**
+/// `test/Assembler`'s `dbg-record-invalid-*` fixtures do carry `!DIArgList`,
+/// but none pins an error raised *inside* the operand list: `-3.ll` and `-4.ll`
+/// fail at the record's head before the `(` — at the `#` itself
+/// (`LLParser::parseBasicBlock`'s hash loop) and at the record-type name
+/// (`LLParser::parseDebugRecord`'s opening check) respectively — while `-0.ll`,
+/// `-1.ll` and `-5.ll` parse the list to completion and fail at a token in the
+/// next IR line (`}`, the return type of the following `call`, and `}`).
+#[test]
+fn di_arg_list_rejects_a_metadata_typed_operand() {
+    let src = r#"
+define void @f(i32 %a) !dbg !3 {
+entry:
+    #dbg_value(!DIArgList(metadata %a), !5, !DIExpression(), !4)
+  ret void
+}
+
+!0 = !DIFile(filename: "a.c", directory: "/tmp")
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
+!2 = !DISubroutineType(types: !{null})
+!3 = distinct !DISubprogram(name: "f", file: !0, type: !2, unit: !1)
+!4 = !DILocation(line: 1, column: 1, scope: !3)
+!5 = !DILocalVariable(name: "x", file: !0, type: !6, scope: !3)
+!6 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+"#;
+    assert_eq!(
+        parse_err(src).to_string(),
+        "invalid metadata-value-metadata roundtrip"
+    );
+}
+/// Ports `test/DebugInfo/Generic/debug_value_list.ll`, byte-identical under
+/// `fixtures/upstream/debug-value-list/` — three `llvm.dbg.value` calls whose
+/// first argument is `metadata !DIArgList(...)`.
+///
+/// The construct this pins is `LLParser::parseMetadata`'s opening
+/// `lltok::MetadataVar` / `"DIArgList"` dispatch into
+/// `LLParser::parseDIArgList`, which runs ahead of `parseSpecializedMDNode`
+/// and is the reason `LLParser::parseMetadataAsValue` forwards a
+/// `PerFunctionState &` at all. llvmkit had hoisted that dispatch into two
+/// callers instead, so every site reached through `parse_metadata_as_value`
+/// rejected this file with `expected metadata type`.
+///
+/// **Oracle substitution, and why.** The fixture's `RUN` line is
+/// `opt -passes=verify < %s | opt -passes=verify -S | FileCheck %s`, so its
+/// `CHECK-COUNT-3: #dbg_value(` block is `opt`'s output *after* the
+/// dbg-intrinsic-to-`#dbg_*`-record conversion in `llvm::UpgradeIntrinsicCall`.
+/// llvmkit does not port that routine — `crates/llvmkit-ir/src/auto_upgrade.rs`
+/// covers `UpgradeModuleFlags`, `UpgradeSectionAttributes` and
+/// `UpgradeTBAANode`, and nothing on the intrinsic side, recorded as
+/// `docs/divergences.md` entry 19 — so llvmkit re-prints the intrinsic-call
+/// spelling. Its metadata slot numbering is not `SlotTracker`'s walk order
+/// either (entry 99), which is why the `CHECK-SAME: !16,` directive has no
+/// counterpart here.
+///
+/// So of the fixture's four directives, **two are asserted against upstream's
+/// literal text** — `!DIArgList(i32 %a, i32 %b, i32 5)` and the
+/// `!DIExpression(DW_OP_LLVM_arg, ...)`, on one line as `CHECK-SAME` demands.
+/// `CHECK-COUNT-3: #dbg_value(` is asserted as the three `llvm.dbg.value` calls
+/// llvmkit actually prints, and `CHECK-SAME: !16,` is dropped; both are
+/// recorded as entries 19 and 99 rather than trimmed. The fixture itself is
+/// byte-identical to upstream's.
+#[test]
+fn upstream_debug_value_list_parses_with_di_arg_list_call_arguments() {
+    let module = Module::dynamic("debug_value_list");
+    Parser::new(DEBUG_VALUE_LIST.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("test/DebugInfo/Generic/debug_value_list.ll parses");
+    let text = format!("{module}");
+    module.verify().expect("the fixture verifies");
+
+    // `; CHECK-COUNT-3: #dbg_value(`
+    assert_eq!(
+        text.matches("call void @llvm.dbg.value(metadata !DIArgList(")
+            .count(),
+        3,
+        "output:\n{text}"
+    );
+    // `; CHECK-SAME: !DIArgList(i32 %a, i32 %b, i32 5)` and
+    // `; CHECK-SAME: !DIExpression(DW_OP_LLVM_arg, 0, ...)`, both on the line
+    // the third match sits on.
+    let expression = concat!(
+        "!DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_plus, ",
+        "DW_OP_LLVM_arg, 2, DW_OP_plus)"
+    );
+    let third = text
+        .lines()
+        .find(|line| line.contains("!DIArgList(i32 %a, i32 %b, i32 5)"))
+        .unwrap_or_else(|| panic!("no three-operand DIArgList in:\n{text}"));
+    assert!(third.contains(expression), "line: {third}");
+}
+
+/// `metadata !DIArgList(...)` inside an operand bundle and inside a
+/// `cleanuppad` argument list — the two `parseMetadataAsValue` callers that are
+/// not `parseParameterList`.
+///
+/// `LLParser::parseOptionalOperandBundles` and `LLParser::parseExceptionArgs`
+/// both call `parseMetadataAsValue(V, PFS)` once the operand type is
+/// `metadata`, and that routine is `parseMetadata` plus `MetadataAsValue::get`
+/// — so upstream's `DIArgList` dispatch is reachable from both. No upstream
+/// fixture spells either shape; this test has no upstream counterpart and
+/// exists to hold the dispatch at the call sites the ported fixture above does
+/// not reach.
+#[test]
+fn di_arg_list_reaches_the_other_parse_metadata_as_value_callers() {
+    let text = parse_and_render(
+        r#"
+declare void @g()
+
+define void @f(i32 %a, i32 %b) personality ptr null {
+entry:
+  call void @g() [ "tag"(metadata !DIArgList(i32 %a, i32 %b)) ]
+  invoke void @g() to label %cont unwind label %pad
+
+cont:
+  ret void
+
+pad:
+  %cp = cleanuppad within none [metadata !DIArgList(i32 %a)]
+  cleanupret from %cp unwind to caller
+}
+"#,
+    );
+    assert!(
+        text.contains(r#"[ "tag"(metadata !DIArgList(i32 %a, i32 %b)) ]"#),
+        "output:\n{text}"
+    );
+    assert!(
+        text.contains("cleanuppad within none [metadata !DIArgList(i32 %a)]"),
+        "output:\n{text}"
     );
 }

@@ -4,6 +4,7 @@
 //!
 //! ```llvm
 //! ; ModuleID = 'cpu_state_add'
+//!
 //! define i32 @add(i64 %rax, i64 %rbx, i64 %rcx, i64 %rdx) local_unnamed_addr {
 //! entry:
 //!   %0 = trunc i64 %rax to i32

@@ -13,7 +13,7 @@ use super::instr_types::{BranchInstData, BranchKind};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{ModuleBrand, ModuleRef};
-use super::value::{ValueKindData, ValueSlot};
+use super::value::{Value, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::{BlockId, FunctionId};
 
 /// A directed edge in a function CFG. Mirrors LLVM's `BasicBlockEdge`
@@ -73,7 +73,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
             let succ_ids = successor_ids(&block);
             let block_id = block.slot();
             for succ_id in &succ_ids {
-                predecessors.entry(*succ_id).or_default().push(block_id);
                 edges.push(BasicBlockEdge::new(
                     block.id(),
                     BasicBlock::<Dyn, Unterminated, B>::from_parts(*succ_id, module_ref, label_ty)
@@ -81,6 +80,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
                 ));
             }
             successors.insert(block_id, succ_ids);
+            // `predecessors(BB)` is a *use-list* view, not the transpose of
+            // the successor walk: `PredIterator` reads `BB->user_begin()`,
+            // which `Use::addToList` head-inserts into, so it answers
+            // newest-first. Building it by pushing each block onto its
+            // successors' lists gives block order instead, and the two
+            // disagree wherever a block has more than one distinct
+            // predecessor.
+            predecessors.insert(block_id, block_predecessors(block.to_erased()));
         }
 
         Self {
@@ -171,6 +178,54 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
     {
         self.edges.iter().cloned()
     }
+}
+
+/// `predecessors(BB)` (`llvm/IR/CFG.h`): `PredIterator` walks
+/// `BB->user_begin()` and its `advancePastNonTerminators` skips every user
+/// that is not an `Instruction` — "Loop to ignore non-terminator uses (for
+/// example BlockAddresses)" — then `assert`s `Inst->isTerminator()` and stops.
+/// It yields `cast<Instruction>(*It)->getParent()`.
+///
+/// So upstream filters on *being an instruction* and only asserts the
+/// terminator half; the `is_terminator()` test below is llvmkit's spelling of
+/// that assertion, and it is sound for the same reason upstream's assert
+/// holds: the only non-terminator that could name a block is a `PHINode`, and
+/// `InstructionKindData::block_operand_ids`'s `Phi` arm yields nothing —
+/// mirroring `PHINode`'s hung-off block array, which is reached by
+/// `block_begin` and is not a use list. A phi therefore never registers a
+/// block use to filter out. The repo bans runtime panics, so the dead branch
+/// is a `filter` rather than an assert; it can never change the result.
+///
+/// Not sorted and not deduplicated — a terminator naming the same successor
+/// twice yields it twice, exactly as upstream. The use list is the ordering
+/// authority: `ValueData::add_use` head-inserts, mirroring `Use::addToList`,
+/// so this reads newest-first the way `Value::uses()` does — which is what
+/// every upstream consumer of `predecessors(BB)` sees, `AsmWriter`'s
+/// `; preds = …` comment and the dominator-tree builder alike. It lives here
+/// rather than in `asm_writer.rs` because [`FunctionCfg`] answers from it too.
+pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(
+    block: Value<'ctx, B>,
+) -> Vec<ValueSlot> {
+    let context = block.module().context();
+    block
+        .data()
+        .use_list
+        .borrow()
+        .iter()
+        .filter_map(|edge| match edge {
+            ValueUse::Instruction(user) => Some(*user),
+            _ => None,
+        })
+        .filter_map(|user| {
+            let ValueKindData::Instruction(instruction) = &context.value_data(user).kind else {
+                return None;
+            };
+            if !instruction.kind.is_terminator() {
+                return None;
+            }
+            Some(instruction.parent.get())
+        })
+        .collect()
 }
 
 pub(super) fn block_successors<'ctx, R, S, B>(

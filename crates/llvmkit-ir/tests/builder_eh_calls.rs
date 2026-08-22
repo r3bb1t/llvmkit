@@ -134,7 +134,9 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
         "got:\n{text}"
     );
     assert!(
-        text.contains("kill:\n  unreachable\n\ncont:\n  ret void\n"),
+        text.contains(
+            "kill:                                             ; preds = %entry\n  unreachable\n\ncont:                                             ; preds = %entry\n  ret void\n"
+        ),
         "got:\n{text}"
     );
     Ok(())

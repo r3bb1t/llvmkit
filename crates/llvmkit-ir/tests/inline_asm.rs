@@ -130,11 +130,13 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
 
     let text = format!("{m}");
 
-    // The newline is escaped as `\0a` (LLVM's printEscapedString hex
-    // escape; case-insensitive check so the assertion is robust).
-    let lower = text.to_ascii_lowercase();
+    // The newline is escaped as `\0A`. `llvm::printEscapedString` writes
+    // `hexdigit(C >> 4)` / `hexdigit(C & 0x0F)`, whose `LowerCase` parameter
+    // defaults to `false`, so the digits are uppercase — matched exactly here
+    // rather than case-insensitively, which is what let the lowercase
+    // spelling live.
     assert!(
-        lower.contains(r#""nop\0anop""#),
+        text.contains(r#""nop\0Anop""#),
         "embedded newline must be escaped as \\0A, not a literal break:\n{text}"
     );
     // And there must be no raw newline inside the quoted asm template.

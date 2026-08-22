@@ -484,7 +484,7 @@ fn compute<'ctx, B: ModuleBrand + 'ctx>(function: FunctionValue<'ctx, Dyn, B>) -
     let cfg = FunctionCfg::new(function);
     let reachable = compute_reachable(function, &cfg);
     let dominators = compute_dominators(function, &cfg, &reachable);
-    let predecessors = compute_predecessors(&cfg);
+    let predecessors = compute_predecessors(function, &cfg);
     let (instruction_parent, instruction_order, normal_dest, phi_incoming_blocks) =
         compute_instruction_maps(function);
     DominatorTree {
@@ -569,17 +569,24 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
     doms
 }
 
+/// The predecessor map, read off [`FunctionCfg`] rather than re-derived by
+/// transposing its edge list — `pred_iterator` is a use-list view and the
+/// edge list is in block order, so the two answer in different orders.
 fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, Dyn, B>,
     cfg: &FunctionCfg<'ctx, B>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
-    let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
-    for edge in cfg.edges() {
-        predecessors
-            .entry(edge.end().slot())
-            .or_default()
-            .push(edge.start().slot());
-    }
-    predecessors
+    function
+        .basic_blocks()
+        .map(|bb| {
+            (
+                bb.slot(),
+                cfg.predecessors(&bb.as_dyn())
+                    .map(|pred| pred.slot())
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 type InstructionMaps = (

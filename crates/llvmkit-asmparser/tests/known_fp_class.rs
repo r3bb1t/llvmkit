@@ -629,3 +629,54 @@ fn fast_math_flags_on_a_call_round_trip() {
     let reparsed = parse(&printed);
     assert_eq!(printed, format!("{reparsed}"));
 }
+
+/// The `bitcast` arm spends the *shared* recursion budget.
+///
+/// **Anchored on the routine; upstream's unit tests do not reach this.**
+/// `computeKnownFPClass`'s `case Instruction::BitCast:` is
+/// `computeKnownBits(Src, DemandedElts, Bits, Q, Depth + 1)` — the same
+/// `Depth` the FP walk is carrying, incremented — so a bitcast reached late in
+/// an FP walk hands known bits a query with almost nothing left to spend.
+/// llvmkit discarded `depth` and entered known bits as a fresh top-level
+/// query, which answered a deep chain *more* precisely than upstream does.
+/// That divergence is closed; the ledger entry that recorded it is deleted.
+///
+/// Both halves are asserted, because only the pair distinguishes the two
+/// implementations: with the default budget the answer is unchanged, and with
+/// a budget small enough that `depth + 1` matters the sign bit is no longer
+/// known. Under the old code the second case answered `Some(true)` as well.
+#[test]
+fn the_bitcast_arm_shares_the_recursion_budget() {
+    let module = parse(
+        r"
+define void @f(i32 %x) {
+  %masked = and i32 %x, 2147483647
+  %f0 = bitcast i32 %masked to float
+  %f1 = fneg float %f0
+  ret void
+}
+",
+    );
+    let data_layout = module.data_layout();
+
+    // Depth 0 is the `fneg`, depth 1 the bitcast, so known bits runs at 2.
+    // With the default budget that is plenty: `%masked` clears the sign bit,
+    // so `%f0` is non-negative and `fneg` flips it.
+    let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
+    assert_eq!(
+        compute_known_fp_class_all(named(&module, "f1"), &query).sign_bit(),
+        Some(true)
+    );
+
+    // The same walk with the budget cut to 2: known bits now starts at its own
+    // limit, so the `and`'s operands are out of reach and the sign is unknown.
+    // A *fresh* query, not `query.with_max_depth(2)` — the known-bits cache is
+    // shared across a derived query, and the first call already memoised
+    // `%masked` at the full budget.
+    let query: ValueTrackingQuery<'_, '_, DynBrand> =
+        ValueTrackingQuery::new(&data_layout).with_max_depth(2);
+    assert_eq!(
+        compute_known_fp_class_all(named(&module, "f1"), &query).sign_bit(),
+        None
+    );
+}

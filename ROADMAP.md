@@ -820,8 +820,10 @@ The per-API delta is tracked in [`docs/inkwell-migration.md`](docs/inkwell-migra
 >   (`set_attribute_group`), and the call builders take `call_attributes`, with
 >   typed readers for parameter, return, and string-valued attributes. The
 >   modeled keyword set is guarded against upstream drift by
->   `attribute_td_drift.rs`; what remains is the 42 keywords its
->   `NOT_YET_MODELED` list still names.
+>   `attribute_td_drift.rs`, whose `NOT_YET_MODELED` list is **empty** — every
+>   keyword `Attributes.td` declares is accepted in every position it declares
+>   (`crates/llvmkit-asmparser/tests/attribute_td_drift.rs`, the list's own
+>   declaration). This line used to say 42 keywords remained.
 > - **Intrinsic declaration APIs.** `get_or_insert_intrinsic_declaration`, plus
 >   its `_by_id` and `_by_name` twins. Overloaded-intrinsic *typing* beyond the
 >   represented signature families is still open (Milestone 2).
@@ -834,7 +836,6 @@ The per-API delta is tracked in [`docs/inkwell-migration.md`](docs/inkwell-migra
 - Builder coverage for remaining common LLVM IR operations and intrinsics.
 - Full metadata attachment storage and printing.
 - Debug-info model sufficient to preserve parsed debug metadata conservatively.
-- The remaining unmodeled attribute keywords (`NOT_YET_MODELED`, 42 today).
 - Overloaded intrinsic typing beyond the represented signature families.
 - Bitcode reader/writer or an explicit bridge plan if bitcode stays out longer.
 - Better error spans for parser/verifier failures. The *message* half landed in

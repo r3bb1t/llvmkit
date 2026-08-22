@@ -40,6 +40,7 @@ use super::instr_types::{
     SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VaArgInstData,
 };
 use super::instruction::{InstructionKind, TerminatorKind};
+use super::instructions::ShuffleVectorInst;
 use super::intrinsics::IntrinsicNameResolution;
 use super::module::ModuleRef;
 use super::value::Value;
@@ -1729,8 +1730,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// `Verifier::visitShuffleVectorInst`. Both vector operands must
-    /// agree on element type; the result is `<mask.len() x elem>`.
+    /// `Verifier::visitShuffleVectorInst`, whose entire body is one
+    /// `Check(ShuffleVectorInst::isValidOperands(SV.getOperand(0),
+    /// SV.getOperand(1), SV.getShuffleMask()), "Invalid shufflevector
+    /// operands!", &SV)`.
+    ///
+    /// The checks after it have no upstream counterpart and are defence in
+    /// depth: upstream's result type is computed by the constructor and cannot
+    /// disagree with the operands, while llvmkit's arena can hold an
+    /// instruction whose recorded result type does.
     fn check_shuffle_vector(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -1738,6 +1746,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         d: &ShuffleVectorInstData,
     ) -> IrResult<()> {
+        let lhs: Value<'ctx, B> =
+            Value::from_parts(d.lhs.get(), self.module, self.value_type(d.lhs.get()));
+        let rhs: Value<'ctx, B> =
+            Value::from_parts(d.rhs.get(), self.module, self.value_type(d.rhs.get()));
+        if !ShuffleVectorInst::is_valid_operands(lhs, rhs, &d.mask) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::ShuffleVectorTypeMismatch,
+                "Invalid shufflevector operands!".to_string(),
+            ));
+        }
+
         let l_ty = self.value_type(d.lhs.get());
         let r_ty = self.value_type(d.rhs.get());
         let l_elem = match self.module.context().type_data(l_ty).as_vector() {
@@ -2634,12 +2655,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// `Verifier::visitGetElementPtrInst`. Constructive subset.
+    /// `Verifier::visitGetElementPtrInst`, arm for arm and in upstream's order.
+    ///
+    /// Two of upstream's `Check`s are not emitted, and each says so at the
+    /// point it would have stood: the `getResultElementType() == ElTy` half of
+    /// "GEP is not of right type for indices!", and the trailing address-space
+    /// `Check`. A third, the `isIntOrIntVectorTy` re-check inside the vector
+    /// loop, is upstream's own duplicate of the earlier one. See
+    /// `docs/divergences.md` entry 120.
     fn check_gep(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        inst: &InstructionView<'ctx, B>,
         g: &GepInstData,
     ) -> IrResult<()> {
         let base_ty = self.value_type(g.ptr.get());
@@ -2662,6 +2690,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 VerifierRule::GepUnsizedSourceType,
                 format!(
                     "getelementptr source element type {} is unsized",
+                    self.type_label(g.source_ty)
+                ),
+            ));
+        }
+        // `if (auto *STy = dyn_cast<StructType>(GEP.getSourceElementType()))
+        //      Check(!STy->isScalableTy(), "getelementptr cannot target
+        //      structure that contains scalable vector" "type", &GEP);`
+        // `Type::is_scalable` is the port of `Type::isScalableTy`, so a struct
+        // that merely *contains* one at any depth is rejected, as upstream's
+        // is. `LLParser::parseGetElementPtr` carries the same rule, so a
+        // parsed module is answered before this runs; a builder-constructed
+        // one reaches it here.
+        if source.is_struct() && source.is_scalable() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::GepScalableStructSource,
+                format!(
+                    "getelementptr source type {} is a struct containing a scalable vector",
                     self.type_label(g.source_ty)
                 ),
             ));
@@ -2695,6 +2742,65 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
+        // `PointerType *PtrTy = dyn_cast<PointerType>(GEP.getType()->getScalarType());`
+        // and the `PtrTy` half of `Check(PtrTy && GEP.getResultElementType()
+        // == ElTy, "GEP is not of right type for indices!")`. The second half
+        // has no counterpart: `GepInstData` stores no result element type, so
+        // there is nothing to disagree with `ElTy` (`docs/divergences.md`
+        // entry 120).
+        let result_ty = inst.ty().id;
+        if !self
+            .module
+            .context()
+            .type_data(scalar_type_id(self.module, result_ty))
+            .is_pointer_data()
+        {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::GepNonPointerResult,
+                format!(
+                    "getelementptr result type {} is not a pointer",
+                    self.type_label(result_ty)
+                ),
+            ));
+        }
+        // "Additional checks for vector GEPs."
+        if let Some(gep_width) = vector_shape(self.module, result_ty) {
+            if let Some(base_width) = vector_shape(self.module, base_ty)
+                && base_width != gep_width
+            {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::GepVectorWidthMismatch,
+                    "vector getelementptr result width doesn't match operand's".to_string(),
+                ));
+            }
+            for (position, idx_id) in g.indices.iter().map(|c| c.get()).enumerate() {
+                // Upstream re-asks `IndexTy->isIntOrIntVectorTy()` inside this
+                // loop; the `GepNonIntegerIndex` loop above already answered it
+                // and returned on the first failure, so a second copy is dead.
+                if let Some(index_width) = vector_shape(self.module, self.value_type(idx_id))
+                    && index_width != gep_width
+                {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::GepVectorWidthMismatch,
+                        format!("invalid getelementptr index #{position} vector width"),
+                    ));
+                }
+            }
+        }
+        // `Check(GEP.getAddressSpace() == PtrTy->getAddressSpace(), "GEP
+        // address space doesn't match type", &GEP);` stands here upstream and
+        // is not emitted: `GetElementPtrInst::getAddressSpace` is the *pointer
+        // operand's* address space (its own comment says "this is always the
+        // same as the pointer operand's"), and both `IrBuilder::gep_inner` and
+        // `IrBuilder::gep_erased` derive the result type from that operand via
+        // `getGEPReturnType`, so the two are the same interned slot by
+        // construction (`docs/divergences.md` entry 120).
         Ok(())
     }
 
@@ -3449,20 +3555,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 // --------------------------------------------------------------------------
 
 /// CFG predecessor map for one function. Mirrors LLVM's `pred_iterator`
-/// exposed via `BasicBlock::pred_begin`; shared successor semantics live in
-/// [`crate::cfg::FunctionCfg`] so every terminator family is handled in one place.
+/// exposed via `BasicBlock::pred_begin`.
+///
+/// Read straight off [`crate::cfg::FunctionCfg`] rather than re-derived by
+/// transposing its edge list: the edge list is in block order and
+/// `pred_iterator` is a use-list view, and re-deriving here is what let the
+/// two disagree unnoticed.
 fn build_predecessors<B: ModuleBrand>(
     f: FunctionValue<'_, Dyn, B>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
     let cfg = FunctionCfg::new(f);
-    let mut preds: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
-    for edge in cfg.edges() {
-        preds
-            .entry(edge.end().slot())
-            .or_default()
-            .push(edge.start().slot());
-    }
-    preds
+    f.basic_blocks()
+        .map(|bb| {
+            (
+                bb.slot(),
+                cfg.predecessors(&bb.as_dyn())
+                    .map(|pred| pred.slot())
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 // --------------------------------------------------------------------------
@@ -3757,7 +3869,25 @@ mod tests {
     ) -> ValueSlot {
         let m = m.core_ref();
         let v = build_instruction_value(result_ty, bb_id, kind, None);
+        // `IrBuilder::append_instruction`'s use registration, verbatim —
+        // `operand_ids()` extended with `block_operand_ids()`. Fabricating
+        // without it left the block use-lists empty, so a `br` built here was
+        // no predecessor at all to `predecessors(BB)` and to
+        // `AssemblyWriter::printBasicBlock`'s `; preds = …`.
+        let operand_ids = match &v.kind {
+            ValueKindData::Instruction(i) => {
+                let mut ids = i.kind.operand_ids();
+                ids.extend(i.kind.block_operand_ids());
+                ids
+            }
+            _ => Vec::new(),
+        };
         let id = m.context().push_value(v);
+        for op in operand_ids {
+            m.context()
+                .value_data(op)
+                .add_use(crate::value::ValueUse::Instruction(id));
+        }
         let bb_data = match &m.context().value_data(bb_id).kind {
             ValueKindData::BasicBlock(b) => b,
             _ => panic!("fabricate_instruction: bb_id is not a basic block"),

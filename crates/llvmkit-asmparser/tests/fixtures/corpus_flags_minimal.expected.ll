@@ -1,4 +1,5 @@
 ; ModuleID = 'corpus_flags_minimal.ll'
+
 define i64 @add_both(i64 %x, i64 %y) {
 entry:
   %z = add nuw nsw i64 %x, %y

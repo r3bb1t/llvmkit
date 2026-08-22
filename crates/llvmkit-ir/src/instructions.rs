@@ -693,13 +693,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
     pub fn source_element_type(self) -> Type<'ctx, B> {
         Type::new(self.payload().source_ty, self.module)
     }
-    /// Pointer operand. Statically a pointer for this opcode, so returned
-    /// as [`PointerValue`] rather than the erased [`Value`].
-    pub fn pointer(self) -> PointerValue<'ctx, B> {
+    /// Pointer operand. Mirrors `GetElementPtrInst::getPointerOperand`, which
+    /// returns a bare `Value *`: a GEP base is a `ptr` **or** a `<N x ptr>`
+    /// (`getGEPReturnType`'s vector arm, [`crate::IrBuilder::gep_erased`]), so
+    /// this is erased. Narrowing it to [`PointerValue`] would forge a pointer
+    /// claim over a vector -- `PointerValue::from_value_unchecked` checks
+    /// nothing, and neither does the `PointerType` that handle's `ty()` hands
+    /// back, so the mislabelling stays silent until `PointerType::address_space`
+    /// panics on it.
+    pub fn pointer(self) -> Value<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
+        Value::from_parts(id, self.module, data.ty)
     }
     pub fn indices(
         self,
@@ -1521,7 +1527,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     /// `fast-math-flags specified for phi without floating-point scalar or
     /// vector return type`.
     pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
-        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+        if !fmf.is_empty()
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
+        {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
             });
@@ -1784,7 +1792,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     /// specified for phi without floating-point scalar or vector return
     /// type`.
     pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
-        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+        if !fmf.is_empty()
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
+        {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
             });
@@ -2212,7 +2222,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     /// specified for phi without floating-point scalar or vector return
     /// type`.
     pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
-        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+        if !fmf.is_empty()
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
+        {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
             });
@@ -2613,6 +2625,140 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
     /// a consumer names the case rather than testing a sign.
     pub fn mask(self) -> &'ctx [ShuffleMaskElem] {
         &self.payload().mask
+    }
+
+    /// Mirrors `ShuffleVectorInst::isValidOperands(const Value *V1, const
+    /// Value *V2, ArrayRef<int> Mask)` (`Instructions.cpp`) — the
+    /// **decoded-mask** overload. It is what the
+    /// `ShuffleVectorInst(Value *, Value *, ArrayRef<int>, ...)` constructor
+    /// asserts on, what `ConstantExpr::getShuffleVector` asserts on, and what
+    /// `Verifier::visitShuffleVectorInst` calls.
+    ///
+    /// It is **not** the same predicate as
+    /// [`Self::is_valid_operands_with_constant_mask`]: only that one has the
+    /// `undef` / `zeroinitializer` early `return true` that precedes every
+    /// scalable test.
+    ///
+    /// Two spellings change because Rust forces them; neither changes the
+    /// logic.
+    ///
+    /// * `Elem != PoisonMaskElem` is [`ShuffleMaskElem::Lane`], and
+    ///   `Mask[0] != 0 && Mask[0] != PoisonMaskElem` is the pair of variant
+    ///   tests below. [`ShuffleMaskElem`] has exactly two cases, so the
+    ///   translation is exact — there is no second negative sentinel in the IR
+    ///   alphabet (`SM_SentinelZero` belongs to code generation, which is out
+    ///   of scope; `docs/divergences.md` entry 69).
+    /// * `Mask[0]` on an empty mask is `ArrayRef::operator[]`'s bounds
+    ///   assertion. A crate that forbids runtime panics cannot abort, so the
+    ///   empty scalable mask answers `false` — the verdict LLVM reaches one
+    ///   step later anyway, since the constructor then calls
+    ///   `VectorType::get(EltTy, 0, /*Scalable=*/true)`, whose own assertion
+    ///   rejects a zero minimum element count.
+    pub fn is_valid_operands(
+        v1: Value<'ctx, B>,
+        v2: Value<'ctx, B>,
+        mask: &[ShuffleMaskElem],
+    ) -> bool {
+        // V1 and V2 must be vectors of the same type.
+        //
+        // The same read also yields upstream's
+        // `cast<VectorType>(V1->getType())->getElementCount().getKnownMinValue()`,
+        // which `TypeData::as_vector` already returns for both vector kinds.
+        let Some((_, v1_size, v1_scalable)) = v1.ty().data().as_vector() else {
+            return false;
+        };
+        if v1.ty() != v2.ty() {
+            return false;
+        }
+
+        // Make sure the mask elements make sense.
+        //
+        // `V1Size * 2` is `int` arithmetic upstream; widening to `u64` keeps
+        // the comparison exact for every `u32` lane count instead of wrapping.
+        let bound = u64::from(v1_size) * 2;
+        for element in mask {
+            if let ShuffleMaskElem::Lane(lane) = *element
+                && u64::from(lane) >= bound
+            {
+                return false;
+            }
+        }
+
+        if v1_scalable {
+            let Some(&first) = mask.first() else {
+                return false;
+            };
+            if (first != ShuffleMaskElem::Lane(0) && first != ShuffleMaskElem::Poison)
+                || !mask.iter().all(|element| *element == first)
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Mirrors `ShuffleVectorInst::isValidOperands(const Value *V1, const
+    /// Value *V2, const Value *Mask)` (`Instructions.cpp`) — the
+    /// **constant-mask** overload, the one `LLParser::parseShuffleVector`
+    /// calls before the mask is decoded.
+    ///
+    /// The difference from [`Self::is_valid_operands`] is load-bearing: the
+    /// `undef` / `zeroinitializer` early `return true` in the tail (the
+    /// crate-internal `valid_shufflevector_mask_constant`)
+    /// precedes every scalable test, which is precisely why a scalable
+    /// `zeroinitializer` mask is accepted while
+    /// `if (isa<ScalableVectorType>(MaskTy)) return false;` two lines below it
+    /// refuses every other scalable mask.
+    ///
+    /// `mask` is a `Value`, not a `Constant`, because upstream's is: a
+    /// non-constant mask reaches the routine's closing `return false` rather
+    /// than being refused earlier.
+    pub fn is_valid_operands_with_constant_mask(
+        v1: Value<'ctx, B>,
+        v2: Value<'ctx, B>,
+        mask: Value<'ctx, B>,
+    ) -> bool {
+        // V1 and V2 must be vectors of the same type.
+        let Some((_, v1_size, v1_scalable)) = v1.ty().data().as_vector() else {
+            return false;
+        };
+        if v1.ty() != v2.ty() {
+            return false;
+        }
+
+        // Mask must be vector of i32, and must be the same kind of vector as
+        // the input vectors.
+        let Some((mask_elem, _, mask_scalable)) = mask.ty().data().as_vector() else {
+            return false;
+        };
+        if Type::new(mask_elem, mask.ty().module()).data().as_integer() != Some(32)
+            || mask_scalable != v1_scalable
+        {
+            return false;
+        }
+
+        // Check to see if Mask is valid.
+        //
+        // No upstream counterpart: upstream's three operands are `Value *`s in
+        // one `LLVMContext`, while a shared brand ([`DynBrand`], or a re-issued
+        // named brand) lets a handle from another module reach here with a slot
+        // that means something else in this arena. The two operand types are
+        // already covered — `Type`'s equality compares the `ModuleId` as well as
+        // the slot — but the mask's slot is read against V1's module below, so
+        // it needs the tag test the crate spells `IrError::ForeignValueId`
+        // elsewhere. A predicate has no error channel, and a mask belonging to a
+        // different module is not a valid operand of this shuffle, so it joins
+        // the routine's other rejections.
+        if mask.module.id() != v1.module.id() {
+            return false;
+        }
+        crate::constants::valid_shufflevector_mask_constant(
+            v1.ty().module().core_ref(),
+            mask.slot(),
+            v1_size,
+            v1_scalable,
+        )
     }
 }
 

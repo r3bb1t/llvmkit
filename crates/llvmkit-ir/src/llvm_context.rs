@@ -310,6 +310,28 @@ impl Context {
         id
     }
 
+    /// Mirrors `VectorType::get(Type *ElementType, unsigned NumElements, bool
+    /// Scalable)` (`DerivedTypes.h`), which dispatches to
+    /// `FixedVectorType::get` / `ScalableVectorType::get` on the flag.
+    ///
+    /// The two siblings above are those two; this is the form the
+    /// `ShuffleVectorInst(Value *, Value *, ArrayRef<int>, ...)` constructor
+    /// writes in its initializer list, so reproducing that constructor means
+    /// writing the same call. The view-level twin of this function, spelled the
+    /// same way, is `constant_fold::vector_type_with_scalability`.
+    pub(crate) fn vector_type_with_scalability(
+        &self,
+        elem: TypeSlot,
+        n: u32,
+        scalable: bool,
+    ) -> TypeSlot {
+        if scalable {
+            self.scalable_vector_type(elem, n)
+        } else {
+            self.fixed_vector_type(elem, n)
+        }
+    }
+
     pub(crate) fn function_type(
         &self,
         ret: TypeSlot,

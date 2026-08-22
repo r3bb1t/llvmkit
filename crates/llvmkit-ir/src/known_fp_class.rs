@@ -2,7 +2,8 @@
 //!
 //! Ports `llvm::computeKnownFPClass` (`llvm/lib/Analysis/ValueTracking.cpp`)
 //! over the [`KnownFpClass`] lattice. It stands to [`fp_class`](crate::fp_class)
-//! as [`compute_known_bits`] stands to [`KnownBits`].
+//! as [`compute_known_bits`](crate::value_tracking::compute_known_bits) stands
+//! to [`KnownBits`].
 //!
 //! # What is not modeled, and why
 //!
@@ -16,16 +17,10 @@
 //!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
 //!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
 //!
-//! One arm diverges from upstream, and it is marked at its site:
-//!
-//! - `bitcast` can be **stronger**. Upstream calls `computeKnownBits` at
-//!   `Depth + 1` on the shared budget, so a bitcast reached late in an FP walk
-//!   gets a known-bits query that is already at the recursion limit and learns
-//!   nothing; llvmkit's known bits is a separate entry point starting at zero,
-//!   so it gets a full budget. Sound — known bits is correct at any depth, and
-//!   depth only bounds discovery — but it means a deep chain can be answered
-//!   more precisely here than upstream answers it, and costs compile time to
-//!   do so.
+//! The `bitcast` arm used to diverge: it discarded `depth` and entered known
+//! bits as a fresh top-level query, so a deep chain was answered more precisely
+//! here than upstream answers it. It threads `depth + 1` onto the shared budget
+//! now, as `computeKnownBits(Src, DemandedElts, Bits, Q, Depth + 1)` does.
 //!
 //! What *is* here: the constant and poison leaves, the fast-math-flag
 //! refinement, `nofpclass` on a call return or a parameter, the context arm
@@ -65,7 +60,7 @@ use crate::r#type::{Type, TypeKind};
 use crate::r#use::Use;
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::value_tracking::{
-    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, compute_known_bits,
+    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, compute_known_bits_at_depth,
     is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
     shuffle_source_demands,
 };
@@ -426,15 +421,10 @@ fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return KnownFpClass::unknown();
     };
 
-    // Upstream recurses at `Depth + 1` on the shared budget, so a bitcast
-    // reached late in an FP walk hands known bits a query already at the
-    // recursion limit, which learns nothing. llvmkit's known bits is a
-    // separate entry point starting at zero, so it gets a full budget and can
-    // answer a deep chain *more* precisely than upstream does. That is sound —
-    // known bits is correct at any depth, and depth only bounds discovery —
-    // but it is a divergence upward, and it costs compile time.
-    let _ = depth;
-    let Ok(bits) = compute_known_bits(source, query) else {
+    // `computeKnownBits(Src, DemandedElts, Bits, Q, Depth + 1)` — the shared
+    // budget, so a bitcast reached late in the FP walk hands known bits a query
+    // already at the recursion limit.
+    let Ok(bits) = compute_known_bits_at_depth(source, query, depth + 1) else {
         return KnownFpClass::unknown();
     };
 

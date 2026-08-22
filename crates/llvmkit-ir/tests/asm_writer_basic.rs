@@ -8,7 +8,7 @@
 //! `unnamed_addr` assertions in `module_prints_simple_add_function` track
 //! `test/Assembler/unnamed-addr.ll`.
 
-use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, Type, module_new};
 
 /// Closest upstream coverage:
 /// `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedInstruction)`
@@ -30,6 +30,7 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
 
     let text = format!("{m}");
     let expected = "; ModuleID = 'demo'\n\
+        \n\
         define i32 @add(i32 %0, i32 %1) {\n\
         entry:\n\
         \x20\x20%sum = add i32 %0, %1\n\
@@ -72,10 +73,20 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
     Ok(())
 }
 
-/// Mirrors `llvm/lib/IR/AsmWriter.cpp::printLLVMNameWithoutPrefix`: `$` is a
-/// legal bare LLVM identifier character and must not force quotes.
+/// Mirrors `llvm::printLLVMNameWithoutPrefix` (`lib/IR/AsmWriter.cpp`): the
+/// unquoted set is `isalnum(C) || C == '-' || C == '.' || C == '_'`, and `$` is
+/// outside it, so every `$`-bearing name is quoted on output — a function, a
+/// block label and an instruction result alike, since all three go through the
+/// one routine. `LLLexer` *accepts* a bare `$` on input, which is why
+/// `test/Assembler/block-labels.ll` writes `br label %$N` and CHECKs for
+/// `br label %"$N"`; the asymmetry is upstream's, and this test pins the API
+/// side of it, where no fixture can reach.
+///
+/// This test previously asserted the opposite, on the claim that `$` "is a
+/// legal bare LLVM identifier character and must not force quotes" — which was
+/// the `$`-quoting divergence, encoded as its own expectation.
 #[test]
-fn dollar_names_print_without_quotes() -> Result<(), IrError> {
+fn dollar_names_print_quoted() -> Result<(), IrError> {
     let m = module_new!("dollar_names")?;
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
@@ -87,9 +98,9 @@ fn dollar_names_print_without_quotes() -> Result<(), IrError> {
     b.ret(sum)?;
 
     let text = format!("{m}");
-    assert!(text.contains("define i32 @foo$bar(i32 %0)"), "{text}");
-    assert!(text.contains("entry$bb:"), "{text}");
-    assert!(text.contains("%sum$value = add i32 %0, 1"), "{text}");
+    assert!(text.contains("define i32 @\"foo$bar\"(i32 %0)"), "{text}");
+    assert!(text.contains("\"entry$bb\":"), "{text}");
+    assert!(text.contains("%\"sum$value\" = add i32 %0, 1"), "{text}");
     Ok(())
 }
 /// llvmkit-specific regression for LLVM's function-local `ValueSymbolTable`:
@@ -116,6 +127,7 @@ fn function_local_names_share_argument_block_and_instruction_namespace() -> Resu
     assert_eq!(m.view(result).name().as_deref(), Some("entry2"));
 
     let expected = "; ModuleID = 'local_names'\n\
+        \n\
         define i32 @f(i32 %entry) {\n\
         entry1:\n\
         \x20\x20%entry2 = add i32 %entry, 1\n\
@@ -228,26 +240,50 @@ fn declare_form_for_empty_function() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Assembler/numbered-values.ll` (slot numbering for unnamed
-/// values and basic blocks). Closest unit-test coverage:
+/// **No upstream `.ll` counterpart:** this hand-builds `@anon(i32 %0)` rather
+/// than parsing a fixture, so it is registered `llvmkit-specific` rather than
+/// `mirror`. The rules it locks are upstream's, cited by symbol:
+/// `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printBasicBlock`'s
+/// `else if (!IsEntryBlock)` slot-label branch — an unnamed **entry** block
+/// prints no label at all yet still holds its slot, and a later unnamed block
+/// prints that slot and names the entry's in its predecessors comment — and
+/// `llvm/lib/IR/AsmWriter.cpp::SlotTracker::processFunction`, which numbers
+/// unnamed arguments before basic blocks.
+///
+/// The arg-before-block slot order has a genuine FileCheck oracle upstream:
+/// `test/Assembler/block-labels.ll::@test2`'s
+/// `; CHECK-LABEL: define void @test2(i32 %0, i32 %1) {` followed by
+/// `; CHECK-NEXT:    ret void`, which is asserted against the vendored fixture
+/// by `crates/llvmkit-asmparser/tests/parser_function_body.rs::an_unnamed_entry_block_prints_no_label`.
+/// That fixture's `@test1` cannot adjudicate the assertions below: its `%X` is
+/// a *named* argument, so its `; CHECK: 2: ; preds = %0` reads `%0` where this
+/// module's unnamed argument pushes the entry block to slot 1.
 /// `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedArgument)`
-/// (slot-numbered argument rendering).
+/// is the closest unit test but covers the opposite condition — a *detached*
+/// argument, which prints `i32 <badref>`.
 #[test]
 fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     let m = module_new!("slots")?;
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
-    // No name on the entry block.
+    // No name on either block.
     let entry = m.view(f).append_basic_block(&m, "");
+    let tail = m.view(f).append_basic_block(&m, "");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.br(&tail)?;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(tail);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.ret(arg)?;
     let text = format!("{m}");
-    // Block 0 (the only block) should label as `1:` because slot 0 is
-    // claimed by the unnamed argument %0.
+    // Slot 0 is claimed by the unnamed argument `%0`, so the entry block is
+    // slot 1 and the tail block slot 2.
     assert!(
-        text.contains("1:\n"),
+        text.contains("define i32 @anon(i32 %0) {\n  br label %2\n"),
+        "the unnamed entry block prints no label; got:\n{text}"
+    );
+    assert!(
+        text.contains("2:                                                ; preds = %1\n"),
         "expected slot-labelled block; got:\n{text}"
     );
     Ok(())
@@ -273,4 +309,70 @@ fn source_filename_api_borrows_and_clears() {
     m.clear_source_filename();
     assert!(m.source_filename().is_none());
     assert_eq!(format!("{m}"), "; ModuleID = 'source_filename_api'\n");
+}
+
+/// Mirrors `AssemblyWriter::printModule`'s function loop, which is
+/// `for (const Function &F : *M) { Out << '\n'; printFunction(&F); }` — the
+/// blank line is **unconditional**. llvmkit guarded it on the module also
+/// having globals, aliases, ifuncs or named structs, so every module without
+/// one of those printed one byte short of `llvm-dis`, and the shortfall was on
+/// the first function only.
+///
+/// **Anchored on the routine, not on a fixture**: FileCheck cannot pin a blank
+/// line, so no upstream `CHECK` block asserts this. The corroborating artefact
+/// is `test/Assembler/debug-label-bitcode.ll`, whose checked-in body is
+/// `llvm-as | llvm-dis` output and reads `source_filename = "…"`, a blank
+/// line, then `; Function Attrs: …` — with no global, alias, ifunc or named
+/// struct anywhere in that module.
+#[test]
+fn module_prints_a_blank_line_before_every_function_including_the_first() -> Result<(), IrError> {
+    let m = module_new!("blank_lines")?;
+    let fn_ty = m.function_type(m.void_type(), Vec::<Type<'_, _>>::new());
+    m.add_function_dyn("a", fn_ty, Linkage::External)?;
+    m.add_function_dyn("b", fn_ty, Linkage::External)?;
+
+    let text = format!("{m}");
+    let expected = "; ModuleID = 'blank_lines'\n\
+        \n\
+        declare void @a()\n\
+        \n\
+        declare void @b()\n";
+    assert_eq!(text, expected, "got:\n{text}");
+    Ok(())
+}
+
+/// Ports `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest,
+/// DebugPrintDetachedArgument)`, whose whole assertion is
+/// `EXPECT_EQ(S, "i32 <badref>")`.
+///
+/// `writeAsOperandInternal`'s value path ends
+/// `if (Slot != -1) Out << Prefix << Slot; else Out << "<badref>";` — the
+/// failure spelling carries no sigil in either the `'%'` or the `'@'` branch,
+/// and llvmkit spelled it `%<unnumbered>` / `@<unnumbered>`.
+///
+/// **Input substitution, recorded rather than routed around.** Upstream builds
+/// `new Argument(Ty)` with no parent; llvmkit has no detached IR — an
+/// `Argument` is a handle into a function — so the argument here is attached
+/// and unnamed. The output is the same for a reason that is in the routines,
+/// not in the probe: `Value::print` sends an `Argument` to
+/// `printAsOperand(OS, /*PrintType=*/true, MST)`, and neither overload calls
+/// `ModuleSlotTracker::incorporateFunction` (only the `Instruction` and
+/// `BasicBlock` arms of `Value::print` do), so `SlotTracker::getLocalSlot`
+/// finds an empty `fMap` and answers -1 whether or not the argument has a
+/// parent.
+#[test]
+fn an_argument_with_no_slot_prints_upstreams_badref() -> Result<(), IrError> {
+    let m = module_new!("badref")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let arg = m.view(f).param(0)?;
+    assert_eq!(format!("{arg}"), "i32 <badref>");
+
+    // The `BasicBlock` arm of the same `if`, reached the same way: an
+    // unnamed block printed as an *operand* with no tracker.
+    let entry = m.view(f).append_basic_block(&m, "");
+    let block = entry.to_erased();
+    assert_eq!(format!("{block}"), "label <badref>");
+    Ok(())
 }

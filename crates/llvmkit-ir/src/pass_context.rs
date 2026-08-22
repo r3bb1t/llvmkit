@@ -1635,6 +1635,7 @@ where
             .iter()
             .filter(|succ| succ.slot() == target_id)
             .count();
+        self.sync_block_uses(&from_block, term_id, target_id);
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
 
         self.cfg_updates
@@ -1869,6 +1870,8 @@ where
             .iter()
             .filter(|succ| succ.slot() == old_id)
             .count();
+        self.sync_block_uses(&from_block, term_id, old_id);
+        self.sync_block_uses(&from_block, term_id, new_id);
         self.drop_incoming_from_pred(&old_block, from_id, surviving)?;
 
         let builder = IrBuilder::new(self.patch.module_mut());
@@ -1890,6 +1893,56 @@ where
         }
         self.patch.dirty.set(true);
         Ok(())
+    }
+
+    /// Restore `block_id`'s use-list edges from the terminator `term_id` after
+    /// that terminator's successor slots have been edited.
+    ///
+    /// Upstream needs no such routine: a terminator's successors *are* `Use`s,
+    /// and `Use::set` unlinks from the old value's list and links into the new
+    /// one's as part of the assignment, so `predecessors(BB)` — which reads
+    /// `BB->user_begin()` — is never stale. llvmkit stores successors as plain
+    /// slots and registers the use once at construction
+    /// (`IrBuilder::append_instruction` extends its operand walk with
+    /// `block_operand_ids`), so an edit here has to re-establish the same
+    /// invariant: one `ValueUse::Instruction(term_id)` entry per occurrence of
+    /// the block among the terminator's successors.
+    ///
+    /// Reconciling against the post-edit successor list rather than counting
+    /// edits is what makes it correct for the many-edge slots — a `switch`
+    /// redirect retargets *every* case naming the old block, and a `cond_br %c,
+    /// X, X` registers two entries on `X` of which collapsing one arm must
+    /// leave one. New entries go to the **head**, as `Use::set` does; which of
+    /// several identical entries is dropped is unobservable.
+    fn sync_block_uses(
+        &self,
+        from_block: &BasicBlock<'m, Dyn, Terminated, B>,
+        term_id: ValueSlot,
+        block_id: ValueSlot,
+    ) {
+        let wanted = crate::cfg::block_successors(from_block)
+            .iter()
+            .filter(|succ| succ.slot() == block_id)
+            .count();
+        let ctx = self.patch.module_mut().core_ref().context();
+        let mut uses = ctx.value_data(block_id).use_list.borrow_mut();
+        let edge = ValueUse::Instruction(term_id);
+        let have = uses.iter().filter(|e| **e == edge).count();
+        if have > wanted {
+            let mut surplus = have - wanted;
+            uses.retain(|e| {
+                if surplus > 0 && *e == edge {
+                    surplus -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        } else {
+            for _ in have..wanted {
+                uses.insert(0, edge);
+            }
+        }
     }
 
     /// Read the current `default` destination id of the `switch` terminator

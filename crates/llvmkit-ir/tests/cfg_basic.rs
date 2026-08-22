@@ -347,3 +347,61 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
     assert_predecessors(&cfg, unwind_label, &[entry_label]);
     Ok(())
 }
+
+/// `predecessors(BB)` is a **use-list** view, not the transpose of a successor
+/// walk. `PredIterator` (`llvm/IR/CFG.h`) reads `BB->user_begin()`, and
+/// `Use::addToList` head-inserts, so the list reads newest-first — reverse
+/// order of terminator creation. Every upstream consumer sees that order:
+/// `AssemblyWriter::printBasicBlock`'s `; preds = …` comment, the verifier,
+/// and the dominator-tree builder.
+///
+/// `FunctionCfg::new` used to build its predecessor map by walking
+/// `basic_blocks()` and pushing each block onto its successors' lists, which
+/// answers in **block** order. The two agree on every shape the rest of this
+/// file writes — one predecessor, or two identical ones — which is why nothing
+/// caught it; a merge block with two *distinct* predecessors separates them.
+///
+/// Anchored on the routine: no `test/` fixture or upstream unit test pins
+/// predecessor order directly. The second assertion is the internal law that
+/// makes the printer and the analysis one answer — `; preds = %b, %a` is what
+/// `AsmWriter` emits for this function, and it is the same list.
+#[test]
+fn predecessors_are_in_use_list_order_not_block_order() -> Result<(), IrError> {
+    let m = module_new!("cfg_pred_order")?;
+    let bool_ty = m.bool_type();
+    let void_ty = m.void_type();
+    let fn_ty = m.function_type(void_ty.as_type(), [bool_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let a = m.view(f).append_basic_block(&m, "a");
+    let b = m.view(f).append_basic_block(&m, "b");
+    let merge = m.view(f).append_basic_block(&m, "merge");
+    let a_label = a.id();
+    let b_label = b.id();
+    let merge_label = merge.id();
+
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(merge)
+        .ret_void()?;
+    // `a`'s branch registers its use of `merge` first, `b`'s second, so the
+    // head-inserted use list reads `b`, then `a`.
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(a)
+        .br(merge_label)?;
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(b)
+        .br(merge_label)?;
+    let cond: IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(entry)
+        .cond_br(cond, a_label, b_label)?;
+
+    let cfg = FunctionCfg::new(m.view(f).as_dyn());
+    assert_predecessors(&cfg, merge_label, &[b_label, a_label]);
+
+    // The printer reads the same use list; the comment and the analysis must
+    // not be able to disagree.
+    let printed = format!("{m}");
+    assert!(printed.contains("; preds = %b, %a"), "{printed}");
+    Ok(())
+}

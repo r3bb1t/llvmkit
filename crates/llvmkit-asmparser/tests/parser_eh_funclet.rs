@@ -1,8 +1,16 @@
 //! Parser integration tests for S3.3 EH/funclet opcodes.
 //!
-//! These are llvmkit-specific parser acceptance subsets for EH/funclet opcodes.
-//! The previously cited `test/Assembler/*.ll` fixture names are not present in
-//! LLVM 22.1.4; rows in `UPSTREAM.md` cite the parser branches instead.
+//! Mixed provenance, stated per test. The `resume` / `invoke` cases and
+//! `cleanuppad_cleanupret_round_trips` are hand-narrowed subsets: the
+//! `test/Assembler/*.ll` fixture names they were first cited against are not
+//! present in LLVM 22.1.4, and `UPSTREAM.md` now points them at the
+//! `test/Bitcode/compatibility.ll` functions they were shaped after.
+//! `landingpad_round_trips` and four of the five `catchswitch` cases reproduce
+//! a whole upstream fixture or function verbatim, loaded through `include_str!`
+//! from a checked-in copy under `tests/fixtures/upstream/` as `UPSTREAM.md`'s
+//! audit rule requires of a `mirror` row; the fifth,
+//! `catchswitch_print_reparse_is_stable`, has no upstream counterpart and says
+//! so in its own doc comment.
 //!
 //! Note: the parser does not require a `personality` attribute on `define`
 //! to accept `landingpad`/`resume`; that constraint is left to the verifier.
@@ -19,26 +27,79 @@ fn parse_snippet(src: &str) -> String {
     format!("{module}")
 }
 
+/// `opt -passes=verify` — the whole contract of an upstream `-valid` fixture.
+/// Parses, verifies, and returns the printed module.
+fn parse_verify_and_print(src: &str) -> String {
+    let module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    module
+        .verify_borrowed()
+        .expect("test/Verifier/preallocated-valid.ll: `opt -passes=verify` accepts this module");
+    format!("{module}")
+}
+
+/// Parse, print, re-parse and re-print. `test/Bitcode/compatibility.ll` runs
+/// `llvm-as | llvm-dis | llvm-as | llvm-dis | FileCheck`, so its `CHECK` lines
+/// are matched against the *second* `llvm-dis`: every construct in it must
+/// survive a full round trip, including the ones with no `CHECK` of their own.
+/// This is the parser/printer half of that pipeline.
+fn parse_print_reparse(src: &str) -> (String, String) {
+    let first = parse_snippet(src);
+    let second = parse_snippet(&first);
+    (first, second)
+}
+
+pub mod support;
+
+use support::{Check, check_directives};
+
 // ── landingpad / resume ───────────────────────────────────────────────────────
 
-/// llvmkit-specific subset: `landingpad { ptr, i32 } catch ptr null`
-/// accepted via `LLParser::parseLandingPad`.
+/// `test/Bitcode/compatibility.ll` `@instructions.landingpad`, verbatim, with
+/// the `declare void @llvm.donothing()` it invokes. Covers all four clause
+/// shapes upstream writes: `cleanup` alone (`catch1`), `cleanup` + one `catch`
+/// (`catch2`), `cleanup` + two `catch`es (`catch3`), and a `filter`
+/// (`catch4`). Accepted via `LLParser::parseLandingPad`.
+///
+/// The fixture's `RUN` line is `llvm-as | llvm-dis | llvm-as | llvm-dis |
+/// FileCheck`, so its `CHECK` lines are matched against a second `llvm-dis`.
+/// All **eleven** of the function's `CHECK` lines are asserted below, in
+/// order, through [`check_directives`]. The declaration's own `CHECK`
+/// (`declare void @llvm.donothing() #35`) names a file-wide attribute-group
+/// number and is not part of this excerpt; the four `invoke` lines and the
+/// `br`/`ret` lines carry no `CHECK` upstream and are pinned by the
+/// round-trip assertion instead.
 #[test]
 fn landingpad_round_trips() {
-    let text = parse_snippet(
-        r#"define void @f() {
-entry:
-  br label %lpad
-lpad:
-  %e = landingpad { ptr, i32 } catch ptr null
-  resume { ptr, i32 } %e
-}
-"#,
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/compatibility/instructions_landingpad.ll");
+
+    let (first, second) = parse_print_reparse(FIXTURE);
+    // The function's own eleven CHECK lines, verbatim and in order.
+    check_directives(
+        &first,
+        &[
+            // catch1
+            Check::Line("landingpad i32"),
+            Check::Line("cleanup"),
+            // catch2
+            Check::Line("landingpad i32"),
+            Check::Line("cleanup"),
+            Check::Line("catch ptr null"),
+            // catch3
+            Check::Line("landingpad i32"),
+            Check::Line("cleanup"),
+            Check::Line("catch ptr null"),
+            Check::Line("catch ptr null"),
+            // catch4
+            Check::Line("landingpad i32"),
+            Check::Line("filter [2 x i32] zeroinitializer"),
+        ],
     );
-    assert!(
-        text.contains("%e = landingpad { ptr, i32 }\n          catch ptr null\n"),
-        "got: {text}"
-    );
+    assert_eq!(first, second, "print/re-parse is not idempotent");
 }
 
 /// llvmkit-specific subset: `resume { ptr, i32 } %e` accepted via
@@ -85,8 +146,11 @@ lpad:
 
 // ── cleanuppad / cleanupret ───────────────────────────────────────────────────
 
-/// llvmkit-specific subset: `cleanuppad within none []` plus
-/// `cleanupret from token %cp unwind to caller` parser acceptance.
+/// `cleanuppad within none []` plus `cleanupret from %cp unwind to caller`,
+/// the spelling `LLParser::parseCleanupRet` accepts: its pad operand is read
+/// with `parseValue(Type::getTokenTy(Context), …)`, so there is no `token`
+/// keyword in the syntax. Shaped after `test/Bitcode/compatibility.ll`
+/// `@instructions.win_eh.2`, narrowed to the two instructions under test.
 #[test]
 fn cleanuppad_cleanupret_round_trips() {
     let text = parse_snippet(
@@ -95,7 +159,7 @@ entry:
   br label %pad_bb
 pad_bb:
   %cp = cleanuppad within none []
-  cleanupret from token %cp unwind to caller
+  cleanupret from %cp unwind to caller
 }
 "#,
     );
@@ -107,4 +171,221 @@ pad_bb:
         text.contains("cleanupret from %cp unwind to caller\n"),
         "got: {text}"
     );
+}
+
+// ── catchswitch ───────────────────────────────────────────────────────────────
+
+/// `test/Bitcode/compatibility.ll` `@instructions.win_eh.1`, verbatim, with the
+/// `declare ccc void @f.ccc()` it calls. Covers a named `catchswitch` result
+/// (`%cs1`/`%cs2`/`%cs3`), both unwind forms (`unwind to caller` and
+/// `unwind label %cleanuppad1`), three distinct handlers, and catchpads with
+/// zero, one and two arguments.
+///
+/// The fixture's `RUN` line is `llvm-as | llvm-dis | llvm-as | llvm-dis |
+/// FileCheck`, so its `CHECK` lines are matched against a second `llvm-dis`.
+/// All **eight** of the function's `CHECK`/`CHECK-NEXT` lines are asserted
+/// below, in order, through [`check_directives`]. Upstream writes no `CHECK`
+/// for the three `catchswitch` lines themselves — the `RUN` line's second
+/// `llvm-as` is what pins those, so they are pinned here by the round-trip
+/// assertion plus three explicit checks.
+#[test]
+fn catchswitch_handlers_and_unwind_forms() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/compatibility/instructions_win_eh_1.ll");
+
+    let (first, second) = parse_print_reparse(FIXTURE);
+    // The function's own eight CHECK lines, verbatim and in order.
+    check_directives(
+        &first,
+        &[
+            Check::Line("catchpad within %cs1 []"),
+            Check::Next("br label %normal"),
+            Check::Line("catchpad within %cs2 [ptr %arg1]"),
+            Check::Next("br label %normal"),
+            Check::Line("catchpad within %cs3 [ptr %arg1, ptr %arg2]"),
+            Check::Next("br label %normal"),
+            Check::Line("%clean.1 = cleanuppad within none []"),
+            Check::Next("unreachable"),
+        ],
+    );
+    // No upstream CHECK covers the catchswitch lines themselves; the RUN
+    // line's second `llvm-as` does, by requiring them to re-parse. This is a
+    // deliberate *second* assertion group, not a continuation of the one
+    // above — the byte cursor restarts at 0, the way a second `FileCheck`
+    // invocation over the same input would.
+    check_directives(
+        &first,
+        &[
+            Check::Line("%cs1 = catchswitch within none [label %catchpad1] unwind to caller"),
+            Check::Line("%cs2 = catchswitch within none [label %catchpad2] unwind to caller"),
+            Check::Line(
+                "%cs3 = catchswitch within none [label %catchpad3] unwind label %cleanuppad1",
+            ),
+        ],
+    );
+    assert_eq!(first, second, "print/re-parse is not idempotent");
+}
+
+/// `test/Bitcode/compatibility.ll` `@instructions.win_eh.2`, verbatim, with the
+/// `declare ccc void @f.ccc()` it calls. Covers a named `catchswitch` with
+/// `unwind label` to a `cleanuppad`, a *named* `catchpad` result,
+/// `catchret from %catch to label %return`,
+/// `cleanupret from %clean unwind to caller`, a nested `cleanuppad within
+/// %catch []`, and a `"funclet"` operand bundle on an `invoke`.
+///
+/// Same `llvm-as | llvm-dis | llvm-as | llvm-dis` `RUN` line as
+/// `@instructions.win_eh.1`. All **nine** of the function's `CHECK`/
+/// `CHECK-NEXT` lines are asserted below, in order — the ordering matters
+/// here, because `CHECK: cleanuppad within none []` appears twice and its
+/// second occurrence must match `terminate:`'s instruction, not `cleanup:`'s.
+/// The `catchswitch` line has no `CHECK` of its own upstream and is pinned by
+/// the round trip plus one explicit check, as in `@instructions.win_eh.1`.
+#[test]
+fn catchswitch_nested_funclets_and_catchret() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/compatibility/instructions_win_eh_2.ll");
+
+    let (first, second) = parse_print_reparse(FIXTURE);
+    // The function's own nine CHECK lines, verbatim and in order.
+    check_directives(
+        &first,
+        &[
+            Check::Line("%clean = cleanuppad within none []"),
+            Check::Line("cleanupret from %clean unwind to caller"),
+            Check::Line("%catch = catchpad within %cs []"),
+            Check::Next("br label %body"),
+            Check::Line("catchret from %catch to label %return"),
+            Check::Line("cleanuppad within %catch []"),
+            Check::Next("unreachable"),
+            Check::Line("cleanuppad within none []"),
+            Check::Next("unreachable"),
+        ],
+    );
+    check_directives(
+        &first,
+        &[Check::Line(
+            "%cs = catchswitch within none [label %catchpad] unwind label %terminate",
+        )],
+    );
+    assert_eq!(first, second, "print/re-parse is not idempotent");
+}
+
+/// `test/Verifier/operand-bundles-wineh.ll`, verbatim (the whole file) — the
+/// *numbered* result spelling, `%0 = catchswitch within none [label %catch]
+/// unwind to caller`, with `%1 = catchpad within %0 [ptr null, i32 0, ptr
+/// null]` referring to it.
+///
+/// Upstream's `RUN` line is `not opt -passes=verify`, and the file's single
+/// `CHECK` (`Missing funclet token on intrinsic call`) is a Verifier
+/// diagnostic: llvmkit's `verifier.rs` has no funclet-token rule, so only the
+/// parse half is ported and that one `CHECK` is **not** asserted. llvmkit
+/// verifies this module clean where upstream rejects it — divergence **112**
+/// in `docs/divergences.md`. The input is the vendored fixture, whole rather
+/// than trimmed; what is left out is the Verifier check, not any part of the
+/// fixture's IR. The three assertions below are llvmkit's own, pinning that
+/// the numbered results survive printing.
+#[test]
+fn catchswitch_numbered_result() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
+
+    let text = parse_snippet(FIXTURE);
+    assert!(
+        text.contains("%0 = catchswitch within none [label %catch] unwind to caller"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("%1 = catchpad within %0 [ptr null, i32 0, ptr null]"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("catchret from %1 to label %eh.cont"),
+        "got:\n{text}"
+    );
+}
+
+/// **llvmkit-specific divergence lock — no upstream counterpart**, because it
+/// pins the *absence* of a rule upstream has. `test/Verifier/operand-bundles-wineh.ll`
+/// runs `not opt -passes=verify` and its one `CHECK` is
+/// `Missing funclet token on intrinsic call`, so upstream **rejects** this
+/// module; llvmkit's `Module::verify_borrowed` answers `Ok(())` because
+/// `verifier.rs` has no funclet-token rule. That is divergence **112** in
+/// `docs/divergences.md`, and this test is its live evidence rather than a
+/// probe quoted in prose: when the rule is ported this assertion flips, which
+/// is the signal to retire entry 112 and regrade `catchswitch_numbered_result`
+/// from `mirror (partial)` to `mirror`.
+#[test]
+fn wineh_missing_funclet_token_is_not_diagnosed() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
+
+    let module = Module::dynamic("test");
+    let _ = Parser::new(FIXTURE.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    assert!(
+        module.verify_borrowed().is_ok(),
+        "divergence 112 assumes llvmkit accepts this module; it no longer does: {:?}",
+        module.verify_borrowed().err()
+    );
+}
+
+/// `test/Verifier/preallocated-valid.ll`, verbatim (the whole file).
+/// `@preallocated_teardown_invoke` is the reason it is here:
+/// `%s = catchswitch within none [label %catch] unwind to caller` with
+/// `%p = catchpad within %s []`.
+///
+/// Upstream's `RUN` line is `opt -S %s -passes=verify` with no `FileCheck`, so
+/// the fixture carries no `CHECK` lines at all: **it asserts only that the
+/// module verifies**, and that is the oracle run here — `verify_borrowed`
+/// inside [`parse_verify_and_print`]. llvmkit has no `preallocated` and no
+/// funclet rule, but a missing rule can only make llvmkit more permissive, so
+/// it can never turn this fixture's contract into a false failure; what the
+/// oracle does cover is `Verifier::check_call` and `check_invoke` over the
+/// rest of the file. The three `contains` assertions below are llvmkit's own,
+/// pinning the `catchswitch`/`catchpad` spelling on top. The file is the
+/// vendored fixture, whole rather than reduced to the one function.
+#[test]
+fn catchswitch_in_preallocated_teardown() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/preallocated-valid.ll");
+
+    let text = parse_verify_and_print(FIXTURE);
+    assert!(
+        text.contains("%s = catchswitch within none [label %catch] unwind to caller"),
+        "got:\n{text}"
+    );
+    assert!(text.contains("%p = catchpad within %s []"), "got:\n{text}");
+    // `@preallocated_indirect` keeps its parameter attribute and its operand
+    // bundle now that `parse_call` builds every callee shape through one
+    // `CallInst::Create`. It used to print `call void %f(ptr %x)`.
+    assert!(
+        text.contains(r#"call void %f(ptr preallocated(i32) %x) [ "preallocated"(token %cs) ]"#),
+        "got:\n{text}"
+    );
+}
+
+/// **No upstream counterpart.** This pins the parser/printer contract that the
+/// missing named-result dispatch broke: `crates/llvmkit-ir/src/asm_writer.rs`
+/// marks `catchswitch` as printing a result name, so every `catchswitch`
+/// llvmkit emits carries a `%name =` — text llvmkit's own parser rejected until
+/// its instruction dispatch stripped the result name once, ahead of the opcode,
+/// the way `LLParser::parseBasicBlock` does. The IR is written here the way
+/// `crates/llvmkit-ir/tests/builder_funclet.rs` builds it, printed, and fed
+/// straight back to the parser.
+#[test]
+fn catchswitch_print_reparse_is_stable() {
+    let (first, second) = parse_print_reparse(
+        r#"define void @f() {
+entry:
+  br label %catchswitch1
+catchswitch1:
+  %cs1 = catchswitch within none [label %catchpad1] unwind to caller
+catchpad1:
+  %cp1 = catchpad within %cs1 []
+  catchret from %cp1 to label %entry
+}
+"#,
+    );
+    assert!(
+        first.contains("%cs1 = catchswitch within none [label %catchpad1] unwind to caller"),
+        "got:\n{first}"
+    );
+    assert_eq!(first, second, "print/re-parse is not idempotent");
 }

@@ -1869,6 +1869,12 @@ pub fn constant_fold_get_element_ptr<'ctx, B: ModuleBrand + 'ctx>(
     Ok(None)
 }
 
+/// The result type of a constant-expression `getelementptr`, i.e.
+/// `ConstantExpr::getGetElementPtr`'s `ReqTy` — `getGEPReturnType` plus the
+/// lane agreement that routine's caller asserts
+/// (`"getelementptr index type missmatch"`, `Constants.cpp`). llvmkit ports
+/// no crash: the disagreement is an `IrError` instead, which is hardening
+/// rather than divergence — the input is IR the Verifier rejects either way.
 pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx>(
     pointer_ty: Type<'ctx, B>,
     indices: &[Constant<'ctx, B>],
@@ -3176,6 +3182,10 @@ fn poison_for<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Constant<'ctx, 
 /// Runtime-scalability choke point for the folder's vector rebuilds: parsed
 /// or analyzed vectors carry `scalable` as data, so this dispatches between
 /// [`ModuleView::vector_type`] and [`ModuleView::scalable_vector_type`].
+///
+/// This is the view-level spelling of `VectorType::get(Type *ElementType,
+/// unsigned NumElements, bool Scalable)` (`DerivedTypes.h`). The slot-level
+/// twin, used by the builder, is `Context::vector_type_with_scalability`.
 fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, T>(
     module: ModuleView<'ctx, B>,
     element: T,

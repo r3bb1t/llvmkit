@@ -654,6 +654,7 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
         text,
         concat!(
             "; ModuleID = 'assoc-cast-assoc'\n",
+            "\n",
             "define i5 @AndZextAnd(i3 %0) {\n",
             "entry:\n",
             "  %op1 = and i3 %0, 2\n",

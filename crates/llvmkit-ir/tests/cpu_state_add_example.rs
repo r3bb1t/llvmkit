@@ -29,6 +29,7 @@ fn cpu_state_add_matches_priorities_section_byte_for_byte() {
     let actual = format!("{m}");
     let expected = "\
 ; ModuleID = 'cpu_state_add'
+
 define i32 @add(i64 %rax, i64 %rbx, i64 %rcx, i64 %rdx) local_unnamed_addr {
 entry:
   %0 = trunc i64 %rax to i32

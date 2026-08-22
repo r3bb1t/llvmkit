@@ -65,7 +65,7 @@ pub struct ParserConfig<'cfg> {
     ///    references by reserve-then-fill on a stable
     ///    [`MetadataId`](llvmkit_ir::metadata::MetadataId) rather than through
     ///    temporary nodes, and has no attachment-removal API for the four
-    ///    holders to erase through (`docs/divergences.md`).
+    ///    holders to erase through (`docs/divergences.md` D13).
     /// 3. **Not applicable.** The relaxed `InstsWithTBAATag` assertion, which
     ///    exists only because `UpgradeTBAANode` runs there. llvmkit has no
     ///    `AutoUpgrade` port, so there is no TBAA upgrade to tolerate a drop
@@ -79,7 +79,8 @@ pub struct ParserConfig<'cfg> {
     /// **Selects nothing today.** The flag guards exactly one statement
     /// upstream — `if (UpgradeDebugInfo) llvm::UpgradeDebugInfo(*M);` — and
     /// llvmkit has no `AutoUpgrade` port for it to guard
-    /// (`docs/divergences.md`). It is carried so the entry-point surface is
+    /// (`docs/divergences.md` D11, and entry 19 for the missing port). It is
+    /// carried so the entry-point surface is
     /// upstream's and so callers that mean `llvm-as` can say so; it starts
     /// selecting behaviour the moment the upgrade lands.
     pub upgrade_debug_info: bool,

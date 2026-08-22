@@ -211,8 +211,66 @@ fn hex_double_literal_converts_to_float_context() {
         "hex_double_literal_converts_to_float_context",
         b"@g = global float 0x400921fb60000000\n",
     );
+    // `writeAPFloatInternal` — reached from `writeConstantInternal`'s
+    // `ConstantFP` arm, which holds the vector `splat (` wrapper around the
+    // delegating call — prints the hex form through
+    // `format_hex(bits, 0, /*Upper=*/true)`, so the digits come back
+    // uppercase whatever case the source used.
     assert!(
-        text.contains("@g = global float 0x400921fb60000000"),
+        text.contains("@g = global float 0x400921FB60000000"),
+        "{text}"
+    );
+}
+
+/// Mirrors `test/Assembler/2002-04-07-InfConstant.ll`'s
+/// `; CHECK: fmul float 0x7FF0000000000000, 1.000000e+01` (RUN:
+/// `llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s`, so the
+/// CHECK line is `AssemblyWriter` output). The statement is
+/// `Out << format_hex(apf.bitcastToAPInt().getZExtValue(), 0, /*Upper=*/true)`
+/// in `llvm/lib/IR/AsmWriter.cpp::writeAPFloatInternal`, a file-static free
+/// function reached from `writeConstantInternal`'s `ConstantFP` arm — that arm
+/// wraps the delegating call in the vector `splat (…)` form and does not print
+/// the digits itself, so it is `writeAPFloatInternal` a porter should grep for.
+#[test]
+fn hex_float_constants_print_uppercase() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/2002-04-07-InfConstant.ll");
+
+    let text = parse_and_render("hex_float_constants_print_uppercase", FIXTURE);
+    assert!(
+        text.contains("fmul float 0x7FF0000000000000, 1.000000e+01"),
+        "{text}"
+    );
+}
+
+/// Mirrors `test/Assembler/2002-04-07-HexFloatConstants.ll`'s
+/// `fmul double 7.200000e+101, 0x427F4000`.
+///
+/// **Caveat on the oracle, stated rather than implied.** That fixture's RUN
+/// lines are `opt -passes=instsimplify -S` and
+/// `llvm-as | llvm-dis | llvm-as | opt | llvm-dis` followed by `diff` — there
+/// is no `FileCheck`, so what the fixture actually pins is printer
+/// *idempotence*, and `0x427F4000` is its hand-written **input** text, not a
+/// captured `llvm-dis` output. The rule this test asserts comes from the
+/// routine: `writeAPFloatInternal` (reached from `writeConstantInternal`'s
+/// `ConstantFP` arm) prints the hex form as
+/// `format_hex(bits, /*Width=*/0, /*Upper=*/true)`, which reaches
+/// `llvm::write_hex` with `NumChars = max(W, max(1, Nibbles) + PrefixChars)`,
+/// so with `W == 0` a value of eight significant nibbles prints in eight
+/// digits and is *not* padded to sixteen. The fixture is the shape and the
+/// spelling; `write_hex` is the authority. (Its sibling
+/// `hex_float_constants_print_uppercase` does have a real FileCheck oracle.)
+#[test]
+fn hex_float_constants_are_not_zero_padded_past_their_width() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/2002-04-07-HexFloatConstants.ll");
+
+    let text = parse_and_render(
+        "hex_float_constants_are_not_zero_padded_past_their_width",
+        FIXTURE,
+    );
+    assert!(
+        text.contains("fmul double 7.200000e+101, 0x427F4000"),
         "{text}"
     );
 }

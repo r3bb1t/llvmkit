@@ -731,8 +731,8 @@ under `RUSTDOCFLAGS=-D warnings`; `test --workspace --all-targets
 --all-features`; `test --workspace --doc --all-features`; `cargo audit`. The
 plain `build` / `build --release` / `test <name>` lines above are local
 convenience, not gates. Reproduce the gate before pushing. Baseline on the pin:
-**0 trybuild failures of 87 registered fixtures** (86 `compile_fail` + 1
-`pass`).
+**zero failures, zero warnings, zero trybuild mismatches** — no totals given,
+because they moved on nearly every commit and were stale more often than not.
 
 **Do not set `CARGO_INCREMENTAL=0`.** Leave the cache alone; the gates are fast
 enough without disabling it, and forcing full rebuilds on every run wastes
@@ -754,7 +754,7 @@ Make/CMake and there are no submodules. `orig_cpp/` is **not** built — never r
 
 ## Testing & QA
 
-The workspace ships a substantial test suite: **2,204 attribute-anchored `#[test]`s** across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks, and **21 doctests**, all green on the pin. Per-test provenance lives in `UPSTREAM.md`; re-count with `grep -rn '^\s*#\[test\]' --include='*.rs' crates/ llvmkit/ | wc -l` rather than trusting this number after a large landing. The categories:
+The workspace ships a substantial test suite — attribute-anchored `#[test]`s across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks, plus doctests — all green on the pin. **No totals are written here.** A test count and a doctest count both stood here and both went stale within days; the gate prints them, `grep -rEc "^\s*#\[test\]" --include="*.rs" crates/ llvmkit/ | awk -F: '{sum+=$2} END {print sum}'` derives the first, and `cargo +1.96.0 test --release --workspace --doc --all-features` derives the second. Per-test provenance lives in `UPSTREAM.md`, whose header explains why it carries no totals either. The categories:
 
 **Tests are ported, not invented.** Every new opcode, predicate, or instruction lands with tests sourced from one of the upstream LLVM trees:
 
@@ -767,6 +767,12 @@ The workspace ships a substantial test suite: **2,204 attribute-anchored `#[test
 **Do not invent `.ll` strings or test scenarios** unless upstream genuinely lacks coverage for the construct. When that happens, say so inline — state what upstream does not cover and why the case still needs pinning — and cite the closest upstream test family (e.g. `IRBuilderTest::CreateStepVectorI3` for arbitrary-width tests). A test that pins an *llvmkit-specific* property (an internal representation choice, a parse/print idempotence law) is legitimate under this rule, but it must say that it has no upstream counterpart rather than implying one.
 
 **Test provenance registry.** Every `#[test]` in the workspace ships with a doc comment citing the upstream LLVM file, fixture, or `TEST(...)` it ports. The complete registry lives at `UPSTREAM.md` (repo root) and is the authoritative answer to "where does this test come from?". After adding a new test, append the row. Doctrine D11 (full prose in `README.md`, worked examples in `docs/type-safety-vs-llvm.md`) makes this rule mechanical: a test without a citation is a defect, not a stylistic gap.
+
+**Every count and every completeness claim carries its derivation.** A number, or an "all / every / none / the rows now say so" claim, written into `docs/`, `UPSTREAM.md`, `CHANGELOG.md` or a test doc comment must sit next to the command that produced it and the commit it was measured at. Nothing in CI reads any of these files, so a figure that was true once decays silently, and a sweep that covered part of a class reads as though it covered all of it. This has gone wrong repeatedly: the 2026-08-20 fix rounds corrected such claims in this registry's own header, in `docs/divergences.md` entry 88, in `docs/future-work.md`'s `mirror`-rows section and in `CHANGELOG.md` — several of them written by the same commit that repaired an earlier one, and one of them stale on the day it was written because a sibling commit in the same round had already moved the tree. So: re-derive rather than copy, including from this file, and when a claim cannot be made exactly true, write the measured figure and the reason instead of rounding the claim up.
+
+**A fix lands with whatever should have caught the bug — resolve, never patch.** Before calling a finding done, ask it out loud: *what would have failed if this were wrong?* If the answer is "nothing", or "something that exists but is too weak", **that gap is part of the finding and lands in the same commit** — not as a follow-up, not as a row in `docs/future-work.md`. A recorded weakness is not a resolved one; being written down is exactly what lets one keep hiding defects while looking handled. Two shipped this way in the 2026-08-21 rounds: a diagnostic carrying upstream's message verbatim but anchored at an unrelated line, because the corpus `error=` oracle matches message text by containment and ignores position — a weakness already recorded — and a regression test that pinned its bug with a *named* value when only an unnamed value reproduced it. Both fixes were correct; both detections stayed blind. **This binds hardest on findings that look trivial.** Severity governs how loudly a finding is reported, never how deeply it is fixed.
+
+**An assertion of absence is a claim and needs a command.** "This is unrecorded", "nothing pins this", "no caller does X", "there is no entry to delete", "no upstream fixture covers it" — run the search, paste it beside the claim, or do not write the sentence. This has shipped twice: a task brief declared a defect unrecorded while `docs/divergences.md` entry 108 had named it for a day, and a routine was called uncalled because the grep used a name it does not have. The converse matters as much: when a search *does* find something, read what it actually asserts before counting it as coverage. Entry 108 named its defect exactly and covered two of that defect's eight parts. **Recorded is not covered, and existing is not sufficient.**
 
 Categories below are the *shape* of testing; their content always sources from the upstream tree above.
 

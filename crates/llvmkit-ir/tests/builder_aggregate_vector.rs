@@ -1,10 +1,14 @@
 //! Aggregate / vector op coverage: `extractvalue`, `insertvalue`,
 //! `extractelement`, `insertelement`, `shufflevector`.
 //!
-//! Every test cites its upstream source per Doctrine D11.
+//! Every test cites its upstream source per Doctrine D11, except the one
+//! that says plainly it has none: llvmkit's cross-module tag has no LLVM
+//! counterpart to port.
 
-use llvmkit_ir::ShuffleMaskElem::Lane;
-use llvmkit_ir::{Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::ShuffleMaskElem::{Lane, Poison};
+use llvmkit_ir::{
+    Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ShuffleVectorInst, module_new,
+};
 
 // --------------------------------------------------------------------------
 // extractvalue
@@ -381,6 +385,257 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
         ),
         "got:\n{text}"
     );
+    Ok(())
+}
+
+/// Ports `test/Bitcode/vscale-round-trip.ll`'s `@non_const_shufflevector`
+/// through the builder rather than the parser:
+/// `%res = shufflevector <vscale x 4 x i32> %lhs, <vscale x 4 x i32> %rhs, <vscale x 4 x i32> zeroinitializer`.
+///
+/// Locks two things `ShuffleVectorInst` decides together: that
+/// `isValidOperands`' scalable branch admits an all-`Lane(0)` mask, and that
+/// the `ArrayRef<int>` constructor builds
+/// `VectorType::get(EltTy, Mask.size(), isa<ScalableVectorType>(V1->getType()))`
+/// — so the result type is scalable and `printShuffleMask` writes the
+/// `vscale x ` prefix.
+#[test]
+fn shuffle_vector_scalable_zero_mask_splat() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let vec_ty = m.scalable_vector_type(i32_ty, 4);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let f = m.add_function_dyn("non_const_shufflevector", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let v0 = m.view(f).param(0)?;
+    let v1 = m.view(f).param(1)?;
+    let _ = b.shuffle_vector(v0, v1, &[Lane(0), Lane(0), Lane(0), Lane(0)], "res")?;
+    b.ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "%res = shufflevector <vscale x 4 x i32> %0, <vscale x 4 x i32> %1, <vscale x 4 x i32> zeroinitializer\n"
+        ),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
+/// The other mask `ShuffleVectorInst::isValidOperands`' scalable branch
+/// admits: `Mask[0] == PoisonMaskElem` with `all_equal(Mask)`.
+///
+/// No upstream `.ll` fixture writes it — `test/Bitcode/vscale-round-trip.ll`
+/// covers only the zero mask — so the source is the routine itself plus
+/// `ShuffleVectorInst::convertShuffleMaskForBitcode`, whose scalable arm
+/// answers `PoisonValue::get(VecTy)` when `Mask[0] != 0`, which is the
+/// `poison` spelling `printShuffleMask` then emits.
+#[test]
+fn shuffle_vector_scalable_poison_mask() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let vec_ty = m.scalable_vector_type(i32_ty, 4);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let v0 = m.view(f).param(0)?;
+    let v1 = m.view(f).param(1)?;
+    let _ = b.shuffle_vector(v0, v1, &[Poison, Poison, Poison, Poison], "")?;
+    b.ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "shufflevector <vscale x 4 x i32> %0, <vscale x 4 x i32> %1, <vscale x 4 x i32> poison\n"
+        ),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
+/// `ShuffleVectorInst::isValidOperands`' scalable branch, negative half: a
+/// scalable operand with a mask that is neither all-zero nor all-poison is
+/// refused by `(Mask[0] != 0 && Mask[0] != PoisonMaskElem) || !all_equal(Mask)`.
+///
+/// The two cases are its two disjuncts: `Lane(1)` fails the first, and a
+/// mixed `Lane(0)` / `Poison` mask fails `all_equal`. `ShuffleMaskElem`'s
+/// `Poison` is upstream's `PoisonMaskElem`.
+#[test]
+fn shuffle_vector_scalable_rejects_a_non_splat_mask() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let vec_ty = m.scalable_vector_type(i32_ty, 4);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let v0 = m.view(f).param(0)?;
+    let v1 = m.view(f).param(1)?;
+    for mask in [
+        [Lane(1), Lane(1), Lane(1), Lane(1)],
+        [Lane(0), Poison, Lane(0), Lane(0)],
+    ] {
+        assert!(
+            matches!(
+                b.shuffle_vector(v0, v1, &mask, ""),
+                Err(IrError::InvalidOperation {
+                    message: "invalid shufflevector operands"
+                })
+            ),
+            "{mask:?}"
+        );
+    }
+    Ok(())
+}
+
+/// `ShuffleVectorInst::isValidOperands`' mask-range clause,
+/// `if (Elem != PoisonMaskElem && Elem >= V1Size * 2) return false;`, which
+/// llvmkit's instruction path did not implement at all: a lane at or past
+/// `2 * V1Size` names neither source vector.
+///
+/// The constant-expression twin is
+/// `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_shufflevector_rejects_out_of_range_mask`;
+/// this is the instruction form of the same rule.
+#[test]
+fn shuffle_vector_rejects_an_out_of_range_mask_lane() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let vec_ty = m.vector_type(i32_ty, 2);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let v0 = m.view(f).param(0)?;
+    let v1 = m.view(f).param(1)?;
+    // `V1Size * 2` is 4, so `Lane(3)` is the last legal lane and `Lane(4)` the
+    // first illegal one.
+    assert!(b.shuffle_vector(v0, v1, &[Lane(3), Lane(0)], "ok").is_ok());
+    assert!(matches!(
+        b.shuffle_vector(v0, v1, &[Lane(4), Lane(0)], ""),
+        Err(IrError::InvalidOperation {
+            message: "invalid shufflevector operands"
+        })
+    ));
+    Ok(())
+}
+
+/// Ports `test/Assembler/constant-splat.ll`'s `@ret_scalable_vector_ptr`
+/// through the builder rather than the parser. Upstream writes
+/// `ret <vscale x 4 x ptr> splat (ptr @my_global)` and its CHECK pins the
+/// expansion, which is the constant expression this test builds directly:
+/// `shufflevector (<vscale x 4 x ptr> insertelement (<vscale x 4 x ptr> poison, ptr @my_global, i64 0), <vscale x 4 x ptr> poison, <vscale x 4 x i32> zeroinitializer)`.
+///
+/// The point is the *unfolded* scalable shuffle. `ConstantFoldShuffleVectorInstruction`'s
+/// all-zero-mask arm folds to `ConstantAggregateZero` only when lane 0 is null,
+/// and reaches `ConstantVector::getSplat` only for a fixed mask; a scalable
+/// operand with a non-null lane 0 therefore falls through to its
+/// `if (isa<ScalableVectorType>(V1VTy)) return nullptr;` and the expression
+/// survives. `printShuffleMask` then writes the mask as `zeroinitializer`.
+///
+/// Reachable through `IrBuilder::shuffle_vector` only since
+/// `ShuffleVectorInst::isValidOperands` was ported -- before that the builder
+/// refused every scalable operand, so the folder branch was dead here and the
+/// shape existed only on the constant-expression path.
+#[test]
+fn shuffle_vector_scalable_constant_operand_survives_folding() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let my_global = m.add_global_uninitialized("my_global", i32_ty.as_type())?;
+    let global_ptr = m.view(my_global).as_global_constant_ptr();
+    let vec_ty = m.scalable_vector_type(global_ptr.ty(), 4);
+    let no_parameters: [llvmkit_ir::Type<'_, _>; 0] = [];
+    let fn_ty = m.function_type(vec_ty.as_type(), no_parameters);
+    let f = m.add_function_dyn("ret_scalable_vector_ptr", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let poison = vec_ty.as_type().poison();
+    let inserted = b.insert_element(poison, global_ptr, i64_ty.const_int(0_i64), "")?;
+    let shuffled = b.shuffle_vector(
+        m.view(inserted),
+        poison,
+        &[Lane(0), Lane(0), Lane(0), Lane(0)],
+        "",
+    )?;
+    b.ret(m.view(shuffled))?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "ret <vscale x 4 x ptr> shufflevector (<vscale x 4 x ptr> insertelement (<vscale x 4 x ptr> poison, ptr @my_global, i64 0), <vscale x 4 x ptr> poison, <vscale x 4 x i32> zeroinitializer)
+"
+        ),
+        "got:
+{text}"
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart.** LLVM's `ShuffleVectorInst::isValidOperands`
+/// takes three `Value *`s from one `LLVMContext` and has nothing to check here;
+/// module identity is llvmkit's own invariant, so there is no fixture to port
+/// and no upstream behaviour to mirror. What is being locked is the guard
+/// itself.
+///
+/// Two [`module_new!`](llvmkit_ir::module_new) modules cannot express the
+/// mistake — their distinct generated brand types make the cross-module call a
+/// compile error, so the runtime check is unreachable. Two
+/// [`llvmkit_ir::DynBrand`] modules share one brand type, which is precisely
+/// why the [`ModuleId`](llvmkit_ir::ModuleId) tag has to hold the line.
+///
+/// Without the tag test the mask's slot is looked up in V1's arena, and both
+/// outcomes are wrong: a slot past the end reaches `Context::value_data`'s
+/// `unreachable!("invalid ValueSlot: out of arena range (cross-module
+/// mixing?)")`, and a slot that happens to be in range reads a different value
+/// entirely and answers about that. Module A here is given extra constants so
+/// its mask lands past the end of B's arena, i.e. on the panicking half.
+#[test]
+fn shuffle_vector_operands_reject_a_mask_from_another_module() -> Result<(), IrError> {
+    let a = Module::dynamic("shuffle-mask-a");
+    let b = Module::dynamic("shuffle-mask-b");
+
+    // Module A: padding constants first, so the mask below lands at an arena
+    // index past anything module B holds.
+    let a_i32 = a.i32_type();
+    for value in 0..64_i32 {
+        let _ = a_i32.const_int(value);
+    }
+    let a_mask_ty = a.vector_type(a_i32.as_type(), 4);
+    let a_mask = a_mask_ty
+        .const_vector([
+            a_i32.const_int(0_i32),
+            a_i32.const_int(1_i32),
+            a_i32.const_int(2_i32),
+            a_i32.const_int(3_i32),
+        ])?
+        .as_erased();
+
+    // Module B: two well-formed `<4 x i32>` operands and its own mask, which is
+    // the same shape as A's so nothing but the tag differs.
+    let b_i32 = b.i32_type();
+    let b_vec_ty = b.vector_type(b_i32.as_type(), 4);
+    let b_lhs = b_vec_ty.as_type().poison().as_erased();
+    let b_rhs = b_vec_ty.as_type().poison().as_erased();
+    let b_mask = b_vec_ty
+        .const_vector([
+            b_i32.const_int(0_i32),
+            b_i32.const_int(1_i32),
+            b_i32.const_int(2_i32),
+            b_i32.const_int(3_i32),
+        ])?
+        .as_erased();
+
+    assert!(
+        !ShuffleVectorInst::is_valid_operands_with_constant_mask(b_lhs, b_rhs, a_mask),
+        "a mask minted in another module must not be a valid shufflevector operand"
+    );
+    // B's own mask is accepted at the same call, so the rejection is about the
+    // tag and nothing else.
+    assert!(ShuffleVectorInst::is_valid_operands_with_constant_mask(
+        b_lhs, b_rhs, b_mask
+    ));
     Ok(())
 }
 

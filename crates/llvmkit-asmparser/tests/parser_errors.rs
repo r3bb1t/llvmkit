@@ -49,9 +49,17 @@ entry:\n\
     }
 }
 
-/// Mirrors `LLParser.cpp::parseShuffleVector` and
-/// `Instructions.cpp::ShuffleVectorInst::isValidOperands`: the mask operand
-/// must be a vector of i32, not any integer vector later coerced to i32.
+/// Mirrors `LLParser::parseShuffleVector` and
+/// `ShuffleVectorInst::isValidOperands`'s `const Value *Mask` overload: the
+/// mask operand must be a vector of **i32**, not any integer vector later
+/// coerced to i32.
+///
+/// The message used to be llvmkit's own `expected valid shufflevector mask`,
+/// raised inside a second routine (`parse_shuffle_mask`) and anchored at the
+/// mask. `LLParser::parseShuffleVector` has exactly one error of its own —
+/// `error(Loc, "invalid shufflevector operands")`, anchored at the **first
+/// operand** — and the mask's type is part of that one check, so that is what
+/// llvmkit now reports.
 #[test]
 fn shufflevector_rejects_non_i32_mask_type() {
     let err = parse_err(
@@ -62,8 +70,8 @@ entry:\n\
 }\n",
     );
     match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "valid shufflevector mask")
+        ParseError::Message { message, .. } => {
+            assert_eq!(message, "invalid shufflevector operands")
         }
         other => panic!("unexpected error variant: {other:?}"),
     }

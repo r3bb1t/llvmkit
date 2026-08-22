@@ -429,8 +429,24 @@ pub fn compute_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<KnownBits> {
+    compute_known_bits_at_depth(value, query, 0)
+}
+
+/// [`compute_known_bits`] entered at an explicit recursion depth.
+///
+/// Upstream's `computeKnownBits` takes `Depth` as a parameter, and a caller
+/// already inside a depth-limited walk passes `Depth + 1` so the budget is
+/// shared — `computeKnownFPClass`'s `case Instruction::BitCast:` arm is such a
+/// caller. Only the depth is threaded: llvmkit's cycle set has no upstream
+/// counterpart (upstream bounds recursion with the depth limit alone), so it
+/// starts fresh here as it does at depth zero.
+pub(crate) fn compute_known_bits_at_depth<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<KnownBits> {
     let mut stack = HashSet::new();
-    compute_known_bits_inner(value, query, 0, &mut stack)
+    compute_known_bits_inner(value, query, depth, &mut stack)
 }
 
 /// Return true when `value` is known non-zero.
@@ -765,7 +781,6 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 src,
                 query,
                 depth + 1,
-                stack,
                 UndefPoisonKind::PoisonOnly,
             )? {
                 compute_known_bits_inner(src, query, depth + 1, stack)
@@ -4729,12 +4744,10 @@ fn implies_poison_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // Upstream's `MaxDepth` here is 2, not the analysis-wide limit.
     const MAX_DEPTH: u32 = 2;
 
-    let mut stack = HashSet::new();
     if is_guaranteed_not_to_be_undef_or_poison(
         value_assumed_poison,
         query,
         0,
-        &mut stack,
         UndefPoisonKind::PoisonOnly,
     )? {
         return Ok(true);
@@ -4810,14 +4823,7 @@ pub fn is_known_not_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
-    let mut stack = HashSet::new();
-    is_guaranteed_not_to_be_undef_or_poison(
-        value,
-        query,
-        0,
-        &mut stack,
-        UndefPoisonKind::PoisonOnly,
-    )
+    is_guaranteed_not_to_be_undef_or_poison(value, query, 0, UndefPoisonKind::PoisonOnly)
 }
 
 /// Return true when `value` is guaranteed not to be undef.
@@ -4826,8 +4832,7 @@ pub fn is_known_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
-    let mut stack = HashSet::new();
-    is_guaranteed_not_to_be_undef_or_poison(value, query, 0, &mut stack, UndefPoisonKind::UndefOnly)
+    is_guaranteed_not_to_be_undef_or_poison(value, query, 0, UndefPoisonKind::UndefOnly)
 }
 
 /// Return true when `value` is guaranteed to be neither undef nor poison.
@@ -4836,14 +4841,7 @@ pub fn is_known_not_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
-    let mut stack = HashSet::new();
-    is_guaranteed_not_to_be_undef_or_poison(
-        value,
-        query,
-        0,
-        &mut stack,
-        UndefPoisonKind::UndefOrPoison,
-    )
+    is_guaranteed_not_to_be_undef_or_poison(value, query, 0, UndefPoisonKind::UndefOrPoison)
 }
 
 // --------------------------------------------------------------------------
@@ -5408,12 +5406,40 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     allow_undefined_elements: bool,
 ) -> Option<(Value<'ctx, B>, ApInt, Value<'ctx, B>, ApInt)> {
+    let lhs = value_from_slot(value, data.lhs.get());
+    let rhs = value_from_slot(value, data.rhs.get());
+
+    // `getShuffleDemandedElts`' first statement, on the **result** type:
+    //
+    //     if (isa<ScalableVectorType>(Shuf->getType())) {
+    //       assert(DemandedElts == APInt(1, 1));
+    //       DemandedLHS = DemandedRHS = DemandedElts;
+    //       return true;
+    //     }
+    //
+    // A scalable shuffle succeeds with both sources fully demanded, so the
+    // caller recurses into the operands instead of answering "nothing known".
+    // The `assert` holds because `computeKnownBits`' no-`DemandedElts` entry
+    // point seeds `APInt(1, 1)` for anything that is not a `FixedVectorType`;
+    // `ApInt::all_ones(1)` is that value, and it is spelled here because
+    // `demanded_elements_for` answers `None` for a scalable vector rather than
+    // carrying a width. Nothing downstream reads the width: every recursion
+    // re-derives its own demanded set through `demanded_elements_for` /
+    // `demanded_lanes`, and both answer `None` — or fall back — for a scalable
+    // operand.
+    let (_, result_scalable) = vector_shape(value)?;
+    if result_scalable {
+        let demanded = ApInt::all_ones(1);
+        return Some((lhs, demanded.clone(), rhs, demanded));
+    }
+
     let result_lanes = u32::try_from(data.mask.len()).ok()?;
     let demanded =
         demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(result_lanes));
-    let lhs = value_from_slot(value, data.lhs.get());
-    let rhs = value_from_slot(value, data.rhs.get());
-    // Both operands share a type, so one width describes each of them.
+    // Both operands share a type, so one width describes each of them. The
+    // `false` patterns are `cast<FixedVectorType>(Shuf->getOperand(0)->getType())`
+    // — upstream's unchecked cast, which the guard above has already made
+    // sound, spelled as a refusal because the repo bans runtime panics.
     let (source_width, false) = vector_shape(lhs)? else {
         return None;
     };
@@ -5566,15 +5592,17 @@ fn value_bit_width<'ctx, B: ModuleBrand + 'ctx>(
 /// `@llvm.assume` arm (`getKnowledgeValidInContext`), which needs an
 /// `AssumptionCache`.
 ///
-/// One arm is an llvmkit **refinement**, marked at its site: a shift whose
-/// amount is proven in range by known bits is not poison, where upstream's
-/// `shiftAmountKnownInRange` demands a literal constant. It answers `true`
-/// strictly more often, and only where the shift provably cannot be poison.
+/// There is no arm upstream does not have. One used to be here — a shift whose
+/// amount known bits proved in range was reported not poison, where
+/// `shiftAmountKnownInRange` demands a literal constant — and it was deleted
+/// as an invention inside a port (D11). It took a known-bits cycle set with it:
+/// this routine never inserted into that set, only threaded it down to the one
+/// `compute_known_bits_inner` call the arm made, and upstream bounds this walk
+/// with `Depth` alone.
 fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueSlot>,
     kind: UndefPoisonKind,
 ) -> IrResult<bool> {
     if depth >= query.max_depth() {
@@ -5644,7 +5672,6 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
                     value_from_slot(value, operand.get()),
                     query,
                     depth + 1,
-                    stack,
                     kind,
                 )? {
                     well_defined = false;
@@ -5658,14 +5685,13 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
             && let Some(splat) = splat_value(value)
         {
             // For a splat, only the value being splatted has to be checked.
-            if is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, stack, kind)? {
+            if is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, kind)? {
                 return Ok(true);
             }
         } else {
             let mut well_defined = true;
             for operand in operands_of(value) {
-                if !is_guaranteed_not_to_be_undef_or_poison(operand, query, depth + 1, stack, kind)?
-                {
+                if !is_guaranteed_not_to_be_undef_or_poison(operand, query, depth + 1, kind)? {
                     well_defined = false;
                     break;
                 }
@@ -5689,36 +5715,6 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     if dominating_condition_proves_well_defined(value, query, kind) {
         return Ok(true);
-    }
-
-    // llvmkit refinement (no upstream counterpart): `shiftAmountKnownInRange`
-    // is syntactic, so a shift by a non-constant amount reaches
-    // `can_create_undef_or_poison_kind` as "can create poison" and the operand
-    // walk above is skipped. Known bits can still prove the amount in range,
-    // and a shift whose amount is in range and whose operands are well defined
-    // provably is not poison.
-    if kind.includes_poison()
-        && let InstructionKindData::Shl(data)
-        | InstructionKindData::Lshr(data)
-        | InstructionKindData::Ashr(data) = operator
-    {
-        if query.uses_instruction_info()
-            && (data.no_unsigned_wrap || data.no_signed_wrap || data.is_exact)
-        {
-            return Ok(false);
-        }
-        let lhs = value_from_slot(value, data.lhs.get());
-        let rhs = value_from_slot(value, data.rhs.get());
-        if !is_guaranteed_not_to_be_undef_or_poison(lhs, query, depth + 1, stack, kind)?
-            || !is_guaranteed_not_to_be_undef_or_poison(rhs, query, depth + 1, stack, kind)?
-        {
-            return Ok(false);
-        }
-        let Some(width) = value_bit_width(lhs, query.data_layout()) else {
-            return Ok(false);
-        };
-        let rhs_bits = compute_known_bits_inner(rhs, query, depth + 1, stack)?;
-        return Ok(rhs_bits.max_value().limited_value(u64::from(width)) < u64::from(width));
     }
 
     Ok(false)
@@ -6003,7 +5999,22 @@ mod tests {
     ) -> ValueSlot {
         let core = m.core_ref();
         let value = build_instruction_value(result_ty, bb_id, kind, None);
+        // `IrBuilder::append_instruction`'s use registration, verbatim — see
+        // the twin helper in `verifier.rs`.
+        let operand_ids = match &value.kind {
+            ValueKindData::Instruction(i) => {
+                let mut ids = i.kind.operand_ids();
+                ids.extend(i.kind.block_operand_ids());
+                ids
+            }
+            _ => Vec::new(),
+        };
         let id = core.context().push_value(value);
+        for op in operand_ids {
+            core.context()
+                .value_data(op)
+                .add_use(crate::value::ValueUse::Instruction(id));
+        }
         let ValueKindData::BasicBlock(bb_data) = &core.context().value_data(bb_id).kind else {
             panic!("fabricate_instruction: bb_id is not a basic block");
         };

@@ -12,6 +12,8 @@ reached, correct as of its date and not maintained afterwards.
 | [`IrStruct` derive macro](ir-struct-derive.md) | User guide for `#[derive(IrStruct)]`: generated wrappers, `StructFields<S>`, the helper attributes, and the struct shapes it rejects. |
 | [Migrating from inkwell](inkwell-migration.md) | Per-API delta against the [`inkwell`](https://crates.io/crates/inkwell) crate: the three structural differences, then a row-by-row mapping of inkwell's spelling to llvmkit's. Read this before porting an existing codebase. |
 | [Future work](future-work.md) | The live backlog: known gaps, deferred items, and the reasoning behind each deferral. Several rustdoc comments in `crates/` point here for *why* a hole is still open. |
+| [Known divergences from LLVM](divergences.md) | The behavioural-difference ledger, graded by severity. Each entry is a hypothesis with a citation, not a fact — and so is its evidence block. |
+| [`llvm/test/Assembler` coverage](fixture-coverage.md) | All 500 upstream fixtures classified `ported` / `blocked-model` / `N/A`, with the named gap per blocked row. |
 
 Start with the repository [`README.md`](../README.md) for the quick tour and
 [`CHANGELOG.md`](../CHANGELOG.md) for the 0.0.4 migration — each break is spelled
