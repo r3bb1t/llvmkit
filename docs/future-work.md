@@ -467,42 +467,6 @@ The verifier's error-distinguishing variant needs a richer return type than
 Not urgent: all three currently agree. It is recorded because a predicate with
 three implementations is one diagnostic away from having three behaviours.
 
-## Parser — the instruction dispatch is split in two, where `LLParser`'s is single (found 2026-08-20, 0.0.4 funclet parity)
-
-`LLParser::parseBasicBlock` strips the optional `%name =` **once**, before
-dispatch, and `LLParser::parseInstruction` switches on the opcode **once**. The
-result name is orthogonal to the opcode. llvmkit dispatches twice: a
-`match self.peek()` handles terminators *before* the name is consumed, and a
-chain of `if matches!(…)` handles the ones that can bind a result *after* it.
-Every result-binding terminator therefore needs two arms — `invoke`, `callbr`,
-and now `catchswitch` — and `parse_lhs_before_invoke` exists only to re-derive
-the name the first dispatch skipped past.
-
-The split has no observable behaviour of its own, so it is recorded here rather
-than in [`divergences.md`](divergences.md) (that file's own rule: a spelling
-difference that changes no behaviour is house doctrine, not a divergence). It
-is the shared cause of three entries that *are* observable, each of which
-points back here:
-
-- **107** — `invoke %named.struct @f(…)` does not parse, because
-  `parse_lhs_before_invoke` eats the return type as a result name.
-- **109** — input ending after `%x =` reports `expected instruction opcode`
-  where upstream reports `found end of file when expecting more instructions`.
-- **110** — instruction diagnostics anchor at the opcode where upstream's
-  `NameLoc` anchors at the result name.
-
-**The fix:** hoist `parse_lhs_assignment` above the terminator `match`, then
-delete the pre-table `Invoke` / `CallBr` / `CatchSwitch` special cases and
-`parse_lhs_before_invoke` outright. 107 and 109 fall out for free.
-
-**Why it is deferred:** the same hoist moves `result_loc` from the opcode token
-to the result-name token for *every* instruction, which is entry 110 — it
-changes the anchor column of `multiple definition of local value named '…'`,
-`instructions returning void cannot have a name`, `check_value_id`'s message
-and `instruction forward referenced with type '…'` across the whole parser.
-That blast radius wants its own diagnostic-span audit and a re-bless of
-whatever pins those columns, not a rider on a funclet fix.
-
 ## Parser — `resolve_direct_callee` returns a three-way sum where `convertValIDToValue` returns one `Value *` (found 2026-08-21, divergence-closing task 6)
 
 `LLParser::convertValIDToValue` switches over `ValID::Kind` internally and

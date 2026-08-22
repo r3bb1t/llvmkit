@@ -1319,6 +1319,29 @@ fn invoke_explicit_type_round_trips() {
     );
 }
 
+/// `LLParser::parseBasicBlock` strips the optional `%name =` **before**
+/// `parseInstruction` dispatches, so the token `parseInvoke` reads next is
+/// always `parseType`'s return type. A `%`-sigil token in that position is a
+/// named struct type, unambiguously — and stays one whether or not the
+/// instruction carries a result name.
+///
+/// **No upstream fixture writes it:** `rg --no-ignore --hidden -a -l "invoke
+/// %[A-Za-z_.]"` over `orig_cpp/.../llvm/test/` returns nothing (the only
+/// near miss, `test/Assembler/opaque-ptr.ll`, writes `invoke void %p()` — a
+/// named *callee*, not a named return type). llvmkit read the return type as
+/// a result name and rejected both spellings until this commit.
+#[test]
+fn invoke_named_struct_return_type_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/invoke_named_struct_return_type.ll");
+
+    let text = parse_and_render_bytes("invoke_named_struct_return_type", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["invoke %struct.S @f()", "%r = invoke %struct.S @f()"],
+    );
+}
+
 /// Crafted against `resolveFunctionType`'s FunctionType branch reached
 /// from `parseInvoke`: vararg invokes are only expressible through the
 /// explicit call-site type (upstream shape: the vararg statepoint invoke

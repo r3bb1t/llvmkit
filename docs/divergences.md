@@ -826,30 +826,6 @@ Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously
   unconstructed variants should either gain their sites or be deleted — a
   public variant nothing produces is a claim the tree does not honour.
 
-### 107. `invoke %named.struct @f(…)` does not parse — the return type is eaten as a result name
-
-*parser — instruction dispatch* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_lhs_before_invoke`)
-
-Found 2026-08-20 while fixing the `catchswitch` dispatch (0.0.4 funclet
-parity); a direct consequence of the split instruction dispatch recorded in
-[`future-work.md`](future-work.md).
-
-- **LLVM:** `LLParser::parseBasicBlock` strips the optional `%name =` **before**
-  `parseInstruction` runs, and `LLParser::parseInvoke` then reads the return
-  type with `parseType`. It never looks for a result name after the opcode, so
-  a `%`-sigil token in return-type position is unambiguously a named type.
-- **llvmkit:** `parse_lhs_before_invoke` bumps `invoke` and *then* runs
-  `parse_lhs_assignment`, so `%struct.S` in return-type position is read as a
-  result name. Probe: `invoke %struct.S @f() to label %ok unwind label %lpad`
-  answers `expected '=' after local SSA name`, anchored on `@f`.
-- **Why:** llvmkit dispatches terminators before the result name is consumed,
-  so `invoke` needs a helper that re-derives the name after the opcode. The
-  helper cannot tell a return type from a result name.
-- **Fix:** falls out for free from the dispatch hoist in
-  [`future-work.md`](future-work.md) — move `parse_lhs_assignment` above the
-  terminator `match` and delete `parse_lhs_before_invoke`. Not fixable in
-  isolation without duplicating the lookahead.
-
 ## Accepts invalid input
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
@@ -1190,53 +1166,6 @@ llvmkit source, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_p
 - **llvmkit:** a `defined_numbered_blocks` membership test raises `ParseError::Redefinition { kind: SymbolKind::Block, .. }` before `check_value_id` runs, pre-empting upstream's message. `SymbolKind::Block` renders as `label`, so the text a user sees is `redefinition of label '%1'` — verified by probe on `define void @f() {\n1:\n  br label %1\n1:\n  ret void\n}`, which upstream answers with `label expected to be numbered '2' or greater`. The same pre-emptive check also sits in `get_basic_block_numbered`, the `getBB(unsigned ID, LocTy)` mirror.
 - **Why:** pre-existing. Carried through unchanged when `defineBB` was unified into one routine for the `printBasicBlock` parity commit, deliberately, so that no diagnostic and no diagnostic *order* moved in a commit whose subject was printed bytes. Keeping the two guards and their order is what makes that diff reviewable as a printing change; it is not an endorsement of them.
 - **Fix:** delete the pre-emptive check from both sites and let `check_value_id` speak. Re-bless whatever pins `Redefinition` for a block id first. Sequence it with the already-recorded `unable to create block numbered '<N>'` entry, which rewrites the other guard in the same function.
-
-### 109. Input ending after `%x =` reports `expected instruction opcode`, not upstream's end-of-file message
-
-*parser — instruction dispatch* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_basic_block_instructions`, the `Token::Eof` guard)
-
-Found 2026-08-20 while fixing the `catchswitch` dispatch (0.0.4 funclet
-parity).
-
-- **LLVM:** the Eof guard is `LLParser::parseInstruction`'s first statement —
-  `if (Token == lltok::Eof) return tokError("found end of file when expecting
-  more instructions");` — and `parseBasicBlock` has already consumed the
-  optional `%name =` by the time it runs. A file ending after `%x =` therefore
-  reports the end-of-file message.
-- **llvmkit:** the same guard runs at the top of the instruction loop, *before*
-  the shared `parse_lhs_assignment`. `%x =` is not `Eof`, so the guard passes,
-  the LHS is consumed, and the opcode `match` answers
-  `expected instruction opcode`. Probe: a file whose last line is `  %x =`
-  reports `3:7: expected instruction opcode`.
-- **Why:** llvmkit folded `parseInstruction`'s prologue into the loop header,
-  where it sits one step earlier than upstream's.
-- **Fix:** move the guard to just after `parse_lhs_assignment`, which is where
-  the dispatch hoist in [`future-work.md`](future-work.md) puts the dispatch
-  anyway. Doing it alone would also be correct.
-
-### 110. Instruction diagnostics anchor at the opcode where upstream anchors at the result name
-
-*parser — instruction dispatch* — crates/llvmkit-asmparser/src/ll_parser.rs (`Parser::parse_basic_block_instructions`, `result_loc`)
-
-Found 2026-08-20 while fixing the `catchswitch` dispatch (0.0.4 funclet
-parity).
-
-- **LLVM:** `LLParser::parseBasicBlock` takes `LocTy NameLoc = Lex.getLoc();`
-  *before* stripping the result name, and hands it to
-  `PerFunctionState::setInstName`. Every diagnostic that routine raises points
-  at the `%name` token.
-- **llvmkit:** `result_loc` is taken *after* `parse_lhs_assignment`, so it
-  points at the opcode. Probe: a function with two `%x = add …` lines reports
-  `4:8: multiple definition of local value named 'x'` — column 8 is `add`,
-  where upstream's `NameLoc` is column 3, the `%x`. The same shift applies to
-  `instructions returning void cannot have a name`, `check_value_id`'s message
-  and `instruction forward referenced with type '…'`.
-- **Why:** the split dispatch (see [`future-work.md`](future-work.md)) forces
-  `result_loc` to be taken in the post-LHS path, and it was taken at the point
-  of use rather than before the name.
-- **Fix:** take `result_loc` before `parse_lhs_assignment`. This changes the
-  anchor column of four diagnostics parser-wide, so it wants its own
-  diagnostic-span audit and lands with that hoist.
 
 ### 113. Every `parseTypeAndBasicBlock` site is rendered as a `label` keyword expectation
 

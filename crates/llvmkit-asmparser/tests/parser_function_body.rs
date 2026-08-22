@@ -400,21 +400,145 @@ fn parses_sub_and_mul() {
     assert!(printed.contains("%b = mul i32 %a, %x\n"));
 }
 
-/// Negative test: an unsupported opcode in this session is reported as a
-/// typed parse error, not a silent miss. Mirrors `LLParser`'s
-/// `tokError("expected instruction opcode")` site for the default arm.
-/// Uses `store` (no result) with an LHS `%x =` to trigger the `_` arm.
+/// `LLParser::parseInstruction`'s `default:` arm,
+/// `error(Loc, "expected instruction opcode")`, in the spelling that carries a
+/// result name: `Loc` is the token that failed to be an opcode, never the
+/// `%name` in front of it. `parseBasicBlock` has already stripped the name by
+/// the time the switch runs, so the two positions are different tokens.
+///
+/// The corpus drives the same arm from three upstream fixtures — `rg
+/// --no-ignore --hidden -a -l "expected instruction opcode"` over
+/// `orig_cpp/.../llvm/test/` returns `constant-splat-diagnostics.ll`,
+/// `dbg-record-invalid-0.ll` and `dbg-record-invalid-5.ll`, all in
+/// `parser_corpus_manifest.txt` — and the two `dbg-record-invalid-*` rows
+/// carry upstream's own `loc=` pin. None of the three writes a *named*
+/// unknown opcode, which is the position this test adds.
+///
+/// It replaces a test that reached an llvmkit-only
+/// `instruction opcode supported by this parser` arm with `%x = store`. That
+/// input is not upstream's default arm at all — `setInstName` answers it
+/// `instructions returning void cannot have a name` — and the arm no longer
+/// exists: the dispatch is exhaustive over `Opcode`, so an unported opcode is
+/// a compile error rather than a runtime message upstream never emits.
 #[test]
-fn unsupported_opcode_is_typed_error() {
-    let err = parser::parse_assembly(
-        "define i32 @f(i32 %a) {\nentry:\n  %x = store i32 %a, ptr null\n  ret i32 %a\n}\n",
-        |_module, _parsed| (),
-    )
-    .unwrap_err();
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("instruction opcode supported by this parser"),
-        "got: {msg}"
+fn an_unknown_opcode_is_reported_at_the_opcode_not_the_result_name() {
+    assert_eq!(
+        parse_expect_error_at(
+            "define void @f() {\nentry:\n  %x = frobnicate i32 1\n  ret void\n}\n"
+        ),
+        ("expected instruction opcode".to_string(), (3, 8))
+    );
+    // Same arm, no result name: `Loc` is unmoved because there was nothing in
+    // front of the opcode to move it off.
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  frobnicate i32 1\n  ret void\n}\n"),
+        ("expected instruction opcode".to_string(), (3, 3))
+    );
+}
+
+/// `LLParser::PerFunctionState::setInstName`'s first arm — `if
+/// (Inst->getType()->isVoidTy()) { if (NameID != -1 || !NameStr.empty())
+/// return P.error(NameLoc, "instructions returning void cannot have a
+/// name"); }` — reached from `parseBasicBlock`, which calls `setInstName` on
+/// *every* instruction it parses, terminators included.
+///
+/// **No upstream fixture pins this message:** `rg --no-ignore --hidden -a -l
+/// "returning void cannot have a name"` over `orig_cpp/.../llvm/test/`
+/// returns nothing. The rule and its `NameLoc` anchor are read off
+/// `setInstName` and `parseBasicBlock` directly.
+///
+/// Every void-typed spelling is written out because llvmkit reaches the rule
+/// through two code paths, not one: the instructions that mint a `Value` go
+/// through `bind_local`, and the terminators and `store` / `fence`, which
+/// mint none, call `reject_named_void` from their own dispatch arm. Probing
+/// one path would not have covered the other, and that is exactly how the
+/// gap survived — `%x = call void @g()` answered upstream's message all
+/// along, through `bind_local`, while every terminator and `store` / `fence`
+/// spelling above it answered an llvmkit-only `instruction opcode supported
+/// by this parser` until this commit.
+#[test]
+fn a_named_void_instruction_is_rejected_at_the_name() {
+    for body in [
+        "%x = ret void",
+        "%x = br label %b",
+        "%x = store i32 0, ptr null",
+        "%x = fence seq_cst",
+        "%x = unreachable",
+        "%x = switch i32 0, label %b []",
+        "%x = indirectbr ptr null, [label %b]",
+        "%x = call void @g()",
+    ] {
+        let src = format!(
+            "declare void @g()\ndefine void @f() {{\nentry:\n  {body}\nb:\n  ret void\n}}\n"
+        );
+        assert_eq!(
+            parse_expect_error_at(&src),
+            (
+                "instructions returning void cannot have a name".to_string(),
+                (4, 3)
+            ),
+            "body: {body}"
+        );
+    }
+    // `%0 =` is upstream's `NameID != -1` half of the same guard; the loop
+    // above only exercises the `!NameStr.empty()` half.
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %0 = ret void\n}\n"),
+        (
+            "instructions returning void cannot have a name".to_string(),
+            (3, 3)
+        )
+    );
+}
+
+/// `LLParser::parseInstruction`'s first statement — `if (Token ==
+/// lltok::Eof) return tokError("found end of file when expecting more
+/// instructions");` — which upstream reaches only *after* `parseBasicBlock`
+/// has stripped the optional `%name =`. Input that stops at `%x =` is
+/// therefore end-of-file, not a missing opcode.
+///
+/// `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll` pins the message on
+/// the spelling with no result name and is ported in
+/// `parser_module_level.rs::the_function_body_frame_matches_upstream_text`;
+/// `rg --no-ignore --hidden -a -l "found end of file when expecting more
+/// instructions"` over `orig_cpp/.../llvm/test/` returns that fixture alone,
+/// so the `%x =` spelling has no upstream fixture and is pinned here.
+#[test]
+fn input_ending_after_a_result_name_is_end_of_file() {
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %x ="),
+        (
+            "found end of file when expecting more instructions".to_string(),
+            (3, 7)
+        )
+    );
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %0 ="),
+        (
+            "found end of file when expecting more instructions".to_string(),
+            (3, 7)
+        )
+    );
+}
+
+/// The two `parseToken(lltok::equal, …)` messages `LLParser::parseBasicBlock`
+/// spells for its `lltok::LocalVar` and `lltok::LocalVarID` arms. They are
+/// different sentences — `instruction name` against `instruction id` — and
+/// llvmkit wrote a third and a fourth (`local SSA name` / `local SSA id`)
+/// until this commit.
+///
+/// **No upstream fixture pins either:** `rg --no-ignore --hidden -a -l
+/// "expected '=' after instruction"` over `orig_cpp/.../llvm/test/` returns
+/// nothing.
+#[test]
+fn a_result_name_without_its_equals_uses_upstreams_two_messages() {
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %x add i32 1, 2\n  ret void\n}\n"),
+        ("expected '=' after instruction name".to_string(), (3, 6))
+    );
+    assert_eq!(
+        parse_expect_error_at("define void @f() {\nentry:\n  %0 add i32 1, 2\n  ret void\n}\n"),
+        ("expected '=' after instruction id".to_string(), (3, 6))
     );
 }
 

@@ -911,6 +911,23 @@ fn is_declaration_linkage(linkage: Linkage) -> bool {
     matches!(linkage, Linkage::External | Linkage::ExternalWeak)
 }
 
+/// `setInstName`'s first arm — an instruction of void type may carry neither
+/// a name nor an id — split out so the void-typed instructions that never mint
+/// a `Value` can reach it: every terminator but `invoke`, `callbr` and
+/// `catchswitch`, plus `store` and `fence`. Upstream needs no split, because
+/// `parseBasicBlock` calls `setInstName` on *every* instruction and the
+/// routine reads `Inst->getType()` itself. `bind_local`, the rest of
+/// `setInstName`, delegates its own void arm here.
+fn reject_named_void(lhs: &LocalLhs, loc: Span) -> ParseResult<()> {
+    match lhs {
+        LocalLhs::None => Ok(()),
+        LocalLhs::Named(_) | LocalLhs::Numbered(_) => Err(ParseError::Message {
+            message: "instructions returning void cannot have a name".into(),
+            loc: DiagLoc::span(loc),
+        }),
+    }
+}
+
 /// Reject a numbered slot that goes *backwards*. Mirrors
 /// `LLParser::checkValueID`.
 ///
@@ -11855,19 +11872,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 pending_debug_records.push(self.parse_debug_record(state)?);
             }
 
-            // `parseInstruction`'s first line: a block that runs off the end
-            // of the file gets its own message rather than whatever the
-            // enclosing production would have said next.
-            if matches!(self.peek(), Token::Eof) {
-                return Err(self.message("found end of file when expecting more instructions"));
-            }
-
             // `FileLoc InstStart(Lex.getTokLineColumnPos());` — taken after the
             // `#dbg_*` records and *before* the optional `%name =`, so the
             // recorded range opens at the result name when there is one.
             let instruction_start = self.loc().start;
 
-            // Terminator — these consume the builder.
+            // `LocTy NameLoc = Lex.getLoc();` — `parseBasicBlock` takes it
+            // *before* stripping the optional `%name =` / `%N =`, and hands
+            // that one location to `setInstName`. Every diagnostic that
+            // routine raises therefore points at the result name, not at the
+            // opcode behind it.
+            let result_loc = self.loc();
+            let result_name = self.parse_lhs_assignment()?;
+
+            // `parseInstruction`'s first statement, which upstream reaches
+            // only after `parseBasicBlock` has stripped the result name: a
+            // block that runs off the end of the file gets its own message
+            // rather than whatever the enclosing production would have said
+            // next. Input ending at `%x =` is end-of-file, not a missing
+            // opcode.
+            if matches!(self.peek(), Token::Eof) {
+                return Err(self.message("found end of file when expecting more instructions"));
+            }
+
+            // `parseInstruction`'s switch, first half: the arms whose
+            // instruction ends the block or produces no value. They take the
+            // builder by value or reject a result name outright, so Rust's
+            // ownership rules keep them in their own `match`; upstream's is
+            // one switch reached at this same point, with the result name
+            // already in hand.
             match self.peek() {
                 Token::Instruction(Opcode::Ret) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
@@ -11878,6 +11911,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::Unreachable) => {
@@ -11890,6 +11924,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::Br) => {
@@ -11901,6 +11936,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::Store) => {
@@ -11913,6 +11949,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     seen_non_phi = true;
                     continue;
                 }
@@ -11926,6 +11963,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     seen_non_phi = true;
                     continue;
                 }
@@ -11938,6 +11976,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::IndirectBr) => {
@@ -11949,12 +11988,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::Invoke) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
-                    let result_loc = self.loc();
-                    let result_name = self.parse_lhs_before_invoke()?;
+                    // `parseInvoke` is entered with the keyword already eaten
+                    // — upstream's `Lex.Lex()` sits in `parseInstruction`,
+                    // ahead of the switch. The return type it reads next is
+                    // `parseType`'s, so a `%`-sigil token there is a named
+                    // type and nothing else.
+                    self.bump()?;
                     let v = self.parse_invoke(state, b, &result_name)?;
                     self.finish_trailing_metadata(
                         state,
@@ -11962,8 +12006,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
-                    if let Some(val) = v {
-                        state.bind_local(&result_name, val, result_loc)?;
+                    match v {
+                        Some(val) => state.bind_local(&result_name, val, result_loc)?,
+                        None => reject_named_void(&result_name, result_loc)?,
                     }
                     return Ok(());
                 }
@@ -11977,6 +12022,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::CleanupRet) => {
@@ -11989,6 +12035,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::CatchRet) => {
@@ -12001,17 +12048,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
+                    reject_named_void(&result_name, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(Opcode::CatchSwitch) => {
-                    // Reached only when the line opens with the opcode, so
-                    // `parse_lhs_assignment` below can only answer
-                    // `LocalLhs::None`; the `%cs =` spelling is handled after
-                    // the shared `parse_lhs_assignment` further down. Upstream
-                    // needs no such pair — see the note there.
+                    // `parse_catchswitch` eats the keyword itself, so it is
+                    // called with the opcode still unconsumed.
                     let b = take_live_builder(&mut builder, self.loc())?;
-                    let result_loc = self.loc();
-                    let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_catchswitch(state, b, &result_name)?;
                     self.finish_trailing_metadata(
                         state,
@@ -12023,9 +12066,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Ok(());
                 }
                 Token::Instruction(Opcode::CallBr) => {
+                    // `parse_callbr` eats the keyword itself, as above.
                     let b = take_live_builder(&mut builder, self.loc())?;
-                    let result_loc = self.loc();
-                    let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_callbr(state, b, &result_name)?;
                     self.finish_trailing_metadata(
                         state,
@@ -12033,17 +12075,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         &mut pending_debug_records,
                         instruction_start,
                     )?;
-                    if let Some(v) = v {
-                        state.bind_local(&result_name, v, result_loc)?;
+                    match v {
+                        Some(val) => state.bind_local(&result_name, val, result_loc)?,
+                        None => reject_named_void(&result_name, result_loc)?,
                     }
                     return Ok(());
                 }
                 _ => {}
             }
-            // Non-terminator: an `%lhs = OP ...` or a void-result
-            // instruction. Only result-producing arms are shipped so far.
-            let result_name = self.parse_lhs_assignment()?;
-            let result_loc = self.loc();
             if matches!(
                 self.peek(),
                 Token::Kw(Keyword::Tail | Keyword::Musttail | Keyword::Notail)
@@ -12060,64 +12099,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 seen_non_phi = true;
                 continue;
             }
-            if matches!(self.peek(), Token::Instruction(Opcode::Invoke)) {
-                let b = take_live_builder(&mut builder, self.loc())?;
-                self.bump()?;
-                let value = self.parse_invoke(state, b, &result_name)?;
-                self.finish_trailing_metadata(
-                    state,
-                    bb_value,
-                    &mut pending_debug_records,
-                    instruction_start,
-                )?;
-                if let Some(value) = value {
-                    state.bind_local(&result_name, value, result_loc)?;
-                }
-                return Ok(());
-            }
-            // `callbr` is a terminator that may still bind a result, so it
-            // arrives here rather than at the terminator dispatch above
-            // whenever the line opens with `%res =` — `%res = callbr i32 asm
-            // ...` is `test/Assembler/inline-asm-constraint-error.ll`'s
-            // `output-after-label` split, and every `callbr` returning a value.
-            if matches!(self.peek(), Token::Instruction(Opcode::CallBr)) {
-                let b = take_live_builder(&mut builder, self.loc())?;
-                let value = self.parse_callbr(state, b, &result_name)?;
-                self.finish_trailing_metadata(
-                    state,
-                    bb_value,
-                    &mut pending_debug_records,
-                    instruction_start,
-                )?;
-                if let Some(value) = value {
-                    state.bind_local(&result_name, value, result_loc)?;
-                }
-                return Ok(());
-            }
-            // `catchswitch` is a terminator whose result is `token`-typed, so
-            // like `callbr` it arrives here rather than at the terminator
-            // dispatch above whenever the line opens with `%cs =` or `%N =`.
-            // `LLParser` has no such split: `parseBasicBlock` strips the
-            // optional result name once, before `parseInstruction` dispatches
-            // on the opcode, so `parseCatchSwitch` is reached identically from
-            // the bare and the named spellings. Reaching it from both is what
-            // this arm restores — the result name is already in `result_name`,
-            // so `parse_catchswitch` is called with the opcode token still
-            // unconsumed, exactly as the bare arm above calls it.
-            if matches!(self.peek(), Token::Instruction(Opcode::CatchSwitch)) {
-                let b = take_live_builder(&mut builder, self.loc())?;
-                let value = self.parse_catchswitch(state, b, &result_name)?;
-                self.finish_trailing_metadata(
-                    state,
-                    bb_value,
-                    &mut pending_debug_records,
-                    instruction_start,
-                )?;
-                // `PFS.setInstName(NameID, NameStr, NameLoc, Inst)`, which
-                // `parseBasicBlock` runs *after* the trailing-metadata switch.
-                state.bind_local(&result_name, value, result_loc)?;
-                return Ok(());
-            }
+            // `parseInstruction`'s switch, second half: the arms that mint a
+            // value and only borrow the builder.
             let opcode = match self.peek() {
                 Token::Instruction(op) => *op,
                 _ => return Err(self.expected("instruction opcode")),
@@ -12200,15 +12183,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Opcode::LandingPad => self.parse_landingpad(state, b_ref, &result_name)?,
                 Opcode::CleanupPad => self.parse_cleanuppad(state, b_ref, &result_name)?,
                 Opcode::CatchPad => self.parse_catchpad(state, b_ref, &result_name)?,
-                _ => {
-                    return Err(ParseError::Expected {
-                        expected: format!(
-                            "instruction opcode supported by this parser (got {opcode:?})"
-                        )
-                        .into(),
-                        loc: DiagLoc::span(result_loc),
-                    });
-                }
+                // The first half of the dispatch returned or continued the
+                // loop for each of these, on the same unadvanced token, so
+                // none reaches here. Listing them keeps this `match`
+                // exhaustive: a new `Opcode` variant is then a compile error
+                // rather than a runtime diagnostic no upstream arm emits.
+                Opcode::Ret
+                | Opcode::Br
+                | Opcode::Switch
+                | Opcode::IndirectBr
+                | Opcode::Invoke
+                | Opcode::Resume
+                | Opcode::Unreachable
+                | Opcode::CleanupRet
+                | Opcode::CatchRet
+                | Opcode::CatchSwitch
+                | Opcode::CallBr
+                | Opcode::Store
+                | Opcode::Fence => unreachable!(
+                    "terminator and void-result opcodes leave the loop in the first half of the dispatch"
+                ),
             };
             self.finish_trailing_metadata(
                 state,
@@ -12220,9 +12214,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    /// Parse an optional `%name = ` / `%N = ` LHS introduction. When the
-    /// next instruction has no LHS (terminator-only), this returns
-    /// [`LocalLhs::None`]; otherwise it consumes the local var and `=`.
+    /// Parse an optional `%name = ` / `%N = ` LHS introduction. Mirrors the
+    /// `lltok::LocalVarID` / `lltok::LocalVar` pair in
+    /// `LLParser::parseBasicBlock`'s instruction loop, including which of the
+    /// two `parseToken(lltok::equal, …)` messages each spelling raises. An
+    /// instruction with no result name is upstream's fall-through, which
+    /// leaves `NameStr` empty and `NameID` at `-1`.
     fn parse_lhs_assignment(&mut self) -> ParseResult<LocalLhs> {
         match self.peek() {
             Token::LocalVar(_) => {
@@ -12230,13 +12227,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("local SSA name"))?;
                 self.bump()?;
-                self.expect_punct(PunctKind::Equal, "'=' after local SSA name")?;
+                self.expect_punct(PunctKind::Equal, "'=' after instruction name")?;
                 Ok(LocalLhs::Named(name))
             }
             Token::LocalVarId(id) => {
                 let id = *id;
                 self.bump()?;
-                self.expect_punct(PunctKind::Equal, "'=' after local SSA id")?;
+                self.expect_punct(PunctKind::Equal, "'=' after instruction id")?;
                 Ok(LocalLhs::Numbered(id))
             }
             _ => Ok(LocalLhs::None),
@@ -14544,21 +14541,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    /// Parse an LHS assignment that may precede an `invoke` terminator.
-    /// Invoke may or may not have an LHS result binding. Mirrors
-    /// `LLParser::parseInstruction`'s handling of `invoke`.
-    fn parse_lhs_before_invoke(&mut self) -> ParseResult<LocalLhs> {
-        // Consume the `invoke` keyword (already peeked; dispatch already
-        // established this is Opcode::Invoke).
-        self.bump()?; // eat `invoke`
-        // An invoke with a result has already had its LHS consumed before
-        // the opcode. But for invoke, the structure is:
-        //   [%name =] invoke ...
-        // The dispatch for Invoke is reached BEFORE parse_lhs_assignment.
-        // So we need to do it here.
-        self.parse_lhs_assignment()
-    }
-
     /// `va_arg <list-ptr>, <ty>`. Mirrors `LLParser::parseVA_Arg`.
     ///
     /// Upstream: `test/Assembler/vaarg.ll`.
@@ -15162,7 +15144,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<Option<llvmkit_ir::Value<'ctx, B>>> {
-        // parse_lhs_before_invoke already consumed `invoke` and optionally LHS.
+        // The dispatch has already eaten the `invoke` keyword, as
+        // `parseInstruction`'s `Lex.Lex()` does ahead of its switch.
         let call_loc = self.loc();
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
@@ -16247,13 +16230,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         loc: Span,
     ) -> ParseResult<()> {
         if v.ty().is_void() {
-            return match lhs {
-                LocalLhs::None => Ok(()),
-                LocalLhs::Named(_) | LocalLhs::Numbered(_) => Err(ParseError::Message {
-                    message: "instructions returning void cannot have a name".into(),
-                    loc: DiagLoc::span(loc),
-                }),
-            };
+            return reject_named_void(lhs, loc);
         }
         match lhs {
             LocalLhs::Named(n) => {

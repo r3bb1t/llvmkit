@@ -365,9 +365,10 @@ fn catchswitch_in_preallocated_teardown() {
 /// missing named-result dispatch broke: `crates/llvmkit-ir/src/asm_writer.rs`
 /// marks `catchswitch` as printing a result name, so every `catchswitch`
 /// llvmkit emits carries a `%name =` — text llvmkit's own parser rejected until
-/// the post-`parse_lhs_assignment` dispatch arm existed. The IR is written here
-/// the way `crates/llvmkit-ir/tests/builder_funclet.rs` builds it, printed, and
-/// fed straight back to the parser.
+/// its instruction dispatch stripped the result name once, ahead of the opcode,
+/// the way `LLParser::parseBasicBlock` does. The IR is written here the way
+/// `crates/llvmkit-ir/tests/builder_funclet.rs` builds it, printed, and fed
+/// straight back to the parser.
 #[test]
 fn catchswitch_print_reparse_is_stable() {
     let (first, second) = parse_print_reparse(

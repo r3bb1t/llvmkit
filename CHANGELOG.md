@@ -19,6 +19,62 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — the instruction dispatch strips the result name once, ahead of the opcode
+
+`LLParser::parseBasicBlock` takes `LocTy NameLoc = Lex.getLoc();`, strips the
+optional `%name =` / `%N =`, and only then calls `parseInstruction`, whose first
+statement is the `lltok::Eof` guard and whose switch dispatches on the opcode
+alone. llvmkit dispatched terminators *before* the name was consumed and handled
+the result-binding ones again afterwards, so `invoke`, `callbr` and `catchswitch`
+each needed two arms and a helper re-derived the name after the opcode. Hoisting
+the strip above the dispatch closes three recorded divergences at once and
+deletes that helper.
+
+- **`invoke %named.struct @f(…)` parses.** The helper bumped `invoke` and then
+  looked for a result name, so `%struct.S` in return-type position was read as
+  one and the invoke was rejected with `expected '=' after local SSA name`. With
+  the name already stripped, `parseInvoke` reads its return type with
+  `parseType`, where a `%`-sigil token is a named type and nothing else — in the
+  named and the bare spelling alike. No `.ll` under the vendored tree writes
+  `invoke %named.struct`, so the two routines are the anchor.
+- **Input ending after `%x =` reports upstream's end-of-file message.** The
+  `Eof` guard ran at the top of the loop, one step ahead of upstream's, so `%x =`
+  passed it and the opcode dispatch answered `expected instruction opcode`. It
+  now sits where `parseInstruction`'s first statement sits, after the strip.
+  `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll` pins the message on the
+  spelling with no result name.
+- **Instruction diagnostics anchor at the result name.** `result_loc` was taken
+  after the strip, so `multiple definition of local value named '…'`,
+  `instructions returning void cannot have a name`, `checkValueID`'s message and
+  `instruction forward referenced with type '…'` all pointed at the opcode
+  rather than at upstream's `NameLoc`. Taking it before the strip moves all four
+  one token left. `test/Assembler/2003-11-24-SymbolTableCrash.ll` is the ported
+  fixture; its `CHECK` block pins only the text, so the ported test now asserts
+  the position too — comparing rendered text and ignoring position is what let
+  the caret sit on `add` unnoticed.
+
+Three findings the hoist surfaced, fixed in the same change:
+
+- **A named void instruction gets upstream's message.** `parseBasicBlock` calls
+  `setInstName` on *every* instruction, so `%x = ret void`, `%x = br …`,
+  `%x = store …`, `%x = fence …` and the rest are
+  `instructions returning void cannot have a name` at the name. llvmkit reached
+  none of them: each fell through to an llvmkit-only
+  `instruction opcode supported by this parser (got Ret)`. `setInstName`'s void
+  arm is now its own routine, called by the value-minting path and by the
+  terminators that mint none.
+- **`expected '=' after instruction name` / `… id`.** Upstream spells two
+  different sentences for the `lltok::LocalVar` and `lltok::LocalVarID` arms;
+  llvmkit wrote `'=' after local SSA name` / `… id` for them.
+- **The dispatch is exhaustive over the parser's `Opcode`.** With every
+  terminator and void-result opcode handled ahead of it, the value dispatch's
+  catch-all became dead and is deleted: an unported opcode is now a compile
+  error instead of a runtime message upstream never emits.
+
+`docs/divergences.md` entries 107, 109 and 110 are deleted, and the
+`docs/future-work.md` item recording the split dispatch as their shared cause
+goes with them.
+
 ### Fixed — three `rejects-valid` divergences: IR llvmkit refused and LLVM accepts
 
 - **`token zeroinitializer` parses.** `Constant::getNullValue`'s

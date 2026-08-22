@@ -6,7 +6,23 @@
 //! for. Each `#[test]` cites the upstream anchor it ports.
 
 use llvmkit_asmparser::ll_parser::Parser;
+use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::{AnyTypeEnum, Module, ModuleBrand, module_new};
+
+pub mod support;
+
+/// Project a rejected fixture's reported span back onto its source as
+/// `(line, column)`, the coordinates upstream's `SourceMgr` prints as
+/// `<stdin>:LINE:COL:`. Comparing only `ParseError`'s rendered text leaves a
+/// diagnostic free to carry upstream's exact message from the wrong token.
+fn reported_line_and_column(source: &[u8], err: &ParseError) -> (u32, u32) {
+    let start = err
+        .loc()
+        .expect("a rejected fixture reports a location")
+        .span
+        .start;
+    support::line_and_column(source, usize::try_from(start).unwrap_or(usize::MAX))
+}
 
 fn parse_into<B: ModuleBrand>(src: &str, m: &Module<B>) {
     Parser::new(src.as_bytes(), m)
@@ -1081,29 +1097,40 @@ fn the_function_body_frame_matches_upstream_text() {
     }
 
     // `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll`
+    let unclosed =
+        include_bytes!("fixtures/upstream/2004-03-30-UnclosedFunctionCrash.ll").as_slice();
     let m = llvmkit_ir::Module::dynamic("unclosed_function");
-    let err = Parser::new(
-        include_bytes!("fixtures/upstream/2004-03-30-UnclosedFunctionCrash.ll").as_slice(),
-        &m,
-    )
-    .expect("lexer primes")
-    .parse_module()
-    .expect_err("fixture is rejected")
-    .to_string();
-    assert_eq!(err, "found end of file when expecting more instructions");
+    let err = Parser::new(unclosed, &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("fixture is rejected");
+    assert_eq!(
+        err.to_string(),
+        "found end of file when expecting more instructions"
+    );
+    assert_eq!(reported_line_and_column(unclosed, &err), (6, 1));
 
     // `test/Assembler/2003-11-24-SymbolTableCrash.ll`. Note upstream spells
     // the name **without** a `%`, unlike its `redefinition of ...` family.
+    let symbol_table_crash =
+        include_bytes!("fixtures/upstream/2003-11-24-SymbolTableCrash.ll").as_slice();
     let m = llvmkit_ir::Module::dynamic("symbol_table_crash");
-    let err = Parser::new(
-        include_bytes!("fixtures/upstream/2003-11-24-SymbolTableCrash.ll").as_slice(),
-        &m,
-    )
-    .expect("lexer primes")
-    .parse_module()
-    .expect_err("fixture is rejected")
-    .to_string();
-    assert_eq!(err, "multiple definition of local value named 'tmp.1'");
+    let err = Parser::new(symbol_table_crash, &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("fixture is rejected");
+    assert_eq!(
+        err.to_string(),
+        "multiple definition of local value named 'tmp.1'"
+    );
+    // Line 8 column 2 is the redefining `%tmp.1`, one tab in —
+    // `parseBasicBlock`'s `NameLoc`, taken before the result name is stripped
+    // and handed to `setInstName`, which raises this message. Neither
+    // fixture's `CHECK` block carries a `<stdin>:LINE:COL:` pin, so the
+    // position is **derived** from those two routines rather than read off
+    // upstream's output; it is asserted here because comparing rendered text
+    // alone is what let the anchor sit on `add` unnoticed.
+    assert_eq!(reported_line_and_column(symbol_table_crash, &err), (8, 2));
 
     // No upstream fixture pins the empty body; the routine is the anchor.
     assert_eq!(
