@@ -70,8 +70,6 @@ pub enum SymbolKind {
     Local,
     /// `%name` at the type position — named or numbered struct type.
     Type,
-    /// `label %name` — basic block.
-    Block,
     /// `!name` — metadata node.
     Metadata,
     /// `$name` — comdat.
@@ -93,7 +91,7 @@ impl SymbolKind {
     pub const fn sigil(self) -> char {
         match self {
             SymbolKind::Global | SymbolKind::GlobalValue => '@',
-            SymbolKind::Local | SymbolKind::Type | SymbolKind::Block => '%',
+            SymbolKind::Local | SymbolKind::Type => '%',
             SymbolKind::Comdat => '$',
             SymbolKind::Metadata => '!',
             SymbolKind::AttrGroup => '#',
@@ -116,7 +114,6 @@ impl core::fmt::Display for SymbolKind {
             SymbolKind::GlobalValue => "value",
             SymbolKind::Local => "value",
             SymbolKind::Type => "type",
-            SymbolKind::Block => "label",
             SymbolKind::Comdat => "comdat",
             SymbolKind::Metadata => "metadata",
             SymbolKind::AttrGroup => "attribute group",

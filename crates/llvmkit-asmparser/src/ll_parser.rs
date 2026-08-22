@@ -15825,36 +15825,49 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         }
     }
 
-    /// Look up or lazily create the named basic block. Mirrors
-    /// `PerFunctionState::getBB(StringRef)`: named forward references create
-    /// the block in advance and the label definition later marks it defined.
-    fn ensure_block(
+    /// Mirrors `PerFunctionState::getVal(Name, Type::getLabelTy(…), Loc)` —
+    /// the whole of `getBB(const std::string &, LocTy)` bar its
+    /// `dyn_cast_or_null`, and the `Ty->isLabelTy()` arm of `getVal`'s
+    /// placeholder minting (`FwdVal = BasicBlock::Create(F.getContext(),
+    /// Name, &F)`).
+    ///
+    /// A name already bound to a non-block local reaches
+    /// `checkValidVariableType` with `Ty->isLabelTy()`, so it fails with
+    /// `'%name' is not a basic block`. That is the message `br label %x`
+    /// carries when `%x` is an instruction result, and the one
+    /// [`Self::get_basic_block_named`] overwrites with `unable to create
+    /// block named '<n>'` when the same name is being *defined* as a label.
+    fn get_val_as_block_named(
         &mut self,
         module: &'ctx Module<B, Unverified>,
         name: &str,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
-    {
-        if let Some(value) = self.blocks.get(name).copied() {
-            return self.value_as_block(module, value, loc);
+    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        if let Some(value) = self.lookup_local(LocalRef::Named(name)) {
+            // `return P.checkValidVariableType(Loc, "%" + Name, Ty, Val);`
+            check_valid_variable_type(
+                loc,
+                &LocalRef::Named(name).display(),
+                module.label_type().as_type(),
+                value.ty(),
+            )?;
+            return Ok(value);
         }
         let bb = self.func.append_basic_block(module, name);
-        self.blocks.insert(name.to_owned(), bb.to_erased());
-        Ok(bb)
+        let value = bb.to_erased();
+        self.blocks.insert(name.to_owned(), value);
+        Ok(value)
     }
 
+    /// Look up or lazily create the named basic block, as a label identity.
     fn ensure_block_label(
         &mut self,
         module: &'ctx Module<B, Unverified>,
         name: &str,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
-        if let Some(value) = self.blocks.get(name).copied() {
-            return self.value_as_block_label(value, loc);
-        }
-        let bb = self.func.append_basic_block(module, name);
-        self.blocks.insert(name.to_owned(), bb.to_erased());
-        Ok(bb.id())
+        let value = self.get_val_as_block_named(module, name, loc)?;
+        self.value_as_block_label(value, loc)
     }
 
     /// Mirrors `LLParser::PerFunctionState::defineBB`.
@@ -15885,13 +15898,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             // `if (P.checkValueID(Loc, "label", "", NumberedVals.getNext(),
             //                     NameID)) return nullptr;`
             BlockHeader::Numbered(id) => {
-                if self.defined_numbered_blocks.contains(&id) {
-                    return Err(ParseError::Redefinition {
-                        kind: SymbolKind::Block,
-                        id: SymbolId::Numbered(id),
-                        loc: DiagLoc::span(loc),
-                    });
-                }
                 check_value_id("label", "", self.next_unnamed_value_id, id, loc)?;
                 (
                     self.get_basic_block_numbered(module, id, loc)?,
@@ -15957,8 +15963,40 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         self.value_as_block(module, block_value, loc)
     }
 
-    /// Mirrors `PerFunctionState::getBB(unsigned ID, LocTy)` — `getVal(ID,
-    /// LabelTy)` narrowed to a block, which forward-declares on a miss.
+    /// Mirrors `PerFunctionState::getVal(ID, Type::getLabelTy(…), Loc)` — the
+    /// whole of `getBB(unsigned ID, LocTy)` bar its `dyn_cast_or_null`,
+    /// including the `Ty->isLabelTy()` arm of the placeholder minting.
+    ///
+    /// The numbered twin of [`Self::get_val_as_block_named`], and reachable
+    /// for the same reason: `checkValueID` only rejects `ID < NextID`, so an
+    /// id at or above it that already carries a pending **non-label** forward
+    /// reference passes that guard and fails here instead, with
+    /// `'%N' is not a basic block`.
+    fn get_val_as_block_numbered(
+        &mut self,
+        module: &'ctx Module<B, Unverified>,
+        id: u32,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        if let Some(value) = self.lookup_local(LocalRef::Numbered(id)) {
+            // `return P.checkValidVariableType(Loc, "%" + Twine(ID), Ty, Val);`
+            check_valid_variable_type(
+                loc,
+                &LocalRef::Numbered(id).display(),
+                module.label_type().as_type(),
+                value.ty(),
+            )?;
+            return Ok(value);
+        }
+        let bb = self.func.append_basic_block(module, "");
+        let value = bb.to_erased();
+        self.numbered_blocks.insert(id, value);
+        Ok(value)
+    }
+
+    /// Mirrors `PerFunctionState::getBB(unsigned ID, LocTy)` together with
+    /// `defineBB`'s `unable to create block numbered '<N>'` arm — the numbered
+    /// twin of [`Self::get_basic_block_named`], and collapsed the same way.
     fn get_basic_block_numbered(
         &mut self,
         module: &'ctx Module<B, Unverified>,
@@ -15966,22 +16004,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
     {
-        if self.defined_numbered_blocks.contains(&id) {
-            return Err(ParseError::Redefinition {
-                kind: SymbolKind::Block,
-                id: SymbolId::Numbered(id),
+        let value = self
+            .get_val_as_block_numbered(module, id, loc)
+            .map_err(|_| ParseError::Message {
+                message: format!("unable to create block numbered '{id}'").into(),
                 loc: DiagLoc::span(loc),
-            });
-        }
-        if self.local_numbered.contains_key(&id) {
-            return Err(self.invalid_numbered_slot(id, loc));
-        }
-        if let Some(value) = self.numbered_blocks.get(&id).copied() {
-            return self.value_as_block(module, value, loc);
-        }
-        let bb = self.func.append_basic_block(module, "");
-        self.numbered_blocks.insert(id, bb.to_erased());
-        Ok(bb)
+            })?;
+        self.value_as_block(module, value, loc)
     }
 
     /// Mirrors `PerFunctionState::getBB(const std::string &Name, LocTy)`
@@ -15990,13 +16019,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// `getBB` reaches the block through `getVal(Name, LabelTy)`, so the name
     /// is looked up in the function's **value** symbol table: a name already
     /// bound to a non-block local makes the block uncreatable, and `getVal`'s
-    /// own `'%x' defined with type 'T' but expected 'label'` is then
-    /// overwritten by `defineBB`'s message — upstream's `error()` keeps only
-    /// the last one at equal priority, so that is what a user sees.
-    ///
-    /// llvmkit keeps blocks in a map of their own (the split W2.2 already
-    /// merges back at leftover-reporting time), so the collision has to be
-    /// asked for explicitly rather than falling out of a shared lookup.
+    /// own `'%x' is not a basic block` is then overwritten by `defineBB`'s
+    /// message — upstream's `error()` keeps only the last one at equal
+    /// priority, so that is what a user sees. Discarding the inner error is
+    /// that overwrite; both carry the same `Loc`.
     fn get_basic_block_named(
         &mut self,
         module: &'ctx Module<B, Unverified>,
@@ -16004,13 +16030,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
     {
-        if !self.blocks.contains_key(name) && self.local_named.contains_key(name) {
-            return Err(ParseError::Message {
+        let value = self
+            .get_val_as_block_named(module, name, loc)
+            .map_err(|_| ParseError::Message {
                 message: format!("unable to create block named '{name}'").into(),
                 loc: DiagLoc::span(loc),
-            });
-        }
-        self.ensure_block(module, name, loc)
+            })?;
+        self.value_as_block(module, value, loc)
     }
 
     fn value_as_block(
@@ -16077,23 +16103,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         id: u32,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
-        if let Some(value) = self.local_numbered.get(&id).copied() {
-            return self.value_as_block_label(value, loc);
-        }
-        // Upstream reaches this rejection one step later: `getBB(ID)` creates
-        // a forward-reference block unconditionally and the *definition* runs
-        // `checkValueID`. llvmkit has no block forward-reference placeholder
-        // yet, so the backward slot is caught here at the reference instead.
-        // Same verdict and same wording; the location differs by one token.
-        // Folds into the definition site when forward references land.
-        check_value_id("label", "", self.next_unnamed_value_id, id, loc)?;
-        let label = if let Some(value) = self.numbered_blocks.get(&id).copied() {
-            self.value_as_block_label(value, loc)?
-        } else {
-            let bb = self.func.append_basic_block(module, "");
-            self.numbered_blocks.insert(id, bb.to_erased());
-            bb.id()
-        };
+        // `getVal(ID, LabelTy, Loc)` — no `checkValueID` here: upstream runs
+        // that guard at the *definition* (`defineBB`), and a reference to a
+        // backward slot forward-declares a block that the later label header
+        // then rejects.
+        let value = self.get_val_as_block_numbered(module, id, loc)?;
+        let label = self.value_as_block_label(value, loc)?;
         self.numbered_block_refs.entry(id).or_insert(loc);
         Ok(label)
     }
@@ -16120,23 +16135,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         self.value_as_block_view(module.view(label).to_erased(), loc)
     }
 
-    /// Look up a function-local value, minting a forward-reference
-    /// placeholder when the name has not been defined yet. Mirrors
-    /// `LLParser::PerFunctionState::getVal`: symbol table, then the
-    /// forward-reference map, then a fresh sentinel of the demanded type.
+    /// The lookup half of both `PerFunctionState::getVal` overloads:
+    /// `F.getValueSymbolTable()->lookup(Name)` / `NumberedVals.get(ID)`, then
+    /// `ForwardRefVals` / `ForwardRefValIDs`.
     ///
     /// Blocks are consulted alongside values because upstream keeps both in
     /// the function's one value symbol table, which is what makes
     /// `'%x' is not a basic block` and `'%x' defined with type 'label'`
-    /// reachable.
-    fn get_val(
-        &self,
-        module: &'ctx Module<B, Unverified>,
-        reference: LocalRef<'_>,
-        ty: Type<'ctx, B>,
-        loc: Span,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let existing = match reference {
+    /// reachable. One routine, because every caller of either `getVal`
+    /// overload — including both `getBB` overloads — reads the same two
+    /// tables in the same order.
+    fn lookup_local(&self, reference: LocalRef<'_>) -> Option<llvmkit_ir::Value<'ctx, B>> {
+        match reference {
             LocalRef::Named(name) => self
                 .local_named
                 .get(name)
@@ -16159,8 +16169,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                         .get(&id)
                         .map(|entry| entry.placeholder.as_value())
                 }),
-        };
-        if let Some(value) = existing {
+        }
+    }
+
+    /// Look up a function-local value, minting a forward-reference
+    /// placeholder when the name has not been defined yet. Mirrors
+    /// `LLParser::PerFunctionState::getVal`: symbol table, then the
+    /// forward-reference map, then a fresh sentinel of the demanded type.
+    fn get_val(
+        &self,
+        module: &'ctx Module<B, Unverified>,
+        reference: LocalRef<'_>,
+        ty: Type<'ctx, B>,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        if let Some(value) = self.lookup_local(reference) {
             // `checkValidVariableType(Loc, "%" + Name, Ty, Val)` —
             // `LocalRef::display` produces upstream's `%name` / `%N` spelling.
             check_valid_variable_type(loc, &reference.display(), ty, value.ty())?;

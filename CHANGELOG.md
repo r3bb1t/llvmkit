@@ -19,6 +19,40 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — every basic-block lookup goes through one `getVal`
+
+`LLParser::PerFunctionState::getBB` is `dyn_cast_or_null<BasicBlock>(getVal(…,
+Type::getLabelTy(…), Loc))` in both overloads, so a label name and a local value
+name share one table and one type check. llvmkit read its own block maps at four
+sites and consulted the value tables at none of them. The lookup half of `getVal`
+is now a single routine that all of them call.
+
+- **`br label %x` where `%x` is an instruction result is rejected.** It reached
+  `checkValidVariableType`'s `Ty->isLabelTy()` arm upstream —
+  `'%x' is not a basic block`. llvmkit appended a *second* block and renamed it
+  `x1`, printing IR that upstream refuses to read.
+- **Added: `unable to create block numbered '<N>'`.** `defineBB`'s numbered arm
+  emits it when `getBB(ID)` returns null, which happens for an id at or above
+  `NumberedVals.getNext()` that already carries a pending non-label forward
+  reference. It was recorded as unreachable-upstream and omitted; the premise
+  confused `checkValueID`'s `ID < NextID` guard with `getVal`'s type check.
+- **`unable to create block named '<n>'` now covers `ForwardRefVals` too.**
+  Upstream's `Val` comes from the symbol table *or* the forward-reference map;
+  llvmkit checked only the first, so a label colliding with a never-defined
+  forward reference was accepted and failed later with an unrelated message.
+- **A re-used numbered label reports `label expected to be numbered 'N' or
+  greater`.** A `defined_numbered_blocks` membership test in front of
+  `checkValueID` raised `redefinition of label '%N'`, which `LLParser.cpp`
+  emits for no namespace at all.
+- **A backwards numbered label reference is reported at the label, not at the
+  reference.** `checkValueID` ran at the *use* site as a stand-in for block
+  forward references that now exist; upstream runs it only in `defineBB`.
+  `test/Assembler/skip-value-numbers-invalid.ll`'s `block_smaller_id` split
+  keeps passing and now anchors where upstream's `Loc` points.
+- **Breaking: `SymbolKind::Block` is removed.** Nothing constructs it any more,
+  and it existed only to render `redefinition of label` / `use of undefined
+  label`, neither of which upstream emits.
+
 ### Fixed — the instruction dispatch strips the result name once, ahead of the opcode
 
 `LLParser::parseBasicBlock` takes `LocTy NameLoc = Lex.getLoc();`, strips the

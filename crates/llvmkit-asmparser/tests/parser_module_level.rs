@@ -763,13 +763,22 @@ fn unknown_top_level_entity_is_typed_error() {
 
 // ── parseFunctionHeader / parseArgumentList ───────────────────────────────
 
-fn header_err(src: &str) -> String {
+/// The rendered message **and** the `(line, column)` upstream's `SourceMgr`
+/// would print. Text alone is what let a diagnostic carry upstream's exact
+/// wording from an unrelated token; a caller that cares about the anchor uses
+/// this, and [`header_err`] is the projection for the ones that do not.
+fn header_err_at(src: &str) -> (String, (u32, u32)) {
     let m = llvmkit_ir::Module::dynamic("function_header");
-    Parser::new(src.as_bytes(), &m)
+    let err = Parser::new(src.as_bytes(), &m)
         .expect("lexer primes")
         .parse_module()
-        .expect_err("malformed function header is rejected")
-        .to_string()
+        .expect_err("malformed function header is rejected");
+    let at = reported_line_and_column(src.as_bytes(), &err);
+    (err.to_string(), at)
+}
+
+fn header_err(src: &str) -> String {
+    header_err_at(src).0
 }
 
 /// `parseFunctionHeader` runs its checks in one fixed order, and the order is
@@ -1170,27 +1179,115 @@ fn uselistorder_directives_come_after_every_block() {
 }
 
 /// `PerFunctionState::defineBB` reaches a named block through
-/// `getVal(Name, LabelTy)`, so blocks and local values share one namespace: a
-/// label whose name is already an instruction result cannot be created.
+/// `getBB(Name, Loc)`, which is `getVal(Name, LabelTy, Loc)`, so blocks and
+/// local values share one namespace: a label whose name is already taken by a
+/// local cannot be created, and `defineBB` overwrites `getVal`'s
+/// `'%x' is not a basic block` with `unable to create block named '<n>'` at
+/// the same `Loc`.
 ///
 /// llvmkit keeps blocks in a map of their own, so it used to create *both* —
 /// a value `%x` and a block `%x` in the same function.
 ///
-/// The label must carry no forward reference: `br label %x` would reach
-/// `getVal` first and fail there instead, with
-/// `'%x' defined with type 'i32' but expected 'label'`.
+/// **Both of `getVal`'s tables reach the message**, and the second half was
+/// missing until the `getVal` lookup was made one routine: `Val` comes from
+/// `F.getValueSymbolTable()` *or* from `ForwardRefVals`, so a name held only
+/// by a **pending forward reference** — never defined at all — collides just
+/// as a defined one does. That case used to be accepted, and the function
+/// then failed far away with `use of undefined value '%y'`.
 ///
-/// The numbered twin (`unable to create block numbered '<N>'`) is not tested:
-/// `defineBB` runs `checkValueID` first, so a numbered label that collides
-/// has already failed with `label expected to be numbered 'N' or greater`,
-/// and no `test/Assembler` fixture reaches it.
+/// No `test/Assembler` fixture pins either message or its column, so both
+/// positions are **derived** from `defineBB`'s `Loc` argument, which
+/// `parseBasicBlock` takes at the label token. They are asserted because
+/// comparing rendered text alone cannot tell the two apart.
 #[test]
 fn a_block_may_not_take_a_local_value_name() {
+    // `Val` from the function symbol table.
     assert_eq!(
-        header_err(
+        header_err_at(
             "define void @f() {\nentry:\n  %x = add i32 0, 0\n  ret void\nx:\n  ret void\n}\n"
         ),
-        "unable to create block named 'x'"
+        ("unable to create block named 'x'".to_owned(), (5, 1))
+    );
+    // `Val` from `ForwardRefVals`.
+    assert_eq!(
+        header_err_at(
+            "define void @f() {\nentry:\n  %z = add i32 %y, 1\n  ret void\ny:\n  ret void\n}\n"
+        ),
+        ("unable to create block named 'y'".to_owned(), (5, 1))
+    );
+}
+
+/// The numbered twin of [`a_block_may_not_take_a_local_value_name`], reached
+/// through `getBB(unsigned ID, LocTy)`.
+///
+/// `defineBB` runs `checkValueID` before `getBB`, and `checkValueID` only
+/// rejects `ID < NextID` — it says nothing about an id at or above `NextID`
+/// that already carries a pending forward reference. So `%5` referenced as an
+/// `i32` while `NumberedVals.getNext()` is still 1 leaves
+/// `ForwardRefValIDs[5]` holding an `Argument(i32)`; the label `5:` clears
+/// `checkValueID`, fails `checkValidVariableType` inside `getVal`, and
+/// `defineBB` reports `unable to create block numbered '5'`.
+///
+/// The message was recorded as unreachable-upstream and therefore deliberately
+/// absent from llvmkit. It is neither: the premise confused `checkValueID`'s
+/// guard with `getVal`'s. No `test/Assembler` fixture reaches it, so the
+/// position is derived from `defineBB`'s `Loc` as above.
+#[test]
+fn a_numbered_block_may_not_take_a_pending_local_value_slot() {
+    assert_eq!(
+        header_err_at(
+            "define void @f() {\nentry:\n  %0 = add i32 %5, 1\n  ret void\n5:\n  ret void\n}\n"
+        ),
+        ("unable to create block numbered '5'".to_owned(), (5, 1))
+    );
+}
+
+/// A numbered label may not re-use a slot, and the message is
+/// `checkValueID`'s — not a redefinition.
+///
+/// `defineBB`'s numbered branch opens with
+/// `P.checkValueID(Loc, "label", "", NumberedVals.getNext(), NameID)`, and a
+/// re-used id is necessarily below `NumberedVals.getNext()`, so that guard is
+/// what fires. llvmkit had a `defined_numbered_blocks` membership test in
+/// front of it raising `redefinition of label '%1'`, a message
+/// `LLParser.cpp` never emits — no `redefinition of` site in it takes a label
+/// (`grep -n "redefinition of" lib/AsmParser/LLParser.cpp` at the vendored
+/// tag `llvmorg-22.1.4` names only comdat, global, type, function and
+/// argument).
+///
+/// `test/Assembler/skip-value-numbers-invalid.ll`'s `block_smaller_id` split
+/// pins the same message for a *forward* backwards-slot and is driven by the
+/// corpus manifest; this one covers the re-use shape, which no upstream
+/// fixture writes, and pins the column that separates the definition site
+/// from the reference site.
+#[test]
+fn a_re_used_numbered_label_is_a_backwards_slot() {
+    assert_eq!(
+        header_err_at("define void @f() {\n1:\n  br label %1\n1:\n  ret void\n}\n"),
+        (
+            "label expected to be numbered '2' or greater".to_owned(),
+            (4, 1)
+        )
+    );
+}
+
+/// `label %x` is parsed by `parseTypeAndBasicBlock` -> `parseTypeAndValue` ->
+/// `getVal(Name, LabelTy, Loc)`, so a *reference* to a name already bound to
+/// a non-block local fails in `checkValidVariableType`'s `Ty->isLabelTy()`
+/// arm — the un-overwritten half of the message
+/// [`a_block_may_not_take_a_local_value_name`] sees.
+///
+/// llvmkit's block map was consulted alone here, so `br label %x` with `%x`
+/// an `i32` result silently appended a *second* block and renamed it `x1`:
+/// an accepts-invalid that printed IR upstream refuses to read. No upstream
+/// fixture writes this shape; the routine is the anchor.
+#[test]
+fn a_label_reference_to_a_local_value_is_not_a_basic_block() {
+    assert_eq!(
+        header_err_at(
+            "define void @f() {\nentry:\n  %x = add i32 0, 0\n  br label %x\nx:\n  ret void\n}\n"
+        ),
+        ("'%x' is not a basic block".to_owned(), (4, 12))
     );
 }
 
