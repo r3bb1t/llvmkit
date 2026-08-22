@@ -19,6 +19,27 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — the comdat block, and `<badref>`
+
+Two printer differences from `llvm-dis`.
+
+- **The comdat block holds the comdats a global object references, in first-use
+  order.** `AssemblyWriter`'s constructor fills a `SetVector` from
+  `TheModule->global_objects()` — `concat<GlobalObject>(functions(),
+  globals())` — so functions come first and a comdat nothing references is not
+  printed. llvmkit walked its own comdat table: declaration order, orphans
+  included. A round trip through `llvm-as | llvm-dis` drops an unreferenced
+  comdat; llvmkit kept it, so the two disagreed.
+- **A value with no slot prints `<badref>`.** `writeAsOperandInternal` ends
+  `if (Slot != -1) Out << Prefix << Slot; else Out << "<badref>";` — no sigil
+  on the failure side — and `printInstruction`'s unnamed-result arm is
+  `Out << "<badref> = "`. llvmkit spelled all four sites `%<unnumbered>` /
+  `@<unnumbered>`.
+
+Three tests moved with the first change, each because it created a comdat no
+global object referenced — a module `llvm-dis` prints no comdat block for at
+all. Each now attaches one, as `test/Bitcode/compatibility.ll` does.
+
 ### Fixed — `zeroinitializer` and a `#dbg_*` value operand carry upstream's own text
 
 Two parser sites that re-worded a complete upstream message, and one that

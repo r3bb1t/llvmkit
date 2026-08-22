@@ -340,3 +340,39 @@ fn module_prints_a_blank_line_before_every_function_including_the_first() -> Res
     assert_eq!(text, expected, "got:\n{text}");
     Ok(())
 }
+
+/// Ports `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest,
+/// DebugPrintDetachedArgument)`, whose whole assertion is
+/// `EXPECT_EQ(S, "i32 <badref>")`.
+///
+/// `writeAsOperandInternal`'s value path ends
+/// `if (Slot != -1) Out << Prefix << Slot; else Out << "<badref>";` — the
+/// failure spelling carries no sigil in either the `'%'` or the `'@'` branch,
+/// and llvmkit spelled it `%<unnumbered>` / `@<unnumbered>`.
+///
+/// **Input substitution, recorded rather than routed around.** Upstream builds
+/// `new Argument(Ty)` with no parent; llvmkit has no detached IR — an
+/// `Argument` is a handle into a function — so the argument here is attached
+/// and unnamed. The output is the same for a reason that is in the routines,
+/// not in the probe: `Value::print` sends an `Argument` to
+/// `printAsOperand(OS, /*PrintType=*/true, MST)`, and neither overload calls
+/// `ModuleSlotTracker::incorporateFunction` (only the `Instruction` and
+/// `BasicBlock` arms of `Value::print` do), so `SlotTracker::getLocalSlot`
+/// finds an empty `fMap` and answers -1 whether or not the argument has a
+/// parent.
+#[test]
+fn an_argument_with_no_slot_prints_upstreams_badref() -> Result<(), IrError> {
+    let m = module_new!("badref")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let arg = m.view(f).param(0)?;
+    assert_eq!(format!("{arg}"), "i32 <badref>");
+
+    // The `BasicBlock` arm of the same `if`, reached the same way: an
+    // unnamed block printed as an *operand* with no tracker.
+    let entry = m.view(f).append_basic_block(&m, "");
+    let block = entry.to_erased();
+    assert_eq!(format!("{block}"), "label <badref>");
+    Ok(())
+}

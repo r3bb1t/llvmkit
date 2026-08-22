@@ -439,12 +439,25 @@ fn align_attribute() {
 // Comdat
 // ---------------------------------------------------------------------------
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 22-23:
-/// `$comdat.any = comdat any`.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `$comdat.any = comdat any` and
+/// its `@comdat.any = global i32 0, comdat`.
+///
+/// The attachment is not decoration: `AssemblyWriter`'s constructor fills its
+/// `Comdats` `SetVector` from `TheModule->global_objects()`, so a comdat that
+/// no global object references never reaches `printModule`'s loop. This test
+/// used to create the comdat alone — a shape upstream's `llvm-as | llvm-dis`
+/// prints nothing for.
 #[test]
 fn comdat_any_emission() {
     let m = module_new!("m").expect("fresh module");
-    m.get_or_insert_comdat("comdat.any");
+    let c = m.get_or_insert_comdat("comdat.any");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("comdat.any", i32_ty.as_type())
+        .initializer(zero)
+        .comdat(c)
+        .build()
+        .expect("build");
     assert!(
         module_text(&m).contains("$comdat.any = comdat any\n"),
         "got:\n{}",
@@ -452,8 +465,10 @@ fn comdat_any_emission() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 24-25 / 26-27 / 28-29 / 30-31:
-/// every selection kind round-trips.
+/// Mirrors `test/Bitcode/compatibility.ll`'s five `$comdat.* = comdat <kind>`
+/// directives together with the five `@comdat.* = global i32 0, comdat`
+/// globals that reference them — for the reason
+/// [`comdat_any_emission`] gives.
 #[test]
 fn comdat_all_selection_kinds() {
     let m = module_new!("m").expect("fresh module");
@@ -466,6 +481,22 @@ fn comdat_all_selection_kinds() {
         .set_selection_kind(&m, SelectionKind::NoDeduplicate);
     m.get_or_insert_comdat("comdat.samesize")
         .set_selection_kind(&m, SelectionKind::SameSize);
+    let i32_ty = m.i32_type();
+    for name in [
+        "comdat.any",
+        "comdat.exactmatch",
+        "comdat.largest",
+        "comdat.noduplicates",
+        "comdat.samesize",
+    ] {
+        let c = m.comdat(name).expect("just inserted");
+        let zero = i32_ty.const_int(0i32);
+        m.global_builder(name, i32_ty.as_type())
+            .initializer(zero)
+            .comdat(c)
+            .build()
+            .expect("build");
+    }
     let text = module_text(&m);
     assert!(text.contains("$comdat.any = comdat any\n"), "got:\n{text}");
     assert!(

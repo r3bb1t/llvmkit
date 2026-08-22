@@ -508,16 +508,73 @@ fn source_filename_round_trips_through_asm_writer() {
 }
 /// Mirrors `LLParser::parseComdat`: a top-level `$name = comdat <kind>`
 /// directive creates the module COMDAT entry and AsmWriter re-emits it.
+///
+/// A global object has to reference it for the second half to hold.
+/// `AssemblyWriter`'s constructor fills `Comdats` from
+/// `TheModule->global_objects()`, so an unreferenced comdat parses and is
+/// stored but is not printed — `llvm-as | llvm-dis` loses it. This test used
+/// to write the directive alone and assert it came back.
 #[test]
 fn top_level_comdat_round_trips() {
     let printed = {
         let m = module_new!("comdat_module").expect("fresh module");
-        parse_into("$foo = comdat largest\n", &m);
+        parse_into(
+            "$foo = comdat largest\n@g = global i32 0, comdat($foo)\n",
+            &m,
+        );
         format!("{m}")
     };
     assert!(
         printed.contains("$foo = comdat largest\n"),
         "AsmWriter output: {printed}"
+    );
+    assert!(
+        printed.contains("@g = global i32 0, comdat($foo)\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+
+/// `AssemblyWriter`'s constructor is
+/// `for (const GlobalObject &GO : TheModule->global_objects()) if (const
+/// Comdat *C = GO.getComdat()) Comdats.insert(C);`, over
+/// `Module::global_objects() = concat<GlobalObject>(functions(), globals())`
+/// and into a `SetVector`. So the printed block is first-use order with
+/// **functions first**, each comdat once, and an unreferenced comdat absent.
+///
+/// llvmkit walked its own comdat table instead — declaration order,
+/// unreferenced entries included — so the two disagreed on any module whose
+/// declaration order is not its first-use order. No `test/Assembler` or
+/// `test/Bitcode` fixture writes one: `test/Bitcode/compatibility.ll` attaches
+/// its five comdats to functions and globals in the order it declares them,
+/// which is why its `CHECK` block passed either way. This input is written to
+/// separate them.
+#[test]
+fn the_comdat_block_is_first_use_order_over_functions_then_globals() {
+    let printed = {
+        let m = module_new!("comdat_order").expect("fresh module");
+        parse_into(
+            "$a = comdat any\n\
+             $b = comdat largest\n\
+             $orphan = comdat exactmatch\n\
+             @g = global i32 0, comdat($a)\n\
+             define void @f() comdat($b) {\n\
+             entry:\n\
+             \x20 ret void\n\
+             }\n",
+            &m,
+        );
+        format!("{m}")
+    };
+    let b = printed
+        .find("$b = comdat largest")
+        .expect("the referenced comdats print");
+    let a = printed
+        .find("$a = comdat any")
+        .expect("the referenced comdats print");
+    assert!(b < a, "functions come first in global_objects(): {printed}");
+    assert!(
+        !printed.contains("$orphan"),
+        "an unreferenced comdat is not in the SetVector: {printed}"
     );
 }
 /// Mirrors the `externally_initialized` flag in `LLParser::parseGlobal`.
@@ -1424,12 +1481,10 @@ module asm \"second line\"\n",
 /// **blank** line between consecutive comdats and none after the last.
 /// llvmkit emitted the leading blank line and then ran the comdats together.
 ///
-/// What this test does **not** assert, because llvmkit still answers it
-/// differently: which comdats reach the loop, and in what order. Upstream
-/// walks `TheModule->global_objects()` into a `SetVector`, so an unreferenced
-/// comdat is dropped and the order is first-use order —
-/// `docs/divergences.md` entry 126. Both comdats here are referenced, and in
-/// declaration order, so the two answers coincide on this input.
+/// Both comdats here are referenced, by globals, in declaration order, so
+/// this input says nothing about *which* comdats reach the loop or in what
+/// order — [`the_comdat_block_is_first_use_order_over_functions_then_globals`]
+/// is the test written to separate those.
 ///
 /// **Anchored on the routine, not on a fixture**: FileCheck cannot pin a blank
 /// line.

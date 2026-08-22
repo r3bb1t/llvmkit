@@ -511,9 +511,9 @@ entry:\n\
 /// `writeAsOperandInternal(Out, V->getValue(), WriterCtx, /*PrintType=*/true)`
 /// — the *same* `AsmWriterContext`, so the same `Machine` numbers `%0` inside
 /// the bundle as numbers it outside. llvmkit's metadata sub-printer took no
-/// `SlotTracker` and printed `%<unnumbered>`, which then failed to re-parse
-/// (`docs/divergences.md` entry 104). Both halves are asserted: the bytes, and
-/// that they re-parse to the same bytes.
+/// `SlotTracker` and printed the no-slot spelling here, which then failed to
+/// re-parse. Both halves are asserted: the bytes, and that they re-parse to the
+/// same bytes.
 #[test]
 fn value_as_metadata_operand_bundle_numbers_an_unnamed_local() {
     let text = parse_and_render(
@@ -532,7 +532,7 @@ entry:\n\
             Check::Next("call void @callee() [ \"tag\"(metadata i32 %0) ]"),
         ],
     );
-    assert!(!text.contains("<unnumbered>"), "{text}");
+    assert!(!text.contains("<badref>"), "{text}");
     assert_eq!(
         parse_and_render(&text),
         text,

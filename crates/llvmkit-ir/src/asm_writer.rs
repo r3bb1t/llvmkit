@@ -70,6 +70,15 @@ use super::r#type::{StructBody, Type, TypeData, TypeSlot};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueUse};
 use super::{ApInt, AttrIndex, Signedness};
 
+/// What `AsmWriter.cpp` prints where a value has no slot: `Out << "<badref>"`.
+///
+/// One spelling, because upstream writes one — in `writeAsOperandInternal`
+/// (both the `'@'` and the `'%'` prefix branches), in `printInstruction`'s
+/// unnamed-result arm, in `printBasicBlock`'s label arm and in
+/// `printNamedMDNode`'s metadata arm. Note what it is *not*: the sigil is
+/// printed only on the success side, so the failure spelling is bare.
+const BAD_REF: &str = "<badref>";
+
 // --------------------------------------------------------------------------
 // SlotTracker
 // --------------------------------------------------------------------------
@@ -229,18 +238,20 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
     let data = v.data();
     match &data.kind {
         ValueKindData::Function(_) => fmt_global_value_ref(f, v),
+        // `if (Slot != -1) Out << Prefix << Slot; else Out << "<badref>";` —
+        // the failure spelling carries **no** sigil, in either arm.
         ValueKindData::BasicBlock(_) => match v.name() {
             Some(n) => fmt_llvm_name(f, "%", &n),
             None => match slots.and_then(|s| s.block(v.id)) {
                 Some(slot) => write!(f, "%{slot}"),
-                None => f.write_str("%<unnumbered>"),
+                None => f.write_str(BAD_REF),
             },
         },
         ValueKindData::Argument { .. } | ValueKindData::Instruction(_) => match v.name() {
             Some(n) => fmt_llvm_name(f, "%", &n),
             None => match slots.and_then(|s| s.local(v.id)) {
                 Some(slot) => write!(f, "%{slot}"),
-                None => f.write_str("%<unnumbered>"),
+                None => f.write_str(BAD_REF),
             },
         },
         ValueKindData::GlobalVariable(_)
@@ -1287,7 +1298,9 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
         Some(name) => fmt_llvm_name(f, "@", &name),
         None => match module_global_slot(v.module().core_ref(), v.id) {
             Some(slot) => write!(f, "@{slot}"),
-            None => f.write_str("@<unnumbered>"),
+            // `writeAsOperandInternal`'s `Prefix = '@'` branch reaches the
+            // same unsigilled `<badref>`.
+            None => f.write_str(BAD_REF),
         },
     }
 }
@@ -1496,9 +1509,11 @@ pub(super) fn fmt_instruction(
                 fmt_llvm_name(f, "%", &n)?;
                 f.write_str(" = ")?;
             }
+            // `if (SlotNum == -1) Out << "<badref> = "; else Out << '%' <<
+            //  SlotNum << " = ";`
             None => match slots.local(inst.slot()) {
                 Some(slot) => write!(f, "%{slot} = ")?,
-                None => f.write_str("%<unnumbered> = ")?,
+                None => write!(f, "{BAD_REF} = ")?,
             },
         }
     }
@@ -3225,7 +3240,10 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     } else if !is_entry_block {
         match slots.block(bb.slot()) {
             Some(slot) => write!(label, "{slot}:")?,
-            None => label.push_str("<badref>:"),
+            None => {
+                label.push_str(BAD_REF);
+                label.push(':');
+            }
         }
     }
     if name.is_some() || !is_entry_block {
@@ -3583,19 +3601,37 @@ pub(super) fn fmt_module_with_options(
     // `Comdat::print` already ends in `'\n'`, so the trailing guard puts a
     // *blank* line between consecutive comdats and none after the last.
     //
-    // Which comdats reach the loop still differs: upstream's `Comdats` is the
-    // `SetVector` the `AssemblyWriter` constructor fills from
-    // `TheModule->global_objects()` — which is `concat(functions(),
-    // globals())` — so a comdat no global object references is never printed
-    // and the order is first-use order rather than declaration order. See
-    // `docs/divergences.md` entry 126.
-    let mut comdats_iter = m.iter_comdats();
-    let comdat_count = comdats_iter.len();
-    if comdat_count > 0 {
+    // Which comdats reach the loop is the `AssemblyWriter` *constructor*:
+    //
+    //     if (!TheModule) return;
+    //     for (const GlobalObject &GO : TheModule->global_objects())
+    //       if (const Comdat *C = GO.getComdat())
+    //         Comdats.insert(C);
+    //
+    // `Comdats` is a `SetVector`, so each comdat appears once at its first
+    // use, and `Module::global_objects()` is
+    // `concat<GlobalObject>(functions(), globals())` — functions first. A
+    // comdat no global object references is never printed at all, which is
+    // why an `llvm-as | llvm-dis` round trip loses one. An alias and an ifunc
+    // are `GlobalValue`s but not `GlobalObject`s, so neither is walked.
+    let mut comdats: Vec<ComdatRef<'_, DynBrand>> = Vec::new();
+    for c in m
+        .iter_functions::<DynBrand>()
+        .filter_map(FunctionValue::comdat)
+        .chain(
+            m.iter_globals::<DynBrand>()
+                .filter_map(GlobalVariable::comdat),
+        )
+    {
+        if !comdats.iter().any(|seen| seen.id == c.id) {
+            comdats.push(c);
+        }
+    }
+    if !comdats.is_empty() {
         f.write_str("\n")?;
-        for (position, c) in comdats_iter.by_ref().enumerate() {
-            fmt_comdat(f, c)?;
-            if position + 1 != comdat_count {
+        for (position, c) in comdats.iter().enumerate() {
+            fmt_comdat(f, *c)?;
+            if position + 1 != comdats.len() {
                 f.write_str("\n")?;
             }
         }

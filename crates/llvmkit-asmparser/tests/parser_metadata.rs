@@ -817,8 +817,8 @@ fn a_malformed_metadata_tuple_operand_type_keeps_the_type_s_own_message() {
 /// threaded into the metadata sub-printer — upstream carries it on
 /// `AsmWriterContext::Machine` and bottoms out in
 /// `writeAsOperandInternal(Out, V->getValue(), WriterCtx, /*PrintType=*/true)`
-/// — llvmkit printed `%<unnumbered>` here, and the printed module then failed
-/// to re-parse. A *named* value prints correctly either way, which is why the
+/// — llvmkit printed the no-slot spelling here, and the printed module then
+/// failed to re-parse. A *named* value prints correctly either way, which is why the
 /// operand-bundle test in `parser_calls.rs` did not catch it; this one pins the
 /// unnamed spelling and the re-parse.
 ///
@@ -833,9 +833,9 @@ fn upstream_dbg_declare_fixture_numbers_an_unnamed_metadata_operand() {
     let src = include_str!("fixtures/upstream/Verifier/dbg-declare-invalid-debug-loc.ll");
     let (_stats, text) = parse_snippet(src);
     assert!(text.contains(OPERAND), "{text}");
-    assert!(!text.contains("<unnumbered>"), "{text}");
-    // The printed module must re-parse --- the half that `%<unnumbered>` broke.
+    assert!(!text.contains("<badref>"), "{text}");
+    // The printed module must re-parse --- the half the no-slot spelling broke.
     let (_stats, reprinted) = parse_snippet(&text);
     assert!(reprinted.contains(OPERAND), "{reprinted}");
-    assert!(!reprinted.contains("<unnumbered>"), "{reprinted}");
+    assert!(!reprinted.contains("<badref>"), "{reprinted}");
 }
