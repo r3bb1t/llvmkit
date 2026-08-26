@@ -1775,3 +1775,266 @@ fn fence_rejects_unordered_and_monotonic() {
         assert_eq!(parse_expect_error(&src), expected, "{ordering}");
     }
 }
+
+/// Every `LLParser::parseTypeAndBasicBlock` call site, one case each, asserting
+/// upstream's `expected a basic block` **and** the token it anchors at.
+///
+/// `parseTypeAndBasicBlock` takes `Loc = Lex.getLoc()` before
+/// `parseTypeAndValue` and reports at that `Loc`, so the caret lands on the
+/// first token of the *type*, not on the value and not on wherever the lexer
+/// has since reached. Each case therefore names the offending type token and
+/// the expectation is derived from the source: a hardcoded column can be
+/// re-blessed, a token cannot.
+///
+/// **llvmkit-authored sources; no upstream fixture pins this message.**
+/// `rg --no-ignore --hidden -l "expected a basic block" llvm/test/` over the
+/// vendored `llvmorg-22.1.4` tree returns only
+/// `CodeGen/MIR/X86/expected-basic-block-at-start-of-body.mir`, which is the
+/// MIR parser's own message and not `LLParser`'s. The rule is the anchor
+/// (D11): `lib/AsmParser/LLParser.cpp::LLParser::parseTypeAndBasicBlock`.
+///
+/// Upstream reaches this routine from fifteen call sites across eight
+/// terminator parsers — `parseBr` (x2), `parseSwitch` (x2), `parseIndirectBr`
+/// (x2, first iteration unrolled), `parseInvoke` (x2), `parseCleanupRet`,
+/// `parseCatchRet`, `parseCatchSwitch` (x2), `parseCallBr` (x3, first indirect
+/// destination unrolled) — and this table has one case per site, in that order.
+#[test]
+fn every_type_and_basic_block_site_reports_expected_a_basic_block() {
+    const PROLOGUE: &str = "declare void @g()\n\
+                            define void @f(i1 %c, i32 %x, ptr %p) personality ptr null {\n\
+                            entry:\n";
+    let cases: [(&str, String, &str); 15] = [
+        (
+            "br then-target",
+            format!("{PROLOGUE}  br i1 %c, i64 0, label %b\nb:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "br else-target",
+            format!("{PROLOGUE}  br i1 %c, label %b, i64 0\nb:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "switch default",
+            format!("{PROLOGUE}  switch i32 %x, i64 0 [ ]\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "switch case destination",
+            format!("{PROLOGUE}  switch i32 %x, label %b [ i32 0, i64 1 ]\nb:\n  ret void\n}}\n"),
+            "i64 1",
+        ),
+        (
+            "indirectbr first destination",
+            format!("{PROLOGUE}  indirectbr ptr %p, [ i64 0 ]\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "indirectbr later destination",
+            format!("{PROLOGUE}  indirectbr ptr %p, [ label %b, i64 0 ]\nb:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "invoke normal destination",
+            format!("{PROLOGUE}  invoke void @g() to i64 0 unwind label %u\nu:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "invoke unwind destination",
+            format!("{PROLOGUE}  invoke void @g() to label %n unwind i64 0\nn:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "cleanupret unwind destination",
+            format!(
+                "{PROLOGUE}  %cp = cleanuppad within none []\n  \
+                 cleanupret from %cp unwind i64 0\n}}\n"
+            ),
+            "i64 0",
+        ),
+        (
+            "catchret destination",
+            format!(
+                "{PROLOGUE}  %cs = catchswitch within none [label %h] unwind to caller\nh:\n  \
+                 %cp = catchpad within %cs []\n  \
+                 catchret from %cp to i64 0\n}}\n"
+            ),
+            "i64 0",
+        ),
+        (
+            "catchswitch handler",
+            format!("{PROLOGUE}  %cs = catchswitch within none [i64 0] unwind to caller\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "catchswitch unwind destination",
+            format!(
+                "{PROLOGUE}  %cs = catchswitch within none [label %h] unwind i64 0\nh:\n  \
+                 ret void\n}}\n"
+            ),
+            "i64 0",
+        ),
+        (
+            "callbr fallthrough destination",
+            format!("{PROLOGUE}  callbr void @g() to i64 0 []\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "callbr first indirect target",
+            format!("{PROLOGUE}  callbr void @g() to label %n [i64 0]\nn:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "callbr later indirect target",
+            format!(
+                "{PROLOGUE}  callbr void @g() to label %n [label %b, i64 0]\nn:\n  \
+                 ret void\nb:\n  ret void\n}}\n"
+            ),
+            "i64 0",
+        ),
+    ];
+
+    for (name, source, anchor_token) in cases {
+        let (message, at) = parse_expect_error_at(&source);
+        assert_eq!(message, "expected a basic block", "case {name}");
+        let offset = source
+            .rfind(anchor_token)
+            .unwrap_or_else(|| panic!("case {name}: anchor token {anchor_token} not in source"));
+        assert_eq!(
+            at,
+            line_and_column(source.as_bytes(), offset),
+            "case {name}: caret is not on {anchor_token}"
+        );
+    }
+}
+
+/// `parseTypeAndBasicBlock`'s other outcome: a token that cannot begin a type
+/// never reaches the `isa<BasicBlock>` guard at all — `parseType` rejects it
+/// first with `expected type`, at the same `Loc`.
+///
+/// This is what makes an empty or comma-terminated destination list report
+/// `expected type` rather than a bespoke `label` expectation, and it is the
+/// half of the routine that a `label`-keyword lookahead cannot reproduce.
+///
+/// **llvmkit-authored sources**; see
+/// [`every_type_and_basic_block_site_reports_expected_a_basic_block`] for why
+/// no vendored fixture covers this routine.
+#[test]
+fn a_non_type_token_in_a_block_operand_reports_expected_type() {
+    const PROLOGUE: &str = "declare void @g()\n\
+                            define void @f(ptr %p) personality ptr null {\n\
+                            entry:\n";
+    let cases = [
+        (
+            "empty catchswitch handler list",
+            format!("{PROLOGUE}  %cs = catchswitch within none [] unwind to caller\n}}\n"),
+        ),
+        (
+            "trailing comma in a catchswitch handler list",
+            format!(
+                "{PROLOGUE}  %cs = catchswitch within none [label %h,] unwind to caller\nh:\n  \
+                 ret void\n}}\n"
+            ),
+        ),
+        (
+            "trailing comma in an indirectbr destination list",
+            format!("{PROLOGUE}  indirectbr ptr %p, [ label %b, ]\nb:\n  ret void\n}}\n"),
+        ),
+        (
+            "trailing comma in a callbr indirect list",
+            format!(
+                "{PROLOGUE}  callbr void @g() to label %n [label %b, ]\nn:\n  \
+                 ret void\nb:\n  ret void\n}}\n"
+            ),
+        ),
+    ];
+
+    for (name, source) in cases {
+        let (message, at) = parse_expect_error_at(&source);
+        assert_eq!(message, "expected type", "case {name}");
+        let offset = source
+            .find(']')
+            .unwrap_or_else(|| panic!("case {name}: no closing bracket in source"));
+        assert_eq!(
+            at,
+            line_and_column(source.as_bytes(), offset),
+            "case {name}: caret is not on the closing bracket"
+        );
+    }
+}
+
+/// `parseIndirectBr` and `parseCallBr` unroll the first iteration of their
+/// destination list — `if (Lex.getKind() != lltok::rsquare) { … while
+/// (EatIfPresent(lltok::comma)) … }` — and then demand the `]` with
+/// `parseToken(lltok::rsquare, "expected ']' at end of block list")`.
+///
+/// A single `while (peek != ']')` loop is not that shape: it accepts a list
+/// whose entries carry no comma between them, because the loop re-enters on
+/// any non-`]` token. This locks the missing-comma half; the trailing-comma
+/// half is in
+/// [`a_non_type_token_in_a_block_operand_reports_expected_type`].
+///
+/// **llvmkit-authored sources.** `test/Assembler/indirectbr.ll` and
+/// `test/Assembler/callbr.ll` are both positives, and
+/// `rg --no-ignore --hidden -l "at end of block list" llvm/test/` over the
+/// vendored tree returns nothing.
+#[test]
+fn a_destination_list_without_commas_reports_the_closing_bracket() {
+    const PROLOGUE: &str = "declare void @g()\n\
+                            define void @f(ptr %p) {\n\
+                            entry:\n";
+    let cases = [
+        (
+            "indirectbr",
+            format!(
+                "{PROLOGUE}  indirectbr ptr %p, [ label %a label %b ]\na:\n  ret void\nb:\n  \
+                 ret void\n}}\n"
+            ),
+        ),
+        (
+            "callbr",
+            format!(
+                "{PROLOGUE}  callbr void @g() to label %n [label %a label %b]\nn:\n  \
+                 ret void\na:\n  ret void\nb:\n  ret void\n}}\n"
+            ),
+        ),
+    ];
+
+    for (name, source) in cases {
+        let (message, at) = parse_expect_error_at(&source);
+        assert_eq!(message, "expected ']' at end of block list", "case {name}");
+        let offset = source
+            .find("label %b")
+            .unwrap_or_else(|| panic!("case {name}: second destination not in source"));
+        assert_eq!(
+            at,
+            line_and_column(source.as_bytes(), offset),
+            "case {name}: caret is not on the second destination"
+        );
+    }
+}
+
+/// A block operand whose name is already bound to a non-block local reaches
+/// `PerFunctionState::getVal`'s `checkValidVariableType` with
+/// `Ty->isLabelTy()`, which is `'%x' is not a basic block`.
+///
+/// The point of the case is *where* that arm lives: upstream has one `getVal`
+/// per spelling with `if (Ty->isLabelTy()) FwdVal = BasicBlock::Create(…)`
+/// inside it, and `getBB` is only `dyn_cast_or_null<BasicBlock>(getVal(Name,
+/// LabelTy, Loc))`. A separate block-minting routine leaves
+/// `parseTypeAndValue` at a `label` type unable to reach it.
+///
+/// **llvmkit-authored source**; `LLParser::PerFunctionState::getVal` and
+/// `LLParser::checkValidVariableType`.
+#[test]
+fn a_block_operand_bound_to_a_value_is_not_a_basic_block() {
+    const SRC: &str = "define void @f(i1 %c) {\n\
+                       entry:\n  \
+                       %x = add i32 0, 0\n  \
+                       br i1 %c, label %x, label %b\nb:\n  ret void\n}\n";
+
+    let (message, at) = parse_expect_error_at(SRC);
+    assert_eq!(message, "'%x' is not a basic block");
+    let offset = SRC.rfind("%x").expect("the use site is in the source");
+    assert_eq!(at, line_and_column(SRC.as_bytes(), offset));
+}

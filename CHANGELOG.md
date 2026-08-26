@@ -19,6 +19,53 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — one `parseTypeAndBasicBlock`, and `musttail` varargs agreement
+
+- **Every terminator's block operand goes through one routine.** Upstream reads
+  a block operand with `LLParser::parseTypeAndBasicBlock` — `parseTypeAndValue`
+  followed by `if (!isa<BasicBlock>(V)) return error(Loc, "expected a basic
+  block")`, anchored at the type's first token. llvmkit instead spelled a
+  `label`-keyword expectation at each site with its own production string
+  (`expected 'label' for then-target`, `expected 'label' in catchswitch
+  handler`, …), messages upstream never emits. `br`, `switch`, `indirectbr`,
+  `invoke`, `cleanupret`, `catchret`, `catchswitch` and `callbr` now all call
+  the ported routine, so a well-formed type-and-value that is not a block gives
+  `expected a basic block` and a token that cannot begin a type gives
+  `parseType`'s `expected type`. **Breaking:** these diagnostics change text.
+
+  Three shapes changed verdict, not only wording. `parseIndirectBr` and
+  `parseCallBr` unroll the first iteration of their destination list and then
+  demand the `]`, where llvmkit ran one `while (peek != ']')` loop: it accepted
+  `[label %a,]` and `[label %a label %b]`, which upstream rejects.
+  `LLParser::parseBr` reads its first operand as a type-and-value and decides
+  which `br` it is with a `dyn_cast<BasicBlock>`, so the `i1` rule now fires
+  after the operand is read rather than before. `LLParser::parseSwitch` reads a
+  case value, its comma *and* its destination before applying either
+  case-value rule, so a malformed destination is reported ahead of a duplicate
+  or non-constant case value.
+
+  `PerFunctionState::getVal` gained the `if (Ty->isLabelTy()) FwdVal =
+  BasicBlock::Create(…)` arm it has upstream, which is what lets
+  `parseTypeAndValue` at a `label` type mint a forward-referenced block;
+  llvmkit had that arm in a second routine of its own, and `getBB` is now the
+  `dyn_cast_or_null<BasicBlock>(getVal(Name, LabelTy, Loc))` wrapper it is
+  upstream.
+- **A short-syntax `musttail` forwarding call is no longer variadic, and
+  `Verifier::verifyMustTailCall` is ported.** `LLParser::resolveFunctionType`
+  builds the call-site signature with the variadic bit hardcoded off
+  (`FunctionType::get(RetType, ParamTypes, false)`); a trailing `...` in a
+  `musttail` argument list is consumed by `parseParameterList` and contributes
+  no parameter. llvmkit threaded its own ellipsis flag in, so
+  `musttail call void @f(i32 %a, ...)` inside `define void @g(i32 %a, ...)`
+  built `void (i32, ...)`, verified clean and printed a form upstream never
+  produces. Both halves land together: the bit is off, and the whole of
+  `verifyMustTailCall` — inline asm, varargs and return-type agreement,
+  calling convention, tail position and the returned value, the `tailcc` /
+  `swifttailcc` `verifyTailCCMustTailAttrs` arm, parameter counts and types,
+  and the ABI-impacting parameter attributes — now rejects the module instead.
+  `AsmWriter` keys the printed `...` on the *enclosing function's* varargs bit,
+  not on the call-site type, so the printed bytes still re-parse.
+
 ### Fixed — predecessor order, and a scalable shuffle's demanded elements
 
 - **`FunctionCfg::predecessors` answers in use-list order.** `predecessors(BB)`

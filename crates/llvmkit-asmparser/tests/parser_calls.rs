@@ -1812,3 +1812,395 @@ fn fast_math_flags_on_a_non_homogeneous_aggregate_call_are_rejected() {
         assert_eq!(err.to_string(), MESSAGE, "case {name}");
     }
 }
+
+/// `llvm/test/Verifier/musttail-invalid.ll`, vendored verbatim; each of its
+/// eleven functions cut out with its `declare` and verified on its own, and
+/// each asserted against the `CHECK` line the fixture writes for it.
+///
+/// Upstream's `RUN` line is `not llvm-as %s -o /dev/null 2>&1 | FileCheck %s`,
+/// so every module in the file is invalid and the diagnostics are
+/// `Verifier::verifyMustTailCall`'s `Check` literals. The fixture is
+/// per-function here for the reason
+/// `parser_metadata.rs::upstream_invalid_range_metadata_fixture_messages_match`
+/// is: `Module::verify_borrowed` reports the *first* failure, where upstream's
+/// `Verifier` accumulates, so eleven separate modules is what reproduces
+/// eleven separate `CHECK` lines.
+///
+/// The `CHECK` lines are substrings of the full literal (`mismatched calling
+/// conv`, not `cannot guarantee tail call due to mismatched calling conv`),
+/// which is FileCheck's own rule, so `contains` is the faithful comparison —
+/// the same one `parser_corpus.rs` applies to an `error=` row.
+#[test]
+fn upstream_musttail_invalid_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/musttail-invalid.ll");
+    let cases = [
+        ("define void @cc_mismatch(", "mismatched calling conv"),
+        ("define void @more_parms(", "mismatched parameter counts"),
+        (
+            "define void @mismatched_intty(",
+            "mismatched parameter types",
+        ),
+        ("define void @mismatched_vararg(", "mismatched varargs"),
+        ("define void @mismatched_retty(", "mismatched return types"),
+        (
+            "define void @mismatched_byval(",
+            "mismatched ABI impacting function attributes",
+        ),
+        (
+            "define void @mismatched_inreg(",
+            "mismatched ABI impacting function attributes",
+        ),
+        (
+            "define void @mismatched_sret(",
+            "mismatched ABI impacting function attributes",
+        ),
+        (
+            "define void @mismatched_alignment(",
+            "mismatched ABI impacting function attributes",
+        ),
+        (
+            "define i32 @not_tail_pos(",
+            "musttail call must precede a ret with an optional bitcast",
+        ),
+        (
+            "define void @inline_asm(",
+            "cannot use musttail call with inline asm",
+        ),
+    ];
+    for (marker, expected) in cases {
+        let source = musttail_fixture_case(FIXTURE, marker);
+        let module = Module::dynamic("upstream_musttail_invalid_fixture_messages_match");
+        Parser::new(source.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .unwrap_or_else(|e| panic!("case {marker} parses: {e}"));
+        let err = module
+            .verify_borrowed()
+            .expect_err("`llvm-as` rejects every module in this fixture");
+        let message = match err {
+            llvmkit_ir::IrError::VerifierFailure { message, .. } => message,
+            other => panic!("case {marker}: expected a verifier failure, got {other:?}"),
+        };
+        assert!(
+            message.contains(expected),
+            "case {marker}: {message:?} does not contain {expected:?}"
+        );
+    }
+}
+
+/// One case of `musttail-invalid.ll`: the `declare` immediately above the
+/// marked `define`, plus the `define` through its closing brace.
+fn musttail_fixture_case(fixture: &str, define_marker: &str) -> String {
+    let define_start = fixture
+        .find(define_marker)
+        .unwrap_or_else(|| panic!("missing define marker {define_marker}"));
+    let define_end = fixture[define_start..]
+        .find("\n}")
+        .map(|idx| define_start + idx + 3)
+        .unwrap_or_else(|| panic!("missing define end for {define_marker}"));
+    // `@inline_asm` has no `declare` of its own; every other case is preceded
+    // immediately by exactly one.
+    let declare = fixture[..define_start]
+        .lines()
+        .rfind(|line| !line.trim().is_empty() && !line.starts_with(';'))
+        .filter(|line| line.starts_with("declare "))
+        .unwrap_or_default();
+    format!("{declare}\n{}\n", &fixture[define_start..define_end])
+}
+
+/// **Regression lock for a closed divergence** (no id: `docs/divergences.md`
+/// deletes an entry when it closes and re-uses its number).
+/// `LLParser::resolveFunctionType` hardcodes the variadic bit off
+/// (`FunctionType::get(RetType, ParamTypes, false)`), so a *short-syntax*
+/// `musttail` forwarding call in a varargs function builds a non-vararg
+/// call-site type — which `Verifier::verifyMustTailCall`'s
+/// `CallerTy->isVarArg() == CalleeTy->isVarArg()` then rejects. llvmkit
+/// threaded its own `...` flag in here instead, so the module verified and
+/// printed `musttail call void (i32, ...) @f(...)`, a form upstream never
+/// produces.
+///
+/// llvmkit-authored source: no vendored fixture reaches the short syntax
+/// (`rg --no-ignore -n -- "musttail call.*\.\.\." orig_cpp/…/llvm/test/`
+/// returns only explicit-function-type forms), which is why the divergence
+/// survived `musttail-invalid.ll` and `test/Assembler/musttail.ll` alike.
+///
+/// Both halves are asserted: the module is rejected, *and* the printed bytes
+/// carry the short form. The second half is the round-trip claim the entry got
+/// wrong — `AsmWriter`'s ellipsis is keyed on the enclosing function's
+/// varargs bit, not on the call-site type, so dropping the bit does not drop
+/// the `...`.
+#[test]
+fn short_syntax_musttail_forwarding_call_is_not_vararg() {
+    const SRC: &[u8] = b"declare void @f(i32, ...)\n\
+                         define void @g(i32 %a, ...) {\n  \
+                         musttail call void @f(i32 %a, ...)\n  \
+                         ret void\n\
+                         }\n";
+
+    let module = Module::dynamic("short_syntax_musttail_forwarding_call_is_not_vararg");
+    Parser::new(SRC, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser accepts the short syntax");
+
+    let text = format!("{module}");
+    assert!(
+        text.contains("musttail call void @f(i32 %a, ...)"),
+        "call-site type must print in the short form: {text}"
+    );
+
+    let err = module
+        .verify_borrowed()
+        .expect_err("upstream's llvm-as rejects this module");
+    match err {
+        llvmkit_ir::IrError::VerifierFailure { rule, message, .. } => {
+            assert_eq!(rule, llvmkit_ir::VerifierRule::MustTailCallVarArgsMismatch);
+            assert_eq!(
+                message,
+                "cannot guarantee tail call due to mismatched varargs"
+            );
+        }
+        other => panic!("expected a verifier failure, got {other:?}"),
+    }
+}
+
+/// `Verifier::verifyMustTailCall`'s returned-value `Check`, all four ways it
+/// can hold and the one way it fails:
+///
+/// ```text
+/// Check(!Ret->getReturnValue() || Ret->getReturnValue() == RetVal ||
+///           isa<UndefValue>(Ret->getReturnValue()),
+///       "musttail call result must be returned", Ret);
+/// ```
+///
+/// `poison` is here because `PoisonValue` derives from `UndefValue`
+/// (`llvm/include/llvm/IR/Constants.h`), so `isa<UndefValue>` accepts it —
+/// a port that matched only the `undef` constant would reject `ret ptr poison`
+/// where upstream accepts it. `test/Verifier/musttail-invalid.ll` reaches this
+/// `Check` only through its `not_tail_pos` case, which fails one `Check`
+/// earlier, so no vendored fixture separates these five.
+///
+/// **llvmkit-authored sources**; `llvm/lib/IR/Verifier.cpp::Verifier::verifyMustTailCall`.
+#[test]
+fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
+    const PROLOGUE: &str = "declare ptr @callee()\ndefine ptr @caller() {\n  \
+                            %v = musttail call ptr @callee()\n  ";
+    for accepted in ["ret ptr %v\n}\n", "ret ptr undef\n}\n", "ret ptr poison\n}\n"] {
+        let source = format!("{PROLOGUE}{accepted}");
+        let module = Module::dynamic("musttail_result_returned");
+        Parser::new(source.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        module
+            .verify_borrowed()
+            .unwrap_or_else(|e| panic!("upstream accepts `{accepted}`: {e}"));
+    }
+
+    // `!Ret->getReturnValue()` — a void caller, so the `ret` carries nothing.
+    let void_source = "declare void @vcallee()\ndefine void @vcaller() {\n  \
+                       musttail call void @vcallee()\n  ret void\n}\n";
+    let module = Module::dynamic("musttail_result_returned_void");
+    Parser::new(void_source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module.verify_borrowed().expect("upstream accepts `ret void`");
+
+    let rejected = format!("{PROLOGUE}ret ptr null\n}}\n");
+    let module = Module::dynamic("musttail_result_not_returned");
+    Parser::new(rejected.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    match module.verify_borrowed() {
+        Err(llvmkit_ir::IrError::VerifierFailure { rule, message, .. }) => {
+            assert_eq!(rule, llvmkit_ir::VerifierRule::MustTailCallResultNotReturned);
+            assert_eq!(message, "musttail call result must be returned");
+        }
+        other => panic!("upstream rejects `ret ptr null` here, got {other:?}"),
+    }
+}
+
+/// `llvm/test/Verifier/musttail-valid.ll`, vendored verbatim, whole file.
+/// Upstream's `RUN` line is `llvm-as %s -o /dev/null` — "Should assemble
+/// without error" — so the whole module must parse *and* verify.
+///
+/// The positive half of `Verifier::verifyMustTailCall`: congruent pointer
+/// parameter and return types, matching `x86_thiscallcc` / `x86_fastcallcc`
+/// varargs thunks, and a `musttail` whose block has an unreachable successor
+/// block after the `ret`.
+#[test]
+fn upstream_musttail_valid_fixture_verifies() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/Verifier/musttail-valid.ll");
+
+    let module = Module::dynamic("upstream_musttail_valid_fixture_verifies");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("`llvm-as` assembles this fixture without error, so llvmkit must too");
+}
+
+/// `llvm/test/Verifier/swifttailcc-musttail-valid.ll`, vendored verbatim, whole
+/// file. Upstream's `RUN` line is `opt -passes=verify %s`, with no `not`.
+///
+/// `@mismatch_parms` is the interesting half: it calls a four-parameter
+/// function from a zero-parameter one and still verifies, because
+/// `verifyMustTailCall` **returns** out of the `swifttailcc` arm before it
+/// reaches the parameter-count `Check`. A port that fell through would reject
+/// it.
+#[test]
+fn upstream_swifttailcc_musttail_valid_fixture_verifies() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/Verifier/swifttailcc-musttail-valid.ll");
+
+    let module = Module::dynamic("upstream_swifttailcc_musttail_valid_fixture_verifies");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("`opt -passes=verify` accepts this fixture, so llvmkit must too");
+}
+
+/// `llvm/test/Verifier/tailcc-musttail.ll` and
+/// `llvm/test/Verifier/swifttailcc-musttail.ll`, both vendored verbatim; each
+/// of their eleven functions cut out with the shared `declare` and verified on
+/// its own against the `CHECK` line the fixture writes for it.
+///
+/// These pin `Verifier::verifyTailCCMustTailAttrs` — the five forbidden
+/// ABI-impacting parameter attributes, on the caller and on the callee — plus
+/// the `cannot guarantee <cc> tail call for varargs function` `Check` that
+/// closes the `tailcc` / `swifttailcc` arm. The two fixtures are the same
+/// eleven cases with the calling convention swapped, which is what makes the
+/// `CCName` half of the diagnostic worth asserting.
+///
+/// Per-function for the same reason
+/// [`upstream_musttail_invalid_fixture_messages_match`] is: upstream's
+/// `Verifier` accumulates and `Module::verify_borrowed` reports the first
+/// failure.
+#[test]
+fn upstream_tailcc_musttail_fixture_messages_match() {
+    const TAILCC: &str = include_str!("fixtures/upstream/Verifier/tailcc-musttail.ll");
+    const SWIFTTAILCC: &str = include_str!("fixtures/upstream/Verifier/swifttailcc-musttail.ll");
+    let markers = [
+        (
+            "define {CC} void @inreg(",
+            "inreg attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @inalloca(",
+            "inalloca attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @swifterror(",
+            "swifterror attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @preallocated(",
+            "preallocated attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @byref(",
+            "byref attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @call_inreg(",
+            "inreg attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_inalloca(",
+            "inalloca attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_swifterror(",
+            "swifterror attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_preallocated(",
+            "preallocated attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_byref(",
+            "byref attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_varargs(",
+            "cannot guarantee {CC} tail call for varargs function",
+        ),
+    ];
+
+    for (cc, fixture) in [("tailcc", TAILCC), ("swifttailcc", SWIFTTAILCC)] {
+        // Five of the eleven cases call a function these fixtures spell as a
+        // `define` — each of which is itself a failing case, so keeping it
+        // whole would report *its* diagnostic first. Each `define` header is
+        // therefore reduced to the `declare` it already implies: the signature
+        // and its parameter attributes verbatim, without the body. That is all
+        // the callee contributes, since `verifyMustTailCall` reads the
+        // *call site's* attributes and the call-site function type.
+        let declarations: Vec<(String, String)> = fixture
+            .lines()
+            .filter(|line| line.starts_with("declare ") || line.starts_with("define "))
+            .map(|line| {
+                let header = line.trim_end().trim_end_matches('{').trim_end();
+                let name = header
+                    .split('@')
+                    .nth(1)
+                    .unwrap_or_default()
+                    .split('(')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                let body = header
+                    .strip_prefix("define")
+                    .or_else(|| header.strip_prefix("declare"))
+                    .unwrap_or(header);
+                (name, format!("declare{body}\n"))
+            })
+            .collect();
+
+        for (marker, expected) in markers {
+            let marker = marker.replace("{CC}", cc);
+            let expected = expected.replace("{CC}", cc);
+            let start = fixture
+                .find(&marker)
+                .unwrap_or_else(|| panic!("{cc}: missing define marker {marker}"));
+            let end = fixture[start..]
+                .find("\n}")
+                .map(|idx| start + idx + 3)
+                .unwrap_or_else(|| panic!("{cc}: missing define end for {marker}"));
+            let define = &fixture[start..end];
+            let under_test = marker
+                .split('@')
+                .nth(1)
+                .unwrap_or_default()
+                .trim_end_matches('(')
+                .to_owned();
+            let prelude: String = declarations
+                .iter()
+                .filter(|(name, _)| *name != under_test)
+                .map(|(_, text)| text.as_str())
+                .collect();
+            let source = format!("{prelude}\n{define}\n");
+
+            let module = Module::dynamic("upstream_tailcc_musttail_fixture_messages_match");
+            Parser::new(source.as_bytes(), &module)
+                .expect("lexer primes")
+                .parse_module()
+                .unwrap_or_else(|e| panic!("{cc} case {marker} parses: {e}\n{source}"));
+            let message = match module.verify_borrowed() {
+                Ok(()) => panic!("{cc} case {marker}: upstream rejects this module\n{source}"),
+                Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => message,
+                Err(other) => panic!("{cc} case {marker}: expected a verifier failure: {other:?}"),
+            };
+            assert!(
+                message.contains(&expected),
+                "{cc} case {marker}: {message:?} does not contain {expected:?}"
+            );
+        }
+    }
+}

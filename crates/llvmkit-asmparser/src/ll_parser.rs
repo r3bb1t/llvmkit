@@ -2524,14 +2524,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn expect_primitive(&mut self, p: PrimitiveTy, expected: &'static str) -> ParseResult<Span> {
-        if matches!(self.peek(), Token::PrimitiveType(got) if *got == p) {
-            self.bump()
-        } else {
-            Err(self.expected(expected))
-        }
-    }
-
     fn token_error(&self, expected: impl Into<Cow<'static, str>>) -> ParseError {
         self.expected(expected)
     }
@@ -12336,31 +12328,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `br`
-        if matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Label)) {
-            self.bump()?;
-            let target = self.parse_block_ref(state)?;
+        // `if (parseTypeAndValue(Op0, Loc, PFS)) return true;` — the
+        // unconditional form is *not* a `label` keyword lookahead upstream:
+        // the operand is read as a type-and-value like any other, and it is
+        // the `dyn_cast` below that decides which `br` this is.
+        let cond_loc = self.loc();
+        let (cond_ty, cond_v) = self.parse_type_and_value(state)?;
+        // `if (BasicBlock *BB = dyn_cast<BasicBlock>(Op0)) { Inst =
+        //  BranchInst::Create(BB); return false; }`
+        if let Some(target) = state.block_label_for_value(cond_v) {
             let _ = b.br(target).map_err(|e| ParseError::Expected {
                 expected: format!("valid br: {e}").into(),
                 loc: DiagLoc::span(self.loc()),
             })?;
             return Ok(());
         }
-        // Conditional: `i1 %cond, label %t, label %f`.
-        let cond_loc = self.loc();
-        let cond_ty = self.parse_type(false)?;
+        // `if (Op0->getType() != Type::getInt1Ty(Context)) return error(Loc,
+        //  "branch condition must have 'i1' type");` — after the block test,
+        // not before it, and after the operand has been read.
         if !matches!(
             cond_ty.into_type_enum(),
             AnyTypeEnum::Int(t) if t.bit_width() == 1
         ) {
             return Err(self.message_at(cond_loc, "branch condition must have 'i1' type"));
         }
-        let cond_v = self.parse_value(state, cond_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after branch condition")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for then-target")?;
-        let then_bb = self.parse_block_ref(state)?;
+        let then_bb = self.parse_type_and_basic_block(state)?;
         self.expect_punct(PunctKind::Comma, "',' after true destination")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for else-target")?;
-        let else_bb = self.parse_block_ref(state)?;
+        let else_bb = self.parse_type_and_basic_block(state)?;
         let cond_iv: IntValue<'ctx, IntDyn, B> = cond_v
             .try_into()
             .map_err(|_| self.expected("i1 condition"))?;
@@ -13951,9 +13946,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("block label in phi pair"))?;
                 self.bump()?;
-                if !state.defined_blocks.contains(&n) {
-                    state.block_refs.entry(n.clone()).or_insert(loc);
-                }
                 // A phi predecessor may already be terminated (the common
                 // merge-block case), so ensure the block through the
                 // state-agnostic label path, never the unterminated-only
@@ -14098,6 +14090,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // anything else is a bare *return* type and the signature is built
         // from the arguments — which is why the walk below only bites on the
         // explicit form.
+        //
+        // `FunctionType::get(RetType, ParamTypes, false)` — the variadic bit
+        // is hardcoded off. A musttail forwarding `...` is consumed by
+        // `parseParameterList` and contributes no `ParamInfo`, so it never
+        // reaches `ParamTypes`; threading `var_args` in here built a call-site
+        // type upstream never builds. `Verifier::verifyMustTailCall`'s
+        // `CallerTy->isVarArg() == CalleeTy->isVarArg()` is what then rejects
+        // the module.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
             _ => {
@@ -14106,7 +14106,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
-                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
+                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), false)
             }
         };
         // `CalleeID.StrVal` survives `convertValIDToValue` upstream because
@@ -14646,11 +14646,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         self.bump()?; // eat `switch`
         let cond_loc = self.loc();
-        let cond_ty = self.parse_type(false)?;
-        let cond_v = self.parse_value(state, cond_ty)?;
+        let (cond_ty, cond_v) = self.parse_type_and_value(state)?;
         self.expect_punct(PunctKind::Comma, "',' after switch condition")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for switch default")?;
-        let default_bb = self.parse_block_ref(state)?;
+        let default_bb = self.parse_type_and_basic_block(state)?;
         // Case list: `[ ty N, label %bb, ... ]`. Upstream demands the `[`
         // *before* checking the condition's type, so a malformed table is
         // reported ahead of a bad condition.
@@ -14669,9 +14667,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 break;
             }
+            // `parseTypeAndValue(Constant, CondLoc, PFS) ||
+            //  parseToken(lltok::comma, "expected ',' after case value") ||
+            //  parseTypeAndBasicBlock(DestBB, PFS)` — the whole pair is read
+            // before either case-value rule is applied, so a malformed
+            // destination is reported ahead of a duplicate or non-constant
+            // case value. `CondLoc` is re-taken by `parseTypeAndValue`, which
+            // is what anchors both rules at the case value rather than at the
+            // condition.
             let case_loc = self.loc();
-            let case_ty = self.parse_type(false)?;
-            let case_v = self.parse_value(state, case_ty)?;
+            let (_, case_v) = self.parse_type_and_value(state)?;
+            self.expect_punct(PunctKind::Comma, "',' after case value")?;
+            let case_bb = self.parse_type_and_basic_block(state)?;
             if seen_cases.contains(&case_v) {
                 return Err(self.message_at(case_loc, "duplicate case value in switch"));
             }
@@ -14685,9 +14692,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let case_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = case_v
                 .try_into()
                 .map_err(|_| self.message_at(case_loc, "case value is not a constant integer"))?;
-            self.expect_punct(PunctKind::Comma, "',' after case value")?;
-            self.expect_primitive(PrimitiveTy::Label, "'label' for switch case destination")?;
-            let case_bb = self.parse_block_ref(state)?;
             sw = sw
                 .add_case(case_int, case_bb)
                 .map_err(|e| self.builder_err("switch.add_case", e))?;
@@ -14707,8 +14711,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         self.bump()?; // eat `indirectbr`
         let addr_loc = self.loc();
-        let addr_ty = self.parse_type(false)?;
-        let addr_v = self.parse_value(state, addr_ty)?;
+        let (_, addr_v) = self.parse_type_and_value(state)?;
         self.expect_punct(PunctKind::Comma, "',' after indirectbr address")?;
         // As in `parseSwitch`, the `[` is demanded before the address type is
         // checked.
@@ -14719,18 +14722,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let (_, mut ibr) = b
             .indirectbr(addr, "")
             .map_err(|e| self.builder_err("indirectbr", e))?;
-        loop {
-            if matches!(self.peek(), Token::RSquare) {
-                self.bump()?;
-                break;
-            }
-            self.expect_primitive(PrimitiveTy::Label, "'label' in indirectbr destination")?;
-            let dest_bb = self.parse_block_ref(state)?;
+        // `if (Lex.getKind() != lltok::rsquare) { parseTypeAndBasicBlock(…);
+        //  while (EatIfPresent(lltok::comma)) parseTypeAndBasicBlock(…); }`
+        // — the first iteration is unrolled, and the shape is observable: a
+        // trailing comma runs the loop body against the `]`, and a missing
+        // comma falls out of the loop into the `]` demand below. A single
+        // `while (peek != ']')` loop accepted `[label %a,]` and
+        // `[label %a label %b]`.
+        if !matches!(self.peek(), Token::RSquare) {
+            let dest_bb = self.parse_type_and_basic_block(state)?;
             ibr = ibr
                 .add_destination(dest_bb)
                 .map_err(|e| self.builder_err("indirectbr.add_destination", e))?;
-            let _ = self.eat_punct(PunctKind::Comma)?;
+            while self.eat_punct(PunctKind::Comma)? {
+                let dest_bb = self.parse_type_and_basic_block(state)?;
+                ibr = ibr
+                    .add_destination(dest_bb)
+                    .map_err(|e| self.builder_err("indirectbr.add_destination", e))?;
+            }
         }
+        self.expect_punct(PunctKind::RSquare, "']' at end of block list")?;
         let _ = ibr.finish();
         Ok(())
     }
@@ -15087,11 +15098,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.expect_keyword(Keyword::Caller, "'caller' in cleanupret")?;
             None
         } else {
-            self.expect_primitive(
-                PrimitiveTy::Label,
-                "'label' in cleanupret unwind destination",
-            )?;
-            Some(self.parse_block_ref(state)?)
+            Some(self.parse_type_and_basic_block(state)?)
         };
         let _ = match unwind_dest {
             Some(dest) => b.cleanup_ret(pad_v, dest, ""),
@@ -15115,8 +15122,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let token_ty = self.module.token_type().as_type();
         let pad_v = self.parse_value(state, token_ty)?;
         self.expect_keyword(Keyword::To, "'to' in catchret")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' in catchret destination")?;
-        let dest = self.parse_block_ref(state)?;
+        let dest = self.parse_type_and_basic_block(state)?;
         let _ = b
             .catch_ret(pad_v, dest, "")
             .map_err(|e| self.builder_err("catchret", e))?;
@@ -15144,8 +15150,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `parseToken` *after* the loop, so a trailing comma is rejected.
         let mut handlers: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         loop {
-            self.expect_primitive(PrimitiveTy::Label, "'label' in catchswitch handler")?;
-            let bb = self.parse_block_ref(state)?;
+            let bb = self.parse_type_and_basic_block(state)?;
             handlers.push(bb);
             if !self.eat_punct(PunctKind::Comma)? {
                 break;
@@ -15157,11 +15162,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.expect_keyword(Keyword::Caller, "'caller' in catchswitch")?;
             None
         } else {
-            self.expect_primitive(
-                PrimitiveTy::Label,
-                "'label' in catchswitch unwind destination",
-            )?;
-            Some(self.parse_block_ref(state)?)
+            Some(self.parse_type_and_basic_block(state)?)
         };
         let name = result_name.as_str();
         let (_, mut cs) = match (parent_pad, unwind_dest) {
@@ -15253,11 +15254,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .function_attr_groups(function_attr_groups.into_boxed_slice())
         .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in invoke")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for invoke normal destination")?;
-        let normal_bb = self.parse_block_ref(state)?;
+        let normal_bb = self.parse_type_and_basic_block(state)?;
         self.expect_keyword(Keyword::Unwind, "'unwind' in invoke")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for invoke unwind destination")?;
-        let unwind_bb = self.parse_block_ref(state)?;
+        let unwind_bb = self.parse_type_and_basic_block(state)?;
         // Upstream `resolveFunctionType`: an explicitly written function
         // type IS the call-site type; otherwise infer from the arguments.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
@@ -15400,11 +15399,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .function_attr_groups(function_attr_groups.into_boxed_slice())
         .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in callbr")?;
-        self.expect_primitive(
-            PrimitiveTy::Label,
-            "'label' for callbr fallthrough destination",
-        )?;
-        let fallthrough = self.parse_block_ref(state)?;
+        let fallthrough = self.parse_type_and_basic_block(state)?;
         // Optional `[ label %ind1, ... ]`
         // The indirect-destination list is **mandatory**, and no comma
         // precedes it: `parseCallBr` ends its `||` chain with
@@ -15414,16 +15409,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // parsed.
         let mut indirect: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         self.expect_punct(PunctKind::LSquare, "'[' in callbr")?;
-        loop {
-            if matches!(self.peek(), Token::RSquare) {
-                self.bump()?;
-                break;
+        // `parseCallBr` unrolls the first iteration of its destination list
+        // exactly as `parseIndirectBr` does, and for the same observable
+        // reason: `[label %a,]` and `[label %a label %b]` are both rejected.
+        if !matches!(self.peek(), Token::RSquare) {
+            indirect.push(self.parse_type_and_basic_block(state)?);
+            while self.eat_punct(PunctKind::Comma)? {
+                indirect.push(self.parse_type_and_basic_block(state)?);
             }
-            self.expect_primitive(PrimitiveTy::Label, "'label' in callbr indirect target")?;
-            let bb = self.parse_block_ref(state)?;
-            indirect.push(bb);
-            let _ = self.eat_punct(PunctKind::Comma)?;
         }
+        self.expect_punct(PunctKind::RSquare, "']' at end of block list")?;
         // Upstream `resolveFunctionType`: an explicitly written function
         // type IS the call-site type; otherwise infer from the arguments.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
@@ -15559,32 +15554,45 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    /// Parse a `label %name` / `label %N` operand. Forward references create
-    /// an empty block, but existing references return label identity only so
-    /// branches may target already-terminated blocks.
-    fn parse_block_ref(
+    /// Mirrors `LLParser::parseTypeAndValue` — `parseType(Ty) ||
+    /// parseValue(Ty, V, PFS)`. The type is handed back alongside the value
+    /// because two of upstream's callers (`parseBr`, `parseSwitch`) test it
+    /// after the fact.
+    fn parse_type_and_value(
         &mut self,
-        state: &mut PerFunctionState<'ctx, B>,
+        state: &PerFunctionState<'ctx, B>,
+    ) -> ParseResult<(Type<'ctx, B>, llvmkit_ir::Value<'ctx, B>)> {
+        let ty = self.parse_type(false)?;
+        let value = self.parse_value(state, ty)?;
+        Ok((ty, value))
+    }
+
+    /// Mirrors `LLParser::parseTypeAndBasicBlock`, the one routine every
+    /// terminator's block operand goes through.
+    ///
+    /// It is `parseTypeAndValue` plus an `isa<BasicBlock>` guard, so the token
+    /// that is *not* a `label` decides the message: one that cannot begin a
+    /// type gives `parseType`'s `expected type`, and a well-formed
+    /// type-and-value that is not a block gives `expected a basic block`
+    /// anchored at the **start of the type** — which is why `Loc` is taken
+    /// before the type is read and not re-taken afterwards.
+    ///
+    /// Upstream's second overload (`parseTypeAndBasicBlock(BB, PFS)`) only
+    /// discards the out-parameter `Loc`; every in-tree caller of the
+    /// three-argument form discards it too, so there is one routine here.
+    fn parse_type_and_basic_block(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
+        // `Loc = Lex.getLoc();`
         let loc = self.loc();
-        match self.peek() {
-            Token::LocalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected("block label name"))?;
-                self.bump()?;
-                if !state.defined_blocks.contains(&name) {
-                    state.block_refs.entry(name.clone()).or_insert(loc);
-                }
-                state.ensure_block_label(self.module, &name, loc)
-            }
-            Token::LocalVarId(id) => {
-                let id = *id;
-                self.bump()?;
-                state.get_or_create_numbered_block_label(self.module, id, loc)
-            }
-            _ => Err(self.expected("block label after 'label'")),
-        }
+        // `if (parseTypeAndValue(V, PFS)) return true;`
+        let (_, value) = self.parse_type_and_value(state)?;
+        // `if (!isa<BasicBlock>(V)) return error(Loc, "expected a basic
+        //  block"); BB = cast<BasicBlock>(V);`
+        state
+            .block_label_for_value(value)
+            .ok_or_else(|| self.message_at(loc, "expected a basic block"))
     }
 
     /// Parse a value of the given type. Accepts local SSA references,
@@ -15811,13 +15819,18 @@ struct PerFunctionState<'ctx, B: ModuleBrand> {
     /// `label` to the named basic-block identity. Created on first reference
     /// to support `br label %later` forward references; re-materialize a
     /// linear insertion handle only at the construction use site.
-    blocks: std::collections::HashMap<String, llvmkit_ir::Value<'ctx, B>>,
-    block_refs: std::collections::HashMap<String, Span>,
+    ///
+    /// `RefCell` for the reason [`Self::forward_ref_named`] carries one: a
+    /// block forward reference is minted by *reading* an operand, inside
+    /// `getVal`'s `Ty->isLabelTy()` arm, and every value-parsing path reaches
+    /// that through `&PerFunctionState`.
+    blocks: RefCell<std::collections::HashMap<String, llvmkit_ir::Value<'ctx, B>>>,
+    block_refs: RefCell<std::collections::HashMap<String, Span>>,
     defined_blocks: std::collections::HashSet<String>,
     /// `%N` block placeholder identities and definitions, keyed by the shared
     /// local numbered-value slot.
-    numbered_blocks: std::collections::HashMap<u32, llvmkit_ir::Value<'ctx, B>>,
-    numbered_block_refs: std::collections::HashMap<u32, Span>,
+    numbered_blocks: RefCell<std::collections::HashMap<u32, llvmkit_ir::Value<'ctx, B>>>,
+    numbered_block_refs: RefCell<std::collections::HashMap<u32, Span>>,
     defined_numbered_blocks: std::collections::HashSet<u32>,
     /// `%name` referenced before it was defined, holding the placeholder
     /// minted at the first use and that use's span. Mirrors
@@ -15851,11 +15864,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             local_named: std::collections::HashMap::new(),
             local_numbered: std::collections::HashMap::new(),
             next_unnamed_value_id: 0,
-            blocks,
-            block_refs: std::collections::HashMap::new(),
+            blocks: RefCell::new(blocks),
+            block_refs: RefCell::new(std::collections::HashMap::new()),
             defined_blocks: std::collections::HashSet::new(),
-            numbered_blocks: std::collections::HashMap::new(),
-            numbered_block_refs: std::collections::HashMap::new(),
+            numbered_blocks: RefCell::new(std::collections::HashMap::new()),
+            numbered_block_refs: RefCell::new(std::collections::HashMap::new()),
             defined_numbered_blocks: std::collections::HashSet::new(),
             forward_ref_named: RefCell::new(BTreeMap::new()),
             forward_ref_numbered: RefCell::new(BTreeMap::new()),
@@ -15886,30 +15899,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// [`Self::get_basic_block_named`] overwrites with `unable to create
     /// block named '<n>'` when the same name is being *defined* as a label.
     fn get_val_as_block_named(
-        &mut self,
+        &self,
         module: &'ctx Module<B, Unverified>,
         name: &str,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        if let Some(value) = self.lookup_local(LocalRef::Named(name)) {
-            // `return P.checkValidVariableType(Loc, "%" + Name, Ty, Val);`
-            check_valid_variable_type(
-                loc,
-                &LocalRef::Named(name).display(),
-                module.label_type().as_type(),
-                value.ty(),
-            )?;
-            return Ok(value);
-        }
-        let bb = self.func.append_basic_block(module, name);
-        let value = bb.to_erased();
-        self.blocks.insert(name.to_owned(), value);
-        Ok(value)
+        self.get_val(
+            module,
+            LocalRef::Named(name),
+            module.label_type().as_type(),
+            loc,
+        )
     }
 
     /// Look up or lazily create the named basic block, as a label identity.
     fn ensure_block_label(
-        &mut self,
+        &self,
         module: &'ctx Module<B, Unverified>,
         name: &str,
         loc: Span,
@@ -15988,7 +15993,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         match defined_name {
             DefinedBlockName::Numbered(id) => {
                 // `ForwardRefValIDs.erase(NameID);`
-                self.numbered_block_refs.remove(&id);
+                self.numbered_block_refs.borrow_mut().remove(&id);
                 // `NumberedVals.add(NameID, BB);` — `add` also advances
                 // `NextUnusedID` to `ID + 1`; `checkValueID` has already
                 // proved `id >= next`, so `max` and `id + 1` agree.
@@ -16021,25 +16026,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// reference passes that guard and fails here instead, with
     /// `'%N' is not a basic block`.
     fn get_val_as_block_numbered(
-        &mut self,
+        &self,
         module: &'ctx Module<B, Unverified>,
         id: u32,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        if let Some(value) = self.lookup_local(LocalRef::Numbered(id)) {
-            // `return P.checkValidVariableType(Loc, "%" + Twine(ID), Ty, Val);`
-            check_valid_variable_type(
-                loc,
-                &LocalRef::Numbered(id).display(),
-                module.label_type().as_type(),
-                value.ty(),
-            )?;
-            return Ok(value);
-        }
-        let bb = self.func.append_basic_block(module, "");
-        let value = bb.to_erased();
-        self.numbered_blocks.insert(id, value);
-        Ok(value)
+        self.get_val(
+            module,
+            LocalRef::Numbered(id),
+            module.label_type().as_type(),
+            loc,
+        )
     }
 
     /// Mirrors `PerFunctionState::getBB(unsigned ID, LocTy)` together with
@@ -16113,14 +16110,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             BlockLabel::Named(name) => self
                 .defined_blocks
                 .contains(name)
-                .then(|| self.blocks.get(name).copied())
+                .then(|| self.blocks.borrow().get(name).copied())
                 .flatten(),
             BlockLabel::Numbered(id) => self
                 .defined_numbered_blocks
                 .contains(id)
-                .then(|| self.numbered_blocks.get(id).copied())
+                .then(|| self.numbered_blocks.borrow().get(id).copied())
                 .flatten(),
         }
+    }
+
+    /// `isa<BasicBlock>(V)`, as a projection rather than a predicate —
+    /// upstream spells the test and the narrowing as one `dyn_cast`
+    /// (`parseBr`) or as `isa` followed by `cast`
+    /// (`parseTypeAndBasicBlock`), and both need the block afterwards.
+    fn block_view_for_value(
+        &self,
+        value: llvmkit_ir::Value<'ctx, B>,
+    ) -> Option<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
+        self.func.basic_blocks().find(|bb| bb.to_erased() == value)
+    }
+
+    /// [`Self::block_view_for_value`] as a label id.
+    fn block_label_for_value(
+        &self,
+        value: llvmkit_ir::Value<'ctx, B>,
+    ) -> Option<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
+        self.block_view_for_value(value).map(|bb| bb.id())
     }
 
     fn value_as_block_view(
@@ -16128,9 +16144,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         value: llvmkit_ir::Value<'ctx, B>,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
-        self.func
-            .basic_blocks()
-            .find(|bb| bb.to_erased() == value)
+        self.block_view_for_value(value)
             .ok_or_else(|| ParseError::Message {
                 message: "referenced value is not a basic block".into(),
                 loc: DiagLoc::span(loc),
@@ -16156,9 +16170,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         // backward slot forward-declares a block that the later label header
         // then rejects.
         let value = self.get_val_as_block_numbered(module, id, loc)?;
-        let label = self.value_as_block_label(value, loc)?;
-        self.numbered_block_refs.entry(id).or_insert(loc);
-        Ok(label)
+        self.value_as_block_label(value, loc)
     }
 
     /// Resolve a phi-incoming predecessor block reference for an edge-add.
@@ -16169,7 +16181,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// returns a view rather than an [`Unterminated`] construction handle. The
     /// block was ensured to exist when the phi incoming pair was parsed
     /// (`parse_phi_label`). Only phi resolution uses this; branch/switch
-    /// targets go through `parse_block_ref`.
+    /// targets go through `parse_type_and_basic_block`.
     fn resolve_block_ref(
         &mut self,
         module: &'ctx Module<B, Unverified>,
@@ -16199,7 +16211,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .local_named
                 .get(name)
                 .copied()
-                .or_else(|| self.blocks.get(name).copied())
+                .or_else(|| self.blocks.borrow().get(name).copied())
                 .or_else(|| {
                     self.forward_ref_named
                         .borrow()
@@ -16210,7 +16222,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .local_numbered
                 .get(&id)
                 .copied()
-                .or_else(|| self.numbered_blocks.get(&id).copied())
+                .or_else(|| self.numbered_blocks.borrow().get(&id).copied())
                 .or_else(|| {
                     self.forward_ref_numbered
                         .borrow()
@@ -16224,6 +16236,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// placeholder when the name has not been defined yet. Mirrors
     /// `LLParser::PerFunctionState::getVal`: symbol table, then the
     /// forward-reference map, then a fresh sentinel of the demanded type.
+    ///
+    /// Both of upstream's placeholder arms live here —
+    /// `if (Ty->isLabelTy()) FwdVal = BasicBlock::Create(…); else FwdVal =
+    /// new Argument(Ty, Name);` — because upstream has one `getVal` per
+    /// spelling and `getBB` is `dyn_cast_or_null<BasicBlock>(getVal(Name,
+    /// LabelTy, Loc))`. Splitting the label arm into a second routine is what
+    /// made `parseTypeAndBasicBlock` unportable: `parseTypeAndValue` at a
+    /// `label` type has to reach the block-minting arm, and it reaches it
+    /// through `convertValIDToValue` -> `getVal`, not through `getBB`.
     fn get_val(
         &self,
         module: &'ctx Module<B, Unverified>,
@@ -16244,6 +16265,36 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 message: "invalid use of a non-first-class type".into(),
                 loc: DiagLoc::span(loc),
             });
+        }
+        // `if (Ty->isLabelTy()) FwdVal = BasicBlock::Create(F.getContext(),
+        //  Name, &F);` — the numbered overload passes `""` for the name.
+        // Upstream's `ForwardRefVals[Name] = std::make_pair(FwdVal, Loc);`
+        // then records it; llvmkit keeps blocks in tables of their own, so
+        // the identity and the reference span are recorded side by side and
+        // `finishFunction` merges them back with the value tables.
+        if ty.is_label() {
+            let name = match reference {
+                LocalRef::Named(name) => name,
+                LocalRef::Numbered(_) => "",
+            };
+            let value = self.func.append_basic_block(module, name).to_erased();
+            match reference {
+                LocalRef::Named(name) => {
+                    self.blocks.borrow_mut().insert(name.to_owned(), value);
+                    self.block_refs
+                        .borrow_mut()
+                        .entry(name.to_owned())
+                        .or_insert(loc);
+                }
+                LocalRef::Numbered(id) => {
+                    self.numbered_blocks.borrow_mut().insert(id, value);
+                    self.numbered_block_refs
+                        .borrow_mut()
+                        .entry(id)
+                        .or_insert(loc);
+                }
+            }
+            return Ok(value);
         }
         let placeholder =
             module
@@ -16329,7 +16380,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 // A numbered slot already claimed by a forward-referenced
                 // *block* is upstream's `ForwardRefValIDs` hit with a `label`
                 // sentinel in it — one map there, so one diagnostic.
-                if let Some(block) = self.numbered_blocks.get(&id).copied() {
+                if let Some(block) = self.numbered_blocks.borrow().get(&id).copied() {
                     return Err(ParseError::InstructionForwardReferencedWithType {
                         ty: block.ty().to_string(),
                         loc: DiagLoc::span(loc),
@@ -16358,7 +16409,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         // as a label. Merging llvmkit's two tables here reproduces both the
         // wording and `begin()`'s choice of which name to name.
         let mut undefined_named: BTreeMap<String, Span> = BTreeMap::new();
-        for (name, loc) in &self.block_refs {
+        for (name, loc) in self.block_refs.borrow().iter() {
             if !self.defined_blocks.contains(name) {
                 undefined_named.insert(name.clone(), *loc);
             }
@@ -16374,7 +16425,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             });
         }
         let mut undefined_numbered: BTreeMap<u32, Span> = BTreeMap::new();
-        for (id, loc) in &self.numbered_block_refs {
+        for (id, loc) in self.numbered_block_refs.borrow().iter() {
             if !self.defined_numbered_blocks.contains(id) {
                 undefined_numbered.insert(*id, *loc);
             }

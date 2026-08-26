@@ -44,7 +44,7 @@ use super::instructions::ShuffleVectorInst;
 use super::intrinsics::IntrinsicNameResolution;
 use super::module::ModuleRef;
 use super::value::Value;
-use crate::attributes::AttributeStorage;
+use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
 use crate::constant_range::{ConstantRange, metadata_constant_int};
@@ -1125,7 +1125,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             InstructionKindData::Load(l) => self.check_load(f, bb, inst, l),
             InstructionKindData::Store(s) => self.check_store(f, bb, inst, s),
             InstructionKindData::Gep(g) => self.check_gep(f, bb, inst, g),
-            InstructionKindData::Call(c) => self.check_call(f, bb, inst, c),
+            InstructionKindData::Call(c) => {
+                self.check_call(f, bb, inst, c, index_in_block, block_instructions)
+            }
             InstructionKindData::Select(s) => self.check_select(f, bb, inst, s),
             InstructionKindData::Phi(p) => {
                 let reachable = cx.dom_tree.is_reachable_from_entry(bb);
@@ -2809,8 +2811,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        inst: &InstructionView<'ctx, B>,
         c: &CallInstData,
+        index_in_block: usize,
+        block_instructions: &[InstructionView<'ctx, B>],
     ) -> IrResult<()> {
         // Callee must be a function value, OR a pointer of address
         // space 0 with a separately-tracked function-type (LLVM 17+
@@ -2893,7 +2897,347 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             // current call surface cannot spell per-operand elementtype attrs.
         }
 
+        // `void Verifier::visitCallInst(CallInst &CI) { visitCallBase(CI);
+        //  if (CI.isMustTailCall()) verifyMustTailCall(CI); }`
+        if matches!(c.tail_kind, crate::instr_types::TailCallKind::MustTail) {
+            self.verify_must_tail_call(f, bb, inst, c, index_in_block, block_instructions)?;
+        }
+
         Ok(())
+    }
+
+    /// Mirrors `Verifier::verifyMustTailCall`, `Check` for `Check` in its own
+    /// order, including the `swifttailcc` / `tailcc` arm's early `return` and
+    /// the intrinsic exemption on the prototype comparison.
+    ///
+    /// One house difference, shared with every rule in this file: upstream's
+    /// `Check` macro records a failure and carries on, so one bad `musttail`
+    /// can produce several diagnostics; here the first failure is the `Err`.
+    ///
+    /// Driven by `test/Verifier/musttail-invalid.ll`,
+    /// `test/Verifier/tailcc-musttail.ll`,
+    /// `test/Verifier/swifttailcc-musttail.ll` and the two positives
+    /// `test/Verifier/musttail-valid.ll` /
+    /// `test/Verifier/swifttailcc-musttail-valid.ll`, all vendored under
+    /// `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/`.
+    fn verify_must_tail_call(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        inst: &InstructionView<'ctx, B>,
+        c: &CallInstData,
+        index_in_block: usize,
+        block_instructions: &[InstructionView<'ctx, B>],
+    ) -> IrResult<()> {
+        // `Check(!CI.isInlineAsm(), "cannot use musttail call with inline
+        //  asm", &CI);`
+        if matches!(
+            self.module.context().value_data(c.callee.get()).kind,
+            ValueKindData::InlineAsm(_)
+        ) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::MustTailCallInlineAsm,
+                "cannot use musttail call with inline asm".to_owned(),
+            ));
+        }
+
+        // `Function *F = CI.getParent()->getParent();
+        //  FunctionType *CallerTy = F->getFunctionType();
+        //  FunctionType *CalleeTy = CI.getFunctionType();`
+        let caller_ty_slot = f.data().signature;
+        let callee_ty_data = self.module.context().type_data(c.fn_ty);
+        let Some((callee_ret, callee_params, callee_var_arg)) = callee_ty_data.as_function() else {
+            // `CI.getFunctionType()` is a `FunctionType` by construction; a
+            // non-function `fn_ty` has already been rejected by the
+            // `visitCallBase` half above, so this arm is unreachable from a
+            // parsed module and reports rather than panics.
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallNonFunction,
+                format!(
+                    "call fn_ty {} is not a function type",
+                    self.type_label(c.fn_ty)
+                ),
+            ));
+        };
+        let caller_ty_data = self.module.context().type_data(caller_ty_slot);
+        let Some((caller_ret, caller_params, caller_var_arg)) = caller_ty_data.as_function() else {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallNonFunction,
+                format!(
+                    "function signature {} is not a function type",
+                    self.type_label(caller_ty_slot)
+                ),
+            ));
+        };
+
+        // `Check(CallerTy->isVarArg() == CalleeTy->isVarArg(), "cannot
+        //  guarantee tail call due to mismatched varargs", &CI);`
+        if caller_var_arg != callee_var_arg {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::MustTailCallVarArgsMismatch,
+                "cannot guarantee tail call due to mismatched varargs".to_owned(),
+            ));
+        }
+        // `Check(isTypeCongruent(CallerTy->getReturnType(),
+        //  CalleeTy->getReturnType()), "cannot guarantee tail call due to
+        //  mismatched return types", &CI);`
+        if !self.is_type_congruent(caller_ret, callee_ret) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::MustTailCallReturnTypeMismatch,
+                "cannot guarantee tail call due to mismatched return types".to_owned(),
+            ));
+        }
+
+        // "- The calling conventions of the caller and callee must match."
+        if f.calling_conv() != c.calling_conv {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::MustTailCallCallingConvMismatch,
+                "cannot guarantee tail call due to mismatched calling conv".to_owned(),
+            ));
+        }
+
+        // "- The call must immediately precede a ret instruction, or a
+        //  pointer bitcast followed by a ret instruction.
+        //  - The ret instruction must return the (possibly bitcasted) value
+        //  produced by the call or void."
+        //
+        // `Value *RetVal = &CI; Instruction *Next = CI.getNextNode();`
+        let mut ret_val = inst.as_erased().slot();
+        let mut next = block_instructions.get(index_in_block + 1);
+
+        // "Handle the optional bitcast."
+        if let Some(bitcast) = next.and_then(|n| Self::bitcast_source(n)) {
+            let (bitcast_inst, source) = bitcast;
+            // `Check(BI->getOperand(0) == RetVal, "bitcast following musttail
+            //  call must use the call", BI);`
+            if source != ret_val {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::MustTailCallBitcastMustUseCall,
+                    "bitcast following musttail call must use the call".to_owned(),
+                ));
+            }
+            ret_val = bitcast_inst;
+            next = block_instructions.get(index_in_block + 2);
+        }
+
+        // "Check the return."
+        // `ReturnInst *Ret = dyn_cast_or_null<ReturnInst>(Next);
+        //  Check(Ret, "musttail call must precede a ret with an optional
+        //  bitcast", &CI);`
+        let Some(returned) = next.and_then(Self::return_value_of) else {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::MustTailCallNotInTailPosition,
+                "musttail call must precede a ret with an optional bitcast".to_owned(),
+            ));
+        };
+        // `Check(!Ret->getReturnValue() || Ret->getReturnValue() == RetVal ||
+        //  isa<UndefValue>(Ret->getReturnValue()), "musttail call result must
+        //  be returned", Ret);`
+        if let Some(returned) = returned {
+            // `isa<UndefValue>` — `PoisonValue` derives from `UndefValue`
+            // (`Constants.h`), so `ret ptr poison` satisfies the guard too.
+            let is_undef = matches!(
+                self.module.context().value_data(returned).kind,
+                ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison)
+            );
+            if returned != ret_val && !is_undef {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::MustTailCallResultNotReturned,
+                    "musttail call result must be returned".to_owned(),
+                ));
+            }
+        }
+
+        // `AttributeList CallerAttrs = F->getAttributes();
+        //  AttributeList CalleeAttrs = CI.getAttributes();`
+        let caller_attrs = f.data().attributes.borrow();
+        if c.calling_conv == crate::CallingConv::SWIFT_TAIL
+            || c.calling_conv == crate::CallingConv::TAIL
+        {
+            // `StringRef CCName = CI.getCallingConv() == CallingConv::Tail ?
+            //  "tailcc" : "swifttailcc";`
+            let cc_name = if c.calling_conv == crate::CallingConv::TAIL {
+                "tailcc"
+            } else {
+                "swifttailcc"
+            };
+            // "- Only sret, byval, swiftself, and swiftasync ABI-impacting
+            //  attributes are allowed in swifttailcc call"
+            for index in 0..caller_params.len() {
+                let abi_attrs = parameter_abi_attributes_of_function(&caller_attrs, index);
+                self.verify_tail_cc_must_tail_attrs(
+                    f,
+                    bb,
+                    &abi_attrs,
+                    &format!("{cc_name} musttail caller"),
+                )?;
+            }
+            for index in 0..callee_params.len() {
+                let abi_attrs = parameter_abi_attributes_of_call_site(&c.attrs, index);
+                self.verify_tail_cc_must_tail_attrs(
+                    f,
+                    bb,
+                    &abi_attrs,
+                    &format!("{cc_name} musttail callee"),
+                )?;
+            }
+            // "- Varargs functions are not allowed"
+            if caller_var_arg {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::TailCcMustTailVarArgsFunction,
+                    format!("cannot guarantee {cc_name} tail call for varargs function"),
+                ));
+            }
+            return Ok(());
+        }
+
+        // "- The caller and callee prototypes must match.  Pointer types of
+        //  parameters or return types may differ in pointee type, but not
+        //  address space."
+        //
+        // `if (!CI.getIntrinsicID()) { … }` — an intrinsic callee is exempt
+        // from the prototype comparison, not from the attribute one below.
+        if !self.callee_is_intrinsic(c.callee.get()) {
+            if caller_params.len() != callee_params.len() {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::MustTailCallParamCountMismatch,
+                    "cannot guarantee tail call due to mismatched parameter counts".to_owned(),
+                ));
+            }
+            for (caller_param, callee_param) in caller_params.iter().zip(callee_params.iter()) {
+                if !self.is_type_congruent(*caller_param, *callee_param) {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::MustTailCallParamTypeMismatch,
+                        "cannot guarantee tail call due to mismatched parameter types".to_owned(),
+                    ));
+                }
+            }
+        }
+
+        // "- All ABI-impacting function attributes, such as sret, byval,
+        //  inreg, returned, preallocated, and inalloca, must match."
+        for index in 0..caller_params.len() {
+            let caller_abi_attrs = parameter_abi_attributes_of_function(&caller_attrs, index);
+            let callee_abi_attrs = parameter_abi_attributes_of_call_site(&c.attrs, index);
+            if !caller_abi_attrs.index_has_same_attributes(&callee_abi_attrs, AttrIndex::Param(0)) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::MustTailCallAbiAttributeMismatch,
+                    "cannot guarantee tail call due to mismatched ABI impacting function \
+                     attributes"
+                        .to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Mirrors `Verifier::verifyTailCCMustTailAttrs`.
+    fn verify_tail_cc_must_tail_attrs(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        attrs: &AttributeStorage,
+        context: &str,
+    ) -> IrResult<()> {
+        for (kind, keyword) in [
+            (AttrKind::InAlloca, "inalloca"),
+            (AttrKind::InReg, "inreg"),
+            (AttrKind::SwiftError, "swifterror"),
+            (AttrKind::Preallocated, "preallocated"),
+            (AttrKind::ByRef, "byref"),
+        ] {
+            if attrs.has_kind(AttrIndex::Param(0), kind) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::TailCcMustTailForbiddenAttribute,
+                    format!("{keyword} attribute not allowed in {context}"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Mirrors the file-local `isTypeCongruent` in `lib/IR/Verifier.cpp`.
+    fn is_type_congruent(&self, l: TypeSlot, r: TypeSlot) -> bool {
+        if l == r {
+            return true;
+        }
+        let context = self.module.context();
+        match (context.type_data(l), context.type_data(r)) {
+            (TypeData::Pointer { addr_space: left }, TypeData::Pointer { addr_space: right }) => {
+                left == right
+            }
+            _ => false,
+        }
+    }
+
+    /// `dyn_cast_or_null<BitCastInst>(Next)`, projected to `(the bitcast,
+    /// its operand 0)`.
+    fn bitcast_source(inst: &InstructionView<'ctx, B>) -> Option<(ValueSlot, ValueSlot)> {
+        let ValueKindData::Instruction(i) = &inst.as_erased().data().kind else {
+            return None;
+        };
+        match &i.kind {
+            InstructionKindData::Cast(cast) if cast.kind == CastOpcode::BitCast => {
+                Some((inst.as_erased().slot(), cast.src.get()))
+            }
+            _ => None,
+        }
+    }
+
+    /// `dyn_cast_or_null<ReturnInst>(Next)` followed by `Ret->getReturnValue()`
+    /// — `None` when the instruction is not a `ret`, `Some(None)` for
+    /// `ret void`.
+    fn return_value_of(inst: &InstructionView<'ctx, B>) -> Option<Option<ValueSlot>> {
+        let ValueKindData::Instruction(i) = &inst.as_erased().data().kind else {
+            return None;
+        };
+        match &i.kind {
+            InstructionKindData::Ret(r) => Some(r.value.get()),
+            _ => None,
+        }
+    }
+
+    /// `CallBase::getIntrinsicID()` — non-zero only for a direct call to an
+    /// intrinsic declaration.
+    fn callee_is_intrinsic(&self, callee: ValueSlot) -> bool {
+        let callee_data = self.module.context().value_data(callee);
+        let ValueKindData::Function(_) = &callee_data.kind else {
+            return false;
+        };
+        crate::intrinsics::descriptor_for_callee(Value::<B>::from_parts(
+            callee,
+            self.module,
+            callee_data.ty,
+        ))
+        .is_some()
     }
 
     fn check_intrinsic_call(
@@ -3561,6 +3905,77 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 /// transposing its edge list: the edge list is in block order and
 /// `pred_iterator` is a use-list view, and re-deriving here is what let the
 /// two disagree unnoticed.
+/// The ten kinds `getParameterABIAttributes` copies, in its own order.
+const PARAMETER_ABI_ATTR_KINDS: [AttrKind; 10] = [
+    AttrKind::StructRet,
+    AttrKind::ByVal,
+    AttrKind::InAlloca,
+    AttrKind::InReg,
+    AttrKind::StackAlignment,
+    AttrKind::SwiftSelf,
+    AttrKind::SwiftAsync,
+    AttrKind::SwiftError,
+    AttrKind::Preallocated,
+    AttrKind::ByRef,
+];
+
+/// Mirrors the file-local `getParameterABIAttributes` in
+/// `lib/IR/Verifier.cpp`, reading the attributes recorded at `index`.
+///
+/// The result is keyed at `AttrIndex::Param(0)` whatever `index` was, so that
+/// a *function*'s parameter set and a *call site*'s argument set — which
+/// llvmkit stores one per argument, each at `Param(0)` — compare directly.
+/// Upstream compares two `AttrBuilder`s, which carry no index at all.
+fn parameter_abi_attributes(source: &AttributeStorage, index: AttrIndex) -> AttributeStorage {
+    let mut copy = AttributeStorage::new();
+    for kind in PARAMETER_ABI_ATTR_KINDS {
+        // `Attribute Attr = Attrs.getParamAttrs(I).getAttribute(AK);
+        //  if (Attr.isValid()) Copy.addAttribute(Attr);`
+        if let Some(attr) = source
+            .get(index)
+            .and_then(|attrs| attrs.iter().find(|attr| attr.kind() == Some(kind)))
+        {
+            copy.add_stored(AttrIndex::Param(0), attr.clone());
+        }
+    }
+    // "`align` is ABI-affecting only in combination with `byval` or `byref`."
+    if source.has_kind(index, AttrKind::Alignment)
+        && (source.has_kind(index, AttrKind::ByVal) || source.has_kind(index, AttrKind::ByRef))
+        && let Some(align) = source.int_value(index, AttrKind::Alignment)
+    {
+        copy.add_stored(
+            AttrIndex::Param(0),
+            AttributeStored::Int(AttrKind::Alignment, align),
+        );
+    }
+    copy
+}
+
+/// `getParameterABIAttributes(C, I, F->getAttributes())`.
+fn parameter_abi_attributes_of_function(
+    attrs: &AttributeStorage,
+    index: usize,
+) -> AttributeStorage {
+    parameter_abi_attributes(
+        attrs,
+        AttrIndex::Param(u32::try_from(index).unwrap_or(u32::MAX)),
+    )
+}
+
+/// `getParameterABIAttributes(C, I, CI.getAttributes())`. A call site's
+/// per-argument attributes are stored one `AttributeStorage` per argument,
+/// each keyed at `Param(0)`; an argument past the end carries none, which is
+/// upstream's empty `AttributeSet` for an absent index.
+fn parameter_abi_attributes_of_call_site(
+    attrs: &crate::instr_types::CallAttributeData,
+    index: usize,
+) -> AttributeStorage {
+    match attrs.arg_attrs().get(index) {
+        Some(storage) => parameter_abi_attributes(storage, AttrIndex::Param(0)),
+        None => AttributeStorage::new(),
+    }
+}
+
 fn build_predecessors<B: ModuleBrand>(
     f: FunctionValue<'_, Dyn, B>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {

@@ -243,6 +243,47 @@ pub enum VerifierRule {
     /// parameter type at the same slot.
     /// Mirrors `Verifier::visitCallBase`.
     CallArgTypeMismatch,
+    /// `musttail call` whose callee is inline assembly.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallInlineAsm,
+    /// `musttail call` whose call-site signature disagrees with the enclosing
+    /// function's on the variadic bit.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallVarArgsMismatch,
+    /// `musttail call` whose return type is not congruent with the enclosing
+    /// function's. Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallReturnTypeMismatch,
+    /// `musttail call` whose calling convention differs from the enclosing
+    /// function's. Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallCallingConvMismatch,
+    /// The `bitcast` following a `musttail call` does not use the call.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallBitcastMustUseCall,
+    /// `musttail call` not immediately followed by a `ret`, with at most an
+    /// intervening `bitcast`. Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallNotInTailPosition,
+    /// The `ret` after a `musttail call` returns something other than the
+    /// call's (possibly bitcast) result.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallResultNotReturned,
+    /// An ABI-impacting parameter attribute that `tailcc` / `swifttailcc`
+    /// forbids on a `musttail` caller or callee.
+    /// Mirrors `Verifier::verifyTailCCMustTailAttrs`.
+    TailCcMustTailForbiddenAttribute,
+    /// A `tailcc` / `swifttailcc` `musttail` call in a varargs function.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    TailCcMustTailVarArgsFunction,
+    /// `musttail call` whose parameter count differs from the enclosing
+    /// function's. Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallParamCountMismatch,
+    /// `musttail call` with a parameter type not congruent with the enclosing
+    /// function's at the same slot.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallParamTypeMismatch,
+    /// `musttail call` whose ABI-impacting parameter attributes differ from
+    /// the enclosing function's at the same slot.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallAbiAttributeMismatch,
     /// `select` condition operand is not `i1`.
     /// Mirrors `Verifier::visitSelectInst`.
     SelectConditionNotI1,
@@ -507,6 +548,34 @@ impl fmt::Display for VerifierRule {
             Self::CallNonFunction => "call callee is not a function value",
             Self::CallArgCountMismatch => "call argument count does not match callee signature",
             Self::CallArgTypeMismatch => "call argument type does not match callee parameter type",
+            Self::MustTailCallInlineAsm => "musttail call callee is inline assembly",
+            Self::MustTailCallVarArgsMismatch => {
+                "musttail call and caller disagree on the variadic bit"
+            }
+            Self::MustTailCallReturnTypeMismatch => {
+                "musttail call return type is not congruent with the caller's"
+            }
+            Self::MustTailCallCallingConvMismatch => {
+                "musttail call calling convention differs from the caller's"
+            }
+            Self::MustTailCallBitcastMustUseCall => {
+                "bitcast after a musttail call does not use the call"
+            }
+            Self::MustTailCallNotInTailPosition => "musttail call is not in tail position",
+            Self::MustTailCallResultNotReturned => "musttail call result is not returned",
+            Self::TailCcMustTailForbiddenAttribute => {
+                "parameter attribute is forbidden on a tailcc musttail call"
+            }
+            Self::TailCcMustTailVarArgsFunction => "tailcc musttail call in a varargs function",
+            Self::MustTailCallParamCountMismatch => {
+                "musttail call parameter count differs from the caller's"
+            }
+            Self::MustTailCallParamTypeMismatch => {
+                "musttail call parameter type is not congruent with the caller's"
+            }
+            Self::MustTailCallAbiAttributeMismatch => {
+                "musttail call ABI-impacting parameter attributes differ from the caller's"
+            }
             Self::SelectConditionNotI1 => "select condition is not i1",
             Self::SelectArmTypeMismatch => {
                 "select arm types differ from each other or from the result"
