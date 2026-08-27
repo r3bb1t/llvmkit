@@ -863,6 +863,59 @@ pub(crate) fn semantic_ids(intrinsics: &[IntrinsicOut]) -> GenResult<Vec<(String
         ("READ_REGISTER", "read_register"),
         ("WRITE_REGISTER", "write_register"),
         ("VSCALE", "vscale"),
+        // `Verifier::visitCallBase`'s `"preallocated"` operand-bundle arm
+        // (`Input->getIntrinsicID() == Intrinsic::call_preallocated_setup`).
+        ("CALL_PREALLOCATED_SETUP", "call_preallocated_setup"),
+        // `IntrinsicInst::mayLowerToFunctionCall`'s `switch`
+        // (`lib/IR/IntrinsicInst.cpp`), in its own order, plus
+        // `objc_claimAutoreleasedReturnValue` — which that `switch` does *not*
+        // list but `Verifier::verifyAttachedCallBundle` accepts as a
+        // `"clang.arc.attachedcall"` bundle operand alongside
+        // `objc_retainAutoreleasedReturnValue` and
+        // `objc_unsafeClaimAutoreleasedReturnValue`.
+        //
+        // Constant names are the enumerator spelling uppercased verbatim, with
+        // no word splitting: `objc_retainAutorelease` and
+        // `objc_retain_autorelease` are two different intrinsics, and any
+        // camel-case-aware renaming collides them.
+        ("OBJC_AUTORELEASE", "objc_autorelease"),
+        ("OBJC_AUTORELEASEPOOLPOP", "objc_autoreleasePoolPop"),
+        ("OBJC_AUTORELEASEPOOLPUSH", "objc_autoreleasePoolPush"),
+        ("OBJC_AUTORELEASERETURNVALUE", "objc_autoreleaseReturnValue"),
+        ("OBJC_COPYWEAK", "objc_copyWeak"),
+        ("OBJC_DESTROYWEAK", "objc_destroyWeak"),
+        ("OBJC_INITWEAK", "objc_initWeak"),
+        ("OBJC_LOADWEAK", "objc_loadWeak"),
+        ("OBJC_LOADWEAKRETAINED", "objc_loadWeakRetained"),
+        ("OBJC_MOVEWEAK", "objc_moveWeak"),
+        ("OBJC_RELEASE", "objc_release"),
+        ("OBJC_RETAIN", "objc_retain"),
+        ("OBJC_RETAINAUTORELEASE", "objc_retainAutorelease"),
+        (
+            "OBJC_RETAINAUTORELEASERETURNVALUE",
+            "objc_retainAutoreleaseReturnValue",
+        ),
+        (
+            "OBJC_RETAINAUTORELEASEDRETURNVALUE",
+            "objc_retainAutoreleasedReturnValue",
+        ),
+        ("OBJC_RETAINBLOCK", "objc_retainBlock"),
+        ("OBJC_STORESTRONG", "objc_storeStrong"),
+        ("OBJC_STOREWEAK", "objc_storeWeak"),
+        (
+            "OBJC_UNSAFECLAIMAUTORELEASEDRETURNVALUE",
+            "objc_unsafeClaimAutoreleasedReturnValue",
+        ),
+        ("OBJC_RETAINEDOBJECT", "objc_retainedObject"),
+        ("OBJC_UNRETAINEDOBJECT", "objc_unretainedObject"),
+        ("OBJC_UNRETAINEDPOINTER", "objc_unretainedPointer"),
+        ("OBJC_RETAIN_AUTORELEASE", "objc_retain_autorelease"),
+        ("OBJC_SYNC_ENTER", "objc_sync_enter"),
+        ("OBJC_SYNC_EXIT", "objc_sync_exit"),
+        (
+            "OBJC_CLAIMAUTORELEASEDRETURNVALUE",
+            "objc_claimAutoreleasedReturnValue",
+        ),
     ];
     let mut out = Vec::new();
     for (const_name, enum_name) in required {

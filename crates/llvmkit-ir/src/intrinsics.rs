@@ -314,6 +314,61 @@ impl IntrinsicId {
     pub const PTRMASK: Self = checked_intrinsic_id(generated::SEMANTIC_PTRMASK);
     pub const VSCALE: Self = checked_intrinsic_id(generated::SEMANTIC_VSCALE);
 
+    /// `Intrinsic::call_preallocated_setup`, read by
+    /// `Verifier::visitCallBase`'s `"preallocated"` operand-bundle arm.
+    pub(crate) const CALL_PREALLOCATED_SETUP: Self =
+        checked_intrinsic_id(generated::SEMANTIC_CALL_PREALLOCATED_SETUP);
+
+    /// The ObjC ARC intrinsics named by `IntrinsicInst::mayLowerToFunctionCall`
+    /// and `Verifier::verifyAttachedCallBundle`. Crate-internal: they exist to
+    /// spell those two routines, not as a public intrinsic catalogue.
+    pub(crate) const OBJC_AUTORELEASE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_AUTORELEASE);
+    pub(crate) const OBJC_AUTORELEASEPOOLPOP: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_AUTORELEASEPOOLPOP);
+    pub(crate) const OBJC_AUTORELEASEPOOLPUSH: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_AUTORELEASEPOOLPUSH);
+    pub(crate) const OBJC_AUTORELEASERETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_AUTORELEASERETURNVALUE);
+    pub(crate) const OBJC_COPYWEAK: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_COPYWEAK);
+    pub(crate) const OBJC_DESTROYWEAK: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_DESTROYWEAK);
+    pub(crate) const OBJC_INITWEAK: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_INITWEAK);
+    pub(crate) const OBJC_LOADWEAK: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_LOADWEAK);
+    pub(crate) const OBJC_LOADWEAKRETAINED: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_LOADWEAKRETAINED);
+    pub(crate) const OBJC_MOVEWEAK: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_MOVEWEAK);
+    pub(crate) const OBJC_RELEASE: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_RELEASE);
+    pub(crate) const OBJC_RETAIN: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAIN);
+    pub(crate) const OBJC_RETAINAUTORELEASE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINAUTORELEASE);
+    pub(crate) const OBJC_RETAINAUTORELEASERETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINAUTORELEASERETURNVALUE);
+    pub(crate) const OBJC_RETAINAUTORELEASEDRETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINAUTORELEASEDRETURNVALUE);
+    pub(crate) const OBJC_RETAINBLOCK: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINBLOCK);
+    pub(crate) const OBJC_STORESTRONG: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_STORESTRONG);
+    pub(crate) const OBJC_STOREWEAK: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_STOREWEAK);
+    pub(crate) const OBJC_UNSAFECLAIMAUTORELEASEDRETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_UNSAFECLAIMAUTORELEASEDRETURNVALUE);
+    pub(crate) const OBJC_RETAINEDOBJECT: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINEDOBJECT);
+    pub(crate) const OBJC_UNRETAINEDOBJECT: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_UNRETAINEDOBJECT);
+    pub(crate) const OBJC_UNRETAINEDPOINTER: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_UNRETAINEDPOINTER);
+    pub(crate) const OBJC_RETAIN_AUTORELEASE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAIN_AUTORELEASE);
+    pub(crate) const OBJC_SYNC_ENTER: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_SYNC_ENTER);
+    pub(crate) const OBJC_SYNC_EXIT: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_SYNC_EXIT);
+    pub(crate) const OBJC_CLAIMAUTORELEASEDRETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_CLAIMAUTORELEASEDRETURNVALUE);
+
     pub fn lookup(name: &str) -> Option<Self> {
         let _ = generated_table_anchor();
         let target_set = target_set_for_name(name)?;
@@ -402,6 +457,15 @@ impl IntrinsicId {
     /// Ports the `IntrNoFree` property.
     pub fn no_free(self) -> bool {
         self.record().fn_attrs.no_free
+    }
+
+    /// Whether the declaration carries `noreturn`.
+    ///
+    /// Ports the `IntrNoReturn` property. `CallBase::doesNotReturn` reads the
+    /// same attribute off a call site, which is what
+    /// `Verifier::verifyAttachedCallBundle`'s void-return arm tests.
+    pub fn no_return(self) -> bool {
+        self.record().fn_attrs.no_return
     }
 
     pub fn memory_effects(self) -> MemoryEffects {

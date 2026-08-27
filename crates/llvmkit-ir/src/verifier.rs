@@ -26,22 +26,28 @@
 //! - Per-function attribute coherence rules (`noalias` /
 //!   `byval` / ...) are out of scope for the current verifier.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use super::cfg::FunctionCfg;
 use super::constant::{Constant, ConstantData};
+use super::eh_personalities::{
+    classify_eh_personality, color_eh_funclets, first_non_phi_kind, is_funclet_pad_kind,
+    is_scoped_eh_personality,
+};
 use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::inline_asm::InlineAsm;
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
-    ExtractElementInstData, ExtractValueInstData, FenceInstData, FnegInstData, FreezeInstData,
-    IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData, LoadInstData,
-    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VaArgInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallAttributeData, CallBrInstData,
+    CallInstData, ExtractElementInstData, ExtractValueInstData, FenceInstData, FnegInstData,
+    FreezeInstData, IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData,
+    LoadInstData, OperandBundleTag, SelectInstData, ShuffleVectorInstData, StoreInstData,
+    SwitchInstData, VaArgInstData,
 };
 use super::instruction::{InstructionKind, TerminatorKind};
 use super::instructions::ShuffleVectorInst;
-use super::intrinsics::IntrinsicNameResolution;
+use super::intrinsics::{IntrinsicId, IntrinsicNameResolution};
 use super::module::ModuleRef;
 use super::value::Value;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
@@ -82,6 +88,36 @@ struct FunctionContext<'a> {
     block_index: &'a HashMap<ValueSlot, usize>,
     /// Recomputed dominator tree for cross-block SSA dominance checks.
     dom_tree: &'a DominatorTree,
+    /// `Verifier::BlockEHFuncletColors`: the EH funclet colouring, built on
+    /// demand by the first intrinsic call that needs it and shared by the rest
+    /// of the function. Upstream clears the map per function; here it lives and
+    /// dies with this context.
+    eh_funclet_colors: &'a OnceCell<HashMap<ValueSlot, Vec<ValueSlot>>>,
+}
+
+/// The four `CallBase` fields the shared `visitCallBase` / `visitIntrinsicCall`
+/// halves read, projected out of a `call`, `invoke` or `callbr` payload — the
+/// slice of `CallBase` those routines take.
+#[derive(Clone, Copy)]
+struct CallBaseParts<'a> {
+    /// `CallBase::getCalledOperand()`.
+    callee: ValueSlot,
+    /// `CallBase::getFunctionType()`.
+    fn_ty: TypeSlot,
+    /// `CallBase::args()`.
+    args: &'a [core::cell::Cell<ValueSlot>],
+    /// `CallBase::getAttributes()` plus the operand bundles.
+    attrs: &'a CallAttributeData,
+}
+
+/// Where an instruction sits in its block: the position plus the block's
+/// instruction list. Together they are the `BasicBlock::iterator` that
+/// `Verifier::verifyMustTailCall` advances with `++BBI` to find the `bitcast`
+/// and `ret` that must follow a `musttail call`.
+#[derive(Clone, Copy)]
+struct BlockPosition<'a, 'ctx, B: ModuleBrand> {
+    index: usize,
+    instructions: &'a [InstructionView<'ctx, B>],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -884,10 +920,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             .collect();
 
         let dom_tree = DominatorTree::new(f);
+        let eh_funclet_colors = OnceCell::new();
         let cx = FunctionContext {
             predecessors: &predecessors,
             block_index: &block_index,
             dom_tree: &dom_tree,
+            eh_funclet_colors: &eh_funclet_colors,
         };
         for bb in f.basic_blocks() {
             let bb = bb.retag_termination::<Unterminated>();
@@ -1071,24 +1109,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         block_instructions: &[InstructionView<'ctx, B>],
         cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
-        // Universal invariants applied to every opcode (mirrors the
-        // shared prologue of `Verifier::visitInstruction`):
-        //   1. Self-reference -- only PHI may reference its own value.
-        //   2. In-block use-before-def -- an operand whose defining
-        //      instruction lives in the same block AND comes after
-        //      the use is malformed.
-        // The PHI exception lives where the storage payload is read
-        // (we know the kind here, and PHI's "incoming" pairs are
-        // semantically uses on predecessor edges, not at the phi).
-        self.check_self_reference_and_in_block_dom(
-            f,
-            bb,
-            inst,
-            index_in_block,
-            block_instructions,
-        )?;
-        self.check_dominates_uses(f, bb, inst, cx.dom_tree)?;
-
         // Per-opcode dispatch. Reaches into the storage payload
         // directly because every typed handle re-narrows the same
         // payload anyway; one match arm per opcode keeps the dispatch
@@ -1125,9 +1145,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             InstructionKindData::Load(l) => self.check_load(f, bb, inst, l),
             InstructionKindData::Store(s) => self.check_store(f, bb, inst, s),
             InstructionKindData::Gep(g) => self.check_gep(f, bb, inst, g),
-            InstructionKindData::Call(c) => {
-                self.check_call(f, bb, inst, c, index_in_block, block_instructions)
-            }
+            InstructionKindData::Call(c) => self.check_call(
+                f,
+                bb,
+                inst,
+                c,
+                BlockPosition {
+                    index: index_in_block,
+                    instructions: block_instructions,
+                },
+                cx,
+            ),
             InstructionKindData::Select(s) => self.check_select(f, bb, inst, s),
             InstructionKindData::Phi(p) => {
                 let reachable = cx.dom_tree.is_reachable_from_entry(bb);
@@ -1150,8 +1178,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             InstructionKindData::IndirectBr(d) => {
                 self.check_indirectbr(f, bb, inst, d, cx.block_index)
             }
-            InstructionKindData::Invoke(d) => self.check_invoke(f, bb, inst, d, cx.block_index),
-            InstructionKindData::CallBr(d) => self.check_callbr(f, bb, inst, d, cx.block_index),
+            InstructionKindData::Invoke(d) => self.check_invoke(f, bb, inst, d, cx),
+            InstructionKindData::CallBr(d) => self.check_callbr(f, bb, inst, d, cx),
             InstructionKindData::LandingPad(_) => Ok(()),
             InstructionKindData::Resume(_) => Ok(()),
             InstructionKindData::CleanupPad(_)
@@ -1162,6 +1190,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             InstructionKindData::Unreachable(_) => Ok(()),
         };
         opcode_result?;
+
+        // `visitInstruction(I)` is the **last** statement of every
+        // `Verifier::visit*` method, not a prologue, so its universal
+        // invariants are raised after the opcode's own:
+        //   1. Self-reference -- only PHI may reference its own value.
+        //   2. In-block use-before-def -- an operand whose defining
+        //      instruction lives in the same block AND comes after
+        //      the use is malformed.
+        // The PHI exception lives where the storage payload is read
+        // (we know the kind here, and PHI's "incoming" pairs are
+        // semantically uses on predecessor edges, not at the phi).
+        //
+        // The order is observable here and not upstream: `CheckFailed`
+        // accumulates, so upstream reports both a bad `deopt` bundle and the
+        // dominance failure `test/Verifier/operand-bundles.ll`'s `@f_deopt`
+        // carries, while llvmkit reports whichever comes first.
+        self.check_self_reference_and_in_block_dom(
+            f,
+            bb,
+            inst,
+            index_in_block,
+            block_instructions,
+        )?;
+        self.check_dominates_uses(f, bb, inst, cx.dom_tree)?;
+
         self.check_instruction_metadata(f, bb, inst, kind)
     }
 
@@ -2813,8 +2866,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         c: &CallInstData,
-        index_in_block: usize,
-        block_instructions: &[InstructionView<'ctx, B>],
+        position: BlockPosition<'_, 'ctx, B>,
+        cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
         // Callee must be a function value, OR a pointer of address
         // space 0 with a separately-tracked function-type (LLVM 17+
@@ -2881,7 +2934,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
         }
-        self.check_intrinsic_call(f, bb, c.callee.get(), c.fn_ty, &c.args)?;
+        let call = CallBaseParts {
+            callee: c.callee.get(),
+            fn_ty: c.fn_ty,
+            args: &c.args,
+            attrs: &c.attrs,
+        };
+        self.check_intrinsic_call(f, bb, call, cx)?;
+        self.visit_call_base_operand_bundles(f, bb, call)?;
         if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(c.callee.get()).kind
         {
             let inline_asm = InlineAsm::<B>::from_parts(c.callee.get(), self.module, callee_ty);
@@ -2900,10 +2960,437 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `void Verifier::visitCallInst(CallInst &CI) { visitCallBase(CI);
         //  if (CI.isMustTailCall()) verifyMustTailCall(CI); }`
         if matches!(c.tail_kind, crate::instr_types::TailCallKind::MustTail) {
-            self.verify_must_tail_call(f, bb, inst, c, index_in_block, block_instructions)?;
+            self.verify_must_tail_call(f, bb, inst, c, position)?;
         }
 
         Ok(())
+    }
+
+    /// `Check(C, Msg, Call)` as it expands inside a `Verifier::visit*` method:
+    /// on a false condition, record the failure and leave the routine. llvmkit
+    /// leaves it by returning the `Err`, which is why every caller writes `?`.
+    /// Named for the macro, not for any one rule — the funclet-token arm uses
+    /// it as well as the operand-bundle loop.
+    fn verifier_check(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        condition: bool,
+        rule: VerifierRule,
+        message: &str,
+    ) -> IrResult<()> {
+        if condition {
+            Ok(())
+        } else {
+            Err(self.fail(f, bb, rule, message.to_owned()))
+        }
+    }
+
+    /// Mirrors the operand-bundle half of `Verifier::visitCallBase`
+    /// (`lib/IR/Verifier.cpp`): the `for` over `Call.getOperandBundleAt(i)`
+    /// with its `if` / `else if` chain on `BU.getTagID()`, then the single
+    /// bundle `Check` that sits *after* the loop — `Direct call cannot have a
+    /// ptrauth bundle`.
+    ///
+    /// Reached from [`Self::check_call`] and [`Self::check_invoke`] and from
+    /// nowhere else, because `visitCallInst` and `visitInvokeInst` are
+    /// upstream's only two callers of `visitCallBase`. `visitCallBrInst` does
+    /// **not** call it — its non-inline-asm arm forbids operand bundles on a
+    /// `callbr` outright, a different rule that llvmkit does not carry
+    /// (`docs/divergences.md`).
+    ///
+    /// The `_` arm is the implicit `else` closing upstream's chain. What
+    /// reaches it: `"convergencectrl"` (upstream verifies that one in
+    /// `ConvergenceVerifier`, not here), `"align"`,
+    /// `"deactivation-symbol"`, and every unregistered tag, which
+    /// `LLVMContext::getOperandBundleTagID` gives an id no arm tests. None of
+    /// them carries a rule in this routine.
+    ///
+    /// Single-shot, and faithfully so: upstream's `Check` macro `return`s out
+    /// of `visitCallBase`, so at most one of these diagnostics is reported for
+    /// one call site. Across *different* call sites upstream keeps going and
+    /// llvmkit stops, which is the house difference the file header records.
+    fn visit_call_base_operand_bundles(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        call: CallBaseParts<'_>,
+    ) -> IrResult<()> {
+        let CallBaseParts { callee, attrs, .. } = call;
+        // `bool FoundDeoptBundle = false, FoundFuncletBundle = false, …;`
+        let mut found_deopt = false;
+        let mut found_funclet = false;
+        let mut found_gc_transition = false;
+        let mut found_cf_guard_target = false;
+        let mut found_preallocated = false;
+        let mut found_gc_live = false;
+        let mut found_ptrauth = false;
+        let mut found_kcfi = false;
+        let mut found_attached_call = false;
+
+        for bundle in attrs.operand_bundles_slice() {
+            let inputs: Vec<ValueSlot> = bundle.inputs().collect();
+            match bundle.tag() {
+                OperandBundleTag::Deopt => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_deopt,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple deopt operand bundles",
+                    )?;
+                    found_deopt = true;
+                }
+                OperandBundleTag::GcTransition => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_gc_transition,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple gc-transition operand bundles",
+                    )?;
+                    found_gc_transition = true;
+                }
+                OperandBundleTag::Funclet => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_funclet,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple funclet operand bundles",
+                    )?;
+                    found_funclet = true;
+                    // `Check(BU.Inputs.size() == 1, …)` followed by
+                    // `Check(isa<FuncletPadInst>(BU.Inputs.front()), …)`;
+                    // `front()` is only reached once the arity `Check` has
+                    // passed, which the slice pattern spells directly.
+                    let [input] = inputs.as_slice() else {
+                        return Err(self.fail(
+                            f,
+                            bb,
+                            VerifierRule::CallOperandBundleOperandCount,
+                            "Expected exactly one funclet bundle operand".to_owned(),
+                        ));
+                    };
+                    self.verifier_check(
+                        f,
+                        bb,
+                        self.is_funclet_pad(*input),
+                        VerifierRule::CallFuncletBundleOperand,
+                        "Funclet bundle operands should correspond to a FuncletPadInst",
+                    )?;
+                }
+                OperandBundleTag::CfGuardTarget => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_cf_guard_target,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple CFGuardTarget operand bundles",
+                    )?;
+                    found_cf_guard_target = true;
+                    self.verifier_check(
+                        f,
+                        bb,
+                        inputs.len() == 1,
+                        VerifierRule::CallOperandBundleOperandCount,
+                        "Expected exactly one cfguardtarget bundle operand",
+                    )?;
+                }
+                OperandBundleTag::PtrAuth => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_ptrauth,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple ptrauth operand bundles",
+                    )?;
+                    found_ptrauth = true;
+                    let [key, discriminator] = inputs.as_slice() else {
+                        return Err(self.fail(
+                            f,
+                            bb,
+                            VerifierRule::CallOperandBundleOperandCount,
+                            "Expected exactly two ptrauth bundle operands".to_owned(),
+                        ));
+                    };
+                    self.verifier_check(
+                        f,
+                        bb,
+                        self.is_constant_int_of_width(*key, 32),
+                        VerifierRule::CallPtrauthBundleOperand,
+                        "Ptrauth bundle key operand must be an i32 constant",
+                    )?;
+                    self.verifier_check(
+                        f,
+                        bb,
+                        self.is_integer_of_width(*discriminator, 64),
+                        VerifierRule::CallPtrauthBundleOperand,
+                        "Ptrauth bundle discriminator operand must be an i64",
+                    )?;
+                }
+                OperandBundleTag::Kcfi => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_kcfi,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple kcfi operand bundles",
+                    )?;
+                    found_kcfi = true;
+                    let [operand] = inputs.as_slice() else {
+                        return Err(self.fail(
+                            f,
+                            bb,
+                            VerifierRule::CallOperandBundleOperandCount,
+                            "Expected exactly one kcfi bundle operand".to_owned(),
+                        ));
+                    };
+                    self.verifier_check(
+                        f,
+                        bb,
+                        self.is_constant_int_of_width(*operand, 32),
+                        VerifierRule::CallKcfiBundleOperand,
+                        "Kcfi bundle operand must be an i32 constant",
+                    )?;
+                }
+                OperandBundleTag::Preallocated => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_preallocated,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple preallocated operand bundles",
+                    )?;
+                    found_preallocated = true;
+                    let [input] = inputs.as_slice() else {
+                        return Err(self.fail(
+                            f,
+                            bb,
+                            VerifierRule::CallOperandBundleOperandCount,
+                            "Expected exactly one preallocated bundle operand".to_owned(),
+                        ));
+                    };
+                    // `auto Input = dyn_cast<IntrinsicInst>(BU.Inputs.front());
+                    //  Check(Input && Input->getIntrinsicID() ==
+                    //        Intrinsic::call_preallocated_setup, …)`
+                    self.verifier_check(
+                        f,
+                        bb,
+                        self.is_intrinsic_call_to(*input, IntrinsicId::CALL_PREALLOCATED_SETUP),
+                        VerifierRule::CallPreallocatedBundleOperand,
+                        "\"preallocated\" argument must be a token from \
+                         llvm.call.preallocated.setup",
+                    )?;
+                }
+                OperandBundleTag::GcLive => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_gc_live,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple gc-live operand bundles",
+                    )?;
+                    found_gc_live = true;
+                }
+                OperandBundleTag::ClangArcAttachedCall => {
+                    self.verifier_check(
+                        f,
+                        bb,
+                        !found_attached_call,
+                        VerifierRule::CallDuplicateOperandBundle,
+                        "Multiple \"clang.arc.attachedcall\" operand bundles",
+                    )?;
+                    found_attached_call = true;
+                    self.verify_attached_call_bundle(f, bb, call, &inputs)?;
+                }
+                OperandBundleTag::ConvergenceCtrl
+                | OperandBundleTag::Align
+                | OperandBundleTag::DeactivationSymbol
+                | OperandBundleTag::Custom(_) => {}
+            }
+        }
+
+        // `Check(!(Call.getCalledFunction() && FoundPtrauthBundle),
+        //        "Direct call cannot have a ptrauth bundle", Call);`
+        // `CallBase::getCalledFunction` is a plain `dyn_cast_or_null<Function>`
+        // on the callee operand — no `stripPointerCasts` — so "direct" here is
+        // exactly "the callee value is a function".
+        let direct_call = matches!(
+            self.module.context().value_data(callee).kind,
+            ValueKindData::Function(_)
+        );
+        self.verifier_check(
+            f,
+            bb,
+            !(direct_call && found_ptrauth),
+            VerifierRule::CallDirectPtrauthBundle,
+            "Direct call cannot have a ptrauth bundle",
+        )
+    }
+
+    /// Mirrors `Verifier::verifyAttachedCallBundle` (`lib/IR/Verifier.cpp`),
+    /// `Check` for `Check` in its own order.
+    fn verify_attached_call_bundle(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        call: CallBaseParts<'_>,
+        inputs: &[ValueSlot],
+    ) -> IrResult<()> {
+        let CallBaseParts {
+            callee,
+            fn_ty,
+            attrs,
+            ..
+        } = call;
+        // `FunctionType *FTy = Call.getFunctionType();`
+        let fn_ty_data = self.module.context().type_data(fn_ty);
+        let Some((return_ty, _, _)) = fn_ty_data.as_function() else {
+            // A call's `fn_ty` is a `FunctionType` by construction upstream;
+            // `check_call` has already rejected anything else, and `check_invoke`
+            // reports rather than panics for the same reason.
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallNonFunction,
+                format!(
+                    "call fn_ty {} is not a function type",
+                    self.type_label(fn_ty)
+                ),
+            ));
+        };
+        let return_ty_data = self.module.context().type_data(return_ty);
+
+        // `Check((FTy->getReturnType()->isPointerTy() ||
+        //         (Call.doesNotReturn() && FTy->getReturnType()->isVoidTy())), …)`
+        //
+        // `CallBase::doesNotReturn()` is `hasFnAttr(Attribute::NoReturn)`,
+        // already ported as `call_site_has_fn_attr`. Its first argument is an
+        // anchor used only to recover the module, so the callee value serves.
+        let callee_data = self.module.context().value_data(callee);
+        let anchor = Value::<B>::from_parts(callee, self.module, callee_data.ty);
+        let does_not_return =
+            crate::speculation::call_site_has_fn_attr(anchor, callee, attrs, AttrKind::NoReturn);
+        self.verifier_check(
+            f,
+            bb,
+            matches!(return_ty_data, TypeData::Pointer { .. })
+                || (does_not_return && matches!(return_ty_data, TypeData::Void)),
+            VerifierRule::CallAttachedCallBundle,
+            "a call with operand bundle \"clang.arc.attachedcall\" must call a \
+             function returning a pointer or a non-returning function that has a \
+             void return type",
+        )?;
+
+        // `Check(BU.Inputs.size() == 1 && isa<Function>(BU.Inputs.front()), …)`
+        // and the `cast<Function>` immediately after it, which is why the
+        // function-ness test and the binding are one pattern here.
+        let [input] = inputs else {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallAttachedCallBundle,
+                "operand bundle \"clang.arc.attachedcall\" requires one function as \
+                 an argument"
+                    .to_owned(),
+            ));
+        };
+        let input_data = self.module.context().value_data(*input);
+        let ValueKindData::Function(input_function) = &input_data.kind else {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallAttachedCallBundle,
+                "operand bundle \"clang.arc.attachedcall\" requires one function as \
+                 an argument"
+                    .to_owned(),
+            ));
+        };
+
+        // `Intrinsic::ID IID = Fn->getIntrinsicID(); if (IID) … else …`
+        let intrinsic_id = crate::intrinsics::descriptor_for_callee(Value::<B>::from_parts(
+            *input,
+            self.module,
+            input_data.ty,
+        ))
+        .map(|descriptor| descriptor.id());
+        match intrinsic_id {
+            Some(id) => self.verifier_check(
+                f,
+                bb,
+                id == IntrinsicId::OBJC_RETAINAUTORELEASEDRETURNVALUE
+                    || id == IntrinsicId::OBJC_CLAIMAUTORELEASEDRETURNVALUE
+                    || id == IntrinsicId::OBJC_UNSAFECLAIMAUTORELEASEDRETURNVALUE,
+                VerifierRule::CallAttachedCallBundle,
+                "invalid function argument",
+            ),
+            None => {
+                let name = input_function.name.as_str();
+                self.verifier_check(
+                    f,
+                    bb,
+                    name == "objc_retainAutoreleasedReturnValue"
+                        || name == "objc_claimAutoreleasedReturnValue"
+                        || name == "objc_unsafeClaimAutoreleasedReturnValue",
+                    VerifierRule::CallAttachedCallBundle,
+                    "invalid function argument",
+                )
+            }
+        }
+    }
+
+    /// `isa<FuncletPadInst>(V)` — a `catchpad` or a `cleanuppad`, the two
+    /// `FuncletPadInst` subclasses.
+    fn is_funclet_pad(&self, slot: ValueSlot) -> bool {
+        let ValueKindData::Instruction(instruction) = &self.module.context().value_data(slot).kind
+        else {
+            return false;
+        };
+        matches!(
+            instruction.kind,
+            InstructionKindData::CleanupPad(_) | InstructionKindData::CatchPad(_)
+        )
+    }
+
+    /// `V->getType()->isIntegerTy(bits)`.
+    fn is_integer_of_width(&self, slot: ValueSlot, bits: u32) -> bool {
+        self.module
+            .context()
+            .type_data(self.value_type(slot))
+            .as_integer()
+            == Some(bits)
+    }
+
+    /// `isa<ConstantInt>(V) && V->getType()->isIntegerTy(bits)`.
+    fn is_constant_int_of_width(&self, slot: ValueSlot, bits: u32) -> bool {
+        matches!(
+            self.module.context().value_data(slot).kind,
+            ValueKindData::Constant(ConstantData::Int(_))
+        ) && self.is_integer_of_width(slot, bits)
+    }
+
+    /// `dyn_cast<IntrinsicInst>(V)` followed by `getIntrinsicID() == id`.
+    /// `IntrinsicInst` derives from `CallInst`, so an `invoke` of the same
+    /// intrinsic is deliberately not one.
+    fn is_intrinsic_call_to(&self, slot: ValueSlot, id: IntrinsicId) -> bool {
+        let ValueKindData::Instruction(instruction) = &self.module.context().value_data(slot).kind
+        else {
+            return false;
+        };
+        let InstructionKindData::Call(call) = &instruction.kind else {
+            return false;
+        };
+        let callee_data = self.module.context().value_data(call.callee.get());
+        let ValueKindData::Function(_) = &callee_data.kind else {
+            return false;
+        };
+        crate::intrinsics::descriptor_for_callee(Value::<B>::from_parts(
+            call.callee.get(),
+            self.module,
+            callee_data.ty,
+        ))
+        .is_some_and(|descriptor| descriptor.id() == id)
     }
 
     /// Mirrors `Verifier::verifyMustTailCall`, `Check` for `Check` in its own
@@ -2911,8 +3398,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// the intrinsic exemption on the prototype comparison.
     ///
     /// One house difference, shared with every rule in this file: upstream's
-    /// `Check` macro records a failure and carries on, so one bad `musttail`
-    /// can produce several diagnostics; here the first failure is the `Err`.
+    /// `Check` macro leaves `verifyMustTailCall` on the first failure just as
+    /// this does, but its `CheckFailed` only *records* the message and the
+    /// `Verifier` carries on to the next instruction, so one bad module can
+    /// produce several diagnostics; here the first failure ends the run.
     ///
     /// Driven by `test/Verifier/musttail-invalid.ll`,
     /// `test/Verifier/tailcc-musttail.ll`,
@@ -2926,9 +3415,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         c: &CallInstData,
-        index_in_block: usize,
-        block_instructions: &[InstructionView<'ctx, B>],
+        position: BlockPosition<'_, 'ctx, B>,
     ) -> IrResult<()> {
+        let BlockPosition {
+            index: index_in_block,
+            instructions: block_instructions,
+        } = position;
         // `Check(!CI.isInlineAsm(), "cannot use musttail call with inline
         //  asm", &CI);`
         if matches!(
@@ -3244,10 +3736,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        callee_id: ValueSlot,
-        fn_ty: TypeSlot,
-        args: &[core::cell::Cell<ValueSlot>],
+        call: CallBaseParts<'_>,
+        cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
+        let CallBaseParts {
+            callee: callee_id,
+            fn_ty,
+            args,
+            attrs,
+        } = call;
         let callee_data = self.module.context().value_data(callee_id);
         let ValueKindData::Function(_) = &callee_data.kind else {
             return Ok(());
@@ -3274,6 +3771,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 "intrinsic signature mismatch".to_string(),
             ));
         }
+        let descriptor_id = descriptor.id();
         for index in descriptor.immarg_operand_indices() {
             let Some(arg) = args.get(index) else {
                 return Err(self.fail(
@@ -3294,6 +3792,86 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     "immarg operand has non-immediate parameter".to_string(),
                 ));
             }
+        }
+        self.verify_funclet_token(f, bb, descriptor_id, attrs, cx)
+    }
+
+    /// Mirrors the tail of `Verifier::visitIntrinsicCall`
+    /// (`lib/IR/Verifier.cpp`), the block under "Verify that there aren't any
+    /// unmediated control transfers between funclets": an intrinsic that may
+    /// lower to a real call, sitting inside an EH funclet of a scoped-EH
+    /// function, must name the funclet it belongs to.
+    ///
+    /// Runs after the per-intrinsic `switch`, which is where upstream puts it.
+    ///
+    /// **One hardening, at the point upstream asserts.** Upstream reads the
+    /// colour vector with `BlockEHFuncletColors.find(CallBB)->second` behind
+    /// `assert(CV.size() > 0 && "Uncolored block")`. `colorEHFunclets` walks
+    /// forward from the entry block, so a block unreachable from entry has no
+    /// entry at all and that lookup is a dangling dereference in a release
+    /// build. llvmkit reads a missing entry as "not in a funclet" and raises
+    /// nothing, which is the answer the colouring would have given had the
+    /// block been reachable through no funclet.
+    fn verify_funclet_token(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        id: IntrinsicId,
+        attrs: &CallAttributeData,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        // `if (IntrinsicInst::mayLowerToFunctionCall(ID)) {`
+        if !crate::intrinsic_inst::may_lower_to_function_call(id) {
+            return Ok(());
+        }
+        // `Function *F = Call.getParent()->getParent();
+        //  if (F->hasPersonalityFn() &&
+        //      isScopedEHPersonality(classifyEHPersonality(F->getPersonalityFn())))`
+        let Some(personality) = f.personality_fn() else {
+            return Ok(());
+        };
+        if !is_scoped_eh_personality(classify_eh_personality(personality.as_erased())) {
+            return Ok(());
+        }
+
+        // `if (BlockEHFuncletColors.empty())
+        //    BlockEHFuncletColors = colorEHFunclets(*F);`
+        // The `OnceCell` is `FunctionContext`'s, so it is built at most once
+        // per function and dropped with it — upstream clears the map in
+        // `visitFunction` for the same reason.
+        let colors = cx.eh_funclet_colors.get_or_init(|| color_eh_funclets(f));
+
+        // `bool InEHFunclet = false;
+        //  for (BasicBlock *ColorFirstBB : CV)
+        //    if (auto It = ColorFirstBB->getFirstNonPHIIt(); It != ColorFirstBB->end())
+        //      if (isa_and_nonnull<FuncletPadInst>(&*It)) InEHFunclet = true;`
+        let mut in_eh_funclet = false;
+        let anchor = f.as_erased();
+        for color_first_bb in colors.get(&bb.slot()).map_or(&[][..], Vec::as_slice) {
+            if first_non_phi_kind(anchor, *color_first_bb).is_some_and(is_funclet_pad_kind) {
+                in_eh_funclet = true;
+            }
+        }
+
+        // `bool HasToken = false;
+        //  for (…) if (…getTagID() == LLVMContext::OB_funclet) HasToken = true;`
+        let mut has_token = false;
+        for bundle in attrs.operand_bundles_slice() {
+            if matches!(bundle.tag(), OperandBundleTag::Funclet) {
+                has_token = true;
+            }
+        }
+
+        // `if (InEHFunclet)
+        //    Check(HasToken, "Missing funclet token on intrinsic call", &Call);`
+        if in_eh_funclet {
+            self.verifier_check(
+                f,
+                bb,
+                has_token,
+                VerifierRule::MissingFuncletToken,
+                "Missing funclet token on intrinsic call",
+            )?;
         }
         Ok(())
     }
@@ -3631,8 +4209,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
         d: &InvokeInstData,
-        block_index: &HashMap<ValueSlot, usize>,
+        cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
+        let block_index = cx.block_index;
         if !block_index.contains_key(&d.normal_dest.get())
             || !block_index.contains_key(&d.unwind_dest.get())
         {
@@ -3643,7 +4222,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 "invoke destination is not a basic block of the parent function".into(),
             ));
         }
-        self.check_intrinsic_call(f, bb, d.callee.get(), d.fn_ty, &d.args)?;
+        let call = CallBaseParts {
+            callee: d.callee.get(),
+            fn_ty: d.fn_ty,
+            args: &d.args,
+            attrs: &d.attrs,
+        };
+        self.check_intrinsic_call(f, bb, call, cx)?;
+        self.visit_call_base_operand_bundles(f, bb, call)?;
         Ok(())
     }
 
@@ -3655,8 +4241,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
         d: &CallBrInstData,
-        block_index: &HashMap<ValueSlot, usize>,
+        cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
+        let block_index = cx.block_index;
         if !block_index.contains_key(&d.default_dest.get()) {
             return Err(self.fail(
                 f,
@@ -3676,7 +4263,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
         }
-        self.check_intrinsic_call(f, bb, d.callee.get(), d.fn_ty, &d.args)?;
+        self.check_intrinsic_call(
+            f,
+            bb,
+            CallBaseParts {
+                callee: d.callee.get(),
+                fn_ty: d.fn_ty,
+                args: &d.args,
+                attrs: &d.attrs,
+            },
+            cx,
+        )?;
         // `Verifier::verifyInlineAsmCall`'s `callbr` arm: one label constraint
         // per indirect destination. The ordinary-call twin lives in
         // `check_call`; upstream runs both from the same helper, and both are

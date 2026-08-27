@@ -830,22 +830,89 @@ Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
 
-### 125. `Verifier::visitCallBase`'s operand-bundle loop is unported, so no bundle rule is enforced
+### 128. `Verifier::visitCallBrInst`'s non-inline-asm arm is unported, so a `callbr` may carry operand bundles and target any function
 
-*verifier — call family* — crates/llvmkit-ir/src/verifier.rs (`check_call`, `check_invoke`, `check_callbr`)
+*verifier — call family* — crates/llvmkit-ir/src/verifier.rs (`check_callbr`)
 
-Found 2026-08-21 while porting `LLParser::parseCall`'s construction tail: the
-change made operand bundles reach an *indirect* call for the first time, and
-two vendored fixtures exist whose whole point is the rules that then do not
-fire. Disclosed until now only in those tests' rustdoc.
+Found 2026-08-27 while porting `Verifier::visitCallBase`'s operand-bundle loop
+(former entry 125, closed by that commit): deciding where the loop runs meant
+reading `visitCallBrInst`, which turns out **not** to call `visitCallBase` at
+all.
 
-- **LLVM:** `Verifier::visitCallBase` walks `Call.getOperandBundleAt(i)` and switches on the tag, rejecting a duplicate of each at-most-once tag (`deopt`, `gc-transition`, `funclet`, `cfguardtarget`, `ptrauth`, `kcfi`, `preallocated`, `gc-live`, `clang.arc.attachedcall`) and checking each one's operand count and operand types; after the loop it rejects a `ptrauth` bundle on a direct call.
-- **llvmkit:** the loop has no counterpart. `check_call`, `check_invoke` and `check_callbr` never read `c.attrs.operand_bundles_slice()` — **no** rule from that loop is enforced, in any category. Read that as a blanket statement rather than a list to check against: it stays true as upstream grows the switch, which a list would not.
-- **Cost, exactly:** the two fixtures vendored under `tests/fixtures/upstream/LLParser-parseCall/` for the erased-callee `call` work — `test/Verifier/kcfi-operand-bundles.ll` and `test/Verifier/ptrauth-operand-bundles.ll` — are `RUN: not opt -passes=verify`, so their verdict half cannot be ported. Between them their `CHECK:` lines pin six diagnostics (`grep -h '^; CHECK: ' <the two fixtures> | sed 's/^; CHECK: //' | sort -u`): `Direct call cannot have a ptrauth bundle`, `Kcfi bundle operand must be an i32 constant`, `Multiple kcfi operand bundles`, `Multiple ptrauth operand bundles`, `Ptrauth bundle discriminator operand must be an i64`, `Ptrauth bundle key operand must be an i32 constant`. llvmkit's `parser_calls.rs` tests over those files therefore assert the `CHECK-NEXT` instruction text only — which is `AsmWriter` output, and is what the erased-callee fix made correct.
-- **Why:** the verifier's call chapter grew from `Verifier::visitCallBase`'s type and attribute checks; operand bundles were a *parser* and *printer* feature until this change and never had a verifier arm at all.
-- **Fix:** port the loop whole — it is one `for` over the bundle list with one `if`/`else if` chain, and `CallAttributeData::operand_bundles_slice()` already carries the data on `call`, `invoke` and `callbr`. `verifyAttachedCallBundle`, which the `clang.arc.attachedcall` arm calls, is a second routine and can follow. The `funclet` arm's `isa<FuncletPadInst>` check overlaps entry 112, which is about `visitIntrinsicCall`'s *missing*-funclet rule rather than a malformed one; they are separate arms and neither subsumes the other.
+- **LLVM:** `Verifier::visitCallBrInst` splits on `CBI.isInlineAsm()`. The
+  non-asm arm raises four things llvmkit does not: `Callbr: indirect function /
+  invalid signature` (entry **27**, which is about the *layer* llvmkit raises it
+  at), `Callbr for intrinsics currently doesn't support operand bundles`, a
+  `switch` on the intrinsic id whose only arm is `Intrinsic::amdgcn_kill`
+  (`Callbr amdgcn_kill only supports one indirect dest`, `Callbr amdgcn_kill
+  indirect dest needs to be unreachable`), and a `default:` that fails outright
+  with `Callbr currently only supports asm-goto and selected intrinsics`. The
+  inline-asm arm adds `Unwinding from Callbr is not allowed`.
+- **llvmkit:** `check_callbr` ports the destination-membership checks and
+  `verifyInlineAsmCall`'s label-count arm. None of the five above exists, so
+  `callbr void @f() [ "deopt"() ] to label %c []` and a `callbr` to any ordinary
+  function verify clean here and are rejected upstream.
+- **Why:** `visitCallBrInst` was never ported as a routine; `check_callbr` grew
+  from the two checks the `callbr` builder needed. The operand-bundle half in
+  particular was invisible until entry 125's port had to establish that
+  `visitCallBase` — and therefore the bundle loop — never runs for a `callbr`:
+  `grep -n "visitCallBase(" lib/IR/Verifier.cpp` prints the declaration, the
+  definition, and two call sites, those two being `visitCallInst` and
+  `visitInvokeInst`.
+- **Fix:** port `visitCallBrInst` whole, both arms, in upstream's order. The
+  `default:` arm is the reason this is not a one-line addition — it rejects every
+  non-asm `callbr` that is not `llvm.amdgcn.kill`, which is a much wider verdict
+  change than the bundle prohibition alone, and it wants checking against the
+  corpus in the same commit. Pair it with entry **27**, which moves the
+  indirect-callee rejection from the parser into this same routine.
 
-**Live, self-checking:** `crates/llvmkit-asmparser/tests/parser_calls.rs::call_operand_bundle_rules_are_not_diagnosed` parses both vendored fixtures, calls `Module::verify_borrowed` and asserts `is_ok()` on each. It is green in the gate, so this entry's "llvmkit accepts them" half is pinned by a test rather than quoted from a probe, and it fails the moment any of the six rules lands.
+### 129. `Verifier`'s three funclet-nesting routines are unported, so an ill-nested EH graph verifies
+
+*verifier — EH* — crates/llvmkit-ir/src/verifier.rs (the `CleanupPad | CatchPad | CatchReturn | CleanupReturn | CatchSwitch => Ok(())` arm of `visit_instruction`)
+
+Found 2026-08-27 while closing the `Missing funclet token on intrinsic call`
+gap (former entry 112). **That entry's `Fix` line named these three routines as
+the "pad colouring" the funclet-token rule depends on. They are not:** `Verifier::visitIntrinsicCall`'s funclet arm reads
+`BlockEHFuncletColors`, which is written only by `colorEHFunclets`
+(`lib/IR/EHPersonalities.cpp`) — `grep -n "BlockEHFuncletColors"
+lib/IR/Verifier.cpp` prints the field declaration, the per-function `clear()`,
+and three lines inside that arm, and nothing else. The three routines below
+write a *different* map,
+`SiblingFuncletInfo`. Closing 112 therefore did not touch them, and this entry
+exists so the gap does not vanish with it.
+
+- **LLVM:** `Verifier::visitFuncletPadInst` walks a `catchpad` / `cleanuppad`'s
+  users to prove every unwind edge leaving it agrees on a destination
+  (`FuncletPadInst must not be nested within itself`, `Bogus funclet pad use`,
+  `Unwind edges out of a funclet pad must have the same unwind dest`, `Unwind
+  edges out of a catch must have the same unwind dest as the parent
+  catchswitch`), recording cleanup siblings in `SiblingFuncletInfo`.
+  `Verifier::visitEHPadPredecessors` checks every predecessor edge into an EH pad
+  (`EH pad cannot be in entry block.`, `Block containing LandingPadInst must be
+  jumped to only by the unwind edge of an invoke.`, `Block containg CatchPadInst
+  must be jumped to only by its catchswitch.`, `Catchswitch cannot unwind to one
+  of its catchpads`, `EH pad must be jumped to via an unwind edge`, `A cleanupret
+  must exit its cleanup`, `EH pad cannot handle exceptions raised within it`, `A
+  single unwind edge may only enter one EH pad`, `EH pad jumps through a cycle of
+  pads`, `Parent pad must be catchpad/cleanuppad/catchswitch`).
+  `Verifier::verifySiblingFuncletUnwinds` then walks `SiblingFuncletInfo` for
+  cycles (`EH pads can't handle each other's exceptions`).
+- **llvmkit:** every funclet-pad opcode answers `Ok(())` from `visit_instruction`'s
+  `CleanupPad | CatchPad | CatchReturn | CleanupReturn | CatchSwitch` arm.
+  `grep -rn "EH pads can't handle\|Bogus funclet pad use\|EH pad cannot be in entry
+  block\|must exit its cleanup" --include=*.rs crates/` returns nothing, so no
+  other file carries them either.
+- **Why:** the funclet opcodes reached the model and the printer before the
+  verifier had an EH chapter. The commit that closed the `Missing funclet token
+  on intrinsic call` gap (former entry 112) added that one rule — the one its
+  fixture pinned — and nothing else.
+- **Fix:** port the three as three routines, in that order, with
+  `SiblingFuncletInfo` as per-function verifier state the way
+  `FunctionContext::eh_funclet_colors` now carries `BlockEHFuncletColors`.
+  `getParentPad` and `getSuccPad` are the two file-local helpers they share and
+  want porting first. Fixtures, from `ls test/Verifier | grep -iE
+  'catch|cleanup|pad|eh'`: `test/Verifier/invalid-eh.ll` and
+  `test/Verifier/invalid-cleanuppad-chain.ll`.
 
 ### 21. An inline-asm call's per-operand `elementtype` rules are not verified
 
@@ -938,29 +1005,6 @@ llvmkit-only remainder as attribute keywords.
   `NON_UPSTREAM_KEYWORDS`, which is the only permitted way to spell an
   llvmkit-only keyword; `the_extension_list_has_no_stale_entries` retires the
   entry automatically if a later LLVM adopts the spelling.
-
-### 112. No funclet-token rule: an intrinsic call inside an EH funclet verifies
-
-*verifier* — crates/llvmkit-ir/src/verifier.rs (the funclet-pad blanket arm at the `CleanupPad | CatchPad | CatchReturn | CleanupReturn | CatchSwitch => Ok(())` match; `check_intrinsic_call`)
-
-Found 2026-08-20 while porting `test/Verifier/operand-bundles-wineh.ll` for the
-`catchswitch` work (0.0.4 funclet parity). Disclosed until now only in that
-test's rustdoc and in its `mirror (partial)` row in `UPSTREAM.md`.
-
-- **LLVM:** `Verifier::visitIntrinsicCall` rejects an intrinsic call that sits inside an EH funclet and carries no `"funclet"` operand bundle, with `Missing funclet token on intrinsic call`. The fixture is `test/Verifier/operand-bundles-wineh.ll`: `RUN: not opt -passes=verify`, and that diagnostic is its one `CHECK`.
-- **llvmkit:** accepts it. Every funclet-pad opcode answers `Ok(())` unconditionally, and `check_intrinsic_call` inspects only signature identity and `immarg` positions — nothing walks a call's enclosing funclet or its operand bundles. Probe: `%2 = call ptr @llvm.objc.retain(ptr null)` inside a `catchpad` funclet verifies clean.
-- **Why:** not recorded. The funclet opcodes reached the model and the printer before the verifier had an EH chapter at all.
-- **Fix:** port `Verifier::visitIntrinsicCall`'s funclet arm together with the pad colouring it depends on — `Verifier::visitFuncletPadInst`, `Verifier::visitEHPadPredecessors` and `Verifier::verifySiblingFuncletUnwinds`. Until then `parser_eh_funclet.rs::catchswitch_numbered_result` stays `mirror (partial)` and asserts the parse half only.
-
-<details><summary>Verification evidence (verified 2026-08-20; re-anchored to a live test 2026-08-20, fix round 4)</summary>
-
-**Live, self-checking:** `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::wineh_missing_funclet_token_is_not_diagnosed` parses the vendored `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/operand-bundles-wineh.ll` — byte-identical to upstream — calls `Module::verify_borrowed` and asserts `is_ok()`. It is green in the gate, so this entry's `verify_borrowed() == Ok(())` half is now pinned by a test rather than quoted from a probe, and it fails the moment the funclet-token rule lands.
-
-**How it was first found, and what that evidence was worth:** a temporary integration test (`crates/llvmkit-asmparser/tests/zz_probe_verify.rs`) printed `PROBE-RESULT: operand-bundles-wineh VERIFIES (upstream rejects)` and was deleted before the commit — so between then and fix round 4 this entry cited an artifact that no longer existed. The same probe reported that the sibling positive fixture `test/Verifier/preallocated-valid.ll` also verifies; that half *is* still live, through `parser_eh_funclet.rs::catchswitch_in_preallocated_teardown`, which runs `verify_borrowed` on it.
-
-**Upstream side, read at 22.1.4:** the fixture's one `CHECK` directive is `; CHECK: Missing funclet token on intrinsic call`, and it is matched against `not opt -passes=verify` output — so what it pins is the Verifier diagnostic, nothing about the printer.
-
-</details>
 
 ## Different diagnostic text
 
@@ -1102,7 +1146,8 @@ crates/llvmkit-asmparser/src/ll_parser.rs — :1765-1809 `global_forward_ref` mi
 - **LLVM:** Upstream auto-declares `llvm.`-prefixed leftovers from call-site function types in `validateEndOfModule`, and the `intrinsic can only be used as callee` rejection happens there, in that ordered sequence.
 - **llvmkit:** The message is emitted at the point of reference (two sites), so a construct upstream would only reject at end of module is rejected earlier and the end-of-module error ordering differs.
 - **Why:** Recorded as a W2 carried item ("`intrinsic can only be used as callee` still fires at reference time"). Error *ordering* in `validateEndOfModule` is itself part of parity, which is why it routes to W13.
-- **Fix:** Fold into W13's `validateEndOfModule` 1:1 sequence: defer the check to the intrinsic auto-declaration step so it fires in upstream's order relative to blockaddress leftovers, dso_local_equivalent resolution, undefined types/comdats and `@` leftovers.
+- **Fix:** Fold into W13's `validateEndOfModule` 1:1 sequence: defer the check to the intrinsic auto-declaration step so it fires in upstream's order relative to blockaddress leftovers, dso_local_equivalent resolution, undefined types/comdats and `@` leftovers. The verifier half has to land with it: upstream's `Verifier::visitInstruction` exempts an `OB_clang_arc_attachedcall` bundle operand from `Cannot take the address of an intrinsic!` precisely so `verifyAttachedCallBundle` can judge it, so deferring the parse guard without that exemption trades a rejects-valid for an accepts-invalid.
+- **Blocks a fixture, named here so the cost is visible:** `test/Verifier/operand-bundles.ll`'s `@f_clang_arc_attachedcall` writes `ptr @llvm.objc.retainAutoreleasedReturnValue` and `ptr @llvm.assume` as bundle operands. Seven of its thirteen calls therefore stop at this parse error, and `crates/llvmkit-asmparser/tests/parser_calls.rs::upstream_verifier_operand_bundles_fixture_messages_match` asserts *that* for them rather than the diagnostic upstream prints — so it turns red the day this entry closes, which is when the remaining `verifyAttachedCallBundle` coverage has to land.
 - **Correction from verification:** Accurate, and understated. Two corrections/refinements: (1) The ordering point is right but the mechanism is stronger than "rejected earlier": llvmkit has NO end-of-module `llvm.*` handling at all. `Parser::parse_module`'s end-of-module sequence (crates/llvmkit-asmparser/src/ll_parser.rs:1457-1480) contains no counterpart to upstream's `ForwardRefVals` auto-declaration loop; the guard was relocated wholesale into the two reference-time sites. So the rejection does not merely fire earlier within `validateEndOfModule` — it fires during `parseTopLevelEntities`, ahead of every end-of-module check. (2) The claim misses a second, larger consequence: because the guard is the *first* statement in each function, running before the `self.module.global(&name)` / `function_dyn(&name)` lookups, llvmkit also rejects address-taken references to an intrinsic that IS declared in the module. Upstream's `getGlobalVal` resolves those to the existing `Function` with no `ForwardRefVals` entry, so LLParser accepts them; the rejection comes from the Verifier with a different message, "Invalid user of intrinsic instruction!" (Verifier.cpp:3293, fixture test/Verifier/intrinsic-addr-taken.ll). llvmkit turns a verifier diagnostic into a parse error and renames it. Relatedly, llvmkit's own verifier (crates/llvmkit-ir/src/verifier.rs:965) emits "intrinsic can only be used as callee" where upstream emits "Invalid user of intrinsic instruction!" — a third site the claim does not list.
 
 <details><summary>Verification evidence — three probes re-run 2026-08-21, all still as recorded</summary>
@@ -1151,7 +1196,7 @@ llvmkit source, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_p
 - **LLVM:** `Verifier`'s `Check(cond, "…", V)` macro hands its literal to `CheckFailed`, which prints that string verbatim ahead of the offending value. The literal *is* the diagnostic: `llvm/test/Verifier/*.ll` `CHECK` lines match it, so it is contractual the same way a parser diagnostic is.
 - **llvmkit:** a verifier failure is `IrError::VerifierFailure { rule, function, block, message }`. `rule` is a `VerifierRule` whose `Display` is a house label written in the enum's own register (lower-case, no trailing `!`, named after the invariant rather than the sentence), and `message` is a `format!` written at the check site, usually naming the offending type or operand index. Neither reproduces upstream's literal. Four pairs from `check_gep` alone, upstream first: `GEP base pointer is not a vector or a vector of pointers` / `getelementptr base operand has type {} (expected pointer)`; `GEP into unsized type!` / `getelementptr source element type {} is unsized`; `GEP indexes must be integers` / `getelementptr index #{slot} has type {} (expected integer)`; `Invalid indices for GEP pointer type!` / `getelementptr indices do not index into source type {}`. The newer GEP rules were written to the same convention, so the divergence is the convention, not any one rule.
 - **Why:** The rule enum, not the string, is llvmkit's diagnostic API — a caller matches `VerifierRule::…` and the text is for humans — so the strings were written for that surface rather than copied. Nothing enforces the convention and nothing measures the drift *across* the verifier: there is no `test/Verifier` counterpart to the manifest `parser_corpus.rs` drives, so the wording is compared against `Verifier.cpp` only where a hand-written test happens to do it.
-- **The `!range` rules are a counterexample, and they answer the register question.** (The `verifyMustTailCall` rules are another, added later and written the same way; check the rule you care about rather than assuming either side of this entry covers it.) `crates/llvmkit-asmparser/tests/parser_metadata.rs::upstream_invalid_range_metadata_fixture_messages_match` `include_str!`s the vendored `tests/fixtures/upstream/Verifier/range-1.ll`, cuts out each of its functions with its `!range` node, runs `Module::verify_borrowed` over each, and `assert_eq!`s the result against upstream's own `Check` literal for that case (`Ranges are only for loads, calls and invokes!`, `It should have at least one range!`, `Intervals are overlapping`, …), read off `IrError::VerifierFailure`'s **`message`** field. So the divergence is not universal, a `test/Verifier` fixture *can* be ported by message text where the rule already carries upstream's string, and where the literal lives is settled: in `message`, not in `rule`'s `Display`.
+- **The `!range` rules are a counterexample, and they answer the register question.** (The `verifyMustTailCall` rules are another, added later and written the same way, as are `visitCallBase`'s operand-bundle rules, `verifyAttachedCallBundle`'s and `Missing funclet token on intrinsic call`; check the rule you care about rather than assuming either side of this entry covers it.) `crates/llvmkit-asmparser/tests/parser_metadata.rs::upstream_invalid_range_metadata_fixture_messages_match` `include_str!`s the vendored `tests/fixtures/upstream/Verifier/range-1.ll`, cuts out each of its functions with its `!range` node, runs `Module::verify_borrowed` over each, and `assert_eq!`s the result against upstream's own `Check` literal for that case (`Ranges are only for loads, calls and invokes!`, `It should have at least one range!`, `Intervals are overlapping`, …), read off `IrError::VerifierFailure`'s **`message`** field. So the divergence is not universal, a `test/Verifier` fixture *can* be ported by message text where the rule already carries upstream's string, and where the literal lives is settled: in `message`, not in `rule`'s `Display`.
 - **Consequence:** the accept/reject verdict is unaffected — this is text only. But porting a `test/Verifier/*.ll` fixture by its `CHECK` lines works only for a rule already written to upstream's literal; elsewhere the `CHECK` line will not match and the port has to assert the `VerifierRule` instead and say so.
 - **Fix:** One sweep, not a per-rule patch: give every `VerifierRule` its upstream `Check` literal in `message` (the enum doc comments already name most of them), keep the `format!` detail as a suffix rather than a replacement, and then drive the `test/Verifier` fixtures by text the way `parser_corpus.rs` drives `test/Assembler` — which is also the gate whose absence let this entry state a negative that one in-tree test already falsified.
 - **Not covered here:** the parser's diagnostics, which *are* upstream's literals and are pinned as such; and the individual entries in this section that record a *parser* message differing from upstream's. `VerifierRule::PhiEmptyInReachableBlock` is also out of scope, but for a reason this entry is the wrong place to state — entry 8 works out when it pre-empts an upstream `Check` and when there is none to pre-empt. Read it there rather than trusting a summary here.

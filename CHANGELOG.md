@@ -19,6 +19,51 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — the verifier's operand-bundle and funclet-token rules
+
+- **`Verifier::visitCallBase`'s operand-bundle loop is ported whole**, one `for`
+  over the bundle list with one `if`/`else if` chain, plus the
+  `Direct call cannot have a ptrauth bundle` `Check` that sits after it and the
+  second routine the `"clang.arc.attachedcall"` arm calls,
+  `Verifier::verifyAttachedCallBundle`. Before this, **no** rule from that loop
+  was enforced on any call: a duplicate `"deopt"`, a `"ptrauth"` bundle with an
+  `i32` discriminator, a `"kcfi"` operand that is not an `i32` constant, a
+  `"funclet"` operand that is not a funclet pad, a `"preallocated"` token from
+  something other than `llvm.call.preallocated.setup`, and a direct call
+  carrying `"ptrauth"` all verified clean. **Breaking:** modules with any of
+  those shapes now fail `Module::verify` / `verify_borrowed`, with upstream's
+  own diagnostic text. Nine new `VerifierRule` variants carry them.
+
+  The loop runs for `call` and `invoke` and not for `callbr`, because
+  `visitCallBase` has exactly two callers upstream (`visitCallInst`,
+  `visitInvokeInst`) and `visitCallBrInst` is not one of them — it forbids
+  operand bundles on a non-inline-asm `callbr` outright instead, a rule llvmkit
+  still lacks and now records as `docs/divergences.md` entry 128.
+
+- **`Missing funclet token on intrinsic call`**, the tail of
+  `Verifier::visitIntrinsicCall`, now fires. Reaching it needed three routines
+  llvmkit did not have, ported into a new `llvmkit_ir::eh_personalities`
+  module: `classifyEHPersonality`, `isScopedEHPersonality` and
+  `colorEHFunclets`, plus `IntrinsicInst::mayLowerToFunctionCall` in
+  `llvmkit_ir::intrinsic_inst`. An intrinsic that may lower to a real call, in a
+  block coloured by an EH funclet of a scoped-EH-personality function, must now
+  carry a `"funclet"` operand bundle. **Breaking** for such modules.
+
+- **`CallBase::hasFnAttr` reads the call site's attribute groups.**
+  `call void @f() #0` with `attributes #0 = { noreturn }` reported no `noreturn`
+  at all, because llvmkit stores group numbers beside the call where upstream's
+  parser folds them into the call's `AttributeList`. This changes what
+  `speculation.rs`'s call predicates see as well as the new bundle rule.
+
+- **`visitInstruction` runs after the opcode's own checks, not before.**
+  Upstream calls it as the last statement of every `Verifier::visit*` method;
+  llvmkit ran its self-reference and dominance checks as a prologue. The order
+  is observable here and not upstream, because upstream's `CheckFailed`
+  accumulates while llvmkit stops at the first failure: a call with both a bad
+  operand bundle and a use-before-def reported the dominance failure where
+  upstream reports the bundle one first. **Breaking** for anyone matching on
+  which of two diagnostics a malformed module produces.
+
 ### Fixed — one `parseTypeAndBasicBlock`, and `musttail` varargs agreement
 
 - **Every terminator's block operand goes through one routine.** Upstream reads

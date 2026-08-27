@@ -243,6 +243,42 @@ pub enum VerifierRule {
     /// parameter type at the same slot.
     /// Mirrors `Verifier::visitCallBase`.
     CallArgTypeMismatch,
+    /// A call site carries two operand bundles with an at-most-once tag.
+    /// Mirrors the nine `Multiple … operand bundles` `Check`s of
+    /// `Verifier::visitCallBase`'s operand-bundle loop.
+    CallDuplicateOperandBundle,
+    /// An operand bundle whose tag fixes its arity carries the wrong number of
+    /// operands. Mirrors the `Expected exactly one …` / `Expected exactly two
+    /// …` `Check`s of `Verifier::visitCallBase`'s operand-bundle loop.
+    CallOperandBundleOperandCount,
+    /// A `"funclet"` bundle operand is not a `catchpad` / `cleanuppad`.
+    /// Mirrors `Verifier::visitCallBase` ("Funclet bundle operands should
+    /// correspond to a FuncletPadInst").
+    CallFuncletBundleOperand,
+    /// A `"ptrauth"` bundle's key operand is not an `i32` constant, or its
+    /// discriminator operand is not `i64`.
+    /// Mirrors `Verifier::visitCallBase`.
+    CallPtrauthBundleOperand,
+    /// A `"kcfi"` bundle operand is not an `i32` constant.
+    /// Mirrors `Verifier::visitCallBase`.
+    CallKcfiBundleOperand,
+    /// A `"preallocated"` bundle operand is not the token produced by
+    /// `llvm.call.preallocated.setup`.
+    /// Mirrors `Verifier::visitCallBase`.
+    CallPreallocatedBundleOperand,
+    /// A **direct** call carries a `"ptrauth"` operand bundle.
+    /// Mirrors `Verifier::visitCallBase` ("Direct call cannot have a ptrauth
+    /// bundle"), the one bundle rule raised after the loop rather than in it.
+    CallDirectPtrauthBundle,
+    /// A `"clang.arc.attachedcall"` bundle whose call signature, operand
+    /// count, or operand function is not one of the three ARC entry points.
+    /// Mirrors `Verifier::verifyAttachedCallBundle`.
+    CallAttachedCallBundle,
+    /// An intrinsic that may lower to a real call, sitting inside an EH funclet
+    /// of a scoped-EH-personality function, carries no `"funclet"` operand
+    /// bundle. Mirrors the tail of `Verifier::visitIntrinsicCall` ("Missing
+    /// funclet token on intrinsic call").
+    MissingFuncletToken,
     /// `musttail call` whose callee is inline assembly.
     /// Mirrors `Verifier::verifyMustTailCall`.
     MustTailCallInlineAsm,
@@ -548,6 +584,21 @@ impl fmt::Display for VerifierRule {
             Self::CallNonFunction => "call callee is not a function value",
             Self::CallArgCountMismatch => "call argument count does not match callee signature",
             Self::CallArgTypeMismatch => "call argument type does not match callee parameter type",
+            Self::CallDuplicateOperandBundle => {
+                "call site repeats an at-most-once operand bundle tag"
+            }
+            Self::CallOperandBundleOperandCount => {
+                "operand bundle carries the wrong number of operands"
+            }
+            Self::CallFuncletBundleOperand => "funclet bundle operand is not a funclet pad",
+            Self::CallPtrauthBundleOperand => "ptrauth bundle operand has the wrong type",
+            Self::CallKcfiBundleOperand => "kcfi bundle operand is not an i32 constant",
+            Self::CallPreallocatedBundleOperand => {
+                "preallocated bundle operand is not a llvm.call.preallocated.setup token"
+            }
+            Self::CallDirectPtrauthBundle => "direct call carries a ptrauth operand bundle",
+            Self::CallAttachedCallBundle => "invalid clang.arc.attachedcall operand bundle",
+            Self::MissingFuncletToken => "intrinsic call in an EH funclet has no funclet token",
             Self::MustTailCallInlineAsm => "musttail call callee is inline assembly",
             Self::MustTailCallVarArgsMismatch => {
                 "musttail call and caller disagree on the variadic bit"

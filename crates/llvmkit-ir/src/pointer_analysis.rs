@@ -1054,7 +1054,9 @@ fn underlying_object_from_int<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports `Value::stripPointerCasts` for the cases the string walk meets:
 /// `bitcast` and `addrspacecast` of a pointer, plus zero-offset GEPs.
-fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, B> {
+pub(crate) fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Value<'ctx, B> {
     let mut current = value;
     for _ in 0..MAX_LOOKUP_SEARCH_DEPTH {
         let next = match operator_opcode(current) {

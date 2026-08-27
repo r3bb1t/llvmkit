@@ -959,13 +959,11 @@ fn indirect_call_parameter_attribute_round_trips() {
 /// `test/Verifier/kcfi-operand-bundles.ll`, verbatim (the whole file). Every
 /// call in it is indirect and every one carries a `"kcfi"` operand bundle.
 ///
-/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
-/// so only the parse/print half is portable: the fixture's `CHECK:` diagnostic
-/// lines have no llvmkit counterpart, which is `docs/divergences.md` entry 125
-/// and is pinned by [`call_operand_bundle_rules_are_not_diagnosed`]. Each
-/// `CHECK-NEXT` line is the offending instruction as `AsmWriter` prints it,
-/// which is what this asserts — as a `Check::Line`, because the diagnostic the
-/// `-NEXT` counts from is not printed here.
+/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`.
+/// This is its printed half: each `CHECK-NEXT` line is the offending
+/// instruction as `AsmWriter` prints it, asserted as a `Check::Line` because
+/// the diagnostic the `-NEXT` counts from is not printed here. The verdict half
+/// is [`upstream_kcfi_operand_bundle_fixture_messages_match`].
 #[test]
 fn indirect_call_kcfi_operand_bundles_round_trip() {
     const FIXTURE: &[u8] =
@@ -989,12 +987,10 @@ fn indirect_call_kcfi_operand_bundles_round_trip() {
 /// is ported alongside the kcfi one rather than instead of it.
 ///
 /// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
-/// so as with [`indirect_call_kcfi_operand_bundles_round_trip`] only the
-/// parse/print half is ported; the unmatched `CHECK:` diagnostic lines are
-/// `docs/divergences.md` entry 125, pinned by
-/// [`call_operand_bundle_rules_are_not_diagnosed`]. The `CHECK-NEXT` lines are
-/// `AsmWriter` output of the offending instruction, asserted here as
-/// `Check::Line` for the same reason.
+/// so as with [`indirect_call_kcfi_operand_bundles_round_trip`] this is the
+/// parse/print half; the `CHECK-NEXT` lines are `AsmWriter` output of the
+/// offending instruction, asserted here as `Check::Line`. The verdict half is
+/// [`upstream_ptrauth_operand_bundle_fixture_messages_match`].
 #[test]
 fn indirect_call_ptrauth_operand_bundles_round_trip() {
     const FIXTURE: &[u8] =
@@ -1112,39 +1108,188 @@ fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
     assert_eq!(error_token(MUSTTAIL, &musttail), "call");
 }
 
-/// **Divergence lock for `docs/divergences.md` entry 125**, in the shape
-/// `parser_eh_funclet.rs::wineh_missing_funclet_token_is_not_diagnosed` uses
-/// for entry 112: it asserts what llvmkit *does*, so the entry stops being a
-/// quoted probe and starts being a test that fails when the gap closes.
-///
-/// Both fixtures are `RUN: not opt -passes=verify` upstream — every module in
-/// them is invalid IR, and between them their `CHECK:` lines pin six
-/// `Verifier::visitCallBase` operand-bundle diagnostics. llvmkit has no
-/// counterpart to that routine's bundle loop, so it accepts both. **This test
-/// asserts the divergence, not a rule**; when the loop is ported it must fail,
-/// and the two round-trip tests above then gain their verdict halves.
-#[test]
-fn call_operand_bundle_rules_are_not_diagnosed() {
-    const KCFI: &[u8] =
-        include_bytes!("fixtures/upstream/LLParser-parseCall/kcfi-operand-bundles.ll");
-    const PTRAUTH: &[u8] =
-        include_bytes!("fixtures/upstream/LLParser-parseCall/ptrauth-operand-bundles.ll");
+/// One `test/Verifier` operand-bundle fixture cut into the pieces its `RUN`
+/// line pins, all taken from the fixture text rather than retyped.
+struct OperandBundleFixture<'a> {
+    /// Everything above the `define` — the `declare`s the body refers to.
+    preamble: Vec<&'a str>,
+    /// The `define` header line.
+    define: &'a str,
+    /// The terminator and closing brace, kept verbatim so a rebuilt module
+    /// ends the way the fixture does.
+    tail: Vec<&'a str>,
+    /// One `(diagnostic, offending instruction)` per `; CHECK:` directive: the
+    /// text FileCheck matches, and the body line that follows it.
+    cases: Vec<(&'a str, &'a str)>,
+    /// The instructions under `; CHECK-NOT:` — the ones upstream reports
+    /// nothing for.
+    clean: Vec<&'a str>,
+}
 
-    for (name, fixture) in [
-        ("kcfi-operand-bundles", KCFI),
-        ("ptrauth-operand-bundles", PTRAUTH),
-    ] {
-        let module = Module::dynamic(name);
-        Parser::new(fixture, &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect("parser succeeds");
+/// Split an operand-bundle `test/Verifier` fixture the way its own directives
+/// do. Every body line must be claimed by a `; CHECK:` or by the `; CHECK-NOT:`
+/// tail; a line that is neither panics rather than being dropped, so a fixture
+/// growing a case cannot silently go unasserted.
+fn operand_bundle_fixture(fixture: &str) -> OperandBundleFixture<'_> {
+    let mut parsed = OperandBundleFixture {
+        preamble: Vec::new(),
+        define: "",
+        tail: Vec::new(),
+        cases: Vec::new(),
+        clean: Vec::new(),
+    };
+    let mut pending: Option<&str> = None;
+    let mut after_check_not = false;
+    for line in fixture.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("; CHECK-NOT:") {
+            after_check_not = true;
+            continue;
+        }
+        if trimmed.starts_with("; CHECK-NEXT:") {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("; CHECK:") {
+            pending = Some(rest.trim());
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with(';') {
+            continue;
+        }
+        if trimmed.starts_with("define ") {
+            parsed.define = line;
+            continue;
+        }
+        if parsed.define.is_empty() {
+            parsed.preamble.push(line);
+            continue;
+        }
+        if trimmed.starts_with("ret ") || trimmed == "}" {
+            parsed.tail.push(line);
+            continue;
+        }
+        match pending.take() {
+            Some(expected) => parsed.cases.push((expected, line)),
+            None if after_check_not => parsed.clean.push(line),
+            None => panic!("fixture body line is pinned by no directive: {line:?}"),
+        }
+    }
+    assert!(!parsed.define.is_empty(), "fixture has no define");
+    assert!(!parsed.cases.is_empty(), "fixture has no CHECK cases");
+    assert!(!parsed.clean.is_empty(), "fixture has no CHECK-NOT tail");
+    parsed
+}
+
+/// The fixture's preamble and `define` header wrapped around `body`.
+fn operand_bundle_module(fixture: &OperandBundleFixture<'_>, body: &[&str]) -> String {
+    let mut out = String::new();
+    for line in &fixture.preamble {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(fixture.define);
+    out.push('\n');
+    for line in body {
+        out.push_str(line);
+        out.push('\n');
+    }
+    for line in &fixture.tail {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The verifier's answer for one rebuilt module, `Ok` or the failure message.
+fn verify_operand_bundle_module(name: &str, source: &str) -> Result<(), String> {
+    let module = Module::dynamic(name);
+    Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .unwrap_or_else(|e| panic!("{name} parses: {e}\n{source}"));
+    match module.verify_borrowed() {
+        Ok(()) => Ok(()),
+        Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => Err(message),
+        Err(other) => panic!("{name}: expected a verifier failure, got {other:?}"),
+    }
+}
+
+/// Drive one `RUN: not opt -passes=verify` operand-bundle fixture: the whole
+/// file must be rejected, each `; CHECK:` directive must be produced by the
+/// instruction it precedes, and the `; CHECK-NOT:` tail must verify clean.
+///
+/// Per-instruction, for the reason
+/// [`upstream_musttail_invalid_fixture_messages_match`] is per-function:
+/// `Module::verify_borrowed` reports the *first* failure where upstream's
+/// `Verifier` keeps walking, so reproducing N `CHECK` lines takes N modules.
+/// Within one call site the two agree — upstream's `Check` macro `return`s out
+/// of `visitCallBase` on the first failure too.
+///
+/// `contains` is the comparison because a `CHECK` directive is a substring
+/// match, which is FileCheck's own rule.
+fn run_operand_bundle_fixture(name: &str, fixture: &str) {
+    let parsed = operand_bundle_fixture(fixture);
+
+    let module = Module::dynamic(name);
+    Parser::new(fixture.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .unwrap_or_else(|e| panic!("{name} parses: {e}"));
+    assert!(
+        module.verify_borrowed().is_err(),
+        "{name}: upstream's RUN line is `not opt -passes=verify`, so the whole \
+         fixture must be rejected"
+    );
+
+    for (expected, instruction) in &parsed.cases {
+        let source = operand_bundle_module(&parsed, &[instruction]);
+        let message = verify_operand_bundle_module(name, &source)
+            .expect_err(&format!("{name}: {instruction:?} must be rejected"));
         assert!(
-            module.verify_borrowed().is_ok(),
-            "divergence 125 assumes llvmkit accepts {name}; it no longer does: {:?}",
-            module.verify_borrowed().err()
+            message.contains(expected),
+            "{name}: {message:?} does not contain {expected:?} for {instruction:?}"
         );
     }
+
+    let clean = operand_bundle_module(&parsed, &parsed.clean);
+    assert_eq!(
+        verify_operand_bundle_module(name, &clean),
+        Ok(()),
+        "{name}: the `; CHECK-NOT:` tail must verify clean"
+    );
+}
+
+/// `test/Verifier/kcfi-operand-bundles.ll`, verbatim (the whole file) — the
+/// verdict half of the fixture [`indirect_call_kcfi_operand_bundles_round_trip`]
+/// ports the printed half of.
+///
+/// Its two `CHECK:` lines are `Verifier::visitCallBase`'s `"kcfi"` arm:
+/// `Multiple kcfi operand bundles` and `Kcfi bundle operand must be an i32
+/// constant`.
+#[test]
+fn upstream_kcfi_operand_bundle_fixture_messages_match() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/LLParser-parseCall/kcfi-operand-bundles.ll");
+
+    run_operand_bundle_fixture("kcfi-operand-bundles", FIXTURE);
+}
+
+/// `test/Verifier/ptrauth-operand-bundles.ll`, verbatim (the whole file) — the
+/// verdict half of the fixture
+/// [`indirect_call_ptrauth_operand_bundles_round_trip`] ports the printed half
+/// of.
+///
+/// Its four `CHECK:` lines cover `Verifier::visitCallBase`'s `"ptrauth"` arm
+/// (`Multiple ptrauth operand bundles`, `Ptrauth bundle key operand must be an
+/// i32 constant` for both a non-constant `i32` and an `i64` constant, and
+/// `Ptrauth bundle discriminator operand must be an i64`) plus `Direct call
+/// cannot have a ptrauth bundle`, the one bundle `Check` raised after the loop.
+#[test]
+fn upstream_ptrauth_operand_bundle_fixture_messages_match() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/LLParser-parseCall/ptrauth-operand-bundles.ll");
+
+    run_operand_bundle_fixture("ptrauth-operand-bundles", FIXTURE);
 }
 
 /// `test/Verifier/inline-asm-indirect-operand.ll`, verbatim (the whole file).
@@ -2212,4 +2357,205 @@ fn upstream_tailcc_musttail_fixture_messages_match() {
             );
         }
     }
+}
+
+/// The lines of `fixture` that sit outside every `define … { … }` block: the
+/// `%0 = type opaque`, the `declare`s, and the `attributes #0 = { … }` line.
+/// A per-case module keeps them so the body it isolates still resolves.
+fn top_level_lines(fixture: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in fixture.lines() {
+        if inside {
+            if line.trim() == "}" {
+                inside = false;
+            }
+            continue;
+        }
+        if line.trim_start().starts_with("define ") {
+            inside = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// One `define` of `fixture`, header through closing brace, taken verbatim.
+fn function_text<'a>(fixture: &'a str, header_marker: &str) -> &'a str {
+    let start = fixture
+        .find(header_marker)
+        .unwrap_or_else(|| panic!("missing function {header_marker}"));
+    let end = fixture[start..]
+        .find("\n}")
+        .map(|idx| start + idx + 3)
+        .unwrap_or_else(|| panic!("missing end of {header_marker}"));
+    &fixture[start..end]
+}
+
+/// Parse `source` and report the verifier's answer, or the parse diagnostic.
+fn parse_and_verify(name: &str, source: &str) -> Result<Result<(), String>, String> {
+    let module = Module::dynamic(name);
+    match Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+    {
+        Err(e) => Err(e.to_string()),
+        Ok(_) => Ok(match module.verify_borrowed() {
+            Ok(()) => Ok(()),
+            Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => Err(message),
+            Err(other) => panic!("{name}: expected a verifier failure, got {other:?}"),
+        }),
+    }
+}
+
+/// `test/Verifier/operand-bundles.ll`, vendored verbatim and driven per
+/// function — and, for its one multi-diagnostic function, per call — for the
+/// reason [`upstream_musttail_invalid_fixture_messages_match`] is driven per
+/// function: `Module::verify_borrowed` reports the first failure where
+/// upstream's `Verifier` keeps walking.
+///
+/// This is the fixture behind the `Verifier::visitCallBase` bundle arms the
+/// kcfi and ptrauth fixtures do not reach — `"deopt"`, `"gc-transition"`, and
+/// `Verifier::verifyAttachedCallBundle` — plus each function's `CHECK-NOT`
+/// tail, which must verify clean.
+///
+/// **Partial, in two named places; nothing is trimmed and every line of the
+/// fixture is asserted.**
+///
+/// 1. `@f0` and `@f1` pin `Instruction does not dominate all uses!`. llvmkit
+///    enforces that rule (an operand-bundle input is an operand here as it is
+///    upstream) but words it its own way — `docs/divergences.md` entry 121, a
+///    class-wide rewording deliberately not done in this commit. Those two
+///    assert rejection, not text.
+/// 2. Seven of `@f_clang_arc_attachedcall`'s thirteen calls name an intrinsic
+///    by address (`ptr @llvm.objc.…`, `ptr @llvm.assume`). Upstream parses
+///    those and `Verifier::visitInstruction` exempts an
+///    `OB_clang_arc_attachedcall` operand from `Cannot take the address of an
+///    intrinsic!` precisely so `verifyAttachedCallBundle` can judge them;
+///    llvmkit rejects every `llvm.`-prefixed non-callee reference at *parse*
+///    time, which is `docs/divergences.md` entry **37**. Those seven assert
+///    that parse rejection with entry 37's message, so this test starts failing
+///    the day entry 37 closes and the remaining coverage has to land with it.
+///    Consequently the whole-file `RUN` line is asserted as a parse failure
+///    rather than a verify failure.
+#[test]
+fn upstream_verifier_operand_bundles_fixture_messages_match() {
+    /// `docs/divergences.md` entry 37 — llvmkit's parse-time stand-in for
+    /// upstream's `Cannot take the address of an intrinsic!`.
+    const ENTRY_37: &str = "intrinsic can only be used as callee";
+
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles.ll");
+    let prelude = top_level_lines(FIXTURE);
+
+    // Upstream's `RUN` line is `not opt -passes=verify`; llvmkit stops one
+    // layer earlier, on entry 37.
+    assert_eq!(
+        parse_and_verify("verifier-operand-bundles", FIXTURE),
+        Err(ENTRY_37.to_owned())
+    );
+
+    // Whole-function cases: the `CHECK` each function carries, or `None` where
+    // llvmkit words the diagnostic differently (entry 121).
+    for (marker, expected) in [
+        ("define void @f0(", None),
+        ("define void @f1(", None),
+        (
+            "define void @f_deopt(",
+            Some("Multiple deopt operand bundles"),
+        ),
+        (
+            "define void @f_gc_transition(",
+            Some("Multiple gc-transition operand bundles"),
+        ),
+    ] {
+        let source = format!("{prelude}\n{}\n", function_text(FIXTURE, marker));
+        let message = parse_and_verify("verifier-operand-bundles", &source)
+            .unwrap_or_else(|e| panic!("{marker} parses: {e}\n{source}"))
+            .expect_err(&format!("{marker}: upstream rejects this function"));
+        if let Some(expected) = expected {
+            assert!(
+                message.contains(expected),
+                "{marker}: {message:?} does not contain {expected:?}"
+            );
+        }
+    }
+
+    // `@f_clang_arc_attachedcall` carries eight `CHECK` directives over
+    // thirteen calls, so it is driven one call at a time. Each call's
+    // expectation is read out of the fixture's own `CHECK` block, which
+    // alternates diagnostic, offending instruction, diagnostic, …; the
+    // instruction lines are `AsmWriter` output, which for these calls is the
+    // source text. A call the block does not name is one upstream reports
+    // nothing for.
+    let attached = function_text(FIXTURE, "define void @f_clang_arc_attachedcall(");
+    let mut expectations: Vec<(&str, &str)> = Vec::new();
+    let mut pending: Option<&str> = None;
+    let mut body: Vec<&str> = Vec::new();
+    let mut header = "";
+    for line in attached.lines() {
+        let trimmed = line.trim();
+        let directive = trimmed
+            .strip_prefix("; CHECK-NEXT:")
+            .or_else(|| trimmed.strip_prefix("; CHECK:"));
+        if let Some(text) = directive {
+            let text = text.trim();
+            match pending.take() {
+                Some(diagnostic) if text.starts_with("call ") => {
+                    expectations.push((text, diagnostic));
+                }
+                // The block strictly alternates; a second diagnostic in a row
+                // would otherwise be dropped without an assertion.
+                Some(diagnostic) => panic!("unpaired CHECK {diagnostic:?} before {text:?}"),
+                None => pending = Some(text),
+            }
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with(';') {
+            continue;
+        }
+        if trimmed.starts_with("define ") {
+            header = line;
+            continue;
+        }
+        if trimmed.starts_with("ret ") || trimmed == "}" {
+            continue;
+        }
+        body.push(line);
+    }
+    assert!(pending.is_none(), "trailing CHECK with no instruction");
+    assert_eq!(expectations.len(), 8, "fixture CHECK count changed");
+    assert_eq!(body.len(), 13, "fixture call count changed");
+
+    let mut blocked = 0;
+    for line in &body {
+        let source = format!("{prelude}\n{header}\n{line}\n  ret void\n}}\n");
+        let answer = parse_and_verify("verifier-operand-bundles", &source);
+        if line.contains("ptr @llvm.") {
+            blocked += 1;
+            assert_eq!(answer, Err(ENTRY_37.to_owned()), "entry 37 blocks {line:?}");
+            continue;
+        }
+        let answer = answer.unwrap_or_else(|e| panic!("{line:?} parses: {e}"));
+        match expectations
+            .iter()
+            .find(|(instruction, _)| *instruction == line.trim())
+        {
+            Some((_, expected)) => {
+                let message =
+                    answer.expect_err(&format!("{line:?} must be rejected by the verifier"));
+                assert!(
+                    message.contains(expected),
+                    "{line:?}: {message:?} does not contain {expected:?}"
+                );
+            }
+            None => assert_eq!(
+                answer,
+                Ok(()),
+                "{line:?} is under CHECK-NOT and must verify"
+            ),
+        }
+    }
+    assert_eq!(blocked, 7, "entry 37's blocked set changed");
 }

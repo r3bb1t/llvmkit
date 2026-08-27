@@ -1267,7 +1267,7 @@ fn call_parts(kind: &InstructionKindData) -> Option<CallParts<'_>> {
 /// Whether the call site or its callee carries `attribute` as a function
 /// attribute. Ports `CallBase::hasFnAttr`, which checks the call site first and
 /// falls back to the called function.
-fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     callee: ValueSlot,
     attrs: &CallAttributeData,
@@ -1275,6 +1275,19 @@ fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
 ) -> bool {
     if storage_has_enum_attr(attrs.function_attrs(), AttrIndex::Function, attribute) {
         return true;
+    }
+    // `LLParser::parseCall` folds a `#N` attribute-group reference into the
+    // call's `AttributeList` before `CallBase::hasFnAttr` ever reads it, so
+    // upstream has no separate group lookup. llvmkit keeps the group numbers
+    // beside the call and resolves them here; without this, `call void @f() #0`
+    // with `attributes #0 = { noreturn }` reports no `noreturn` at all.
+    let module = module_ref(anchor).module();
+    for group in attrs.function_attr_groups_slice() {
+        if let Some(group_attrs) = module.attribute_group(*group)
+            && storage_has_enum_attr(&group_attrs, AttrIndex::Function, attribute)
+        {
+            return true;
+        }
     }
     let callee = value_from_slot(anchor, callee);
     let ValueKindData::Function(data) = &callee.data().kind else {
@@ -1292,6 +1305,7 @@ fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
             AttrKind::WillReturn => id.will_return(),
             AttrKind::Speculatable => id.is_speculatable(),
             AttrKind::NoFree => id.no_free(),
+            AttrKind::NoReturn => id.no_return(),
             _ => false,
         },
         None => false,

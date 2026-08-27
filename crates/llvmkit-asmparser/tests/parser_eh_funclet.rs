@@ -275,13 +275,10 @@ fn catchswitch_nested_funclets_and_catchret() {
 ///
 /// Upstream's `RUN` line is `not opt -passes=verify`, and the file's single
 /// `CHECK` (`Missing funclet token on intrinsic call`) is a Verifier
-/// diagnostic: llvmkit's `verifier.rs` has no funclet-token rule, so only the
-/// parse half is ported and that one `CHECK` is **not** asserted. llvmkit
-/// verifies this module clean where upstream rejects it — divergence **112**
-/// in `docs/divergences.md`. The input is the vendored fixture, whole rather
-/// than trimmed; what is left out is the Verifier check, not any part of the
-/// fixture's IR. The three assertions below are llvmkit's own, pinning that
-/// the numbered results survive printing.
+/// diagnostic, asserted by [`wineh_missing_funclet_token_is_diagnosed`]. This
+/// is the parse half: the input is the vendored fixture, whole rather than
+/// trimmed, and the three assertions below are llvmkit's own, pinning that the
+/// numbered results survive printing.
 #[test]
 fn catchswitch_numbered_result() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
@@ -301,18 +298,23 @@ fn catchswitch_numbered_result() {
     );
 }
 
-/// **llvmkit-specific divergence lock — no upstream counterpart**, because it
-/// pins the *absence* of a rule upstream has. `test/Verifier/operand-bundles-wineh.ll`
-/// runs `not opt -passes=verify` and its one `CHECK` is
-/// `Missing funclet token on intrinsic call`, so upstream **rejects** this
-/// module; llvmkit's `Module::verify_borrowed` answers `Ok(())` because
-/// `verifier.rs` has no funclet-token rule. That is divergence **112** in
-/// `docs/divergences.md`, and this test is its live evidence rather than a
-/// probe quoted in prose: when the rule is ported this assertion flips, which
-/// is the signal to retire entry 112 and regrade `catchswitch_numbered_result`
-/// from `mirror (partial)` to `mirror`.
+/// `test/Verifier/operand-bundles-wineh.ll`'s verdict half: upstream's `RUN`
+/// line is `not opt -passes=verify` and the file's one `CHECK` is
+/// `Missing funclet token on intrinsic call`, the tail of
+/// `Verifier::visitIntrinsicCall`.
+///
+/// Every ingredient of that rule is exercised by this one module:
+/// `@llvm.objc.retain` is in `IntrinsicInst::mayLowerToFunctionCall`'s
+/// `switch`, `ptr @__CxxFrameHandler3` classifies as `MSVC_CXX` which
+/// `isScopedEHPersonality` accepts, and `colorEHFunclets` has to walk
+/// entry → `catch.dispatch` (a `catchswitch`) → `catch` (a `catchpad`, so the
+/// colour changes there) → `catch.cont` for the call's block to come out
+/// coloured by a funclet at all.
+///
+/// `contains` is the comparison because a `CHECK` directive is a substring
+/// match, which is FileCheck's own rule.
 #[test]
-fn wineh_missing_funclet_token_is_not_diagnosed() {
+fn wineh_missing_funclet_token_is_diagnosed() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
 
     let module = Module::dynamic("test");
@@ -320,11 +322,61 @@ fn wineh_missing_funclet_token_is_not_diagnosed() {
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
+    let message = match module.verify_borrowed() {
+        Ok(()) => panic!("upstream's RUN line is `not opt -passes=verify`"),
+        Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => message,
+        Err(other) => panic!("expected a verifier failure, got {other:?}"),
+    };
     assert!(
-        module.verify_borrowed().is_ok(),
-        "divergence 112 assumes llvmkit accepts this module; it no longer does: {:?}",
-        module.verify_borrowed().err()
+        message.contains("Missing funclet token on intrinsic call"),
+        "{message:?}"
     );
+}
+
+/// **No upstream counterpart** — the negative half of
+/// [`wineh_missing_funclet_token_is_diagnosed`], built by editing that
+/// fixture's one offending call.
+///
+/// Two ways upstream's rule stays silent, neither of which the fixture itself
+/// exercises: naming the funclet, and leaving the function's personality off.
+/// Without them, a rule that fired unconditionally would pass the fixture.
+#[test]
+fn wineh_funclet_token_and_missing_personality_both_silence_the_rule() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
+
+    // `Check(HasToken, …)` — a `"funclet"` bundle naming the enclosing pad.
+    let with_token = FIXTURE.replace(
+        "call ptr @llvm.objc.retain(ptr null)",
+        "call ptr @llvm.objc.retain(ptr null) [ \"funclet\"(token %1) ]",
+    );
+    assert_ne!(with_token, FIXTURE, "fixture text moved");
+
+    // `if (F->hasPersonalityFn() && isScopedEHPersonality(…))` — no
+    // personality, so the funclet colouring never runs.
+    let without_personality = FIXTURE.replace(" personality ptr @__CxxFrameHandler3", "");
+    assert_ne!(without_personality, FIXTURE, "fixture text moved");
+
+    for (name, source) in [
+        ("funclet token supplied", with_token),
+        ("no personality function", without_personality),
+    ] {
+        let module = Module::dynamic("test");
+        Parser::new(source.as_bytes(), &module)
+            .expect("parse constructor")
+            .parse_module()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{name} parses: {e}
+{source}"
+                )
+            });
+        assert!(
+            module.verify_borrowed().is_ok(),
+            "{name}: {:?}
+{source}",
+            module.verify_borrowed().err()
+        );
+    }
 }
 
 /// `test/Verifier/preallocated-valid.ll`, verbatim (the whole file).
@@ -335,8 +387,8 @@ fn wineh_missing_funclet_token_is_not_diagnosed() {
 /// Upstream's `RUN` line is `opt -S %s -passes=verify` with no `FileCheck`, so
 /// the fixture carries no `CHECK` lines at all: **it asserts only that the
 /// module verifies**, and that is the oracle run here — `verify_borrowed`
-/// inside [`parse_verify_and_print`]. llvmkit has no `preallocated` and no
-/// funclet rule, but a missing rule can only make llvmkit more permissive, so
+/// inside [`parse_verify_and_print`]. llvmkit has no `preallocated`
+/// intrinsic rules, but a missing rule can only make llvmkit more permissive, so
 /// it can never turn this fixture's contract into a false failure; what the
 /// oracle does cover is `Verifier::check_call` and `check_invoke` over the
 /// rest of the file. The three `contains` assertions below are llvmkit's own,
