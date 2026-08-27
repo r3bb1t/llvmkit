@@ -286,6 +286,46 @@ pub enum VerifierRule {
     /// count, or operand function is not one of the three ARC entry points.
     /// Mirrors `Verifier::verifyAttachedCallBundle`.
     CallAttachedCallBundle,
+    /// An inline-asm call argument disagrees with the constraint it answers:
+    /// an indirect constraint whose operand is not a pointer or carries no
+    /// `elementtype` attribute, or a direct constraint whose operand carries
+    /// one. Mirrors `Verifier::verifyInlineAsmCall`.
+    InlineAsmConstraintOperand,
+    /// An inline-asm call's label-constraint count is wrong for the call form
+    /// — non-zero on a `call` / `invoke`, or unequal to the indirect
+    /// destination count on a `callbr`. Mirrors the tail of
+    /// `Verifier::verifyInlineAsmCall`.
+    InlineAsmLabelConstraint,
+    /// A non-inline-asm `callbr` carries operand bundles. Mirrors
+    /// `Verifier::visitCallBrInst` ("Callbr for intrinsics currently doesn't
+    /// support operand bundles").
+    CallBrOperandBundle,
+    /// A non-inline-asm `callbr` names something other than the one intrinsic
+    /// its `switch` supports, or names it with the wrong indirect
+    /// destinations. Mirrors `Verifier::visitCallBrInst`'s `switch` — the
+    /// `Intrinsic::amdgcn_kill` case and its `default:`.
+    CallBrUnsupportedIntrinsic,
+    /// An inline-asm `callbr` whose asm carries the `unwind` keyword. Mirrors
+    /// `Verifier::visitCallBrInst` ("Unwinding from Callbr is not allowed").
+    CallBrInlineAsmUnwinds,
+    /// A `landingpad`, `resume`, `catchpad`, `cleanuppad` or `catchswitch` in a
+    /// function with no `personality`. Mirrors the first `Check` of
+    /// `Verifier::visitLandingPadInst` / `visitResumeInst` /
+    /// `visitCatchPadInst` / `visitCleanupPadInst` / `visitCatchSwitchInst`.
+    EhPadMissingPersonality,
+    /// An EH-pad instruction is malformed in itself: not first in its block,
+    /// nested in the wrong parent, given the wrong operand kind, unwinding to
+    /// a non-EH block, or disagreeing with the function's `landingpad` result
+    /// type. Mirrors the per-opcode `Check`s of `Verifier`'s EH `visit*`
+    /// methods and `visitInvokeInst`'s unwind-destination `Check`.
+    EhPadInvalidStructure,
+    /// An edge into an EH pad is not a legal unwind edge, or passes through the
+    /// wrong pads on its way. Mirrors `Verifier::visitEHPadPredecessors`.
+    EhPadPredecessorEdge,
+    /// Funclet pads are ill-nested, or the unwind edges leaving one disagree
+    /// on where they go. Mirrors `Verifier::visitFuncletPadInst` and
+    /// `Verifier::verifySiblingFuncletUnwinds`.
+    FuncletPadNesting,
     /// An intrinsic that may lower to a real call, sitting inside an EH funclet
     /// of a scoped-EH-personality function, carries no `"funclet"` operand
     /// bundle. Mirrors the tail of `Verifier::visitIntrinsicCall` ("Missing
@@ -377,6 +417,14 @@ pub enum VerifierRule {
     /// `swifterror` alloca is not pointer-typed, or is an array allocation.
     /// Mirrors `Verifier::visitAllocaInst`.
     SwiftErrorAlloca,
+    /// A `swifterror` value is used somewhere other than a `load`, a `store`'s
+    /// pointer operand, or a `swifterror`-attributed call argument. Mirrors
+    /// `Verifier::verifySwiftErrorValue` and `Verifier::verifySwiftErrorCall`.
+    SwiftErrorValueUse,
+    /// A call argument carrying the `swifterror` attribute does not come from
+    /// a `swifterror` alloca or a `swifterror` parameter. Mirrors the
+    /// `swifterror` loop of `Verifier::visitCallBase`.
+    SwiftErrorCallArgument,
     /// `load` pointer operand is not a pointer.
     /// Mirrors `Verifier::visitLoadInst`.
     LoadNonPointer,
@@ -459,6 +507,9 @@ pub enum VerifierRule {
     AtomicInvalidOrdering,
     /// `cmpxchg` / `atomicrmw` pointer operand is not a pointer.
     AtomicNonPointerOperand,
+    /// `cmpxchg` compare operand is neither a scalar integer nor a pointer.
+    /// Mirrors `Verifier::visitAtomicCmpXchgInst`.
+    AtomicCmpXchgInvalidOperandType,
     /// `atomicrmw` operand value type does not match the operation's
     /// expected element type, or the FP-only ops were given a non-FP
     /// operand.
@@ -610,6 +661,23 @@ impl fmt::Display for VerifierRule {
             }
             Self::CallDirectPtrauthBundle => "direct call carries a ptrauth operand bundle",
             Self::CallAttachedCallBundle => "invalid clang.arc.attachedcall operand bundle",
+            Self::InlineAsmConstraintOperand => {
+                "inline asm argument does not satisfy its constraint's indirect/elementtype rules"
+            }
+            Self::InlineAsmLabelConstraint => {
+                "inline asm label-constraint count is wrong for this call form"
+            }
+            Self::CallBrOperandBundle => "non-asm callbr carries operand bundles",
+            Self::CallBrUnsupportedIntrinsic => {
+                "callbr callee is not asm-goto or a supported intrinsic used the supported way"
+            }
+            Self::CallBrInlineAsmUnwinds => "callbr inline asm is marked unwind",
+            Self::EhPadMissingPersonality => "EH pad instruction in a function with no personality",
+            Self::EhPadInvalidStructure => "EH pad instruction is malformed",
+            Self::EhPadPredecessorEdge => "an edge into an EH pad is not a legal unwind edge",
+            Self::FuncletPadNesting => {
+                "funclet pads are ill-nested, or unwind edges out of one disagree"
+            }
             Self::MissingFuncletToken => "intrinsic call in an EH funclet has no funclet token",
             Self::MustTailCallInlineAsm => "musttail call callee is inline assembly",
             Self::MustTailCallVarArgsMismatch => {
@@ -657,6 +725,13 @@ impl fmt::Display for VerifierRule {
             Self::AllocaUnsizedType => "alloca allocated type is unsized",
             Self::AllocaNonIntegerCount => "alloca num-elements operand is not an integer",
             Self::SwiftErrorAlloca => "swifterror alloca must be a non-array pointer allocation",
+            Self::SwiftErrorValueUse => {
+                "swifterror value is used somewhere other than a load, a store's pointer operand, \
+                 or a swifterror call argument"
+            }
+            Self::SwiftErrorCallArgument => {
+                "swifterror call argument does not come from a swifterror alloca or parameter"
+            }
             Self::LoadNonPointer => "load pointer operand is not a pointer",
             Self::LoadUnsizedType => "loading unsized types is not allowed",
             Self::StoreNonPointer => "store pointer operand is not a pointer",
@@ -696,6 +771,9 @@ impl fmt::Display for VerifierRule {
             }
             Self::AtomicInvalidOrdering => "atomic op given an invalid memory ordering",
             Self::AtomicNonPointerOperand => "atomic op pointer operand is not a pointer",
+            Self::AtomicCmpXchgInvalidOperandType => {
+                "cmpxchg operand type is not a scalar integer or pointer"
+            }
             Self::AtomicRmwOperandTypeMismatch => "atomicrmw operand type does not match operation",
             Self::SwitchOperandTypeMismatch => "switch operand types disagree",
             Self::IndirectBrNonPointerAddress => "indirectbr address operand is not a pointer",

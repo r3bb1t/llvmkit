@@ -977,7 +977,7 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     args: &[Cell<ValueSlot>],
     arg_attrs: &[AttributeStorage],

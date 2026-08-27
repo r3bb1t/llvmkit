@@ -866,6 +866,12 @@ pub(crate) fn semantic_ids(intrinsics: &[IntrinsicOut]) -> GenResult<Vec<(String
         // `Verifier::visitCallBase`'s `"preallocated"` operand-bundle arm
         // (`Input->getIntrinsicID() == Intrinsic::call_preallocated_setup`).
         ("CALL_PREALLOCATED_SETUP", "call_preallocated_setup"),
+        // `Verifier::visitCallBrInst`'s non-inline-asm arm: the `switch
+        // (CBI.getIntrinsicID())` has exactly one case,
+        // `Intrinsic::amdgcn_kill`, and its second `Check` names
+        // `Intrinsic::amdgcn_unreachable`.
+        ("AMDGCN_KILL", "amdgcn_kill"),
+        ("AMDGCN_UNREACHABLE", "amdgcn_unreachable"),
         // `IntrinsicInst::mayLowerToFunctionCall`'s `switch`
         // (`lib/IR/IntrinsicInst.cpp`), in its own order, plus
         // `objc_claimAutoreleasedReturnValue` — which that `switch` does *not*

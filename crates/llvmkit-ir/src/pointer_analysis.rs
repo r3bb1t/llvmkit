@@ -33,7 +33,7 @@
 
 use crate::ApInt;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
-use crate::constant::{Constant, ConstantData, ConstantExprOpcode};
+use crate::constant::{Constant, ConstantData, ConstantExprFlags, ConstantExprOpcode};
 use crate::data_layout::DataLayout;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::global_value::Linkage;
@@ -1075,6 +1075,103 @@ pub(crate) fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(
         }
     }
     current
+}
+
+/// Ports `Value::stripInBoundsOffsets` (`llvm/lib/IR/Value.cpp`) — the
+/// `PSK_InBounds` instantiation of `stripPointerCastsAndOffsets`, in that
+/// template's own arm order.
+///
+/// `Verifier::visitCallBase`'s `swifterror` loop is its one caller here:
+/// `dyn_cast<AllocaInst>(SwiftErrorArg->stripInBoundsOffsets())`.
+///
+/// Two differences from its siblings above, both upstream's: the GEP arm peels
+/// an `inbounds` GEP whatever its indices are (not only an all-zero one), and
+/// the loop terminates on a `Visited` set rather than a depth cap — upstream's
+/// `do { … } while (Visited.insert(V).second)`, whose comment says the cycle
+/// guard exists because the value may sit in an unreachable block.
+pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Value<'ctx, B> {
+    // `if (!V->getType()->isPointerTy()) return V;`
+    if !is_pointer(value.ty()) {
+        return value;
+    }
+    let mut current = value;
+    let mut visited: HashSet<ValueSlot> = HashSet::new();
+    visited.insert(current.slot());
+    loop {
+        let next = match operator_opcode(current) {
+            // `if (auto *GEP = dyn_cast<GEPOperator>(V)) { case PSK_InBounds:
+            //    if (!GEP->isInBounds()) return V; … V = GEP->getPointerOperand(); }`
+            Some(Opcode::GetElementPtr) => match instruction_kind(current) {
+                Some(InstructionKindData::Gep(data))
+                    if data.flags.contains(GepNoWrapFlags::IN_BOUNDS) =>
+                {
+                    Some(value_from_slot(current, data.ptr.get()))
+                }
+                // A constant-expression GEP: llvmkit's `GepOffset` form is
+                // always `inbounds` (see `gep_operator_pointer_operand`), and
+                // an `Expr` GEP carries its flags with it.
+                _ => match &current.data().kind {
+                    ValueKindData::Constant(ConstantData::GepOffset { base_id, .. }) => {
+                        Some(value_from_slot(current, *base_id))
+                    }
+                    ValueKindData::Constant(ConstantData::Expr(expr))
+                        if matches!(
+                            &expr.flags,
+                            ConstantExprFlags::Gep(gep)
+                                if gep.no_wrap().contains(GepNoWrapFlags::IN_BOUNDS)
+                        ) =>
+                    {
+                        expr.operands
+                            .first()
+                            .map(|slot| value_from_slot(current, *slot))
+                    }
+                    _ => return current,
+                },
+            },
+            // `else if (Operator::getOpcode(V) == Instruction::BitCast) {
+            //    Value *NewV = cast<Operator>(V)->getOperand(0);
+            //    if (!NewV->getType()->isPointerTy()) return V; V = NewV; }`
+            Some(Opcode::BitCast) => match operator_operand(current, 0) {
+                Some(next) if is_pointer(next.ty()) => Some(next),
+                _ => return current,
+            },
+            // `else if (StripKind != PSK_ZeroIndicesSameRepresentation &&
+            //    Operator::getOpcode(V) == Instruction::AddrSpaceCast)`
+            Some(Opcode::AddrSpaceCast) => operator_operand(current, 0),
+            // `else { if (const auto *Call = dyn_cast<CallBase>(V)) { if (const
+            //    Value *RV = Call->getReturnedArgOperand()) { V = RV;
+            //    continue; } … } return V; }` — the
+            //    `launder`/`strip.invariant.group` arm below it is
+            //    `PSK_ForAliasAnalysis` only.
+            _ => call_base_returned_arg_operand(current),
+        };
+        let Some(next) = next else {
+            return current;
+        };
+        current = next;
+        // `while (Visited.insert(V).second);`
+        if !visited.insert(current.slot()) {
+            return current;
+        }
+    }
+}
+
+/// `dyn_cast<CallBase>(V)` followed by `Call->getReturnedArgOperand()`.
+fn call_base_returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
+    let ValueKindData::Instruction(instruction) = &value.data().kind else {
+        return None;
+    };
+    let (args, attrs) = match &instruction.kind {
+        InstructionKindData::Call(call) => (&call.args, &call.attrs),
+        InstructionKindData::Invoke(invoke) => (&invoke.args, &invoke.attrs),
+        InstructionKindData::CallBr(callbr) => (&callbr.args, &callbr.attrs),
+        _ => return None,
+    };
+    crate::value_tracking::returned_arg_operand(value, args, attrs.arg_attrs())
 }
 
 /// Ports `Value::stripPointerCastsSameRepresentation` (`llvm/lib/IR/Value.cpp`),

@@ -18,9 +18,19 @@ use llvmkit_ir::{
 // clippy's `type_complexity` threshold without an `#[allow]` (the repo bans
 // `#[allow(...)]`).
 
-/// Return of `build_invoke_caller`/`build_callbr_caller`: the caller function
-/// and the `%new` `Dyn` label a redirect can aim at.
+/// Return of `build_callbr_caller`: the caller function and the `%new` `Dyn`
+/// label a redirect can aim at.
 type CallerFixture<B> = (FunctionId<(), B>, BlockId<Dyn, B>);
+
+/// Return of `build_invoke_caller`: the caller function, the plain `%new`
+/// label the *normal* edge can be redirected to, and the EH-pad `%new.pad`
+/// label the *unwind* edge can be redirected to.
+///
+/// They cannot be one block. `Verifier::visitInvokeInst` requires an unwind
+/// destination to be an EH pad, and `visitEHPadPredecessors` requires a
+/// `landingpad`'s block to be jumped to *only* by an invoke's unwind edge — so
+/// one block can serve one redirect or the other, never both.
+type InvokeCallerFixture<B> = (FunctionId<(), B>, BlockId<Dyn, B>, BlockId<Dyn, B>);
 
 /// Return of `build_switch_fn`: the function plus the `case0` and `new` `Dyn`
 /// labels.
@@ -82,7 +92,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectInvokeEdge<B> {
 /// aim at. Returns the caller and the `%new` `Dyn` label.
 fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
-) -> IrResult<CallerFixture<B>> {
+) -> IrResult<InvokeCallerFixture<B>> {
     let callee = m
         .add_typed_function::<(), (), _>("callee", Linkage::External)?
         .as_function();
@@ -90,22 +100,37 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
         .add_typed_function::<(), (), _>("caller", Linkage::External)?
         .as_function();
 
+    m.view(caller)
+        .set_personality_fn(m, m.ptr_type(0).const_null())?;
     let entry = m.view(caller).append_basic_block(m, "entry");
     let normal = m.view(caller).append_basic_block(m, "normal");
     let unwind = m.view(caller).append_basic_block(m, "unwind");
     let new = m.view(caller).append_basic_block(m, "new");
+    let new_pad = m.view(caller).append_basic_block(m, "new.pad");
     // Capture the labels before `position_at_end` consumes the block handles.
     let normal_lbl = normal.id();
     let unwind_lbl = unwind.id();
     let new_dyn: BasicBlockLabel<'_, Dyn, _> = new.to_erased().try_into()?;
     let new_dyn = new_dyn.id();
+    let new_pad_dyn: BasicBlockLabel<'_, Dyn, _> = new_pad.to_erased().try_into()?;
+    let new_pad_dyn = new_pad_dyn.id();
 
     let bn = IrBuilder::new_for::<()>(m).position_at_end(normal);
     bn.ret_void();
+    // `Verifier::visitInvokeInst` requires the unwind destination to be an EH
+    // pad, and `visitLandingPadInst` requires the `personality` set above.
     let bu = IrBuilder::new_for::<()>(m).position_at_end(unwind);
+    let _closed = bu.landingpad(m.i32_type().as_type(), true, "lp")?.finish();
     bu.ret_void();
     let bnew = IrBuilder::new_for::<()>(m).position_at_end(new);
     bnew.ret_void();
+    // The unwind-redirect target: an EH pad of its own, with no predecessor
+    // until the redirect gives it one.
+    let bnew_pad = IrBuilder::new_for::<()>(m).position_at_end(new_pad);
+    let _closed = bnew_pad
+        .landingpad(m.i32_type().as_type(), true, "lp.new")?
+        .finish();
+    bnew_pad.ret_void();
 
     let b = IrBuilder::new_for::<()>(m).position_at_end(entry);
     let _ = b.invoke_dyn(
@@ -115,7 +140,7 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
         unwind_lbl,
         "",
     )?;
-    Ok((caller, new_dyn))
+    Ok((caller, new_dyn, new_pad_dyn))
 }
 
 /// `edit_invoke(..).redirect_normal(new, [])` retargets ONLY the normal edge;
@@ -123,7 +148,7 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
 #[test]
 fn invoke_redirect_normal_retargets_normal_edge() -> Result<(), IrError> {
     let m = module_new!("invoke-redirect-normal")?;
-    let (caller, new_dyn) = build_invoke_caller(&m)?;
+    let (caller, new_dyn, _new_pad_dyn) = build_invoke_caller(&m)?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectInvokeEdge {
@@ -144,19 +169,19 @@ fn invoke_redirect_normal_retargets_normal_edge() -> Result<(), IrError> {
 #[test]
 fn invoke_redirect_unwind_retargets_unwind_edge() -> Result<(), IrError> {
     let m = module_new!("invoke-redirect-unwind")?;
-    let (caller, new_dyn) = build_invoke_caller(&m)?;
+    let (caller, _new_dyn, new_pad_dyn) = build_invoke_caller(&m)?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectInvokeEdge {
         which: InvokeArm::Unwind,
-        new_to: new_dyn,
+        new_to: new_pad_dyn,
     };
     let out = run_function_pass(pass, verified, caller, &mut analyses)?;
     let reverified = out.verify().expect("invoke redirect output must re-verify");
     let printed = format!("{reverified}");
     assert!(
-        printed.contains("to label %normal unwind label %new"),
-        "unwind edge must now target %new, normal untouched, got:\n{printed}"
+        printed.contains("to label %normal unwind label %new.pad"),
+        "unwind edge must now target %new.pad, normal untouched, got:\n{printed}"
     );
     Ok(())
 }
@@ -197,14 +222,26 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
     }
 }
 
-/// Build `void @caller()` with a `callbr void @callee() to label %cont
-/// [label %ind]`, plus an unreferenced `%new` block a redirect can aim at.
+/// Build `void @caller()` with a `callbr void asm sideeffect "", "!i"() to
+/// label %cont [label %ind]`, plus an unreferenced `%new` block a redirect can
+/// aim at.
+///
+/// The callee is inline asm because `Verifier::visitCallBrInst`'s
+/// non-inline-asm arm ends in `default: CheckFailed("Callbr currently only
+/// supports asm-goto and selected intrinsics")` — a `callbr` to an ordinary
+/// function is not IR upstream accepts, and these tests re-verify their output.
+/// One `!i` label constraint matches the one indirect destination.
 fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<B>> {
-    let callee = m
-        .add_typed_function::<(), (), _>("callee", Linkage::External)?
-        .as_function();
+    let void_ty = m.void_type();
+    let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let asm = m.inline_asm(
+        asm_ty,
+        "",
+        "!i",
+        llvmkit_ir::InlineAsmOptions::new().side_effects(),
+    );
     let caller = m
         .add_typed_function::<(), (), _>("caller", Linkage::External)?
         .as_function();
@@ -227,7 +264,13 @@ fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
     bnew.ret_void();
 
     let b = IrBuilder::new_for::<()>(m).position_at_end(entry);
-    let _ = b.callbr(callee, Vec::<Value<'_, _>>::new(), cont_lbl, [ind_lbl], "")?;
+    let _ = b.inline_asm_callbr::<(), _, _, _, _, _, _>(
+        asm,
+        Vec::<Value<'_, _>>::new(),
+        cont_lbl,
+        [ind_lbl],
+        "",
+    )?;
     Ok((caller, new_dyn))
 }
 

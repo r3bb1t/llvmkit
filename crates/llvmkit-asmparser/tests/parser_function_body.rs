@@ -157,19 +157,31 @@ fn parses_implicit_unnamed_blocks_with_shared_numbering() {
 
 /// Mirrors `LLParser::setInstName(NameID=-1, NameStr="")`: an unnamed
 /// non-void `callbr` result still consumes the next numbered local slot.
+///
+/// The callee is inline asm because that is the only non-void `callbr` LLVM
+/// accepts: `Verifier::visitCallBrInst`'s non-inline-asm arm ends in
+/// `default: CheckFailed("Callbr currently only supports asm-goto and selected
+/// intrinsics")`, and its one supported intrinsic — `llvm.amdgcn.kill` —
+/// returns `void`. The shape is `test/Verifier/callbr.ll`'s `@test4`
+/// ("Ensure you can use the return value of a callbr in indirect targets"),
+/// with the result left unnamed, which is what this test is about. It used to
+/// name `@callee`, and `parse_and_verify` accepted that only because the
+/// `default:` arm was unported.
 #[test]
 fn parses_unnamed_non_void_callbr_result_numbering() {
-    let src = "declare i32 @callee()\n\
-               define i32 @callbr_unnamed_result() {\n\
+    let src = "define i32 @callbr_unnamed_result() {\n\
                entry:\n  \
-                 callbr i32 @callee() to label %fallthrough []\n\
+                 callbr i32 asm sideeffect \"\", \"=r,!i\"() to label %fallthrough \
+                 [label %indirect]\n\
                fallthrough:\n  \
+                 ret i32 %0\n\
+               indirect:\n  \
                  ret i32 %0\n\
                }\n";
 
     parse_and_verify(src);
     let printed = parse_and_print(src);
-    assert!(printed.contains("callbr i32 @callee()"), "{printed}");
+    assert!(printed.contains("callbr i32 asm sideeffect"), "{printed}");
     assert!(printed.contains("ret i32 %0"), "{printed}");
 }
 

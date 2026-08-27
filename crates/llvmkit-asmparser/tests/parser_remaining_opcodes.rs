@@ -283,6 +283,61 @@ fn cmpxchg_round_trips() {
     );
 }
 
+/// `Verifier::visitAtomicCmpXchgInst`: `Check(ElTy->isIntOrPtrTy(), "cmpxchg
+/// operand must have integer or pointer type", ElTy, &CXI)` on the `cmp`
+/// operand, then `checkAtomicMemAccessSize(ElTy, &CXI)`.
+///
+/// **No upstream fixture pins either message, so the two inputs are
+/// llvmkit's** — the rule is a port, the reproducer is not.
+/// `rg --no-ignore --hidden -l -a "cmpxchg operand must have"
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/` answers `lib/IR/Verifier.cpp`
+/// and nothing else, and the same search for `atomic memory access' size must
+/// be byte-sized` under `llvm/test/` answers nothing. `test/Verifier/atomics.ll`
+/// — which `docs/divergences.md` entry 131 named as the fixture to port —
+/// contains only `load atomic` and `store atomic`, no `cmpxchg` at all.
+///
+/// Both shapes parse: `LLParser::parseCmpXchg` demands only `isFirstClassType`
+/// of the `cmp` operand, and llvmkit's port does the same, so the verifier is
+/// the only layer that can reject them.
+#[test]
+fn cmpxchg_operand_must_be_integer_or_pointer_and_power_of_two_sized() {
+    let float_error = verify_error(
+        b"define void @f(ptr %p) {\n\
+          entry:\n  \
+          %x = cmpxchg ptr %p, float 0.0, float 1.0 seq_cst seq_cst\n  \
+          ret void\n}\n",
+    );
+    assert!(
+        float_error.contains("cmpxchg operand must have integer or pointer type"),
+        "{float_error}"
+    );
+
+    let narrow_error = verify_error(
+        b"define void @f(ptr %p) {\n\
+          entry:\n  \
+          %x = cmpxchg ptr %p, i9 0, i9 1 seq_cst seq_cst\n  \
+          ret void\n}\n",
+    );
+    assert!(
+        narrow_error.contains("atomic memory access' operand must have a power-of-two size"),
+        "{narrow_error}"
+    );
+}
+
+/// Parse `src`, run `Module::verify_borrowed` over it, and answer the failure
+/// message. Panics when the module parses *and* verifies.
+fn verify_error(src: &[u8]) -> String {
+    let module = Module::dynamic("verify");
+    Parser::new(src, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("the fixture parses; the verifier is the layer that rejects it");
+    module
+        .verify_borrowed()
+        .expect_err("upstream's verifier rejects this module")
+        .to_string()
+}
+
 /// Forward-reference `atomicrmw` case from `test/Assembler/atomicrmw.ll`.
 #[test]
 fn atomicrmw_round_trips() {

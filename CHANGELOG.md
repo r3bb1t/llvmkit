@@ -19,6 +19,79 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — the verifier has an exception-handling chapter
+
+- **`Verifier`'s EH pad routines are ported.** Every funclet opcode used to
+  answer `Ok(())` from the per-opcode dispatch, so an ill-nested EH graph
+  verified clean. Now ported, in upstream's order:
+  `visitEHPadPredecessors`, `visitFuncletPadInst` and
+  `verifySiblingFuncletUnwinds` (the three the ledger named), plus the
+  `visit*Inst` routines that call them — `visitLandingPadInst`,
+  `visitResumeInst`, `visitCatchPadInst`, `visitCatchReturnInst`,
+  `visitCleanupPadInst`, `visitCatchSwitchInst`, `visitCleanupReturnInst` —
+  and `visitInvokeInst`'s `The unwind destination does not have an exception
+  handling instruction!` `Check`. `SiblingFuncletInfo` and
+  `LandingPadResultTy` join `BlockEHFuncletColors` as per-function verifier
+  state. New `VerifierRule::EhPadMissingPersonality`, `EhPadInvalidStructure`,
+  `EhPadPredecessorEdge`, `FuncletPadNesting`.
+
+  All twenty-six cases of `llvm/test/Verifier/invalid-eh.ll` are driven, each
+  as its own module the way its own `RUN` line's `sed` builds it, plus
+  `llvm/test/Verifier/invalid-cleanuppad-chain.ll`. **Newly rejected input**,
+  including an EH pad in a function with no `personality` — which is why
+  `parser_eh_funclet.rs`'s no-personality case now asserts a rejection instead
+  of a clean verify.
+
+### Fixed — inline asm, `callbr` and `swifterror` are verified the way `Verifier` does
+
+- **`Verifier::verifyInlineAsmCall` is one routine with three call sites**, as
+  upstream has one routine with two. llvmkit carried two hand-rolled copies of
+  its *tail* — in `check_call` and `check_callbr` — and none in `check_invoke`,
+  so an inline-asm `invoke` carrying a label constraint verified clean. The
+  per-operand loop is now ported too: an indirect constraint's operand must be
+  a pointer and must carry `elementtype`, and a direct constraint's operand
+  must not. New `VerifierRule::InlineAsmConstraintOperand`;
+  `VerifierRule::InlineAsmLabelConstraint` replaces `CallArgCountMismatch` on
+  the two label rules, whose category label had nothing to do with argument
+  counts. **Newly rejected input.**
+
+- **`Verifier::visitCallBrInst` is ported whole, both arms.** Its non-inline-asm
+  arm was absent, so a `callbr` could carry operand bundles and name any
+  function. It now rejects a `callbr` with operand bundles, checks the
+  `Intrinsic::amdgcn_kill` case's indirect-destination rules, and — this is the
+  wide one — rejects **every** non-asm `callbr` whose callee is not
+  `llvm.amdgcn.kill`, which is upstream's `default:` verdict. An inline-asm
+  `callbr` whose asm is marked `unwind` is rejected too. New
+  `VerifierRule::CallBrOperandBundle`, `CallBrUnsupportedIntrinsic`,
+  `CallBrInlineAsmUnwinds`. **Newly rejected input**, and much of it: a
+  `callbr void @g() to label %x []` verified here and does not now.
+  `check_callbr`'s destination-membership checks also moved to the end of the
+  routine, where `visitTerminator(CBI)` puts them.
+
+- **`swifterror` values are checked at their use sites.**
+  `Verifier::verifySwiftErrorValue` and `Verifier::verifySwiftErrorCall` are
+  ported, reached from `visitAllocaInst`'s and `visitFunction`'s call sites,
+  and the `swifterror` loop of `visitCallBase` now rejects a `swifterror` call
+  argument that does not come from a `swifterror` alloca or parameter. New
+  `VerifierRule::SwiftErrorValueUse` and `SwiftErrorCallArgument`.
+  `Value::stripInBoundsOffsets` is ported alongside, as
+  `pointer_analysis::strip_in_bounds_offsets`. **Newly rejected input.**
+  The attribute-level rules (`Cannot have multiple 'swifterror' parameters!`)
+  still need `Verifier::verifyFunctionAttrs`, which llvmkit does not have.
+
+### Fixed — `cmpxchg` operand type and size are now verified
+
+- **`Verifier::visitAtomicCmpXchgInst` is ported whole.** Its two statements —
+  `Check(ElTy->isIntOrPtrTy(), "cmpxchg operand must have integer or pointer
+  type", …)` on the `cmp` operand, then `checkAtomicMemAccessSize` — had no
+  counterpart, so `cmpxchg ptr %p, float 0.0, float 1.0 seq_cst seq_cst` and
+  `cmpxchg ptr %p, i9 0, i9 1 seq_cst seq_cst` both verified clean here and are
+  rejected upstream. Both are now rejected, with upstream's literals. New
+  `VerifierRule::AtomicCmpXchgInvalidOperandType`; the size half reuses
+  `AtomicLoadStoreInvalidSize`, as it is the same `checkAtomicMemAccessSize`
+  the atomic load/store paths already call. **Newly rejected input**, so a
+  module built or parsed with such a `cmpxchg` now fails `Module::verify()`.
+
 ### Changed — every verifier diagnostic now carries upstream's `Check` literal
 
 - **`IrError::VerifierFailure`'s `message` begins with `Verifier::CheckFailed`'s

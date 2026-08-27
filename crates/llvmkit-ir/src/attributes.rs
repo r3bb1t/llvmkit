@@ -1850,6 +1850,20 @@ impl AttributeStorage {
         })
     }
 
+    /// The type payload recorded at `index` for a type-flavoured `kind`, if
+    /// one is.
+    ///
+    /// Ports `AttributeList::getParamElementType` — the spelling
+    /// `Verifier::verifyInlineAsmCall` uses to ask whether a call argument
+    /// carries `elementtype`, where its sibling arm asks
+    /// `paramHasAttr(ArgNo, Attribute::ElementType)` ([`Self::has_kind`]).
+    pub(crate) fn type_value(&self, index: AttrIndex, kind: AttrKind) -> Option<TypeSlot> {
+        self.get(index)?.iter().find_map(|attr| match attr {
+            AttributeStored::Type(k, t) if *k == kind => Some(*t),
+            _ => None,
+        })
+    }
+
     /// Drop every attribute of `kind` at `index`.
     ///
     /// Ports `AttrBuilder::removeAttribute(Attribute::AttrKind)`, whose one

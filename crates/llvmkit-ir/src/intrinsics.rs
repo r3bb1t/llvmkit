@@ -319,6 +319,15 @@ impl IntrinsicId {
     pub(crate) const CALL_PREALLOCATED_SETUP: Self =
         checked_intrinsic_id(generated::SEMANTIC_CALL_PREALLOCATED_SETUP);
 
+    /// The two intrinsics `Verifier::visitCallBrInst`'s non-inline-asm arm
+    /// names: `Intrinsic::amdgcn_kill` is the `switch`'s only case, and
+    /// `Intrinsic::amdgcn_unreachable` is what its indirect destination may
+    /// call instead of holding an `unreachable`. Crate-internal, for the same
+    /// reason the ObjC ARC ids are: they spell one routine, not a catalogue.
+    pub(crate) const AMDGCN_KILL: Self = checked_intrinsic_id(generated::SEMANTIC_AMDGCN_KILL);
+    pub(crate) const AMDGCN_UNREACHABLE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_AMDGCN_UNREACHABLE);
+
     /// The ObjC ARC intrinsics named by `IntrinsicInst::mayLowerToFunctionCall`
     /// and `Verifier::verifyAttachedCallBundle`. Crate-internal: they exist to
     /// spell those two routines, not as a public intrinsic catalogue.

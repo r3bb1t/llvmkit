@@ -18,16 +18,27 @@
 //!
 //! ## Coverage gaps (deferred)
 //!
-//! - Metadata / debug-info / intrinsic / inline-asm verifier rules are not
-//!   fully ported yet.
+//! - Metadata / debug-info verifier rules are not fully ported yet.
+//! - `Verifier::visitIntrinsicCall`'s preamble and its per-intrinsic `switch`
+//!   are unported: `check_intrinsic_call` checks the signature, the `immarg`
+//!   operands and the funclet token, and nothing else. See
+//!   `docs/divergences.md`.
 //! - GEP index-walks-the-aggregate-type checks are deferred; today the
 //!   verifier checks that every GEP index is integer-typed and that the
 //!   source type is sized.
-//! - Per-function attribute coherence rules (`noalias` /
-//!   `byval` / ...) are out of scope for the current verifier.
+//! - `Verifier::verifyFunctionAttrs` and `Verifier::verifyParameterAttrs` —
+//!   the per-function and per-parameter attribute coherence rules (`sret`,
+//!   `byval`, `nest`, `returned`, `Cannot have multiple 'swifterror'
+//!   parameters!`, …) — have no counterpart here. See `docs/divergences.md`.
+//!
+//! `Verifier::verifyInlineAsmCall` is ported whole (both the per-operand
+//! `elementtype` loop and the label-constraint tail), as is the EH pad
+//! chapter: `visitEHPadPredecessors`, `visitFuncletPadInst`,
+//! `verifySiblingFuncletUnwinds` and the per-opcode `visit*Inst` routines
+//! that call them.
 
-use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::{HashMap, HashSet};
 
 use super::cfg::FunctionCfg;
 use super::constant::{Constant, ConstantData};
@@ -37,13 +48,15 @@ use super::eh_personalities::{
 };
 use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
-use super::inline_asm::InlineAsm;
+use super::inline_asm::{ConstraintKind, InlineAsm};
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallAttributeData, CallBrInstData,
-    CallInstData, ExtractElementInstData, ExtractValueInstData, FenceInstData, FnegInstData,
-    FreezeInstData, IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData,
-    LoadInstData, OperandBundleTag, SelectInstData, ShuffleVectorInstData, StoreInstData,
-    SwitchInstData, VaArgInstData,
+    CallInstData, CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FenceInstData,
+    FnegInstData, FreezeInstData, IndirectBrInstData, InsertElementInstData, InsertValueInstData,
+    InvokeInstData, LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleTag,
+    ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData,
+    VaArgInstData,
 };
 use super::instruction::{InstructionKind, TerminatorKind};
 use super::instructions::ShuffleVectorInst;
@@ -93,6 +106,18 @@ struct FunctionContext<'a> {
     /// of the function. Upstream clears the map per function; here it lives and
     /// dies with this context.
     eh_funclet_colors: &'a OnceCell<HashMap<ValueSlot, Vec<ValueSlot>>>,
+    /// `Verifier::SiblingFuncletInfo`: the cleanup-sibling unwind edges
+    /// `visitFuncletPadInst` and `visitCatchSwitchInst` record, consumed by
+    /// `verifySiblingFuncletUnwinds` once the function's instructions have
+    /// been visited. Upstream's `MapVector` is insertion-ordered and that
+    /// routine iterates it in insertion order, so this is a `Vec` of pairs and
+    /// not a `HashMap`. Upstream clears it per function; here it lives and
+    /// dies with this context.
+    sibling_funclet_info: &'a RefCell<Vec<(ValueSlot, ValueSlot)>>,
+    /// `Verifier::LandingPadResultTy`: the result type the function's first
+    /// `landingpad` or `resume` established, which every later one must agree
+    /// with. Upstream resets it to null per function.
+    landing_pad_result_ty: &'a Cell<Option<TypeSlot>>,
 }
 
 /// The four `CallBase` fields the shared `visitCallBase` / `visitIntrinsicCall`
@@ -943,16 +968,51 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
         let dom_tree = DominatorTree::new(f);
         let eh_funclet_colors = OnceCell::new();
+        let sibling_funclet_info = RefCell::new(Vec::new());
+        let landing_pad_result_ty = Cell::new(None);
         let cx = FunctionContext {
             predecessors: &predecessors,
             block_index: &block_index,
             dom_tree: &dom_tree,
             eh_funclet_colors: &eh_funclet_colors,
+            sibling_funclet_info: &sibling_funclet_info,
+            landing_pad_result_ty: &landing_pad_result_ty,
         };
+        // `visitFunction`'s argument loop: "Check that swifterror argument is
+        // only used by loads and stores." —
+        // `if (Attrs.hasParamAttr(i, Attribute::SwiftError))
+        //    verifySwiftErrorValue(&Arg);`
+        //
+        // The loop runs before the block walk, as upstream's does. A
+        // declaration has no block to anchor a diagnostic at and no users
+        // inside one either, so the walk simply finds nothing.
+        {
+            let attrs = f.data().attributes.borrow();
+            // A declaration has no block to anchor a diagnostic at, and none
+            // of its arguments can have a user inside one either, so the walk
+            // would raise nothing.
+            let entry = f
+                .basic_blocks()
+                .next()
+                .map(BasicBlock::retag_termination::<Unterminated>);
+            for argument in f.params() {
+                if !attrs.has_kind(AttrIndex::Param(argument.slot()), AttrKind::SwiftError) {
+                    continue;
+                }
+                let Some(entry) = entry.as_ref() else {
+                    continue;
+                };
+                self.verify_swift_error_value(f, entry, argument.as_erased().slot())?;
+            }
+        }
         for bb in f.basic_blocks() {
             let bb = bb.retag_termination::<Unterminated>();
             self.visit_block(f, &bb, &cx)?;
         }
+        // `visit(const_cast<Function &>(F)); verifySiblingFuncletUnwinds();` —
+        // `Verifier::verify(const Function &)` runs it immediately after the
+        // instruction walk that fills `SiblingFuncletInfo`.
+        self.verify_sibling_funclet_unwinds(f, &cx)?;
         Ok(())
     }
 
@@ -1227,13 +1287,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             InstructionKindData::Invoke(d) => self.check_invoke(f, bb, inst, d, cx),
             InstructionKindData::CallBr(d) => self.check_callbr(f, bb, inst, d, cx),
-            InstructionKindData::LandingPad(_) => Ok(()),
-            InstructionKindData::Resume(_) => Ok(()),
-            InstructionKindData::CleanupPad(_)
-            | InstructionKindData::CatchPad(_)
-            | InstructionKindData::CatchReturn(_)
-            | InstructionKindData::CleanupReturn(_)
-            | InstructionKindData::CatchSwitch(_) => Ok(()),
+            InstructionKindData::LandingPad(d) => self.check_landing_pad(f, bb, inst, d, cx),
+            InstructionKindData::Resume(d) => self.check_resume(f, bb, d, cx),
+            InstructionKindData::CleanupPad(d) => self.check_cleanup_pad(f, bb, inst, d, cx),
+            InstructionKindData::CatchPad(d) => self.check_catch_pad(f, bb, inst, d, cx),
+            InstructionKindData::CatchReturn(d) => self.check_catch_return(f, bb, d),
+            InstructionKindData::CleanupReturn(d) => self.check_cleanup_return(f, bb, d),
+            InstructionKindData::CatchSwitch(d) => self.check_catch_switch(f, bb, inst, d, cx),
             InstructionKindData::Unreachable(_) => Ok(()),
         };
         opcode_result?;
@@ -2018,15 +2078,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// The pointer must be a pointer; cmp / new value types must match;
-    /// orderings must be at least monotonic and the failure ordering must not
-    /// be Release / AcqRel.
+    /// `Verifier::visitAtomicCmpXchgInst`, preceded by the `AtomicCmpXchgInst`
+    /// construction-time `assert`s llvmkit raises as verifier failures.
     ///
-    /// **No upstream `Check` literal for any of these four.**
-    /// `Verifier::visitAtomicCmpXchgInst`'s only `Check` is `cmpxchg operand
-    /// must have integer or pointer type`; the rest are `assert`s inside
-    /// `AtomicCmpXchgInst::Init`, which llvmkit raises as verifier failures
-    /// (production paths do not panic) and so keeps its own wording for.
+    /// The first four checks — pointer operand is a pointer, cmp / new value
+    /// types match, both orderings are at least monotonic, the failure
+    /// ordering is not Release / AcqRel — have **no upstream `Check`
+    /// literal**: they are `assert`s inside `AtomicCmpXchgInst::Init` and
+    /// `setFailureOrdering`, which run at construction and so precede
+    /// `visitAtomicCmpXchgInst`. Production paths here do not panic, so they
+    /// keep llvmkit's own wording.
+    ///
+    /// The two statements of `visitAtomicCmpXchgInst` itself follow, in its
+    /// order: `Check(ElTy->isIntOrPtrTy(), …)` on `getOperand(1)` — the `cmp`
+    /// operand — then `checkAtomicMemAccessSize(ElTy, &CXI)`.
     fn check_cmpxchg(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -2093,6 +2158,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
+        // `Type *ElTy = CXI.getOperand(1)->getType();` — operand 1 is `cmp`.
+        let el_ty = cmp_ty;
+        // `Check(ElTy->isIntOrPtrTy(), "cmpxchg operand must have integer or
+        //  pointer type", ElTy, &CXI);`
+        //
+        // `Type::isIntOrPtrTy` is `isIntegerTy() || isPointerTy()` — scalars
+        // only, which is narrower than `check_atomic_access_type`'s
+        // load/store predicate (that one also admits floating-point and
+        // vectors).
+        let el_data = self.module.context().type_data(el_ty);
+        if !(el_data.as_integer().is_some() || el_data.is_pointer_data()) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicCmpXchgInvalidOperandType,
+                format!(
+                    "cmpxchg operand must have integer or pointer type (got {})",
+                    self.type_label(el_ty)
+                ),
+            ));
+        }
+        // `checkAtomicMemAccessSize(ElTy, &CXI);`
+        self.check_atomic_access_size(f, bb, el_ty)?;
         Ok(())
     }
 
@@ -2677,6 +2765,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     "swifterror alloca must not be array allocation".to_owned(),
                 ));
             }
+            // `verifySwiftErrorValue(&AI);`
+            self.verify_swift_error_value(f, bb, inst.slot())?;
         }
         // Result type must be a pointer; the IrBuilder construction
         // path always emits one, but assert it for parsed/foreign IR.
@@ -3147,21 +3237,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             args: &c.args,
             attrs: &c.attrs,
         };
+        // `visitCallBase`'s `swifterror` loop, which sits between the
+        // parameter-type loop above and the operand-bundle loop below.
+        self.verify_call_swift_error_arguments(f, bb, call)?;
         self.check_intrinsic_call(f, bb, call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
+        // `if (Call.isInlineAsm()) verifyInlineAsmCall(Call);` — the tail of
+        // `visitCallBase`, after the operand-bundle loop.
         if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(c.callee.get()).kind
         {
-            let inline_asm = InlineAsm::<B>::from_parts(c.callee.get(), self.module, callee_ty);
-            if inline_asm.label_constraint_count() != 0 {
-                return Err(self.fail(
-                    f,
-                    bb,
-                    VerifierRule::CallArgCountMismatch,
-                    "Label constraints can only be used with callbr".to_owned(),
-                ));
-            }
-            // Full indirect-constraint / elementtype parity is deferred: the
-            // current call surface cannot spell per-operand elementtype attrs.
+            self.verify_inline_asm_call(f, bb, call, None)?;
         }
 
         // `void Verifier::visitCallInst(CallInst &CI) { visitCallBase(CI);
@@ -3171,6 +3256,353 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         }
 
         Ok(())
+    }
+
+    /// `Verifier::verifySwiftErrorCall` (`lib/IR/Verifier.cpp`): "Check that
+    /// SwiftErrorVal is used as a swifterror argument in CS."
+    fn verify_swift_error_call(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        call: CallBaseParts<'_>,
+        swift_error_val: ValueSlot,
+    ) -> IrResult<()> {
+        // `for (const auto &I : llvm::enumerate(Call.args()))`
+        for (index, arg) in call.args.iter().enumerate() {
+            if arg.get() != swift_error_val {
+                continue;
+            }
+            // `Check(Call.paramHasAttr(I.index(), Attribute::SwiftError),
+            //  "swifterror value when used in a callsite should be marked with
+            //   swifterror attribute", SwiftErrorVal, Call);`
+            self.verifier_check(
+                f,
+                bb,
+                call.attrs
+                    .arg_attrs()
+                    .get(index)
+                    .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::SwiftError)),
+                VerifierRule::SwiftErrorValueUse,
+                &format!(
+                    "swifterror value when used in a callsite should be marked with swifterror attribute (argument #{index})"
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `Verifier::verifySwiftErrorValue` (`lib/IR/Verifier.cpp`): "Check that
+    /// swifterror value is only used by loads, stores, or as a swifterror
+    /// argument."
+    ///
+    /// `report_bb` is the block the diagnostic is anchored at when the
+    /// offending user's own block cannot be resolved — upstream anchors on the
+    /// two *values* (`SwiftErrorVal, U`) and prints no block at all.
+    fn verify_swift_error_value(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        report_bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        swift_error_val: ValueSlot,
+    ) -> IrResult<()> {
+        let value = Value::<B>::from_parts(
+            swift_error_val,
+            self.module,
+            self.value_type(swift_error_val),
+        );
+        // `for (const User *U : SwiftErrorVal->users())`
+        for user in value.users() {
+            let user_slot = user.slot();
+            let user_block = self.block_of(f, user_slot);
+            let at = user_block.as_ref().unwrap_or(report_bb);
+            let ValueKindData::Instruction(instruction) =
+                &self.module.context().value_data(user_slot).kind
+            else {
+                unreachable!("Value::users yields instructions");
+            };
+            // `Check(isa<LoadInst>(U) || isa<StoreInst>(U) || isa<CallInst>(U)
+            //  || isa<InvokeInst>(U), "swifterror value can only be loaded and
+            //  stored from, or as a swifterror argument!", SwiftErrorVal, U);`
+            self.verifier_check(
+                f,
+                at,
+                matches!(
+                    instruction.kind,
+                    InstructionKindData::Load(_)
+                        | InstructionKindData::Store(_)
+                        | InstructionKindData::Call(_)
+                        | InstructionKindData::Invoke(_)
+                ),
+                VerifierRule::SwiftErrorValueUse,
+                "swifterror value can only be loaded and stored from, or as a swifterror argument!",
+            )?;
+            // `if (auto StoreI = dyn_cast<StoreInst>(U))
+            //    Check(StoreI->getOperand(1) == SwiftErrorVal, "swifterror
+            //    value should be the second operand when used by stores",
+            //    SwiftErrorVal, U);`
+            if let InstructionKindData::Store(store) = &instruction.kind {
+                self.verifier_check(
+                    f,
+                    at,
+                    store.ptr.get() == swift_error_val,
+                    VerifierRule::SwiftErrorValueUse,
+                    "swifterror value should be the second operand when used by stores",
+                )?;
+            }
+            // `if (auto *Call = dyn_cast<CallBase>(U))
+            //    verifySwiftErrorCall(*const_cast<CallBase *>(Call),
+            //    SwiftErrorVal);` — a `callbr` user has already failed the
+            // first `Check` above, so only `call` and `invoke` reach here.
+            let call = match &instruction.kind {
+                InstructionKindData::Call(c) => Some(CallBaseParts {
+                    callee: c.callee.get(),
+                    fn_ty: c.fn_ty,
+                    args: &c.args,
+                    attrs: &c.attrs,
+                }),
+                InstructionKindData::Invoke(i) => Some(CallBaseParts {
+                    callee: i.callee.get(),
+                    fn_ty: i.fn_ty,
+                    args: &i.args,
+                    attrs: &i.attrs,
+                }),
+                _ => None,
+            };
+            if let Some(call) = call {
+                self.verify_swift_error_call(f, at, call, swift_error_val)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The `swifterror` loop of `Verifier::visitCallBase`: "For each argument
+    /// of the callsite, if it has the swifterror argument, make sure the
+    /// underlying alloca/parameter it comes from has a swifterror as well."
+    fn verify_call_swift_error_arguments(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        call: CallBaseParts<'_>,
+    ) -> IrResult<()> {
+        // `FTy = Call.getFunctionType()`; a payload whose recorded type is not
+        // a function type is rejected by the caller's own guard.
+        let Some((_ret, params, _var_arg)) =
+            self.module.context().type_data(call.fn_ty).as_function()
+        else {
+            return Ok(());
+        };
+        // `for (unsigned i = 0, e = FTy->getNumParams(); i != e; ++i)`
+        for index in 0..params.len() {
+            // `if (Call.paramHasAttr(i, Attribute::SwiftError))`
+            if !call
+                .attrs
+                .arg_attrs()
+                .get(index)
+                .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::SwiftError))
+            {
+                continue;
+            }
+            // `Value *SwiftErrorArg = Call.getArgOperand(i);`
+            let Some(swift_error_arg) = call.args.get(index) else {
+                continue;
+            };
+            let swift_error_arg = Value::<B>::from_parts(
+                swift_error_arg.get(),
+                self.module,
+                self.value_type(swift_error_arg.get()),
+            );
+            // `if (auto AI = dyn_cast<AllocaInst>(
+            //      SwiftErrorArg->stripInBoundsOffsets())) {
+            //    Check(AI->isSwiftError(), "swifterror argument for call has
+            //    mismatched alloca", AI, Call); continue; }`
+            let stripped = crate::pointer_analysis::strip_in_bounds_offsets(swift_error_arg);
+            if let ValueKindData::Instruction(instruction) = &stripped.data().kind
+                && let InstructionKindData::Alloca(alloca) = &instruction.kind
+            {
+                self.verifier_check(
+                    f,
+                    bb,
+                    alloca.flags.is_swifterror(),
+                    VerifierRule::SwiftErrorCallArgument,
+                    &format!(
+                        "swifterror argument for call has mismatched alloca (argument #{index})"
+                    ),
+                )?;
+                continue;
+            }
+            // `auto ArgI = dyn_cast<Argument>(SwiftErrorArg);` — the
+            // *unstripped* operand, deliberately: upstream strips only for the
+            // alloca cast above.
+            let ValueKindData::Argument { parent_fn, slot } = &swift_error_arg.data().kind else {
+                // `Check(ArgI, "swifterror argument should come from an alloca
+                //  or parameter", SwiftErrorArg, Call);`
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::SwiftErrorCallArgument,
+                    format!(
+                        "swifterror argument should come from an alloca or parameter (argument #{index})"
+                    ),
+                ));
+            };
+            // `Check(ArgI->hasSwiftErrorAttr(), "swifterror argument for call
+            //  has mismatched parameter", ArgI, Call);`
+            let parent_attrs = match &self.module.context().value_data(*parent_fn).kind {
+                ValueKindData::Function(data) => data.attributes.borrow().clone(),
+                _ => AttributeStorage::new(),
+            };
+            self.verifier_check(
+                f,
+                bb,
+                parent_attrs.has_kind(AttrIndex::Param(*slot), AttrKind::SwiftError),
+                VerifierRule::SwiftErrorCallArgument,
+                &format!(
+                    "swifterror argument for call has mismatched parameter (argument #{index})"
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The block handle for the block `instruction` sits in, when it is an
+    /// instruction of `f`. `IrError::VerifierFailure` carries a block name
+    /// where `Verifier::CheckFailed` prints the offending value itself.
+    fn block_of(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        instruction: ValueSlot,
+    ) -> Option<BasicBlock<'ctx, Dyn, Unterminated, B>> {
+        let ValueKindData::Instruction(data) = &self.module.context().value_data(instruction).kind
+        else {
+            return None;
+        };
+        let parent = data.parent.get();
+        f.basic_blocks()
+            .find(|bb| bb.slot() == parent)
+            .map(BasicBlock::retag_termination::<Unterminated>)
+    }
+
+    /// `Verifier::verifyInlineAsmCall` (`lib/IR/Verifier.cpp`), whole.
+    ///
+    /// Upstream has one routine and two call sites: the tail of
+    /// `visitCallBase` (`if (Call.isInlineAsm()) verifyInlineAsmCall(Call);`),
+    /// which is where a `call` and an `invoke` reach it, and
+    /// `visitCallBrInst`'s inline-asm arm. llvmkit carried two hand-rolled
+    /// copies of the routine's *tail* — one in [`Self::check_call`], one in
+    /// [`Self::check_callbr`] — and none in [`Self::check_invoke`], so an
+    /// inline-asm `invoke` carrying a label constraint verified clean. This is
+    /// now one routine with three call sites, matching upstream's two.
+    ///
+    /// `indirect_dest_count` stands for upstream's
+    /// `dyn_cast<CallBrInst>(&Call)`: `Some(n)` is a `callbr` with `n`
+    /// indirect destinations, `None` a `call` or an `invoke`.
+    fn verify_inline_asm_call(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        call: CallBaseParts<'_>,
+        indirect_dest_count: Option<usize>,
+    ) -> IrResult<()> {
+        let CallBaseParts {
+            callee,
+            args,
+            attrs,
+            ..
+        } = call;
+        // `const InlineAsm *IA = cast<InlineAsm>(Call.getCalledOperand());`
+        let inline_asm = InlineAsm::<B>::from_parts(callee, self.module, self.value_type(callee));
+        // `unsigned ArgNo = 0; unsigned LabelNo = 0;`
+        let mut arg_no = 0usize;
+        let mut label_no = 0usize;
+        // `for (const InlineAsm::ConstraintInfo &CI : IA->ParseConstraints())`
+        for constraint in inline_asm.constraint_info() {
+            // `if (CI.Type == InlineAsm::isLabel) { ++LabelNo; continue; }`
+            if constraint.kind == ConstraintKind::Label {
+                label_no += 1;
+                continue;
+            }
+            // `if (!CI.hasArg()) continue;` — "Only deal with constraints that
+            // correspond to call arguments."
+            if !constraint.has_arg() {
+                continue;
+            }
+            // Upstream indexes `Call.getArgOperand(ArgNo)` directly, behind
+            // `InlineAsm::verify`'s constraint/argument count check at
+            // construction. llvmkit stops rather than indexing past the end:
+            // production paths do not panic, and a count mismatch has its own
+            // diagnostic before this routine runs.
+            let Some(arg) = args.get(arg_no) else {
+                break;
+            };
+            let arg_ty = self.value_type(arg.get());
+            let arg_attrs = attrs.arg_attrs().get(arg_no);
+            if constraint.is_indirect {
+                // `Check(Arg->getType()->isPointerTy(), "Operand for indirect
+                //  constraint must have pointer type", &Call);`
+                self.verifier_check(
+                    f,
+                    bb,
+                    self.module.context().type_data(arg_ty).is_pointer_data(),
+                    VerifierRule::InlineAsmConstraintOperand,
+                    &format!(
+                        "Operand for indirect constraint must have pointer type (argument #{arg_no} has type {})",
+                        self.type_label(arg_ty)
+                    ),
+                )?;
+                // `Check(Call.getParamElementType(ArgNo), "Operand for
+                //  indirect constraint must have elementtype attribute",
+                //  &Call);`
+                let element_type = arg_attrs
+                    .and_then(|set| set.type_value(AttrIndex::Param(0), AttrKind::ElementType));
+                self.verifier_check(
+                    f,
+                    bb,
+                    element_type.is_some(),
+                    VerifierRule::InlineAsmConstraintOperand,
+                    &format!(
+                        "Operand for indirect constraint must have elementtype attribute (argument #{arg_no})"
+                    ),
+                )?;
+            } else {
+                // `Check(!Call.paramHasAttr(ArgNo, Attribute::ElementType),
+                //  "Elementtype attribute can only be applied for indirect
+                //  constraints", &Call);`
+                let has_element_type = arg_attrs
+                    .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::ElementType));
+                self.verifier_check(
+                    f,
+                    bb,
+                    !has_element_type,
+                    VerifierRule::InlineAsmConstraintOperand,
+                    &format!(
+                        "Elementtype attribute can only be applied for indirect constraints (argument #{arg_no})"
+                    ),
+                )?;
+            }
+            // `ArgNo++;`
+            arg_no += 1;
+        }
+
+        // `if (auto *CallBr = dyn_cast<CallBrInst>(&Call)) { … } else { … }`
+        match indirect_dest_count {
+            Some(dests) => self.verifier_check(
+                f,
+                bb,
+                label_no == dests,
+                VerifierRule::InlineAsmLabelConstraint,
+                &format!(
+                    "Number of label constraints does not match number of callbr dests ({label_no} label constraints, {dests} indirect destinations)"
+                ),
+            ),
+            None => self.verifier_check(
+                f,
+                bb,
+                label_no == 0,
+                VerifierRule::InlineAsmLabelConstraint,
+                &format!(
+                    "Label constraints can only be used with callbr ({label_no} label constraints)"
+                ),
+            ),
+        }
     }
 
     /// `Check(C, Msg, Call)` as it expands inside a `Verifier::visit*` method:
@@ -4454,13 +4886,50 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             args: &d.args,
             attrs: &d.attrs,
         };
+        self.verify_call_swift_error_arguments(f, bb, call)?;
         self.check_intrinsic_call(f, bb, call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
+        // `if (Call.isInlineAsm()) verifyInlineAsmCall(Call);` — the same tail
+        // of `visitCallBase` that `check_call` runs; `visitInvokeInst` calls
+        // `visitCallBase` too, so an inline-asm `invoke` is checked here.
+        if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(d.callee.get()).kind
+        {
+            self.verify_inline_asm_call(f, bb, call, None)?;
+        }
+        // "Verify that the first non-PHI instruction of the unwind destination
+        //  is an exception handling instruction." —
+        // `Check(II.getUnwindDest()->isEHPad(), "The unwind destination does
+        //  not have an exception handling instruction!", &II);`
+        self.verifier_check(
+            f,
+            bb,
+            self.first_non_phi_in_block(f, d.unwind_dest.get())
+                .is_some_and(|slot| self.is_eh_pad_instruction(slot)),
+            VerifierRule::EhPadInvalidStructure,
+            "The unwind destination does not have an exception handling instruction!",
+        )?;
         Ok(())
     }
 
-    /// `Verifier::visitCallBrInst`. Constructive subset: every
-    /// destination is a basic block of the parent function.
+    /// `Verifier::visitCallBrInst`, both arms, in upstream's order.
+    ///
+    /// The routine splits on `CBI.isInlineAsm()` and **never calls
+    /// `visitCallBase`** — `grep -n "visitCallBase(" lib/IR/Verifier.cpp`
+    /// prints the declaration, the definition and two call sites, those two
+    /// being `visitCallInst` and `visitInvokeInst`. So no operand-bundle loop
+    /// runs for a `callbr`; the non-asm arm forbids bundles outright instead.
+    ///
+    /// Two deliberate spellings:
+    ///
+    /// * upstream's `default:` arm is a bare `CheckFailed`, not a `Check`, so
+    ///   it records the failure and falls through to `visitIntrinsicCall`.
+    ///   llvmkit reports the first failure and returns, which is the house
+    ///   single-error model the module header records; the *first* message is
+    ///   upstream's first, which is what a `CHECK` line reads.
+    /// * `visitTerminator(CBI)` closes the routine, and the block-membership
+    ///   checks that stand for `visitInstruction`'s `Referring to a basic
+    ///   block in another function!` therefore run **last**, not first as they
+    ///   did before this port.
     fn check_callbr(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -4469,6 +4938,123 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         d: &CallBrInstData,
         cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
+        let call = CallBaseParts {
+            callee: d.callee.get(),
+            fn_ty: d.fn_ty,
+            args: &d.args,
+            attrs: &d.attrs,
+        };
+        let callee_data = self.module.context().value_data(d.callee.get());
+        // `if (!CBI.isInlineAsm()) { … } else { … }`
+        if let ValueKindData::InlineAsm(_) = &callee_data.kind {
+            // `const InlineAsm *IA = cast<InlineAsm>(CBI.getCalledOperand());
+            //  Check(!IA->canThrow(), "Unwinding from Callbr is not allowed");`
+            let inline_asm =
+                InlineAsm::<B>::from_parts(d.callee.get(), self.module, callee_data.ty);
+            self.verifier_check(
+                f,
+                bb,
+                !inline_asm.can_unwind(),
+                VerifierRule::CallBrInlineAsmUnwinds,
+                "Unwinding from Callbr is not allowed",
+            )?;
+            // `verifyInlineAsmCall(CBI);`
+            self.verify_inline_asm_call(f, bb, call, Some(d.indirect_dests.len()))?;
+        } else {
+            // `Check(CBI.getCalledFunction(), "Callbr: indirect function /
+            //  invalid signature");` — `getCalledFunction` is
+            // `dyn_cast_or_null<Function>(getCalledOperand())`, so anything
+            // that is not a function value fails here.
+            let ValueKindData::Function(_) = &callee_data.kind else {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::CallNonFunction,
+                    format!(
+                        "Callbr: indirect function / invalid signature (callee has type {})",
+                        self.type_label(callee_data.ty)
+                    ),
+                ));
+            };
+            // `Check(!CBI.hasOperandBundles(), "Callbr for intrinsics
+            //  currently doesn't support operand bundles");`
+            self.verifier_check(
+                f,
+                bb,
+                d.attrs.operand_bundles_slice().is_empty(),
+                VerifierRule::CallBrOperandBundle,
+                "Callbr for intrinsics currently doesn't support operand bundles",
+            )?;
+            // `switch (CBI.getIntrinsicID())` — one case, plus `default:`.
+            let intrinsic_id = crate::intrinsics::descriptor_for_callee(Value::<B>::from_parts(
+                d.callee.get(),
+                self.module,
+                callee_data.ty,
+            ))
+            .map(|descriptor| descriptor.id());
+            if intrinsic_id == Some(IntrinsicId::AMDGCN_KILL) {
+                // `Check(CBI.getNumIndirectDests() == 1, "Callbr amdgcn_kill
+                //  only supports one indirect dest");`
+                self.verifier_check(
+                    f,
+                    bb,
+                    d.indirect_dests.len() == 1,
+                    VerifierRule::CallBrUnsupportedIntrinsic,
+                    &format!(
+                        "Callbr amdgcn_kill only supports one indirect dest (has {})",
+                        d.indirect_dests.len()
+                    ),
+                )?;
+                // `bool Unreachable = isa<UnreachableInst>(
+                //      CBI.getIndirectDest(0)->begin());
+                //  CallInst *Call = dyn_cast<CallInst>(
+                //      CBI.getIndirectDest(0)->begin());`
+                //
+                // `begin()`, not `getFirstNonPHIIt()`. An empty destination
+                // block has no `begin()` to dereference; upstream would read
+                // past the end there, llvmkit answers `None` and the `Check`
+                // below fails — the block is separately rejected for having no
+                // terminator.
+                let first = d
+                    .indirect_dests
+                    .first()
+                    .and_then(|dest| self.first_instruction_in_block(dest.get()));
+                let unreachable = first.is_some_and(|slot| {
+                    matches!(
+                        &self.module.context().value_data(slot).kind,
+                        ValueKindData::Instruction(instruction)
+                            if matches!(instruction.kind, InstructionKindData::Unreachable(_))
+                    )
+                });
+                let calls_amdgcn_unreachable = first.is_some_and(|slot| {
+                    self.is_intrinsic_call_to(slot, IntrinsicId::AMDGCN_UNREACHABLE)
+                });
+                // `Check(Unreachable || (Call && Call->getIntrinsicID() ==
+                //  Intrinsic::amdgcn_unreachable), "Callbr amdgcn_kill
+                //  indirect dest needs to be unreachable");`
+                self.verifier_check(
+                    f,
+                    bb,
+                    unreachable || calls_amdgcn_unreachable,
+                    VerifierRule::CallBrUnsupportedIntrinsic,
+                    "Callbr amdgcn_kill indirect dest needs to be unreachable",
+                )?;
+            } else {
+                // `default: CheckFailed("Callbr currently only supports
+                //  asm-goto and selected intrinsics");`
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::CallBrUnsupportedIntrinsic,
+                    "Callbr currently only supports asm-goto and selected intrinsics".to_owned(),
+                ));
+            }
+            // `visitIntrinsicCall(CBI.getIntrinsicID(), CBI);`
+            self.check_intrinsic_call(f, bb, call, cx)?;
+        }
+
+        // `visitTerminator(CBI);` — llvmkit's spelling of the successor half
+        // of `visitInstruction`'s operand walk.
         let block_index = cx.block_index;
         if !block_index.contains_key(&d.default_dest.get()) {
             return Err(self.fail(
@@ -4490,35 +5076,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
         }
-        self.check_intrinsic_call(
-            f,
-            bb,
-            CallBaseParts {
-                callee: d.callee.get(),
-                fn_ty: d.fn_ty,
-                args: &d.args,
-                attrs: &d.attrs,
-            },
-            cx,
-        )?;
-        // `Verifier::verifyInlineAsmCall`'s `callbr` arm: one label constraint
-        // per indirect destination. The ordinary-call twin lives in
-        // `check_call`; upstream runs both from the same helper, and both are
-        // verifier rules — the parser accepts either shape.
-        if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(d.callee.get()).kind
-        {
-            let callee_ty = self.module.context().value_data(d.callee.get()).ty;
-            let inline_asm = InlineAsm::<B>::from_parts(d.callee.get(), self.module, callee_ty);
-            if inline_asm.label_constraint_count() != d.indirect_dests.len() {
-                return Err(self.fail(
-                    f,
-                    bb,
-                    VerifierRule::CallArgCountMismatch,
-                    "Number of label constraints does not match number of callbr dests".to_owned(),
-                ));
-            }
-        }
         Ok(())
+    }
+
+    /// `BasicBlock::begin()` projected to a value id — the block's *first*
+    /// instruction, phis included, or `None` for an empty block (upstream's
+    /// `begin() == end()`).
+    fn first_instruction_in_block(&self, block: ValueSlot) -> Option<ValueSlot> {
+        let ValueKindData::BasicBlock(data) = &self.module.context().value_data(block).kind else {
+            return None;
+        };
+        let instructions = data.instructions.borrow();
+        instructions.first().copied()
     }
 
     /// `Verifier::visitBranchInst`.
@@ -4567,6 +5136,1204 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     ));
                 }
             }
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Exception handling — `Verifier`'s EH pad chapter
+    // ------------------------------------------------------------------
+
+    /// A pad operand as upstream compares them, with `None` for
+    /// `ConstantTokenNone`.
+    ///
+    /// llvmkit spells "no pad" two ways — a `parent_pad` field holding `None`
+    /// (`cleanuppad within none`), and an explicit `token none` operand
+    /// (`cleanupret from none`), which parses to a `ConstantData::TokenNone`
+    /// value. Upstream has one uniqued `ConstantTokenNone` per context, so the
+    /// two are pointer-equal there and must compare equal here.
+    fn pad_ref(&self, slot: ValueSlot) -> Option<ValueSlot> {
+        match &self.module.context().value_data(slot).kind {
+            ValueKindData::Constant(ConstantData::TokenNone) => None,
+            _ => Some(slot),
+        }
+    }
+
+    /// `getParentPad` (`lib/IR/Verifier.cpp`, file-local):
+    /// `FuncletPadInst::getParentPad()` or `CatchSwitchInst::getParentPad()`,
+    /// with `None` for `ConstantTokenNone`.
+    ///
+    /// Upstream's `cast<CatchSwitchInst>` asserts on anything that is neither a
+    /// funclet pad nor a `catchswitch`. Every caller here reaches it only past
+    /// the `Parent pad must be catchpad/cleanuppad/catchswitch` `Check`, which
+    /// is what upstream's own comment says that `Check` is for ("We need the
+    /// extra check here to make sure getParentPad() works"), so the `None`
+    /// this answers for a non-pad stands for an unreachable assertion rather
+    /// than a divergence.
+    fn parent_pad(&self, pad: ValueSlot) -> Option<ValueSlot> {
+        let ValueKindData::Instruction(instruction) = &self.module.context().value_data(pad).kind
+        else {
+            return None;
+        };
+        let field = match &instruction.kind {
+            InstructionKindData::CatchPad(p) => p.parent_pad.get(),
+            InstructionKindData::CleanupPad(p) => p.parent_pad.get(),
+            InstructionKindData::CatchSwitch(s) => s.parent_pad.get(),
+            _ => None,
+        };
+        field.and_then(|slot| self.pad_ref(slot))
+    }
+
+    /// `isa<FuncletPadInst>(V) || isa<CatchSwitchInst>(V)`.
+    fn is_pad_or_catch_switch(&self, slot: ValueSlot) -> bool {
+        let ValueKindData::Instruction(instruction) = &self.module.context().value_data(slot).kind
+        else {
+            return false;
+        };
+        matches!(
+            instruction.kind,
+            InstructionKindData::CatchPad(_)
+                | InstructionKindData::CleanupPad(_)
+                | InstructionKindData::CatchSwitch(_)
+        )
+    }
+
+    /// `Instruction::isEHPad()` — `landingpad`, `catchpad`, `cleanuppad`,
+    /// `catchswitch`.
+    fn is_eh_pad_instruction(&self, slot: ValueSlot) -> bool {
+        let ValueKindData::Instruction(instruction) = &self.module.context().value_data(slot).kind
+        else {
+            return false;
+        };
+        matches!(
+            instruction.kind,
+            InstructionKindData::LandingPad(_)
+                | InstructionKindData::CatchPad(_)
+                | InstructionKindData::CleanupPad(_)
+                | InstructionKindData::CatchSwitch(_)
+        )
+    }
+
+    /// `isa<LandingPadInst>(V)`.
+    fn is_landing_pad(&self, slot: ValueSlot) -> bool {
+        matches!(
+            &self.module.context().value_data(slot).kind,
+            ValueKindData::Instruction(instruction)
+                if matches!(instruction.kind, InstructionKindData::LandingPad(_))
+        )
+    }
+
+    /// `BasicBlock::getFirstNonPHIIt()` as a value id.
+    fn first_non_phi_in_block(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        block: ValueSlot,
+    ) -> Option<ValueSlot> {
+        crate::eh_personalities::first_non_phi_slot(f.as_erased(), block)
+    }
+
+    /// `BasicBlock::getTerminator()` as a value id — `None` when the block's
+    /// last instruction is not one, which `visit_block` rejects separately.
+    fn block_terminator(&self, block: ValueSlot) -> Option<ValueSlot> {
+        let ValueKindData::BasicBlock(data) = &self.module.context().value_data(block).kind else {
+            return None;
+        };
+        let last = *data.instructions.borrow().last()?;
+        let ValueKindData::Instruction(instruction) = &self.module.context().value_data(last).kind
+        else {
+            return None;
+        };
+        instruction.kind.is_terminator().then_some(last)
+    }
+
+    /// `Instruction::getParent()` as a value id.
+    fn parent_block_of(&self, instruction: ValueSlot) -> Option<ValueSlot> {
+        match &self.module.context().value_data(instruction).kind {
+            ValueKindData::Instruction(data) => Some(data.parent.get()),
+            _ => None,
+        }
+    }
+
+    /// The unwind destination of an `invoke`, a `catchswitch` or a
+    /// `cleanupret` — the three terminators that have one. The outer `Option`
+    /// is "this terminator has no unwind destination field at all"; the inner
+    /// is upstream's null `BasicBlock *` (`unwind to caller`).
+    fn terminator_unwind_dest(&self, terminator: ValueSlot) -> Option<Option<ValueSlot>> {
+        let ValueKindData::Instruction(instruction) =
+            &self.module.context().value_data(terminator).kind
+        else {
+            return None;
+        };
+        match &instruction.kind {
+            InstructionKindData::Invoke(i) => Some(Some(i.unwind_dest.get())),
+            InstructionKindData::CatchSwitch(s) => Some(s.unwind_dest.get()),
+            InstructionKindData::CleanupReturn(r) => Some(r.unwind_dest),
+            _ => None,
+        }
+    }
+
+    /// `getSuccPad` (`lib/IR/Verifier.cpp`, file-local): the first non-phi
+    /// instruction of `terminator`'s unwind destination.
+    ///
+    /// Upstream's final `cast<CleanupReturnInst>` asserts on any other
+    /// terminator and its `UnwindDest->getFirstNonPHIIt()` dereferences the
+    /// `end()` iterator of an empty block. Both are unreachable through
+    /// `SiblingFuncletInfo`, whose only writers store an `invoke`, a
+    /// `catchswitch` or a `cleanupret` whose unwind destination has already
+    /// been shown to start with an EH pad; `None` stands for those two.
+    fn succ_pad(&self, f: FunctionValue<'ctx, Dyn, B>, terminator: ValueSlot) -> Option<ValueSlot> {
+        let unwind_dest = self.terminator_unwind_dest(terminator)??;
+        self.first_non_phi_in_block(f, unwind_dest)
+    }
+
+    /// `CallBase::doesNotThrow()` — `hasFnAttr(Attribute::NoUnwind)`, which
+    /// reads the call site's own function attributes and then the called
+    /// function's (`CallBase::hasFnAttrOnCalledFunction`).
+    fn call_does_not_throw(&self, callee: ValueSlot, attrs: &CallAttributeData) -> bool {
+        if attrs
+            .function_attrs()
+            .has_kind(AttrIndex::Function, AttrKind::NoUnwind)
+        {
+            return true;
+        }
+        match &self.module.context().value_data(callee).kind {
+            ValueKindData::Function(data) => data
+                .attributes
+                .borrow()
+                .has_kind(AttrIndex::Function, AttrKind::NoUnwind),
+            _ => false,
+        }
+    }
+
+    /// `Verifier::visitEHPadPredecessors` (`lib/IR/Verifier.cpp`), whole.
+    ///
+    /// `pad` is upstream's `Instruction &I`, and `bb` its parent block.
+    fn visit_eh_pad_predecessors(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        pad: ValueSlot,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        let block = bb.slot();
+        let no_predecessors: Vec<ValueSlot> = Vec::new();
+        let predecessors = cx.predecessors.get(&block).unwrap_or(&no_predecessors);
+
+        // `Check(BB != &F->getEntryBlock(), "EH pad cannot be in entry
+        //  block.", &I);`
+        let is_entry_block = f
+            .basic_blocks()
+            .next()
+            .is_some_and(|entry| entry.slot() == block);
+        self.verifier_check(
+            f,
+            bb,
+            !is_entry_block,
+            VerifierRule::EhPadPredecessorEdge,
+            "EH pad cannot be in entry block.",
+        )?;
+
+        let ValueKindData::Instruction(pad_instruction) =
+            &self.module.context().value_data(pad).kind
+        else {
+            unreachable!("visitEHPadPredecessors is only reached from an EH pad instruction");
+        };
+
+        // `if (auto *LPI = dyn_cast<LandingPadInst>(&I)) { … return; }`
+        if matches!(pad_instruction.kind, InstructionKindData::LandingPad(_)) {
+            for &predecessor in predecessors {
+                let is_unwind_edge_of_invoke = self
+                    .block_terminator(predecessor)
+                    .and_then(|terminator| {
+                        match &self.module.context().value_data(terminator).kind {
+                            ValueKindData::Instruction(instruction) => Some(&instruction.kind),
+                            _ => None,
+                        }
+                    })
+                    .is_some_and(|kind| match kind {
+                        InstructionKindData::Invoke(invoke) => {
+                            invoke.unwind_dest.get() == block && invoke.normal_dest.get() != block
+                        }
+                        _ => false,
+                    });
+                // `Check(II && II->getUnwindDest() == BB &&
+                //  II->getNormalDest() != BB, "Block containing LandingPadInst
+                //  must be jumped to only by the unwind edge of an invoke.",
+                //  LPI);`
+                self.verifier_check(
+                    f,
+                    bb,
+                    is_unwind_edge_of_invoke,
+                    VerifierRule::EhPadPredecessorEdge,
+                    "Block containing LandingPadInst must be jumped to only by the unwind edge of an invoke.",
+                )?;
+            }
+            return Ok(());
+        }
+
+        // `if (auto *CPI = dyn_cast<CatchPadInst>(&I)) { … return; }`
+        if let InstructionKindData::CatchPad(catch_pad) = &pad_instruction.kind {
+            // `CPI->getCatchSwitch()` is `cast<CatchSwitchInst>(getParentPad())`,
+            // which `visitCatchPadInst`'s `CatchPadInst needs to be directly
+            // nested in a CatchSwitchInst.` `Check` has already established —
+            // it runs before this routine.
+            let Some(catch_switch) = catch_pad.parent_pad.get() else {
+                unreachable!(
+                    "visitCatchPadInst rejects a catchpad whose parent is not a catchswitch"
+                )
+            };
+            // `if (!pred_empty(BB))
+            //    Check(BB->getUniquePredecessor() ==
+            //          CPI->getCatchSwitch()->getParent(), "Block containg
+            //          CatchPadInst must be jumped to only by its
+            //          catchswitch.", CPI);`
+            if !predecessors.is_empty() {
+                // `BasicBlock::getUniquePredecessor` answers the single
+                // *distinct* predecessor, so a block that branches to `BB`
+                // twice still has one.
+                let first = predecessors[0];
+                let unique_predecessor = predecessors
+                    .iter()
+                    .all(|&predecessor| predecessor == first)
+                    .then_some(first);
+                self.verifier_check(
+                    f,
+                    bb,
+                    unique_predecessor.is_some()
+                        && unique_predecessor == self.parent_block_of(catch_switch),
+                    VerifierRule::EhPadPredecessorEdge,
+                    "Block containg CatchPadInst must be jumped to only by its catchswitch.",
+                )?;
+            }
+            // `Check(BB != CPI->getCatchSwitch()->getUnwindDest(),
+            //  "Catchswitch cannot unwind to one of its catchpads",
+            //  CPI->getCatchSwitch(), CPI);`
+            let catch_switch_unwind_dest =
+                self.terminator_unwind_dest(catch_switch).unwrap_or(None);
+            self.verifier_check(
+                f,
+                bb,
+                catch_switch_unwind_dest != Some(block),
+                VerifierRule::EhPadPredecessorEdge,
+                "Catchswitch cannot unwind to one of its catchpads",
+            )?;
+            return Ok(());
+        }
+
+        // "Verify that each pred has a legal terminator with a legal to/from
+        //  EH pad relationship."
+        //
+        // `Instruction *ToPad = &I; Value *ToPadParent = getParentPad(ToPad);`
+        let to_pad = pad;
+        let to_pad_parent = self.parent_pad(to_pad);
+        for &predecessor in predecessors {
+            let Some(terminator) = self.block_terminator(predecessor) else {
+                // A predecessor with no terminator is rejected by
+                // `visit_block`'s `Basic Block does not have terminator!`.
+                continue;
+            };
+            let ValueKindData::Instruction(terminator_instruction) =
+                &self.module.context().value_data(terminator).kind
+            else {
+                unreachable!("block_terminator answers an instruction")
+            };
+            let from_pad: Option<ValueSlot> = match &terminator_instruction.kind {
+                // `if (auto *II = dyn_cast<InvokeInst>(TI))`
+                InstructionKindData::Invoke(invoke) => {
+                    // `Check(II->getUnwindDest() == BB && II->getNormalDest()
+                    //  != BB, "EH pad must be jumped to via an unwind edge",
+                    //  ToPad, II);`
+                    self.verifier_check(
+                        f,
+                        bb,
+                        invoke.unwind_dest.get() == block && invoke.normal_dest.get() != block,
+                        VerifierRule::EhPadPredecessorEdge,
+                        "EH pad must be jumped to via an unwind edge",
+                    )?;
+                    // `auto *CalledFn = dyn_cast<Function>(
+                    //      II->getCalledOperand()->stripPointerCasts());
+                    //  if (CalledFn && CalledFn->isIntrinsic() &&
+                    //      II->doesNotThrow() &&
+                    //      !IntrinsicInst::mayLowerToFunctionCall(
+                    //          CalledFn->getIntrinsicID()))
+                    //    continue;`
+                    let callee = invoke.callee.get();
+                    let callee_value =
+                        Value::<B>::from_parts(callee, self.module, self.value_type(callee));
+                    let stripped = crate::pointer_analysis::strip_pointer_casts(callee_value);
+                    let intrinsic_id = crate::intrinsics::descriptor_for_callee(stripped)
+                        .map(|descriptor| descriptor.id());
+                    if let Some(id) = intrinsic_id
+                        && self.call_does_not_throw(stripped.slot(), &invoke.attrs)
+                        && !crate::intrinsic_inst::may_lower_to_function_call(id)
+                    {
+                        continue;
+                    }
+                    // `if (auto Bundle = II->getOperandBundle(
+                    //      LLVMContext::OB_funclet))
+                    //    FromPad = Bundle->Inputs[0];
+                    //  else FromPad = ConstantTokenNone::get(II->getContext());`
+                    invoke
+                        .attrs
+                        .operand_bundles_slice()
+                        .iter()
+                        .find(|bundle| *bundle.tag() == OperandBundleTag::Funclet)
+                        .and_then(|bundle| bundle.inputs().next())
+                        .and_then(|input| self.pad_ref(input))
+                }
+                // `else if (auto *CRI = dyn_cast<CleanupReturnInst>(TI))`
+                InstructionKindData::CleanupReturn(cleanup_return) => {
+                    // `FromPad = CRI->getOperand(0);
+                    //  Check(FromPad != ToPadParent, "A cleanupret must exit
+                    //  its cleanup", CRI);`
+                    let from_pad = self.pad_ref(cleanup_return.cleanup_pad.get());
+                    self.verifier_check(
+                        f,
+                        bb,
+                        from_pad != to_pad_parent,
+                        VerifierRule::EhPadPredecessorEdge,
+                        "A cleanupret must exit its cleanup",
+                    )?;
+                    from_pad
+                }
+                // `else if (auto *CSI = dyn_cast<CatchSwitchInst>(TI))
+                //    FromPad = CSI;`
+                InstructionKindData::CatchSwitch(_) => Some(terminator),
+                // `else Check(false, "EH pad must be jumped to via an unwind
+                //  edge", ToPad, TI);`
+                _ => {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::EhPadPredecessorEdge,
+                        "EH pad must be jumped to via an unwind edge".to_owned(),
+                    ));
+                }
+            };
+
+            // "The edge may exit from zero or more nested pads."
+            // `SmallPtrSet<Value *, 8> Seen;
+            //  for (;; FromPad = getParentPad(FromPad)) { … }`
+            let mut seen: HashSet<ValueSlot> = HashSet::new();
+            let mut from_pad = from_pad;
+            loop {
+                // `Check(FromPad != ToPad, "EH pad cannot handle exceptions
+                //  raised within it", FromPad, TI);`
+                self.verifier_check(
+                    f,
+                    bb,
+                    from_pad != Some(to_pad),
+                    VerifierRule::EhPadPredecessorEdge,
+                    "EH pad cannot handle exceptions raised within it",
+                )?;
+                // `if (FromPad == ToPadParent) break;` — a legal unwind edge.
+                if from_pad == to_pad_parent {
+                    break;
+                }
+                // `Check(!isa<ConstantTokenNone>(FromPad), "A single unwind
+                //  edge may only enter one EH pad", TI);`
+                self.verifier_check(
+                    f,
+                    bb,
+                    from_pad.is_some(),
+                    VerifierRule::EhPadPredecessorEdge,
+                    "A single unwind edge may only enter one EH pad",
+                )?;
+                let Some(current) = from_pad else {
+                    unreachable!("the Check above returns when from_pad is token none")
+                };
+                // `Check(Seen.insert(FromPad).second, "EH pad jumps through a
+                //  cycle of pads", FromPad);`
+                self.verifier_check(
+                    f,
+                    bb,
+                    seen.insert(current),
+                    VerifierRule::EhPadPredecessorEdge,
+                    "EH pad jumps through a cycle of pads",
+                )?;
+                // `Check(isa<FuncletPadInst>(FromPad) ||
+                //  isa<CatchSwitchInst>(FromPad), "Parent pad must be
+                //  catchpad/cleanuppad/catchswitch", TI);` — upstream's own
+                // comment: "This will be diagnosed on the corresponding
+                // instruction already. We need the extra check here to make
+                // sure getParentPad() works."
+                self.verifier_check(
+                    f,
+                    bb,
+                    self.is_pad_or_catch_switch(current),
+                    VerifierRule::EhPadPredecessorEdge,
+                    "Parent pad must be catchpad/cleanuppad/catchswitch",
+                )?;
+                from_pad = self.parent_pad(current);
+            }
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitLandingPadInst`.
+    fn check_landing_pad(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        inst: &InstructionView<'ctx, B>,
+        d: &LandingPadInstData,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        let clauses = d.clauses.borrow();
+        // `Check(LPI.getNumClauses() > 0 || LPI.isCleanup(), "LandingPadInst
+        //  needs at least one clause or to be a cleanup.", &LPI);`
+        self.verifier_check(
+            f,
+            bb,
+            !clauses.is_empty() || d.cleanup.get(),
+            VerifierRule::EhPadInvalidStructure,
+            "LandingPadInst needs at least one clause or to be a cleanup.",
+        )?;
+
+        // `visitEHPadPredecessors(LPI);`
+        self.visit_eh_pad_predecessors(f, bb, inst.slot(), cx)?;
+
+        // `if (!LandingPadResultTy) LandingPadResultTy = LPI.getType();
+        //  else Check(LandingPadResultTy == LPI.getType(), "The landingpad
+        //  instruction should have a consistent result type inside a
+        //  function.", &LPI);`
+        let result_ty = self.value_type(inst.slot());
+        match cx.landing_pad_result_ty.get() {
+            None => cx.landing_pad_result_ty.set(Some(result_ty)),
+            Some(established) => self.verifier_check(
+                f,
+                bb,
+                established == result_ty,
+                VerifierRule::EhPadInvalidStructure,
+                "The landingpad instruction should have a consistent result type inside a function.",
+            )?,
+        }
+
+        // `Check(F->hasPersonalityFn(), "LandingPadInst needs to be in a
+        //  function with a personality.", &LPI);`
+        self.verifier_check(
+            f,
+            bb,
+            f.personality_fn().is_some(),
+            VerifierRule::EhPadMissingPersonality,
+            "LandingPadInst needs to be in a function with a personality.",
+        )?;
+
+        // `Check(LPI.getParent()->getLandingPadInst() == &LPI, "LandingPadInst
+        //  not the first non-PHI instruction in the block.", &LPI);` —
+        // `BasicBlock::getLandingPadInst` is `dyn_cast<LandingPadInst>(
+        // getFirstNonPHIIt())`, so this is the first-non-phi test its three
+        // sibling routines spell directly.
+        self.verifier_check(
+            f,
+            bb,
+            self.first_non_phi_in_block(f, bb.slot()) == Some(inst.slot()),
+            VerifierRule::EhPadInvalidStructure,
+            "LandingPadInst not the first non-PHI instruction in the block.",
+        )?;
+
+        // `for (unsigned i = 0, e = LPI.getNumClauses(); i < e; ++i)`
+        for (kind, clause) in clauses.iter() {
+            let clause = clause.get();
+            match kind {
+                // `if (LPI.isCatch(i)) Check(isa<PointerType>(
+                //  Clause->getType()), "Catch operand does not have pointer
+                //  type!", &LPI);`
+                LandingPadClauseKind::Catch => self.verifier_check(
+                    f,
+                    bb,
+                    self.module
+                        .context()
+                        .type_data(self.value_type(clause))
+                        .is_pointer_data(),
+                    VerifierRule::EhPadInvalidStructure,
+                    "Catch operand does not have pointer type!",
+                )?,
+                // `else { Check(LPI.isFilter(i), "Clause is neither catch nor
+                //  filter!", &LPI); Check(isa<ConstantArray>(Clause) ||
+                //  isa<ConstantAggregateZero>(Clause), "Filter operand is not
+                //  an array of constants!", &LPI); }`
+                //
+                // The first of those two has no counterpart: upstream's
+                // `ClauseType` is a two-valued enum stored per clause and
+                // `isCatch`/`isFilter` are its two readers, so the `else` arm
+                // *is* the filter arm and the `Check` can only fail on a
+                // corrupted `LandingPadInst`. llvmkit stores the same two-valued
+                // enum, so the branch is unrepresentable rather than merely
+                // untaken.
+                //
+                // `isa<ConstantArray> || isa<ConstantAggregateZero>` collapses
+                // to one test here: llvmkit spells a `zeroinitializer` as an
+                // aggregate of zeros, so both are `ConstantData::Aggregate`.
+                LandingPadClauseKind::Filter => self.verifier_check(
+                    f,
+                    bb,
+                    matches!(
+                        &self.module.context().value_data(clause).kind,
+                        ValueKindData::Constant(ConstantData::Aggregate(_))
+                    ),
+                    VerifierRule::EhPadInvalidStructure,
+                    "Filter operand is not an array of constants!",
+                )?,
+            }
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitResumeInst`.
+    fn check_resume(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        d: &ResumeInstData,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        // `Check(RI.getFunction()->hasPersonalityFn(), "ResumeInst needs to be
+        //  in a function with a personality.", &RI);`
+        self.verifier_check(
+            f,
+            bb,
+            f.personality_fn().is_some(),
+            VerifierRule::EhPadMissingPersonality,
+            "ResumeInst needs to be in a function with a personality.",
+        )?;
+        // `if (!LandingPadResultTy) LandingPadResultTy =
+        //  RI.getValue()->getType(); else Check(LandingPadResultTy ==
+        //  RI.getValue()->getType(), "The resume instruction should have a
+        //  consistent result type inside a function.", &RI);`
+        let value_ty = self.value_type(d.value.get());
+        match cx.landing_pad_result_ty.get() {
+            None => cx.landing_pad_result_ty.set(Some(value_ty)),
+            Some(established) => self.verifier_check(
+                f,
+                bb,
+                established == value_ty,
+                VerifierRule::EhPadInvalidStructure,
+                "The resume instruction should have a consistent result type inside a function.",
+            )?,
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitCatchPadInst`.
+    fn check_catch_pad(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        inst: &InstructionView<'ctx, B>,
+        d: &CatchPadInstData,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        // `Check(F->hasPersonalityFn(), "CatchPadInst needs to be in a
+        //  function with a personality.", &CPI);`
+        self.verifier_check(
+            f,
+            bb,
+            f.personality_fn().is_some(),
+            VerifierRule::EhPadMissingPersonality,
+            "CatchPadInst needs to be in a function with a personality.",
+        )?;
+        // `Check(isa<CatchSwitchInst>(CPI.getParentPad()), "CatchPadInst needs
+        //  to be directly nested in a CatchSwitchInst.", CPI.getParentPad());`
+        let parent_is_catch_switch = d.parent_pad.get().is_some_and(|parent| {
+            matches!(
+                &self.module.context().value_data(parent).kind,
+                ValueKindData::Instruction(instruction)
+                    if matches!(instruction.kind, InstructionKindData::CatchSwitch(_))
+            )
+        });
+        self.verifier_check(
+            f,
+            bb,
+            parent_is_catch_switch,
+            VerifierRule::EhPadInvalidStructure,
+            "CatchPadInst needs to be directly nested in a CatchSwitchInst.",
+        )?;
+        // `Check(&*BB->getFirstNonPHIIt() == &CPI, "CatchPadInst not the first
+        //  non-PHI instruction in the block.", &CPI);`
+        self.verifier_check(
+            f,
+            bb,
+            self.first_non_phi_in_block(f, bb.slot()) == Some(inst.slot()),
+            VerifierRule::EhPadInvalidStructure,
+            "CatchPadInst not the first non-PHI instruction in the block.",
+        )?;
+        // `visitEHPadPredecessors(CPI); visitFuncletPadInst(CPI);`
+        self.visit_eh_pad_predecessors(f, bb, inst.slot(), cx)?;
+        self.visit_funclet_pad(f, bb, inst.slot(), cx)
+    }
+
+    /// `Verifier::visitCatchReturnInst`.
+    fn check_catch_return(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        d: &CatchReturnInstData,
+    ) -> IrResult<()> {
+        // `Check(isa<CatchPadInst>(CatchReturn.getOperand(0)),
+        //  "CatchReturnInst needs to be provided a CatchPad", &CatchReturn,
+        //  CatchReturn.getOperand(0));`
+        let is_catch_pad = matches!(
+            &self.module.context().value_data(d.catch_pad.get()).kind,
+            ValueKindData::Instruction(instruction)
+                if matches!(instruction.kind, InstructionKindData::CatchPad(_))
+        );
+        self.verifier_check(
+            f,
+            bb,
+            is_catch_pad,
+            VerifierRule::EhPadInvalidStructure,
+            "CatchReturnInst needs to be provided a CatchPad",
+        )
+    }
+
+    /// `Verifier::visitCleanupPadInst`.
+    fn check_cleanup_pad(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        inst: &InstructionView<'ctx, B>,
+        d: &CleanupPadInstData,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        // `Check(F->hasPersonalityFn(), "CleanupPadInst needs to be in a
+        //  function with a personality.", &CPI);`
+        self.verifier_check(
+            f,
+            bb,
+            f.personality_fn().is_some(),
+            VerifierRule::EhPadMissingPersonality,
+            "CleanupPadInst needs to be in a function with a personality.",
+        )?;
+        // `Check(&*BB->getFirstNonPHIIt() == &CPI, "CleanupPadInst not the
+        //  first non-PHI instruction in the block.", &CPI);`
+        self.verifier_check(
+            f,
+            bb,
+            self.first_non_phi_in_block(f, bb.slot()) == Some(inst.slot()),
+            VerifierRule::EhPadInvalidStructure,
+            "CleanupPadInst not the first non-PHI instruction in the block.",
+        )?;
+        // `auto *ParentPad = CPI.getParentPad();
+        //  Check(isa<ConstantTokenNone>(ParentPad) ||
+        //  isa<FuncletPadInst>(ParentPad), "CleanupPadInst has an invalid
+        //  parent.", &CPI);`
+        let parent_pad = d.parent_pad.get().and_then(|slot| self.pad_ref(slot));
+        let parent_is_valid = match parent_pad {
+            None => true,
+            Some(parent) => matches!(
+                &self.module.context().value_data(parent).kind,
+                ValueKindData::Instruction(instruction)
+                    if is_funclet_pad_kind(&instruction.kind)
+            ),
+        };
+        self.verifier_check(
+            f,
+            bb,
+            parent_is_valid,
+            VerifierRule::EhPadInvalidStructure,
+            "CleanupPadInst has an invalid parent.",
+        )?;
+        // `visitEHPadPredecessors(CPI); visitFuncletPadInst(CPI);`
+        self.visit_eh_pad_predecessors(f, bb, inst.slot(), cx)?;
+        self.visit_funclet_pad(f, bb, inst.slot(), cx)
+    }
+
+    /// `Verifier::visitCatchSwitchInst`.
+    fn check_catch_switch(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        inst: &InstructionView<'ctx, B>,
+        d: &CatchSwitchInstData,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        // `Check(F->hasPersonalityFn(), "CatchSwitchInst needs to be in a
+        //  function with a personality.", &CatchSwitch);`
+        self.verifier_check(
+            f,
+            bb,
+            f.personality_fn().is_some(),
+            VerifierRule::EhPadMissingPersonality,
+            "CatchSwitchInst needs to be in a function with a personality.",
+        )?;
+        // `Check(&*BB->getFirstNonPHIIt() == &CatchSwitch, "CatchSwitchInst
+        //  not the first non-PHI instruction in the block.", &CatchSwitch);`
+        self.verifier_check(
+            f,
+            bb,
+            self.first_non_phi_in_block(f, bb.slot()) == Some(inst.slot()),
+            VerifierRule::EhPadInvalidStructure,
+            "CatchSwitchInst not the first non-PHI instruction in the block.",
+        )?;
+        // `auto *ParentPad = CatchSwitch.getParentPad();
+        //  Check(isa<ConstantTokenNone>(ParentPad) ||
+        //  isa<FuncletPadInst>(ParentPad), "CatchSwitchInst has an invalid
+        //  parent.", ParentPad);`
+        let parent_pad = d.parent_pad.get().and_then(|slot| self.pad_ref(slot));
+        let parent_is_valid = match parent_pad {
+            None => true,
+            Some(parent) => matches!(
+                &self.module.context().value_data(parent).kind,
+                ValueKindData::Instruction(instruction)
+                    if is_funclet_pad_kind(&instruction.kind)
+            ),
+        };
+        self.verifier_check(
+            f,
+            bb,
+            parent_is_valid,
+            VerifierRule::EhPadInvalidStructure,
+            "CatchSwitchInst has an invalid parent.",
+        )?;
+
+        // `if (BasicBlock *UnwindDest = CatchSwitch.getUnwindDest()) { … }`
+        if let Some(unwind_dest) = d.unwind_dest.get() {
+            let first_non_phi = self.first_non_phi_in_block(f, unwind_dest);
+            // `Check(I->isEHPad() && !isa<LandingPadInst>(I), "CatchSwitchInst
+            //  must unwind to an EH block which is not a landingpad.",
+            //  &CatchSwitch);`
+            self.verifier_check(
+                f,
+                bb,
+                first_non_phi.is_some_and(|slot| {
+                    self.is_eh_pad_instruction(slot) && !self.is_landing_pad(slot)
+                }),
+                VerifierRule::EhPadInvalidStructure,
+                "CatchSwitchInst must unwind to an EH block which is not a landingpad.",
+            )?;
+            // "Record catchswitch sibling unwinds for
+            //  verifySiblingFuncletUnwinds" —
+            // `if (getParentPad(&*I) == ParentPad)
+            //    SiblingFuncletInfo[&CatchSwitch] = &CatchSwitch;`
+            if let Some(unwind_pad) = first_non_phi
+                && self.parent_pad(unwind_pad) == parent_pad
+            {
+                self.record_sibling_funclet(cx, inst.slot(), inst.slot());
+            }
+        }
+
+        let handlers = d.handlers.borrow();
+        // `Check(CatchSwitch.getNumHandlers() != 0, "CatchSwitchInst cannot
+        //  have empty handler list", &CatchSwitch);`
+        self.verifier_check(
+            f,
+            bb,
+            !handlers.is_empty(),
+            VerifierRule::EhPadInvalidStructure,
+            "CatchSwitchInst cannot have empty handler list",
+        )?;
+        // `for (BasicBlock *Handler : CatchSwitch.handlers())
+        //    Check(isa<CatchPadInst>(Handler->getFirstNonPHIIt()),
+        //    "CatchSwitchInst handlers must be catchpads", &CatchSwitch,
+        //    Handler);`
+        for &handler in handlers.iter() {
+            let handler_is_catch_pad =
+                self.first_non_phi_in_block(f, handler).is_some_and(|slot| {
+                    matches!(
+                        &self.module.context().value_data(slot).kind,
+                        ValueKindData::Instruction(instruction)
+                            if matches!(instruction.kind, InstructionKindData::CatchPad(_))
+                    )
+                });
+            self.verifier_check(
+                f,
+                bb,
+                handler_is_catch_pad,
+                VerifierRule::EhPadInvalidStructure,
+                "CatchSwitchInst handlers must be catchpads",
+            )?;
+        }
+        drop(handlers);
+
+        // `visitEHPadPredecessors(CatchSwitch); visitTerminator(CatchSwitch);`
+        self.visit_eh_pad_predecessors(f, bb, inst.slot(), cx)
+    }
+
+    /// `Verifier::visitCleanupReturnInst`.
+    fn check_cleanup_return(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        d: &CleanupReturnInstData,
+    ) -> IrResult<()> {
+        // `Check(isa<CleanupPadInst>(CRI.getOperand(0)), "CleanupReturnInst
+        //  needs to be provided a CleanupPad", &CRI, CRI.getOperand(0));`
+        let is_cleanup_pad = matches!(
+            &self.module.context().value_data(d.cleanup_pad.get()).kind,
+            ValueKindData::Instruction(instruction)
+                if matches!(instruction.kind, InstructionKindData::CleanupPad(_))
+        );
+        self.verifier_check(
+            f,
+            bb,
+            is_cleanup_pad,
+            VerifierRule::EhPadInvalidStructure,
+            "CleanupReturnInst needs to be provided a CleanupPad",
+        )?;
+        // `if (BasicBlock *UnwindDest = CRI.getUnwindDest()) { … }`
+        if let Some(unwind_dest) = d.unwind_dest {
+            // `Check(I->isEHPad() && !isa<LandingPadInst>(I),
+            //  "CleanupReturnInst must unwind to an EH block which is not a
+            //  landingpad.", &CRI);`
+            self.verifier_check(
+                f,
+                bb,
+                self.first_non_phi_in_block(f, unwind_dest)
+                    .is_some_and(|slot| {
+                        self.is_eh_pad_instruction(slot) && !self.is_landing_pad(slot)
+                    }),
+                VerifierRule::EhPadInvalidStructure,
+                "CleanupReturnInst must unwind to an EH block which is not a landingpad.",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `SiblingFuncletInfo[pad] = terminator`, on the insertion-ordered `Vec`
+    /// standing for upstream's `MapVector`.
+    fn record_sibling_funclet(
+        &self,
+        cx: &FunctionContext<'_>,
+        pad: ValueSlot,
+        terminator: ValueSlot,
+    ) {
+        let mut info = cx.sibling_funclet_info.borrow_mut();
+        match info.iter_mut().find(|(key, _)| *key == pad) {
+            Some(entry) => entry.1 = terminator,
+            None => info.push((pad, terminator)),
+        }
+    }
+
+    /// `Verifier::visitFuncletPadInst` (`lib/IR/Verifier.cpp`), whole.
+    ///
+    /// The pad references upstream keeps in `Value *` are `Option<ValueSlot>`
+    /// here, `None` for `ConstantTokenNone`; `UnresolvedAncestorPad` is a
+    /// `Value *` that is separately *nullable*, so it is
+    /// `Option<Option<ValueSlot>>` — the outer layer is upstream's null, the
+    /// inner its token-none.
+    fn visit_funclet_pad(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        fpi: ValueSlot,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        // `User *FirstUser = nullptr; Value *FirstUnwindPad = nullptr;
+        //  SmallVector<FuncletPadInst *, 8> Worklist({&FPI});
+        //  SmallPtrSet<FuncletPadInst *, 8> Seen;`
+        let mut first_user: Option<ValueSlot> = None;
+        let mut first_unwind_pad: Option<Option<ValueSlot>> = None;
+        let mut worklist: Vec<ValueSlot> = vec![fpi];
+        let mut seen: HashSet<ValueSlot> = HashSet::new();
+
+        // `while (!Worklist.empty()) { FuncletPadInst *CurrentPad =
+        //  Worklist.pop_back_val(); … }`
+        while let Some(current_pad) = worklist.pop() {
+            // `Check(Seen.insert(CurrentPad).second, "FuncletPadInst must not
+            //  be nested within itself", CurrentPad);`
+            self.verifier_check(
+                f,
+                bb,
+                seen.insert(current_pad),
+                VerifierRule::FuncletPadNesting,
+                "FuncletPadInst must not be nested within itself",
+            )?;
+            // `Value *UnresolvedAncestorPad = nullptr;`
+            let mut unresolved_ancestor_pad: Option<Option<ValueSlot>> = None;
+            let current_pad_value =
+                Value::<B>::from_parts(current_pad, self.module, self.value_type(current_pad));
+            // `for (User *U : CurrentPad->users())`
+            for user in current_pad_value.users() {
+                let u = user.slot();
+                let ValueKindData::Instruction(user_instruction) =
+                    &self.module.context().value_data(u).kind
+                else {
+                    unreachable!("Value::users yields instructions")
+                };
+                // `BasicBlock *UnwindDest;` — the `if`/`else if` chain.
+                let unwind_dest: Option<ValueSlot> = match &user_instruction.kind {
+                    // `if (auto *CRI = dyn_cast<CleanupReturnInst>(U))
+                    //    UnwindDest = CRI->getUnwindDest();`
+                    InstructionKindData::CleanupReturn(cri) => cri.unwind_dest,
+                    // `else if (auto *CSI = dyn_cast<CatchSwitchInst>(U)) {
+                    //    if (CSI->unwindsToCaller()) continue;
+                    //    UnwindDest = CSI->getUnwindDest(); }`
+                    InstructionKindData::CatchSwitch(csi) => match csi.unwind_dest.get() {
+                        None => continue,
+                        dest => dest,
+                    },
+                    // `else if (auto *II = dyn_cast<InvokeInst>(U))
+                    //    UnwindDest = II->getUnwindDest();`
+                    InstructionKindData::Invoke(ii) => Some(ii.unwind_dest.get()),
+                    // `else if (isa<CallInst>(U)) continue;`
+                    InstructionKindData::Call(_) => continue,
+                    // `else if (auto *CPI = dyn_cast<CleanupPadInst>(U)) {
+                    //    Worklist.push_back(CPI); continue; }`
+                    InstructionKindData::CleanupPad(_) => {
+                        worklist.push(u);
+                        continue;
+                    }
+                    // `else { Check(isa<CatchReturnInst>(U), "Bogus funclet pad
+                    //  use", U); continue; }`
+                    other => {
+                        self.verifier_check(
+                            f,
+                            bb,
+                            matches!(other, InstructionKindData::CatchReturn(_)),
+                            VerifierRule::FuncletPadNesting,
+                            "Bogus funclet pad use",
+                        )?;
+                        continue;
+                    }
+                };
+
+                let unwind_pad: Option<ValueSlot>;
+                let exits_fpi: bool;
+                if let Some(unwind_dest) = unwind_dest {
+                    // `UnwindPad = &*UnwindDest->getFirstNonPHIIt();
+                    //  if (!cast<Instruction>(UnwindPad)->isEHPad()) continue;`
+                    let Some(pad) = self.first_non_phi_in_block(f, unwind_dest) else {
+                        continue;
+                    };
+                    if !self.is_eh_pad_instruction(pad) {
+                        continue;
+                    }
+                    unwind_pad = Some(pad);
+                    // `Value *UnwindParent = getParentPad(UnwindPad);
+                    //  if (UnwindParent == CurrentPad) continue;`
+                    let unwind_parent = self.parent_pad(pad);
+                    if unwind_parent == Some(current_pad) {
+                        continue;
+                    }
+                    // `Value *ExitedPad = CurrentPad; ExitsFPI = false;
+                    //  do { … } while (!isa<ConstantTokenNone>(ExitedPad));`
+                    let mut exited_pad: Option<ValueSlot> = Some(current_pad);
+                    let mut exits = false;
+                    loop {
+                        // `if (ExitedPad == &FPI) { ExitsFPI = true;
+                        //    UnresolvedAncestorPad = &FPI; break; }`
+                        if exited_pad == Some(fpi) {
+                            exits = true;
+                            unresolved_ancestor_pad = Some(Some(fpi));
+                            break;
+                        }
+                        // `Value *ExitedParent = getParentPad(ExitedPad);`
+                        let Some(current_exited) = exited_pad else {
+                            unreachable!("the loop condition below stops at token none")
+                        };
+                        let exited_parent = self.parent_pad(current_exited);
+                        // `if (ExitedParent == UnwindParent) {
+                        //    UnresolvedAncestorPad = ExitedParent; break; }`
+                        if exited_parent == unwind_parent {
+                            unresolved_ancestor_pad = Some(exited_parent);
+                            break;
+                        }
+                        exited_pad = exited_parent;
+                        if exited_pad.is_none() {
+                            break;
+                        }
+                    }
+                    exits_fpi = exits;
+                } else {
+                    // "Unwinding to caller exits all pads."
+                    // `UnwindPad = ConstantTokenNone::get(FPI.getContext());
+                    //  ExitsFPI = true; UnresolvedAncestorPad = &FPI;`
+                    unwind_pad = None;
+                    exits_fpi = true;
+                    unresolved_ancestor_pad = Some(Some(fpi));
+                }
+
+                if exits_fpi {
+                    // "This unwind edge exits FPI. Make sure it agrees with
+                    //  other such edges."
+                    if first_user.is_some() {
+                        // `Check(UnwindPad == FirstUnwindPad, "Unwind edges out
+                        //  of a funclet pad must have the same unwind dest",
+                        //  &FPI, U, FirstUser);`
+                        self.verifier_check(
+                            f,
+                            bb,
+                            first_unwind_pad == Some(unwind_pad),
+                            VerifierRule::FuncletPadNesting,
+                            "Unwind edges out of a funclet pad must have the same unwind dest",
+                        )?;
+                    } else {
+                        first_user = Some(u);
+                        first_unwind_pad = Some(unwind_pad);
+                        // "Record cleanup sibling unwinds for
+                        //  verifySiblingFuncletUnwinds" —
+                        // `if (isa<CleanupPadInst>(&FPI) &&
+                        //     !isa<ConstantTokenNone>(UnwindPad) &&
+                        //     getParentPad(UnwindPad) == getParentPad(&FPI))
+                        //   SiblingFuncletInfo[&FPI] = cast<Instruction>(U);`
+                        let fpi_is_cleanup_pad = matches!(
+                            &self.module.context().value_data(fpi).kind,
+                            ValueKindData::Instruction(instruction)
+                                if matches!(instruction.kind, InstructionKindData::CleanupPad(_))
+                        );
+                        if fpi_is_cleanup_pad
+                            && let Some(unwind_pad) = unwind_pad
+                            && self.parent_pad(unwind_pad) == self.parent_pad(fpi)
+                        {
+                            self.record_sibling_funclet(cx, fpi, u);
+                        }
+                    }
+                }
+                // "Make sure we visit all uses of FPI, but for nested pads stop
+                //  as soon as we know where they unwind to."
+                // `if (CurrentPad != &FPI) break;`
+                if current_pad != fpi {
+                    break;
+                }
+            }
+
+            // `if (UnresolvedAncestorPad) { … }`
+            if let Some(unresolved_ancestor_pad) = unresolved_ancestor_pad {
+                // `if (CurrentPad == UnresolvedAncestorPad) { assert(CurrentPad
+                //  == &FPI); continue; }` — "When CurrentPad is FPI itself, we
+                // don't mark it as resolved even if we've found an unwind edge
+                // that exits it, because we need to verify all direct uses of
+                // FPI."
+                if unresolved_ancestor_pad == Some(current_pad) {
+                    continue;
+                }
+                // "Pop off the worklist any nested pads that we've found an
+                //  unwind destination for."
+                let mut resolved_pad: Option<ValueSlot> = Some(current_pad);
+                while let Some(&uncle_pad) = worklist.last() {
+                    let ancestor_pad = self.parent_pad(uncle_pad);
+                    // "Walk ResolvedPad up the ancestor list until we either
+                    //  find the uncle's parent or the last resolved ancestor."
+                    while resolved_pad != ancestor_pad {
+                        // Upstream's `getParentPad(ResolvedPad)` asserts if the
+                        // walk ever reaches `ConstantTokenNone`; it cannot,
+                        // because `UnresolvedAncestorPad` is an ancestor of
+                        // `ResolvedPad`. Stopping is llvmkit's answer at the
+                        // point upstream asserts.
+                        let Some(current_resolved) = resolved_pad else {
+                            break;
+                        };
+                        let resolved_parent = self.parent_pad(current_resolved);
+                        if resolved_parent == unresolved_ancestor_pad {
+                            break;
+                        }
+                        resolved_pad = resolved_parent;
+                    }
+                    // "If the resolved ancestor search didn't find the uncle's
+                    //  parent, then the uncle is not yet resolved."
+                    if resolved_pad != ancestor_pad {
+                        break;
+                    }
+                    worklist.pop();
+                }
+            }
+        }
+
+        // `if (FirstUnwindPad) { if (auto *CatchSwitch =
+        //  dyn_cast<CatchSwitchInst>(FPI.getParentPad())) { … } }` — the guard
+        // is on the `Value *` being non-null, which a `ConstantTokenNone`
+        // still is, so it tests "an exiting edge was seen at all".
+        if let Some(first_unwind_pad) = first_unwind_pad {
+            let parent_pad = self.parent_pad(fpi);
+            let parent_is_catch_switch = parent_pad.is_some_and(|parent| {
+                matches!(
+                    &self.module.context().value_data(parent).kind,
+                    ValueKindData::Instruction(instruction)
+                        if matches!(instruction.kind, InstructionKindData::CatchSwitch(_))
+                )
+            });
+            if parent_is_catch_switch {
+                let Some(catch_switch) = parent_pad else {
+                    unreachable!("parent_is_catch_switch implies a parent")
+                };
+                // `BasicBlock *SwitchUnwindDest = CatchSwitch->getUnwindDest();
+                //  Value *SwitchUnwindPad = SwitchUnwindDest ?
+                //    &*SwitchUnwindDest->getFirstNonPHIIt() :
+                //    ConstantTokenNone::get(...);`
+                let switch_unwind_pad = self
+                    .terminator_unwind_dest(catch_switch)
+                    .unwrap_or(None)
+                    .and_then(|dest| self.first_non_phi_in_block(f, dest));
+                // `Check(SwitchUnwindPad == FirstUnwindPad, "Unwind edges out
+                //  of a catch must have the same unwind dest as the parent
+                //  catchswitch", &FPI, FirstUser, CatchSwitch);`
+                self.verifier_check(
+                    f,
+                    bb,
+                    switch_unwind_pad == first_unwind_pad,
+                    VerifierRule::FuncletPadNesting,
+                    "Unwind edges out of a catch must have the same unwind dest as the parent catchswitch",
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `Verifier::verifySiblingFuncletUnwinds` (`lib/IR/Verifier.cpp`).
+    ///
+    /// Upstream's `CycleNodes` walk is not reproduced: it exists only to build
+    /// the value list `CheckFailed` prints beside the message, and
+    /// `IrError::VerifierFailure` has no field for one. The cycle *detection*
+    /// — the `Active` set — is unchanged.
+    fn verify_sibling_funclet_unwinds(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        // `SmallPtrSet<Instruction *, 8> Visited; SmallPtrSet<Instruction *, 8>
+        //  Active;`
+        let mut visited: HashSet<ValueSlot> = HashSet::new();
+        let mut active: HashSet<ValueSlot> = HashSet::new();
+        let info = cx.sibling_funclet_info.borrow().clone();
+        // `for (const auto &Pair : SiblingFuncletInfo)`
+        for (pred_pad, terminator) in &info {
+            // `if (Visited.count(PredPad)) continue; Active.insert(PredPad);`
+            if visited.contains(pred_pad) {
+                continue;
+            }
+            active.insert(*pred_pad);
+            let mut terminator = *terminator;
+            // `do { … } while (true);`
+            //
+            // `getSuccPad` is upstream's first statement in the body and
+            // cannot fail there; `None` here stands for the two shapes its
+            // `cast` and its `getFirstNonPHIIt()` would assert on, so the
+            // `while let` is upstream's `do { … } while (true)` with that
+            // assertion spelled as an exit.
+            while let Some(succ_pad) = self.succ_pad(f, terminator) {
+                // `if (Active.count(SuccPad)) { … Check(false, "EH pads can't
+                //  handle each other's exceptions", CycleNodes); }`
+                if active.contains(&succ_pad) {
+                    let report_at = self
+                        .block_of(f, succ_pad)
+                        .or_else(|| self.block_of(f, terminator));
+                    let Some(report_at) = report_at else {
+                        break;
+                    };
+                    return Err(self.fail(
+                        f,
+                        &report_at,
+                        VerifierRule::FuncletPadNesting,
+                        "EH pads can't handle each other's exceptions".to_owned(),
+                    ));
+                }
+                // "Don't re-walk a node we've already checked" —
+                // `if (!Visited.insert(SuccPad).second) break;`
+                if !visited.insert(succ_pad) {
+                    break;
+                }
+                // "Walk to this successor if it has a map entry."
+                let Some((_, next_terminator)) = info.iter().find(|(key, _)| *key == succ_pad)
+                else {
+                    break;
+                };
+                terminator = *next_terminator;
+                active.insert(succ_pad);
+            }
+            // "Each node only has one successor, so we've walked all the active
+            //  nodes' successors."
+            active.clear();
         }
         Ok(())
     }

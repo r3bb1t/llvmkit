@@ -192,9 +192,14 @@ fn inline_asm_without_a_function_type_is_rejected() {
 ///
 /// Both used to be parse-time rejections with llvmkit wordings, which shadowed
 /// the verifier rule llvmkit already had — the ordinary-call one carries
-/// upstream's text verbatim. The fixtures are llvmkit's, because upstream's
-/// own splits of `inline-asm-constraint-error.ll` all stop at
-/// `InlineAsm::verify` and never reach these two.
+/// upstream's text verbatim.
+///
+/// The fixtures here are llvmkit's minimal shapes; the *upstream* fixture that
+/// pins both messages is `test/Verifier/callbr.ll`, ported whole by
+/// [`upstream_callbr_label_constraint_fixture_messages_match`] below. This test
+/// used to say no upstream fixture reached these two rules, which was a claim
+/// about the splits of `inline-asm-constraint-error.ll` only and read as a
+/// claim about the tree.
 #[test]
 fn inline_asm_label_constraint_rules_are_verifier_rules() {
     const CALL: &[u8] = include_bytes!(
@@ -229,6 +234,213 @@ fn inline_asm_label_constraint_rules_are_verifier_rules() {
             "{name}: unexpected error: {err}"
         );
     }
+}
+
+/// `llvm/test/Verifier/callbr.ll`, vendored verbatim; its six inline-asm
+/// functions cut out and verified one at a time, each against the `CHECK` line
+/// the fixture writes for it.
+///
+/// Upstream's `RUN` line is `not opt -S %s -passes=verify`, so the whole file
+/// runs through `Verifier` and its diagnostics are `Check` literals. It is
+/// per-function here for the reason
+/// [`upstream_musttail_invalid_fixture_messages_match`] is: `verify_borrowed`
+/// reports the first failure where upstream's `Verifier` accumulates.
+///
+/// **The four `llvm.callbr.landingpad` functions of this fixture are not
+/// ported.** They belong to `Verifier::visitIntrinsicCall`'s
+/// `Intrinsic::callbr_landingpad` arm — `Intrinsic in block must have 1 unique
+/// predecessor`, `Intrinsic's corresponding callbr must have intrinsic's
+/// parent basic block in indirect destination list`, `No other instructions
+/// may proceed intrinsic` — a routine `check_intrinsic_call` does not carry.
+/// See `docs/divergences.md`.
+#[test]
+fn upstream_callbr_label_constraint_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/callbr.ll");
+    let cases = [
+        (
+            "define void @too_few_label_constraints(",
+            Some("Number of label constraints does not match number of callbr dests"),
+        ),
+        ("define void @correct_label_constraints(", None),
+        (
+            "define void @too_many_label_constraints(",
+            Some("Number of label constraints does not match number of callbr dests"),
+        ),
+        (
+            "define void @label_constraint_without_callbr(",
+            Some("Label constraints can only be used with callbr"),
+        ),
+        (
+            "define void @callbr_without_label_constraint(",
+            Some("Number of label constraints does not match number of callbr dests"),
+        ),
+        // `;; Ensure you can use the return value of a callbr in indirect
+        // targets. No issue!`
+        ("define i32 @test4(", None),
+    ];
+    for (marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, "", marker, expected);
+    }
+}
+
+/// `llvm/test/Verifier/callbr-intrinsic.ll`, vendored verbatim; each of its six
+/// functions cut out with the `declare` it needs and verified on its own.
+///
+/// This is `Verifier::visitCallBrInst`'s whole non-inline-asm arm: the
+/// `getCalledFunction` `Check`, the operand-bundle `Check`, the
+/// `Intrinsic::amdgcn_kill` case's two `Check`s, and the `default:`
+/// `CheckFailed`.
+///
+/// `@test_callbr_intrinsic_wrong_signature` reaches the same verdict from the
+/// **parser**, not the verifier: `parse_callbr` rejects an indirect callee
+/// outright because the callbr builder has no indirect-callee form. That is
+/// `docs/divergences.md` entry 27, which the verifier half of this port does
+/// not close — the `Callbr: indirect function / invalid signature` `Check`
+/// now exists in `check_callbr` but nothing in llvmkit can build a `callbr`
+/// that reaches it.
+#[test]
+fn upstream_callbr_intrinsic_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/callbr-intrinsic.ll");
+    const KILL: &str = "declare void @llvm.amdgcn.kill(i1)\n";
+    const WORKITEM: &str = "declare i32 @llvm.amdgcn.workitem.id.x()\n";
+    let cases = [
+        (
+            KILL,
+            "define void @test_callbr_intrinsic_indirect0(",
+            "Callbr amdgcn_kill only supports one indirect dest",
+        ),
+        (
+            KILL,
+            "define void @test_callbr_intrinsic_indirect2(",
+            "Callbr amdgcn_kill only supports one indirect dest",
+        ),
+        (
+            KILL,
+            "define void @test_callbr_intrinsic_no_unreachable(",
+            "Callbr amdgcn_kill indirect dest needs to be unreachable",
+        ),
+        (
+            WORKITEM,
+            "define void @test_callbr_intrinsic_unsupported(",
+            "Callbr currently only supports asm-goto and selected intrinsics",
+        ),
+        (
+            KILL,
+            "define void @test_callbr_intrinsic_no_operand_bundles(",
+            "Callbr for intrinsics currently doesn't support operand bundles",
+        ),
+    ];
+    for (prelude, marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, prelude, marker, Some(expected));
+    }
+
+    // `@test_callbr_intrinsic_wrong_signature` — rejected by the parser here,
+    // by the verifier upstream. Entry 27.
+    let source = fixture_define(
+        FIXTURE,
+        "define void @test_callbr_intrinsic_wrong_signature(",
+    );
+    let module = Module::dynamic("test_callbr_intrinsic_wrong_signature");
+    let err = Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("llvmkit rejects an indirect callbr at parse time — entry 27");
+    assert!(
+        err.to_string()
+            .contains("expected direct function callee for callbr"),
+        "{err}"
+    );
+}
+
+/// `llvm/test/Verifier/swifterror.ll`, vendored verbatim; its four `define`s
+/// cut out and verified one at a time.
+///
+/// The rules are `Verifier::verifySwiftErrorValue` (reached from
+/// `visitFunction`'s argument loop for `@foo` and from `visitAllocaInst` for
+/// the rest), `Verifier::verifySwiftErrorCall`, and the `swifterror` loop of
+/// `Verifier::visitCallBase`.
+///
+/// **The fixture's last two lines are `declare`s and are not ported.**
+/// `Cannot have multiple 'swifterror' parameters!` is a
+/// `Verifier::verifyFunctionAttrs` `Check` and `Attribute 'swifterror'
+/// applied to incompatible type!` is one of `Verifier::verifyParameterAttrs`,
+/// which that routine calls. Neither routine has a counterpart here —
+/// `verifier.rs`'s module header says so ("Per-function attribute coherence
+/// rules … are out of scope"). See `docs/divergences.md`.
+#[test]
+fn upstream_swifterror_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/swifterror.ll");
+    let cases = [
+        (
+            "",
+            "define float @foo(",
+            "swifterror value can only be loaded and stored from, or as a swifterror argument!",
+        ),
+        (
+            "declare float @foo(ptr swifterror)\n",
+            "define float @caller(",
+            "swifterror argument for call has mismatched alloca",
+        ),
+        (
+            "",
+            "define void @swifterror_alloca_invalid_type(",
+            "swifterror alloca must have pointer type",
+        ),
+        (
+            "",
+            "define void @swifterror_alloca_array(",
+            "swifterror alloca must not be array allocation",
+        ),
+    ];
+    for (prelude, marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, prelude, marker, Some(expected));
+    }
+}
+
+/// Parse `prelude` plus the `define` beginning at `marker`, verify it, and
+/// assert either that it verifies clean (`expected` is `None`) or that the
+/// failure carries `expected`.
+fn assert_fixture_case_verifies(
+    fixture: &str,
+    prelude: &str,
+    marker: &str,
+    expected: Option<&str>,
+) {
+    let source = format!("{prelude}{}", fixture_define(fixture, marker));
+    let module = Module::dynamic("fixture_case");
+    Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .unwrap_or_else(|e| panic!("case {marker} parses: {e}"));
+    match expected {
+        None => module
+            .verify_borrowed()
+            .unwrap_or_else(|e| panic!("case {marker} carries no CHECK line, so it verifies: {e}")),
+        Some(expected) => {
+            let err = module
+                .verify_borrowed()
+                .expect_err("upstream's `RUN` line rejects this module");
+            let llvmkit_ir::IrError::VerifierFailure { message, .. } = err else {
+                panic!("case {marker}: expected a verifier failure, got {err:?}");
+            };
+            assert!(
+                message.contains(expected),
+                "case {marker}: {message:?} does not contain {expected:?}"
+            );
+        }
+    }
+}
+
+/// The `define` beginning at `marker`, through its closing brace.
+fn fixture_define(fixture: &str, marker: &str) -> String {
+    let start = fixture
+        .find(marker)
+        .unwrap_or_else(|| panic!("missing define marker {marker}"));
+    let end = fixture[start..]
+        .find("\n}")
+        .map(|idx| start + idx + 3)
+        .unwrap_or_else(|| panic!("missing define end for {marker}"));
+    fixture[start..end].to_owned()
 }
 
 /// Mirrors `test/Assembler/callbr.ll` successor structure with the upstream
@@ -1297,13 +1509,12 @@ fn upstream_ptrauth_operand_bundle_fixture_messages_match() {
 /// `elementtype(i32)`.
 ///
 /// Upstream's `RUN` line is `not llvm-as < %s -o /dev/null 2>&1 | FileCheck %s`
-/// — `llvm-as` runs the verifier, and the rejection is
-/// `Verifier::verifyInlineAsmCall`'s per-operand half, which llvmkit does not
-/// port (`docs/divergences.md` entry 85). So only the parse/print half is
-/// ported: the `CHECK-NEXT` lines are the offending instruction as `AsmWriter`
-/// prints it, and `@okay`'s call is the positive case with no `CHECK` of its
-/// own. That llvmkit accepts the module is entry 85's divergence, not this
-/// test's claim.
+/// — `llvm-as` runs the verifier, so the fixture has two halves. This test is
+/// the parse/print half: the `CHECK-NEXT` lines are the offending instruction
+/// as `AsmWriter` prints it, and `@okay`'s call is the positive case with no
+/// `CHECK` of its own. The `CHECK` half — the three
+/// `Verifier::verifyInlineAsmCall` messages — is
+/// [`upstream_inline_asm_indirect_operand_fixture_messages_match`].
 #[test]
 fn inline_asm_call_elementtype_argument_attribute_round_trips() {
     const FIXTURE: &[u8] =
@@ -1331,6 +1542,46 @@ fn inline_asm_call_elementtype_argument_attribute_round_trips() {
             Check::Line(r#"callbr void asm "addl $1, $0", "=*rm,r"(i32 %p, i32 %x)"#),
         ],
     );
+}
+
+/// `llvm/test/Verifier/inline-asm-indirect-operand.ll`'s `CHECK` half: each of
+/// its six functions cut out and verified on its own, against the message the
+/// fixture writes above it.
+///
+/// These are the three `Check`s of `Verifier::verifyInlineAsmCall`'s
+/// per-operand loop, and the `call` / `invoke` / `callbr` spread is the
+/// fixture's own point — upstream reaches all three from one routine, and so
+/// does llvmkit now. `@okay` carries no `CHECK` line, so it must verify clean.
+#[test]
+fn upstream_inline_asm_indirect_operand_fixture_messages_match() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/LLParser-parseCall/inline-asm-indirect-operand.ll");
+    let cases = [
+        ("define void @okay(", None),
+        (
+            "define void @not_pointer_arg(",
+            Some("Operand for indirect constraint must have pointer type"),
+        ),
+        (
+            "define void @not_indirect(",
+            Some("Elementtype attribute can only be applied for indirect constraints"),
+        ),
+        (
+            "define void @missing_elementtype(",
+            Some("Operand for indirect constraint must have elementtype attribute"),
+        ),
+        (
+            "define void @not_pointer_arg_invoke(",
+            Some("Operand for indirect constraint must have pointer type"),
+        ),
+        (
+            "define void @not_pointer_arg_callbr(",
+            Some("Operand for indirect constraint must have pointer type"),
+        ),
+    ];
+    for (marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, "", marker, expected);
+    }
 }
 
 /// **No upstream counterpart.** The rule anchor is `LLParser::parseCall`'s

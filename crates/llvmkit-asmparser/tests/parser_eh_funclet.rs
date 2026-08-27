@@ -340,6 +340,16 @@ fn wineh_missing_funclet_token_is_diagnosed() {
 /// Two ways upstream's rule stays silent, neither of which the fixture itself
 /// exercises: naming the funclet, and leaving the function's personality off.
 /// Without them, a rule that fired unconditionally would pass the fixture.
+///
+/// The two halves assert different things, and the reason is upstream's own:
+/// a `funclet` bundle makes the module **valid**, while removing the
+/// `personality` makes it invalid for a *different* reason —
+/// `Verifier::visitCatchSwitchInst`'s `CatchSwitchInst needs to be in a
+/// function with a personality.`, which llvmkit reports since the EH chapter
+/// was ported. So the second half asserts that the rejection is that one and
+/// not `Missing funclet token on intrinsic call`, which is exactly the claim
+/// the case exists to make. It used to assert `is_ok()`, which held only
+/// because the personality `Check` was unported.
 #[test]
 fn wineh_funclet_token_and_missing_personality_both_silence_the_rule() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
@@ -356,9 +366,13 @@ fn wineh_funclet_token_and_missing_personality_both_silence_the_rule() {
     let without_personality = FIXTURE.replace(" personality ptr @__CxxFrameHandler3", "");
     assert_ne!(without_personality, FIXTURE, "fixture text moved");
 
-    for (name, source) in [
-        ("funclet token supplied", with_token),
-        ("no personality function", without_personality),
+    for (name, source, expected) in [
+        ("funclet token supplied", with_token, None),
+        (
+            "no personality function",
+            without_personality,
+            Some("CatchSwitchInst needs to be in a function with a personality."),
+        ),
     ] {
         let module = Module::dynamic("test");
         Parser::new(source.as_bytes(), &module)
@@ -370,12 +384,24 @@ fn wineh_funclet_token_and_missing_personality_both_silence_the_rule() {
 {source}"
                 )
             });
-        assert!(
-            module.verify_borrowed().is_ok(),
-            "{name}: {:?}
-{source}",
-            module.verify_borrowed().err()
-        );
+        match (module.verify_borrowed(), expected) {
+            (Ok(()), None) => {}
+            (Ok(()), Some(expected)) => {
+                panic!("{name}: verified clean, want {expected:?}\n{source}")
+            }
+            (Err(e), None) => panic!("{name}: {e:?}\n{source}"),
+            (Err(llvmkit_ir::IrError::VerifierFailure { message, .. }), Some(expected)) => {
+                assert!(
+                    message.contains(expected),
+                    "{name}: {message:?} does not contain {expected:?}"
+                );
+                assert!(
+                    !message.contains("Missing funclet token on intrinsic call"),
+                    "{name}: the funclet-token rule must stay silent, got {message:?}"
+                );
+            }
+            (Err(other), Some(_)) => panic!("{name}: expected a verifier failure, got {other:?}"),
+        }
     }
 }
 
@@ -440,4 +466,151 @@ catchpad1:
         "got:\n{first}"
     );
     assert_eq!(first, second, "print/re-parse is not idempotent");
+}
+
+/// `llvm/test/Verifier/invalid-eh.ll`, vendored verbatim, run the way its own
+/// `RUN` lines run it: twenty-six `sed`-selected cases, each its own module,
+/// each asserted against the `CHECK<n>` line the fixture writes for it.
+///
+/// This is `Verifier`'s EH chapter end to end — `visitEHPadPredecessors`,
+/// `visitFuncletPadInst` and `verifySiblingFuncletUnwinds`, plus the per-opcode
+/// `visit*Inst` routines that call them and `visitInvokeInst`'s
+/// unwind-destination `Check`.
+///
+/// One message is asserted per case, because upstream's `Verifier` accumulates
+/// where `Module::verify_borrowed` reports the first failure. For twenty-four
+/// of the twenty-six that message is the case's own `CHECK<n>` line; for the
+/// two exceptions it is the other upstream `Check` literal the same module
+/// raises first, and the table says which. The `CHECK<n>-NEXT` lines are
+/// `CheckFailed`'s value list, which `IrError::VerifierFailure` has no field
+/// for.
+#[test]
+fn upstream_invalid_eh_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/invalid-eh.ll");
+    let cases: [(u32, &str); 26] = [
+        (1, "CatchReturnInst needs to be provided a CatchPad"),
+        // T2 and T4 spell `define void @f()` with no `personality`, and both
+        // carry a pad. Upstream emits `CHECK2` / `CHECK4` *and* the personality
+        // `Check` of `visitCleanupPadInst` / `visitCatchSwitchInst`, in that
+        // order; `Module::verify_borrowed` reports only the first. The
+        // expectation is therefore upstream's other literal for the same
+        // module, not a llvmkit wording.
+        (
+            2,
+            "CleanupPadInst needs to be in a function with a personality.",
+        ),
+        (3, "CleanupReturnInst needs to be provided a CleanupPad"),
+        (
+            4,
+            "CatchSwitchInst needs to be in a function with a personality.",
+        ),
+        (5, "CleanupPadInst has an invalid parent"),
+        (
+            6,
+            "Block containg CatchPadInst must be jumped to only by its catchswitch",
+        ),
+        (7, "CatchSwitchInst has an invalid parent"),
+        (8, "CatchSwitchInst handlers must be catchpads"),
+        (9, "EH pad cannot handle exceptions raised within it"),
+        (10, "EH pad cannot handle exceptions raised within it"),
+        (11, "A single unwind edge may only enter one EH pad"),
+        (12, "A cleanupret must exit its cleanup"),
+        (13, "EH pad cannot handle exceptions raised within it"),
+        (
+            14,
+            "Unwind edges out of a funclet pad must have the same unwind dest",
+        ),
+        (
+            15,
+            "Unwind edges out of a funclet pad must have the same unwind dest",
+        ),
+        (
+            16,
+            "Unwind edges out of a catch must have the same unwind dest as the parent catchswitch",
+        ),
+        (
+            17,
+            "Unwind edges out of a catch must have the same unwind dest as the parent catchswitch",
+        ),
+        (18, "EH pads can't handle each other's exceptions"),
+        (19, "EH pads can't handle each other's exceptions"),
+        (20, "Catchswitch cannot unwind to one of its catchpads"),
+        (21, "Catchswitch cannot unwind to one of its catchpads"),
+        (
+            22,
+            "The unwind destination does not have an exception handling instruction!",
+        ),
+        (
+            23,
+            "CatchPadInst needs to be directly nested in a CatchSwitchInst.",
+        ),
+        (24, "A single unwind edge may only enter one EH pad"),
+        (25, "EH pad jumps through a cycle of pads"),
+        (26, "A cleanupret must exit its cleanup"),
+    ];
+    let mut mismatches: Vec<String> = Vec::new();
+    for (case, expected) in cases {
+        let source = invalid_eh_case(FIXTURE, case);
+        let module = Module::dynamic("invalid_eh");
+        let parsed = Parser::new(source.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module();
+        if let Err(e) = parsed {
+            mismatches.push(format!("T{case}: parse failed: {e}"));
+            continue;
+        }
+        let message = match module.verify_borrowed() {
+            Ok(()) => {
+                mismatches.push(format!("T{case}: verified clean, want {expected:?}"));
+                continue;
+            }
+            Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => message,
+            Err(other) => panic!("T{case}: expected a verifier failure, got {other:?}"),
+        };
+        if !message.contains(expected) {
+            mismatches.push(format!("T{case}: got {message:?}, want {expected:?}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+/// `sed -e s/.T<case>://` — the transformation each of `invalid-eh.ll`'s `RUN`
+/// lines applies before handing the file to `llvm-as` / `opt`. It uncomments
+/// the selected case's lines and leaves every other `;T<n>:` line as the
+/// comment it already is.
+fn invalid_eh_case(fixture: &str, case: u32) -> String {
+    let marker = format!(";T{case}:");
+    let mut out: String = fixture
+        .lines()
+        .map(|line| line.replacen(&marker, "", 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    out.push('\n');
+    out
+}
+
+/// `llvm/test/Verifier/invalid-cleanuppad-chain.ll`, vendored verbatim.
+///
+/// Its first `CHECK` is asserted. The second — `Parent pad must be
+/// catchpad/cleanuppad/catchswitch`, from `visitEHPadPredecessors` walking
+/// `bb2`'s `cleanuppad` back through the `cleanupret from undef` that reaches
+/// it — is upstream's second accumulated failure, and
+/// `Module::verify_borrowed` stops at the first.
+#[test]
+fn upstream_invalid_cleanuppad_chain_fixture_message_matches() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/invalid-cleanuppad-chain.ll");
+    let module = Module::dynamic("invalid_cleanuppad_chain");
+    Parser::new(FIXTURE.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("the fixture parses; the verifier is the layer that rejects it");
+    let message = match module.verify_borrowed() {
+        Ok(()) => panic!("upstream's RUN line is `not llvm-as`"),
+        Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => message,
+        Err(other) => panic!("expected a verifier failure, got {other:?}"),
+    };
+    assert!(
+        message.contains("CleanupReturnInst needs to be provided a CleanupPad"),
+        "{message:?}"
+    );
 }

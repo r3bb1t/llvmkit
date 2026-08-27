@@ -830,160 +830,51 @@ Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
 
-### 128. `Verifier::visitCallBrInst`'s non-inline-asm arm is unported, so a `callbr` may carry operand bundles and target any function
+### 132. `Verifier::visitIntrinsicCall`'s preamble and its per-intrinsic `switch` are unported, so an intrinsic's own rules are never checked
 
-*verifier — call family* — crates/llvmkit-ir/src/verifier.rs (`check_callbr`)
+*verifier — call family* — crates/llvmkit-ir/src/verifier.rs (`check_intrinsic_call`)
 
-Found 2026-08-27 while porting `Verifier::visitCallBase`'s operand-bundle loop
-(former entry 125, closed by that commit): deciding where the loop runs meant
-reading `visitCallBrInst`, which turns out **not** to call `visitCallBase` at
-all.
+Found 2026-08-27 while porting `Verifier::visitCallBrInst` (former entry 128):
+`test/Verifier/callbr.ll`'s four `llvm.callbr.landingpad` functions could not
+be ported with the rest of the fixture, because the routine that answers them
+does not exist here.
 
-- **LLVM:** `Verifier::visitCallBrInst` splits on `CBI.isInlineAsm()`. The
-  non-asm arm raises four things llvmkit does not: `Callbr: indirect function /
-  invalid signature` (entry **27**, which is about the *layer* llvmkit raises it
-  at), `Callbr for intrinsics currently doesn't support operand bundles`, a
-  `switch` on the intrinsic id whose only arm is `Intrinsic::amdgcn_kill`
-  (`Callbr amdgcn_kill only supports one indirect dest`, `Callbr amdgcn_kill
-  indirect dest needs to be unreachable`), and a `default:` that fails outright
-  with `Callbr currently only supports asm-goto and selected intrinsics`. The
-  inline-asm arm adds `Unwinding from Callbr is not allowed`.
-- **llvmkit:** `check_callbr` ports the destination-membership checks and
-  `verifyInlineAsmCall`'s label-count arm. None of the five above exists, so
-  `callbr void @f() [ "deopt"() ] to label %c []` and a `callbr` to any ordinary
-  function verify clean here and are rejected upstream.
-- **Why:** `visitCallBrInst` was never ported as a routine; `check_callbr` grew
-  from the two checks the `callbr` builder needed. The operand-bundle half in
-  particular was invisible until entry 125's port had to establish that
-  `visitCallBase` — and therefore the bundle loop — never runs for a `callbr`:
-  `grep -n "visitCallBase(" lib/IR/Verifier.cpp` prints the declaration, the
-  definition, and two call sites, those two being `visitCallInst` and
-  `visitInvokeInst`.
-- **Fix:** port `visitCallBrInst` whole, both arms, in upstream's order. The
-  `default:` arm is the reason this is not a one-line addition — it rejects every
-  non-asm `callbr` that is not `llvm.amdgcn.kill`, which is a much wider verdict
-  change than the bundle prohibition alone, and it wants checking against the
-  corpus in the same commit. Pair it with entry **27**, which moves the
-  indirect-callee rejection from the parser into this same routine.
-
-### 129. `Verifier`'s three funclet-nesting routines are unported, so an ill-nested EH graph verifies
-
-*verifier — EH* — crates/llvmkit-ir/src/verifier.rs (the `CleanupPad | CatchPad | CatchReturn | CleanupReturn | CatchSwitch => Ok(())` arm of `visit_instruction`)
-
-Found 2026-08-27 while closing the `Missing funclet token on intrinsic call`
-gap (former entry 112). **That entry's `Fix` line named these three routines as
-the "pad colouring" the funclet-token rule depends on. They are not:** `Verifier::visitIntrinsicCall`'s funclet arm reads
-`BlockEHFuncletColors`, which is written only by `colorEHFunclets`
-(`lib/IR/EHPersonalities.cpp`) — `grep -n "BlockEHFuncletColors"
-lib/IR/Verifier.cpp` prints the field declaration, the per-function `clear()`,
-and three lines inside that arm, and nothing else. The three routines below
-write a *different* map,
-`SiblingFuncletInfo`. Closing 112 therefore did not touch them, and this entry
-exists so the gap does not vanish with it.
-
-- **LLVM:** `Verifier::visitFuncletPadInst` walks a `catchpad` / `cleanuppad`'s
-  users to prove every unwind edge leaving it agrees on a destination
-  (`FuncletPadInst must not be nested within itself`, `Bogus funclet pad use`,
-  `Unwind edges out of a funclet pad must have the same unwind dest`, `Unwind
-  edges out of a catch must have the same unwind dest as the parent
-  catchswitch`), recording cleanup siblings in `SiblingFuncletInfo`.
-  `Verifier::visitEHPadPredecessors` checks every predecessor edge into an EH pad
-  (`EH pad cannot be in entry block.`, `Block containing LandingPadInst must be
-  jumped to only by the unwind edge of an invoke.`, `Block containg CatchPadInst
-  must be jumped to only by its catchswitch.`, `Catchswitch cannot unwind to one
-  of its catchpads`, `EH pad must be jumped to via an unwind edge`, `A cleanupret
-  must exit its cleanup`, `EH pad cannot handle exceptions raised within it`, `A
-  single unwind edge may only enter one EH pad`, `EH pad jumps through a cycle of
-  pads`, `Parent pad must be catchpad/cleanuppad/catchswitch`).
-  `Verifier::verifySiblingFuncletUnwinds` then walks `SiblingFuncletInfo` for
-  cycles (`EH pads can't handle each other's exceptions`).
-- **llvmkit:** every funclet-pad opcode answers `Ok(())` from `visit_instruction`'s
-  `CleanupPad | CatchPad | CatchReturn | CleanupReturn | CatchSwitch` arm.
-  `grep -rn "EH pads can't handle\|Bogus funclet pad use\|EH pad cannot be in entry
-  block\|must exit its cleanup" --include=*.rs crates/` returns nothing, so no
-  other file carries them either.
-- **Why:** the funclet opcodes reached the model and the printer before the
-  verifier had an EH chapter. The commit that closed the `Missing funclet token
-  on intrinsic call` gap (former entry 112) added that one rule — the one its
-  fixture pinned — and nothing else.
-- **Fix:** port the three as three routines, in that order, with
-  `SiblingFuncletInfo` as per-function verifier state the way
-  `FunctionContext::eh_funclet_colors` now carries `BlockEHFuncletColors`.
-  `getParentPad` and `getSuccPad` are the two file-local helpers they share and
-  want porting first. Fixtures, from `ls test/Verifier | grep -iE
-  'catch|cleanup|pad|eh'`: `test/Verifier/invalid-eh.ll` and
-  `test/Verifier/invalid-cleanuppad-chain.ll`.
-
-### 131. `Verifier::visitAtomicCmpXchgInst`'s operand-type and size checks are unported, so a `cmpxchg` on any first-class type verifies
-
-*verifier* — crates/llvmkit-ir/src/verifier.rs (`check_cmpxchg`)
-
-Found 2026-08-27 while giving every `VerifierRule` upstream's `Check` literal
-(former entry 121): `check_cmpxchg` had no site to carry
-`cmpxchg operand must have integer or pointer type`, because it does not make
-that check at all.
-
-- **LLVM:** `Verifier::visitAtomicCmpXchgInst` is two statements carrying three `Check`s between them.
-  `Check(ElTy->isIntOrPtrTy(), "cmpxchg operand must have integer or pointer type", ElTy, &CXI)`
-  on the compare operand's type, then `checkAtomicMemAccessSize(ElTy, &CXI)`,
-  which is itself two `Check`s — `atomic memory access' size must be byte-sized`
-  and `atomic memory access' operand must have a power-of-two size`.
-- **llvmkit:** `check_cmpxchg` checks four other things — the pointer operand is
-  a pointer, `cmp` and `new` agree, both orderings are at least monotonic, and
-  the failure ordering is not `release`/`acq_rel` — and none of upstream's.
-  `cmpxchg ptr %p, float 0.0, float 1.0 seq_cst seq_cst` and
-  `cmpxchg ptr %p, i9 0, i9 1 seq_cst seq_cst` are the two shapes that separates
-  them: both parse (`LLParser::parseCmpXchg` and llvmkit's port both demand only
-  `isFirstClassType`, and a `float` and an `i9` are), upstream's verifier rejects
-  the first on `isIntOrPtrTy` and the second on the power-of-two size, and
-  nothing in llvmkit's `check_cmpxchg` looks at either. **Derived from the two
-  routines, not from a run** — no probe was written, so treat the two examples as
-  what the code says will happen rather than as observed output. The four llvmkit
-  *does* make are the `assert`s
-  inside `AtomicCmpXchgInst::Init`, raised as verifier failures because
-  production paths do not panic; they carry no upstream literal and say so at
-  the site.
-- **Why:** unrecorded until now. The `atomic` load/store twins are ported —
-  `check_atomic_access_type` and `check_atomic_access_size` exist and are called
-  from `check_load` and `check_store` — so this is a missing *call*, not a
-  missing routine.
-- **Fix:** call `check_atomic_access_size(f, bb, cmp_ty)` from `check_cmpxchg`
-  where upstream calls `checkAtomicMemAccessSize`, and add the int-or-pointer
-  check ahead of it — note it is *narrower* than `check_atomic_access_type`,
-  which also admits floating-point for load/store. Port
-  `test/Verifier/atomics.ll`'s `cmpxchg` half in the same commit.
-
-<details><summary>Verification evidence (2026-08-27)</summary>
-
-Upstream, `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/Verifier.cpp`:
-`Verifier::visitAtomicCmpXchgInst` — `Type *ElTy = CXI.getOperand(1)->getType();
-Check(ElTy->isIntOrPtrTy(), "cmpxchg operand must have integer or pointer type",
-ElTy, &CXI); checkAtomicMemAccessSize(ElTy, &CXI); visitInstruction(CXI);` — and
-`Verifier::checkAtomicMemAccessSize` — `Check(Size >= 8, "atomic memory access'
-size must be byte-sized", Ty, I); Check(!(Size & (Size - 1)), "atomic memory
-access' operand must have a power-of-two size", Ty, I);`. llvmkit: the whole body
-of `check_cmpxchg` is the four checks listed above; `grep -n
-"check_atomic_access_size\|check_atomic_access_type"
-crates/llvmkit-ir/src/verifier.rs` shows their definitions and exactly two call
-sites each — both in `check_load` / `check_store`, none in `check_cmpxchg`.
-`grep -rn "cmpxchg operand must have" --include=*.rs crates/` returns nothing.
-
-</details>
-
-### 21. An inline-asm call's per-operand `elementtype` rules are not verified
-
-*verifier* — crates/llvmkit-ir/src/verifier.rs:2775-2779 (call arm), :3230-3240 (callbr arm); attributes reach the instruction via crates/llvmkit-asmparser/src/ll_parser.rs:12972 and crates/llvmkit-ir/src/instr_types.rs:2215 (`arg_attrs()`)
-
-- **LLVM:** `Verifier::verifyInlineAsmCall` walks `IA->ParseConstraints()` and, for each constraint with an argument, checks three things: an indirect constraint's operand has pointer type (`Operand for indirect constraint must have pointer type`), an indirect constraint's operand carries an `elementtype` attribute (`Operand for indirect constraint must have elementtype attribute`), and a non-indirect constraint's operand does **not** (`Elementtype attribute can only be applied for indirect constraints`).
-- **llvmkit:** llvmkit's verifier implements only the label half of the same routine — `label_constraint_count() != 0` for `call`, `!= indirect_dests.len()` for `callbr`. The three `elementtype` checks are absent, so `call void asm sideeffect "", "=*m"(ptr %p)` with no `elementtype` (and the inverse, `elementtype` on a direct constraint) verifies clean here and is rejected by upstream.
-- **Why:** Recorded reason: "the call surface cannot spell per-operand `elementtype` attributes yet". **That premise is stale** — the parser reads per-argument attribute lists into `CallAttributeData::arg_attrs`, `Keyword::Elementtype` is one of the type attributes it accepts, and the AsmWriter prints them back. Nothing blocks the check today. [[verify-recorded-premises]]
-- **Fix:** In both verifier arms, iterate `InlineAsm::parse_constraints()` alongside `attrs.arg_attrs()` exactly as upstream walks `ArgNo`, skipping label and no-argument constraints, and emit the three messages as new `VerifierRule` variants. Port the fixtures from `test/Verifier/inline-asm-*.ll` in the same commit.
-
-<details><summary>Verification evidence</summary>
-
-Upstream C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/Verifier.cpp, Verifier::verifyInlineAsmCall (~line 2799): loops ParseConstraints(), skips labels (counting them) and !CI.hasArg(); for CI.isIndirect it Checks Arg->getType()->isPointerTy() ("Operand for indirect constraint must have pointer type") and Call.getParamElementType(ArgNo) ("Operand for indirect constraint must have elementtype attribute"); the else arm Checks !Call.paramHasAttr(ArgNo, Attribute::ElementType) ("Elementtype attribute can only be applied for indirect constraints"). The label-count comparison (LabelNo == 0 for call, == CallBr->getNumIndirectDests() for callbr) is the tail of the same function. llvmkit C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/verifier.rs implements only that tail: line 2778 `if inline_asm.label_constraint_count() != 0` in check_call, line 3238 `if inline_asm.label_constraint_count() != d.indirect_dests.len()` in the callbr arm. Lines 2786-2787 carry an explicit in-code deferral: "// Full indirect-constraint / elementtype parity is deferred: the // current call surface cannot spell per-operand elementtype attrs." Grep of the entire crates/ tree for "indirect constraint" and "Elementtype attribute can only" returns zero hits, and verifier.rs contains no `AttrKind::` reference anywhere, so it never inspects call parameter attributes at all — nothing else in the verifier could reject these programs. `git status --porcelain crates/llvmkit-ir/src/verifier.rs` is empty, so this is committed state. Plumbing cited by the claim confirmed: crates/llvmkit-asmparser/src/ll_parser.rs line ~9613 parses `elementtype(T)` into AttrKind::ElementType; line 12974 (claim said 12972 — two lines off, not substantive) does `let one_arg_attrs = self.parse_optional_param_attrs()?;` per argument, fed into CallAttributeData::new(...) at line 13002; crates/llvmkit-ir/src/instr_types.rs:2215 `pub fn arg_attrs(&self) -> &[AttributeStorage]` exposes them (asm_writer.rs:2080 already prints from it). crates/llvmkit-ir/src/inline_asm.rs:240 `constraint_info()` and the `is_indirect` field of ConstraintInfo (line 353) supply the constraint half. Extra finding (not part of the claim, but stale premise): the recorded rationale for the deferral — in-code at verifier.rs:2786-2787 and in docs/future-work.md:1283-1285, "the call surface cannot spell per-operand elementtype attributes yet" — is no longer true. The parser stores per-arg attributes, and ir_builder.rs:9513, :9710, :9817 all expose `call_attributes(CallAttributeData)` on the call/invoke/callbr builders. The only missing piece is a `has_arg()` equivalent on ConstraintInfo (upstream's `Type == isInput || (Type == isOutput && isIndirect)`), which inline_asm.rs does not define.
-
-</details>
+- **LLVM:** `visitIntrinsicCall` runs a preamble — `Intrinsic functions should
+  never be defined!`, `matchIntrinsicSignature` split into `Intrinsic has
+  incorrect return type!` and `Intrinsic has incorrect argument type!`,
+  `Intrinsic was not defined with variable arguments!` / `Callsite was not
+  defined with variable arguments!`, `Intrinsic has too few arguments!`,
+  `Intrinsic name not mangled correctly for type arguments!`, `visitMetadataAsValue`
+  on every `MetadataAsValue` argument, and `const x86_amx is not allowed in
+  argument!` — and then a `switch (ID)` in which each modelled intrinsic
+  carries its own `Check`s (`llvm.assume`'s operand bundles, `llvm.callbr.landingpad`'s
+  `Intrinsic in block must have 1 unique predecessor` / `Intrinsic's
+  corresponding callbr must have intrinsic's parent basic block in indirect
+  destination list` / `No other instructions may proceed intrinsic`, the
+  `experimental.gc.*` family, the constrained-FP family, and the rest).
+- **llvmkit:** `check_intrinsic_call` makes three checks and no others: the
+  descriptor's function type equals the call's, every `immarg` operand is an
+  integer or FP constant, and `verify_funclet_token`. `rg -n "Intrinsic has
+  incorrect return type|Intrinsic has too few arguments|not mangled
+  correctly|unique predecessor|may proceed intrinsic"
+  crates/llvmkit-ir/src/ crates/llvmkit-asmparser/src/` returns nothing, so no
+  other source file carries them either (the same search over `crates/` finds
+  only the vendored fixture and two test doc comments). `%out = call i32
+  @llvm.callbr.landingpad.i32(i32 %foo)` in a block with two predecessors —
+  `test/Verifier/callbr.ll`'s `@callbrpad_multi_preds` — verifies clean here.
+- **Why:** `check_intrinsic_call` grew from what the `call` builder needed
+  (a signature guard and `immarg`), and the funclet-token arm was added by the
+  commit that closed the `Missing funclet token on intrinsic call` gap. The
+  `switch` was never started.
+- **Fix:** port the preamble first — it is where the collapsed
+  `Intrinsic called with incompatible signature` message comes from, which
+  `docs/fixture-coverage.md`'s gap **G1** already names — then the `switch`
+  arm by arm, each with the `test/Verifier` fixture that pins it. The four
+  `llvm.callbr.landingpad` functions of `test/Verifier/callbr.ll` are already
+  vendored at
+  `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/callbr.ll` and
+  are the natural first arm; `parser_calls.rs::upstream_callbr_label_constraint_fixture_messages_match`
+  ports that fixture's other six functions and says why it stops there.
 
 ### 22. A non-uniform scalable-vector constant is constructible through the IR builder and prints text neither LLVM nor llvmkit's own parser can read
 
@@ -1001,21 +892,45 @@ Upstream C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llv
 
 </details>
 
-### 23. `swifterror` use-site dataflow rules are not enforced
+### 23. `Verifier::verifyFunctionAttrs` is unported, so two attribute-level `swifterror` rules do not fire — **NARROWED**
 
-*verifier* — crates/llvmkit-ir/src/verifier.rs:2402-2435 (the alloca-level checks; no use-site walk exists)
+*verifier* — crates/llvmkit-ir/src/verifier.rs (no counterpart routine; the module header lists "Per-function attribute coherence rules … are out of scope")
 
-- **LLVM:** `Verifier::visitAllocaInst` and the `swifterror` use checks in `Verifier` restrict a swifterror value's flow: it may appear only in specific positions (a `swifterror` call argument, a `load`/`store` of the pointer itself, and so on), and any other use is an error.
-- **llvmkit:** llvmkit verifies the parse-level constraints only — a swifterror alloca must have pointer type and must not be an array allocation. A swifterror value used in a position upstream rejects verifies clean here.
-- **Why:** Recorded under the 2026-07-06 upstream-parity follow-ups as deliberately deferred; no reason beyond scope is given for the deferral.
-- **Fix:** Add a use-site walk keyed on the swifterror alloca/argument: enumerate the legal positions upstream allows, reject everything else as new `VerifierRule` variants, and port the fixtures from `test/Verifier/swifterror*.ll` with their `UPSTREAM.md` rows.
-- **Correction from verification:** Substantively accurate; two refinements. (1) The two checks llvmkit does have are verifier-level, not "parse-level" — they live in `Verifier::check_alloca` (crates/llvmkit-ir/src/verifier.rs:2402-2434), a faithful mirror of the first two `Check`s in upstream `visitAllocaInst`. The parser (`LLParser::parseAlloc` mirror at crates/llvmkit-asmparser/src/ll_parser.rs:11811-11849) only eats the `swifterror` keyword and forwards it to `AllocaBuilder::swifterror`; it enforces nothing swifterror-specific. (2) The missing surface is wider than the use-site walk alone. llvmkit omits every swifterror rule except those two: `verifySwiftErrorValue` (the users() walk), `verifySwiftErrorCall` (callsite argument must carry the `swifterror` attribute), the `visitCallBase` "swifterror argument for call has mismatched alloca / should come from an alloca or parameter / mismatched parameter" checks, the per-argument `verifySwiftErrorValue` call in `visitFunction`, and "Cannot have multiple 'swifterror' parameters!". The capability is not the blocker: llvmkit has real use lists (`ValueData::use_list`, `operand_users()`, `Value::users()` — used by asm_writer.rs, demanded_bits.rs, assumptions.rs), so the walk is expressible today.
+**Narrowed 2026-08-27.** The use-site half of this entry is closed:
+`Verifier::verifySwiftErrorValue` and `Verifier::verifySwiftErrorCall` are
+ported, `check_alloca` and `visit_function`'s parameter loop call the first
+where `visitAllocaInst` and `visitFunction` do, and the three-`Check`
+`swifterror` loop of `visitCallBase` runs from `check_call` and
+`check_invoke`. `test/Verifier/swifterror.ll`'s four `define`s are driven by
+`crates/llvmkit-asmparser/tests/parser_calls.rs::upstream_swifterror_fixture_messages_match`.
+What is left is that fixture's last two lines, both `declare`s.
 
-<details><summary>Verification evidence</summary>
-
-Upstream C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/Verifier.cpp: `verifySwiftErrorValue` (users() walk rejecting anything but load/store/call/invoke, requiring the value be the second store operand) and `verifySwiftErrorCall`; `visitAllocaInst` calls `verifySwiftErrorValue(&AI)` right after the pointer-type and array-allocation Checks; `visitFunction` calls it for each `Attribute::SwiftError` parameter; `visitCallBase` adds the mismatched-alloca/parameter checks; `verifyFunctionAttrs` has "Cannot have multiple 'swifterror' parameters!". llvmkit C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/verifier.rs: a case-insensitive grep for swifterror/SwiftError over the whole file returns only lines 2402-2431 — the alloca pointer-type and array-allocation checks, both emitting `VerifierRule::SwiftErrorAlloca`; no use-site walk, no callsite check, no argument-attribute check. Repo-wide grep over crates/llvmkit-ir/src finds swifterror only in asm_writer.rs (printing), attributes.rs (attribute enum + param-only position), instructions.rs / instr_types.rs (the flag), ir_builder.rs (`AllocaBuilder::swifterror`), error.rs (`SwiftErrorAlloca`). verifier.rs's own module header (lines 19-27) lists "Per-function attribute coherence rules" as out of scope. Empirical: a temporary integration test (since deleted) parsed the misuse shapes from orig_cpp/.../llvm/test/Verifier/swifterror.ll through `parse_assembly` + `verify_borrowed` on `cargo +1.96.0 test --release -p llvmkit-asmparser`. Results: gep on a `ptr swifterror` argument, gep on a swifterror alloca, a swifterror alloca used as a store's *value* operand, a plain alloca passed as `ptr swifterror` to a call, a swifterror alloca passed to a call with no swifterror attribute, and a declaration with two `swifterror` parameters all reported PARSED + VERIFIED CLEAN; upstream rejects every one. The control case `alloca swifterror i128` was correctly rejected ("swifterror alloca must have pointer type, got i128"), confirming the probe reached the verifier.
-
-</details>
+- **LLVM:** `Verifier::verifyFunctionAttrs` raises `Cannot have multiple
+  'swifterror' parameters!` when two parameters carry the attribute, and
+  `Verifier::verifyParameterAttrs` — which it calls — raises `Attribute
+  '<name>' applied to incompatible type!` when one sits on a non-pointer.
+  `declare void @a(ptr swifterror %a, ptr swifterror %b)` and
+  `declare void @b(i32 swifterror %a)` are the fixture's two cases, and
+  `test/Verifier/swifterror2.ll` (`declare swifterror void @c(ptr swifterror
+  %a)` → `this attribute does not apply to return values`) is a third from the
+  same routine.
+- **llvmkit:** `rg -n "Cannot have multiple|applied to incompatible type"
+  crates/llvmkit-ir/src/` returns nothing, and the same search for
+  `verifyFunctionAttrs|verifyParameterAttrs` returns exactly one line — a
+  comment in `constant_range_list.rs` naming the routine as the place an empty
+  `initializes` list is rejected, not an implementation of it. None of the
+  three `declare`s is rejected.
+- **Why:** `verifyFunctionAttrs` and `verifyParameterAttrs` between them cover
+  every function and parameter attribute — `sret`, `byval`, `byref`,
+  `inalloca`, `nest`, `returned`, `preallocated`, alignment, the memory-effect
+  coherence rules — with dozens of arms. Porting them for the two `swifterror`
+  `Check`s alone would have been a half-port of a routine whose other arms are
+  missing for exactly the same reason.
+- **Fix:** port `Verifier::verifyFunctionAttrs` and `Verifier::verifyParameterAttrs`
+  whole, and drive `test/Verifier/swifterror.ll`'s two `declare`s and
+  `test/Verifier/swifterror2.ll` from them. The entry is deliberately scoped to
+  the routines rather than to `swifterror`: closing it for `swifterror` alone
+  would leave the same gap under a different attribute name.
 
 ### 103. `exnref` is a type keyword llvmkit has and LLVM 22.1.4 does not
 
@@ -1141,7 +1056,7 @@ llvmkit: C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.r
 - **LLVM:** `LLParser::parseCallBr` accepts an indirect callee; `Verifier::visitCallBrInst` is what requires a direct callee for a non-inline-asm callbr (`Callbr: indirect function / invalid signature`).
 - **llvmkit:** `parse_callbr` rejects a non-inline-asm callbr whose callee is not a direct function with `expected direct function callee for callbr`. The verdict matches upstream's — the IR is invalid either way — but the layer and the wording do not.
 - **Why:** Recorded under the 2026-07-06 upstream-parity follow-ups, which state the trade explicitly: llvmkit reaches the same verdict, and a stricter port would accept it at parse and reject it in the verifier. Noted alongside indirect *invoke*, which is valid IR and is now supported.
-- **Fix:** Give the callbr builder an indirect-callee form (the indirect-invoke work is the template), let the parse succeed, and move the rejection into the verifier as a `VerifierRule` carrying upstream's wording — the callbr arm of the verifier already exists at verifier.rs:3230 for the label-count check.
+- **Fix:** Give the callbr builder an indirect-callee form (the indirect-invoke work is the template) and let the parse succeed. **The verifier half is done** (2026-08-27): `check_callbr` is now a whole port of `Verifier::visitCallBrInst`, so the `Callbr: indirect function / invalid signature` `Check` exists and carries upstream's wording. It is unreachable, because nothing in llvmkit can build a `callbr` with a non-function callee — which is exactly what remains of this entry. `crates/llvmkit-asmparser/tests/parser_calls.rs::upstream_callbr_intrinsic_fixture_messages_match` pins the divergence on the fixture's own case, `@test_callbr_intrinsic_wrong_signature`.
 
 <details><summary>Verification evidence</summary>
 
@@ -1899,22 +1814,6 @@ Decisive single fact: grep for callers of the public predicates `is_int_or_int_v
 <details><summary>Verification evidence</summary>
 
 crates/llvmkit-ir/src/constant_range_list.rs (343 lines, read in full, unmodified in the working tree): the sole `impl ConstantRangeList` block has `new` (= getConstantRangeList), `is_ordered_ranges`, `ranges`, `is_empty`, `len`, `bit_width`, `insert`, `insert_signed`, plus `impl Display` for `print`. No `subtract`, `union_with`, or `intersect_with`. A crate-wide grep for `ConstantRangeList` across crates/llvmkit-ir/src shows the type only appears additionally in attributes.rs (the `Initializes` payload) and lib.rs:219 (re-export) — no set operations anywhere else. Upstream orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/IR/ConstantRangeList.h declares `subtract` (line 77), `unionWith` (81) and `intersectWith` (85), all three defined in lib/IR/ConstantRangeList.cpp (lines 86, 146, 197). unittests/IR/ConstantRangeListTest.cpp has exactly six TEST_F cases — Basics, getConstantRangeList, Insert, Subtract, Union, Intersect — and llvmkit's in-file `mod tests` ports only the first three (UPSTREAM.md rows 1130-1133 corroborate; the fourth test, display_matches_print, is self-declared llvmkit-specific). docs/future-work.md line 258 records this as a deliberate deferral ("ConstantRangeList - three set operations not ported (decided 2026-08-12, LLParser parity W5)"), reasoning that the three methods have no in-tree caller and instructing that they land with their first real caller together with the three tests. Sole nuance: the claim's enumeration understates the ported surface slightly — `rangesRef`/`empty`/`size`/`getBitWidth`/`operator==` are also ported (as ranges/is_empty/len/bit_width/PartialEq) — but what is missing is exactly the three set operations, as claimed.
-
-</details>
-
-### 85. The per-operand `elementtype` half of `verifyInlineAsmCall` is unported
-
-*verifier / call surface* — crates/llvmkit-ir/src/inline_asm.rs, crates/llvmkit-ir/src/verifier.rs, crates/llvmkit-ir/src/ir_builder.rs (call surface)
-
-- **LLVM:** `Verifier::verifyInlineAsmCall` checks per-operand `elementtype` attributes against the constraint records, in addition to the label rules W4 ported.
-- **llvmkit:** The label rules and all nine `InlineAsm::verify` messages are reachable, but the `elementtype` half is absent.
-- **Why:** Recorded in docs/future-work.md (W4): the call surface cannot spell per-operand `elementtype` attributes yet, so the check has nothing to read. The `Flag` / `ConstraintCode` bit encodings from the same header are recorded as backend serialization and deliberately out of scope.
-- **Fix:** Grow the call-building surface to carry per-operand attribute sets, then port the `elementtype` arm of `verifyInlineAsmCall`.
-- **Correction from verification:** Accurate as stated — the divergence is real and still present — with one factual refinement to the *reason* llvmkit records for it. Confirmed: `Verifier::verifyInlineAsmCall`'s per-operand loop has three Check messages ("Operand for indirect constraint must have pointer type", "Operand for indirect constraint must have elementtype attribute", "Elementtype attribute can only be applied for indirect constraints"). None of the three strings exists anywhere in the llvmkit tree. Only the two label rules are ported (call arm and callbr arm), and llvmkit marks the rest deferred in an inline comment. All nine `InlineAsm::verify` messages are indeed present and reachable (`InlineAsmVerifyError` has exactly nine variants; `verify_inline_asm` is called from `ll_parser.rs:13391`), as the claim says. Refinement: the stated blocker — "the current call surface cannot spell per-operand elementtype attrs" (verifier.rs comment, echoed in docs/future-work.md) — is true only of the *typed builder* helper, not of the call surface generally. `IrBuilder::inline_asm_call` hardcodes `CallAttributeData::default()`, so that one path cannot attach arg attributes. But `CallInstData` already carries `attrs: CallAttributeData` with `arg_attrs: Box<[AttributeStorage]>`; `LLParser::parse_call` collects per-argument attributes via `parse_optional_param_attrs` into exactly that field; `elementtype` is a live `AttrKind` parsed by the lexer/parser (`ll_parser.rs:9613`, `attributes.rs:389`); and the AsmWriter prints per-arg attrs back out. That claim was wrong until the indirect/inline-asm call attribute loss was closed: an inline-asm call's argument attributes were parsed and then discarded by `IrBuilder::inline_asm_call`'s hardcoded `CallAttributeData::default()`, so `ptr elementtype(i32) %p` printed back as `ptr %p` (`test/Verifier/inline-asm-indirect-operand.ll`, fed verbatim). Since that fix the attribute does parse, store and re-print, and what remains unported is only the *verifier* half — llvmkit never reads `c.attrs.arg_attrs()` for the inline-asm case, which is what this entry is about. Pinned by `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_call_elementtype_argument_attribute_round_trips`. The elementtype half is blocked by the builder ergonomics only; the data model and parser already support it, so the deferral rationale on record understates what is available.
-
-<details><summary>Verification evidence</summary>
-
-Upstream, C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/Verifier.cpp, `Verifier::verifyInlineAsmCall`: loops `IA->ParseConstraints()`, skips `isLabel` (counting LabelNo) and `!CI.hasArg()`, then for `CI.isIndirect` checks pointer type and `Call.getParamElementType(ArgNo)`, else checks `!Call.paramHasAttr(ArgNo, Attribute::ElementType)`; the LabelNo comparison against callbr dests is the tail. llvmkit, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/verifier.rs:2775-2788 (`check_call`): the InlineAsm arm only emits "Label constraints can only be used with callbr", followed by the literal comment "Full indirect-constraint / elementtype parity is deferred: the current call surface cannot spell per-operand elementtype attrs." Lines 3230-3246 (`check_callbr`) port only the "Number of label constraints does not match number of callbr dests" twin. A repo-wide grep for "indirect constraint" and "Elementtype attribute can only" returns zero hits; the only `elementtype` mention in verifier.rs is that deferral comment. C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/inline_asm.rs: `ConstraintInfo` carries `is_indirect` (line 353) and `verify_inline_asm` (line 718) is the static `InlineAsm::verify` port with the nine `InlineAsmVerifyError` variants; it never inspects call arguments, matching its doc note that the caller checks label counts. C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/instr_types.rs:2165-2172 and 2246-2298: `CallAttributeData { return_attrs, arg_attrs: Box<[AttributeStorage]>, ... }` is a field of `CallInstData`. C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs:12949-13004 (`parse_call`) fills `arg_attrs` from `parse_optional_param_attrs`; line 9613 maps the keyword to `AttrKind::ElementType`; C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/asm_writer.rs (~line 2080) prints `c.attrs.arg_attrs().get(idx)`. (A sentence citing `ir_builder.rs`'s `inline_asm_call` passing `CallAttributeData::default()` stood here, as the actual builder-only gap; that code was replaced by the erased-callee `call` construction on 2026-08-21 -- `inline_asm_call` now forwards to `IrBuilder::call_erased` and carries whatever `CallSiteConfig` it is given -- so the citation was deleted rather than re-pointed. Nothing else in this block was re-checked at that time, and it carries no date for the same reason.) Deferral also recorded at C:/Users/olegg/Desktop/llvmkit/docs/future-work.md:1276-1286.
 
 </details>
 

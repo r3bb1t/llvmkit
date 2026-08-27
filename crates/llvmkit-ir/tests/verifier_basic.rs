@@ -676,6 +676,12 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
+    // `Verifier::visitInvokeInst` requires the unwind destination to be an EH
+    // pad, and `visitLandingPadInst` requires the `personality`. Neither is
+    // what this test is about; without them the module is not IR upstream
+    // accepts, and the dominance failure it does pin would never be reached.
+    m.view(f)
+        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let normal = m.view(f).append_basic_block(&m, "normal");
     let unwind = m.view(f).append_basic_block(&m, "unwind");
@@ -697,6 +703,7 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
         .position_at_end(normal)
         .ret(invoke_value)?;
     let bu = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
+    let _closed = bu.landingpad(i32_ty.as_type(), true, "lp")?.finish();
     let bad = bu.int_add(invoke_value, x, "bad")?;
     bu.ret(bad)?;
 

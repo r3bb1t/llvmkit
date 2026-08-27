@@ -180,26 +180,32 @@ pub(crate) fn is_funclet_pad_kind(kind: &InstructionKindData) -> bool {
     )
 }
 
-/// `BasicBlock::getFirstNonPHIIt()`, projected to the instruction's payload —
+/// `BasicBlock::getFirstNonPHIIt()`, projected to the instruction's value id —
 /// `None` where upstream's iterator would be `end()`.
-pub(crate) fn first_non_phi_kind<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn first_non_phi_slot<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     block: ValueSlot,
-) -> Option<&'ctx InstructionKindData> {
+) -> Option<ValueSlot> {
     let ValueKindData::BasicBlock(data) =
         &anchor.module().core_ref().context().value_data(block).kind
     else {
         return None;
     };
     let instructions = data.instructions.borrow();
-    instructions
-        .iter()
-        .copied()
-        .find_map(|slot| match instruction_kind(anchor, slot) {
-            Some(InstructionKindData::Phi(_)) => None,
-            other => other.map(Some),
-        })
-        .flatten()
+    instructions.iter().copied().find(|slot| {
+        !matches!(
+            instruction_kind(anchor, *slot),
+            Some(InstructionKindData::Phi(_)) | None
+        )
+    })
+}
+
+/// [`first_non_phi_slot`], projected to the instruction's payload.
+pub(crate) fn first_non_phi_kind<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    block: ValueSlot,
+) -> Option<&'ctx InstructionKindData> {
+    instruction_kind(anchor, first_non_phi_slot(anchor, block)?)
 }
 
 /// `Visiting->getTerminator()`, projected to its payload.

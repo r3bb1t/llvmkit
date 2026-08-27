@@ -1792,10 +1792,14 @@ says that too rather than inventing one.
   `InlineAsm::verify`; `ConstraintInfo` carries the typed records, all nine
   `verify` messages are reachable from the parser, and the `!`-counting
   heuristic behind `label_constraint_count` is gone along with the
-  `arg_constraints`-hardcoded-to-`0` summary struct. What is *not* ported: the
-  per-operand `elementtype` half of `Verifier::verifyInlineAsmCall`, because
-  the call surface cannot spell per-operand `elementtype` attributes yet, and
-  the `Flag` / `ConstraintCode` bit encodings, which are backend
+  `arg_constraints`-hardcoded-to-`0` summary struct. The per-operand
+  `elementtype` half of `Verifier::verifyInlineAsmCall` followed on
+  **2026-08-27** (`ConstraintInfo::has_arg` plus the three `Check`s, driven by
+  `test/Verifier/inline-asm-indirect-operand.ll`); the reason recorded here for
+  deferring it — "the call surface cannot spell per-operand `elementtype`
+  attributes yet" — was already stale when written, since the parser stores
+  per-argument attribute lists and the AsmWriter prints them back. What is
+  *not* ported: the `Flag` / `ConstraintCode` bit encodings, which are backend
   serialization and out of scope.
 
 ## Killer-feature designs (deferred)
@@ -2231,9 +2235,12 @@ deliberately deferred; each cites its upstream anchor.
 - **Indirect `callbr`** -- `callbr void %fp(...)` is invalid IR upstream
   (`Verifier::visitCallBrInst` requires a direct callee for non-asm callbr:
   "Callbr: indirect function / invalid signature"), so llvmkit rejects it at
-  parse, which reaches the same verdict. A stricter port would accept it at
-  parse and reject in the verifier. (Indirect *invoke* is now supported -- it
-  is valid IR.)
+  parse, which reaches the same verdict. **The verifier half now exists**
+  (2026-08-27): `check_callbr` is a whole port of `Verifier::visitCallBrInst`
+  and carries that `Check`. It is unreachable until the builder gains an
+  indirect-callee `callbr`, which is the whole of what remains — see
+  `docs/divergences.md` entry 27. (Indirect *invoke* is supported -- it is
+  valid IR.)
 - **DCE removable calls / allocs** -- llvmkit still keeps `willReturn`+readnone
   calls, removable allocation-function calls, `free(null)`, and lifetime-only
   allocas that upstream `wouldInstructionBeTriviallyDead`
