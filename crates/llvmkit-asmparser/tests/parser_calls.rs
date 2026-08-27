@@ -1985,7 +1985,11 @@ fn short_syntax_musttail_forwarding_call_is_not_vararg() {
 fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
     const PROLOGUE: &str = "declare ptr @callee()\ndefine ptr @caller() {\n  \
                             %v = musttail call ptr @callee()\n  ";
-    for accepted in ["ret ptr %v\n}\n", "ret ptr undef\n}\n", "ret ptr poison\n}\n"] {
+    for accepted in [
+        "ret ptr %v\n}\n",
+        "ret ptr undef\n}\n",
+        "ret ptr poison\n}\n",
+    ] {
         let source = format!("{PROLOGUE}{accepted}");
         let module = Module::dynamic("musttail_result_returned");
         Parser::new(source.as_bytes(), &module)
@@ -2005,7 +2009,9 @@ fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
-    module.verify_borrowed().expect("upstream accepts `ret void`");
+    module
+        .verify_borrowed()
+        .expect("upstream accepts `ret void`");
 
     let rejected = format!("{PROLOGUE}ret ptr null\n}}\n");
     let module = Module::dynamic("musttail_result_not_returned");
@@ -2015,7 +2021,10 @@ fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
         .expect("parser succeeds");
     match module.verify_borrowed() {
         Err(llvmkit_ir::IrError::VerifierFailure { rule, message, .. }) => {
-            assert_eq!(rule, llvmkit_ir::VerifierRule::MustTailCallResultNotReturned);
+            assert_eq!(
+                rule,
+                llvmkit_ir::VerifierRule::MustTailCallResultNotReturned
+            );
             assert_eq!(message, "musttail call result must be returned");
         }
         other => panic!("upstream rejects `ret ptr null` here, got {other:?}"),
