@@ -1464,6 +1464,10 @@ pins the string. What survives is the metadata half and a model gap.
   `NumberedTypes` **index** and so cannot fail; and the same struct case in
   `type.rs`'s `Display`.
 
+## Model gaps
+
+A public query answers differently from its LLVM counterpart, or a structure LLVM has is missing.
+
 ### 61. Plain `add`/`sub`/`div`/shift builders consult the wrong folder hook
 
 *IR builder* — crates/llvmkit-ir/src/ir_builder.rs (`int_add` / `int_sub` and the div/shift emitters), crates/llvmkit-ir/src/ir_builder/folder.rs (the hook trait)
