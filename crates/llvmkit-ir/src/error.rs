@@ -154,6 +154,18 @@ impl fmt::Display for ValueCategoryLabel {
 ///
 /// Each variant cites its `Verifier::visit*` C++ method in
 /// `llvm/lib/IR/Verifier.cpp`.
+///
+/// # Where upstream's text lives
+///
+/// This enum's [`Display`](core::fmt::Display) is llvmkit's own label for the
+/// invariant, deliberately: it is the *category*, and several variants stand
+/// for several of upstream's `Check`s. Upstream's `Check` literal — the string
+/// a `llvm/test/Verifier/*.ll` `CHECK` line matches — is carried verbatim in
+/// [`IrError::VerifierFailure`]'s `message`, at the head of the string, with
+/// llvmkit's extra detail appended in parentheses. A rule with no upstream
+/// `Check` to reproduce (`AtomicRmwOperandTypeMismatch`'s result-type arm,
+/// `PhiEmptyInReachableBlock`, the `cmpxchg` orderings, …) says so in a
+/// comment at the check site in `verifier.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum VerifierRule {
@@ -1113,9 +1125,11 @@ pub enum IrError {
     /// [`Module::verify_borrowed`](crate::Module::verify_borrowed). The
     /// `rule` discriminator names the LangRef invariant that was
     /// violated; `function` / `block` carry diagnostic context, and
-    /// `message` is a human-readable description that mirrors the
-    /// shape of `Verifier::CheckFailed` output in
-    /// `llvm/lib/IR/Verifier.cpp`.
+    /// `message` **begins with upstream's own `Check` literal**, verbatim, so
+    /// a `llvm/test/Verifier/*.ll` fixture can be driven by its `CHECK` lines;
+    /// llvmkit's extra detail follows in parentheses. See [`VerifierRule`] for
+    /// the split between the two, and for the rules that have no upstream
+    /// literal to carry.
     #[error("verifier: {rule}: {message}")]
     VerifierFailure {
         /// The LangRef invariant that was violated.
@@ -1124,7 +1138,8 @@ pub enum IrError {
         function: Option<String>,
         /// Name of the offending basic block, if known.
         block: Option<String>,
-        /// Human-readable description mirroring `Verifier::CheckFailed`.
+        /// `Verifier::CheckFailed`'s own literal for the failing `Check`,
+        /// followed by llvmkit's detail in parentheses where it has any.
         message: String,
     },
 

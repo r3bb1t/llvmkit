@@ -2038,3 +2038,99 @@ fn a_block_operand_bound_to_a_value_is_not_a_basic_block() {
     let offset = SRC.rfind("%x").expect("the use site is in the source");
     assert_eq!(at, line_and_column(SRC.as_bytes(), offset));
 }
+
+/// Parse a vendored `test/Verifier` fixture, run `Module::verify_borrowed`
+/// over it, and run the fixture's own `CHECK` block against the failure
+/// message.
+///
+/// Upstream's `RUN` line for each caller is `not llvm-as … | FileCheck %s`,
+/// whose output is whichever layer rejected — parser or verifier. This helper
+/// insists on the *verifier*, because that is the layer the fixture's `CHECK`
+/// text comes from (`llvm/lib/IR/Verifier.cpp`); a parse-time rejection here
+/// would be a divergence, not a pass. `PhiGrouping.ll` and `AmbiguousPhi.ll`
+/// are exactly that, which is why they have tests of their own below rather
+/// than calling this.
+fn assert_verifier_reports_fixture_checks(fixture: &str) {
+    let message = parser::parse_assembly(fixture, |module, _parsed| module.verify_borrowed())
+        .expect("the fixture parses; upstream rejects it in the verifier")
+        .expect_err("upstream's RUN line is `not llvm-as`");
+    let llvmkit_ir::IrError::VerifierFailure { message, .. } = message else {
+        panic!("expected a verifier failure, got {message:?}");
+    };
+    support::check_directives(&message, &fixture_checks(fixture));
+}
+
+/// The `; CHECK:` directives of a vendored fixture, in order.
+fn fixture_checks(fixture: &str) -> Vec<support::Check<'_>> {
+    let checks: Vec<support::Check<'_>> = fixture
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("; CHECK:"))
+        .map(|needle| support::Check::Line(needle.trim()))
+        .collect();
+    assert!(
+        !checks.is_empty(),
+        "fixture carries no `; CHECK:` directive"
+    );
+    checks
+}
+
+/// `test/Verifier/SelfReferential.ll`, vendored verbatim and driven by its own
+/// `CHECK` line. Pins `llvm/lib/IR/Verifier.cpp::Verifier::visitInstruction`'s
+/// `Only PHI nodes may reference their own value!`.
+///
+/// The `CHECK` line is matchable only because the rule now carries upstream's
+/// `Check` literal in `IrError::VerifierFailure`'s `message`; before that it
+/// read `non-phi instruction references its own value` and this fixture could
+/// not be ported by its own text.
+#[test]
+fn upstream_self_referential_fixture_message_matches() {
+    assert_verifier_reports_fixture_checks(include_str!(
+        "fixtures/upstream/Verifier/SelfReferential.ll"
+    ));
+}
+
+/// `test/Verifier/PhiGrouping.ll`, vendored verbatim. **Blocked port**, and
+/// the blocker is asserted rather than skipped: `docs/divergences.md` entry 26
+/// — `parse_basic_block`'s `seen_non_phi` guard rejects a misplaced `phi` at
+/// *parse* time, so `Verifier::visitPHINode`'s `PHI nodes not grouped at top
+/// of basic block!` is never reached on this input.
+///
+/// llvmkit's verifier does carry that rule, and its message is asserted
+/// against this fixture's `CHECK` text by
+/// `crates/llvmkit-ir/src/verifier.rs::phi_not_at_top`, which reaches
+/// `VerifierRule::PhiNotAtTop` through the arena rather than the parser. When
+/// entry 26 closes, delete this test and call
+/// [`assert_verifier_reports_fixture_checks`] on the fixture instead.
+#[test]
+fn upstream_phi_grouping_fixture_is_rejected_at_parse_time() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/PhiGrouping.ll");
+    assert_eq!(
+        parse_expect_error(FIXTURE),
+        "expected phi must be grouped at the top of its basic block"
+    );
+}
+
+/// `test/Verifier/AmbiguousPhi.ll`, vendored verbatim. **Blocked port**, and
+/// the blocker is asserted rather than skipped: `docs/divergences.md` entry
+/// 130 — `PhiInst::add_incoming` refuses a second, differing entry for a block
+/// at the *builder* call site, so the parser reports
+/// `IrError::AmbiguousPhiIncoming` and
+/// `Verifier::visitBasicBlock`'s `PHI node has multiple entries for the same
+/// basic block with different incoming values!` is never reached.
+///
+/// The `%4` in the parse message is entry 130's second half: an internal arena
+/// index where upstream prints the `SlotTracker` number `%0`.
+///
+/// The verifier rule the fixture is really about, `VerifierRule::AmbiguousPhi`,
+/// is asserted against this fixture's `CHECK` text by
+/// `crates/llvmkit-ir/src/verifier.rs::ambiguous_phi_duplicate_predecessor`,
+/// which reaches it through the arena rather than the parser.
+#[test]
+fn upstream_ambiguous_phi_fixture_is_rejected_by_the_builder() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/AmbiguousPhi.ll");
+    let message = parse_expect_error(FIXTURE);
+    assert!(
+        message.contains("phi already has an entry for block %4 with a different value"),
+        "{message:?}"
+    );
+}

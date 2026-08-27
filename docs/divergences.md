@@ -914,6 +914,62 @@ exists so the gap does not vanish with it.
   'catch|cleanup|pad|eh'`: `test/Verifier/invalid-eh.ll` and
   `test/Verifier/invalid-cleanuppad-chain.ll`.
 
+### 131. `Verifier::visitAtomicCmpXchgInst`'s operand-type and size checks are unported, so a `cmpxchg` on any first-class type verifies
+
+*verifier* — crates/llvmkit-ir/src/verifier.rs (`check_cmpxchg`)
+
+Found 2026-08-27 while giving every `VerifierRule` upstream's `Check` literal
+(former entry 121): `check_cmpxchg` had no site to carry
+`cmpxchg operand must have integer or pointer type`, because it does not make
+that check at all.
+
+- **LLVM:** `Verifier::visitAtomicCmpXchgInst` is two statements carrying three `Check`s between them.
+  `Check(ElTy->isIntOrPtrTy(), "cmpxchg operand must have integer or pointer type", ElTy, &CXI)`
+  on the compare operand's type, then `checkAtomicMemAccessSize(ElTy, &CXI)`,
+  which is itself two `Check`s — `atomic memory access' size must be byte-sized`
+  and `atomic memory access' operand must have a power-of-two size`.
+- **llvmkit:** `check_cmpxchg` checks four other things — the pointer operand is
+  a pointer, `cmp` and `new` agree, both orderings are at least monotonic, and
+  the failure ordering is not `release`/`acq_rel` — and none of upstream's.
+  `cmpxchg ptr %p, float 0.0, float 1.0 seq_cst seq_cst` and
+  `cmpxchg ptr %p, i9 0, i9 1 seq_cst seq_cst` are the two shapes that separates
+  them: both parse (`LLParser::parseCmpXchg` and llvmkit's port both demand only
+  `isFirstClassType`, and a `float` and an `i9` are), upstream's verifier rejects
+  the first on `isIntOrPtrTy` and the second on the power-of-two size, and
+  nothing in llvmkit's `check_cmpxchg` looks at either. **Derived from the two
+  routines, not from a run** — no probe was written, so treat the two examples as
+  what the code says will happen rather than as observed output. The four llvmkit
+  *does* make are the `assert`s
+  inside `AtomicCmpXchgInst::Init`, raised as verifier failures because
+  production paths do not panic; they carry no upstream literal and say so at
+  the site.
+- **Why:** unrecorded until now. The `atomic` load/store twins are ported —
+  `check_atomic_access_type` and `check_atomic_access_size` exist and are called
+  from `check_load` and `check_store` — so this is a missing *call*, not a
+  missing routine.
+- **Fix:** call `check_atomic_access_size(f, bb, cmp_ty)` from `check_cmpxchg`
+  where upstream calls `checkAtomicMemAccessSize`, and add the int-or-pointer
+  check ahead of it — note it is *narrower* than `check_atomic_access_type`,
+  which also admits floating-point for load/store. Port
+  `test/Verifier/atomics.ll`'s `cmpxchg` half in the same commit.
+
+<details><summary>Verification evidence (2026-08-27)</summary>
+
+Upstream, `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/Verifier.cpp`:
+`Verifier::visitAtomicCmpXchgInst` — `Type *ElTy = CXI.getOperand(1)->getType();
+Check(ElTy->isIntOrPtrTy(), "cmpxchg operand must have integer or pointer type",
+ElTy, &CXI); checkAtomicMemAccessSize(ElTy, &CXI); visitInstruction(CXI);` — and
+`Verifier::checkAtomicMemAccessSize` — `Check(Size >= 8, "atomic memory access'
+size must be byte-sized", Ty, I); Check(!(Size & (Size - 1)), "atomic memory
+access' operand must have a power-of-two size", Ty, I);`. llvmkit: the whole body
+of `check_cmpxchg` is the four checks listed above; `grep -n
+"check_atomic_access_size\|check_atomic_access_type"
+crates/llvmkit-ir/src/verifier.rs` shows their definitions and exactly two call
+sites each — both in `check_load` / `check_store`, none in `check_cmpxchg`.
+`grep -rn "cmpxchg operand must have" --include=*.rs crates/` returns nothing.
+
+</details>
+
 ### 21. An inline-asm call's per-operand `elementtype` rules are not verified
 
 *verifier* — crates/llvmkit-ir/src/verifier.rs:2775-2779 (call arm), :3230-3240 (callbr arm); attributes reach the instruction via crates/llvmkit-asmparser/src/ll_parser.rs:12972 and crates/llvmkit-ir/src/instr_types.rs:2215 (`arg_attrs()`)
@@ -1010,6 +1066,56 @@ llvmkit-only remainder as attribute keywords.
 
 Same verdict, different wording. Upstream's text is contractual, including its own inconsistencies.
 
+### 130. `test/Verifier/AmbiguousPhi.ll` is answered by the builder, in a message naming an arena index
+
+*IR builder / diagnostics* — crates/llvmkit-ir/src/instructions.rs (`PhiInst::add_incoming` and its two siblings), crates/llvmkit-ir/src/ir_builder.rs (`make_phi_in_block`); crates/llvmkit-ir/src/llvm_context.rs (`block_diag_name`)
+
+Found 2026-08-27 while porting `test/Verifier` fixtures by message text (former
+entry 121). Two halves, both observable on that one fixture.
+
+- **LLVM:** a phi with two differing entries for the same predecessor parses
+  cleanly and is rejected by `Verifier::visitBasicBlock` —
+  `PHI node has multiple entries for the same basic block with different incoming
+  values!` — with the offending block printed through the module's `SlotTracker`,
+  so `test/Verifier/AmbiguousPhi.ll`'s implicit entry block is named `%0`.
+- **llvmkit:** `add_incoming` refuses the second entry at the *builder* call site
+  with `IrError::AmbiguousPhiIncoming`, which the parser surfaces as
+  `expected valid phi.add_incoming: phi already has an entry for block %4 with a
+  different value`. Same verdict, wrong layer, and a message upstream never
+  prints — the `VerifierRule::AmbiguousPhi` that would print upstream's literal
+  is unreachable from parsed text. The block name is the second half: it comes
+  from `LlvmContext::block_diag_name`, whose unnamed-value fallback is
+  `id.arena_index().to_string()`. `%4` is an internal arena handle; it appears
+  nowhere in the source and nowhere in `AsmWriter`'s output, where the same block
+  is `%0`.
+- **Why:** the layer choice is deliberate and documented on the error variant —
+  "enforced at the edge-add call site rather than deferred to `Module::verify`'s
+  `AmbiguousPhi` rule", citing `llvm/llvm-project#196954`. The arena-index
+  fallback is not deliberate; it is the same defect the verifier's own
+  `slot_label` had (`format!("{:?}", block_id)`), which is fixed — `slot_label`
+  now asks `asm_writer::SlotTracker::for_function`, exactly as
+  `Verifier::CheckFailed` asks the module's. `block_diag_name` was not reached by
+  that change.
+- **What is blocked by it:** `test/Verifier/AmbiguousPhi.ll` is vendored at
+  `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/AmbiguousPhi.ll` and
+  cannot be driven through the parser.
+  `crates/llvmkit-asmparser/tests/parser_function_body.rs::upstream_ambiguous_phi_fixture_is_rejected_by_the_builder`
+  asserts *this* entry's diagnostic, `%4` included, so the day either half closes
+  the test fails and the real port replaces it. The verifier rule's own text is
+  asserted separately, against the same fixture's `CHECK` line, by
+  `crates/llvmkit-ir/src/verifier.rs::ambiguous_phi_duplicate_predecessor`.
+- **Fix:** the second half first and on its own — give `block_diag_name` the
+  `SlotTracker` number `AsmWriter` would print, or the parser's own written text,
+  and never an arena index. The first half is the same shape as entry 26 and
+  wants the same decision: a builder that records what was written and lets
+  `Module::verify` judge it, rather than refusing at the edge.
+
+<details><summary>Verification evidence (2026-08-27)</summary>
+
+llvmkit: `crates/llvmkit-ir/src/error.rs` — `IrError::AmbiguousPhiIncoming { block: String }`, `#[error("phi already has an entry for block %{block} with a different value")]`, with the doc line quoted above. `crates/llvmkit-ir/src/instructions.rs` — three `add_incoming` bodies raise it, each passing `module.context().block_diag_name(block_id)`; `crates/llvmkit-ir/src/ir_builder.rs` raises it once more. `crates/llvmkit-ir/src/llvm_context.rs::block_diag_name` — `self.value_data(id).name.borrow().clone().unwrap_or_else(|| id.arena_index().to_string())`. Empirical, running the vendored fixture through `parser::parse_assembly`: `expected valid phi.add_incoming: phi already has an entry for block %4 with a different value`, pinned by the test named above. Upstream: `lib/IR/Verifier.cpp::Verifier::visitBasicBlock` carries the `Check`, and `Verifier::CheckFailed` renders each value through `WriteAsOperand`, which uses `Machine.getLocalSlot`. Ledger scope check before opening this entry: `grep -niE "ambiguous|multiple entries for the same basic block|duplicate predecessor" docs/divergences.md docs/future-work.md docs/fixture-coverage.md` returned no matches, and `grep -rn "already has an entry for block" crates/` found only the `error.rs` variant — no entry covered either half.
+
+</details>
+
 ### 26. A misplaced `phi` is rejected by the parser, with a message upstream never prints
 
 *parser* — crates/llvmkit-asmparser/src/ll_parser.rs:11125-11133 (the `seen_non_phi` guard)
@@ -1019,6 +1125,8 @@ Same verdict, different wording. Upstream's text is contractual, including its o
 - **Why:** Recorded, with an explicit "do not fix this by deleting the parser check": every phi llvmkit builds goes through `IrBuilder::make_phi_in_block` → `BasicBlock::insert_instruction_at_phi_head`, which places the phi at the block's phi head regardless of the insertion point. Drop the parse check and a misplaced phi is *silently hoisted* into a legal position, so llvmkit's own `VerifierRule::PhiNotAtTop` never fires — accepting invalid IR and quietly rewriting it, strictly worse than the current strictness.
 - **Fix:** Add a non-hoisting insertion path for parsed phis so the instruction lands where it was written, then delete the parse-time check and let `VerifierRule::PhiNotAtTop` deliver upstream's verdict and wording. That is entangled with llvmkit's head-phi design — block parameters are operandless head-phis per `IrBuilder::append_block_with_params`, and `insert_instruction_at_phi_head` is the only phi insertion path today — so it wants deciding alongside that model rather than as a parser patch.
 - **Correction from verification:** Accurate, with two refinements. (1) The guard now spans lines 11125-11134 (the claim cited 11125-11133; the `else { seen_non_phi = true; }` arm closes at 11134). (2) The message is emitted via `self.expected(...)`, whose ParseError variant renders as `#[error("expected {expected}")]`, so the actual user-visible string is the ungrammatical `expected phi must be grouped at the top of its basic block`, not the bare production the claim quotes. Additional context strengthening the claim: llvmkit already carries the same rule in its verifier (crates/llvmkit-ir/src/verifier.rs:1036-1051, VerifierRule::PhiNotAtTop), so the parse-time guard is strictly redundant with the correct layer, and it prevents a misplaced phi from ever reaching that rule. Worth noting the guard is deliberate, not an oversight: the in-source comment and the test doc both state the rationale (the auto-hoisting phi builders would silently reorder a misplaced phi into valid position, laundering ill-formed .ll into valid IR).
+- **Narrowed, and a duplicate merged.** Two halves used to be recorded here. The *message-text* half — `VerifierRule::PhiNotAtTop` rendering `PHI nodes not grouped at top of block`, dropping upstream's `basic` and its `!` — is closed: the rule now carries `PHI nodes not grouped at top of basic block!` in `IrError::VerifierFailure`'s `message`, asserted by `crates/llvmkit-ir/src/verifier.rs::phi_not_at_top` against the vendored fixture's own `CHECK` text. Only the *wrong-layer* half above is left. This entry also absorbed a second entry that recorded the same divergence in the same terms (former **35**, "A misplaced `phi` is rejected at parse time, not by the verifier"); nothing distinguished the two, and the duplicate was deleted rather than left to be closed twice.
+- **What is blocked by it:** `test/Verifier/PhiGrouping.ll` is vendored at `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/PhiGrouping.ll` and cannot be driven through the parser. `crates/llvmkit-asmparser/tests/parser_function_body.rs::upstream_phi_grouping_fixture_is_rejected_at_parse_time` asserts *this* entry's parse diagnostic instead, so the day the entry closes the test fails and the real port replaces it.
 
 <details><summary>Verification evidence</summary>
 
@@ -1107,22 +1215,6 @@ Built and ran C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/examples/p
 
 </details>
 
-### 35. A misplaced `phi` is rejected at parse time, not by the verifier
-
-*parser / IR insertion model* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_basic_block`); crates/llvmkit-ir/src/basic_block.rs (`insert_instruction_at_phi_head`); crates/llvmkit-ir/src/ir_builder.rs (`make_phi_in_block`, `append_block_with_params`)
-
-- **LLVM:** `LLParser` accepts a `phi` written after a non-phi instruction and lets `Verifier::visitPHINode` reject it with `PHI nodes not grouped at top of basic block!`.
-- **llvmkit:** `ll_parser.rs::parse_basic_block` rejects it at parse time with `phi must be grouped at the top of its basic block` — a message upstream never prints. Same verdict, wrong layer.
-- **Why:** Recorded in docs/future-work.md, and explicitly corrected in the plan (W1 item, `- [x]` with "CORRECTED 2026-08-08 — do not remove"): every phi goes through `IrBuilder::make_phi_in_block` → `BasicBlock::insert_instruction_at_phi_head`, so deleting the parse check makes llvmkit *silently hoist* the phi and its own `VerifierRule::PhiNotAtTop` never fires — accepting invalid IR and rewriting it, strictly worse than the current strictness.
-- **Fix:** Add a non-hoisting insertion path for parsed phis so the instruction lands where it was written, then delete the parse-time check and let `VerifierRule::PhiNotAtTop` fire. Entangled with the head-phi/block-parameter model (block parameters are operandless head-phis), so it wants deciding alongside that model rather than as a parser patch.
-- **Correction from verification:** Accurate as written; two refinements. (1) The claim is fully confirmed: ll_parser.rs::parse_basic_block (lines 11125-11134) tracks a `seen_non_phi` flag and returns `phi must be grouped at the top of its basic block` when a phi follows a non-phi, while upstream LLParser::parseBasicBlock (LLParser.cpp) inserts every instruction with `Inst->insertInto(BB, BB->end())` and has no ordering check at all, leaving it to Verifier::visitPHINode's `PHI nodes not grouped at top of basic block!`. (2) Worth adding: llvmkit DOES implement the verifier rule (verifier.rs, VerifierRule::PhiNotAtTop), but its rendered text is `PHI nodes not grouped at top of block` (error.rs) -- it drops upstream's word `basic` and the trailing `!`. So the entry understates the divergence slightly: it is both a wrong-layer divergence AND a message-text divergence in the verifier rule that does exist. Also note the recorded rationale for keeping the parser check holds up on inspection: every phi the parser builds routes through IrBuilder::{make_phi_in_block, append_phi_instruction}, both of which call BasicBlock::insert_instruction_at_phi_head unconditionally, so removing the parse-time check would silently hoist a misplaced phi past the verifier rather than reject it.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-asmparser/src/ll_parser.rs:11125-11134 -- `if matches!(opcode, Opcode::Phi) { if seen_non_phi { return Err(self.expected("phi must be grouped at the top of its basic block")); } } else { seen_non_phi = true; }`; the working-tree diff on that file does not touch this region. Pinned by crates/llvmkit-asmparser/tests/parser_errors.rs:86 `phi_after_non_phi_is_a_parse_error`, which asserts the message text. crates/llvmkit-ir/src/basic_block.rs:863 `insert_instruction_at_phi_head` inserts at the first non-phi position unconditionally; crates/llvmkit-ir/src/ir_builder.rs:931 `make_phi_in_block` and ir_builder.rs:9045 `append_phi_instruction` both call it "regardless of the builder's cursor"; ir_builder.rs:993 `append_block_with_params` exists as cited; ll_parser.rs:12747 `parse_phi` builds every phi through those builder entry points. crates/llvmkit-ir/src/phi_raw_tests/typestate.rs:129 `build_phi_inserts_at_phi_head_not_cursor` demonstrates the hoist and then asserts `m.verify()` succeeds. crates/llvmkit-ir/src/verifier.rs:1036-1050 implements the PhiNotAtTop scan; crates/llvmkit-ir/src/error.rs:474 renders it as "PHI nodes not grouped at top of block". Upstream: orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp:7050-7158 (parseBasicBlock, `Inst->insertInto(BB, BB->end())`, no ordering check), LLParser.cpp:8314-8356 (parsePHI, only the "phi node must have first class type" error), and lib/IR/Verifier.cpp:3808-3815 (visitPHINode's `Check(&PN == &PN.getParent()->front() || isa<PHINode>(--BasicBlock::iterator(&PN)), "PHI nodes not grouped at top of basic block!", &PN, PN.getParent());`).
-
-</details>
-
 ### 36. Global forward references resolve in one end-of-module sweep, not per definition site
 
 *parser — forward references* — crates/llvmkit-asmparser/src/ll_parser.rs:6991-6999 (`forward_ref_globals` guard), :1711-1731 (end-of-module leftovers)
@@ -1188,26 +1280,6 @@ llvmkit source, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_p
 > recorded in **D12**, not here.
 
 > **Evidence block removed 2026-08-20 (fix round 3).** It recorded a single verification pass taken before W13a and was superseded by the `Status (W13a, W13b)` paragraph above: its central finding, "11 calls in an order that does not match upstream's", is no longer true, and its llvmkit coordinate for the sequence (`ll_parser.rs:1457-1480`) had drifted into metadata-slot code. The upstream half it cited (`LLParser::validateEndOfModule`, and `parseValID`'s blockaddress leftovers) still holds and is named by symbol in the bullets above.
-
-### 121. Verifier diagnostics are house-worded, not `Verifier::CheckFailed`'s strings
-
-*verifier* — crates/llvmkit-ir/src/verifier.rs; crates/llvmkit-ir/src/error.rs (`VerifierRule`, `IrError::VerifierFailure`)
-
-- **LLVM:** `Verifier`'s `Check(cond, "…", V)` macro hands its literal to `CheckFailed`, which prints that string verbatim ahead of the offending value. The literal *is* the diagnostic: `llvm/test/Verifier/*.ll` `CHECK` lines match it, so it is contractual the same way a parser diagnostic is.
-- **llvmkit:** a verifier failure is `IrError::VerifierFailure { rule, function, block, message }`. `rule` is a `VerifierRule` whose `Display` is a house label written in the enum's own register (lower-case, no trailing `!`, named after the invariant rather than the sentence), and `message` is a `format!` written at the check site, usually naming the offending type or operand index. Neither reproduces upstream's literal. Four pairs from `check_gep` alone, upstream first: `GEP base pointer is not a vector or a vector of pointers` / `getelementptr base operand has type {} (expected pointer)`; `GEP into unsized type!` / `getelementptr source element type {} is unsized`; `GEP indexes must be integers` / `getelementptr index #{slot} has type {} (expected integer)`; `Invalid indices for GEP pointer type!` / `getelementptr indices do not index into source type {}`. The newer GEP rules were written to the same convention, so the divergence is the convention, not any one rule.
-- **Why:** The rule enum, not the string, is llvmkit's diagnostic API — a caller matches `VerifierRule::…` and the text is for humans — so the strings were written for that surface rather than copied. Nothing enforces the convention and nothing measures the drift *across* the verifier: there is no `test/Verifier` counterpart to the manifest `parser_corpus.rs` drives, so the wording is compared against `Verifier.cpp` only where a hand-written test happens to do it.
-- **The `!range` rules are a counterexample, and they answer the register question.** (The `verifyMustTailCall` rules are another, added later and written the same way, as are `visitCallBase`'s operand-bundle rules, `verifyAttachedCallBundle`'s and `Missing funclet token on intrinsic call`; check the rule you care about rather than assuming either side of this entry covers it.) `crates/llvmkit-asmparser/tests/parser_metadata.rs::upstream_invalid_range_metadata_fixture_messages_match` `include_str!`s the vendored `tests/fixtures/upstream/Verifier/range-1.ll`, cuts out each of its functions with its `!range` node, runs `Module::verify_borrowed` over each, and `assert_eq!`s the result against upstream's own `Check` literal for that case (`Ranges are only for loads, calls and invokes!`, `It should have at least one range!`, `Intervals are overlapping`, …), read off `IrError::VerifierFailure`'s **`message`** field. So the divergence is not universal, a `test/Verifier` fixture *can* be ported by message text where the rule already carries upstream's string, and where the literal lives is settled: in `message`, not in `rule`'s `Display`.
-- **Consequence:** the accept/reject verdict is unaffected — this is text only. But porting a `test/Verifier/*.ll` fixture by its `CHECK` lines works only for a rule already written to upstream's literal; elsewhere the `CHECK` line will not match and the port has to assert the `VerifierRule` instead and say so.
-- **Fix:** One sweep, not a per-rule patch: give every `VerifierRule` its upstream `Check` literal in `message` (the enum doc comments already name most of them), keep the `format!` detail as a suffix rather than a replacement, and then drive the `test/Verifier` fixtures by text the way `parser_corpus.rs` drives `test/Assembler` — which is also the gate whose absence let this entry state a negative that one in-tree test already falsified.
-- **Not covered here:** the parser's diagnostics, which *are* upstream's literals and are pinned as such; and the individual entries in this section that record a *parser* message differing from upstream's. `VerifierRule::PhiEmptyInReachableBlock` is also out of scope, but for a reason this entry is the wrong place to state — entry 8 works out when it pre-empts an upstream `Check` and when there is none to pre-empt. Read it there rather than trusting a summary here.
-
-<details><summary>Verification evidence (2026-08-21)</summary>
-
-Upstream read at the vendored tag `llvmorg-22.1.4`; the repo commit does not pin `orig_cpp/`, which is gitignored. `llvm/lib/IR/Verifier.cpp` — the `Check` macro expands to `CheckFailed(__VA_ARGS__); return;`, and `Verifier::visitGetElementPtrInst` carries the four literals quoted above. llvmkit at this commit: `crates/llvmkit-ir/src/error.rs` — `IrError::VerifierFailure`'s `message` field is documented "Human-readable description mirroring `Verifier::CheckFailed`", and `VerifierRule`'s `Display` arm for each GEP rule renders the house label (`"getelementptr base is not a pointer"`, `"getelementptr source element type is unsized"`, `"getelementptr index operand is not an integer"`, `"getelementptr indices are invalid for the source type"`); `crates/llvmkit-ir/src/verifier.rs::check_gep` carries the four `format!` strings quoted above. Scope check before opening this entry: `grep -niE "verifier.*(wording|reworded|message text|diagnostic text|Check string)" docs/divergences.md docs/future-work.md` found no class-level entry, and the two entries that mention verifier wording (the `PhiNotAtTop` text and the `callbr` "carrying upstream's wording" fix sketch) are per-rule remarks inside entries about a different divergence. The claim here is deliberately not quantified over every rule: four pairs were read and quoted, and the sentence says the convention diverges, not that every rule does.
-
-**Correction, 2026-08-22.** That scope check searched `docs/` and never `crates/`, and the entry then asserted an absence over the tree it had not looked at: it said no `test/Verifier` fixture is driven through llvmkit's verifier by message text. `grep -rln 'fixtures/upstream/Verifier' crates/` finds the `range-1.ll` test named in the bullet above, which does exactly that and passes. Both the Why and the Consequence are rewritten; the `!range` rules are the in-tree counterexample.
-
-</details>
 
 ## Different printed bytes
 

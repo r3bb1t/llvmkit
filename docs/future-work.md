@@ -171,6 +171,45 @@ entry deliberately carries **no figure** — three were written and all three we
 wrong, because the prose naming the phantom paths is itself counted by any sweep
 that looks for them — so no figure is repeated here either.
 
+## `llvm/test/Verifier` — no corpus manifest, so nothing measures the drift (found 2026-08-27, divergence-closing wave 5)
+
+Every `VerifierRule` now carries upstream's `Check` literal at the head of
+`IrError::VerifierFailure`'s `message`, so a `llvm/test/Verifier/*.ll` fixture
+can be driven by its own `CHECK` lines — that was the point of closing the
+"verifier diagnostics are house-worded" divergence, and it is why
+`test/Verifier/SelfReferential.ll` is now a port rather than a paraphrase.
+
+What did **not** land with it is the gate: there is no `test/Verifier`
+counterpart to the manifest `crates/llvmkit-asmparser/tests/parser_corpus.rs`
+drives over `test/Assembler`. Each vendored `test/Verifier` fixture is
+`include_str!`ed by one hand-written test, so a rule whose literal drifts is
+caught only where a test happens to look, and a fixture nobody vendored is
+invisible. The absence of exactly this measurement is what let the whole
+verifier drift from `Verifier.cpp` unnoticed in the first place; a per-fixture
+test is a narrower answer than a manifest.
+
+Wanted, in this order:
+
+1. A `test/Verifier` classification the way
+   [`fixture-coverage.md`](fixture-coverage.md) classifies `test/Assembler` —
+   `ported` / `blocked` / `N/A`, each blocked row naming its gap. Derive it,
+   do not estimate it; the directory listing is the denominator.
+2. A manifest-driven runner over the vendored subset: parse, verify, and run
+   the fixture's own `CHECK` block through
+   `crates/llvmkit-asmparser/tests/support/mod.rs`'s FileCheck subset. The
+   per-fixture tests collapse into rows.
+3. A rule-coverage check: every `VerifierRule` variant either appears in the
+   manifest's expectations or carries a comment at its check site saying it has
+   no upstream `Check` literal to reproduce. Those comments exist today
+   (`check_freeze`, `check_va_arg`, `check_cmpxchg`, `check_switch`'s condition
+   arm, `PhiEmptyInReachableBlock`, the arena-level result-type guards); nothing
+   enforces that a *new* rule writes one.
+
+Two fixtures are vendored and waiting on a divergence rather than on this work:
+`PhiGrouping.ll` (entry 26 — the parser pre-empts the rule) and
+`AmbiguousPhi.ll` (entry 130 — the builder does). Both assert their blocker
+today, so they fail the day it closes.
+
 ## AutoUpgrade — six of nine `validateEndOfModule` call sites still open (measured 2026-08-16, LLParser parity W13d)
 
 `crates/llvmkit-ir/src/auto_upgrade.rs` exists now and carries the
@@ -778,6 +817,13 @@ head-phi design (block parameters are operandless head-phis, per
 `IrBuilder::append_block_with_params`), so it wants deciding alongside that
 model rather than as a parser patch. `insert_instruction_at_phi_head` is the
 only phi insertion path today.
+
+The fixture is now vendored — `PhiGrouping.ll`, under
+`crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/` — and
+`upstream_phi_grouping_fixture_is_rejected_at_parse_time` asserts the parse
+diagnostic above, so this item's closure is what makes that test fail and get
+replaced by the real port. `VerifierRule::PhiNotAtTop` itself now renders
+upstream's literal; that half is closed.
 
 ## ~~Parser — `syncscope("system")` collapsed to the default scope~~ (decided and fixed 2026-08-06, W8)
 

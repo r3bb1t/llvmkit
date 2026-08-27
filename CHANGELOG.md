@@ -19,6 +19,61 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — every verifier diagnostic now carries upstream's `Check` literal
+
+- **`IrError::VerifierFailure`'s `message` begins with `Verifier::CheckFailed`'s
+  own string, verbatim**, for every rule that has one — including its oddities:
+  `Unary operators must have same type foroperands and result!` and
+  `getelementptr cannot target structure that contains scalable vectortype` are
+  upstream's missing spaces, not typos, and `Trunc only produces integer` has no
+  article where `ZExt only produces an integer` does. llvmkit's own detail
+  follows in parentheses (`GEP into unsized type! (source element type %s)`), so
+  the literal is always a prefix and a `llvm/test/Verifier/*.ll` `CHECK` line
+  matches. **Breaking** for any caller matching on the message text; matching on
+  `VerifierRule` is unaffected, and that enum's `Display` is unchanged — it stays
+  llvmkit's category label, because several variants stand for several of
+  upstream's `Check`s.
+
+  A rule with **no** upstream `Check` to reproduce keeps llvmkit's wording and
+  now says so in a comment at the check site: `check_freeze` and `check_va_arg`
+  (upstream has no `visitFreeze`, and `visitVAArgInst` is `{ visitInstruction(VAA); }`),
+  `check_cmpxchg`'s four (upstream `assert`s them in `AtomicCmpXchgInst::Init`),
+  `check_switch`'s condition arm, the `icmp`/`fcmp` result-type guards, the
+  arena-level result-type guards in `check_alloca` / `check_load`, and
+  `PhiEmptyInReachableBlock`.
+
+- **Three `Verifier` routines are now ported arm for arm** rather than collapsed
+  into one check, because the collapse is what made the message house-worded:
+  `visitGlobalVariable`'s `if (GV.hasCommonLinkage())` is three `Check`s again
+  (`'common' global must have a zero initializer!` / `may not be marked
+  constant!` / `may not be in a Comdat!`), `checkAtomicMemAccessSize` is two, and
+  `visitBinaryOperator`'s `switch` splits the integer opcodes into the
+  arithmetic, shift and logical arms that carry different literals.
+  `visitUnaryOperator`'s same-type `Check` also runs *before* the `FNeg` one, as
+  upstream orders them.
+
+- **A verifier diagnostic naming an unnamed block or value prints the number
+  `AsmWriter` prints.** `slot_label`'s fallback was `format!("{:?}", block_id)`,
+  the `Debug` of an internal arena handle — text that appears nowhere in the
+  source or in printed output. It now asks `SlotTracker::for_function`, as
+  `Verifier::CheckFailed` asks the module's slot tracker, and falls back to
+  `AsmWriter`'s own `<badref>`.
+
+- **Fixtures now ported by their own `CHECK` lines:**
+  `test/Verifier/SelfReferential.ll`, vendored whole and driven through
+  `Module::verify_borrowed`; and the `@f0` / `@f1` halves of
+  `test/Verifier/operand-bundles.ll`, which asserted rejection without text
+  until `Instruction does not dominate all uses!` was the message. That test's
+  whole-function expectations are now read out of the fixture rather than
+  repeated in the test, so a re-blessed message that drifts from upstream's
+  cannot be papered over by editing a string.
+
+  `test/Verifier/PhiGrouping.ll` and `test/Verifier/AmbiguousPhi.ll` are
+  vendored too and **cannot** be driven through the parser: llvmkit answers the
+  first in `parse_basic_block` and the second in `PhiInst::add_incoming`. Each
+  test asserts that blocker instead, and names the ledger entry (26 and the new
+  130), so it fails the day the blocker closes.
+
 ### Added — the verifier's operand-bundle and funclet-token rules
 
 - **`Verifier::visitCallBase`'s operand-bundle loop is ported whole**, one `for`

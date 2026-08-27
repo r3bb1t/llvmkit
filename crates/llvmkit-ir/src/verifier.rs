@@ -187,7 +187,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 rule: VerifierRule::IfuncInvalidLinkage,
                 function: Some(format!("@{}", i.name())),
                 block: None,
-                message: VerifierRule::IfuncInvalidLinkage.to_string(),
+                message: "IFunc should have private, internal, linkonce, weak, linkonce_odr, \
+                          weak_odr, or external linkage!"
+                    .to_owned(),
             });
         }
         Ok(())
@@ -200,7 +202,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return Err(self.fail_global(
                 g,
                 VerifierRule::GlobalScalableType,
-                format!("@{}: globals cannot contain scalable types", g.name()),
+                format!("Globals cannot contain scalable types (@{})", g.name()),
             ));
         }
 
@@ -210,7 +212,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     g,
                     VerifierRule::GlobalInitializerTypeMismatch,
                     format!(
-                        "@{}: initializer type {} does not match value type {}",
+                        "Global variable initializer type does not match global variable type! (@{}: initializer type {}, value type {})",
                         g.name(),
                         init.ty().kind_label(),
                         value_ty.kind_label(),
@@ -221,23 +223,43 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 return Err(self.fail_global(
                     g,
                     VerifierRule::GlobalInitializerUnsized,
-                    format!("@{}: initializer must be sized", g.name()),
+                    format!("Global variable initializer must be sized (@{})", g.name()),
                 ));
             }
             if g.linkage() == Linkage::Common {
-                // Upstream asks `GV.getInitializer()->isNullValue()`, which is
+                // Upstream's `if (GV.hasCommonLinkage())` block is three
+                // separate `Check`s with three literals, and is three checks
+                // here for the same reason.
+                //
+                // The first asks `GV.getInitializer()->isNullValue()`, which is
                 // true of a zero *aggregate* too — `common global [10 x T]
                 // zeroinitializer` is the shape clang emits. Recognising only
                 // scalar zeros rejected it.
-                let zero = crate::constants::constant_id_is_null_value(self.module, init.slot());
-                if !zero || g.is_constant() || g.comdat().is_some() {
+                if !crate::constants::constant_id_is_null_value(self.module, init.slot()) {
                     return Err(self.fail_global(
                         g,
                         VerifierRule::CommonLinkageInvariantViolated,
                         format!(
-                            "@{}: common-linkage global must have a zero initializer, must not be constant, and must not be in a comdat",
+                            "'common' global must have a zero initializer! (@{})",
                             g.name()
                         ),
+                    ));
+                }
+                if g.is_constant() {
+                    return Err(self.fail_global(
+                        g,
+                        VerifierRule::CommonLinkageInvariantViolated,
+                        format!(
+                            "'common' global may not be marked constant! (@{})",
+                            g.name()
+                        ),
+                    ));
+                }
+                if g.comdat().is_some() {
+                    return Err(self.fail_global(
+                        g,
+                        VerifierRule::CommonLinkageInvariantViolated,
+                        format!("'common' global may not be in a Comdat! (@{})", g.name()),
                     ));
                 }
             }
@@ -1036,7 +1058,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::MissingTerminator,
                 format!(
-                    "block {:?} has no instructions",
+                    "Basic Block does not have terminator! (block {:?} has no instructions)",
                     bb.name().as_deref().unwrap_or("<anon>")
                 ),
             ));
@@ -1052,7 +1074,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::MisplacedTerminator,
-                    "terminator appears before the end of the block".into(),
+                    "Terminator found in the middle of a basic block!".into(),
                 ));
             }
             if !inst.is_terminator() && is_last {
@@ -1060,7 +1082,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::MissingTerminator,
-                    "block does not end with a terminator instruction".into(),
+                    "Basic Block does not have terminator!".into(),
                 ));
             }
         }
@@ -1081,7 +1103,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::PhiNotAtTop,
-                    "phi node appears after a non-phi instruction".into(),
+                    "PHI nodes not grouped at top of basic block!".into(),
                 ));
             }
             if !is_phi {
@@ -1120,19 +1142,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             _ => unreachable!("instruction handle invariant: value kind is Instruction"),
         };
         let opcode_result = match kind {
+            // `Verifier::visitBinaryOperator`'s `switch (B.getOpcode())` has
+            // four arms, each with its own pair of `Check` literals. The
+            // integer arms share one routine here and differ only in which
+            // pair they hand it.
             InstructionKindData::Add(b)
             | InstructionKindData::Sub(b)
             | InstructionKindData::Mul(b)
             | InstructionKindData::Udiv(b)
             | InstructionKindData::Sdiv(b)
             | InstructionKindData::Urem(b)
-            | InstructionKindData::Srem(b)
-            | InstructionKindData::Shl(b)
+            | InstructionKindData::Srem(b) => self.check_int_binary(
+                f,
+                bb,
+                inst,
+                b,
+                "Integer arithmetic operators only work with integral types!",
+                "Integer arithmetic operators must have same type for operands and result!",
+            ),
+            InstructionKindData::Shl(b)
             | InstructionKindData::Lshr(b)
-            | InstructionKindData::Ashr(b)
-            | InstructionKindData::And(b)
+            | InstructionKindData::Ashr(b) => self.check_int_binary(
+                f,
+                bb,
+                inst,
+                b,
+                "Shifts only work with integral types!",
+                "Shift return type must be same as operands!",
+            ),
+            InstructionKindData::And(b)
             | InstructionKindData::Or(b)
-            | InstructionKindData::Xor(b) => self.check_int_binary(f, bb, inst, b),
+            | InstructionKindData::Xor(b) => self.check_int_binary(
+                f,
+                bb,
+                inst,
+                b,
+                "Logical operators only work with integral types!",
+                "Logical operators must have same type for operands and result!",
+            ),
             InstructionKindData::Fadd(b)
             | InstructionKindData::Fsub(b)
             | InstructionKindData::Fmul(b)
@@ -1288,6 +1335,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         F: FnMut(VerifierRule, String) -> IrError,
     {
         let store = self.module.metadata_store();
+        // No upstream `Check` literal: `verifyRangeLikeMetadata` takes an
+        // `MDNode *` and reads `getNumOperands()` directly, so a non-tuple
+        // cannot reach it. llvmkit's store can hold one, so this guard exists
+        // and keeps llvmkit's own wording.
         let Some(MetadataKind::Tuple { operands, .. }) = store.get(id) else {
             return Err(fail(
                 VerifierRule::RangeMetadataMalformed,
@@ -1343,6 +1394,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     "The upper and lower limits cannot be the same value".to_string(),
                 ));
             }
+            // No upstream `Check` literal: `ConstantRange`'s constructor
+            // asserts equal bit widths, which the two type checks above have
+            // already established, so this arm carries `ConstantRange`'s own
+            // error text rather than a `Verifier` string.
             let range = ConstantRange::new(low.clone(), high.clone())
                 .map_err(|err| fail(VerifierRule::RangeMetadataTypeMismatch, err.to_string()))?;
             if range.is_empty_set() || (kind == RangeLikeMetadataKind::Range && range.is_full_set())
@@ -1403,12 +1458,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitBinaryOperator` -- integer flavor.
     /// `add`/`sub`/`mul`/`udiv`/`sdiv`/`urem`/`srem`/`shl`/`lshr`/`ashr`/
     /// `and`/`or`/`xor`.
+    ///
+    /// `operand_kind_message` and `same_type_message` are the two `Check`
+    /// literals of the caller's arm of upstream's `switch (B.getOpcode())`;
+    /// see [`Self::visit_instruction`]'s dispatch.
     fn check_int_binary(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         b: &BinaryOpData,
+        operand_kind_message: &str,
+        same_type_message: &str,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(b.lhs.get());
         let rhs_ty = self.value_type(b.rhs.get());
@@ -1418,7 +1479,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::BinaryOperandsTypeMismatch,
                 format!(
-                    "lhs is {} but rhs is {}",
+                    "Both operands to a binary operator are not of the same type! (lhs is {} but rhs is {})",
                     self.type_label(lhs_ty),
                     self.type_label(rhs_ty)
                 ),
@@ -1429,7 +1490,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::IntegerOpNonIntegerOperand,
-                format!("operand type {} is not integer", self.type_label(lhs_ty)),
+                format!(
+                    "{operand_kind_message} (operand type {})",
+                    self.type_label(lhs_ty)
+                ),
             ));
         }
         if inst.ty().id != lhs_ty {
@@ -1438,7 +1502,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::BinaryResultTypeMismatch,
                 format!(
-                    "result {} != operand {}",
+                    "{same_type_message} (result {} != operand {})",
                     self.type_label(inst.ty().id),
                     self.type_label(lhs_ty)
                 ),
@@ -1464,7 +1528,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::BinaryOperandsTypeMismatch,
                 format!(
-                    "lhs is {} but rhs is {}",
+                    "Both operands to a binary operator are not of the same type! (lhs is {} but rhs is {})",
                     self.type_label(lhs_ty),
                     self.type_label(rhs_ty)
                 ),
@@ -1476,7 +1540,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::FloatOpNonFloatOperand,
                 format!(
-                    "operand type {} is not floating-point",
+                    "Floating-point arithmetic operators only work with floating-point types! (operand type {})",
                     self.type_label(lhs_ty)
                 ),
             ));
@@ -1487,7 +1551,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::BinaryResultTypeMismatch,
                 format!(
-                    "result {} != operand {}",
+                    "Floating-point arithmetic operators must have same type for operands and result! (result {} != operand {})",
                     self.type_label(inst.ty().id),
                     self.type_label(lhs_ty)
                 ),
@@ -1496,8 +1560,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// `Verifier::visitFNeg`. The `fneg` opcode produces an FP value
-    /// whose type matches the operand type.
+    /// `Verifier::visitUnaryOperator`, whose only opcode is `fneg`: the
+    /// same-type `Check` runs *before* the `switch`, so it is first here too.
+    ///
+    /// `Unary operators must have same type foroperands and result!` is
+    /// upstream's literal, missing space and all — the two adjacent string
+    /// literals it concatenates have no separator.
     fn check_fneg(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -1506,25 +1574,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         u: &FnegInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
-        if !is_fp_or_fp_vector(self.module, src_ty) {
-            return Err(self.fail(
-                f,
-                bb,
-                VerifierRule::FnegTypeMismatch,
-                format!(
-                    "operand type {} is not floating-point",
-                    self.type_label(src_ty)
-                ),
-            ));
-        }
         if inst.ty().id != src_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::FnegTypeMismatch,
                 format!(
-                    "result {} != operand {}",
+                    "Unary operators must have same type foroperands and result! (result {} != operand {})",
                     self.type_label(inst.ty().id),
+                    self.type_label(src_ty)
+                ),
+            ));
+        }
+        if !is_fp_or_fp_vector(self.module, src_ty) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::FnegTypeMismatch,
+                format!(
+                    "FNeg operator only works with float types! (operand type {})",
                     self.type_label(src_ty)
                 ),
             ));
@@ -1532,9 +1600,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// `Verifier::visitFreeze`. The result type must match the operand
-    /// type. Operand type is otherwise unconstrained (LangRef permits
-    /// any first-class type except aggregates of tokens).
+    /// The result type must match the operand type. Operand type is otherwise
+    /// unconstrained (LangRef permits any first-class type except aggregates
+    /// of tokens).
+    ///
+    /// **No upstream counterpart.** `Verifier` has no `visitFreeze`, so this
+    /// rule has no `Check` literal to carry and keeps llvmkit's own wording —
+    /// `grep -c 'Freeze' llvm/lib/IR/Verifier.cpp` is 0 at `llvmorg-22.1.4`.
     fn check_freeze(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -1558,8 +1630,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// `Verifier::visitVAArgInst`. The source operand must be a
-    /// pointer to a `va_list`; the destination type is independent.
+    /// The source operand must be a pointer to a `va_list`; the destination
+    /// type is independent.
+    ///
+    /// **No upstream counterpart.** `Verifier::visitVAArgInst` is declared
+    /// inline as `{ visitInstruction(VAA); }` and carries no `Check`, so this
+    /// rule has no literal to reproduce and keeps llvmkit's own wording.
     fn check_va_arg(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -1595,13 +1671,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::AggregateOpNonAggregate,
-                    format!("operand type {} is not aggregate", self.type_label(at)),
+                    format!(
+                        "Invalid ExtractValueInst operands! (operand type {} is not aggregate)",
+                        self.type_label(at)
+                    ),
                 ),
                 AggWalkErr::OutOfRange { idx, count } => self.fail(
                     f,
                     bb,
                     VerifierRule::AggregateIndexOutOfRange,
-                    format!("index {idx} >= {count}"),
+                    format!("Invalid ExtractValueInst operands! (index {idx} >= {count})"),
                 ),
             })?;
         if inst.ty().id != leaf_ty {
@@ -1610,7 +1689,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::AggregateOpNonAggregate,
                 format!(
-                    "result {} != leaf {}",
+                    "Invalid ExtractValueInst operands! (result {} != leaf {})",
                     self.type_label(inst.ty().id),
                     self.type_label(leaf_ty)
                 ),
@@ -1635,13 +1714,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::AggregateOpNonAggregate,
-                    format!("operand type {} is not aggregate", self.type_label(at)),
+                    format!(
+                        "Invalid InsertValueInst operands! (operand type {} is not aggregate)",
+                        self.type_label(at)
+                    ),
                 ),
                 AggWalkErr::OutOfRange { idx, count } => self.fail(
                     f,
                     bb,
                     VerifierRule::AggregateIndexOutOfRange,
-                    format!("index {idx} >= {count}"),
+                    format!("Invalid InsertValueInst operands! (index {idx} >= {count})"),
                 ),
             })?;
         if val_ty != leaf_ty {
@@ -1650,7 +1732,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::InsertValueLeafTypeMismatch,
                 format!(
-                    "inserted value {} != leaf {}",
+                    "Invalid InsertValueInst operands! (inserted value {} != leaf {})",
                     self.type_label(val_ty),
                     self.type_label(leaf_ty)
                 ),
@@ -1662,7 +1744,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::InsertValueLeafTypeMismatch,
                 format!(
-                    "result {} != aggregate {}",
+                    "Invalid InsertValueInst operands! (result {} != aggregate {})",
                     self.type_label(inst.ty().id),
                     self.type_label(agg_ty)
                 ),
@@ -1689,7 +1771,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::VectorElementOpTypeMismatch,
-                    format!("vector operand {} is not a vector", self.type_label(vec_ty)),
+                    format!(
+                        "Invalid extractelement operands! (vector operand {} is not a vector)",
+                        self.type_label(vec_ty)
+                    ),
                 ));
             }
         };
@@ -1704,7 +1789,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::VectorElementOpTypeMismatch,
-                format!("index {} is not an integer", self.type_label(idx_ty)),
+                format!(
+                    "Invalid extractelement operands! (index {} is not an integer)",
+                    self.type_label(idx_ty)
+                ),
             ));
         }
         if inst.ty().id != elem {
@@ -1713,7 +1801,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::VectorElementOpTypeMismatch,
                 format!(
-                    "result {} != element {}",
+                    "Invalid extractelement operands! (result {} != element {})",
                     self.type_label(inst.ty().id),
                     self.type_label(elem)
                 ),
@@ -1740,7 +1828,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::VectorElementOpTypeMismatch,
-                    format!("vector operand {} is not a vector", self.type_label(vec_ty)),
+                    format!(
+                        "Invalid insertelement operands! (vector operand {} is not a vector)",
+                        self.type_label(vec_ty)
+                    ),
                 ));
             }
         };
@@ -1750,7 +1841,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::VectorElementOpTypeMismatch,
                 format!(
-                    "inserted value {} != element {}",
+                    "Invalid insertelement operands! (inserted value {} != element {})",
                     self.type_label(val_ty),
                     self.type_label(elem)
                 ),
@@ -1767,7 +1858,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::VectorElementOpTypeMismatch,
-                format!("index {} is not an integer", self.type_label(idx_ty)),
+                format!(
+                    "Invalid insertelement operands! (index {} is not an integer)",
+                    self.type_label(idx_ty)
+                ),
             ));
         }
         if inst.ty().id != vec_ty {
@@ -1776,7 +1870,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::VectorElementOpTypeMismatch,
                 format!(
-                    "result {} != vector {}",
+                    "Invalid insertelement operands! (result {} != vector {})",
                     self.type_label(inst.ty().id),
                     self.type_label(vec_ty)
                 ),
@@ -1823,7 +1917,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::ShuffleVectorTypeMismatch,
-                    format!("lhs {} is not a vector", self.type_label(l_ty)),
+                    format!(
+                        "Invalid shufflevector operands! (lhs {} is not a vector)",
+                        self.type_label(l_ty)
+                    ),
                 ));
             }
         };
@@ -1834,7 +1931,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::ShuffleVectorTypeMismatch,
-                    format!("rhs {} is not a vector", self.type_label(r_ty)),
+                    format!(
+                        "Invalid shufflevector operands! (rhs {} is not a vector)",
+                        self.type_label(r_ty)
+                    ),
                 ));
             }
         };
@@ -1844,7 +1944,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::ShuffleVectorTypeMismatch,
                 format!(
-                    "lhs element {} != rhs element {}",
+                    "Invalid shufflevector operands! (lhs element {} != rhs element {})",
                     self.type_label(l_elem),
                     self.type_label(r_elem)
                 ),
@@ -1859,7 +1959,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::ShuffleVectorTypeMismatch,
-                        "result vector length does not fit this host".to_string(),
+                        "Invalid shufflevector operands! (result vector length does not fit \
+                         this host)"
+                            .to_string(),
                     ));
                 };
                 if re != l_elem || result_len != d.mask.len() {
@@ -1867,7 +1969,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::ShuffleVectorTypeMismatch,
-                        "result vector shape disagrees with operands or mask length".to_string(),
+                        "Invalid shufflevector operands! (result vector shape disagrees with \
+                         operands or mask length)"
+                            .to_string(),
                     ));
                 }
             }
@@ -1876,7 +1980,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::ShuffleVectorTypeMismatch,
-                    format!("result {} is not a vector", self.type_label(inst.ty().id)),
+                    format!(
+                        "Invalid shufflevector operands! (result {} is not a vector)",
+                        self.type_label(inst.ty().id)
+                    ),
                 ));
             }
         }
@@ -1901,16 +2008,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::AtomicInvalidOrdering,
-                format!("fence ordering {} is invalid", d.ordering),
+                format!(
+                    "fence instructions may only have acquire, release, acq_rel, or seq_cst \
+                     ordering. (got {})",
+                    d.ordering
+                ),
             ));
         }
         Ok(())
     }
 
-    /// `Verifier::visitAtomicCmpXchgInst`. The pointer must be a
-    /// pointer; cmp / new value types must match; orderings must be at
-    /// least monotonic and the failure ordering must not be Release /
-    /// AcqRel.
+    /// The pointer must be a pointer; cmp / new value types must match;
+    /// orderings must be at least monotonic and the failure ordering must not
+    /// be Release / AcqRel.
+    ///
+    /// **No upstream `Check` literal for any of these four.**
+    /// `Verifier::visitAtomicCmpXchgInst`'s only `Check` is `cmpxchg operand
+    /// must have integer or pointer type`; the rest are `assert`s inside
+    /// `AtomicCmpXchgInst::Init`, which llvmkit raises as verifier failures
+    /// (production paths do not panic) and so keeps its own wording for.
     fn check_cmpxchg(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -1981,6 +2097,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     }
 
     /// `Verifier::visitAtomicRMWInst`.
+    ///
+    /// The pointer and result-type checks have no upstream `Check` literal —
+    /// `AtomicRMWInst::Init` asserts them — so they keep llvmkit's wording.
     fn check_atomicrmw(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -2008,7 +2127,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::AtomicRmwOperandTypeMismatch,
                 format!(
-                    "atomicrmw {} operand {} is not floating-point",
+                    "atomicrmw {} operand must have floating-point or fixed vector of \
+                     floating-point type! (got {})",
                     d.op.keyword(),
                     self.type_label(val_ty)
                 ),
@@ -2027,7 +2147,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::AtomicInvalidOrdering,
                 format!(
-                    "atomicrmw ordering {} must be at least monotonic",
+                    "atomicrmw instructions cannot be unordered. (got {})",
                     d.ordering
                 ),
             ));
@@ -2063,7 +2183,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::IcmpOperandTypeMismatch,
                 format!(
-                    "lhs {} differs from rhs {}",
+                    "Both operands to ICmp instruction are not of the same type! (lhs {} differs from rhs {})",
                     self.type_label(lhs_ty),
                     self.type_label(rhs_ty)
                 ),
@@ -2077,7 +2197,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::IcmpOperandTypeMismatch,
                 format!(
-                    "operand type {} is neither integer nor pointer",
+                    "Invalid operand types for ICmp instruction (operand type {} is neither integer nor pointer)",
                     self.type_label(lhs_ty)
                 ),
             ));
@@ -2085,6 +2205,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // Result type must be i1 (or vector of i1 for vector compares).
         // Predicate is statically a valid IntPredicate; nothing extra
         // to assert beyond the type-level guarantee.
+        //
+        // No upstream `Check` literal: `CmpInst::Create` builds the result
+        // type, so upstream has nothing to verify and llvmkit's arena-level
+        // guard keeps its own wording. The same holds in `check_fcmp`.
         let _ = c.predicate;
         let res = inst.ty();
         let res_ok = is_i1(self.module, res.id) || is_i1_vector(self.module, res.id);
@@ -2115,7 +2239,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::FcmpOperandTypeMismatch,
                 format!(
-                    "lhs {} differs from rhs {}",
+                    "Both operands to FCmp instruction are not of the same type! (lhs {} differs from rhs {})",
                     self.type_label(lhs_ty),
                     self.type_label(rhs_ty)
                 ),
@@ -2127,7 +2251,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::FcmpOperandTypeMismatch,
                 format!(
-                    "operand type {} is not floating-point",
+                    "Invalid operand types for FCmp instruction (operand type {} is not floating-point)",
                     self.type_label(lhs_ty)
                 ),
             ));
@@ -2164,8 +2288,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 // vector is checked on its element and separately on its
                 // shape: both sides vectors of equal element count, or both
                 // scalars.
-                let src_w = self.scalar_int_width_or_err(f, bb, src_ty, "source")?;
-                let dst_w = self.scalar_int_width_or_err(f, bb, dst_ty, "destination")?;
+                //
+                // The four literals are `visitTruncInst` / `visitZExtInst` /
+                // `visitSExtInst`'s, in their order. The `produces` verb is
+                // upstream's own: `Trunc only produces integer` has no article
+                // where the other two say `an integer`.
+                let (source_message, result_message, shape_message, width_message) = match c.kind {
+                    CastOpcode::Trunc => (
+                        "Trunc only operates on integer",
+                        "Trunc only produces integer",
+                        "trunc source and destination must both be a vector or neither",
+                        "DestTy too big for Trunc",
+                    ),
+                    CastOpcode::Zext => (
+                        "ZExt only operates on integer",
+                        "ZExt only produces an integer",
+                        "zext source and destination must both be a vector or neither",
+                        "Type too small for ZExt",
+                    ),
+                    _ => (
+                        "SExt only operates on integer",
+                        "SExt only produces an integer",
+                        "sext source and destination must both be a vector or neither",
+                        "Type too small for SExt",
+                    ),
+                };
+                let src_w = self.scalar_int_width_or_err(f, bb, src_ty, source_message)?;
+                let dst_w = self.scalar_int_width_or_err(f, bb, dst_ty, result_message)?;
                 let src_shape = vector_shape(self.module, src_ty);
                 let dst_shape = vector_shape(self.module, dst_ty);
                 if src_shape != dst_shape {
@@ -2174,7 +2323,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         bb,
                         VerifierRule::CastTypeMismatch,
                         format!(
-                            "{} from {} to {} changes the vector shape",
+                            "{shape_message} ({} from {} to {})",
                             c.kind.keyword(),
                             self.type_label(src_ty),
                             self.type_label(dst_ty)
@@ -2183,8 +2332,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
                 let ok = match c.kind {
                     CastOpcode::Trunc => dst_w < src_w,
-                    CastOpcode::Zext | CastOpcode::Sext => dst_w > src_w,
-                    _ => unreachable!("matched only int-to-int casts here"),
+                    _ => dst_w > src_w,
                 };
                 if !ok {
                     return Err(self.fail(
@@ -2192,7 +2340,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         bb,
                         VerifierRule::CastWidthMismatch,
                         format!(
-                            "{} from {} to {}",
+                            "{width_message} ({} from {} to {})",
                             c.kind.keyword(),
                             self.type_label(src_ty),
                             self.type_label(dst_ty)
@@ -2201,55 +2349,69 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             CastOpcode::FpTrunc | CastOpcode::FpExt => {
-                let src_rank = fp_rank(self.module, src_ty);
-                let dst_rank = fp_rank(self.module, dst_ty);
-                match (src_rank, dst_rank) {
-                    (Some(s), Some(d)) => {
-                        let ok = match c.kind {
-                            CastOpcode::FpTrunc => d < s,
-                            CastOpcode::FpExt => d > s,
-                            _ => unreachable!(),
-                        };
-                        if !ok {
-                            return Err(self.fail(
-                                f,
-                                bb,
-                                VerifierRule::CastWidthMismatch,
-                                format!(
-                                    "{} from {} to {}",
-                                    c.kind.keyword(),
-                                    self.type_label(src_ty),
-                                    self.type_label(dst_ty)
-                                ),
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(self.fail(
-                            f,
-                            bb,
-                            VerifierRule::CastTypeMismatch,
-                            format!(
-                                "{} requires floating-point operands; got {} -> {}",
-                                c.kind.keyword(),
-                                self.type_label(src_ty),
-                                self.type_label(dst_ty)
-                            ),
-                        ));
-                    }
+                let (source_message, result_message, width_message) = match c.kind {
+                    CastOpcode::FpTrunc => (
+                        "FPTrunc only operates on FP",
+                        "FPTrunc only produces an FP",
+                        "DestTy too big for FPTrunc",
+                    ),
+                    _ => (
+                        "FPExt only operates on FP",
+                        "FPExt only produces an FP",
+                        "DestTy too small for FPExt",
+                    ),
+                };
+                let Some(s) = fp_rank(self.module, src_ty) else {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::CastTypeMismatch,
+                        format!("{source_message} (got {})", self.type_label(src_ty)),
+                    ));
+                };
+                let Some(d) = fp_rank(self.module, dst_ty) else {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::CastTypeMismatch,
+                        format!("{result_message} (got {})", self.type_label(dst_ty)),
+                    ));
+                };
+                let ok = match c.kind {
+                    CastOpcode::FpTrunc => d < s,
+                    _ => d > s,
+                };
+                if !ok {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::CastWidthMismatch,
+                        format!(
+                            "{width_message} ({} from {} to {})",
+                            c.kind.keyword(),
+                            self.type_label(src_ty),
+                            self.type_label(dst_ty)
+                        ),
+                    ));
                 }
             }
             CastOpcode::FpToUi | CastOpcode::FpToSi => {
+                let (source_message, result_message) = match c.kind {
+                    CastOpcode::FpToUi => (
+                        "FPToUI source must be FP or FP vector",
+                        "FPToUI result must be integer or integer vector",
+                    ),
+                    _ => (
+                        "FPToSI source must be FP or FP vector",
+                        "FPToSI result must be integer or integer vector",
+                    ),
+                };
                 if !is_fp_or_fp_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
-                        format!(
-                            "{} source must be floating-point, got {}",
-                            c.kind.keyword(),
-                            self.type_label(src_ty)
-                        ),
+                        format!("{source_message} (got {})", self.type_label(src_ty)),
                     ));
                 }
                 if !is_int_or_int_vector(self.module, dst_ty) {
@@ -2257,25 +2419,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
-                        format!(
-                            "{} destination must be integer, got {}",
-                            c.kind.keyword(),
-                            self.type_label(dst_ty)
-                        ),
+                        format!("{result_message} (got {})", self.type_label(dst_ty)),
                     ));
                 }
             }
             CastOpcode::UiToFp | CastOpcode::SiToFp => {
+                let (source_message, result_message) = match c.kind {
+                    CastOpcode::UiToFp => (
+                        "UIToFP source must be integer or integer vector",
+                        "UIToFP result must be FP or FP vector",
+                    ),
+                    _ => (
+                        "SIToFP source must be integer or integer vector",
+                        "SIToFP result must be FP or FP vector",
+                    ),
+                };
                 if !is_int_or_int_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
-                        format!(
-                            "{} source must be integer, got {}",
-                            c.kind.keyword(),
-                            self.type_label(src_ty)
-                        ),
+                        format!("{source_message} (got {})", self.type_label(src_ty)),
                     ));
                 }
                 if !is_fp_or_fp_vector(self.module, dst_ty) {
@@ -2283,25 +2447,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
-                        format!(
-                            "{} destination must be floating-point, got {}",
-                            c.kind.keyword(),
-                            self.type_label(dst_ty)
-                        ),
+                        format!("{result_message} (got {})", self.type_label(dst_ty)),
                     ));
                 }
             }
             CastOpcode::PtrToAddr | CastOpcode::PtrToInt => {
+                let (source_message, result_message) = match c.kind {
+                    CastOpcode::PtrToAddr => (
+                        "PtrToAddr source must be pointer",
+                        "PtrToAddr result must be integral",
+                    ),
+                    _ => (
+                        "PtrToInt source must be pointer",
+                        "PtrToInt result must be integral",
+                    ),
+                };
                 if !is_pointer_or_pointer_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
-                        format!(
-                            "{} source must be pointer, got {}",
-                            c.kind.keyword(),
-                            self.type_label(src_ty)
-                        ),
+                        format!("{source_message} (got {})", self.type_label(src_ty)),
                     ));
                 }
                 if !is_int_or_int_vector(self.module, dst_ty) {
@@ -2309,11 +2475,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
-                        format!(
-                            "{} destination must be integer, got {}",
-                            c.kind.keyword(),
-                            self.type_label(dst_ty)
-                        ),
+                        format!("{result_message} (got {})", self.type_label(dst_ty)),
                     ));
                 }
                 if c.kind == CastOpcode::PtrToAddr {
@@ -2323,7 +2485,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                             f,
                             bb,
                             VerifierRule::CastTypeMismatch,
-                            "ptrtoaddr source must be pointer".to_owned(),
+                            "PtrToAddr source must be pointer".to_owned(),
                         ));
                     };
                     let Some((dst_bits, dst_shape)) = integer_result_shape(self.module, dst_ty)
@@ -2332,7 +2494,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                             f,
                             bb,
                             VerifierRule::CastTypeMismatch,
-                            "ptrtoaddr destination must be integer".to_owned(),
+                            "PtrToAddr result must be integral".to_owned(),
                         ));
                     };
                     let index_bits = self.module.data_layout().index_size_in_bits(addr_space);
@@ -2341,7 +2503,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                             f,
                             bb,
                             VerifierRule::CastTypeMismatch,
-                            "ptrtoaddr result must be address width".to_owned(),
+                            "PtrToAddr result must be address width".to_owned(),
                         ));
                     }
                 }
@@ -2353,7 +2515,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         bb,
                         VerifierRule::CastTypeMismatch,
                         format!(
-                            "inttoptr source must be integer, got {}",
+                            "IntToPtr source must be an integral (got {})",
                             self.type_label(src_ty)
                         ),
                     ));
@@ -2364,7 +2526,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         bb,
                         VerifierRule::CastTypeMismatch,
                         format!(
-                            "inttoptr destination must be pointer, got {}",
+                            "IntToPtr result must be a pointer (got {})",
                             self.type_label(dst_ty)
                         ),
                     ));
@@ -2389,7 +2551,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                             bb,
                             VerifierRule::CastTypeMismatch,
                             format!(
-                                "bitcast across address spaces ({src_as} -> {dst_as}); use addrspacecast"
+                                "Invalid bitcast (across address spaces {src_as} -> {dst_as}; use addrspacecast)"
                             ),
                         ));
                     }
@@ -2403,7 +2565,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                                 f,
                                 bb,
                                 VerifierRule::BitCastSizeMismatch,
-                                format!("bitcast {s}-bit -> {d}-bit"),
+                                format!("Invalid bitcast ({s}-bit -> {d}-bit)"),
                             ));
                         }
                         _ => {
@@ -2412,7 +2574,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                                 bb,
                                 VerifierRule::CastTypeMismatch,
                                 format!(
-                                    "bitcast requires sized scalar/vector/pointer types; got {} -> {}",
+                                    "Invalid bitcast (requires sized scalar/vector/pointer types; got {} -> {})",
                                     self.type_label(src_ty),
                                     self.type_label(dst_ty)
                                 ),
@@ -2422,16 +2584,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             CastOpcode::AddrSpaceCast => {
-                if !is_pointer_or_pointer_vector(self.module, src_ty)
-                    || !is_pointer_or_pointer_vector(self.module, dst_ty)
-                {
+                if !is_pointer_or_pointer_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
                         format!(
-                            "addrspacecast requires pointer operands; got {} -> {}",
-                            self.type_label(src_ty),
+                            "AddrSpaceCast source must be a pointer (got {})",
+                            self.type_label(src_ty)
+                        ),
+                    ));
+                }
+                if !is_pointer_or_pointer_vector(self.module, dst_ty) {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::CastTypeMismatch,
+                        format!(
+                            "AddrSpaceCast result must be a pointer (got {})",
                             self.type_label(dst_ty)
                         ),
                     ));
@@ -2456,7 +2626,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::AllocaUnsizedType,
                 format!(
-                    "alloca'd type {} is unsized",
+                    "Cannot allocate unsized type (allocated type {})",
                     self.type_label(a.allocated_ty)
                 ),
             ));
@@ -2469,7 +2639,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     bb,
                     VerifierRule::AllocaNonIntegerCount,
                     format!(
-                        "alloca count operand has type {} (expected integer)",
+                        "Alloca array size must have integer type (got {})",
                         self.type_label(count_ty)
                     ),
                 ));
@@ -2489,7 +2659,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     bb,
                     VerifierRule::SwiftErrorAlloca,
                     format!(
-                        "swifterror alloca must have pointer type, got {}",
+                        "swifterror alloca must have pointer type (got {})",
                         self.type_label(a.allocated_ty)
                     ),
                 ));
@@ -2504,12 +2674,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::SwiftErrorAlloca,
-                    "swifterror alloca must not be an array allocation".to_owned(),
+                    "swifterror alloca must not be array allocation".to_owned(),
                 ));
             }
         }
         // Result type must be a pointer; the IrBuilder construction
         // path always emits one, but assert it for parsed/foreign IR.
+        //
+        // No upstream `Check` literal: `AllocaInst`'s result type is built by
+        // its constructor, so this guard is llvmkit's own and keeps its own
+        // wording.
         if !self
             .module
             .context()
@@ -2544,7 +2718,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::LoadNonPointer,
                 format!(
-                    "load pointer operand has type {} (expected pointer)",
+                    "Load operand must be a pointer. (got {})",
                     self.type_label(ptr_ty)
                 ),
             ));
@@ -2556,12 +2730,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::LoadUnsizedType,
                 format!(
-                    "load pointee type {} is unsized",
+                    "loading unsized types is not allowed (pointee type {})",
                     self.type_label(l.pointee_ty)
                 ),
             ));
         }
-        // Result type must equal pointee type.
+        // Result type must equal pointee type. No upstream `Check` literal:
+        // `LoadInst`'s result type *is* the pointee upstream, so there is
+        // nothing to compare; this guard is llvmkit's own.
         if inst.ty().id != l.pointee_ty {
             return Err(self.fail(
                 f,
@@ -2585,17 +2761,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::AtomicLoadInvalidOrdering,
-                    format!("atomic load has ordering {}", l.ordering),
+                    format!("Load cannot have Release ordering (got {})", l.ordering),
                 ));
             }
-            self.check_atomic_access_type(f, bb, l.pointee_ty, "load")?;
+            self.check_atomic_access_type(
+                f,
+                bb,
+                l.pointee_ty,
+                "atomic load operand must have integer, pointer, floating point, or vector type!",
+            )?;
             self.check_atomic_access_size(f, bb, l.pointee_ty)?;
         } else if !l.sync_scope.is_default() {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::NonAtomicWithSyncScope,
-                "non-atomic load carries a non-default syncscope".to_string(),
+                "Non-atomic load cannot have SynchronizationScope specified".to_string(),
             ));
         }
         Ok(())
@@ -2616,7 +2797,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::StoreNonPointer,
                 format!(
-                    "store pointer operand has type {} (expected pointer)",
+                    "Store operand must be a pointer. (got {})",
                     self.type_label(ptr_ty)
                 ),
             ));
@@ -2627,7 +2808,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::StoreUnsizedType,
-                format!("store value type {} is unsized", self.type_label(val_ty)),
+                format!(
+                    "storing unsized types is not allowed (value type {})",
+                    self.type_label(val_ty)
+                ),
             ));
         }
         // Atomic-specific rules. Mirrors `Verifier::visitStoreInst`.
@@ -2641,17 +2825,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::AtomicStoreInvalidOrdering,
-                    format!("atomic store has ordering {}", s.ordering),
+                    format!("Store cannot have Acquire ordering (got {})", s.ordering),
                 ));
             }
-            self.check_atomic_access_type(f, bb, val_ty, "store")?;
+            self.check_atomic_access_type(
+                f,
+                bb,
+                val_ty,
+                "atomic store operand must have integer, pointer, floating point, or vector type!",
+            )?;
             self.check_atomic_access_size(f, bb, val_ty)?;
         } else if !s.sync_scope.is_default() {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::NonAtomicWithSyncScope,
-                "non-atomic store carries a non-default syncscope".to_string(),
+                "Non-atomic store cannot have SynchronizationScope specified".to_string(),
             ));
         }
         Ok(())
@@ -2660,12 +2849,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// Mirrors `Verifier::visitLoadInst` / `visitStoreInst` operand-type
     /// branch: atomic load/store operands must be integer, pointer,
     /// floating-point, or a vector thereof.
+    ///
+    /// `message` is the caller's `Check` literal — the two differ only in the
+    /// `load` / `store` noun.
     fn check_atomic_access_type(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         ty: TypeSlot,
-        kind: &str,
+        message: &str,
     ) -> IrResult<()> {
         if is_int_or_int_vector(self.module, ty)
             || is_fp_or_fp_vector(self.module, ty)
@@ -2677,13 +2869,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             f,
             bb,
             VerifierRule::AtomicLoadStoreInvalidType,
-            format!("atomic {} operand has type {}", kind, self.type_label(ty)),
+            format!("{message} (got {})", self.type_label(ty)),
         ))
     }
 
-    /// Mirrors `Verifier::checkAtomicMemAccessSize` in `lib/IR/Verifier.cpp`:
-    /// the operand bit width must be at least 8 (byte-sized) and a power
-    /// of two.
+    /// Mirrors `Verifier::checkAtomicMemAccessSize` in `lib/IR/Verifier.cpp`,
+    /// whose two `Check`s are separate and are separate here: byte-sized
+    /// first, then power-of-two.
     fn check_atomic_access_size(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
@@ -2696,14 +2888,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             // DataLayout yet, so accept silently.
             return Ok(());
         };
-        if bits < 8 || (bits & (bits - 1)) != 0 {
+        if bits < 8 {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicLoadStoreInvalidSize,
+                format!("atomic memory access' size must be byte-sized (got {bits} bits)"),
+            ));
+        }
+        if (bits & (bits - 1)) != 0 {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::AtomicLoadStoreInvalidSize,
                 format!(
-                    "atomic access bit width {} is not byte-sized and power-of-two",
-                    bits
+                    "atomic memory access' operand must have a power-of-two size (got {bits} bits)"
                 ),
             ));
         }
@@ -2732,7 +2931,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::GepNonPointerBase,
                 format!(
-                    "getelementptr base operand has type {} (expected pointer)",
+                    "GEP base pointer is not a vector or a vector of pointers (base operand has type {})",
                     self.type_label(base_ty)
                 ),
             ));
@@ -2744,7 +2943,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::GepUnsizedSourceType,
                 format!(
-                    "getelementptr source element type {} is unsized",
+                    "GEP into unsized type! (source element type {})",
                     self.type_label(g.source_ty)
                 ),
             ));
@@ -2763,7 +2962,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::GepScalableStructSource,
                 format!(
-                    "getelementptr source type {} is a struct containing a scalable vector",
+                    "getelementptr cannot target structure that contains scalable vectortype (source type {})",
                     self.type_label(g.source_ty)
                 ),
             ));
@@ -2776,7 +2975,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     bb,
                     VerifierRule::GepNonIntegerIndex,
                     format!(
-                        "getelementptr index #{slot} has type {} (expected integer)",
+                        "GEP indexes must be integers (index #{slot} has type {})",
                         self.type_label(idx_ty)
                     ),
                 ));
@@ -2792,7 +2991,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::GepInvalidIndices,
                 format!(
-                    "getelementptr indices do not index into source type {}",
+                    "Invalid indices for GEP pointer type! (indices do not index into source type {})",
                     self.type_label(g.source_ty)
                 ),
             ));
@@ -2815,7 +3014,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::GepNonPointerResult,
                 format!(
-                    "getelementptr result type {} is not a pointer",
+                    "GEP is not of right type for indices! (result type {} is not a pointer)",
                     self.type_label(result_ty)
                 ),
             ));
@@ -2829,7 +3028,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::GepVectorWidthMismatch,
-                    "vector getelementptr result width doesn't match operand's".to_string(),
+                    "Vector GEP result width doesn't match operand's".to_string(),
                 ));
             }
             for (position, idx_id) in g.indices.iter().map(|c| c.get()).enumerate() {
@@ -2843,7 +3042,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::GepVectorWidthMismatch,
-                        format!("invalid getelementptr index #{position} vector width"),
+                        format!("Invalid GEP index vector width (index #{position})"),
                     ));
                 }
             }
@@ -2888,12 +3087,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::CallNonFunction,
                 format!(
-                    "call callee has type {} (expected function or pointer)",
+                    "Called function must be a pointer! (callee has type {})",
                     self.type_label(callee_ty)
                 ),
             ));
         }
         // Argument count and types must match `c.fn_ty`.
+        //
+        // The `as_function` guard has no upstream `Check` literal:
+        // `CallBase::getFunctionType()` returns a `FunctionType *` by
+        // construction, so upstream has nothing to reject here.
         let fn_ty_data = self.module.context().type_data(c.fn_ty);
         let Some((_ret, params, is_var_arg)) = fn_ty_data.as_function() else {
             return Err(self.fail(
@@ -2909,14 +3112,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let n_args = c.args.len();
         let n_params = params.len();
         if (is_var_arg && n_args < n_params) || (!is_var_arg && n_args != n_params) {
+            // `visitCallBase`'s `if (FTy->isVarArg()) … else …`: the two arms
+            // carry different literals.
+            let message = if is_var_arg {
+                "Called function requires more parameters than were provided!"
+            } else {
+                "Incorrect number of arguments passed to called function!"
+            };
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::CallArgCountMismatch,
-                format!(
-                    "call passes {n_args} args but signature expects {n_params}{}",
-                    if is_var_arg { "+ (vararg)" } else { "" }
-                ),
+                format!("{message} (passes {n_args} args, signature expects {n_params})"),
             ));
         }
         for (slot, (arg_cell, &param_ty)) in c.args.iter().zip(params.iter()).enumerate() {
@@ -2927,7 +3134,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     bb,
                     VerifierRule::CallArgTypeMismatch,
                     format!(
-                        "call arg #{slot} has type {} but signature expects {}",
+                        "Call parameter type does not match function signature! (arg #{slot} has type {} but signature expects {})",
                         self.type_label(arg_ty),
                         self.type_label(param_ty)
                     ),
@@ -3760,7 +3967,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::CallArgTypeMismatch,
-                    "intrinsic signature mismatch".to_string(),
+                    "Intrinsic called with incompatible signature".to_string(),
                 )
             })?;
         if expected.as_type().id() != fn_ty {
@@ -3768,7 +3975,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::CallArgTypeMismatch,
-                "intrinsic signature mismatch".to_string(),
+                "Intrinsic called with incompatible signature".to_string(),
             ));
         }
         let descriptor_id = descriptor.id();
@@ -3778,7 +3985,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::CallArgCountMismatch,
-                    "intrinsic signature mismatch".to_string(),
+                    "Intrinsic called with incompatible signature".to_string(),
                 ));
             };
             if !matches!(
@@ -3911,7 +4118,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::SelectConditionNotI1,
                 format!(
-                    "select condition has type {} (expected i1 or <N x i1>)",
+                    "Invalid operands for select instruction! (condition has type {})",
                     self.type_label(cond_ty)
                 ),
             ));
@@ -3922,7 +4129,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::SelectArmTypeMismatch,
                 format!(
-                    "select arms have types {}/{} (result {})",
+                    "Select values must have same type as select instruction! (arms have types {}/{}, result {})",
                     self.type_label(true_ty),
                     self.type_label(false_ty),
                     self.type_label(result_ty)
@@ -3960,14 +4167,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             || rty.is_array()
             || (rty.is_struct() && rty.is_first_class());
         if !valid_result {
+            // Two upstream `Check`s answer this between them, and which one
+            // fires depends on the type: `visitPHINode`'s
+            // `Check(!PN.getType()->isTokenLikeTy(), …)` for a token, and
+            // `visitInstruction`'s `Check(I.getType()->isFirstClassType(), …)`
+            // for everything else llvmkit rejects here.
+            let message = if rty.is_token() {
+                "PHI nodes cannot have token type!"
+            } else {
+                "Instruction returns a non-scalar type!"
+            };
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::PhiInvalidResultType,
-                format!(
-                    "phi result type {} is not a valid first-class data type",
-                    self.type_label(result_ty)
-                ),
+                format!("{message} (phi result type {})", self.type_label(result_ty)),
             ));
         }
 
@@ -3996,6 +4210,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `visitPHINode`). We run before that delegation and gate on
         // reachability — an unreachable block may legitimately have no
         // predecessors, so we do not force its phis to carry incomings.
+        //
+        // No upstream `Check` literal, deliberately: this rule pre-empts one
+        // upstream does not have, and `docs/divergences.md` entry 8 works out
+        // when that is so. It keeps llvmkit's own wording.
         if reachable && incoming.is_empty() {
             return Err(self.fail(
                 f,
@@ -4012,15 +4230,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::PhiPredecessorMismatch,
-                format!("phi has {entries} incoming entries but block has {preds} predecessors"),
+                format!(
+                    "PHINode should have one entry for each predecessor of its parent basic block! ({entries} incoming entries, {preds} predecessors)"
+                ),
             )),
             Err(PhiViolation::NotAPredecessor { block }) => Err(self.fail(
                 f,
                 bb,
                 VerifierRule::PhiPredecessorMismatch,
                 format!(
-                    "phi incoming block %{} is not a predecessor",
-                    slot_label(self.module, block)
+                    "PHI node entries do not match predecessors! (incoming block %{} is not a predecessor)",
+                    slot_label(f, block)
                 ),
             )),
             Err(PhiViolation::TooManyFromBlock { block }) => Err(self.fail(
@@ -4028,8 +4248,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::PhiPredecessorMismatch,
                 format!(
-                    "phi has too many incoming entries from block %{}",
-                    slot_label(self.module, block)
+                    "PHI node entries do not match predecessors! (too many incoming entries from block %{})",
+                    slot_label(f, block)
                 ),
             )),
             Err(PhiViolation::AmbiguousValues { block }) => Err(self.fail(
@@ -4037,8 +4257,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::AmbiguousPhi,
                 format!(
-                    "phi has multiple entries for block %{} with different values",
-                    slot_label(self.module, block)
+                    "PHI node has multiple entries for the same basic block with different incoming values! (block %{})",
+                    slot_label(f, block)
                 ),
             )),
             Err(PhiViolation::IncomingTypeMismatch { block, value_ty }) => Err(self.fail(
@@ -4046,9 +4266,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::PhiIncomingTypeMismatch,
                 format!(
-                    "phi expects {} but incoming from %{} is {}",
+                    "PHI node operands are not the same type as the result! (expects {} but incoming from %{} is {})",
                     self.type_label(result_ty),
-                    slot_label(self.module, block),
+                    slot_label(f, block),
                     self.type_label(value_ty)
                 ),
             )),
@@ -4066,12 +4286,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let expected = f.return_type();
         match (r.value.get(), expected.is_void()) {
             (None, true) => Ok(()),
+            // `visitReturnInst`'s `if (F->getReturnType()->isVoidTy())` picks
+            // which of two literals a bad `ret` gets: the void-function arm
+            // has its own, and every other shape is the operand-type one.
             (None, false) => Err(self.fail(
                 f,
                 bb,
                 VerifierRule::ReturnTypeMismatch,
                 format!(
-                    "ret has no operand but function returns {}",
+                    "Function return type does not match operand type of return inst! (ret has no operand but function returns {})",
                     expected.kind_label()
                 ),
             )),
@@ -4079,7 +4302,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::ReturnTypeMismatch,
-                "void function cannot return a value".into(),
+                "Found return instr that returns non-void in Function of void return type!".into(),
             )),
             (Some(v), false) => {
                 let actual = self.value_type(v);
@@ -4091,7 +4314,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         bb,
                         VerifierRule::ReturnTypeMismatch,
                         format!(
-                            "ret operand has type {} but function returns {}",
+                            "Function return type does not match operand type of return inst! (operand has type {} but function returns {})",
                             self.type_label(actual),
                             expected.kind_label()
                         ),
@@ -4120,6 +4343,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             .as_integer()
             .is_none()
         {
+            // No upstream `Check` literal: `SwitchInst::init` asserts the
+            // condition is integral, so `visitSwitchInst` never restates it.
             return Err(self.fail(
                 f,
                 bb,
@@ -4135,7 +4360,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::PhiPredecessorMismatch,
-                "switch default target is not a basic block of the parent function".into(),
+                "Referring to a basic block in another function! (switch default target)".into(),
             ));
         }
         for (case_v, case_bb) in d.cases.borrow().iter() {
@@ -4146,7 +4371,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     bb,
                     VerifierRule::SwitchOperandTypeMismatch,
                     format!(
-                        "switch case value {} != condition {}",
+                        "Switch constants must all be same type as switch value! (case value {} != condition {})",
                         self.type_label(v_ty),
                         self.type_label(cond_ty)
                     ),
@@ -4157,7 +4382,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::PhiPredecessorMismatch,
-                    "switch case target is not a basic block of the parent function".into(),
+                    "Referring to a basic block in another function! (switch case target)".into(),
                 ));
             }
         }
@@ -4181,7 +4406,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 bb,
                 VerifierRule::IndirectBrNonPointerAddress,
                 format!(
-                    "indirectbr address {} is not a pointer",
+                    "Indirectbr operand must have pointer type! (got {})",
                     self.type_label(addr_ty)
                 ),
             ));
@@ -4192,7 +4417,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::PhiPredecessorMismatch,
-                    "indirectbr destination is not a basic block of the parent function".into(),
+                    "Referring to a basic block in another function! (indirectbr destination)"
+                        .into(),
                 ));
             }
         }
@@ -4219,7 +4445,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::PhiPredecessorMismatch,
-                "invoke destination is not a basic block of the parent function".into(),
+                "Referring to a basic block in another function! (invoke destination)".into(),
             ));
         }
         let call = CallBaseParts {
@@ -4249,7 +4475,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::PhiPredecessorMismatch,
-                "callbr default destination is not a basic block of the parent function".into(),
+                "Referring to a basic block in another function! (callbr default destination)"
+                    .into(),
             ));
         }
         for ic in d.indirect_dests.iter() {
@@ -4258,7 +4485,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::PhiPredecessorMismatch,
-                    "callbr indirect destination is not a basic block of the parent function"
+                    "Referring to a basic block in another function! (callbr indirect destination)"
                         .into(),
                 ));
             }
@@ -4310,7 +4537,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::PhiPredecessorMismatch,
-                        "br target is not a basic block of the parent function".into(),
+                        "Referring to a basic block in another function! (br target)".into(),
                     ));
                 }
             }
@@ -4326,7 +4553,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         bb,
                         VerifierRule::BranchConditionNotI1,
                         format!(
-                            "br condition has type {} (expected i1)",
+                            "Branch condition is not 'i1' type! (got {})",
                             self.type_label(cond_ty)
                         ),
                     ));
@@ -4336,7 +4563,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::PhiPredecessorMismatch,
-                        "br target is not a basic block of the parent function".into(),
+                        "Referring to a basic block in another function! (br target)".into(),
                     ));
                 }
             }
@@ -4366,9 +4593,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     bb,
                     VerifierRule::UseBeforeDef,
                     format!(
-                        "operand %{} does not dominate its use in block %{}",
-                        slot_label(self.module, op_id),
-                        slot_label(self.module, bb.slot())
+                        "Instruction does not dominate all uses! (operand %{} does not dominate its use in block %{})",
+                        slot_label(f, op_id),
+                        slot_label(f, bb.slot())
                     ),
                 ));
             }
@@ -4406,7 +4633,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     f,
                     bb,
                     VerifierRule::SelfReference,
-                    "non-phi instruction references its own value".into(),
+                    "Only PHI nodes may reference their own value!".into(),
                 ));
             }
             // In-block use-before-def. For operands that are themselves
@@ -4424,7 +4651,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::UseBeforeDef,
-                        "operand defined after its use within the same block".into(),
+                        "Instruction does not dominate all uses! (operand defined after its \
+                         use within the same block)"
+                            .into(),
                     ));
                 }
             }
@@ -4460,8 +4689,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     }
 
     /// Read the width of `ty`'s scalar integer type — `ty` itself when it is a
-    /// scalar, its element when it is a vector — erroring with the given role
-    /// label (`"source"` / `"destination"`) if neither is an integer.
+    /// scalar, its element when it is a vector — erroring with `message` if
+    /// neither is an integer. Callers pass the `Check` literal of the
+    /// per-opcode `Verifier::visit*Inst` they stand in for, so the diagnostic
+    /// says `Trunc only operates on integer` where upstream does.
     ///
     /// Mirrors `Type::getScalarSizeInBits`, which is what
     /// `CastInst::castIsValid` compares for the integer casts. The caller must
@@ -4472,7 +4703,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         ty: TypeSlot,
-        role: &str,
+        message: &str,
     ) -> IrResult<u32> {
         let data = self.module.context().type_data(ty);
         let scalar = match data.as_vector() {
@@ -4485,7 +4716,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 f,
                 bb,
                 VerifierRule::CastTypeMismatch,
-                format!("{role} type {} is not integer", self.type_label(ty)),
+                format!("{message} (got {})", self.type_label(ty)),
             )),
         }
     }
@@ -4812,14 +5043,25 @@ fn type_bit_width(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
 // Slot label helper
 // --------------------------------------------------------------------------
 
-/// Best-effort label for a basic-block id. Used in diagnostics; not a
-/// faithful slot tracker.
-fn slot_label(m: &ModuleCore, block_id: ValueSlot) -> String {
-    let v = m.context().value_data(block_id);
-    if let Some(name) = v.name.borrow().as_ref() {
+/// The text `AsmWriter` prints after the `%` for `id` inside `f`: its written
+/// name, or the `SlotTracker` number an unnamed value or block is given.
+///
+/// Mirrors how `Verifier::CheckFailed` renders a `Value` — through
+/// `WriteAsOperand`, which asks the module's `SlotTracker` for the number and
+/// so always names something the reader can find in the printed IR. The
+/// previous fallback was `format!("{:?}", block_id)`, the `Debug` of an
+/// internal arena handle, which named nothing in the source or the output.
+fn slot_label<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>, id: ValueSlot) -> String {
+    let module = f.module();
+    if let Some(name) = module.context().value_data(id).name.borrow().as_ref() {
         return name.clone();
     }
-    format!("{:?}", block_id)
+    let slots = crate::asm_writer::SlotTracker::for_function(f);
+    match slots.local(id).or_else(|| slots.block(id)) {
+        Some(number) => number.to_string(),
+        // `AsmWriter`'s own spelling for a value it cannot number.
+        None => "<badref>".to_owned(),
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -4967,6 +5209,24 @@ mod tests {
         match err {
             IrError::VerifierFailure { rule, .. } if *rule == expected => {}
             _ => panic!("expected VerifierRule::{expected:?}, got {err:?}"),
+        }
+    }
+
+    /// [`assert_rule`] plus the `CHECK` text of the upstream fixture the test
+    /// cites.
+    ///
+    /// The rule alone says nothing about the message, and the message is the
+    /// half a `llvm/test/Verifier/*.ll` fixture is written against. Asserting
+    /// only the rule is exactly what let every verifier diagnostic drift from
+    /// `Verifier::CheckFailed`'s literal without a single test noticing.
+    fn assert_rule_and_check_line(err: &IrError, expected: VerifierRule, check_line: &str) {
+        assert_rule(err, expected);
+        match err {
+            IrError::VerifierFailure { message, .. } => assert!(
+                message.contains(check_line),
+                "message {message:?} lacks the fixture's CHECK text {check_line:?}"
+            ),
+            other => panic!("expected VerifierRule::{expected:?}, got {other:?}"),
         }
     }
 
@@ -5120,6 +5380,12 @@ mod tests {
     }
 
     /// `test/Verifier/PhiGrouping.ll` -- phi appears after a non-phi.
+    ///
+    /// The fixture itself is vendored at
+    /// `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/PhiGrouping.ll`
+    /// but cannot be driven through the parser (`docs/divergences.md` entry
+    /// 26), so its `CHECK` text is asserted here, on a block built in the
+    /// arena.
     #[test]
     fn phi_not_at_top() {
         let m = crate::module_new!("t").expect("fresh module");
@@ -5143,7 +5409,11 @@ mod tests {
         );
         append_ret_void(&m, entry_id);
         let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::PhiNotAtTop);
+        assert_rule_and_check_line(
+            &err,
+            VerifierRule::PhiNotAtTop,
+            "PHI nodes not grouped at top",
+        );
     }
 
     /// `test/Verifier/SelfReferential.ll` -- non-phi instruction whose
@@ -5169,7 +5439,11 @@ mod tests {
         assert_eq!(pushed, next_id, "id prediction must match arena order");
         append_ret_void(&m, bb_id);
         let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::SelfReference);
+        assert_rule_and_check_line(
+            &err,
+            VerifierRule::SelfReference,
+            "Only PHI nodes may reference their own value",
+        );
     }
 
     /// `Verifier::visitPHINode` -- "PHI nodes cannot have token type", plus the
@@ -5247,6 +5521,11 @@ mod tests {
 
     /// `test/Verifier/AmbiguousPhi.ll` -- duplicate predecessor with
     /// differing values.
+    ///
+    /// The fixture itself is vendored at
+    /// `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/AmbiguousPhi.ll`
+    /// but cannot be driven through the parser (`docs/divergences.md` entry
+    /// 130), so its `CHECK` text is asserted here, on a phi built in the arena.
     #[test]
     fn ambiguous_phi_duplicate_predecessor() {
         let m = crate::module_new!("t").expect("fresh module");
@@ -5286,7 +5565,11 @@ mod tests {
         );
         append_ret_void(&m, target.slot());
         let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::AmbiguousPhi);
+        assert_rule_and_check_line(
+            &err,
+            VerifierRule::AmbiguousPhi,
+            "multiple entries for the same basic block",
+        );
     }
 
     /// Phi references a block that is not a CFG predecessor.
@@ -5390,7 +5673,7 @@ mod tests {
         assert_rule(&err, VerifierRule::CastTypeMismatch);
         match err {
             IrError::VerifierFailure { message, .. } => {
-                assert!(message.contains("ptrtoaddr result must be address width"));
+                assert!(message.contains("PtrToAddr result must be address width"));
             }
             _ => panic!("expected verifier failure"),
         }

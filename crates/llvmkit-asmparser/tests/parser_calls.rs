@@ -2421,25 +2421,29 @@ fn parse_and_verify(name: &str, source: &str) -> Result<Result<(), String>, Stri
 /// `Verifier::verifyAttachedCallBundle` — plus each function's `CHECK-NOT`
 /// tail, which must verify clean.
 ///
-/// **Partial, in two named places; nothing is trimmed and every line of the
-/// fixture is asserted.**
+/// **Partial in one named place; nothing is trimmed and every line of the
+/// fixture is asserted.** Seven of `@f_clang_arc_attachedcall`'s thirteen
+/// calls name an intrinsic by address (`ptr @llvm.objc.…`, `ptr @llvm.assume`).
+/// Upstream parses those and `Verifier::visitInstruction` exempts an
+/// `OB_clang_arc_attachedcall` operand from `Cannot take the address of an
+/// intrinsic!` precisely so `verifyAttachedCallBundle` can judge them; llvmkit
+/// rejects every `llvm.`-prefixed non-callee reference at *parse* time, which
+/// is `docs/divergences.md` entry **37**. Those seven assert that parse
+/// rejection with entry 37's message, so this test starts failing the day
+/// entry 37 closes and the remaining coverage has to land with it.
+/// Consequently the whole-file `RUN` line is asserted as a parse failure
+/// rather than a verify failure.
 ///
-/// 1. `@f0` and `@f1` pin `Instruction does not dominate all uses!`. llvmkit
-///    enforces that rule (an operand-bundle input is an operand here as it is
-///    upstream) but words it its own way — `docs/divergences.md` entry 121, a
-///    class-wide rewording deliberately not done in this commit. Those two
-///    assert rejection, not text.
-/// 2. Seven of `@f_clang_arc_attachedcall`'s thirteen calls name an intrinsic
-///    by address (`ptr @llvm.objc.…`, `ptr @llvm.assume`). Upstream parses
-///    those and `Verifier::visitInstruction` exempts an
-///    `OB_clang_arc_attachedcall` operand from `Cannot take the address of an
-///    intrinsic!` precisely so `verifyAttachedCallBundle` can judge them;
-///    llvmkit rejects every `llvm.`-prefixed non-callee reference at *parse*
-///    time, which is `docs/divergences.md` entry **37**. Those seven assert
-///    that parse rejection with entry 37's message, so this test starts failing
-///    the day entry 37 closes and the remaining coverage has to land with it.
-///    Consequently the whole-file `RUN` line is asserted as a parse failure
-///    rather than a verify failure.
+/// `@f0` and `@f1` were the second partial place until the verifier carried
+/// upstream's `Check` literals: they pin `Instruction does not dominate all
+/// uses!`, which llvmkit used to word its own way, and now assert that text
+/// like every other function here.
+///
+/// Every whole-function expectation is **read out of the fixture's own first
+/// `; CHECK:` line** rather than repeated in this file, so a re-blessed
+/// verifier message that drifts from upstream's cannot be papered over by
+/// editing a string here — the same discipline `@f_clang_arc_attachedcall`'s
+/// half already used.
 #[test]
 fn upstream_verifier_operand_bundles_fixture_messages_match() {
     /// `docs/divergences.md` entry 37 — llvmkit's parse-time stand-in for
@@ -2456,30 +2460,28 @@ fn upstream_verifier_operand_bundles_fixture_messages_match() {
         Err(ENTRY_37.to_owned())
     );
 
-    // Whole-function cases: the `CHECK` each function carries, or `None` where
-    // llvmkit words the diagnostic differently (entry 121).
-    for (marker, expected) in [
-        ("define void @f0(", None),
-        ("define void @f1(", None),
-        (
-            "define void @f_deopt(",
-            Some("Multiple deopt operand bundles"),
-        ),
-        (
-            "define void @f_gc_transition(",
-            Some("Multiple gc-transition operand bundles"),
-        ),
+    // Whole-function cases. The expectation is the function's first `CHECK`
+    // directive, taken from the vendored text.
+    for marker in [
+        "define void @f0(",
+        "define void @f1(",
+        "define void @f_deopt(",
+        "define void @f_gc_transition(",
     ] {
-        let source = format!("{prelude}\n{}\n", function_text(FIXTURE, marker));
+        let text = function_text(FIXTURE, marker);
+        let expected = text
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("; CHECK:"))
+            .map(str::trim)
+            .unwrap_or_else(|| panic!("{marker}: no `; CHECK:` directive in the fixture"));
+        let source = format!("{prelude}\n{text}\n");
         let message = parse_and_verify("verifier-operand-bundles", &source)
             .unwrap_or_else(|e| panic!("{marker} parses: {e}\n{source}"))
             .expect_err(&format!("{marker}: upstream rejects this function"));
-        if let Some(expected) = expected {
-            assert!(
-                message.contains(expected),
-                "{marker}: {message:?} does not contain {expected:?}"
-            );
-        }
+        assert!(
+            message.contains(expected),
+            "{marker}: {message:?} does not contain {expected:?}"
+        );
     }
 
     // `@f_clang_arc_attachedcall` carries eight `CHECK` directives over
