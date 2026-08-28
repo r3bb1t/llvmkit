@@ -954,9 +954,9 @@ pub(crate) fn block_parameter_phis<'ctx, B: ModuleBrand>(
 /// Branching
 /// into a parameterised block without arguments adds no incomings, so the
 /// target's parameter-phis stay one entry short — an incomplete phi that used
-/// to surface only at [`Module::verify`](crate::Module::verify)
-/// (`PhiEmptyInReachableBlock`, or the shared `check_phi` count guard). The
-/// caller must use the argument-carrying builder for that edge instead.
+/// to surface only at [`Module::verify`](crate::Module::verify), through the
+/// shared `check_phi` count guard. The caller must use the argument-carrying
+/// builder for that edge instead.
 ///
 /// Reports the same [`IrError::PhiArgArityMismatch`] the `_with_args` builders
 /// already produce for a wrong argument count, so one wrong count reads the

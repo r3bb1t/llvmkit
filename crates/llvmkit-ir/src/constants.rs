@@ -1702,6 +1702,30 @@ pub(super) fn replace_placeholder_uses_with<'ctx, B: ModuleBrand + 'ctx>(
     replace_value_uses_with(from.module.module(), from.id, replacement.id)
 }
 
+/// `isa<Constant>(To)` — the question `Constant::handleOperandChange` asks
+/// before re-uniquing a constant around a replaced operand.
+///
+/// Upstream's hierarchy puts `GlobalValue` under `Constant`, so a function,
+/// global variable, alias or ifunc is a legal replacement for a value a
+/// constant embeds — which is what makes
+/// `@r = global ptr getelementptr (i32, ptr @a, i64 1)` above
+/// `@a = alias i32, ptr @g` a forward reference `LLParser` can resolve.
+/// llvmkit gives each `GlobalValue` kind its own [`ValueKindData`] variant, so
+/// the question spans five variants rather than one. Answering it on
+/// `Constant(_)` alone rejected an alias or ifunc replacement, because those
+/// two hand back their own value id where `GlobalVariable` and `FunctionValue`
+/// mint the interned `GlobalValueRef` wrapper of `docs/divergences.md` D3.
+fn is_constant_value(module: &ModuleCore, id: ValueSlot) -> bool {
+    matches!(
+        module.context().value_data(id).kind,
+        ValueKindData::Constant(_)
+            | ValueKindData::Function(_)
+            | ValueKindData::GlobalVariable(_)
+            | ValueKindData::GlobalAlias(_)
+            | ValueKindData::GlobalIfunc(_)
+    )
+}
+
 /// Point every recorded use of `from_id` at `replacement_id`.
 ///
 /// Category-agnostic: `replacement_id` may name any value. Uniqued constant
@@ -1730,10 +1754,7 @@ fn replace_value_uses_with(
                 }
             }
             ValueUse::Constant(user_id) => {
-                if !matches!(
-                    module.context().value_data(replacement_id).kind,
-                    ValueKindData::Constant(_)
-                ) {
+                if !is_constant_value(module, replacement_id) {
                     return Err(IrError::InvalidOperation {
                         message: "a value embedded in a constant can only be replaced by a constant",
                     });

@@ -1264,10 +1264,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 cx,
             ),
             InstructionKindData::Select(s) => self.check_select(f, bb, inst, s),
-            InstructionKindData::Phi(p) => {
-                let reachable = cx.dom_tree.is_reachable_from_entry(bb);
-                self.check_phi(f, bb, inst, p, cx.predecessors, reachable)
-            }
+            InstructionKindData::Phi(p) => self.check_phi(f, bb, inst, p, cx.predecessors),
             InstructionKindData::Ret(r) => self.check_ret(f, bb, inst, r),
             InstructionKindData::Br(b) => self.check_br(f, bb, inst, b, cx.block_index),
             InstructionKindData::Fneg(u) => self.check_fneg(f, bb, inst, u),
@@ -4579,7 +4576,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         p: &PhiData,
         predecessors: &HashMap<ValueSlot, Vec<ValueSlot>>,
-        reachable: bool,
     ) -> IrResult<()> {
         let result_ty = inst.ty().id;
 
@@ -4633,28 +4629,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             .map(|(v, b)| (v.get(), *b))
             .collect();
 
-        // Defense in depth (stricter than upstream). A phi with zero incomings
-        // in a block reachable from entry prints as `%p = phi i32` with no
-        // `[ … ]` pairs — un-round-trippable, since `LLParser::parsePHI` rejects
-        // it. `check_phi_incoming` below would miss this: its only length guard
-        // is `incoming.len() != preds.len()`, so a zero-incoming phi in a
-        // zero-predecessor block passes on `0 == 0` (the same gap as LLVM's
-        // `visitPHINode`). We run before that delegation and gate on
-        // reachability — an unreachable block may legitimately have no
-        // predecessors, so we do not force its phis to carry incomings.
+        // There is deliberately no separate "empty phi" rule here. Upstream's
+        // only length guard on a phi is `visitBasicBlock`'s
+        // `Check(PN.getNumIncomingValues() == Preds.size(), …)`, which
+        // `check_phi_incoming` carries below; a zero-incoming phi in a
+        // zero-predecessor block passes it on `0 == 0`, and nothing else in
+        // `Verifier` rejects it. `visitPHINode` itself checks only phi
+        // grouping, the token-like result type and per-incoming type
+        // agreement, then defers with "All other PHI node constraints are
+        // checked in the visitBasicBlock method."
         //
-        // No upstream `Check` literal, deliberately: this rule pre-empts one
-        // upstream does not have, and `docs/divergences.md` entry 8 works out
-        // when that is so. It keeps llvmkit's own wording.
-        if reachable && incoming.is_empty() {
-            return Err(self.fail(
-                f,
-                bb,
-                VerifierRule::PhiEmptyInReachableBlock,
-                "phi in a block reachable from entry has no incoming values".into(),
-            ));
-        }
-
+        // llvmkit used to pre-empt that with a stricter reachability-gated
+        // rule, justified on round-trip grounds. The justification was wrong:
+        // `AsmWriter`'s phi arm emits the type and then an empty
+        // `ListSeparator` loop, and both `LLParser::parsePHI` and llvmkit's
+        // `parse_phi` open their pair loop with "if the next token is not `[`,
+        // stop" — so `%p = phi i32` prints and re-parses on both sides.
         let value_ty_of = |id: ValueSlot| self.value_type(id);
         match check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
             Ok(()) => Ok(()),
@@ -7259,11 +7249,9 @@ mod tests {
     /// guard — the first cut of this rule enumerated only `is_pointer()`, so it
     /// rejected `phi i32*`, IR that verified clean before.
     ///
-    /// The phi is fabricated in an **unreachable** block so this case isolates
-    /// the result-type gate (`PhiInvalidResultType`, which runs unconditionally
-    /// ahead of the reachable check) without tripping the zero-incoming backstop
-    /// (`PhiEmptyInReachableBlock`): a zero-incoming phi is only rejected in a
-    /// block reachable from entry.
+    /// The phi is fabricated in a predecessor-less block so the incoming count
+    /// matches the predecessor count on `0 == 0` and the case isolates the
+    /// result-type gate, which runs ahead of the count delegation.
     #[test]
     fn phi_with_typed_pointer_result_type_verifies() {
         let m = crate::module_new!("t").expect("fresh module");

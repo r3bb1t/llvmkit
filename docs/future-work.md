@@ -202,8 +202,8 @@ Wanted, in this order:
    manifest's expectations or carries a comment at its check site saying it has
    no upstream `Check` literal to reproduce. Those comments exist today
    (`check_freeze`, `check_va_arg`, `check_cmpxchg`, `check_switch`'s condition
-   arm, `PhiEmptyInReachableBlock`, the arena-level result-type guards); nothing
-   enforces that a *new* rule writes one.
+   arm, the arena-level result-type guards); nothing enforces that a *new* rule
+   writes one.
 
 Two fixtures are vendored and waiting on a divergence rather than on this work:
 `PhiGrouping.ll` (entry 26 — the parser pre-empts the rule) and
@@ -464,28 +464,6 @@ input at all. That is the module-summary analysis, not the parser, and llvmkit
 has neither. The other sixteen summary fixtures in `test/Assembler` are ported
 in `crates/llvmkit-asmparser/tests/parser_summary.rs`.
 
-## Parser — `parseUInt64` is narrower than upstream's in two ways (found 2026-08-15, LLParser parity W10)
-
-`LLParser::parseUInt64` accepts any `lltok::APSInt` whose value is *unsigned*
-and takes `APSInt::getLimitedValue()`, which **saturates** at `UINT64_MAX`.
-llvmkit's `parse_uint64` (`ll_parser.rs`) accepts only a positive **decimal**
-literal and fails outright when the digits do not fit in a `u64`. Two
-divergences follow:
-
-- `u0x10` is an unsigned APSInt upstream and is accepted wherever a `uint64` is
-  wanted; llvmkit answers `expected integer`.
-- a literal wider than 64 bits saturates upstream and is rejected here.
-
-`parse_uint32` has the same shape, though its saturation is unobservable: the
-`0xFFFFFFFF + 1` limit makes any oversized value fail the range check either
-way, which is what `align-param-attr-error2.ll` pins.
-
-Not fixed in W10 because it is a W5-owned routine with 25 call sites, no
-fixture in `test/Assembler` reaches either case, and the honest fix reads the
-token through `parse_int_literal` — the APSInt token model — which changes
-where the diagnostic's span comes from. It is recorded rather than smuggled
-into the summary-index wave.
-
 ## llvmkit-ir — three copies of the aggregate index walk (found 2026-08-14, LLParser parity W9c)
 
 `ExtractValueInst::getIndexedType` now has a public port,
@@ -606,34 +584,6 @@ fixture is vendored and waiting), `type of definition and forward reference of
 
 The two redefinition texts landed in W8 part 2 (`invalid redefinition of
 function 'f'`, `redefinition of function '@f'`); this is the remainder.
-
-## Parser — a self-typed aliasee does not parse, because constant expressions are type-directed (found 2026-08-13, LLParser parity W7)
-
-`@a = alias i32, bitcast (ptr @g to ptr)` does not parse, and neither do the
-`getelementptr`, `addrspacecast` or `inttoptr` spellings.
-
-`LLParser::parseAliasOrIFunc` branches on the aliasee's **first token**: those
-four keywords go through a bare `parseValID` — its comment says "the bitcast
-dest type is not present, it is implied by the dest type" — and anything else
-goes through `parseGlobalTypeAndValue`, which is TYPE VALUE. The result must
-be `ValID::t_Constant` or the diagnostic is `invalid aliasee`, and the pointer
-check then runs on the **aliasee value's** type, with the address space taken
-from it.
-
-An attempt to wire this up (reverted) got as far as the branch and the
-value-typed pointer check, then hit the real blocker:
-`Parser::parse_constant_expr` takes a `result_ty` and llvmkit has no entry
-point for a constant expression that types *itself*. Every constexpr arm is
-reached with the demanded type already in hand.
-
-This is W4's type-agnostic `ValID` refactor, applied one level down to
-constant expressions — the same shape, the same reason (a parser that reads
-the answer off the type it is meant to be checking), and the same likely
-payoff of turning up value bugs rather than just missing diagnostics. It is a
-wave-sized piece, not an alias fix, so it wants its own slot rather than
-being smuggled into W7.
-
-Blocked behind it: `invalid aliasee`, which is only reachable on that route.
 
 ## An upstream calling-convention bug, reproduced (found 2026-08-13, LLParser parity W6)
 
@@ -2433,13 +2383,18 @@ whose very method set encodes the legal edits, so a structurally-invalid edge
 edit is a *compile* error rather than a runtime rejection), the verifier
 phi-result-type rule (`VerifierRule::PhiInvalidResultType`, defense in depth —
 `check_phi` rejects a phi whose result is not a first-class data type, matching
-the parser), and the zero-incoming-phi verifier backstop
-(`VerifierRule::PhiEmptyInReachableBlock` — `check_phi` now rejects a phi that
-carries no incomings in a block reachable from entry, gated on
-`DominatorTree::is_reachable_from_entry`; such a phi is un-round-trippable
-because `LLParser::parsePHI` rejects a bracket-less `%p = phi i32`, and the
-shared `check_phi_incoming` count guard would otherwise miss it on the `0 == 0`
-gap LLVM's `visitPHINode` shares) have all shipped.
+the parser) have all shipped.
+
+One more shipped alongside them and has since been **withdrawn**: a
+zero-incoming-phi verifier backstop (`VerifierRule::PhiEmptyInReachableBlock`),
+justified on the ground that a bracket-less `%p = phi i32` has no legal textual
+form. It has one — `AsmWriter`'s phi arm prints the type and then an empty
+`ListSeparator` loop, `LLParser::parsePHI` and llvmkit's `parse_phi` both stop
+their pair loop at the first token that is not `[`, and
+`test/Assembler/zero-input-phi.ll` round-trips exactly that through
+`llvm-as | llvm-dis`. The rule rejected IR LLVM accepts, so it is gone;
+`check_phi_incoming`'s `numIncoming == numPreds` guard — upstream's own, from
+`Verifier::visitBasicBlock` — is the only length rule again.
 
 The former follow-up here — **edge ops on `invoke`/`callbr`** — has also
 shipped: the `invoke` (`normal_dest`/`unwind_dest`) and `callbr`

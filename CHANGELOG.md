@@ -19,6 +19,73 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — three rejects-valid divergences: the self-typed aliasee, `parseUInt64`, the empty phi
+
+- **A constant expression types itself, so a self-typed aliasee parses.**
+  `LLParser::parseAliasOrIFunc` branches on the aliasee's *first* token:
+  `bitcast`, `getelementptr`, `addrspacecast` and `inttoptr` go through a bare
+  `parseValID` — "the bitcast dest type is not present, it is implied by the
+  dest type" — and everything else through `parseGlobalTypeAndValue`.
+  `Parser::parse_constant_expr` took a `result_ty`, so llvmkit had no way into
+  the first branch and answered `expected type` to all four spellings, for
+  `alias` and `ifunc` alike. It now takes none: each arm derives its own result
+  type where upstream's `ConstantExpr::get*` call does — the type after `to` for
+  a cast, the operands for a binop, `getGEPReturnType` for a GEP, the mask
+  length and `V1`'s element type for a `shufflevector`. `parse_alias_or_ifunc`
+  branches on the first token, carries upstream's `invalid aliasee` guard, and
+  takes the pointer check and the address space off the aliasee **value's**
+  type, after reading it, as `parseAliasOrIFunc` does.
+
+  Two consequences beyond the alias. A constant expression whose own type
+  disagrees with the demanded one now reaches `convertValIDToValue`'s
+  `constant expression type mismatch: got type 'T' but expected 'U'` instead of
+  a malformed-operands error from the builder. And
+  `AssemblyWriter::printAlias` / `printIFunc` print
+  `writeOperand(Aliasee, !isa<ConstantExpr>(Aliasee))` — no leading type on a
+  constant-expression aliasee — which `fmt_alias` / `fmt_ifunc` now mirror.
+  **Changed printed bytes** for an alias or ifunc whose aliasee is a constant
+  expression. `test/Assembler/{addrspacecast-alias,alias-use-list-order,ConstantExprNoFold,getelementptr,uselistorder}.ll`
+  all pass now.
+
+- **A `GlobalValue` may replace a value a constant embeds.** Resolving a
+  forward reference RAUWs a placeholder, and `replace_value_uses_with` asked
+  `ValueKindData::Constant(_)` of the replacement where
+  `Constant::handleOperandChange` asks `isa<Constant>` — under which every
+  `GlobalValue` qualifies. A `GlobalVariable` and a `FunctionValue` slipped
+  through only because they mint the interned `GlobalValueRef` wrapper; an
+  alias and an ifunc hand back their own id and were refused, so
+  `@r = global ptr getelementptr (i32, ptr @a, i64 1)` above
+  `@a = alias i32, ptr @g` did not parse. **Newly accepted input.**
+
+- **`parseUInt64` and `parseUInt32` read the token the lexer built.** Both
+  matched only a positive *decimal* literal and failed outright when the digits
+  did not fit a `u64`, where upstream gates on the token kind and
+  `APSInt::isSigned()` alone and reads through the **saturating**
+  `getLimitedValue`. So `align u0x8`, `dereferenceable(u0x10)` and
+  `addrspace(u0x1)` answered `expected integer`, and
+  `align 99999999999999999999999` did too, where upstream saturates to
+  `UINT64_MAX` and then says `alignment is not a power of two`. Both routines
+  now read the APSInt without consuming the token — upstream's `Lex.Lex()` comes
+  *after* `parseUInt32`'s range check, so `expected 32-bit integer (too large)`
+  still reports on the integer itself, and no call site's diagnostic span
+  moves. **Newly accepted input**, at every one of the two routines' call sites.
+
+- **Removed `VerifierRule::PhiEmptyInReachableBlock`.** *(Breaking: the variant
+  is gone from the `#[non_exhaustive]` enum.)* The rule rejected a
+  zero-incoming phi in any block reachable from entry, which for the entry
+  block — the only block both reachable and predecessor-free — is IR LLVM
+  accepts. Its recorded justification was that such a phi prints as
+  `%p = phi i32` with no `[ … ]` pairs and `LLParser::parsePHI` rejects that.
+  It does not: `parsePHI` opens its pair loop with "if the next token is not
+  `[`, stop", llvmkit's `parse_phi` does the same, `AsmWriter` prints the type
+  and then an empty `ListSeparator` loop, and
+  `test/Assembler/zero-input-phi.ll` round-trips exactly that through
+  `llvm-as | llvm-dis`. `check_phi_incoming`'s `numIncoming == numPreds` —
+  `Verifier::visitBasicBlock`'s own and LLVM's only length guard on a phi — is
+  the rule again, so a zero-incoming phi in a block that *has* predecessors is
+  still rejected, now with upstream's `PHINode should have one entry for each
+  predecessor of its parent basic block!`. **Newly accepted input.**
+
 ### Added — the verifier has an exception-handling chapter
 
 - **`Verifier`'s EH pad routines are ported.** Every funclet opcode used to

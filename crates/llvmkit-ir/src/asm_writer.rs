@@ -4106,6 +4106,40 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     )
 }
 
+/// `writeOperand(Aliasee, !isa<ConstantExpr>(Aliasee))` — the one operand in
+/// the whole writer whose leading type is conditional.
+///
+/// `printAlias` and `printIFunc` suppress it for a constant *expression*
+/// because that is the spelling `LLParser::parseAliasOrIFunc` reads back: its
+/// `bitcast` / `getelementptr` / `addrspacecast` / `inttoptr` branch takes a
+/// bare `parseValID`, where "the bitcast dest type is not present, it is
+/// implied by the dest type".
+///
+/// `GepOffset` / `SymbolDelta` / `SymbolDeltaPlus` are llvmkit's compact
+/// spellings of a `getelementptr` / `sub` / `add` constant expression and print
+/// as one, so they answer to the same rule. `blockaddress`,
+/// `dso_local_equivalent`, `no_cfi` and `ptrauth` are separate `Constant`
+/// subclasses upstream, not `ConstantExpr`s, and keep their type.
+fn fmt_aliasee<'ctx, B: ModuleBrand + 'ctx>(
+    f: &mut fmt::Formatter<'_>,
+    aliasee: Value<'ctx, B>,
+) -> fmt::Result {
+    let is_constant_expr = matches!(
+        &aliasee.data().kind,
+        ValueKindData::Constant(
+            ConstantData::Expr(_)
+                | ConstantData::GepOffset { .. }
+                | ConstantData::SymbolDelta { .. }
+                | ConstantData::SymbolDeltaPlus { .. }
+        )
+    );
+    if is_constant_expr {
+        fmt_operand_ref(f, aliasee, None)
+    } else {
+        fmt_operand(f, aliasee, None)
+    }
+}
+
 pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     a: GlobalAlias<'ctx, B>,
@@ -4139,7 +4173,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("alias ")?;
     write!(f, "{}, ", a.value_type())?;
-    fmt_operand(f, a.aliasee().as_erased(), None)?;
+    fmt_aliasee(f, a.aliasee().as_erased())?;
     if let Some(partition) = a.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;
@@ -4184,7 +4218,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("ifunc ")?;
     write!(f, "{}, ", i.value_type())?;
-    fmt_operand(f, i.resolver().as_erased(), None)?;
+    fmt_aliasee(f, i.resolver().as_erased())?;
     if let Some(partition) = i.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;

@@ -164,8 +164,8 @@ impl fmt::Display for ValueCategoryLabel {
 /// [`IrError::VerifierFailure`]'s `message`, at the head of the string, with
 /// llvmkit's extra detail appended in parentheses. A rule with no upstream
 /// `Check` to reproduce (`AtomicRmwOperandTypeMismatch`'s result-type arm,
-/// `PhiEmptyInReachableBlock`, the `cmpxchg` orderings, …) says so in a
-/// comment at the check site in `verifier.rs`.
+/// the `cmpxchg` orderings, …) says so in a comment at the check site in
+/// `verifier.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum VerifierRule {
@@ -230,20 +230,6 @@ pub enum VerifierRule {
     /// gate — hence the explicit enumeration. Defense in depth: the rule holds
     /// regardless of construction path, not just for parsed IR.
     PhiInvalidResultType,
-    /// `phi` in a block reachable from entry carries **zero** incoming values.
-    /// Such a phi prints as `%p = phi i32` with no `[ … ]` pairs — a form that
-    /// has no legal textual round-trip.
-    ///
-    /// **Stricter than upstream.** `Verifier::visitPHINode` shares the same
-    /// `0 == 0` gap: it only checks the incoming count against the predecessor
-    /// count, so a zero-incoming phi in a zero-predecessor block passes. llvmkit
-    /// rejects it because such a phi fails `LLParser::parsePHI` round-trip — a
-    /// phi with no incomings cannot be re-parsed. Restricted to blocks
-    /// **reachable from entry**: an unreachable block may legitimately have no
-    /// predecessors, and llvmkit does not force its phis to carry incomings.
-    /// Defense in depth: the rule holds however the zero-incoming phi arose, not
-    /// just via the public mutation path (which now erases such phis).
-    PhiEmptyInReachableBlock,
     /// `call` callee is not a function-typed value.
     /// Mirrors `Verifier::visitCallBase`.
     CallNonFunction,
@@ -640,9 +626,6 @@ impl fmt::Display for VerifierRule {
             }
             Self::PhiInvalidResultType => {
                 "PHI node result type is not a valid first-class data type"
-            }
-            Self::PhiEmptyInReachableBlock => {
-                "PHI node in a block reachable from entry has no incoming values"
             }
             Self::CallNonFunction => "call callee is not a function value",
             Self::CallArgCountMismatch => "call argument count does not match callee signature",

@@ -1,12 +1,16 @@
-//! Regression coverage for the zero-incoming-phi round-trip hole.
+//! Regression coverage for the phi a dropped edge empties.
 //!
 //! When the typed edge-edit ops (`edit_cond_br(..).remove_then` /
-//! `redirect_then`) drop the *only* predecessor of a
-//! block, that block's leading phis are left with zero incomings. A phi with no
-//! incomings has no legal textual form (`%p = phi i32` with no `[ … ]` pairs),
-//! which LLVM's own LL parser rejects, so the module no longer round-trips. The
-//! edge ops now mirror LLVM `BasicBlock::removePredecessor`: an emptied phi is
-//! RAUW'd with poison of its own type and erased.
+//! `redirect_then`) drop the *only* predecessor of a block, that block's
+//! leading phis are left with zero incomings and their users still reading
+//! them. The edge ops mirror LLVM `BasicBlock::removePredecessor`, which
+//! removes each incoming through `PHINode::removeIncomingValue` with
+//! `DeletePHIIfEmpty` set: "If the PHI node is dead, because it has zero
+//! entries, nuke it now" — `replaceAllUsesWith(PoisonValue::get(getType()))`
+//! then `eraseFromParent()`. No verifier rule stands behind it: the block has
+//! lost its only predecessor, so a leftover zero-entry phi passes
+//! `visitBasicBlock`'s `numIncoming == numPreds` on `0 == 0`. The assertions
+//! are the guard.
 //!
 //! This case builds a `cond_br` whose then-arm target has `entry` as its ONLY
 //! predecessor, so removing that edge empties the target's head phi — which
@@ -281,21 +285,23 @@ fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Defensive verifier backstop: a phi with **zero** incomings sitting in a
-/// block **reachable from entry** is rejected with `PhiEmptyInReachableBlock`,
-/// however it arose. The public mutation path (Slice A) already erases such
-/// phis, but a phi authored directly through the raw builder with no
-/// `add_incoming` — the shape block arguments cannot express — must still be
-/// caught by `verify()`.
+/// A phi with **zero** incomings in a block that *has* a predecessor is
+/// rejected by the one length guard upstream has — `Verifier::visitBasicBlock`'s
+/// `Check(PN.getNumIncomingValues() == Preds.size(), "PHINode should have one
+/// entry for each predecessor of its parent basic block!", &PN)`. The public
+/// mutation path (Slice A) already erases such phis, but a phi authored
+/// directly through the raw builder with no `add_incoming` — the shape block
+/// arguments cannot express — must still be caught by `verify()`.
 ///
 /// Shape: `entry` unconditionally branches to `b`; `b` opens with a raw
-/// `phi i32` carrying no incomings, then a terminator. `b` is reachable
-/// (entry → b). The new check runs *before* the count-mismatch delegation, so
-/// it fires first — otherwise this block (0 incomings vs 1 predecessor) would
-/// be reported as `PhiPredecessorMismatch`, which is exactly what makes this
-/// test red-for-the-right-reason before the check exists.
+/// `phi i32` carrying no incomings, then a terminator. `b` therefore has one
+/// predecessor and zero incoming entries.
+///
+/// The `CHECK` text is asserted, not just the rule: the rule enum is llvmkit's
+/// category label and says nothing about the literal a
+/// `llvm/test/Verifier/*.ll` fixture matches.
 #[test]
-fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
+fn zero_incoming_phi_in_a_block_with_a_predecessor_is_rejected() -> Result<(), IrError> {
     let m = crate::module_new!("zero_incoming_reachable")?;
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
@@ -304,7 +310,7 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
     let b = m.view(f).append_basic_block(&m, "b");
     let b_label = b.id();
 
-    // entry: br b   (so `b` is reachable from entry)
+    // entry: br b   (so `b` has exactly one predecessor)
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     bld.br(b_label)?;
 
@@ -315,29 +321,46 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
 
     let err = m
         .verify_borrowed()
-        .expect_err("a zero-incoming phi in a reachable block must be rejected");
-    assert!(
-        matches!(
-            err,
-            IrError::VerifierFailure {
-                rule: VerifierRule::PhiEmptyInReachableBlock,
-                ..
-            }
-        ),
-        "expected PhiEmptyInReachableBlock, got {err:?}"
-    );
+        .expect_err("0 incomings against 1 predecessor must be rejected");
+    match &err {
+        IrError::VerifierFailure { rule, message, .. } => {
+            assert_eq!(*rule, VerifierRule::PhiPredecessorMismatch, "got {err:?}");
+            assert!(
+                message.starts_with(
+                    "PHINode should have one entry for each predecessor of its parent basic block!"
+                ),
+                "message {message:?} lacks upstream's Check literal"
+            );
+        }
+        other => panic!("expected a verifier failure, got {other:?}"),
+    }
     Ok(())
 }
 
-/// Contrast that proves the reachability gate: the *same* zero-incoming phi in
-/// an **unreachable** block (no predecessors, no edge into it) is NOT rejected
-/// by this rule. An unreachable block may legitimately have zero predecessors,
-/// so its head phi carrying zero incomings passes the shared count check
-/// (`0 == 0`) and the reachable-gate suppresses the new backstop. `verify()`
-/// accepts the module.
+/// The contrast, and the case llvmkit used to get wrong: a zero-incoming phi in
+/// a block with **zero** predecessors verifies clean, because
+/// `visitBasicBlock`'s count guard passes on `0 == 0` and nothing else in
+/// `Verifier` looks at a phi's length.
+///
+/// Both predecessor-less shapes are covered, since llvmkit's superseded
+/// `PhiEmptyInReachableBlock` rule split exactly here — it rejected the entry
+/// block and spared the unreachable one:
+///
+/// - `u`, unreachable, with no edge into it. This shape *is* an upstream
+///   fixture, `test/Assembler/zero-input-phi.ll`, already ported at
+///   `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::phi_int_round_trips`
+///   and in the corpus manifest; its `%r = phi i32` sits in a `return` block
+///   nothing branches to.
+/// - `entry` itself, reachable by definition and predecessor-free — the shape
+///   the old rule rejected and LLVM accepts. No upstream fixture writes it:
+///   `grep -raInE '(^|[^a-zA-Z_])phi[[:space:]]+[^[:space:],]+[[:space:]]*$'
+///   test/Verifier test/Assembler` under
+///   `orig_cpp/llvm-project-llvmorg-22.1.4/llvm` matches `zero-input-phi.ll`
+///   alone, so the oracle for this half is `Verifier::visitBasicBlock` read
+///   directly.
 #[test]
-fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
-    let m = crate::module_new!("zero_incoming_unreachable")?;
+fn zero_incoming_phi_without_predecessors_verifies() -> Result<(), IrError> {
+    let m = crate::module_new!("zero_incoming_no_preds")?;
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -345,8 +368,9 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
     // `u` has no edge into it — unreachable from entry.
     let u = m.view(f).append_basic_block(&m, "u");
 
-    // entry: ret 0
+    // entry: %e = phi i32   (no add_incoming) ; ret 0
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let _e = bld.view(bld.int_phi::<i32, _>("e")?);
     bld.ret(i32_ty.const_int(0_u32))?;
 
     // u: %q = phi i32   (no add_incoming) ; ret 0
@@ -355,6 +379,42 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
     bld.ret(i32_ty.const_int(0_u32))?;
 
     m.verify_borrowed()
-        .expect("a zero-incoming phi in an unreachable block is not this rule's concern");
+        .expect("a phi with no incomings and no predecessors is what LLVM accepts");
+    Ok(())
+}
+
+/// The printed half of the round trip that makes accepting an empty phi safe —
+/// the half the withdrawn `PhiEmptyInReachableBlock` rule assumed did not
+/// exist.
+///
+/// `AsmWriter`'s phi arm prints the result type and then an empty
+/// `ListSeparator` loop, so `%e = phi i32` is exactly what LLVM emits too. The
+/// reading half already exists in the parser crate:
+/// `parser_remaining_opcodes.rs::phi_int_round_trips` (the ported
+/// `test/Assembler/zero-input-phi.ll`) and
+/// `phi_real_incomings.rs::zero_input_phi_still_parses`.
+///
+/// No upstream counterpart: this is llvmkit's own print/parse idempotence law,
+/// asserted on the shape the verifier rule above stopped rejecting.
+#[test]
+fn an_empty_phi_prints_its_type_and_no_pairs() -> Result<(), IrError> {
+    let m = crate::module_new!("empty_phi_round_trip")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let _e = bld.view(bld.int_phi::<i32, _>("e")?);
+    bld.ret(i32_ty.const_int(0_u32))?;
+
+    let printed = format!("{m}");
+    let phi_line = printed
+        .lines()
+        .find(|l| l.contains("= phi "))
+        .expect("the phi is printed");
+    // `Out << ' '; TypePrinter.print(I.getType(), Out); Out << ' ';` and then a
+    // `ListSeparator` loop that emits nothing — the trailing space is
+    // upstream's too.
+    assert_eq!(phi_line.trim_start(), "%e = phi i32 ", "got:\n{printed}");
     Ok(())
 }

@@ -122,9 +122,11 @@ upstream/assembler-corpus/2009-07-24-ZeroArgGEP.ll | test/Assembler/2009-07-24-Z
 upstream/assembler-corpus/ConstantExprFold.ll | test/Assembler/ConstantExprFold.ll | status=pass
 upstream/assembler-corpus/ConstantExprFoldCast.ll | test/Assembler/ConstantExprFoldCast.ll | status=pass
 upstream/assembler-corpus/ConstantExprFoldSelect.ll | test/Assembler/ConstantExprFoldSelect.ll | status=pass
+upstream/assembler-corpus/ConstantExprNoFold.ll | test/Assembler/ConstantExprNoFold.ll | status=pass
 upstream/assembler-corpus/DIGlobalVariableExpression.ll | test/Assembler/DIGlobalVariableExpression.ll | status=pass
 upstream/assembler-corpus/aarch64-intrinsics-attributes.ll | test/Assembler/aarch64-intrinsics-attributes.ll | status=pass
 upstream/assembler-corpus/absolute_symbol.ll | test/Assembler/absolute_symbol.ll | status=pass
+upstream/assembler-corpus/addrspacecast-alias.ll | test/Assembler/addrspacecast-alias.ll | status=pass
 upstream/assembler-corpus/aggregate-constant-values.ll | test/Assembler/aggregate-constant-values.ll | status=pass
 upstream/assembler-corpus/aggregate-return-single-value.ll | test/Assembler/aggregate-return-single-value.ll | status=pass
 upstream/assembler-corpus/align-inst-alloca.ll | test/Assembler/align-inst-alloca.ll | status=reject
@@ -135,6 +137,7 @@ upstream/assembler-corpus/align-param-attr-error0.ll | test/Assembler/align-para
 upstream/assembler-corpus/align-param-attr-error1.ll | test/Assembler/align-param-attr-error1.ll | status=reject | loc=5:42 | error=expected '{' in function body
 upstream/assembler-corpus/align-param-attr-error2.ll | test/Assembler/align-param-attr-error2.ll | status=reject | loc=5:39 | error=expected integer
 upstream/assembler-corpus/align-param-attr-format.ll | test/Assembler/align-param-attr-format.ll | status=pass
+upstream/assembler-corpus/alias-use-list-order.ll | test/Assembler/alias-use-list-order.ll | status=pass
 upstream/assembler-corpus/alignstack.ll | test/Assembler/alignstack.ll | status=pass
 upstream/assembler-corpus/alloca-addrspace-elems.ll | test/Assembler/alloca-addrspace-elems.ll | status=pass
 upstream/assembler-corpus/alloca-addrspace-parse-error-0.ll | test/Assembler/alloca-addrspace-parse-error-0.ll | status=reject | error=expected metadata after comma
@@ -245,6 +248,7 @@ upstream/assembler-corpus/extractvalue-no-idx.ll | test/Assembler/extractvalue-n
 upstream/assembler-corpus/flags.ll | test/Assembler/flags.ll | status=pass
 upstream/assembler-corpus/fp-intrinsics-attr.ll | test/Assembler/fp-intrinsics-attr.ll | status=pass
 upstream/assembler-corpus/function-operand-uselistorder.ll | test/Assembler/function-operand-uselistorder.ll | status=pass
+upstream/assembler-corpus/getelementptr.ll | test/Assembler/getelementptr.ll | status=pass
 upstream/assembler-corpus/getelementptr_invalid_ptr.ll | test/Assembler/getelementptr_invalid_ptr.ll | status=reject | error=base of getelementptr must be a pointer
 upstream/assembler-corpus/getelementptr_struct.ll | test/Assembler/getelementptr_struct.ll | status=reject | error=invalid getelementptr indices
 upstream/assembler-corpus/getelementptr_vec_ce.ll | test/Assembler/getelementptr_vec_ce.ll | status=pass

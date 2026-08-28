@@ -1512,3 +1512,88 @@ $b = comdat largest\n\
         "got:\n{printed}"
     );
 }
+
+/// Ports `test/Assembler/addrspacecast-alias.ll` whole, including its single
+/// `CHECK` line — its `RUN` is `llvm-as < %s | llvm-dis | FileCheck %s`, so the
+/// printed bytes are the assertion.
+///
+/// Two halves of `parseAliasOrIFunc` meet here. Reading: an aliasee opening
+/// with `bitcast` / `getelementptr` / `addrspacecast` / `inttoptr` goes through
+/// a bare `parseValID` and types *itself* — "the bitcast dest type is not
+/// present, it is implied by the dest type" — so no type precedes it. Printing:
+/// `AssemblyWriter::printAlias` does `writeOperand(Aliasee,
+/// !isa<ConstantExpr>(Aliasee))`, suppressing the leading type for exactly that
+/// spelling, which is what makes the two halves round-trip.
+#[test]
+fn a_self_typed_addrspacecast_aliasee_round_trips() {
+    let m = module_new!("addrspacecast_alias").expect("fresh module");
+    parse_into(
+        "@i = internal addrspace(1) global i8 42\n\
+@ia = internal alias ptr addrspace(2), addrspacecast (ptr addrspace(1) @i to ptr addrspace(3))\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert!(
+        printed.contains(
+            "@ia = internal alias ptr addrspace(2), addrspacecast (ptr addrspace(1) @i to ptr addrspace(3))"
+        ),
+        "got:\n{printed}"
+    );
+}
+
+/// Ports the alias half of `test/Assembler/alias-use-list-order.ll`, whose
+/// `RUN` line is `verify-uselistorder`.
+///
+/// Its `@alias.ref3` / `@alias.ref4` are self-typed `getelementptr` aliasees,
+/// and its `@alias.ref1` / `@alias.ref2` embed a **forward reference to an
+/// alias** inside a constant expression. The second half is the one that took
+/// a second fix: resolving that forward reference RAUWs the placeholder inside
+/// a uniqued constant, and llvmkit's guard there asked
+/// `ValueKindData::Constant(_)` where upstream asks `isa<Constant>` — under
+/// which every `GlobalValue`, alias included, qualifies.
+#[test]
+fn an_alias_forward_referenced_from_a_constant_expression_resolves() {
+    let m = module_new!("alias_use_list_order").expect("fresh module");
+    parse_into(
+        "@global = global i32 0\n\
+@alias.ref1 = global ptr getelementptr inbounds (i32, ptr @alias, i64 1)\n\
+@alias.ref2 = global ptr getelementptr inbounds (i32, ptr @alias, i64 1)\n\
+@alias = alias i32, ptr @global\n\
+@alias.ref3 = alias i32, getelementptr inbounds (i32, ptr @alias, i64 1)\n\
+@alias.ref4 = alias i32, getelementptr inbounds (i32, ptr @alias, i64 1)\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert!(
+        printed
+            .contains("@alias.ref3 = alias i32, getelementptr inbounds (i32, ptr @alias, i64 1)"),
+        "got:\n{printed}"
+    );
+    assert!(
+        printed
+            .contains("@alias.ref1 = global ptr getelementptr inbounds (i32, ptr @alias, i64 1)"),
+        "got:\n{printed}"
+    );
+}
+
+/// `LLParser::parseAliasOrIFunc` takes the pointer check and the address space
+/// off the aliasee **value's** type, after the aliasee is read — never off a
+/// type written ahead of it. An `ifunc` reaches the same branch as an alias.
+///
+/// No upstream fixture writes a self-typed resolver — `grep -ranE
+/// '=[^=]*ifunc .*,\s*(bitcast|getelementptr|addrspacecast|inttoptr)'` over
+/// `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/Assembler` matches nothing,
+/// and the closest, `ifunc-program-addrspace.ll`'s
+/// `ifunc void (), ptr addrspacecast (…)`, opens on `ptr` and so takes the
+/// TYPE VALUE branch. The oracle is the routine: its branch is on the first
+/// token alone and says nothing about `IsAlias`.
+#[test]
+fn a_self_typed_ifunc_resolver_parses() {
+    let m = module_new!("ifunc_self_typed_resolver").expect("fresh module");
+    parse_into("@h = ifunc i32 (), inttoptr (i64 42 to ptr)\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@h = ifunc i32 (), inttoptr (i64 42 to ptr)"),
+        "got:\n{printed}"
+    );
+}

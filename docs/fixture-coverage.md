@@ -134,7 +134,7 @@ another was deleted outright, so the letters are not a stable namespace.
 | **G1** | `AutoUpgrade` is not ported: an intrinsic name or signature upstream silently rewrites is rejected instead. |
 | **G2** | Target-specific intrinsic tables (`llvm.amdgcn.*`, `llvm.nvvm.*`, `llvm.wasm.*`, `llvm.aarch64.*`) are not modelled. |
 | **G3** | An unknown `llvm.`-prefixed declaration is rejected; `LLParser::parseFunctionHeader` keeps it and leaves the complaint to the Verifier. |
-| **G4** | An alias/ifunc aliasee may be a constant expression (`getelementptr`, `addrspacecast`); llvmkit's `parse_alias_or_ifunc` sends everything through the TYPE VALUE branch where `LLParser::parseAliasOrIFunc` branches on the aliasee's *first token* and routes those keywords through a bare `parseValID`. This is the "self-typed aliasee does not parse" entry already in [`future-work.md`](future-work.md), and these five fixtures are what it costs. |
+| **G4** | *Closed.* An alias/ifunc aliasee written as a bare constant expression (`bitcast`, `getelementptr`, `addrspacecast`, `inttoptr`) now parses: `parse_constant_expr` types itself, `parse_alias_or_ifunc` branches on the aliasee's first token as `LLParser::parseAliasOrIFunc` does, and `fmt_alias` / `fmt_ifunc` suppress the leading operand type for a constant expression as `writeOperand(Aliasee, !isa<ConstantExpr>(Aliasee))` does. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G6** | Symbolic address-space **printing** (`llvm-dis --print-addrspace-name=true`) is not modelled: `printAddressSpace`'s `PrintAddrspaceName` branch is `static cl::opt<bool>`-gated and llvmkit has no printer-option layer, so it has no reachable trigger. Parsing `addrspace("A"/"G"/"P")` and `addrspace("<datalayout name>")` is ported, and the data the branch would print is modelled (`DataLayout::address_space_name`). |
 | **G7** | *Closed.* `getelementptr` with a vector-of-pointers base or vector indices is now modelled (`IrBuilder::gep_erased`, `GetElementPtrInst::getGEPReturnType`). Kept as a row so a reader meeting the letter in an older commit message finds it; see the note above about letters that are simply absent. |
 | **G8** | Metadata fields that take a value or a brace list (`!DITemplateValueParameter(value: i32 7)`, `!GenericDINode(operands: {...})`) are not parsed. |
@@ -159,7 +159,7 @@ Which fixture sits on which gap:
 - **G1**: `auto_upgrade_intrinsics.ll`, `autoupgrade-invalid-masked-align.ll`, `autoupgrade-invalid-mem-intrinsics.ll`, `autoupgrade-invalid-name-mangling.ll`, `autoupgrade-lifetime-intrinsics.ll`, `implicit-intrinsic-declaration-invalid.ll`, `implicit-intrinsic-declaration-invalid3.ll`, `implicit-intrinsic-declaration.ll`, `invalid-vecreduce.ll`, `metadata.ll`, `opaque-ptr-intrinsic-remangling.ll`, `remangle.ll`, `struct-ret-without-upgrade.ll`
 - **G2**: `amdgcn-unreachable.ll`, `amdgpu-image-atomic-attributes.ll`, `auto_upgrade_nvvm_intrinsics.ll`, `autoupgrade-thread-pointer.ll`, `autoupgrade-wasm-intrinsics.ll`
 - **G3**: `immarg-param-attribute.ll`, `invalid-immarg.ll`, `invalid-immarg4.ll`, `invalid-immarg5.ll`, `metadata-function-local.ll`, `token.ll`
-- **G4**: `ConstantExprNoFold.ll`, `addrspacecast-alias.ll`, `alias-use-list-order.ll`, `getelementptr.ll`, `uselistorder.ll`
+- **G4**: closed
 - **G6**: `symbolic-addrspace-datalayout.ll`
 - **G7**: closed
 - **G8**: `DIDefaultTemplateParam.ll`, `ditemplateparameter.ll`, `generic-debug-node.ll`
@@ -357,7 +357,7 @@ collision.
 | `ConstantExprFold.ll` | ported | 1 pass |
 | `ConstantExprFoldCast.ll` | ported | 1 pass |
 | `ConstantExprFoldSelect.ll` | ported | 1 pass |
-| `ConstantExprNoFold.ll` | blocked-model | **G4** — rejected at 24:23: `expected type` |
+| `ConstantExprNoFold.ll` | ported | 1 pass |
 | `DICommonBlock.ll` | blocked-model | **G19** — printed module does not re-print identically |
 | `DIDefaultTemplateParam.ll` | blocked-model | **G8** — rejected at 60:62: `expected metadata field value` |
 | `DIEnumerator.ll` | blocked-model | **G19** — printed module does not re-print identically |
@@ -367,11 +367,11 @@ collision.
 | `MultipleReturnValueType.ll` | blocked-model | **G20** — printed module does not re-parse: functions are not values, refer to them as pointers |
 | `aarch64-intrinsics-attributes.ll` | ported | 1 pass |
 | `absolute_symbol.ll` | ported | 1 pass |
-| `addrspacecast-alias.ll` | blocked-model | **G4** — rejected at 7:40: `expected type` |
+| `addrspacecast-alias.ll` | ported | 1 pass; its `CHECK` line is pinned by `parser_module_level.rs::a_self_typed_addrspacecast_aliasee_round_trips` |
 | `aggregate-constant-values.ll` | ported | 1 pass |
 | `aggregate-return-single-value.ll` | ported | 1 pass |
 | `alias-redefinition.ll` | blocked-model | **G17** — reported `expected valid alias definition: a global named "bar" already exists in this module`, upstream `redefinition of global '@bar'` |
-| `alias-use-list-order.ll` | blocked-model | **G4** — rejected at 10:26: `expected type` |
+| `alias-use-list-order.ll` | ported | 1 pass |
 | `align-inst-alloca.ll` | ported | 1 reject (0 with upstream's diagnostic pinned) |
 | `align-inst-load.ll` | ported | 1 reject (0 with upstream's diagnostic pinned) |
 | `align-inst-store.ll` | ported | 1 reject (0 with upstream's diagnostic pinned) |
@@ -498,7 +498,7 @@ collision.
 | `fp-intrinsics-attr.ll` | ported | 1 pass |
 | `function-operand-uselistorder.ll` | ported | 1 pass |
 | `generic-debug-node.ll` | blocked-model | **G8** — rejected at 11:64: `expected metadata field value` |
-| `getelementptr.ll` | blocked-model | **G4** — rejected at 28:29: `expected type` |
+| `getelementptr.ll` | ported | 1 pass |
 | `getelementptr_invalid_ptr.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `getelementptr_struct.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `getelementptr_vec_ce.ll` | ported | 1 pass |
@@ -769,7 +769,7 @@ collision.
 | `unnamed.ll` | ported | 1 pass |
 | `unsized-recursive-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `unsupported-constexprs.ll` | ported | 2 reject (2 with upstream's diagnostic pinned) |
-| `uselistorder.ll` | blocked-model | **G4** — rejected at 7:16: `expected type` |
+| `uselistorder.ll` | ported | 1 pass, in `parser_use_list.rs::the_upstream_uselistorder_fixture_parses_clean` rather than as a manifest row: its own `uselistorder` directives permute use lists that plain `Display` drops, so the corpus runner's print-twice law cannot hold for it |
 | `uselistorder_bb.ll` | ported | 1 pass |
 | `uselistorder_global.ll` | ported | 1 pass |
 | `uwtable-1.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

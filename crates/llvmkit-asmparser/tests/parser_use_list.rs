@@ -355,27 +355,19 @@ fn global_use_list_order_round_trips() {
 /// emits neither an error nor a warning — every directive in it is accepted,
 /// including the `ConstantInt` and `label` operands.
 ///
-/// **llvmkit still rejects this fixture, and not for a use-list reason.** Its
-/// second line is `@b = alias i1, getelementptr ([4 x i1], ptr @a, i64 0, i64 2)`
-/// — an aliasee written as a leading constant expression with no type of its
-/// own. `parse_constant_expr` takes a `result_ty` and llvmkit has no
-/// self-typing entry point, so the `getelementptr` is met with
-/// `expected type`. That gap is recorded as D6 in `docs/divergences.md`; it
-/// is `parseValID`'s type-agnostic refactor applied one level down, and it is
-/// what upstream's `invalid aliasee` is reached through.
-///
-/// The assertion below therefore pins **llvmkit's current answer, not
-/// upstream's**, so that closing D6 makes this test fail and demands the port
-/// be finished. Everything the wave itself owns is already covered: the
-/// `label` operands by
-/// [`a_block_after_a_directive_is_rejected`], the `ConstantInt` operand by the
-/// same, and the module-level directives by
-/// [`global_use_list_order_round_trips`].
+/// Its second line, `@b = alias i1, getelementptr ([4 x i1], ptr @a, i64 0, i64 2)`,
+/// is an aliasee written as a leading constant expression with no type of its
+/// own — `LLParser::parseAliasOrIFunc`'s bare-`parseValID` branch. That is what
+/// blocked this fixture until `parse_constant_expr` became self-typing.
 #[test]
-fn the_upstream_uselistorder_fixture_is_blocked_on_the_self_typed_aliasee() {
+fn the_upstream_uselistorder_fixture_parses_clean() {
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/uselistorder/uselistorder.ll");
 
-    assert_eq!(parse_err("uselistorder_full", FIXTURE), "expected type");
+    let module = Module::dynamic("uselistorder_full");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("fixture parses");
 }
 
 /// Ports `test/Assembler/uselistorder_bb.ll`, whose `RUN` line likewise

@@ -750,6 +750,25 @@ struct ParsedApsInt {
     signedness: Signedness,
 }
 
+/// The signedness `LLLexer` stamps on an integer token's `APSInt`, and what
+/// `Lex.getAPSIntVal().isSigned()` reads back off it.
+///
+/// Two upstream sites decide it between them. `LLLexer::lexIdentifier`'s
+/// `[us]0x[0-9A-Fa-f]+` block passes `TokStart[0] == 'u'` as `APSInt`'s
+/// `isUnsigned` flag, so `u0x…` is unsigned and `s0x…` signed; every other
+/// integer spelling reaches `APSInt::APSInt(StringRef)`, which is signed
+/// exactly when `Str[0] == '-'`.
+fn int_lit_signedness(lit: IntLit<'_>) -> Signedness {
+    match lit.base {
+        NumBase::HexSigned => Signedness::Signed,
+        NumBase::HexUnsigned => Signedness::Unsigned,
+        NumBase::Dec => match lit.sign {
+            Sign::Neg => Signedness::Signed,
+            Sign::Pos => Signedness::Unsigned,
+        },
+    }
+}
+
 impl ParsedApsInt {
     /// The token's own bit width, as `APSInt::getBitWidth` reports it.
     fn bit_width(&self) -> u32 {
@@ -1284,19 +1303,17 @@ fn apint_word(words: &[u64], idx: usize, bit_width: u32) -> u64 {
     word
 }
 
+/// `ExtractElementInst::isValidOperands(Val, Index)` — the operand guard only;
+/// the result type is the vector's element type and is derived, not demanded.
 fn is_valid_extractelement<'ctx, B: ModuleBrand + 'ctx>(
-    result_ty: Type<'ctx, B>,
     vector_ty: Type<'ctx, B>,
     index_ty: Type<'ctx, B>,
 ) -> bool {
-    let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector_ty) else {
-        return false;
-    };
-    vector_ty.element() == result_ty && index_ty.is_integer()
+    vector_ty.is_vector() && index_ty.is_integer()
 }
 
+/// `InsertElementInst::isValidOperands(Vec, Elt, Index)`.
 fn is_valid_insertelement<'ctx, B: ModuleBrand + 'ctx>(
-    result_ty: Type<'ctx, B>,
     vector_ty: Type<'ctx, B>,
     value_ty: Type<'ctx, B>,
     index_ty: Type<'ctx, B>,
@@ -1304,11 +1321,19 @@ fn is_valid_insertelement<'ctx, B: ModuleBrand + 'ctx>(
     let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector_ty) else {
         return false;
     };
-    vector_ty.as_type() == result_ty && vector_ty.element() == value_ty && index_ty.is_integer()
+    vector_ty.element() == value_ty && index_ty.is_integer()
 }
 
+/// `ShuffleVectorInst::isValidOperands(V1, V2, Mask)`, the `Value *Mask`
+/// overload: `V1` and `V2` are vectors of the same type, and the mask is a
+/// vector of `i32` of the same kind — fixed against fixed, scalable against
+/// scalable.
+///
+/// The mask's *element range* half (`CI->uge(V1Size * 2)`) is not repeated
+/// here: `validate_constant_expr_data`'s `ShuffleVector` arm runs it through
+/// `valid_shufflevector_mask_constant`, and `build_constant_expr` renders that
+/// rejection as this same `invalid operands to shufflevector`.
 fn is_valid_shufflevector<'ctx, B: ModuleBrand + 'ctx>(
-    result_ty: Type<'ctx, B>,
     lhs_ty: Type<'ctx, B>,
     rhs_ty: Type<'ctx, B>,
     mask_ty: Type<'ctx, B>,
@@ -1322,16 +1347,11 @@ fn is_valid_shufflevector<'ctx, B: ModuleBrand + 'ctx>(
     let AnyTypeEnum::Vector(mask_ty) = AnyTypeEnum::from(mask_ty) else {
         return false;
     };
-    let AnyTypeEnum::Vector(result_ty) = AnyTypeEnum::from(result_ty) else {
-        return false;
-    };
     lhs_ty.element() == rhs_ty.element()
         && lhs_ty.min_len() == rhs_ty.min_len()
         && lhs_ty.is_scalable() == rhs_ty.is_scalable()
         && matches!(mask_ty.element().kind(), TypeKind::Integer { bits: 32 })
-        && result_ty.element() == lhs_ty.element()
-        && result_ty.min_len() == mask_ty.min_len()
-        && result_ty.is_scalable() == mask_ty.is_scalable()
+        && mask_ty.is_scalable() == lhs_ty.is_scalable()
 }
 
 #[derive(Clone, Copy)]
@@ -2653,30 +2673,41 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `Lex.getKind() != lltok::APSInt || Lex.getAPSIntVal().isSigned()` — the
+    /// guard `parseUInt32` and `parseUInt64` share, answered **without**
+    /// consuming the token.
+    ///
+    /// The token has to survive the answer: upstream's `Lex.Lex()` comes after
+    /// `parseUInt32`'s range check, so `expected 32-bit integer (too large)`
+    /// is a `tokError` on the integer itself. The base and the digit count are
+    /// never inspected — only the token kind and the signedness are.
+    fn peek_unsigned_apsint(&self) -> Option<IntLit<'src>> {
+        match self.peek() {
+            Token::IntegerLit(lit) if int_lit_signedness(*lit) == Signedness::Unsigned => {
+                Some(*lit)
+            }
+            _ => None,
+        }
+    }
+
     /// Mirrors `LLParser::parseUInt32`, including its second message: a value
     /// that does not round-trip through `unsigned` is
     /// `expected 32-bit integer (too large)`, which is why
     /// `attributes #0 = { align = 4294967296 }` fails where the inline
     /// `align 4294967296` succeeds.
     fn parse_uint32(&mut self) -> ParseResult<u32> {
-        // Upstream reads the token as an unsigned APSInt first and only then
-        // asks whether it fits, so "not an integer" and "too large" are
-        // separate messages. Parsing straight into a `u32` would collapse them.
-        let digits = match self.peek() {
-            Token::IntegerLit(IntLit {
-                sign: Sign::Pos,
-                base: NumBase::Dec,
-                digits,
-            }) => *digits,
-            _ => return Err(self.expected("integer")),
+        let Some(lit) = self.peek_unsigned_apsint() else {
+            return Err(self.expected("integer"));
         };
-        let Ok(value) = digits.parse::<u64>() else {
-            // `getLimitedValue(0xFFFFFFFFULL + 1)` saturates rather than
-            // failing, so a literal too wide even for 64 bits still reaches
-            // the range check below.
-            return Err(self.expected("32-bit integer (too large)"));
-        };
-        let Ok(value) = u32::try_from(value) else {
+        // `getLimitedValue(0xFFFFFFFFULL + 1)` saturates rather than failing,
+        // so a literal too wide even for 64 bits still reaches the range check
+        // below and answers `expected 32-bit integer (too large)` rather than
+        // `expected integer`.
+        let value64 = self
+            .apsint_from_int_lit(lit)?
+            .value
+            .limited_value(0xFFFF_FFFF_u64 + 1);
+        let Ok(value) = u32::try_from(value64) else {
             return Err(self.expected("32-bit integer (too large)"));
         };
         self.bump()?;
@@ -2686,22 +2717,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Mirrors `LLParser::parseUInt64`. Its one message is `expected integer`
     /// at every one of upstream's call sites, so this takes no label; the
     /// bespoke per-site wordings llvmkit used to pass were all divergences.
+    ///
+    /// `getLimitedValue()`'s default limit is `UINT64_MAX`, so a literal wider
+    /// than 64 bits **saturates** instead of failing — `align 99999…9` reaches
+    /// `parseOptionalAlignment`'s `alignment is not a power of two` rather
+    /// than being refused as a non-integer.
     fn parse_uint64(&mut self) -> ParseResult<u64> {
-        let n = match self.peek() {
-            Token::IntegerLit(IntLit {
-                sign: Sign::Pos,
-                base: NumBase::Dec,
-                digits,
-            }) => digits.parse::<u64>().ok(),
-            _ => None,
+        let Some(lit) = self.peek_unsigned_apsint() else {
+            return Err(self.expected("integer"));
         };
-        match n {
-            Some(n) => {
-                self.bump()?;
-                Ok(n)
-            }
-            None => Err(self.expected("integer")),
-        }
+        let value = self.apsint_from_int_lit(lit)?.value.limited_value(u64::MAX);
+        self.bump()?;
+        Ok(value)
     }
 
     /// Read one integer-literal token into the `APSInt` the lexer would have
@@ -2724,25 +2751,31 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::IntegerLit(lit) => *lit,
             _ => return Err(self.expected("integer literal")),
         };
-        let parsed = match lit.base {
+        let parsed = self.apsint_from_int_lit(lit)?;
+        self.bump()?;
+        Ok(parsed)
+    }
+
+    /// The value half of [`Self::parse_int_literal`], **without** the
+    /// `Lex.Lex()`. It stands where `LLLexer` builds `APSIntVal`, so the
+    /// routines that read a token twice — `parseUInt32` inspecting the value
+    /// and then reporting on the still-current token — have somewhere to ask.
+    fn apsint_from_int_lit(&self, lit: IntLit<'_>) -> ParseResult<ParsedApsInt> {
+        let signedness = int_lit_signedness(lit);
+        Ok(match lit.base {
             NumBase::Dec => {
                 let scratch_width = decimal_scratch_bits(lit.digits);
                 let magnitude = ApInt::from_string(scratch_width, lit.digits, 10)
                     .map_err(|_| self.expected("valid integer literal"))?;
-                if matches!(lit.sign, Sign::Neg) {
+                let value = if matches!(lit.sign, Sign::Neg) {
                     let value = magnitude.negate();
                     let minimum = value.significant_bits().max(1);
-                    ParsedApsInt {
-                        value: value.trunc(minimum).unwrap_or(value),
-                        signedness: Signedness::Signed,
-                    }
+                    value.trunc(minimum).unwrap_or(value)
                 } else {
                     let active = magnitude.active_bits().max(1);
-                    ParsedApsInt {
-                        value: magnitude.trunc(active).unwrap_or(magnitude),
-                        signedness: Signedness::Unsigned,
-                    }
-                }
+                    magnitude.trunc(active).unwrap_or(magnitude)
+                };
+                ParsedApsInt { value, signedness }
             }
             NumBase::HexSigned | NumBase::HexUnsigned => {
                 let digit_width = u32::try_from(lit.digits.len())
@@ -2756,16 +2789,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 } else {
                     value
                 };
-                let signedness = if matches!(lit.base, NumBase::HexSigned) {
-                    Signedness::Signed
-                } else {
-                    Signedness::Unsigned
-                };
                 ParsedApsInt { value, signedness }
             }
-        };
-        self.bump()?;
-        Ok(parsed)
+        })
     }
 
     // ── Instruction modifier parsing ──────────────────────────────────────
@@ -7805,32 +7831,57 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `AliaseeLoc`, captured before the aliasee is read — upstream anchors
         // both the pointer-type check and `invalid aliasee` here.
         let aliasee_loc = self.loc();
-        let target_ty = self.parse_type(false)?;
-        let target_loc = self.loc();
-        match target_ty.into_type_enum() {
-            AnyTypeEnum::Pointer(_) => {}
-            _ => {
-                return Err(
-                    self.message_at(aliasee_loc, "An alias or ifunc must have pointer type")
-                );
+        // `parseAliasOrIFunc`'s first-token branch. Four constant-expression
+        // keywords name an aliasee that types *itself* and go through a bare
+        // `parseValID` — upstream's comment: "The bitcast dest type is not
+        // present, it is implied by the dest type". Everything else is
+        // TYPE VALUE, read by `parseGlobalTypeAndValue`.
+        let self_typed_aliasee = matches!(
+            self.peek(),
+            Token::Instruction(
+                Opcode::BitCast | Opcode::GetElementPtr | Opcode::AddrSpaceCast | Opcode::IntToPtr
+            )
+        );
+        let (target, forward_target, target_loc) = if self_typed_aliasee {
+            let id = self.parse_val_id(None, None)?;
+            let loc = id.loc;
+            // `if (ID.Kind != ValID::t_Constant) return error(AliaseeLoc,
+            // "invalid aliasee");` — ported for the routine's shape, though it
+            // is defensive on both sides: each of the four `parseValID` arms
+            // this branch can reach ends in `ID.Kind = ValID::t_Constant`, so
+            // nothing upstream reaches the message either.
+            let ValIdKind::Constant(constant) = id.kind else {
+                return Err(self.message_at(aliasee_loc, "invalid aliasee"));
+            };
+            (constant, None, loc)
+        } else {
+            let written_ty = self.parse_type(false)?;
+            let loc = self.loc();
+            // A forward-referenced target becomes a null placeholder patched at
+            // end of module, exactly as `personality` already handles the same
+            // ordering problem.
+            match self.parse_alias_target(written_ty) {
+                Ok(c) => (c, None, loc),
+                Err(ParseError::UndefinedSymbol {
+                    id: SymbolId::Named(name),
+                    ..
+                }) => {
+                    let AnyTypeEnum::Pointer(pty) = written_ty.into_type_enum() else {
+                        return Err(self.expected("pointer type for alias or ifunc target"));
+                    };
+                    (pty.const_null().as_constant(), Some(name), loc)
+                }
+                Err(other) => return Err(other),
             }
-        }
-        // A forward-referenced target becomes a null placeholder patched at
-        // end of module, exactly as `personality` already handles the same
-        // ordering problem.
-        let (target, forward_target) = match self.parse_alias_target(target_ty) {
-            Ok(c) => (c, None),
-            Err(ParseError::UndefinedSymbol {
-                id: SymbolId::Named(name),
-                ..
-            }) => {
-                let AnyTypeEnum::Pointer(pty) = target_ty.into_type_enum() else {
-                    return Err(self.expected("pointer type for alias or ifunc target"));
-                };
-                (pty.const_null().as_constant(), Some(name))
-            }
-            Err(other) => return Err(other),
         };
+        // `Type *AliaseeType = Aliasee->getType(); auto *PTy =
+        // dyn_cast<PointerType>(AliaseeType);` — the check and the address
+        // space both come off the aliasee **value's** type, after it is read,
+        // never off a type written ahead of it.
+        let target_ty = target.ty();
+        if !matches!(target_ty.into_type_enum(), AnyTypeEnum::Pointer(_)) {
+            return Err(self.message_at(aliasee_loc, "An alias or ifunc must have pointer type"));
+        }
 
         let mut partition = None;
         let mut ifunc_metadata = Vec::new();
@@ -8242,9 +8293,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::RParen, "')' in splat constant")?;
                 Ok(ValIdKind::ConstantSplat(scalar))
             }
+            // No `expected_ty` here, deliberately: upstream's constexpr arms
+            // are reached from `parseValID(ID, /*PFS=*/nullptr)` with no type
+            // in hand at all — that is how `parseAliasOrIFunc` reads a
+            // `bitcast` / `getelementptr` / `addrspacecast` / `inttoptr`
+            // aliasee. Demanding one made those four spellings unparseable.
             Token::Instruction(op) if is_supported_constant_expr_opcode(*op) => {
-                let ty = expected_ty.ok_or_else(|| self.unsupported_constant_value_form_at(loc))?;
-                self.parse_constant_expr(ty).map(ValIdKind::Constant)
+                self.parse_constant_expr().map(ValIdKind::Constant)
             }
             // `LLParser::parseValID`'s default arm.
             _ => Err(self.expected("value token")),
@@ -9371,7 +9426,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             })
     }
 
-    fn parse_constant_expr(&mut self, result_ty: Type<'ctx, B>) -> ParseResult<Constant<'ctx, B>> {
+    /// `LLParser::parseValID`'s constant-expression arms.
+    ///
+    /// **Self-typing, as upstream's are.** Every arm ends in a
+    /// `ConstantExpr::get*` call whose result type comes from what was written
+    /// — the destination type after `to`, the operands, the GEP's base and
+    /// indices — and never from a type demanded by the surrounding context.
+    /// That is what lets `parseAliasOrIFunc` read an aliasee with no type of
+    /// its own, and it is where the agreement check belongs: a constant
+    /// expression whose own type differs from the demanded one is
+    /// `convertValIDToValue`'s `constant expression type mismatch`, one layer
+    /// up, not a malformed-operands error down here.
+    fn parse_constant_expr(&mut self) -> ParseResult<Constant<'ctx, B>> {
         let op = match self.peek() {
             Token::Instruction(op) => *op,
             _ => return Err(self.expected("constant expression opcode")),
@@ -9414,6 +9480,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     );
                 }
                 self.expect_punct(PunctKind::RParen, "')' in binary constantexpr")?;
+                // `ConstantExpr::get(Opc, Val0, Val1, Flags)` — an integer
+                // binop's result type is its operands'.
+                let result_ty = lhs.ty();
                 self.build_constant_expr(result_ty, None, opcode, vec![lhs, rhs], flags)
             }
             ConstantExprOpcode::Trunc
@@ -9440,8 +9509,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         loc: DiagLoc::span(self.loc()),
                     });
                 }
+                // `ConstantExpr::getCast(Opc, SrcVal, DestTy)` — upstream's own
+                // comment on the aliasee spelling of this arm is that the
+                // "dest type is not present, it is implied by the dest type",
+                // i.e. the type after `to` *is* the result type.
                 self.build_constant_expr(
-                    result_ty,
+                    dst_ty,
                     None,
                     opcode,
                     vec![operand],
@@ -9455,7 +9528,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::Comma, "comma after getelementptr's type")?;
                 let operands = self.parse_global_value_vector()?;
                 self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-                let flags =
+                let (flags, result_ty) =
                     self.validate_parsed_gep_constant_expr(source_ty, &operands, parsed_flags)?;
                 self.build_constant_expr(result_ty, Some(source_ty), opcode, operands, flags)
             }
@@ -9465,7 +9538,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::LParen, "'(' in constantexpr")?;
                 let operands = self.parse_global_value_vector()?;
                 self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-                self.validate_parsed_vector_constant_expr(opcode, result_ty, &operands)?;
+                let result_ty = self.validate_parsed_vector_constant_expr(opcode, &operands)?;
                 self.build_constant_expr(
                     result_ty,
                     None,
@@ -9586,12 +9659,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// fires decides the message. `getelementptr({<vscale x 2 x i32>, i32},
     /// ptr @g, i32 0)` is both unsized and unsupported, and upstream reports
     /// it unsized.
+    /// The `Opc == Instruction::GetElementPtr` half of `parseValID`'s
+    /// `getelementptr` arm, up to and including the `inrange` bounds.
+    ///
+    /// Returns the flags **and** the result type
+    /// `ConstantExpr::getGetElementPtr` would give the expression:
+    /// `GetElementPtrInst::getGEPReturnType`'s answer, a `ptr` in the base's
+    /// address space, made a vector of the first vector shape found among the
+    /// base and then the indices.
     fn validate_parsed_gep_constant_expr(
         &self,
         source_ty: Type<'ctx, B>,
         operands: &[llvmkit_ir::Constant<'ctx, B>],
         parsed_flags: ParsedGepConstantExprFlags,
-    ) -> ParseResult<ConstantExprFlags> {
+    ) -> ParseResult<(ConstantExprFlags, Type<'ctx, B>)> {
         // Upstream's `Elts.size() == 0 || !isPtrOrPtrVectorTy()`; asking for
         // the address space answers both at once, and the `inrange` bounds
         // need it next anyway.
@@ -9634,43 +9715,83 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if llvmkit_ir::indexed_gep_type(source_ty, &index_values).is_none() {
             return Err(self.message("invalid getelementptr indices"));
         }
-        Ok(flags)
+        let scalar_ptr = self.module.ptr_type(address_space).as_type();
+        let result_ty = match gep_width {
+            None => scalar_ptr,
+            Some((lanes, true)) => self
+                .module
+                .scalable_vector_type(scalar_ptr, lanes)
+                .as_type(),
+            Some((lanes, false)) => self.module.vector_type(scalar_ptr, lanes).as_type(),
+        };
+        Ok((flags, result_ty))
     }
 
+    /// The three non-GEP arms of `parseValID`'s
+    /// `getelementptr`/`shufflevector`/`insertelement`/`extractelement` case,
+    /// each an `isValidOperands` guard followed by a `ConstantExpr::get*` whose
+    /// result type falls out of the operands. Returns that type.
     fn validate_parsed_vector_constant_expr(
         &self,
         opcode: ConstantExprOpcode,
-        result_ty: Type<'ctx, B>,
         operands: &[Constant<'ctx, B>],
-    ) -> ParseResult<()> {
+    ) -> ParseResult<Type<'ctx, B>> {
         match opcode {
             ConstantExprOpcode::ShuffleVector => {
                 let [lhs, rhs, mask] = operands else {
                     return Err(self.expected("three operands to shufflevector"));
                 };
-                if !is_valid_shufflevector(result_ty, lhs.ty(), rhs.ty(), mask.ty()) {
+                if !is_valid_shufflevector(lhs.ty(), rhs.ty(), mask.ty()) {
                     return Err(self.message("invalid operands to shufflevector"));
                 }
+                // `ConstantExpr::getShuffleVector`: `VectorType::get(EltTy,
+                // Mask.size(), TypeIsScalable)` — the element type and
+                // scalability from `V1`, the length from the mask.
+                let (AnyTypeEnum::Vector(lhs_ty), AnyTypeEnum::Vector(mask_ty)) =
+                    (AnyTypeEnum::from(lhs.ty()), AnyTypeEnum::from(mask.ty()))
+                else {
+                    return Err(self.message("invalid operands to shufflevector"));
+                };
+                let element = lhs_ty.element();
+                Ok(if lhs_ty.is_scalable() {
+                    self.module
+                        .scalable_vector_type(element, mask_ty.min_len())
+                        .as_type()
+                } else {
+                    self.module
+                        .vector_type(element, mask_ty.min_len())
+                        .as_type()
+                })
             }
             ConstantExprOpcode::ExtractElement => {
                 let [vector, index] = operands else {
                     return Err(self.expected("two operands to extractelement"));
                 };
-                if !is_valid_extractelement(result_ty, vector.ty(), index.ty()) {
+                if !is_valid_extractelement(vector.ty(), index.ty()) {
                     return Err(self.message("invalid extractelement operands"));
                 }
+                // `ConstantExpr::getExtractElement` types itself off the
+                // vector's element type.
+                let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector.ty()) else {
+                    return Err(self.message("invalid extractelement operands"));
+                };
+                Ok(vector_ty.element())
             }
             ConstantExprOpcode::InsertElement => {
                 let [vector, value, index] = operands else {
                     return Err(self.expected("three operands to insertelement"));
                 };
-                if !is_valid_insertelement(result_ty, vector.ty(), value.ty(), index.ty()) {
+                if !is_valid_insertelement(vector.ty(), value.ty(), index.ty()) {
                     return Err(self.message("invalid insertelement operands"));
                 }
+                // `ConstantExpr::getInsertElement` gives back the vector's own
+                // type.
+                Ok(vector.ty())
             }
-            _ => {}
+            _ => unreachable!(
+                "only shufflevector / extractelement / insertelement reach this helper"
+            ),
         }
-        Ok(())
     }
 
     fn build_constant_expr(
