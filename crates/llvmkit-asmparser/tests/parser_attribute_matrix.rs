@@ -813,11 +813,15 @@ fn alignment_value_checks_match_upstream_text() {
 /// header*, not only inside an attribute group.
 ///
 /// Upstream has one attribute-list production for both, entered from
-/// `parseFunctionHeader` without any lookahead gate. llvmkit gates the header
-/// path on `is_attr_start`, so a keyword missing from that predicate makes
-/// the whole list invisible — the attribute is not rejected, it is never
-/// looked for, and the failure surfaces as `expected '{' to open function
-/// body`. Every one of these is ordinary `clang` output.
+/// `parseFunctionHeader` without any lookahead gate. llvmkit used to gate the
+/// header path on `is_attr_start`, a hand-maintained second copy of the
+/// loop's arm list, so a keyword missing from that predicate made the whole
+/// list invisible — the attribute was not rejected, it was never looked for,
+/// and the failure surfaced as `expected '{' to open function body`. Every one
+/// of these is ordinary `clang` output. The predicate is gone
+/// (it was `docs/divergences.md`'s hand-maintained-lookahead entry, deleted
+/// when the gate was); this test is what would catch a regression that
+/// reintroduced one.
 #[test]
 fn argument_carrying_attributes_parse_on_a_function_header() {
     for spelled in [
@@ -968,6 +972,74 @@ fn a_uint32_field_reports_its_own_overflow() {
 
     parse_dynamic("@g = global i8 0, align 4294967296\n")
         .expect("the inline form reads a full uint64");
+}
+
+/// The three alignment rejections inside an attribute group that upstream
+/// states as C++ `assert`s rather than as `error()`s: `Align(Value)`'s
+/// `assert(Value > 0)` / `assert(isPowerOf2_64(Value))`, `MaybeAlign`'s
+/// `assert(Value == 0 || isPowerOf2_64(Value))`, and
+/// `AttrBuilder::addStackAlignmentAttr`'s `assert(*Align <= 0x100)`.
+///
+/// llvmkit forbids runtime panics in production paths, so each is ported as a
+/// diagnostic: the two `align =` texts are `parseOptionalAlignment`'s
+/// verbatim, the non-power-of-two `alignstack =` text is
+/// `parseOptionalStackAlignment`'s verbatim, and the `0x100` cap carries
+/// llvmkit's own wording because upstream states it only as an assertion
+/// string. Against an assertions-enabled `llvm-as` the accept/reject set is
+/// identical; against a release one, where the asserts are compiled out, this
+/// is deliberate hardening. `docs/divergences.md` carried that as a
+/// rejects-valid row while the site's own comment claimed, wrongly, that it was
+/// never accept/reject; both are fixed.
+///
+/// No upstream fixture pins any of them: `grep -ral 'alignstack = \|align = '
+/// test/Assembler test/Verifier` over the vendored tree matches only three
+/// `alloca`-addrspace files, none of them an attribute group. The asserts are
+/// the anchor.
+///
+/// `alignment_value_checks_match_upstream_text` above covers the *inline*
+/// spellings (`align 3` on a parameter, `alignstack(3)` on a header). The group
+/// spellings and the `0x100` cap had nothing behind them at all, which is how
+/// the cap stayed unported.
+#[test]
+fn attribute_group_alignment_asserts_are_ported_as_diagnostics() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("an alignment upstream asserts on is rejected")
+            .to_string()
+    }
+    fn group(body: &str) -> String {
+        format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {body} }}\n")
+    }
+
+    // `Align(Value)`: `assert(Value > 0)` and `assert(isPowerOf2_64(Value))`
+    // share one llvmkit text, because `parseOptionalAlignment` does too.
+    assert_eq!(
+        parse_err(group("align = 0").as_str()),
+        "alignment is not a power of two"
+    );
+    assert_eq!(
+        parse_err(group("align = 3").as_str()),
+        "alignment is not a power of two"
+    );
+    // `MaybeAlign(uint64_t)` makes zero well defined — it yields `nullopt` and
+    // `addStackAlignmentAttr` adds nothing, which
+    // `attribute_group_diagnostics_match_upstream_text` already pins as an
+    // empty group — while a non-power-of-two asserts.
+    assert_eq!(
+        parse_err(group("alignstack = 3").as_str()),
+        "stack alignment is not a power of two"
+    );
+    // `assert(*Align <= 0x100)`, which both spellings reach.
+    assert_eq!(
+        parse_err(group("alignstack = 512").as_str()),
+        "stack alignment is too large"
+    );
+    assert_eq!(
+        parse_err("define void @f() alignstack(512) { ret void }\n"),
+        "stack alignment is too large"
+    );
+    // The cap is inclusive.
+    parse_dynamic(group("alignstack = 256").as_str()).expect("0x100 itself is legal");
 }
 
 /// `parseUnnamedAttrGrp` and its loop's own diagnostics.

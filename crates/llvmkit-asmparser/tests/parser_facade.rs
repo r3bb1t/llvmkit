@@ -315,22 +315,21 @@ fn parser_context_records_several_functions_on_one_line() {
 /// here. The fixture is checked in verbatim; its six `CHECK` lines are
 /// asserted below in its own order.
 ///
-/// **Two of the six lines diverge and are asserted as they actually are, not
-/// trimmed.** Both are recorded in `docs/divergences.md`.
+/// **One of the six lines diverges and is asserted as it actually is, not
+/// trimmed**, and it is recorded in `docs/divergences.md`: `@fn1`'s
+/// declaration prints its parameter *names*.
+/// `AssemblyWriter::printFunction` branches on `F->isDeclaration()` and prints
+/// only the types there; llvmkit's `fmt_function_header` prints names
+/// unconditionally, so the line reads `declare void @fn1(i32 %0)`. Unrelated
+/// to this fixture and pre-existing — `crates/llvmkit-ir/tests/
+/// builder_call.rs::…` already pins `declare float @llvm.acos.f32(float %0)`.
 ///
-/// 1. `@fn2`'s three call sites disagree on the signature, so upstream's
-///    `GetCommonFunctionType` answers null and it emits
-///    `@fn2 = external global i8`. llvmkit's `parse_direct_callee` has already
-///    built a real `declare void @fn2(i32)` at the *first* call site — it does
-///    not route a direct callee through a `ForwardRefVals` placeholder the way
-///    `getGlobalVal` does — and llvmkit-ir has no function-removal or
-///    function-RAUW API to undo it with.
-/// 2. `@fn1`'s declaration prints its parameter *names*.
-///    `AssemblyWriter::printFunction` branches on `F->isDeclaration()` and
-///    prints only the types there; llvmkit's `fmt_function_header` prints
-///    names unconditionally, so the line reads `declare void @fn1(i32 %0)`.
-///    Unrelated to this fixture and pre-existing — `crates/llvmkit-ir/tests/
-///    builder_call.rs::…` already pins `declare float @llvm.acos.f32(float %0)`.
+/// The `@fn2` line used to diverge too: llvmkit built a real `declare void
+/// @fn2(i32)` at the *first* call site instead of routing a direct callee
+/// through a `ForwardRefVals` placeholder, so `GetCommonFunctionType` never
+/// got the chance to answer null for its three disagreeing call sites. The
+/// callee position goes through `global_forward_ref` now, so the `i8` fallback
+/// is reached.
 #[test]
 fn incomplete_ir_declarations() {
     let config = ParserConfig {
@@ -341,14 +340,16 @@ fn incomplete_ir_declarations() {
         .expect("incomplete IR parses");
     let printed = format!("{module}");
     // `@g1`..`@g4` are never callees — an argument, two pointer operands and a
-    // return operand — so each takes upstream's dummy `i8` fallback.
+    // return operand — so each takes upstream's dummy `i8` fallback, and so
+    // does `@fn2`, whose three call sites disagree.
     for expected in [
+        "@fn2 = external global i8",
         "@g1 = external global i8",
         "@g2 = external global i8",
         "@g3 = external global i8",
         "@g4 = external global i8",
         // `@fn1` is called twice at one signature, which is the whole point of
-        // `GetCommonFunctionType`. Divergence 2 supplies the ` %0`.
+        // `GetCommonFunctionType`. The printer divergence supplies the ` %0`.
         "declare void @fn1(i32 %0)",
     ] {
         assert!(
@@ -356,12 +357,6 @@ fn incomplete_ir_declarations() {
             "missing {expected} in:\n{printed}"
         );
     }
-    // Divergence 1, pinned so a future fix has to update this test.
-    assert!(
-        !printed.contains("@fn2 = external global i8"),
-        "llvmkit is not expected to reach upstream's @fn2 fallback yet"
-    );
-    assert!(printed.contains("declare void @fn2(i32 %0)"), "{printed}");
 }
 
 /// llvmkit-specific: the same fixture under the **default** configuration,
@@ -371,15 +366,17 @@ fn incomplete_ir_declarations() {
 /// so the closest anchor is `LLParser::validateEndOfModule`'s
 /// `use of undefined value '@…'` guard.
 ///
-/// The reported name is `@g1`, not upstream's `@fn1`: `ForwardRefVals` is one
-/// sorted `std::map` there, while llvmkit splits value references from direct
-/// callees across two maps checked in that order. Recorded in
-/// `docs/divergences.md`.
+/// The reported name is `@fn1`, upstream's: `validateEndOfModule` reports
+/// `ForwardRefVals.begin()`, which for a sorted `std::map` is the
+/// lexicographically first leftover, and llvmkit's `forward_ref_globals` is a
+/// `BTreeMap` holding every `@`-reference — callee or not — for the same
+/// reason. It used to answer `@g1`, because a direct callee lived in a second
+/// map swept afterwards.
 #[test]
 fn incomplete_ir_is_rejected_by_default() {
     let err = parse_dynamic(INCOMPLETE_IR_DECLARATIONS)
         .expect_err("incomplete IR is refused without the option");
-    assert_eq!(err.to_string(), "use of undefined value '@g1'");
+    assert_eq!(err.to_string(), "use of undefined value '@fn1'");
 }
 
 /// llvmkit-specific: [`ParserConfig::data_layout_callback`] replaces the

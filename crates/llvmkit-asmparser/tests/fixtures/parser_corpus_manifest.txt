@@ -73,6 +73,7 @@ upstream/assembler-corpus/2003-04-15-ConstantInitAssertion.ll | test/Assembler/2
 upstream/assembler-corpus/2003-04-25-UnresolvedGlobalReference.ll | test/Assembler/2003-04-25-UnresolvedGlobalReference.ll | status=pass
 upstream/assembler-corpus/2003-05-03-BytecodeReaderProblem.ll | test/Assembler/2003-05-03-BytecodeReaderProblem.ll | status=pass
 upstream/assembler-corpus/2003-05-12-MinIntProblem.ll | test/Assembler/2003-05-12-MinIntProblem.ll | status=pass
+upstream/assembler-corpus/2003-05-15-AssemblerProblem.ll | test/Assembler/2003-05-15-AssemblerProblem.ll | status=pass
 upstream/assembler-corpus/2003-05-15-SwitchBug.ll | test/Assembler/2003-05-15-SwitchBug.ll | status=pass
 upstream/assembler-corpus/2003-05-21-ConstantShiftExpr.ll | test/Assembler/2003-05-21-ConstantShiftExpr.ll | status=pass
 upstream/assembler-corpus/2003-05-21-EmptyStructTest.ll | test/Assembler/2003-05-21-EmptyStructTest.ll | status=pass
@@ -464,7 +465,9 @@ upstream/assembler-corpus/non-global-value-max-name-size-2.ll | test/Assembler/n
 upstream/assembler-corpus/numbered-values.ll | test/Assembler/numbered-values.ll | status=pass
 upstream/assembler-corpus/opaque-ptr-cmpxchg.ll | test/Assembler/opaque-ptr-cmpxchg.ll | status=reject | error=compare value and new value type do not match
 upstream/assembler-corpus/opaque-ptr-invalid-forward-ref-2.ll | test/Assembler/opaque-ptr-invalid-forward-ref-2.ll | status=reject | error=forward reference and definition of global have different types
+upstream/assembler-corpus/opaque-ptr-invalid-forward-ref.ll | test/Assembler/opaque-ptr-invalid-forward-ref.ll | status=reject | error=invalid forward reference to function 'f' with wrong type: expected 'ptr' but was 'ptr addrspace(1)'
 upstream/assembler-corpus/opaque-ptr-struct-types.ll | test/Assembler/opaque-ptr-struct-types.ll | status=pass
+upstream/assembler-corpus/opaque-ptr.ll | test/Assembler/opaque-ptr.ll | status=pass
 upstream/assembler-corpus/phi-first-class-type.ll | test/Assembler/phi-first-class-type.ll | status=reject | error=phi node must have first class type
 upstream/assembler-corpus/pr119818.ll | test/Assembler/pr119818.ll | status=pass
 upstream/assembler-corpus/private-hidden-alias.ll | test/Assembler/private-hidden-alias.ll | status=reject | error=symbol with local linkage must have default visibility

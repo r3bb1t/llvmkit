@@ -19,6 +19,78 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — a forward-referenced callee is an untyped placeholder, and the function-header attribute list has no lookahead
+
+- **A call may forward-reference a function whose later `declare` / `define`
+  disagrees with it.** `LLParser::getGlobalVal` mints an *untyped* stand-in for
+  a forward reference — `createGlobalFwdRef`'s `i8` `GlobalVariable` with
+  `ExternalWeakLinkage`, whose only meaningful property is the demanded
+  pointer's address space — and `parseFunctionHeader` compares only
+  `FwdFn->getType() != PFT` before RAUW-ing it with the real `Function`. The
+  signature is never compared, there or afterwards: for a non-intrinsic callee
+  no `Verifier` check relates the call site's `FunctionType` to the callee's.
+
+  llvmkit's `resolve_direct_callee` instead built a real `Function` at the
+  *call site's* signature, which no later header could re-type, so `declare` /
+  `define` rejected the reuse with two texts upstream never prints —
+  `forward function declaration with matching signature` and
+  `forward function definition with matching signature`. Both are gone. The
+  callee position now goes through the same `global_forward_ref` an ordinary
+  `@`-operand takes, and `claim_function_forward_ref` is a port of
+  `parseFunctionHeader`'s `if (!FunctionName.empty()) { … } else { … }`
+  block, carrying upstream's two per-site texts verbatim:
+  `invalid forward reference to function '<n>' with wrong type: expected 'T'
+  but was 'U'` and
+  `type of definition and forward reference of '@N' disagree: …`.
+  `forward_function_decls` and `validate_forward_function_decls` are deleted.
+
+  Four further behaviours follow from the one model change.
+  A **numbered** forward-referenced callee (`call void @0()` above
+  `define void @0()`) resolves instead of answering `use of undefined value`.
+  Under `-allow-incomplete-ir`, `GetCommonFunctionType` finally sees callee
+  uses, so a name whose call sites disagree takes upstream's `i8` fallback
+  rather than keeping the first call's signature. The leftover reported when
+  the option is off is upstream's — the lexicographically first name in the one
+  sorted map — and it always says `value`, never `global`. And a header no
+  longer re-uses an existing `Function` at all: it always creates a fresh one,
+  as `Function::Create` does.
+
+  Upstream fixtures that now pass, each a corpus manifest row:
+  `test/Assembler/2003-05-15-AssemblerProblem.ll`,
+  `test/Assembler/opaque-ptr.ll`, and
+  `test/Assembler/opaque-ptr-invalid-forward-ref.ll` — the last vendored since
+  W8 and wired to nothing until now.
+
+- **A `callbr` may take a non-function callee, and the verifier rejects it.**
+  `IrBuilder::indirect_callbr_with_config` is new: the D3 dyn form of
+  `callbr_with_config`, taking a pointer callee and an explicit call-site
+  function type, mirroring `indirect_invoke_dyn_with_config`. `parse_callbr`
+  used to reject an indirect callee outright, because no builder entry point
+  could express one — which also left `check_callbr`'s
+  `Callbr: indirect function / invalid signature` `Check` unreachable from any
+  `.ll` text. Both halves of `test/Verifier/callbr-intrinsic.ll` now answer from
+  the verifier.
+
+- **The function-header attribute list is entered unconditionally.**
+  `parse_optional_function_header_attrs` calls
+  `parse_fn_attribute_value_pairs` once and lets its `_ => break` arm end the
+  list, exactly as `parseFunctionHeader` enters `parseFnAttributeValuePairs` as
+  one term of its `||` chain. The hand-maintained `keyword_starts_attribute` /
+  `is_attr_start` lookahead is deleted; a keyword missing from such a predicate
+  is not rejected, it makes the whole list invisible. The surrounding `while`
+  loop is gone with it — re-entering the loop restarted the `legacy_memory`
+  accumulator that upstream intersects across the whole list.
+
+- **`alignstack` is capped at `0x100`, as `AttrBuilder::addStackAlignmentAttr`
+  asserts.** Both spellings reach that assert upstream, and llvmkit ported the
+  neighbouring `Align` / `MaybeAlign` assertions as diagnostics while leaving
+  this one unported, so `alignstack(512)` was accepted. It now reports
+  `stack alignment is too large` — llvmkit's own wording, because upstream
+  states this one only as an assertion string. The site's comment claiming
+  these checks were "a deliberate divergence in *diagnostic presence*, never in
+  accept/reject", and citing a `docs/future-work.md` record that did not exist,
+  is replaced by an accurate one.
+
 ### Fixed — three rejects-valid divergences: the self-typed aliasee, `parseUInt64`, the empty phi
 
 - **A constant expression types itself, so a self-typed aliasee parses.**

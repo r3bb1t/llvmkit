@@ -1,9 +1,8 @@
-; llvmkit-specific STRICTNESS lock. Upstream PARSES an indirect callbr
-; (llvm/lib/AsmParser/LLParser.cpp::parseCallBr shares parseCall's callee
-; path) but rejects it in the verifier:
-; llvm/lib/IR/Verifier.cpp::visitCallBrInst requires a direct callee for
-; non-asm callbr ("Callbr: indirect function / invalid signature").
-; llvmkit rejects at parse time instead.
+; Crafted against llvm/lib/AsmParser/LLParser.cpp::parseCallBr, which shares
+; parseCall's callee path and stores whatever `Value *` it resolves to, so an
+; indirect callbr PARSES; llvm/lib/IR/Verifier.cpp::visitCallBrInst is what
+; rejects it, with "Callbr: indirect function / invalid signature".
+; LLVM 22.1.4 ships no lit fixture for the parse half on its own.
 
 define void @caller(ptr %fp) {
 entry:

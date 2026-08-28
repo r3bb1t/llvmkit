@@ -273,7 +273,6 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// Global-object attachments are deliberately not recorded — upstream
     /// pushes only from the instruction routine.
     insts_with_tbaa_tag: Vec<llvmkit_ir::InstructionView<'ctx, B>>,
-    forward_function_decls: HashMap<String, Span>,
     /// `@name` referenced before it was defined, holding the placeholder
     /// minted at the first use. Mirrors `LLParser::ForwardRefVals`; ordered
     /// because `validateEndOfModule` reports `begin()`.
@@ -675,8 +674,9 @@ impl<'ctx, B: ModuleBrand> ParsedCallee<'ctx, B> {
     /// through its out-parameter. Upstream's switch over `ValID::Kind` ends in
     /// a single erased value and every call/invoke/callbr construction site
     /// downstream sees only that; llvmkit keeps the variants because
-    /// `parse_callbr` still needs the directness distinction
-    /// (`docs/divergences.md` entry 27), so the collapse is spelled here.
+    /// `parse_invoke` and `parse_callbr` each still reach a *different*
+    /// builder entry point per callee shape (`docs/future-work.md`), so the
+    /// collapse is spelled here.
     fn as_erased(&self) -> llvmkit_ir::Value<'ctx, B> {
         match self {
             ParsedCallee::Function(f) => IsValue::as_erased(*f),
@@ -1402,7 +1402,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             deferred_alias_targets: Vec::new(),
             deferred_intrinsic_attribute_checks: Vec::new(),
             insts_with_tbaa_tag: Vec::new(),
-            forward_function_decls: HashMap::new(),
             forward_ref_comdats: BTreeMap::new(),
             forward_ref_globals: BTreeMap::new(),
             forward_ref_global_ids: BTreeMap::new(),
@@ -1679,7 +1678,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // own: its `NoCFIValue` wraps the placeholder directly and re-interns
         // itself when the sweep above RAUWs it.
         self.resolve_pending_no_cfi()?;
-        self.validate_forward_function_decls(config.allow_incomplete_ir)?;
         // `if (!ForwardRefMDNodes.empty())` — metadata is the *last* of the
         // leftovers, after every value one.
         for (slot, entry) in &self.metadata_slots {
@@ -2258,38 +2256,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         Ok(constant)
-    }
-
-    /// The half of upstream's `ForwardRefVals` sweep that llvmkit keeps in a
-    /// map of its own: a `@name` that was only ever seen as the *callee* of a
-    /// direct call.
-    ///
-    /// Upstream has no such map — `getGlobalVal` mints one placeholder for
-    /// every spelling of a forward reference — whereas llvmkit's
-    /// `parse_direct_callee` builds a real `declare` at the first call site's
-    /// signature and remembers the name here so a later `define` / `declare`
-    /// can claim it. Under `-allow-incomplete-ir` that declaration is exactly
-    /// what upstream would have synthesised for a name whose call sites all
-    /// agree, so the entries are simply retired.
-    ///
-    /// **Divergence:** for a name whose call sites *disagree*, upstream's
-    /// `GetCommonFunctionType` answers null and it emits an `i8` global
-    /// instead. llvmkit has already built the function by then and has no way
-    /// to unbuild it, so the first call site's signature survives
-    /// (`docs/divergences.md` entry 15).
-    fn validate_forward_function_decls(&mut self, allow_incomplete_ir: bool) -> ParseResult<()> {
-        if allow_incomplete_ir {
-            self.forward_function_decls.clear();
-            return Ok(());
-        }
-        if let Some((name, loc)) = self.forward_function_decls.iter().next() {
-            return Err(ParseError::UndefinedSymbol {
-                kind: SymbolKind::Global,
-                id: SymbolId::Named(name.clone()),
-                loc: DiagLoc::span(*loc),
-            });
-        }
-        Ok(())
     }
 
     fn intrinsic_parse_error(&self, loc: Span, err: IrError) -> ParseError {
@@ -9052,6 +9018,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(loc, "global value as a pointer", e))
     }
 
+    /// The same narrowing for the stand-in `global_forward_ref` mints. It
+    /// cannot fail — `global_forward_ref` refuses a non-pointer `ty` up front
+    /// and builds the placeholder *at* that type — and is spelled as a checked
+    /// conversion only because `PointerValue`'s unchecked constructor is
+    /// private to `llvmkit-ir`.
+    fn constant_as_pointer(
+        &self,
+        loc: Span,
+        c: llvmkit_ir::Constant<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, B>> {
+        llvmkit_ir::PointerValue::try_from(c.as_erased())
+            .map_err(|e| self.builder_err_at(loc, "forward-referenced callee as a pointer", e))
+    }
+
     fn resolve_global_name_as_ref(&self, name: String) -> ParseResult<GlobalRef<'ctx, B>> {
         self.global_symbol_lookup(&name)
             .ok_or_else(|| ParseError::UndefinedSymbol {
@@ -9988,9 +9968,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// named value is `redefinition of function '@f'`.
     fn check_function_redefinition(&self, name: &str, loc: Span) -> ParseResult<()> {
         // An empty name is the `@N` / `@""` form, which upstream routes
-        // through `ForwardRefValIDs` instead; a name already registered as a
-        // forward reference is exactly the case that *may* be reused.
-        if name.is_empty() || self.forward_function_decls.contains_key(name) {
+        // through `ForwardRefValIDs` instead.
+        //
+        // The forward-reference case never reaches here at all: it is the
+        // `if (FRVI != ForwardRefVals.end())` arm of the same `else if` chain,
+        // handled by [`Self::claim_function_forward_ref`].
+        if name.is_empty() {
             return Ok(());
         }
         if self.module.function_dyn(name).is_some() {
@@ -10003,6 +9986,82 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.message_at(loc, format!("redefinition of function '@{name}'")));
         }
         Ok(())
+    }
+
+    /// `parseFunctionHeader`'s `if (!FunctionName.empty()) { … } else { … }`
+    /// block: the `else if` chain that decides whether this header *claims* a
+    /// pending forward-reference placeholder, and rejects a name already
+    /// taken. Returns upstream's `GlobalValue *FwdFn` — the placeholder the
+    /// caller RAUWs once the fresh `Function` exists.
+    ///
+    /// Both branches compare `FwdFn->getType() != PFT`, which after opaque
+    /// pointers is nothing but the address space, and neither looks at the
+    /// signature: a call site's arguments never constrain the definition.
+    /// llvmkit used to *reuse* a function whose signature happened to match
+    /// and reject the header otherwise, because its forward-referenced callee
+    /// was a real `Function` built at the call site's type.
+    ///
+    /// The two messages differ in wording **and** in anchor: the named form is
+    /// `error(FRVI->second.second, …)`, on the reference that created the
+    /// placeholder, while the numbered form is `error(NameLoc, …)`, on the
+    /// header's own `@N`.
+    fn claim_function_forward_ref(
+        &mut self,
+        name: &str,
+        name_id: &NameOrId,
+        address_space: u32,
+        name_loc: Span,
+    ) -> ParseResult<Option<ForwardRef<'ctx, B>>> {
+        // `PointerType *PFT = PointerType::get(Context, AddrSpace);`
+        let pft = self.module.ptr_type(address_space).as_type();
+        if !name.is_empty() {
+            let Some(entry) = self.forward_ref_globals.remove(name) else {
+                // `else if ((Fn = M->getFunction(FunctionName)))` / `else if
+                // (M->getNamedValue(FunctionName))`.
+                self.check_function_redefinition(name, name_loc)?;
+                return Ok(None);
+            };
+            let placeholder_ty = entry.placeholder.ty();
+            if placeholder_ty != pft {
+                return Err(self.message_at(
+                    entry.loc,
+                    format!(
+                        "invalid forward reference to function '{name}' with wrong type: \
+                         expected '{pft}' but was '{placeholder_ty}'"
+                    ),
+                ));
+            }
+            return Ok(Some(entry));
+        }
+        // The `@N` half.
+        //
+        // **Divergence:** `@""` — a name syntactically present but semantically
+        // missing — reaches this branch upstream too, where `FunctionNumber ==
+        // (unsigned)-1` is replaced by `NumberedVals.getNext()` so the header
+        // claims that slot. llvmkit lexes `@""` as an empty `GlobalVar` and
+        // carries it as `NameOrId::Name("")`, which takes no number at all, so
+        // the arm below never fires for it. That is the *unnamed global takes
+        // no slot* gap, catalogued as **G15** in `docs/fixture-coverage.md`
+        // with `test/Assembler/skip-value-numbers-globals.ll` behind it; it is
+        // not introduced here, and an empty name reached
+        // `check_function_redefinition`'s own early return before.
+        let NameOrId::Id(id) = name_id else {
+            return Ok(None);
+        };
+        let Some(entry) = self.forward_ref_global_ids.remove(id) else {
+            return Ok(None);
+        };
+        let placeholder_ty = entry.placeholder.ty();
+        if placeholder_ty != pft {
+            return Err(self.message_at(
+                name_loc,
+                format!(
+                    "type of definition and forward reference of '@{id}' disagree: \
+                     expected '{pft}' but was '{placeholder_ty}'"
+                ),
+            ));
+        }
+        Ok(Some(entry))
     }
 
     /// `parseFunctionHeader`'s "Verify that the linkage is ok" switch.
@@ -10244,78 +10303,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return None,
         })
     }
-    /// Every keyword `parse_fn_attribute_value_pairs` has an arm for.
+    /// `parseFunctionHeader`'s `parseFnAttributeValuePairs(FuncAttrs,
+    /// FwdRefAttrGrps, false, BuiltinLoc)` term: **one** call, entered
+    /// unconditionally, ended by `tokenToAttribute` answering
+    /// `Attribute::None` on the first token that is not an attribute.
     ///
-    /// Upstream needs no such predicate: `parseFunctionHeader` enters the
-    /// attribute list unconditionally and lets `tokenToAttribute` end it.
-    /// llvmkit gates the header path on a lookahead, which means a keyword
-    /// missing from *this* list is not rejected — the list is never entered,
-    /// and `define void @f() uwtable {` fails with `expected '{' to open
-    /// function body`. It has to name every keyword the loop's bespoke arms
-    /// match, because those never reach `attr_kind_for_keyword`.
-    fn keyword_starts_attribute(keyword: Keyword) -> bool {
-        if Self::attr_kind_for_keyword(keyword).is_some()
-            || Self::legacy_memory_effects(keyword).is_some()
-        {
-            return true;
-        }
-        matches!(
-            keyword,
-            Keyword::Align
-                | Keyword::Alignstack
-                | Keyword::Memory
-                | Keyword::Nofpclass
-                | Keyword::Uwtable
-                | Keyword::Dereferenceable
-                | Keyword::DereferenceableOrNull
-                | Keyword::Byval
-                | Keyword::Byref
-                | Keyword::Inalloca
-                | Keyword::Sret
-                | Keyword::Preallocated
-                | Keyword::Elementtype
-                | Keyword::Captures
-                | Keyword::Range
-                | Keyword::Initializes
-                | Keyword::Allocsize
-                | Keyword::VscaleRange
-                | Keyword::Allockind
-        )
-    }
-
-    fn is_attr_start(&self) -> bool {
-        match self.peek() {
-            Token::AttrGrpId(_) | Token::StringConstant(_) => true,
-            Token::Kw(keyword) => Self::keyword_starts_attribute(*keyword),
-            _ => false,
-        }
-    }
-
+    /// llvmkit used to gate this on `is_attr_start`, a hand-maintained second
+    /// copy of the loop's arm list, and to call the loop repeatedly until the
+    /// predicate went false. Both are gone: a keyword missing from a lookahead
+    /// is not rejected, it makes the whole list invisible — `define void @f()
+    /// uwtable {` failed with `expected '{' to open function body` for exactly
+    /// that reason — and a re-entered loop restarts
+    /// `parse_fn_attribute_value_pairs`'s `legacy_memory` accumulator, which
+    /// upstream intersects across the *whole* list.
+    ///
+    /// `align N` is parsed here as an `AttributeList` entry, exactly as
+    /// upstream does, and moved to the alignment field by
+    /// `parse_optional_function_suffix`. llvmkit used to exclude it from this
+    /// loop and leave it to the suffix, which is invisible while the suffix is
+    /// order-free but breaks `align 8 section "x"` once the clause chain is a
+    /// fixed sequence.
     fn parse_optional_function_header_attrs(
         &mut self,
         attrs: &mut AttributeStorage,
     ) -> ParseResult<ParsedAttrList> {
-        let mut builtin_loc = None;
-        let mut groups = Vec::new();
-        // `align N` is parsed here as an `AttributeList` entry, exactly as
-        // upstream does, and moved to the alignment field by
-        // `parse_optional_function_suffix`. llvmkit used to exclude it from
-        // this loop and leave it to the suffix, which is invisible while the
-        // suffix is order-free but breaks `align 8 section "x"` once the
-        // clause chain is a fixed sequence.
-        while self.is_attr_start() {
-            let parsed = self.parse_fn_attribute_value_pairs(
-                attrs,
-                AttrIndex::Function,
-                AttrListContext::FunctionHeader,
-            )?;
-            groups.extend(parsed.groups);
-            builtin_loc = builtin_loc.or(parsed.builtin_loc);
-        }
-        Ok(ParsedAttrList {
-            groups,
-            builtin_loc,
-        })
+        self.parse_fn_attribute_value_pairs(
+            attrs,
+            AttrIndex::Function,
+            AttrListContext::FunctionHeader,
+        )
     }
 
     /// The fixed clause chain `parseFunctionHeader` runs after the argument
@@ -10461,13 +10477,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 Token::Kw(Keyword::Align) => {
                     // Inside a group the grammar is `align = N`, read with
-                    // `parseUInt32` and given **no** validation at all —
-                    // upstream reaches `Align(Value)`, whose rejections are
-                    // C++ asserts. llvmkit raises no runtime panics, so it
-                    // reuses `parseOptionalAlignment`'s wording for the two
-                    // values that would assert; recorded in
-                    // `docs/future-work.md` as a deliberate divergence in
-                    // *diagnostic presence*, never in accept/reject.
+                    // `parseUInt32` and given no `error()` at all: upstream's
+                    // `parseEnumAttribute` case `Attribute::Alignment` hands the
+                    // value straight to `Align(Value)`, whose `assert(Value >
+                    // 0)` / `assert(isPowerOf2_64(Value))` are the only
+                    // rejections, and `AttrBuilder::addAlignmentAttr` adds
+                    // `assert(*Align <= Value::MaximumAlignment)`.
+                    //
+                    // llvmkit raises no runtime panics in production paths, so
+                    // an assert is ported as a diagnostic, not as a crash:
+                    // `check_alignment_value` reuses `parseOptionalAlignment`'s
+                    // two `error()` texts for the same three values. Against an
+                    // assertions-enabled `llvm-as` that is the same accept /
+                    // reject set with a diagnostic instead of an abort; against
+                    // a release one, where the asserts are compiled out and
+                    // `align = 3` is silently rounded to 2 by `Log2_64`, it is
+                    // deliberate hardening. `docs/divergences.md` carried it
+                    // as a rejects-valid row until this comment said so; ids in
+                    // that file are re-used, so the row is named, not numbered.
                     let value = if context.in_attr_group() {
                         self.bump()?;
                         self.expect_punct(PunctKind::Equal, "'=' here")?;
@@ -10489,9 +10516,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.expect_punct(PunctKind::Equal, "'=' here")?;
                         let value_loc = self.loc();
                         let value = u64::from(self.parse_uint32()?);
-                        // Same treatment as `align =` above: upstream's
-                        // `MaybeAlign(unsigned)` asserts on a non-power-of-two.
-                        // A zero is well defined and adds no attribute.
+                        // The group spelling reaches `MaybeAlign(uint64_t)`,
+                        // whose `assert(Value == 0 || isPowerOf2_64(Value))`
+                        // makes zero *well defined*: it yields `nullopt` and
+                        // `addStackAlignmentAttr` returns without adding
+                        // anything. Upstream's `parseOptionalStackAlignment`,
+                        // reached only by the `alignstack(N)` spelling below,
+                        // is the one that rejects zero outright.
                         if value == 0 {
                             continue;
                         }
@@ -10502,15 +10533,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         }
                         value
                     } else {
-                        let value = self.parse_stack_alignment_value()?;
-                        if value == 0 {
-                            // `addStackAlignmentAttr(0)` builds a `MaybeAlign`
-                            // holding nothing, so no attribute is added — and
-                            // a group containing only it is empty.
-                            continue;
-                        }
-                        value
+                        // `parseOptionalStackAlignment` runs
+                        // `!isPowerOf2_32(Alignment)`, which is false for zero,
+                        // so the `alignstack(0)` spelling never reaches the
+                        // `MaybeAlign` arm above.
+                        self.parse_stack_alignment_value()?
                     };
+                    // `assert(*Align <= 0x100 && "Alignment too large.")` in
+                    // `AttrBuilder::addStackAlignmentAttr`, which both spellings
+                    // reach. Ported as a diagnostic for the reason given on the
+                    // `align` arm above, anchored — like every other position
+                    // diagnostic in this loop — at the attribute's own keyword;
+                    // the text is llvmkit's own, because upstream states this
+                    // one only as an assertion string.
+                    if value > 0x100 {
+                        return Err(self.message_at(attr_loc, "stack alignment is too large"));
+                    }
                     let attr = Attribute::<B>::int(AttrKind::StackAlignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
@@ -11451,68 +11489,40 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 return Ok(());
             }
         }
-        let existing_by_id = match &name_id {
-            NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
-                GlobalRef::Function(f) => Some(*f),
-                _ => None,
-            }),
-            NameOrId::Name(_) => None,
-        };
-        self.check_function_redefinition(&name, decl_loc)?;
-        let existing_by_name = (!name.is_empty())
-            .then(|| self.module.function_dyn(&name))
-            .flatten()
-            .map(|id| self.module.view(id));
-        let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
-            if existing.signature() != fn_ty || existing.basic_blocks().len() != 0 {
-                return Err(ParseError::Expected {
-                    expected: "forward function declaration with matching signature".into(),
-                    loc: DiagLoc::span(decl_loc),
-                });
-            }
-            existing.set_linkage(self.module, linkage);
-            existing.set_visibility(self.module, visibility);
-            existing.set_dll_storage_class(self.module, dll_storage_class);
-            existing.set_dso_locality(self.module, dso_locality);
-            existing.set_calling_conv(self.module, calling_conv);
-            existing.set_unnamed_addr(self.module, unnamed_addr);
-            existing.set_address_space(self.module, address_space);
-            if !name.is_empty() {
-                self.forward_function_decls.remove(&name);
-            }
-            existing.set_attributes(self.module, attrs);
-            existing
-        } else {
-            let f = self
-                .module
-                .add_function_dyn(&name, fn_ty, linkage)
-                .map_err(|e| ParseError::Expected {
-                    expected: format!("valid function declaration: {e}").into(),
+        let forward_ref =
+            self.claim_function_forward_ref(&name, &name_id, address_space, decl_loc)?;
+        // `Fn = Function::Create(FT, ExternalLinkage, AddrSpace, FunctionName,
+        // M);` — unconditional. A header never re-uses an existing `Function`;
+        // the only thing a pending forward reference contributes is the
+        // placeholder RAUW'd below.
+        let f = self
+            .module
+            .add_function_dyn(&name, fn_ty, linkage)
+            .map_err(|e| ParseError::Expected {
+                expected: format!("valid function declaration: {e}").into(),
+                loc: DiagLoc::span(decl_loc),
+            })?;
+        let f = self.module.view(f);
+        f.set_visibility(self.module, visibility);
+        f.set_dll_storage_class(self.module, dll_storage_class);
+        f.set_dso_locality(self.module, dso_locality);
+        f.set_calling_conv(self.module, calling_conv);
+        f.set_unnamed_addr(self.module, unnamed_addr);
+        f.set_address_space(self.module, address_space);
+        f.set_attributes(self.module, attrs);
+        for (slot, name) in param_names.into_iter().enumerate() {
+            if let Some(name) = name {
+                let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
+                    expected: "parameter slot fits in u32".into(),
                     loc: DiagLoc::span(decl_loc),
                 })?;
-            let f = self.module.view(f);
-            f.set_visibility(self.module, visibility);
-            f.set_dll_storage_class(self.module, dll_storage_class);
-            f.set_dso_locality(self.module, dso_locality);
-            f.set_calling_conv(self.module, calling_conv);
-            f.set_unnamed_addr(self.module, unnamed_addr);
-            f.set_address_space(self.module, address_space);
-            f.set_attributes(self.module, attrs);
-            for (slot, name) in param_names.into_iter().enumerate() {
-                if let Some(name) = name {
-                    let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
-                        expected: "parameter slot fits in u32".into(),
-                        loc: DiagLoc::span(decl_loc),
-                    })?;
-                    let arg = f.param(slot).map_err(|e| ParseError::Expected {
-                        expected: format!("function parameter slot {slot}: {e}").into(),
-                        loc: DiagLoc::span(decl_loc),
-                    })?;
-                    arg.set_name(self.module, &name);
-                }
+                let arg = f.param(slot).map_err(|e| ParseError::Expected {
+                    expected: format!("function parameter slot {slot}: {e}").into(),
+                    loc: DiagLoc::span(decl_loc),
+                })?;
+                arg.set_name(self.module, &name);
             }
-            f
-        };
+        }
         for group in suffix.attr_groups {
             f.add_function_attr_group(self.module, group);
         }
@@ -11565,6 +11575,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     });
                 }
             }
+        }
+        // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn); FwdFn->eraseFromParent(); }`
+        // — the last statement of `parseFunctionHeader`'s common tail, after
+        // every setter and the argument-name loop, and before `parseDeclare`
+        // resumes with the attachments it read ahead of the header.
+        if let Some(entry) = forward_ref {
+            Self::resolve_global_forward_ref(entry, f.as_global_constant_ptr())?;
         }
         // `parseDeclare` applies the attachments it read *before* the header,
         // in the order they were written. There is no trailing form: a
@@ -11679,55 +11696,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let function_metadata = self.parse_optional_function_metadata()?;
 
         let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args);
-        let existing_by_id = match &name_id {
-            NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
-                GlobalRef::Function(f) => Some(*f),
-                _ => None,
-            }),
-            NameOrId::Name(_) => None,
-        };
-        self.check_function_redefinition(&name, decl_loc)?;
-        let existing_by_name = (!name.is_empty())
-            .then(|| self.module.function_dyn(&name))
-            .flatten()
-            .map(|id| self.module.view(id));
-        let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
-            if existing.signature() != fn_ty || existing.basic_blocks().any(|bb| !bb.is_empty()) {
-                return Err(ParseError::Expected {
-                    expected: "forward function definition with matching signature".into(),
-                    loc: DiagLoc::span(decl_loc),
-                });
-            }
-            existing.set_linkage(self.module, linkage);
-            existing.set_visibility(self.module, visibility);
-            existing.set_dll_storage_class(self.module, dll_storage_class);
-            existing.set_dso_locality(self.module, dso_locality);
-            existing.set_calling_conv(self.module, calling_conv);
-            existing.set_unnamed_addr(self.module, unnamed_addr);
-            existing.set_address_space(self.module, address_space);
-            existing.set_attributes(self.module, attrs);
-            if !name.is_empty() {
-                self.forward_function_decls.remove(&name);
-            }
-            existing
-        } else {
-            let f = self
-                .module
-                .add_function_dyn(&name, fn_ty, linkage)
-                .map_err(|e| ParseError::Expected {
-                    expected: format!("valid function definition: {e}").into(),
-                    loc: DiagLoc::span(decl_loc),
-                })?;
-            let f = self.module.view(f);
-            f.set_visibility(self.module, visibility);
-            f.set_dll_storage_class(self.module, dll_storage_class);
-            f.set_dso_locality(self.module, dso_locality);
-            f.set_calling_conv(self.module, calling_conv);
-            f.set_unnamed_addr(self.module, unnamed_addr);
-            f.set_address_space(self.module, address_space);
-            f.set_attributes(self.module, attrs);
-            f
-        };
+        let forward_ref =
+            self.claim_function_forward_ref(&name, &name_id, address_space, decl_loc)?;
+        // `Fn = Function::Create(FT, ExternalLinkage, AddrSpace, FunctionName,
+        // M);` — unconditional, exactly as in `parse_declare`; `IsDefine` does
+        // not reach this far into `parseFunctionHeader`.
+        let f = self
+            .module
+            .add_function_dyn(&name, fn_ty, linkage)
+            .map_err(|e| ParseError::Expected {
+                expected: format!("valid function definition: {e}").into(),
+                loc: DiagLoc::span(decl_loc),
+            })?;
+        let f = self.module.view(f);
+        f.set_visibility(self.module, visibility);
+        f.set_dll_storage_class(self.module, dll_storage_class);
+        f.set_dso_locality(self.module, dso_locality);
+        f.set_calling_conv(self.module, calling_conv);
+        f.set_unnamed_addr(self.module, unnamed_addr);
+        f.set_address_space(self.module, address_space);
+        f.set_attributes(self.module, attrs);
         for (slot, p) in param_names.iter().enumerate() {
             if let Some(n) = p {
                 let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
@@ -11793,6 +11781,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     });
                 }
             }
+        }
+        // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn); FwdFn->eraseFromParent(); }`
+        // — the last statement of `parseFunctionHeader`'s common tail, so a
+        // recursive call in the body below sees the real `Function`, not the
+        // placeholder.
+        if let Some(entry) = forward_ref {
+            Self::resolve_global_forward_ref(entry, f.as_global_constant_ptr())?;
         }
         // `parseDefine` reads the attachments *after* the header, through
         // `parseOptionalFunctionMetadata`, and before the body's `{`.
@@ -14537,13 +14532,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // hoist is `check_resolved_global_type`, shared with
                 // `resolve_global_name_as_value`, llvmkit's port of the same
                 // routine for an ordinary operand.
+                let ptr_ty = self.module.ptr_type(callee_addr_space).as_type();
                 if let Some(resolved) = self.global_symbol_lookup(&name) {
-                    self.check_resolved_global_type(
-                        loc,
-                        &format!("@{name}"),
-                        self.module.ptr_type(callee_addr_space).as_type(),
-                        resolved,
-                    )?;
+                    self.check_resolved_global_type(loc, &format!("@{name}"), ptr_ty, resolved)?;
                     let GlobalRef::Function(f) = resolved else {
                         // A non-function `GlobalValue` callee stays the bare
                         // pointer `getGlobalVal` handed back: the call's own
@@ -14619,29 +14610,32 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         loc: DiagLoc::span(loc),
                     }),
                     IntrinsicNameResolution::NonIntrinsic => {
-                        let f = self
-                            .module
-                            .add_function_dyn(&name, parsed_fn_ty, Linkage::External)
-                            .map_err(|e| ParseError::Expected {
-                                expected: format!("forward function declaration: {e}").into(),
-                                loc: DiagLoc::span(loc),
-                            })?;
-                        let f = self.module.view(f);
-                        // `createGlobalFwdRef(M, PTy)` mints the placeholder at
-                        // the *demanded* pointer type's address space, so a
-                        // later reference at a different one mismatches. Under
-                        // `target datalayout = "P42"` a `call void @f()` with no
-                        // `addrspace` keyword therefore forward-declares `@f` at
-                        // 42, not at 0.
+                        // `getGlobalVal`'s miss path, reached through the very
+                        // same `global_forward_ref` an ordinary `@`-operand
+                        // takes: `createGlobalFwdRef(M, PTy)` mints an
+                        // **untyped** stand-in — an `i8` `GlobalVariable` with
+                        // `ExternalWeakLinkage` whose only meaningful property
+                        // is `PTy->getAddressSpace()` — records it in
+                        // `ForwardRefVals`, and hands it back as a bare `ptr`.
                         //
-                        // llvmkit declares an unseen intrinsic here rather than
-                        // deferring to `validateEndOfModule`
-                        // (`docs/divergences.md` entry 37); that arm above uses
-                        // the same address space for the same reason — it is
-                        // standing in for `getGlobalVal`.
-                        f.set_address_space(self.module, callee_addr_space);
-                        self.forward_function_decls.entry(name).or_insert(loc);
-                        Ok(ParsedCallee::Function(f))
+                        // Nothing about the callee's eventual signature is
+                        // decided here: the call carries its own `FunctionType`
+                        // on the `CallBase`, and `parseFunctionHeader` RAUWs the
+                        // placeholder with the real `Function` when the
+                        // `declare` / `define` arrives. llvmkit used to mint a
+                        // real `Function` at the *call site's* signature
+                        // instead, which no later definition could re-type.
+                        //
+                        // The placeholder is minted at the *demanded* pointer
+                        // type's address space, so a later reference at a
+                        // different one mismatches. Under `target datalayout =
+                        // "P42"` a `call void @f()` with no `addrspace` keyword
+                        // therefore forward-references `@f` at 42, not at 0.
+                        let placeholder =
+                            self.global_forward_ref(Some(&name), None, ptr_ty, loc)?;
+                        Ok(ParsedCallee::Indirect(
+                            self.constant_as_pointer(loc, placeholder)?,
+                        ))
                     }
                 }
             }
@@ -14649,22 +14643,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `getGlobalVal(unsigned ID, Ty, Loc)` reads `NumberedVals`,
                 // which holds every `GlobalValue` kind, exactly as the named
                 // overload reads the symbol table.
-                let resolved = self.numbered_globals.get(id).copied().ok_or_else(|| {
-                    ParseError::UndefinedSymbol {
-                        kind: SymbolKind::Global,
-                        id: SymbolId::Numbered(id),
-                        loc: DiagLoc::span(loc),
-                    }
-                })?;
+                let ptr_ty = self.module.ptr_type(callee_addr_space).as_type();
+                let Some(resolved) = self.numbered_globals.get(id).copied() else {
+                    // …and, exactly as in the named overload, a miss is not an
+                    // error: `ForwardRefValIDs` gets a `createGlobalFwdRef`
+                    // placeholder that `parseFunctionHeader` RAUWs at the
+                    // definition. llvmkit used to answer `use of undefined
+                    // value` outright, so `call void @0()` above `define void
+                    // @0()` was rejected.
+                    let placeholder = self.global_forward_ref(None, Some(id), ptr_ty, loc)?;
+                    return Ok(ParsedCallee::Indirect(
+                        self.constant_as_pointer(loc, placeholder)?,
+                    ));
+                };
                 // `checkValidVariableType(Loc, "@" + Twine(ID), Ty, Val)`. See
                 // the named arm above for why this reduces to an address-space
                 // comparison.
-                self.check_resolved_global_type(
-                    loc,
-                    &format!("@{id}"),
-                    self.module.ptr_type(callee_addr_space).as_type(),
-                    resolved,
-                )?;
+                self.check_resolved_global_type(loc, &format!("@{id}"), ptr_ty, resolved)?;
                 match resolved {
                     GlobalRef::Function(f) => Ok(ParsedCallee::Function(f)),
                     other => Ok(ParsedCallee::Indirect(
@@ -15582,14 +15577,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .attrs(call_attrs),
                 )
                 .map_err(|e| self.builder_err("callbr", e))?,
-            ParsedCallee::Indirect(_) => {
-                // A non-inline-asm callbr with an indirect callee is invalid
-                // IR upstream too (`Verifier::visitCallBrInst` requires a
-                // direct callee — "Callbr: indirect function / invalid
-                // signature"), so rejecting it at parse reaches the same
-                // verdict.
-                return Err(self.expected("direct function callee for callbr"));
-            }
+            // `parseCallBr` stores whatever `Value *` its callee resolved to,
+            // exactly as `parseCall` does; a non-function operand — a function
+            // pointer, or a `@name` still standing on its forward-reference
+            // placeholder — is `Verifier::visitCallBrInst`'s to reject
+            // ("Callbr: indirect function / invalid signature"), not the
+            // parser's. llvmkit used to reject it here because its callbr
+            // builder had no indirect form.
+            ParsedCallee::Indirect(callee_ptr) => b
+                .indirect_callbr_with_config(
+                    callee_ptr,
+                    parsed_fn_ty,
+                    args,
+                    fallthrough,
+                    indirect,
+                    llvmkit_ir::CallSiteConfig::new(name)
+                        .calling_conv(calling_conv)
+                        .attrs(call_attrs),
+                )
+                .map_err(|e| self.builder_err("callbr", e))?,
         };
         let ret_is_void = matches!(
             parsed_fn_ty.return_type().into_type_enum(),

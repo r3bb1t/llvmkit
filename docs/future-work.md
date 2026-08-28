@@ -496,9 +496,7 @@ llvmkit's `resolve_direct_callee` returns `ParsedCallee::{Function, InlineAsm,
 Indirect}` and hands the fork to its caller. `parse_call` no longer forks — it
 calls `ParsedCallee::as_erased` and then one `IrBuilder::call_erased` — but
 `parse_invoke` and `parse_callbr` still `match` on the variant and dispatch
-per callee shape — to a separate builder entry point each, except
-`parse_callbr`'s `Indirect` arm, which calls no builder at all and rejects
-(entry 27).
+per callee shape, to a separate builder entry point each.
 
 The remaining fork has no observable behaviour of its own, so it is recorded
 here rather than in [`divergences.md`](divergences.md): every builder entry
@@ -513,11 +511,14 @@ into the one arm that used it.
 remaining `match`es. `ParsedCallee::as_erased` is the transitional shim and
 goes with it.
 
-**Why it is deferred:** `parse_callbr` needs the directness distinction to keep
-[`divergences.md`](divergences.md) entry 27's deliberate parse-time rejection
-of an indirect `callbr`. Collapsing `ParsedCallee` to a bare `Value` therefore
-requires closing entry 27 first — giving the callbr builder an indirect-callee
-form and moving the rejection into the verifier.
+**Why it is deferred:** the blocker named here — `parse_callbr` needing the
+directness distinction to keep a parse-time rejection of an indirect `callbr`
+— is gone: `IrBuilder::indirect_callbr_with_config` landed in W8 and the
+rejection moved to `Verifier::visitCallBrInst` where upstream has it. What is
+left is the mechanical half: each of the two remaining `match`es reaches three
+*different* builder entry points, and collapsing them means routing `invoke`
+and `callbr` through one erased-callee constructor apiece, the way
+`call_erased` already serves `parse_call`. That is its own commit.
 
 ## IR builder — three call-site builders accept a `call_site_type` override and ignore it (found 2026-08-21, divergence-closing task 6)
 
@@ -545,45 +546,6 @@ with `asm.function_type()` as the fallback for the two inline-asm forms.
 **Why it is deferred:** that is a behaviour change for any caller that was
 setting the field, on three entry points unrelated to the `call` construction
 the same commit rewrote. It wants its own commit rather than a rider.
-
-## Parser — a forward-referenced function is a *typed* `Function`, so a later definition may not change its signature (found 2026-08-14, LLParser parity W8)
-
-`declare`/`define` reuse a function that a call already forward-referenced,
-and reject the reuse when the signatures disagree:
-
-```
-forward function declaration with matching signature
-forward function definition with matching signature
-```
-
-Neither text is upstream's, and neither *rule* is upstream's either.
-`LLParser::getGlobalVal` mints an untyped placeholder — a `ptr`-typed
-`GlobalVariable` — so `parseFunctionHeader` compares only
-`FwdFn->getType() != PFT`, which after opaque pointers is nothing but the
-**address space**. The signature is not checked there at all; a call whose
-arguments disagree with the eventual definition is accepted by the parser and
-rejected by the Verifier (`Call parameter type does not match function
-signature!`).
-
-llvmkit cannot do that yet. `parse_direct_callee`'s forward-reference arm
-calls `Module::add_function_dyn` with the *call site's* signature, so the
-placeholder is a real `Function` with a real `FunctionType` — and there is no
-way to give it a different signature later. The check is therefore
-load-bearing for the representation, not merely for the diagnostic: dropping
-it would leave a call wired to a function whose type it does not match.
-
-Closing it needs the same shape W2 gave value forward references — an untyped
-placeholder plus RAUW at the definition — applied to the *callee* position, so
-that `parseFunctionHeader` can create a fresh `Function` and re-point the call.
-It also unblocks the three per-site texts W2.5 carried:
-`invalid forward reference to function '<n>' with wrong type: expected 'T' but
-was 'U'` (pinned by `test/Assembler/opaque-ptr-invalid-forward-ref.ll`, whose
-fixture is vendored and waiting), `type of definition and forward reference of
-'@N' disagree`, and the global/alias twins — all of which compare types at the
-*definition site*, where llvmkit still resolves in one end-of-module sweep.
-
-The two redefinition texts landed in W8 part 2 (`invalid redefinition of
-function 'f'`, `redefinition of function '@f'`); this is the remainder.
 
 ## An upstream calling-convention bug, reproduced (found 2026-08-13, LLParser parity W6)
 
@@ -673,28 +635,6 @@ Consequences, all real:
 Land it with the `validateEndOfModule` group-merge work (W13) rather than
 alone: the merge is what decides which attributes survive into the printed
 group, so doing the writer first would pin output the merge then changes.
-
-## Parser — the attribute-list lookahead has to be kept in sync by hand (found 2026-08-13, LLParser parity W5)
-
-`Parser::keyword_starts_attribute` (`ll_parser.rs`) exists only because
-llvmkit gates the *function-header* attribute list behind a lookahead, where
-upstream's `parseFunctionHeader` enters `parseFnAttributeValuePairs`
-unconditionally and lets `tokenToAttribute` end it.
-
-The gate is a second copy of the loop's arm list, and it was already wrong:
-`uwtable`, `allocsize`, `vscale_range`, `allockind`, `nofpclass`,
-`dereferenceable`, `captures`, `range`, `initializes` and the six type
-attributes were all missing from it, so `define void @f() uwtable {` — plain
-`clang` output — did not parse at all. Not "was rejected": the list was never
-entered, and the failure surfaced as `expected '{' to open function body`.
-Every existing test for those attributes used the `attributes #N = { … }`
-form, which enters the loop directly, so nothing caught it.
-
-`argument_carrying_attributes_parse_on_a_function_header` now covers the
-header path, but the structural fix is to delete the lookahead: enter the
-loop unconditionally and let the `_ => break` arm end it, exactly as upstream
-does. That needs `parse_optional_function_suffix`'s `align`-is-not-an-
-attribute carve-out to survive, which is why it was not done in W5.
 
 ## `ConstantRangeList` — three set operations not ported (decided 2026-08-12, LLParser parity W5)
 
@@ -2182,15 +2122,6 @@ unordered-atomic-load DCE + trivially-dead InstSimplify erase, and the
 folder-bypass item was already fixed on dev (`b06413e`). The items below remain
 deliberately deferred; each cites its upstream anchor.
 
-- **Indirect `callbr`** -- `callbr void %fp(...)` is invalid IR upstream
-  (`Verifier::visitCallBrInst` requires a direct callee for non-asm callbr:
-  "Callbr: indirect function / invalid signature"), so llvmkit rejects it at
-  parse, which reaches the same verdict. **The verifier half now exists**
-  (2026-08-27): `check_callbr` is a whole port of `Verifier::visitCallBrInst`
-  and carries that `Check`. It is unreachable until the builder gains an
-  indirect-callee `callbr`, which is the whole of what remains — see
-  `docs/divergences.md` entry 27. (Indirect *invoke* is supported -- it is
-  valid IR.)
 - **DCE removable calls / allocs** -- llvmkit still keeps `willReturn`+readnone
   calls, removable allocation-function calls, `free(null)`, and lifetime-only
   allocas that upstream `wouldInstructionBeTriviallyDead`

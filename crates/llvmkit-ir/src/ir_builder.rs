@@ -8670,6 +8670,73 @@ where
         ))
     }
 
+    /// `callbr` through a function-pointer **value**, with the call-site
+    /// function type supplied explicitly — the D3 dyn form of
+    /// [`callbr_with_config`](Self::callbr_with_config), and the twin of
+    /// [`indirect_invoke_dyn_with_config`](Self::indirect_invoke_dyn_with_config).
+    ///
+    /// Upstream has no separate entry point: `LLParser::parseCallBr` resolves
+    /// its callee through the same `convertValIDToValue` path `parseCall` uses
+    /// and stores whatever `Value *` comes back, so a `callbr` operand may be a
+    /// function pointer or a not-yet-defined forward reference just as a
+    /// `call`'s may. Whether that is *valid* is
+    /// `Verifier::visitCallBrInst`'s question — `Check(CBI.getCalledFunction(),
+    /// "Callbr: indirect function / invalid signature")` — not the builder's.
+    ///
+    /// Every destination is guarded against **parameterised** blocks, exactly
+    /// as in [`callbr_with_config`](Self::callbr_with_config).
+    pub fn indirect_callbr_with_config<I, V, Default, Indirects, Indirect, Callee>(
+        self,
+        callee: Callee,
+        fn_ty: FunctionType<'ctx, B>,
+        args: I,
+        default_dest: Default,
+        indirect_dests: Indirects,
+        config: CallSiteConfig,
+    ) -> IrResult<(BasicBlock<'ctx, R, Terminated, B>, CallBrInst<'ctx, B>)>
+    where
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+        Default: IntoBasicBlockLabel<'ctx, R, B>,
+        Indirects: IntoIterator<Item = Indirect>,
+        Indirect: IntoBasicBlockLabel<'ctx, R, B>,
+        Callee: IntoPointerValue<'ctx, B>,
+    {
+        let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
+        let default_dest = self.plain_edge_target(default_dest)?;
+        let callee_v = IsValue::as_erased(callee);
+        let ret_ty = fn_ty.return_type().id();
+        let (name, calling_conv, attrs) = config.into_parts();
+        let arg_ids: Vec<ValueSlot> = args
+            .into_iter()
+            .map(|a| {
+                a.into_erased_value(ModuleRef::new(self.module))
+                    .map(|v| v.slot())
+            })
+            .collect::<IrResult<_>>()?;
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
+        let indirect_ids: Vec<ValueSlot> = indirect_dests
+            .into_iter()
+            .map(|d| self.plain_edge_target(d).map(|l| l.slot()))
+            .collect::<IrResult<_>>()?;
+        let payload = CallBrInstData::new_with_attrs(
+            callee_v.id,
+            fn_ty.as_type().id(),
+            arg_ids,
+            calling_conv,
+            default_dest.slot(),
+            indirect_ids,
+            attrs,
+        );
+        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
+        Ok((
+            bb.retag_termination::<Terminated>(),
+            CallBrInst::<B>::from_raw(inst.slot(), module_ref, ret_ty),
+        ))
+    }
+
     /// Produce a `callbr` whose callee is an inline-assembly value.
     pub fn inline_asm_callbr<R2, I, V, Default, Indirects, Indirect, Name>(
         self,

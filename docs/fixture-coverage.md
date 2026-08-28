@@ -142,9 +142,9 @@ another was deleted outright, so the letters are not a stable namespace.
 | **G10** | `!DIEnumerator` values wider than i128 are rejected; upstream stores an `APInt` of any width. |
 | **G11** | A global variable's trailing `"key" = "value"` attribute list is not parsed. |
 | **G12** | `fpext` (and its siblings) reject a scalable-vector source. |
-| **G13** | A forward-referenced function whose later definition/ifunc has the same name is rejected instead of resolved. |
+| **G13** | *Closed.* A forward-referenced function whose later definition/ifunc had the same name was rejected instead of resolved, because the callee position minted a typed `Function` at the call site's signature. `resolve_direct_callee` mints `getGlobalVal`'s untyped placeholder now and `claim_function_forward_ref` RAUWs it at the header. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G14** | `-allow-incomplete-ir`'s `dropUnknownMetadataReferences` half is not implemented (recorded in docs/divergences.md). |
-| **G15** | A forward reference to an explicitly numbered global (`@6`) is not resolved. |
+| **G15** | An **unnamed** global (`@""`) does not consume `NumberedVals.getNext()`, so a reference to the number it should have taken is undefined. Probed 2026-08-28 with `target/release/examples/parse_file.exe`: on `@5 = global i8 0` + `@"" = global i8 1`, `store ptr @5` resolves and `store ptr @6` answers `use of undefined value '@6'`. The row used to say "a forward reference to an explicitly numbered global is not resolved", which was wrong twice over — `@6` there is not a forward reference, and numbered forward references resolve. |
 | **G16** | The `typeidCompatibleVTable:` module-summary entry kind is not parsed. |
 | **G17** | Diagnostic text differs from upstream's: llvmkit routes a complete upstream message through an `expected ...` wrapper, or words the check differently. |
 | **G18** | The check runs at a different stage than upstream's, or not at all: upstream's `llvm-as` rejects at parse/verify time and llvmkit accepts. |
@@ -167,11 +167,11 @@ Which fixture sits on which gap:
 - **G10**: `DIEnumeratorBig.ll`
 - **G11**: `globalvariable-attributes.ll`
 - **G12**: `fast-math-flags.ll`
-- **G13**: `2003-05-15-AssemblerProblem.ll`
+- **G13**: closed
 - **G14**: `incomplete-ir-metadata.ll`
-- **G15**: `opaque-ptr.ll`, `skip-value-numbers-globals.ll`
+- **G15**: `skip-value-numbers-globals.ll`
 - **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
-- **G17**: `2007-01-16-CrashOnBadCast.ll`, `alias-redefinition.ll`, `dicompileunit-invalid-language.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `opaque-ptr-invalid-forward-ref.ll`, `ptrtoaddr-invalid.ll`
+- **G17**: `2007-01-16-CrashOnBadCast.ll`, `alias-redefinition.ll`, `dicompileunit-invalid-language.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `ptrtoaddr-invalid.ll`
 - **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-dicompileunit-emissionkind-bad.ll`, `invalid-dicompileunit-language-overflow.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid-generic-debug-node-tag-overflow.ll`, `invalid-generic-debug-node-tag-wrong-type.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
 - **G19**: `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
 - **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
@@ -303,7 +303,7 @@ collision.
 | `2003-04-25-UnresolvedGlobalReference.ll` | ported | 1 pass |
 | `2003-05-03-BytecodeReaderProblem.ll` | ported | 1 pass |
 | `2003-05-12-MinIntProblem.ll` | ported | 1 pass |
-| `2003-05-15-AssemblerProblem.ll` | blocked-model | **G13** — rejected at 11:13: `expected forward function definition with matching signature` |
+| `2003-05-15-AssemblerProblem.ll` | ported | 1 pass |
 | `2003-05-15-SwitchBug.ll` | ported | 1 pass |
 | `2003-05-21-ConstantShiftExpr.ll` | ported | 1 pass |
 | `2003-05-21-EmptyStructTest.ll` | ported | 1 pass |
@@ -709,9 +709,9 @@ collision.
 | `opaque-ptr-cmpxchg.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `opaque-ptr-intrinsic-remangling.ll` | blocked-model | **G1** — rejected at 30:1: `expected valid invoke: call argument #2 type mismatch: expected ptr, got void ()` |
 | `opaque-ptr-invalid-forward-ref-2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `opaque-ptr-invalid-forward-ref.ll` | blocked-model | **G17** — reported `forward reference and definition of global have different types`, upstream `invalid forward reference to function 'f' with wrong type: expected 'ptr' but was 'ptr addrspace(1)'` |
+| `opaque-ptr-invalid-forward-ref.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `opaque-ptr-struct-types.ll` | ported | 1 pass |
-| `opaque-ptr.ll` | blocked-model | **G15** — rejected at 173:13: `use of undefined global '@0'` |
+| `opaque-ptr.ll` | ported | 1 pass |
 | `phi-first-class-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `pr119818.ll` | ported | 1 pass |
 | `private-hidden-alias.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

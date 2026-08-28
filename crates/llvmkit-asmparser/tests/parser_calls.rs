@@ -291,13 +291,14 @@ fn upstream_callbr_label_constraint_fixture_messages_match() {
 /// `Intrinsic::amdgcn_kill` case's two `Check`s, and the `default:`
 /// `CheckFailed`.
 ///
-/// `@test_callbr_intrinsic_wrong_signature` reaches the same verdict from the
-/// **parser**, not the verifier: `parse_callbr` rejects an indirect callee
-/// outright because the callbr builder has no indirect-callee form. That is
-/// `docs/divergences.md` entry 27, which the verifier half of this port does
-/// not close — the `Callbr: indirect function / invalid signature` `Check`
-/// now exists in `check_callbr` but nothing in llvmkit can build a `callbr`
-/// that reaches it.
+/// `@test_callbr_intrinsic_wrong_signature` is one of the six now, not an
+/// exception: `IrBuilder::indirect_callbr_with_config` gives the builder the
+/// indirect-callee form it lacked, so `parse_callbr` stores the pointer
+/// operand `parseCallBr` stores and the `Check(CBI.getCalledFunction(), …)`
+/// arm of `check_callbr` is reachable. It used to be rejected by the
+/// **parser** instead. That was `docs/divergences.md`'s indirect-callbr entry,
+/// deleted in the same commit as the forward-referenced-callee model change
+/// that made a non-function callbr callee reachable from ordinary IR.
 #[test]
 fn upstream_callbr_intrinsic_fixture_messages_match() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/callbr-intrinsic.ll");
@@ -325,6 +326,11 @@ fn upstream_callbr_intrinsic_fixture_messages_match() {
             "Callbr currently only supports asm-goto and selected intrinsics",
         ),
         (
+            "",
+            "define void @test_callbr_intrinsic_wrong_signature(",
+            "Callbr: indirect function / invalid signature",
+        ),
+        (
             KILL,
             "define void @test_callbr_intrinsic_no_operand_bundles(",
             "Callbr for intrinsics currently doesn't support operand bundles",
@@ -333,23 +339,6 @@ fn upstream_callbr_intrinsic_fixture_messages_match() {
     for (prelude, marker, expected) in cases {
         assert_fixture_case_verifies(FIXTURE, prelude, marker, Some(expected));
     }
-
-    // `@test_callbr_intrinsic_wrong_signature` — rejected by the parser here,
-    // by the verifier upstream. Entry 27.
-    let source = fixture_define(
-        FIXTURE,
-        "define void @test_callbr_intrinsic_wrong_signature(",
-    );
-    let module = Module::dynamic("test_callbr_intrinsic_wrong_signature");
-    let err = Parser::new(source.as_bytes(), &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("llvmkit rejects an indirect callbr at parse time — entry 27");
-    assert!(
-        err.to_string()
-            .contains("expected direct function callee for callbr"),
-        "{err}"
-    );
 }
 
 /// `llvm/test/Verifier/swifterror.ll`, vendored verbatim; its four `define`s
@@ -1684,19 +1673,35 @@ fn invoke_indirect_callee_round_trips() {
     );
 }
 
-/// A non-inline-asm callbr with an indirect callee is invalid IR upstream —
-/// `Verifier::visitCallBrInst` requires a direct callee ("Callbr: indirect
-/// function / invalid signature"). llvmkit rejects it at parse time, which
-/// reaches the same overall verdict (the module is rejected either way).
+/// Crafted against `LLParser::parseCallBr`, which resolves its callee through
+/// the same `convertValIDToValue` path `parseCall` uses and stores whatever
+/// `Value *` comes back — so an indirect callbr **parses**, and
+/// `Verifier::visitCallBrInst`'s `Check(CBI.getCalledFunction(), "Callbr:
+/// indirect function / invalid signature")` is what rejects it.
+///
+/// llvmkit used to reject it in `parse_callbr` instead, because the callbr
+/// builder had no indirect-callee form. The layer matters beyond tidiness:
+/// with the parser owning the verdict, the verifier's own `Check` was
+/// unreachable from any `.ll` text.
 #[test]
-fn callbr_indirect_callee_rejected() {
+fn callbr_indirect_callee_is_rejected_by_the_verifier() {
     const FIXTURE: &[u8] =
         include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_indirect_callee_rejected.ll");
 
-    assert_fixture_rejected(
-        "callbr_indirect_callee_rejected",
-        FIXTURE,
-        "expected direct function callee for callbr",
+    let module = Module::dynamic("callbr_indirect_callee_rejected");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("upstream parses an indirect callbr");
+    let err = module
+        .verify_borrowed()
+        .expect_err("upstream's verifier rejects an indirect callbr");
+    let llvmkit_ir::IrError::VerifierFailure { message, .. } = err else {
+        panic!("expected a verifier failure, got {err:?}");
+    };
+    assert!(
+        message.contains("Callbr: indirect function / invalid signature"),
+        "{message}"
     );
 }
 
