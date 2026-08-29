@@ -319,6 +319,55 @@ fn constant_expr_gep_inrange_signed_hex_active_bits_are_preserved() {
     assert_parse_error(FIXTURE, "expected end to be larger than start");
 }
 
+/// An `inrange` bound and an ordinary integer literal read the same token the
+/// same way.
+///
+/// **No upstream counterpart, and upstream cannot have one.** `LLLexer` sets a
+/// single `APSIntVal` and every consumer reads it through `getAPSIntVal()`, so
+/// there is no second reader to disagree with — `LLParser::parseValID`'s
+/// `getelementptr` arm is `InRangeStart = Lex.getAPSIntVal()` and nothing more.
+/// llvmkit had a second one: `parse_inrange_bound` matched `Token::IntegerLit`
+/// itself and rebuilt the `[us]0x` active-bit truncation and the signed
+/// widening out of raw `u64` words, in parallel with `parse_int_literal`.
+/// The two agreed, and nothing made them.
+///
+/// This is the law that makes them one: each spelling below is read once as an
+/// `inrange` bound and once as an `i64` constant, and the two must agree. The
+/// cases are the ones where the lexer rule actually bites. `s0xF` and `s0x7F`
+/// both read as **−1**, not 15 and 127: `LLLexer` truncates a `[us]0x` literal
+/// to its active bits before stamping the signedness (`if (activeBits > 0 &&
+/// activeBits < bits) Tmp = Tmp.trunc(activeBits)`), so each is an all-ones
+/// signed APSInt that sign-extends. `u0xF` is the same digits read unsigned and
+/// is 15, and `u0x8000000000000000` keeps all 64 bits.
+#[test]
+fn an_inrange_bound_and_an_integer_literal_read_a_token_identically() {
+    for (spelling, printed) in [
+        ("0", "0"),
+        ("-1", "-1"),
+        ("s0xF", "-1"),
+        ("u0xF", "15"),
+        ("s0x7F", "-1"),
+        ("u0x8000000000000000", "-9223372036854775808"),
+    ] {
+        // The spelling goes in as `start`, against an end high enough to keep
+        // the range non-empty for every case above.
+        let source = format!(
+            "@g = external global i8\n\
+             @b = global ptr getelementptr inrange({spelling}, 9223372036854775807) (i8, ptr @g, i64 0)\n\
+             @i = global i64 {spelling}\n"
+        );
+        let text = parse_and_render("inrange_vs_literal", source.as_bytes());
+        assert_check_lines(
+            &text,
+            &[
+                &format!("inrange({printed}, 9223372036854775807)"),
+                &format!("@i = global i64 {printed}"),
+            ],
+        );
+        assert_parse_print_parse_stable(&text);
+    }
+}
+
 /// Direct port of `LLParser::parseValID`'s `blockaddress` branch:
 /// the accepted `blockaddress(@function, %block)` shape.
 #[test]

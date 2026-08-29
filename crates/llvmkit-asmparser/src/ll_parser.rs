@@ -1046,20 +1046,7 @@ fn vector_shape_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<(
 #[derive(Debug, Clone)]
 struct ParsedGepConstantExprFlags {
     no_wrap: GepNoWrapFlags,
-    in_range: Option<(ParsedInRangeBound, ParsedInRangeBound)>,
-}
-
-#[derive(Debug, Clone)]
-enum ParsedInRangeBound {
-    SignedMagnitude {
-        negative: bool,
-        magnitude_words: Box<[u64]>,
-    },
-    HexApsInt {
-        signed: bool,
-        words: Box<[u64]>,
-        bit_width: u32,
-    },
+    in_range: Option<(ParsedApsInt, ParsedApsInt)>,
 }
 
 /// `GV->getValueType()->isFunctionTy()` for whichever global kind `r` names.
@@ -1086,221 +1073,6 @@ fn pointer_address_space_or_vector_element<'ctx, B: ModuleBrand + 'ctx>(
         },
         _ => None,
     }
-}
-
-fn inrange_bound_to_apint_words(bound: &ParsedInRangeBound, bit_width: u32) -> Box<[u64]> {
-    match bound {
-        ParsedInRangeBound::SignedMagnitude {
-            negative,
-            magnitude_words,
-        } => signed_magnitude_to_apint_words(*negative, magnitude_words, bit_width),
-        ParsedInRangeBound::HexApsInt {
-            signed,
-            words,
-            bit_width: source_bit_width,
-        } => apsint_to_apint_words(*signed, words, *source_bit_width, bit_width),
-    }
-}
-
-fn signed_magnitude_to_apint_words(
-    negative: bool,
-    magnitude_words: &[u64],
-    bit_width: u32,
-) -> Box<[u64]> {
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    let mut words = vec![0; word_count];
-    let copy_count = words.len().min(magnitude_words.len());
-    words[..copy_count].copy_from_slice(&magnitude_words[..copy_count]);
-    mask_apint_top_word(&mut words, bit_width);
-    if negative {
-        negate_apint_words(&mut words, bit_width);
-    }
-    words.into_boxed_slice()
-}
-
-fn apsint_to_apint_words(
-    signed: bool,
-    source_words: &[u64],
-    source_bit_width: u32,
-    bit_width: u32,
-) -> Box<[u64]> {
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    let negative = signed && apint_sign_bit(source_words, source_bit_width);
-    let fill = if negative { u64::MAX } else { 0 };
-    let mut words = vec![fill; word_count];
-    let copy_count = words.len().min(source_words.len());
-    words[..copy_count].copy_from_slice(&source_words[..copy_count]);
-    if negative && source_bit_width < bit_width {
-        sign_extend_apint_words(&mut words, source_bit_width);
-    }
-    mask_apint_top_word(&mut words, bit_width);
-    words.into_boxed_slice()
-}
-
-fn sign_extend_apint_words(words: &mut [u64], source_bit_width: u32) {
-    let start_word = usize::try_from(source_bit_width / 64).unwrap_or(usize::MAX);
-    if start_word >= words.len() {
-        return;
-    }
-    let start_bit = source_bit_width % 64;
-    if start_bit == 0 {
-        for word in &mut words[start_word..] {
-            *word = u64::MAX;
-        }
-    } else {
-        words[start_word] |= u64::MAX << start_bit;
-        for word in &mut words[start_word + 1..] {
-            *word = u64::MAX;
-        }
-    }
-}
-
-fn negate_apint_words(words: &mut [u64], bit_width: u32) {
-    for word in words.iter_mut() {
-        *word = !*word;
-    }
-    mask_apint_top_word(words, bit_width);
-    let mut carry = true;
-    for word in words.iter_mut() {
-        if !carry {
-            break;
-        }
-        let (next, overflowed) = word.overflowing_add(1);
-        *word = next;
-        carry = overflowed;
-    }
-    mask_apint_top_word(words, bit_width);
-}
-
-fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
-    let top_bits = bit_width % 64;
-    if top_bits != 0
-        && let Some(top) = words.last_mut()
-    {
-        *top &= (1u64 << top_bits) - 1;
-    }
-}
-
-fn constant_expr_inrange_is_non_empty(range: &ConstantExprInRange) -> bool {
-    signed_apint_cmp(range.start(), range.end(), range.bit_width()).is_lt()
-}
-
-fn signed_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
-    let lhs_negative = apint_sign_bit(lhs, bit_width);
-    let rhs_negative = apint_sign_bit(rhs, bit_width);
-    match (lhs_negative, rhs_negative) {
-        (true, false) => core::cmp::Ordering::Less,
-        (false, true) => core::cmp::Ordering::Greater,
-        _ => unsigned_apint_cmp(lhs, rhs, bit_width),
-    }
-}
-
-fn apint_sign_bit(words: &[u64], bit_width: u32) -> bool {
-    if bit_width == 0 {
-        return false;
-    }
-    let bit_index = bit_width - 1;
-    let word_index = usize::try_from(bit_index / 64).unwrap_or(usize::MAX);
-    let bit_in_word = bit_index % 64;
-    words
-        .get(word_index)
-        .is_some_and(|word| ((word >> bit_in_word) & 1) != 0)
-}
-
-fn unsigned_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    for idx in (0..word_count).rev() {
-        let lhs_word = apint_word(lhs, idx, bit_width);
-        let rhs_word = apint_word(rhs, idx, bit_width);
-        match lhs_word.cmp(&rhs_word) {
-            core::cmp::Ordering::Equal => {}
-            ordering => return ordering,
-        }
-    }
-    core::cmp::Ordering::Equal
-}
-
-fn decimal_digits_to_words(digits: &str) -> Option<Box<[u64]>> {
-    let mut words = vec![0u64];
-    for byte in digits.bytes() {
-        if !byte.is_ascii_digit() {
-            return None;
-        }
-        mul_add_words(&mut words, 10, u64::from(byte - b'0'));
-    }
-    while words.len() > 1 && words.last().copied() == Some(0) {
-        words.pop();
-    }
-    Some(words.into_boxed_slice())
-}
-
-fn hex_digits_to_words(digits: &str) -> Option<Box<[u64]>> {
-    let mut words = vec![0u64];
-    for byte in digits.bytes() {
-        let digit = match byte {
-            b'0'..=b'9' => byte - b'0',
-            b'a'..=b'f' => byte - b'a' + 10,
-            b'A'..=b'F' => byte - b'A' + 10,
-            _ => return None,
-        };
-        mul_add_words(&mut words, 16, u64::from(digit));
-    }
-    while words.len() > 1 && words.last().copied() == Some(0) {
-        words.pop();
-    }
-    Some(words.into_boxed_slice())
-}
-
-fn hex_apsint_bit_width(digits: &str, words: &[u64]) -> Option<u32> {
-    let syntactic_bits = u32::try_from(digits.len()).ok()?.checked_mul(4)?;
-    let active_bits = apint_active_bits(words)?;
-    if active_bits > 0 && active_bits < syntactic_bits {
-        Some(active_bits)
-    } else {
-        Some(syntactic_bits)
-    }
-}
-
-fn apint_active_bits(words: &[u64]) -> Option<u32> {
-    for (idx, word) in words.iter().enumerate().rev() {
-        if *word != 0 {
-            let word_base = u32::try_from(idx).ok()?.checked_mul(64)?;
-            return word_base.checked_add(64 - word.leading_zeros());
-        }
-    }
-    Some(0)
-}
-
-fn mul_add_words(words: &mut Vec<u64>, multiplier: u64, addend: u64) {
-    let mut carry = u128::from(addend);
-    for word in words.iter_mut() {
-        let value = u128::from(*word) * u128::from(multiplier) + carry;
-        *word = low_u64(value);
-        carry = value >> 64;
-    }
-    while carry != 0 {
-        words.push(low_u64(carry));
-        carry >>= 64;
-    }
-}
-
-fn low_u64(value: u128) -> u64 {
-    let bytes = value.to_le_bytes();
-    u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ])
-}
-
-fn apint_word(words: &[u64], idx: usize, bit_width: u32) -> u64 {
-    let mut word = words.get(idx).copied().unwrap_or(0);
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    if word_count != 0 && idx + 1 == word_count {
-        let top_bits = bit_width % 64;
-        if top_bits != 0 {
-            word &= (1u64 << top_bits) - 1;
-        }
-    }
-    word
 }
 
 /// `ExtractElementInst::isValidOperands(Val, Index)` — the operand guard only;
@@ -9672,6 +9444,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// The `inrange` half of the `getelementptr` arm: upstream widens both
     /// bounds to the base pointer's index width before comparing them, so a
     /// bound that only overflows at the narrower width is legal.
+    /// The `inrange` half of `LLParser::parseValID`'s `getelementptr` arm,
+    /// after both bounds have been lexed:
+    ///
+    /// ```text
+    /// InRangeStart = InRangeStart->extOrTrunc(IndexWidth);
+    /// InRangeEnd = InRangeEnd->extOrTrunc(IndexWidth);
+    /// if (InRangeStart->sge(*InRangeEnd))
+    ///   return error(..., "expected end to be larger than start");
+    /// ```
     fn gep_constant_expr_flags(
         &self,
         parsed: ParsedGepConstantExprFlags,
@@ -9681,10 +9462,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(ConstantExprFlags::gep(parsed.no_wrap));
         };
         let bit_width = self.module.data_layout().index_size_in_bits(address_space);
-        let start_words = inrange_bound_to_apint_words(&start, bit_width);
-        let end_words = inrange_bound_to_apint_words(&end, bit_width);
-        let in_range = ConstantExprInRange::new(start_words, end_words, bit_width);
-        if !constant_expr_inrange_is_non_empty(&in_range) {
+        let in_range = ConstantExprInRange::new(
+            start.extend_or_truncate(bit_width),
+            end.extend_or_truncate(bit_width),
+        );
+        if !in_range.is_non_empty() {
             return Err(self.expected("end to be larger than start"));
         }
         Ok(ConstantExprFlags::gep_with_in_range(
@@ -9693,38 +9475,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ))
     }
 
-    fn parse_inrange_bound(&mut self) -> ParseResult<ParsedInRangeBound> {
-        let bound = match self.peek() {
-            Token::IntegerLit(IntLit {
-                sign,
-                base: NumBase::Dec,
-                digits,
-            }) => {
-                let magnitude_words =
-                    decimal_digits_to_words(digits).ok_or_else(|| self.expected("integer"))?;
-                ParsedInRangeBound::SignedMagnitude {
-                    negative: matches!(sign, Sign::Neg),
-                    magnitude_words,
-                }
-            }
-            Token::IntegerLit(IntLit {
-                base: base @ (NumBase::HexSigned | NumBase::HexUnsigned),
-                digits,
-                ..
-            }) => {
-                let words = hex_digits_to_words(digits).ok_or_else(|| self.expected("integer"))?;
-                let bit_width =
-                    hex_apsint_bit_width(digits, &words).ok_or_else(|| self.expected("integer"))?;
-                ParsedInRangeBound::HexApsInt {
-                    signed: matches!(base, NumBase::HexSigned),
-                    words,
-                    bit_width,
-                }
-            }
-            _ => return Err(self.expected("integer")),
-        };
-        self.bump()?;
-        Ok(bound)
+    /// One `inrange` bound. Upstream reads it as `Lex.getAPSIntVal()`, the
+    /// single `APSInt` every integer token carries, so this is
+    /// [`Self::parse_int_literal`] and nothing else — the `[us]0x` active-bit
+    /// truncation and the signed/unsigned stamp are that one lexer rule's job.
+    fn parse_inrange_bound(&mut self) -> ParseResult<ParsedApsInt> {
+        match self.peek() {
+            Token::IntegerLit(_) => self.parse_int_literal(),
+            _ => Err(self.expected("integer")),
+        }
     }
 
     /// Everything `LLParser::parseValID`'s `getelementptr` arm does after the

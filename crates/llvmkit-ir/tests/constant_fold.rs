@@ -2626,7 +2626,8 @@ fn constant_fold_gep_inrange_noop_does_not_fold() -> Result<(), IrError> {
     let i64_ty = m.i64_type();
     let g = m.add_global("g", i32_ty.const_zero())?;
     let base = m.view(g).as_global_constant_ptr();
-    let in_range = ConstantExprInRange::new([0_u64], [1_u64], 64);
+    let in_range =
+        ConstantExprInRange::new(ApInt::from_words(64, &[0]), ApInt::from_words(64, &[1]));
     let expr = m.constant_expr_with_options(
         base.ty(),
         ConstantExprOpcode::GetElementPtr,

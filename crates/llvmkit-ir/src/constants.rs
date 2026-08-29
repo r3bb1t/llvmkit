@@ -26,8 +26,8 @@ use super::array_len::ArrayLen;
 use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
 use super::constant::{
-    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
-    ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant,
+    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
+    ForwardRefValue, IntoConstantValue, IsConstant,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
@@ -1496,40 +1496,10 @@ fn canonical_constant_expr_flags(flags: ConstantExprFlags) -> ConstantExprFlags 
             let (no_wrap, in_range) = flags.into_parts();
             ConstantExprFlags::gep_raw(
                 crate::GepNoWrapFlags::from_bits_canonical(no_wrap.bits()),
-                in_range.map(canonical_in_range),
+                in_range,
             )
         }
         flags => flags,
-    }
-}
-
-fn canonical_in_range(in_range: ConstantExprInRange) -> ConstantExprInRange {
-    let (start, end, bit_width) = in_range.into_parts();
-    ConstantExprInRange::new(
-        canonical_apint_words(start, bit_width),
-        canonical_apint_words(end, bit_width),
-        bit_width,
-    )
-}
-
-fn canonical_apint_words(words: Box<[u64]>, bit_width: u32) -> Box<[u64]> {
-    let Ok(word_count) = usize::try_from(bit_width.div_ceil(64)) else {
-        return words;
-    };
-    let mut canonical = vec![0; word_count];
-    let copy_count = canonical.len().min(words.len());
-    canonical[..copy_count].copy_from_slice(&words[..copy_count]);
-    mask_apint_top_word(&mut canonical, bit_width);
-    canonical.into_boxed_slice()
-}
-
-fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
-    let top_bits = bit_width % 64;
-    if top_bits == 0 {
-        return;
-    }
-    if let Some(last) = words.last_mut() {
-        *last &= (1u64 << top_bits) - 1;
     }
 }
 
@@ -2061,7 +2031,7 @@ fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {
 
     if let ConstantExprFlags::Gep(flags) = &data.flags
         && let Some(in_range) = flags.in_range()
-        && !constant_range_is_non_empty(in_range)
+        && !in_range.is_non_empty()
     {
         return Err(IrError::InvalidOperation {
             message: "expected end to be larger than start",
@@ -2069,57 +2039,6 @@ fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {
     }
 
     Ok(())
-}
-
-fn constant_range_is_non_empty(range: &ConstantExprInRange) -> bool {
-    signed_apint_cmp(range.start(), range.end(), range.bit_width()).is_lt()
-}
-
-fn signed_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
-    let lhs_negative = apint_sign_bit(lhs, bit_width);
-    let rhs_negative = apint_sign_bit(rhs, bit_width);
-    match (lhs_negative, rhs_negative) {
-        (true, false) => core::cmp::Ordering::Less,
-        (false, true) => core::cmp::Ordering::Greater,
-        _ => unsigned_apint_cmp(lhs, rhs, bit_width),
-    }
-}
-
-fn apint_sign_bit(words: &[u64], bit_width: u32) -> bool {
-    if bit_width == 0 {
-        return false;
-    }
-    let bit_index = bit_width - 1;
-    let word_index = usize::try_from(bit_index / 64).unwrap_or(usize::MAX);
-    let bit_in_word = bit_index % 64;
-    words
-        .get(word_index)
-        .is_some_and(|word| ((word >> bit_in_word) & 1) != 0)
-}
-
-fn unsigned_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    for idx in (0..word_count).rev() {
-        let lhs_word = apint_word(lhs, idx, bit_width);
-        let rhs_word = apint_word(rhs, idx, bit_width);
-        match lhs_word.cmp(&rhs_word) {
-            core::cmp::Ordering::Equal => {}
-            ordering => return ordering,
-        }
-    }
-    core::cmp::Ordering::Equal
-}
-
-fn apint_word(words: &[u64], idx: usize, bit_width: u32) -> u64 {
-    let mut word = words.get(idx).copied().unwrap_or(0);
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    if word_count != 0 && idx + 1 == word_count {
-        let top_bits = bit_width % 64;
-        if top_bits != 0 {
-            word &= (1u64 << top_bits) - 1;
-        }
-    }
-    word
 }
 
 // --------------------------------------------------------------------------

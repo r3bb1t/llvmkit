@@ -127,46 +127,63 @@ impl OverflowingConstantExprFlags {
     }
 }
 
-/// APInt half-open range attached to a constant `getelementptr`.
+/// The half-open `inrange(start, end)` range attached to a constant
+/// `getelementptr`.
+///
+/// Mirrors the `InRangeStart` / `InRangeEnd` pair `LLParser::parseValID`'s
+/// `getelementptr` arm carries as two `APSInt`s and hands to
+/// `ConstantExpr::getGetElementPtr` as a `ConstantRange`, which holds two
+/// `APInt`s. Both bounds are already at the index width — upstream applies
+/// `extOrTrunc(IndexWidth)` before constructing the range, so the width is the
+/// bounds' own and is not stored separately.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstantExprInRange {
-    start: Box<[u64]>,
-    end: Box<[u64]>,
-    bit_width: u32,
+    start: ApInt,
+    end: ApInt,
 }
 
 impl ConstantExprInRange {
+    /// The range `[start, end)`. Both bounds must already be at the index
+    /// width; mismatched widths are widened to the larger, which is the only
+    /// answer that keeps [`Self::bit_width`] meaningful.
     #[inline]
-    pub fn new<Start, End>(start: Start, end: End, bit_width: u32) -> Self
-    where
-        Start: Into<Box<[u64]>>,
-        End: Into<Box<[u64]>>,
-    {
+    #[must_use]
+    pub fn new(start: ApInt, end: ApInt) -> Self {
+        let width = start.bit_width().max(end.bit_width());
         Self {
-            start: start.into(),
-            end: end.into(),
-            bit_width,
+            start: start.sext_or_trunc(width),
+            end: end.sext_or_trunc(width),
         }
     }
 
     #[inline]
-    pub fn start(&self) -> &[u64] {
+    pub fn start(&self) -> &ApInt {
         &self.start
     }
 
     #[inline]
-    pub fn end(&self) -> &[u64] {
+    pub fn end(&self) -> &ApInt {
         &self.end
     }
 
+    /// The shared width of the two bounds — upstream's
+    /// `ConstantRange::getBitWidth`.
     #[inline]
-    pub const fn bit_width(&self) -> u32 {
-        self.bit_width
+    pub fn bit_width(&self) -> u32 {
+        self.start.bit_width()
     }
 
+    /// `InRangeStart.slt(InRangeEnd)` — the negation of
+    /// `LLParser::parseValID`'s `if (InRangeStart.sge(InRangeEnd)) return
+    /// error(…, "expected end to be larger than start")`.
+    ///
+    /// Signed, as upstream spells it, and the *only* emptiness test in the
+    /// tree: the parser and `constants.rs` used to carry a hand-rolled
+    /// `signed_apint_cmp` apiece.
     #[inline]
-    pub(crate) fn into_parts(self) -> (Box<[u64]>, Box<[u64]>, u32) {
-        (self.start, self.end, self.bit_width)
+    #[must_use]
+    pub fn is_non_empty(&self) -> bool {
+        self.start.slt(&self.end)
     }
 }
 

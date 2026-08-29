@@ -1690,7 +1690,7 @@ crates/llvmkit-asmparser/src/ll_parser.rs: lines 5344-5350 remain the only DIAss
 
 </details>
 
-### 80. `attr_kind_for_keyword` is a hand-written table, not generated from `Attributes.td`
+### 80. `attr_kind_for_keyword` is a hand-written table, not generated from `Attributes.td` — **NARROWED (W13)**
 
 > **Triage 2026-08-29: pending work, description verified and unchanged.**
 > `attr_kind_for_keyword` is still a transcribed `match`, `crates/llvmkit-asmparser`
@@ -1700,6 +1700,40 @@ crates/llvmkit-asmparser/src/ll_parser.rs: lines 5344-5350 remain the only DIAss
 > attribute *lexer* keywords from the same `Attributes.inc` via
 > `KEYWORD(DISPLAY_NAME)`, so `ll_lexer/keywords.rs` is the second hand-written
 > half of the same generated table.
+>
+> **Correction from W13, and the narrowing that follows.** The triage's scope
+> note is right that `ll_lexer/keywords.rs` is a second hand-written half, and
+> wrong to leave the impression that it is a second *unguarded* one. It is not:
+> `attribute_td_drift.rs::parser_accepts` builds real `.ll` text
+> (`attributes #0 = { <spelling> }`, a `define` parameter, a `define` return)
+> and runs `parse_dynamic` on it, so every probe goes through the lexer's
+> keyword table and the parser's `attr_kind_for_keyword` **end to end**. A
+> keyword missing from `keywords.rs` fails to lex and fails the probe exactly
+> as a missing parser arm does. Read the eight tests, not the file name:
+>
+> ```
+> grep -c '^#\[test\]' crates/llvmkit-asmparser/tests/attribute_td_drift.rs
+> ```
+>
+> Between them they pin the *set* (`no_unmodeled_attribute_is_silently_missing`
+> against an empty `NOT_YET_MODELED`), the *positions* each attribute declares
+> (`every_attribute_declares_a_position`), the *print order*
+> (`a_function_attribute_list_prints_in_attributes_td_enum_order`, W11's
+> addition), the reverse direction
+> (`a_lexed_keyword_with_no_td_def_does_not_print_as_itself`), and the typed
+> readers for the string-valued kinds. A wrong keyword→`AttrKind` mapping
+> prints as the wrong attribute and fails the order test.
+>
+> **So the residual is a maintainability property, not a behavioural one:** the
+> two tables are transcribed rather than generated, and the guard proves they
+> currently agree with `Attributes.td` without removing the transcription. The
+> obstacle to generation is recorded in `attribute_td_drift.rs`'s own module
+> header and is real — the generated artifact would have to be keyed by
+> `Keyword`, and `Keyword` is a hand-written enum over a deliberate subset, so
+> emitting the table means emitting part of a 700-variant enum. A design that
+> generates a `&[(&str, AttrKind)]` table and keys it off the lexer's existing
+> string→`Keyword` map would sidestep that; nobody has costed it. **Not
+> scheduled** — it buys no behaviour the guard does not already hold.
 
 
 *parser — attributes* — crates/llvmkit-asmparser/src/ll_parser.rs (`attr_kind_for_keyword`), crates/llvmkit-ir/src/attributes.rs, crates/llvmkit-asmparser/tests/attribute_td_drift.rs, crates/llvmkit-asmparser/tablegen/llvm-22.1.4/Attributes.td
@@ -1712,47 +1746,6 @@ crates/llvmkit-asmparser/src/ll_parser.rs: lines 5344-5350 remain the only DIAss
 <details><summary>Verification evidence</summary>
 
 Claim #85 is REAL and STILL PRESENT; the description is accurate on every material point. llvmkit (hand-written, confirmed today): - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs:9172 — `fn attr_kind_for_keyword(keyword: Keyword) -> Option<AttrKind>` is a literal transcribed `match` of ~90 `Keyword::X => AttrKind::Y` arms terminating in `_ => return None`. Lines 9216-9220 even carry a comment describing the arms added later as "upstream's `tokenToAttribute`" that "was missing them, so each parsed as 'not an attribute'". - No `build.rs` exists in crates/llvmkit-asmparser (dir listing: Cargo.toml, LICENSE, README.md, examples, src, tablegen, tests). Nothing generates this table. - The only TableGen generation in the workspace is llvmkit-ir/build.rs -> llvmkit-tablegen, whose sole root input is `const ROOT_TD: &str = "llvm/IR/Intrinsics.td"` (crates/llvmkit-tablegen/src/lib.rs:64). Intrinsics only; `Attributes.td` is never fed to the generator. - `AttrKind` is itself a hand-written enum at crates/llvmkit-ir/src/attributes.rs:285. Upstream (generated, confirmed in the vendored tree): - orig_cpp/.../llvm/lib/AsmParser/LLParser.cpp:1545 `static Attribute::AttrKind tokenToAttribute(lltok::Kind Kind)` whose switch body is `#define GET_ATTR_NAMES` / `#define ATTRIBUTE_ENUM(ENUM_NAME, DISPLAY_NAME) case lltok::kw_##DISPLAY_NAME: return Attribute::ENUM_NAME;` / `#include "llvm/IR/Attributes.inc"`, with `default: return Attribute::None`. Called from LLParser.cpp:1736 and :2026. The drift guard exists exactly as described: - crates/llvmkit-asmparser/tests/attribute_td_drift.rs `include_str!`s ../tablegen/llvm-22.1.4/include/llvm/IR/Attributes.td (present, 20191 bytes, tracked). `NOT_YET_MODELED` is `&[]`. Its module header states generation was deliberately rejected ("llvmkit deliberately models a subset ... would mean generating part of the 700-variant `Keyword` enum") and that the test "gives the same guarantee without that cost". - The "five holes" figure is consistent with the file's own doc comments, which record: Milestone 0's ~21 missing keywords; multi-line `def`s misread (dereferenceable_or_null, speculative_load_hardening, nocreateundeforpoison); the `split_once(':')` spacing bug dropping hot / disable_sanitizer_instrumentation / allockind; anonymous `def : CompatRuleStrAttr` defs inventing an attribute named `isEqual`; and positionless defs passing the probe vacuously (now guarded by `every_attribute_declares_a_position`). Scope note (the claim is if anything understated, not wrong): the divergence covers the lexer as well as the parser. Upstream's LLLexer.cpp:701 emits its attribute keywords from the same `Attributes.inc` via `KEYWORD(DISPLAY_NAME)`, whereas llvmkit's crates/llvmkit-asmparser/src/ll_lexer/keywords.rs is a hand-written byte-string match (e.g. line 334 `b"nocreateundeforpoison" => kw(Nocreateundeforpoison)`, line 395 `b"zeroext" => kw(Zeroext)`). So both generated halves upstream are hand-transcribed here. Working-tree caveat: ll_parser.rs is modified vs HEAD (173+/165- per `git diff --stat`), but that diff is line-ending/reflow churn in this region; the hand-written table is present in the working tree as read.
-
-</details>
-
-### 81. `inrange` bounds have a second, parallel APSInt reader
-
-> **Triage 2026-08-29: pending work, and "both are currently correct" is not a
-> reason to leave it.** Verified unchanged: `parse_inrange_bound` still matches
-> `Token::IntegerLit` itself and routes through `decimal_digits_to_words` /
-> `hex_digits_to_words` / `hex_apsint_bit_width`, never touching
-> `parse_int_literal` or `ParsedApsInt::extend_or_truncate`. Its sibling
-> finding, entry 82 — the same shape, one upstream routine with several
-> llvmkit copies — shipped a **rejects-valid** defect that was found on
-> 2026-08-29 while this band was being triaged, on a claim that read exactly
-> like this one's. Treat "currently correct" as a dated observation, not a
-> deferral.
->
-> Root cause note, which changes what the fix is: the duplication originates in
-> `llvmkit-ir`, not the parser. `ConstantExprInRange` stores
-> `start: Box<[u64]>, end: Box<[u64]>, bit_width: u32` where upstream's
-> `ConstantRange` holds two `APInt`s, so the parser cannot hand it a
-> `ParsedApsInt`/`ApInt` and is forced to build words. Collapsing
-> `parse_inrange_bound` alone would not remove the duplication —
-> `ConstantExprInRange` must hold `ApInt` first. The parallel machinery is
-> also larger than the "six helpers" below: `sign_extend_apint_words`,
-> `negate_apint_words`, `mask_apint_top_word`, `apint_active_bits`,
-> `mul_add_words`, `low_u64`, and the `signed_apint_cmp` /
-> `unsigned_apint_cmp` / `apint_sign_bit` trio re-implementing APSInt `sge`
-> for the emptiness check all exist only for this path.
-
-
-*parser — constants* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_inrange_bound` and helpers)
-
-- **LLVM:** `LLLexer` has one APSInt rule — the `[us]0x` active-bit truncation and the signed widening — and every consumer widens from it.
-- **llvmkit:** `Parser::parse_inrange_bound` and its six helpers (`ParsedInRangeBound`, `inrange_bound_to_apint_words`, `signed_magnitude_to_apint_words`, `apsint_to_apint_words`, `hex_apsint_bit_width`, `decimal_digits_to_words`, `hex_digits_to_words`) implement the same rule that `parse_int_literal` implements since W5. Both are currently correct.
-- **Why:** Recorded in docs/future-work.md (W5): two implementations of one lexer rule is the exact shape this program keeps finding bugs in (three private copies of the scalable-vector walk, none matching `Type::isScalableTy`). Not done in W5 because it sits on the GEP constant-expression path — routed to W9a, which did not take it.
-- **Fix:** Collapse `parse_inrange_bound` onto `parse_int_literal` + `ParsedApsInt::extend_or_truncate`; the only real work is that `ConstantExprInRange::new` takes `Box<[u64]>` rather than an `ApInt`. Keep `parser_constants.rs::constant_expr_gep_inrange_signed_hex_active_bits_are_preserved` green.
-- **Correction from verification:** The claim is accurate in substance but understates the scope and misplaces the root cause. Two refinements: (1) the parallel machinery is larger than "six helpers" — `sign_extend_apint_words`, `negate_apint_words`, `mask_apint_top_word`, `apint_active_bits`, `mul_add_words`, `low_u64`, plus `signed_apint_cmp`/`unsigned_apint_cmp`/`apint_sign_bit` (re-implementing APSInt `sge` for the emptiness check) exist only for this path, ~12 exclusive items total; (2) the divergence originates in llvmkit-ir, not the parser: `ConstantExprInRange` (crates/llvmkit-ir/src/constant.rs:132) stores `start: Box<[u64]>, end: Box<[u64]>, bit_width: u32` where upstream's `ConstantRange` holds two `APInt`s, so the parser cannot hand it a `ParsedApsInt`/`ApInt` and is forced to build words. Collapsing `parse_inrange_bound` alone would not remove the duplication — `ConstantExprInRange` must hold `ApInt` first. Also, upstream's lexer sets `APSIntVal` at two sites (LLLexer.cpp lexIdentifier's `[us]0x` path and the decimal `APSInt(StringRef)` path), not literally one rule, but both feed the single `APSIntVal` every consumer reads via `getAPSIntVal()`, so the claim's "one APSInt rule" characterization holds. The "both are currently correct" assessment is confirmed.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-asmparser/src/ll_parser.rs: `parse_inrange_bound` (line 8702) matches `Token::IntegerLit` itself and calls `decimal_digits_to_words` (1061) / `hex_digits_to_words` (1075) / `hex_apsint_bit_width` (1092) — it never calls `parse_int_literal` (2277) or `ParsedApsInt::extend_or_truncate` (637). `hex_apsint_bit_width` restates the same `active_bits > 0 && active_bits < syntactic_bits` truncation that `parse_int_literal`'s HexSigned/HexUnsigned arm already implements against `ApInt`. `gep_constant_expr_flags` (8677) then calls `inrange_bound_to_apint_words` (929) -> `signed_magnitude_to_apint_words` (943) / `apsint_to_apint_words` (959), which redo the sign/zero-extend-or-truncate that `extend_or_truncate` performs via `sext_or_trunc`/`zext_or_trunc`. Grep confirms `mul_add_words`, `negate_apint_words`, `sign_extend_apint_words`, `apint_active_bits`, `mask_apint_top_word`, `low_u64` have no caller outside this cluster. Upstream orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp lines 4485-4531 (LLParser::parseValID, getelementptr arm): reads `InRangeStart = Lex.getAPSIntVal()` / `InRangeEnd = Lex.getAPSIntVal()`, then `InRangeStart = InRangeStart.extOrTrunc(IndexWidth); InRangeEnd = InRangeEnd.extOrTrunc(IndexWidth); if (InRangeStart.sge(InRangeEnd)) return error(...)` — no second reader. LLLexer.cpp:1062 `APSIntVal = APSInt(Tmp, TokStart[0] == 'u')` after `if (activeBits > 0 && activeBits < bits) Tmp = Tmp.trunc(activeBits)`, and LLLexer.cpp:1207 `APSIntVal = APSInt(StringRef(...))`. crates/llvmkit-ir/src/constant.rs:132-150 shows `ConstantExprInRange` holding `Box<[u64]>` rather than `ApInt`. Correctness of both readers is pinned by crates/llvmkit-asmparser/tests/fixtures/upstream/LLParser-parseValID/constant_expr_gep_inrange_hex_apsint.ll, ..._apint_trunc.ll, and ..._signed_hex_active_bits_invalid.ll (the last proving `s0x1` reads as -1).
 
 </details>
 
@@ -1839,31 +1832,6 @@ Upstream, C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/ll
 <details><summary>Verification evidence</summary>
 
 Decisive single fact: grep for callers of the public predicates `is_int_or_int_vector()` / `is_ptr_or_ptr_vector()` across crates/ returns exactly one file - crates/llvmkit-ir/src/instructions.rs (i.e. cast_is_valid itself). Every other consumer in the workspace calls a local copy. Files read: - crates/llvmkit-ir/src/type.rs:580-760 - the public ports: is_sized (604), is_scalable (615), scalar_type (633), is_int_or_int_vector (686, `self.scalar_type().is_integer()`), is_ptr_or_ptr_vector (691), is_valid_struct/array/vector/pointer_element (712/725/732/747), is_vector (535). Free slot-level helpers is_sized/is_scalable at 934/1011 are private to type.rs. - crates/llvmkit-asmparser/src/ll_parser.rs:818-883 - private `is_int_or_int_vector_type` (matches on AnyTypeEnum::Int / Vector-with-integer-element), `is_fp_or_fp_vector_type`, `is_ptr_or_ptr_vector_type`; called at :8566, :8764, :11370, :11535, :12160. Same file calls the public `ty.is_valid_pointer_element()` at :6453/:6921/:11817 and `llvmkit_ir::cast_is_valid` at :8589, so the public Type surface is demonstrably reachable there. - crates/llvmkit-ir/src/constants.rs:2362 (scalar_type_id), :2391 (is_ptr_or_ptr_vector), :2512 (is_int_or_int_vector) - all `(&ModuleCore, TypeSlot)`-shaped; ~10 call sites at :1903, :2090-2133, :2242, :2300-2305. - crates/llvmkit-ir/src/intrinsics.rs:2033-2069 - is_integer_or_integer_vector, is_float_or_float_vector, is_vector, scalar_type_data. - crates/llvmkit-ir/src/ir_builder/constant_folder.rs:679-690 - `fn is_int_or_int_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool`, same receiver type as the public method, called at :624. - crates/llvmkit-ir/src/assumptions.rs:1166-1175 and implied_conditions.rs:1199-1217 - both carry the rustdoc "Ports `Type::isIntOrIntVectorTy(1)`"; implied_conditions.rs:1200 also has a bare `is_vector`. - grep "type_contains_scalable_vector" across crates/ - zero hits, confirming that W4 consolidation did land. Upstream confirmed: - orig_cpp/.../llvm/include/llvm/IR/Type.h:246 `isIntOrIntVectorTy()`, :250 the `(unsigned BitWidth)` overload, :270 `isPtrOrPtrVectorTy()` - all inline in the header, not Type.cpp. - orig_cpp/.../llvm/lib/IR/Type.cpp:61/69 Type::isScalableTy, :263 isSizedDerivedType, :703/765/789/875 the four isValidElementType. - orig_cpp/.../llvm/lib/IR/Instructions.cpp:3312 CastInst::castIsValid. Context: docs/future-work.md:76-94 records the identical shape for the aggregate index walk ("one port, three callers"; "a predicate with three implementations is one diagnostic away from having three behaviours") and cites W4's type_contains_scalable_vector as the precedent - but there is no future-work entry covering the Type int/ptr/fp/scalar predicate family.
-
-</details>
-
-### 84. `ConstantRangeList` set operations are not ported
-
-> **Triage 2026-08-29: pending work, gated on a first caller, description
-> verified and unchanged.** `impl ConstantRangeList` still has no `subtract`,
-> `union_with` or `intersect_with`
-> (`grep -n "fn subtract\|fn union_with\|fn intersect_with" crates/llvmkit-ir/src/constant_range_list.rs`
-> returns nothing), and the three `ConstantRangeListTest.cpp` cases remain
-> unportable. This is a **deferral with a named trigger** — land the three
-> methods with their first real caller — not a difference that should never
-> close, so it stays unmarked.
-
-
-*IR model* — crates/llvmkit-ir/src/constant_range_list.rs
-
-- **LLVM:** `llvm/IR/ConstantRangeList.h` provides `subtract`, `unionWith` and `intersectWith` alongside `insert`.
-- **llvmkit:** Only `isOrderedRanges`, `getConstantRangeList`, `print` and `insert` (with its `int64_t` overload) are ported. Three of the six `unittests/IR/ConstantRangeListTest.cpp` cases (`Subtract`, `Union`, `Intersect`) are therefore unportable.
-- **Why:** Recorded in docs/future-work.md (W5, decided 2026-08-12): no consumer anywhere in llvmkit — upstream's callers are Attributor- and `MemoryLocation`-style passes this tree has not ported — so porting would add public API with no in-tree user and no way to be sure it stays right.
-- **Fix:** Land the three methods together with their first real caller, taking the three unit tests in the same commit. One detail to carry: `insert`'s no-op check uses `ConstantRange::contains` (unsigned) while everything else in the class compares signed; llvmkit reproduces the inconsistency, so read a `subtract` port against upstream's comment, not against `insert`.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-ir/src/constant_range_list.rs (343 lines, read in full, unmodified in the working tree): the sole `impl ConstantRangeList` block has `new` (= getConstantRangeList), `is_ordered_ranges`, `ranges`, `is_empty`, `len`, `bit_width`, `insert`, `insert_signed`, plus `impl Display` for `print`. No `subtract`, `union_with`, or `intersect_with`. A crate-wide grep for `ConstantRangeList` across crates/llvmkit-ir/src shows the type only appears additionally in attributes.rs (the `Initializes` payload) and lib.rs:219 (re-export) — no set operations anywhere else. Upstream orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/IR/ConstantRangeList.h declares `subtract` (line 77), `unionWith` (81) and `intersectWith` (85), all three defined in lib/IR/ConstantRangeList.cpp (lines 86, 146, 197). unittests/IR/ConstantRangeListTest.cpp has exactly six TEST_F cases — Basics, getConstantRangeList, Insert, Subtract, Union, Intersect — and llvmkit's in-file `mod tests` ports only the first three (UPSTREAM.md rows 1130-1133 corroborate; the fourth test, display_matches_print, is self-declared llvmkit-specific). docs/future-work.md line 258 records this as a deliberate deferral ("ConstantRangeList - three set operations not ported (decided 2026-08-12, LLParser parity W5)"), reasoning that the three methods have no in-tree caller and instructing that they land with their first real caller together with the three tests. Sole nuance: the claim's enumeration understates the ported surface slightly — `rangesRef`/`empty`/`size`/`getBitWidth`/`operator==` are also ported (as ranges/is_empty/len/bit_width/PartialEq) — but what is missing is exactly the three set operations, as claimed.
 
 </details>
 

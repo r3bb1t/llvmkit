@@ -79,6 +79,49 @@ cut, entries accumulate under **Unreleased**.
   turn on a flag written on the `select` — is now ported as the law that would
   have caught it.
 
+### Added — `ConstantRangeList::subtract`, `union_with` and `intersect_with`
+
+- **The three set operations from `llvm/lib/IR/ConstantRangeList.cpp`.** They
+  were deferred for having no in-tree caller; the three upstream `TEST_F` cases
+  they unblock (`Subtract`, `Union`, `Intersect`) are the guarantee they stay
+  right, and are ported with every assertion unchanged. Upstream's asserts —
+  a full or reversed subtrahend, mismatched widths — become guards that leave
+  the list unchanged, the same treatment `insert` already gave them, since this
+  crate raises no runtime panics on a production path. Every comparison is
+  signed, including the two containment tests in `subtract`, which upstream's
+  own comment insists on because `ConstantRange::contains` is unsigned.
+
+### Changed — `inrange` bounds are read by the one integer-literal reader
+
+- **`ConstantExprInRange` holds two `ApInt`s** instead of `Box<[u64]>` plus a
+  separate width, and `ConstantExprInRange::new` takes them. `LLLexer` has one
+  `APSInt` rule and `LLParser::parseValID` reads `inrange` bounds through it
+  like every other consumer; llvmkit had a second, parallel reader —
+  `parse_inrange_bound` matched `Token::IntegerLit` itself and rebuilt the
+  `[us]0x` active-bit truncation and the signed widening out of raw `u64`
+  words. It is now `parse_int_literal` plus
+  `ParsedApsInt::extend_or_truncate`, which is what upstream's `extOrTrunc` is.
+
+  The parallel word arithmetic goes with it — `ParsedInRangeBound` plus 17
+  helper functions, none of which had a caller outside this one path. Both
+  figures are the diff of the commit that made this change, not a stored count:
+  `git show <that commit> --numstat -- crates/llvmkit-asmparser/src/ll_parser.rs`
+  for the lines, and `git show <that commit>^:crates/llvmkit-asmparser/src/ll_parser.rs
+  | sed -n '1052,1063p;1088,1304p' | grep -c '^fn \|^enum '` for the 18 items.
+  Two more copies of the same shape go with it in
+  `llvmkit-ir`: `canonical_apint_words`, subsumed because `ApInt`
+  canonicalises its own words, and a second hand-rolled signed comparison in
+  `constants.rs`, now `ConstantExprInRange::is_non_empty`. Both readers were
+  correct and stayed correct — this closes the duplication, not a bug. The law
+  that keeps them one is
+  `parser_constants.rs::an_inrange_bound_and_an_integer_literal_read_a_token_identically`,
+  which reads each spelling as an `inrange` bound and as an `i64` constant and
+  requires them to agree.
+
+  **Breaking:** `ConstantExprInRange::new(start, end, bit_width)` is now
+  `new(start: ApInt, end: ApInt)`, and `start()` / `end()` return `&ApInt`
+  rather than `&[u64]`.
+
 ### Fixed — the verifier's aggregate index walk agrees with the other two again
 
 - **`extractvalue` / `insertvalue` into an array longer than `u32::MAX` no

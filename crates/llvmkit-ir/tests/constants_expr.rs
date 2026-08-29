@@ -1,8 +1,8 @@
 //! Constant-expression, blockaddress, and token-none tests.
 
 use llvmkit_ir::{
-    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn, GepNoWrapFlags, IrBuilder,
-    IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags, module_new,
+    ApInt, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn, GepNoWrapFlags,
+    IrBuilder, IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags, module_new,
 };
 
 fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
@@ -684,6 +684,12 @@ fn vector_gep_struct_index_width_mismatch_is_rejected() -> Result<(), IrError> {
 /// llvmkit-specific subset of `LLParser::parseValID`/`ConstantsContext.h`:
 /// public `ConstantExprInRange` construction canonicalizes APInt words outside
 /// the declared bit width before interning.
+///
+/// Since `ConstantExprInRange` began holding two `ApInt`s rather than raw
+/// words, this is `ApInt`'s own canonicalization doing the work — a 64-bit
+/// `ApInt::from_words` keeps one word and drops the rest — but the property the
+/// interner depends on is the same and is still worth pinning here: two ranges
+/// spelled differently for the same value must intern to one constant.
 #[test]
 fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<(), IrError> {
     let m = module_new!("constexpr_inrange_canonical_words")?;
@@ -691,9 +697,12 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
     let g = m.add_global("g", i8_ty.const_zero())?;
     let ptr = m.view(g).as_global_constant_ptr();
     let offset = m.i64_type().const_int(1i64);
-    let canonical_range = ConstantExprInRange::new(Box::from([0]), Box::from([1]), 64);
-    let high_word_range =
-        ConstantExprInRange::new(Box::from([0, u64::MAX]), Box::from([1, u64::MAX]), 64);
+    let canonical_range =
+        ConstantExprInRange::new(ApInt::from_words(64, &[0]), ApInt::from_words(64, &[1]));
+    let high_word_range = ConstantExprInRange::new(
+        ApInt::from_words(64, &[0, u64::MAX]),
+        ApInt::from_words(64, &[1, u64::MAX]),
+    );
 
     let canonical = m.constant_expr_with_options(
         m.ptr_type(0).as_type(),
@@ -736,7 +745,8 @@ fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), I
     let i8_ty = m.i8_type();
     let g = m.add_global("g", i8_ty.const_zero())?;
     let offset = m.i64_type().const_int(1i64);
-    let wrong_width_range = ConstantExprInRange::new(Box::from([0]), Box::from([1]), 32);
+    let wrong_width_range =
+        ConstantExprInRange::new(ApInt::from_words(32, &[0]), ApInt::from_words(32, &[1]));
 
     let err = m
         .constant_expr_with_options(

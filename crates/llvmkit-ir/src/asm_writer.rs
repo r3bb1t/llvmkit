@@ -943,11 +943,9 @@ fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx>(
                 write!(f, " {}", no_wrap)?;
             }
             if let Some(in_range) = flags.in_range() {
-                f.write_str(" inrange(")?;
-                fmt_apint_signed(f, in_range.start(), in_range.bit_width())?;
-                f.write_str(", ")?;
-                fmt_apint_signed(f, in_range.end(), in_range.bit_width())?;
-                f.write_str(")")?;
+                // `impl Display for ApInt` is the signed-decimal form
+                // `AsmWriter` prints for both bounds.
+                write!(f, " inrange({}, {})", in_range.start(), in_range.end())?;
             }
         }
     }
