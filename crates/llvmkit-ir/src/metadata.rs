@@ -1993,6 +1993,189 @@ impl SpecializedMetadataKind {
 }
 
 // --------------------------------------------------------------------------
+// Debug-info flag bitfields
+// --------------------------------------------------------------------------
+
+/// The bit a `DIFlag*` / `DISPFlag*` spelling names, or `FlagZero` when the
+/// table does not carry it — `StringSwitch<…>(Flag).Case(…).Default(FlagZero)`
+/// under both `DINode::getFlag` and `DISubprogram::getFlag`.
+fn flag_bit(lookup: fn(&str) -> Option<u32>, spelling: &str) -> u32 {
+    lookup(spelling).unwrap_or(0)
+}
+
+/// `DINode::DIFlags` (`include/llvm/IR/DebugInfoMetadata.h`) — the `flags:`
+/// field of a specialized `DI*` node, as one bitfield rather than the source
+/// text that produced it.
+///
+/// The three routines below are `DINode::getFlag`, `DINode::getFlagString` and
+/// `DINode::splitFlags` (`lib/IR/DebugInfoMetadata.cpp`); between them they are
+/// why `flags: 4 | DIFlagPublic` and `flags: DIFlagProtected | DIFlagPrivate`
+/// are read as bit sets and printed back canonically instead of echoed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct DiFlags(u32);
+
+impl DiFlags {
+    /// `DINode::FlagZero`.
+    pub const ZERO: Self = Self(0);
+
+    /// The raw bitfield.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Wrap a raw bitfield. The unsigned integer term `parseMDField`'s
+    /// `parseFlag` accepts arrives this way.
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    /// Whether every bit of `other` is set. Upstream spells this
+    /// `(Flags & Other) == Other`.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// `Flags |= Val`, the accumulator of `parseMDField`'s `do`/`while` loop.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Mirrors `DINode::getFlag`: the flag a `DIFlag*` spelling names, or
+    /// [`Self::ZERO`] for one the table does not carry. Callers reject a zero
+    /// result, which is how `DIFlagZero` itself is refused upstream.
+    pub fn get_flag(spelling: &str) -> Self {
+        Self(flag_bit(crate::dwarf::di_flag, spelling))
+    }
+
+    /// Mirrors `DINode::getFlagString`, whose empty `StringRef` is [`None`]
+    /// here.
+    pub fn flag_string(self) -> Option<&'static str> {
+        crate::dwarf::di_flag_string(self.0)
+    }
+
+    /// Mirrors `DINode::splitFlags`: push each component onto `split` and
+    /// return the unrecognised remainder, which the printer emits as a
+    /// trailing number.
+    ///
+    /// The two composite fields come first and in upstream's order, with
+    /// upstream's own comment for the first: emit `DIFlagPublic` and not
+    /// `DIFlagPrivate | DIFlagProtected`.
+    pub fn split_flags(mut self, split: &mut Vec<Self>) -> Self {
+        let bit = |name: &str| Self(flag_bit(crate::dwarf::di_flag, name));
+        let accessibility = bit("DIFlagPrivate")
+            .union(bit("DIFlagProtected"))
+            .union(bit("DIFlagPublic"));
+        let ptr_to_member_rep = bit("DIFlagSingleInheritance")
+            .union(bit("DIFlagMultipleInheritance"))
+            .union(bit("DIFlagVirtualInheritance"));
+        let indirect_virtual_base = bit("DIFlagIndirectVirtualBase");
+
+        let a = self.0 & accessibility.0;
+        if a != 0 {
+            if a == bit("DIFlagPrivate").0 {
+                split.push(bit("DIFlagPrivate"));
+            } else if a == bit("DIFlagProtected").0 {
+                split.push(bit("DIFlagProtected"));
+            } else {
+                split.push(bit("DIFlagPublic"));
+            }
+            self.0 &= !a;
+        }
+        let r = self.0 & ptr_to_member_rep.0;
+        if r != 0 {
+            if r == bit("DIFlagSingleInheritance").0 {
+                split.push(bit("DIFlagSingleInheritance"));
+            } else if r == bit("DIFlagMultipleInheritance").0 {
+                split.push(bit("DIFlagMultipleInheritance"));
+            } else {
+                split.push(bit("DIFlagVirtualInheritance"));
+            }
+            self.0 &= !r;
+        }
+        if self.contains(indirect_virtual_base) {
+            self.0 &= !indirect_virtual_base.0;
+            split.push(indirect_virtual_base);
+        }
+        // `#define HANDLE_DI_FLAG(ID, NAME) if (DIFlags Bit = Flags & Flag##NAME)
+        //  { SplitFlags.push_back(Bit); Flags &= ~Bit; }` over the whole `.def`,
+        // in its order — which is this table's order.
+        for &(_, value) in crate::dwarf::DI_FLAGS {
+            let bit = self.0 & value;
+            if bit != 0 {
+                split.push(Self(bit));
+                self.0 &= !bit;
+            }
+        }
+        self
+    }
+}
+
+/// `DISubprogram::DISPFlags` (`include/llvm/IR/DebugInfoMetadata.h`) — the
+/// `spFlags:` field of `!DISubprogram`, as one bitfield.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct DispFlags(u32);
+
+impl DispFlags {
+    /// `DISubprogram::SPFlagZero`.
+    pub const ZERO: Self = Self(0);
+
+    /// The raw bitfield.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Wrap a raw bitfield.
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    /// Whether every bit of `other` is set.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// `Flags |= Val`.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// `DISubprogram::SPFlagDefinition`, the one bit a caller outside this
+    /// module asks about: `parseDISubprogram`'s `IsDefinition` guard reads the
+    /// computed `SPFlags`, not the `isDefinition:` field.
+    pub fn definition() -> Self {
+        Self(flag_bit(crate::dwarf::disp_flag, "DISPFlagDefinition"))
+    }
+
+    /// Mirrors `DISubprogram::getFlag`.
+    pub fn get_flag(spelling: &str) -> Self {
+        Self(flag_bit(crate::dwarf::disp_flag, spelling))
+    }
+
+    /// Mirrors `DISubprogram::getFlagString`. Its `case SPFlagVirtuality:
+    /// return "";` arm — added to appease a warning, for a value no
+    /// `HANDLE_DISP_FLAG` row carries — falls out of the table lookup as
+    /// [`None`].
+    pub fn flag_string(self) -> Option<&'static str> {
+        crate::dwarf::disp_flag_string(self.0)
+    }
+
+    /// Mirrors `DISubprogram::splitFlags`, which is the bare `HANDLE_DISP_FLAG`
+    /// loop: upstream's comment notes that the only multi-bit field is
+    /// virtuality and all its values are single-bit, so the right behaviour
+    /// falls out with no special case.
+    pub fn split_flags(mut self, split: &mut Vec<Self>) -> Self {
+        for &(_, value) in crate::dwarf::DISP_FLAGS {
+            let bit = self.0 & value;
+            if bit != 0 {
+                split.push(Self(bit));
+                self.0 &= !bit;
+            }
+        }
+        self
+    }
+}
+
+// --------------------------------------------------------------------------
 // Specialized `DI*` node fields
 // --------------------------------------------------------------------------
 
@@ -2005,6 +2188,12 @@ pub enum MetadataFieldValue<B: ModuleBrand> {
     Integer(i128),
     String(String),
     Enum(String),
+    /// A `flags:` bitfield. Its terms are OR-ed at parse time, exactly as
+    /// `parseMDField(DIFlagField&)`'s `do`/`while` loop does, so the written
+    /// order, duplicates and alias spellings do not survive into storage.
+    DiFlags(DiFlags),
+    /// A `spFlags:` bitfield, the `DISPFlagField` twin.
+    DispFlags(DispFlags),
     Metadata(MetadataId<B>),
     MetadataList(Vec<MetadataId<B>>),
 }
@@ -2019,6 +2208,8 @@ impl<B: ModuleBrand> MetadataFieldValue<B> {
             Self::Integer(i) => MetadataFieldValue::Integer(i),
             Self::String(s) => MetadataFieldValue::String(s),
             Self::Enum(s) => MetadataFieldValue::Enum(s),
+            Self::DiFlags(f) => MetadataFieldValue::DiFlags(f),
+            Self::DispFlags(f) => MetadataFieldValue::DispFlags(f),
             Self::Metadata(id) => MetadataFieldValue::Metadata(id.into_stored(owner)?),
             Self::MetadataList(ids) => MetadataFieldValue::MetadataList(
                 ids.into_iter()
@@ -2036,6 +2227,8 @@ impl<B: ModuleBrand> MetadataFieldValue<B> {
             MetadataFieldValue::Integer(i) => Self::Integer(*i),
             MetadataFieldValue::String(s) => Self::String(s.clone()),
             MetadataFieldValue::Enum(s) => Self::Enum(s.clone()),
+            MetadataFieldValue::DiFlags(f) => Self::DiFlags(*f),
+            MetadataFieldValue::DispFlags(f) => Self::DispFlags(*f),
             MetadataFieldValue::Metadata(id) => Self::Metadata(MetadataId::from_stored(*id)),
             MetadataFieldValue::MetadataList(ids) => Self::MetadataList(
                 ids.iter()

@@ -246,13 +246,15 @@ fn inline_asm_label_constraint_rules_are_verifier_rules() {
 /// [`upstream_musttail_invalid_fixture_messages_match`] is: `verify_borrowed`
 /// reports the first failure where upstream's `Verifier` accumulates.
 ///
-/// **The four `llvm.callbr.landingpad` functions of this fixture are not
-/// ported.** They belong to `Verifier::visitIntrinsicCall`'s
-/// `Intrinsic::callbr_landingpad` arm — `Intrinsic in block must have 1 unique
-/// predecessor`, `Intrinsic's corresponding callbr must have intrinsic's
-/// parent basic block in indirect destination list`, `No other instructions
-/// may proceed intrinsic` — a routine `check_intrinsic_call` does not carry.
-/// See `docs/divergences.md`.
+/// **Three of the four `llvm.callbr.landingpad` functions are ported by
+/// [`upstream_callbr_landingpad_fixture_messages_match`] below**, which is a
+/// separate test only because they need a `declare` prelude this one does not.
+/// The fourth, `@callbrpad_bad_type`, is still unported: its `CHECK` is
+/// `Intrinsic has incorrect argument type!`, one of the three messages
+/// `Verifier::visitIntrinsicCall`'s preamble splits out of
+/// `Intrinsic::matchIntrinsicSignature`'s result, which llvmkit collapses into
+/// `Intrinsic called with incompatible signature`. See `docs/divergences.md`
+/// entry 132.
 #[test]
 fn upstream_callbr_label_constraint_fixture_messages_match() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/callbr.ll");
@@ -280,6 +282,50 @@ fn upstream_callbr_label_constraint_fixture_messages_match() {
     ];
     for (marker, expected) in cases {
         assert_fixture_case_verifies(FIXTURE, "", marker, expected);
+    }
+}
+
+/// `llvm/test/Verifier/callbr.ll`'s `llvm.callbr.landingpad` half, vendored
+/// with the rest of the fixture: three of its four functions, each against the
+/// `CHECK-NEXT` the fixture writes for it.
+///
+/// This is `Verifier::visitIntrinsicCall`'s `case Intrinsic::callbr_landingpad:`
+/// arm, the one arm of that routine's per-intrinsic `switch` llvmkit carries.
+/// The three messages are its three reachable rejections; the arm's fourth,
+/// `intrinstic requires callbr operand` (upstream's typo), has no function in
+/// this fixture — every one of them passes a `callbr` result as operand zero.
+///
+/// A separate test from
+/// [`upstream_callbr_label_constraint_fixture_messages_match`] only because
+/// these functions need a `declare` prelude the inline-asm ones do not.
+///
+/// `@callbrpad_bad_type`, the fourth function, is deliberately absent: its
+/// `CHECK` is `Intrinsic has incorrect argument type!`, which belongs to the
+/// preamble's `matchIntrinsicSignature` split rather than to this arm.
+/// `docs/divergences.md` entry 132 names it.
+#[test]
+fn upstream_callbr_landingpad_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/callbr.ll");
+    // `@test_callbr_landingpad_not_first_inst` also calls `@foo`, which the
+    // fixture declares beside the intrinsic.
+    const PRELUDE: &str = "declare i32 @llvm.callbr.landingpad.i32(i32)\ndeclare i32 @foo(i32)\n";
+    let cases = [
+        (
+            "define i32 @callbrpad_multi_preds(",
+            "Intrinsic in block must have 1 unique predecessor",
+        ),
+        (
+            "define void @callbrpad_wrong_callbr(",
+            "Intrinsic's corresponding callbr must have intrinsic's parent basic block in \
+             indirect destination list",
+        ),
+        (
+            "define i32 @test_callbr_landingpad_not_first_inst(",
+            "No other instructions may proceed intrinsic",
+        ),
+    ];
+    for (marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, PRELUDE, marker, Some(expected));
     }
 }
 

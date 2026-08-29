@@ -328,6 +328,11 @@ impl IntrinsicId {
     pub(crate) const AMDGCN_UNREACHABLE: Self =
         checked_intrinsic_id(generated::SEMANTIC_AMDGCN_UNREACHABLE);
 
+    /// `Intrinsic::callbr_landingpad`, the one `case` of
+    /// `Verifier::visitIntrinsicCall`'s per-intrinsic `switch` that is ported.
+    pub(crate) const CALLBR_LANDINGPAD: Self =
+        checked_intrinsic_id(generated::SEMANTIC_CALLBR_LANDINGPAD);
+
     /// The ObjC ARC intrinsics named by `IntrinsicInst::mayLowerToFunctionCall`
     /// and `Verifier::verifyAttachedCallBundle`. Crate-internal: they exist to
     /// spell those two routines, not as a public intrinsic catalogue.

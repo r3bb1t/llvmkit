@@ -317,6 +317,19 @@ pub enum VerifierRule {
     /// bundle. Mirrors the tail of `Verifier::visitIntrinsicCall` ("Missing
     /// funclet token on intrinsic call").
     MissingFuncletToken,
+    /// An intrinsic declaration has a body. Mirrors the head of
+    /// `Verifier::visitIntrinsicCall` ("Intrinsic functions should never be
+    /// defined!").
+    IntrinsicDefined,
+    /// A constant argument to an intrinsic has type `x86_amx`. Mirrors
+    /// `Verifier::visitIntrinsicCall`'s argument walk ("const x86_amx is not
+    /// allowed in argument!").
+    ConstX86AmxArgument,
+    /// `llvm.callbr.landingpad` is not the first instruction of a block whose
+    /// one predecessor ends in the `callbr` it names, with that block among the
+    /// `callbr`'s indirect destinations. Mirrors
+    /// `Verifier::visitIntrinsicCall`'s `case Intrinsic::callbr_landingpad:`.
+    CallbrLandingPadPlacement,
     /// `musttail call` whose callee is inline assembly.
     /// Mirrors `Verifier::verifyMustTailCall`.
     MustTailCallInlineAsm,
@@ -662,6 +675,11 @@ impl fmt::Display for VerifierRule {
                 "funclet pads are ill-nested, or unwind edges out of one disagree"
             }
             Self::MissingFuncletToken => "intrinsic call in an EH funclet has no funclet token",
+            Self::IntrinsicDefined => "an intrinsic function has a body",
+            Self::ConstX86AmxArgument => "a constant argument to an intrinsic has type x86_amx",
+            Self::CallbrLandingPadPlacement => {
+                "llvm.callbr.landingpad is not first in a block reached only by its callbr"
+            }
             Self::MustTailCallInlineAsm => "musttail call callee is inline assembly",
             Self::MustTailCallVarArgsMismatch => {
                 "musttail call and caller disagree on the variadic bit"

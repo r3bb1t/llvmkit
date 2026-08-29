@@ -872,6 +872,8 @@ pub(crate) fn semantic_ids(intrinsics: &[IntrinsicOut]) -> GenResult<Vec<(String
         // `Intrinsic::amdgcn_unreachable`.
         ("AMDGCN_KILL", "amdgcn_kill"),
         ("AMDGCN_UNREACHABLE", "amdgcn_unreachable"),
+        // `Verifier::visitIntrinsicCall`'s `case Intrinsic::callbr_landingpad:`.
+        ("CALLBR_LANDINGPAD", "callbr_landingpad"),
         // `IntrinsicInst::mayLowerToFunctionCall`'s `switch`
         // (`lib/IR/IntrinsicInst.cpp`), in its own order, plus
         // `objc_claimAutoreleasedReturnValue` — which that `switch` does *not*

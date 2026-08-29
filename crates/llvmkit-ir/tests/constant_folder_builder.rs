@@ -321,6 +321,14 @@ fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), 
 /// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldShuffleVector`
 /// lines 165-172 and `Constants.cpp::ConstantExpr::getShuffleVector`: scalable
 /// zero-mask shuffles build a scalable mask constant for the fallback constexpr.
+///
+/// **The operands used to be non-uniform** — `<i32 1, i32 2>` and
+/// `<i32 3, i32 4>` — and the assertion pinned them in the printed text. That
+/// is a shape LLVM cannot build (`ConstantVector::get` takes a fixed count) and
+/// llvmkit's own `.ll` parser cannot read, so the test was holding the
+/// divergence in place rather than catching it. `VectorType::const_vector` now
+/// requires a scalable constant's lanes to agree; the operands are splats and
+/// nothing else about the case moved.
 #[test]
 fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), IrError> {
     let m = module_new!("folder-scalable-shuffle")?;
@@ -328,11 +336,11 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
     let vec_ty = m.scalable_vector_type(i32_ty.as_type(), 2);
     let lhs = vec_ty.const_vector::<ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(1_i32),
-        i32_ty.const_int(2_i32),
+        i32_ty.const_int(1_i32),
     ])?;
     let rhs = vec_ty.const_vector::<ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(3_i32),
-        i32_ty.const_int(4_i32),
+        i32_ty.const_int(3_i32),
     ])?;
 
     let folded = ConstantFolder
@@ -347,7 +355,7 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
     m.add_global("shuf", folded)?;
     let text = format!("{m}");
     assert!(
-        text.contains("@shuf = global <vscale x 2 x i32> shufflevector (<vscale x 2 x i32> <i32 1, i32 2>, <vscale x 2 x i32> <i32 3, i32 4>, <vscale x 2 x i32> zeroinitializer)"),
+        text.contains("@shuf = global <vscale x 2 x i32> shufflevector (<vscale x 2 x i32> splat (i32 1), <vscale x 2 x i32> splat (i32 3), <vscale x 2 x i32> zeroinitializer)"),
         "{text}"
     );
     Ok(())

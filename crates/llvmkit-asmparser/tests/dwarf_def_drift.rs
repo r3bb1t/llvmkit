@@ -231,6 +231,16 @@ fn dw_macinfo_matches_the_hand_written_switch() {
 
 /// Mirrors `DINode::getFlag` / `getFlagString` (`lib/IR/DebugInfoMetadata.cpp`),
 /// which builds its `StringSwitch` from `HANDLE_DI_FLAG` with a `DIFlag` prefix.
+///
+/// Both directions, and the second is the one that matters: `flag_rows` used to
+/// read the `.def` line by line and so swept in `HANDLE_DI_FLAG((1 << 30),
+/// Largest)`, which sits inside `#ifdef DI_FLAG_LARGEST_NEEDED`. Only
+/// `DebugInfoMetadata.h` defines that macro — to bound the `DIFlags` bitmask
+/// enum — and `DebugInfoMetadata.cpp` does not, so `getFlag` has never matched
+/// `DIFlagLargest` and `getFlagString` could not carry it (`FlagLargest`
+/// aliases `FlagNameIsSimplified`). llvmkit's table carried it anyway and
+/// accepted the spelling upstream rejects; the forward direction alone could
+/// not see that, because it only asks whether every derived row is present.
 #[test]
 fn di_flag_table_matches_the_vendored_def() {
     let derived = flag_rows(DEBUG_INFO_FLAGS_DEF, "DI_FLAG");
@@ -242,6 +252,9 @@ fn di_flag_table_matches_the_vendored_def() {
             Some(value),
             "{spelled} should be {value:#x}"
         );
+    }
+    for name in ["DIFlagLargest", "DIFlagBogus", "DIFlag"] {
+        assert_eq!(dwarf::di_flag(name), None, "{name}");
     }
 }
 
@@ -274,7 +287,9 @@ fn dw_apple_enum_kind_table_matches_the_vendored_def() {
 }
 
 /// Mirrors `DISubprogram::getFlag` / `getFlagString`, built from
-/// `HANDLE_DISP_FLAG` with a `DISPFlag` prefix.
+/// `HANDLE_DISP_FLAG` with a `DISPFlag` prefix. `DISPFlagLargest` is excluded
+/// for the reason [`di_flag_table_matches_the_vendored_def`] gives, and aliases
+/// `DISPFlagObjCDirect`.
 #[test]
 fn disp_flag_table_matches_the_vendored_def() {
     let derived = flag_rows(DEBUG_INFO_FLAGS_DEF, "DISP_FLAG");
@@ -287,22 +302,46 @@ fn disp_flag_table_matches_the_vendored_def() {
             "{spelled} should be {value:#x}"
         );
     }
+    for name in ["DISPFlagLargest", "DISPFlagBogus", "DISPFlag"] {
+        assert_eq!(dwarf::disp_flag(name), None, "{name}");
+    }
 }
 
 /// `DebugInfoFlags.def` writes its values as C expressions (`1`, `(1 << 2)`,
 /// `(1 << 2) | (1 << 5)`, `1u`), so they are evaluated rather than parsed.
+///
+/// Rows inside an `#ifdef …_LARGEST_NEEDED` block are skipped: the `.def` is
+/// included twice with different macros defined, and the include that builds
+/// `DINode::getFlag` / `getFlagString` — the routines these tables stand in
+/// for — is the one that leaves it undefined.
 fn flag_rows(source: &str, macro_name: &str) -> Vec<(String, u32)> {
     let prefix = format!("HANDLE_{macro_name}(");
-    source
-        .lines()
-        .filter_map(|line| line.strip_prefix(prefix.as_str()))
-        .filter_map(|rest| {
-            let close = rest.rfind(')')?;
-            let inner = &rest[..close];
-            let (expr, name) = inner.rsplit_once(',')?;
-            Some((name.trim().to_owned(), eval_flag_expr(expr)))
-        })
-        .collect()
+    let mut rows = Vec::new();
+    let mut skipping = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#ifdef") && trimmed.ends_with("_LARGEST_NEEDED") {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if trimmed == "#endif" {
+                skipping = false;
+            }
+            continue;
+        }
+        let Some(rest) = line.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        let Some(close) = rest.rfind(')') else {
+            continue;
+        };
+        let Some((expr, name)) = rest[..close].rsplit_once(',') else {
+            continue;
+        };
+        rows.push((name.trim().to_owned(), eval_flag_expr(expr)));
+    }
+    rows
 }
 
 /// Evaluate the `|`-joined, `<<`-shifted integer expressions the `.def` uses.

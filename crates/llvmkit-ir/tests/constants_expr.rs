@@ -508,6 +508,12 @@ fn shufflevector_constant_expr_rejects_extra_raw_mask_payload() -> Result<(), Ir
 /// Ports `ShuffleVectorInst::isValidOperands`: scalable vector masks accept
 /// undef and aggregate-zero constants; llvmkit's aggregate-zero representation
 /// prints as `zeroinitializer`.
+///
+/// The two shuffled operands were `<i32 1, i32 2>` and `<i32 3, i32 4>` — a
+/// shape LLVM has no constructor for, since `ConstantVector::get` takes a fixed
+/// count. `VectorType::const_vector` now requires a scalable constant's lanes
+/// to agree, so both are splats; the mask, which is what the test is about,
+/// is unchanged.
 #[test]
 fn scalable_shufflevector_zero_mask_is_accepted() -> Result<(), IrError> {
     let m = module_new!("constexpr_scalable_shuffle_zero_mask")?;
@@ -515,11 +521,11 @@ fn scalable_shufflevector_zero_mask_is_accepted() -> Result<(), IrError> {
     let vec_i32_ty = m.scalable_vector_type(i32_ty.as_type(), 2);
     let lhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(1i32),
-        i32_ty.const_int(2i32),
+        i32_ty.const_int(1i32),
     ])?;
     let rhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(3i32),
-        i32_ty.const_int(4i32),
+        i32_ty.const_int(3i32),
     ])?;
     let zero = i32_ty.const_zero();
     let mask =

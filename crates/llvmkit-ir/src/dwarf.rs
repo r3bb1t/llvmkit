@@ -537,7 +537,17 @@ pub(crate) const MACINFO_TYPES: &[(&str, u32)] = &[
     ("DW_MACINFO_vendor_ext", 0xff),
 ];
 
-/// `DIFlag*` name/value pairs, in `Dwarf.def` order.
+/// `DIFlag*` name/value pairs, in `DebugInfoFlags.def` order.
+///
+/// **`DIFlagLargest` is deliberately absent.** The `.def` guards that row
+/// behind `#ifdef DI_FLAG_LARGEST_NEEDED`, which only `DebugInfoMetadata.h`
+/// defines — to give the `DIFlags` enum a `LLVM_MARK_AS_BITMASK_ENUM` bound.
+/// `DebugInfoMetadata.cpp` includes the same `.def` without it, so
+/// `DINode::getFlag` never matches the spelling and `DINode::getFlagString`
+/// has no `case` for its value (it could not: `FlagLargest` aliases
+/// `FlagNameIsSimplified`). This table is the one behind those two routines,
+/// so it stops where they stop. `DISPFlagLargest` is absent for the same
+/// reason, and aliases `DISPFlagObjCDirect`.
 pub(crate) const DI_FLAGS: &[(&str, u32)] = &[
     ("DIFlagZero", 0x0),
     ("DIFlagPrivate", 0x1),
@@ -573,10 +583,10 @@ pub(crate) const DI_FLAGS: &[(&str, u32)] = &[
     ("DIFlagAllCallsDescribed", 0x20000000),
     ("DIFlagNameIsSimplified", 0x40000000),
     ("DIFlagIndirectVirtualBase", 0x24),
-    ("DIFlagLargest", 0x40000000),
 ];
 
-/// `DISPFlag*` name/value pairs, in `Dwarf.def` order.
+/// `DISPFlag*` name/value pairs, in `DebugInfoFlags.def` order. See
+/// [`DI_FLAGS`] for why `DISPFlagLargest` is absent.
 pub(crate) const DISP_FLAGS: &[(&str, u32)] = &[
     ("DISPFlagZero", 0x0),
     ("DISPFlagVirtual", 0x1),
@@ -590,7 +600,6 @@ pub(crate) const DISP_FLAGS: &[(&str, u32)] = &[
     ("DISPFlagMainSubprogram", 0x100),
     ("DISPFlagDeleted", 0x200),
     ("DISPFlagObjCDirect", 0x800),
-    ("DISPFlagLargest", 0x800),
 ];
 
 /// `DW_APPLE_ENUM_KIND_*` name/value pairs, in `Dwarf.def` order.

@@ -954,6 +954,21 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
 
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, B> {
     /// `<N x T> < ... >`. Mirrors `ConstantVector::get`.
+    ///
+    /// **The scalable case has no `ConstantVector::get` to mirror.** Upstream's
+    /// takes an `ArrayRef<Constant *>` and hands it to
+    /// `FixedVectorType::get(V.front()->getType(), V.size())`, so an
+    /// element-list constant is *always* fixed-width there and a scalable
+    /// vector constant can only be born from
+    /// `ConstantVector::getSplat(ElementCount, V)` — one value, replicated.
+    /// llvmkit stores a scalable splat as `min_len` equal elements (see
+    /// `constant_fold::vector_splat_constant`), which is a representation
+    /// choice, not a licence to describe lanes upstream cannot: the list must
+    /// have exactly `min_len` entries and every entry must be the same
+    /// constant, so what this builds is `getSplat` under llvmkit's spelling
+    /// and nothing else. Without that rule a non-uniform scalable constant is
+    /// constructible and prints text neither LLVM nor llvmkit's own `.ll`
+    /// parser will read back.
     pub fn const_vector<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
@@ -974,10 +989,19 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
         let n = ids.len();
         let expected = usize::try_from(self.min_len())
             .unwrap_or_else(|_| unreachable!("vector lane count fits in usize"));
-        if !self.is_scalable() && n != expected {
+        if n != expected {
             return Err(IrError::OperandWidthMismatch {
                 lhs: u32::try_from(expected).unwrap_or(u32::MAX),
                 rhs: u32::try_from(n).unwrap_or(u32::MAX),
+            });
+        }
+        if self.is_scalable()
+            && let Some(first) = ids.first().copied()
+            && ids.iter().any(|id| *id != first)
+        {
+            return Err(IrError::InvalidOperation {
+                message: "a scalable vector constant must be a splat: every lane \
+                          the same constant, as `ConstantVector::getSplat` builds it",
             });
         }
         Ok(intern_aggregate(self.as_type(), ids.into_boxed_slice()))

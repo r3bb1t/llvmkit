@@ -741,11 +741,10 @@ trips parse → verify → print → re-parse; the fixture that used to pin the 
 output is re-aimed at the fix. The original analysis follows, since the
 mechanism is worth keeping.
 
-A **non-uniform** scalable aggregate still reaches the element-list fallback and
-still prints text LLVM would reject — but that constant should not exist at
-all, and making it unconstructible is the open policy question recorded below,
-not a printer decision. Printing it losslessly beats collapsing it to a
-`splat (…)` it is not.
+~~A **non-uniform** scalable aggregate still reaches the element-list fallback
+and still prints text LLVM would reject~~ — **closed 2026-08-29**: it is now
+unconstructible, which is the answer the policy question below settled on. The
+element-list fallback is fixed-width only.
 
 ---
 
@@ -809,24 +808,38 @@ representation. `constant_fold_extract_element_instruction` deliberately skips
 the out-of-range→poison rule for a scalable operand, which would assert
 `vscale == 1`, and answers "don't know" instead.
 
-### Open policy question: llvmkit permits a scalable constant LLVM cannot express
+### ~~Open policy question: llvmkit permits a scalable constant LLVM cannot express~~ (decided 2026-08-29)
 
-`VectorType::const_vector` skips its element-count check for scalable types —
-correctly, since the count carries no meaning there — but nothing requires the
-lanes to *agree*. So a non-uniform scalable constant is constructible, and the
-parser reaches it: `@g = global <vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7>`
-parses today. LLVM cannot express that constant at all (`ConstantVector::get`
-takes a fixed count), so it has no rule against it either.
+**Decided: uniformity is required.** `VectorType::const_vector` now demands
+exactly `min_len` lanes and demands that they agree when the type is scalable,
+which makes it llvmkit's spelling of `ConstantVector::getSplat(ElementCount, V)`
+— the only constructor upstream has for a scalable vector constant. The
+element-count skip was not "correct because the count carries no meaning": it
+let `<vscale x 4 x i32>` hold a two-element list.
 
-Requiring uniformity was tried and **reverted**: two deliberate tests depend on
-the permissive behaviour as their *premise* —
-`scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts` and
-`scalable_vector_fsub_negative_zero_pattern_controls_undef_fold`, both in
-`crates/llvmkit-ir/tests/constant_fold.rs`, construct non-uniform scalable
-vectors to check that the folder declines. So this is a representation-policy
-decision, not an oversight to patch: either those tests' premise becomes
-unconstructible (and the tests unnecessary), or llvmkit keeps accepting a
-constant that has no LLVM spelling. **Decide before changing anything here.**
+Two claims in the original entry were wrong, and both were load-bearing.
+
+- **"the parser reaches it: `@g = global <vscale x 4 x i32> <i32 7, i32 8, i32
+  7, i32 7>` parses today"** — it does not, and did not. `LLParser`'s `<…>` arm
+  builds a *fixed* vector (`ConstantVector::get` → `FixedVectorType::get`) and
+  `convertValIDToValue`'s `t_Constant` arm then compares types exactly;
+  llvmkit's parser mirrors both, so that text answers `constant expression type
+  mismatch`. The builder was the only entry point, which is why the fix is
+  builder-side. [[verify-recorded-premises]]
+- **"two deliberate tests depend on the permissive behaviour"** — three did. The
+  third, `constant_folder_builder.rs::constant_folder_scalable_shuffle_builds_scalable_mask_expr`,
+  did more than depend on it: its assertion pinned the invalid printed text
+  `<vscale x 2 x i32> <i32 1, i32 2>` as expected output. A test written against
+  the defect is what "requiring uniformity was tried and reverted" actually
+  measured.
+
+Of the three, one lost its premise entirely and is gone
+(`scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts`), one kept the
+splat halves of its case
+(`scalable_vector_fsub_negative_zero_pattern_controls_undef_fold`), and the
+shuffle one took splat operands. `builder_aggregate_vector.rs::scalable_const_vector_admits_only_a_splat`
+is the rule's own test, and asserts the printed form as well as the rejection —
+the printer is what the rule exists to protect.
 
 ## ~~Parser — deferred alias/ifunc targets~~ (found and fixed 2026-07-31)
 
@@ -1608,21 +1621,24 @@ says that too rather than inventing one.
   the operands were still unvalidated names when W11 opened them. Recorded
   here because a false "closed" is worse than an open item.
   [[verify-recorded-premises]]
-- **`DIFlags` / `DISPFlags` are not bitflags.** Upstream spells them as two
-  `uint32_t` bitfields with `getFlag` / `getFlagString` / `splitFlags`
-  (`DINode::DIFlags` and `DISubprogram::DISPFlags`, `DebugInfoMetadata.h`);
-  llvmkit keeps the written disjunction as one `Enum(String)` field value, so
-  `DIFlagPublic | DIFlagPrototyped` round-trips as text without ever becoming a
-  set. Same milestone as the DWARF tables, and the same reason — the bitflag
-  type is only worth its keep once something reads it.
+- ~~**`DIFlags` / `DISPFlags` are not bitflags.**~~ **Closed 2026-08-29
+  (divergence-closing W9).** `metadata::DiFlags` and `metadata::DispFlags` are
+  the two `u32` bitfields, carrying ports of `DINode::getFlag` /
+  `getFlagString` / `splitFlags` and their `DISubprogram` twins;
+  `MetadataFieldValue` grew a variant for each, `parseMDField`'s two typed
+  overloads are ported as `parse_di_flag_field` / `parse_disp_flag_field`, and
+  the printer emits through `splitFlags` the way `MDFieldPrinter::printDIFlags`
+  and `printDISPFlags` do.
 
-  The *parsing* half landed 2026-08-07: `ll_parser.rs` reads the `|`-joined
-  form (upstream's repeated `lltok::bar` loop for `MDFieldImpl<DIFlags>` /
-  `<DISPFlags>`) and stores the joined source text, which is byte-for-byte what
-  `AsmWriter.cpp`'s `printDIFlags` emits — its separator is
-  `ListSeparator(" | ")`. Before that, `flags: DIFlagPublic | DIFlagStaticMember`
-  did not parse at all, which is what blocked porting
-  `test/Assembler/invalid-disubroutinetype-missing-types.ll` verbatim.
+  What that reasoning had missed, and what the joined-source-text
+  representation could not express: `parseFlag`'s **first** arm is an unsigned
+  `lltok::APSInt`, so `flags: 4 | DIFlagPublic` is legal upstream and was
+  rejected here; and `printDIFlags` re-derives the printed form rather than
+  echoing it, so a written order, a duplicate term, an alias spelling and a
+  zero field were all wrong on output. The recorded reason — that the bitflag
+  type is only worth its keep once something reads it — was true of storage and
+  false of the parser and the printer, both of which already read it.
+  [[verify-recorded-premises]]
 - **`MetadataField::name` is a `String` — validated, but still stringly typed.**
   ~~Nothing validates it~~ — **the divergence half is closed (2026-08-07).**
   `SpecializedMetadataKind::fields` / `required_fields` port each class's

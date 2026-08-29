@@ -6249,16 +6249,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // just as `isDefinition: true` does — and `spFlags:`, when given,
             // is what `toSPFlags` is skipped in favour of.
             Kind::DiSubprogram => {
-                // `DISPFlagDefinition` is looked up rather than spelled as a
-                // literal so the bit stays tied to the vendored table.
-                let definition_bit = llvmkit_ir::dwarf::disp_flag("DISPFlagDefinition")
-                    .unwrap_or_else(|| unreachable!("DISPFlagDefinition is in the DISPFlag table"));
                 let is_definition = match value("spFlags") {
-                    Some(llvmkit_ir::metadata::MetadataFieldValue::Enum(flags)) => flags
-                        .split('|')
-                        .any(|flag| flag.trim() == "DISPFlagDefinition"),
-                    Some(llvmkit_ir::metadata::MetadataFieldValue::Integer(bits)) => {
-                        bits & i128::from(definition_bit) != 0
+                    Some(llvmkit_ir::metadata::MetadataFieldValue::DispFlags(flags)) => {
+                        flags.contains(llvmkit_ir::metadata::DispFlags::definition())
                     }
                     _ => matches!(
                         value("isDefinition"),
@@ -6304,25 +6297,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 _ => Ok(()),
             }
-        };
-
-        // `DIFlag*` / `DISPFlag*` accept a `|`-joined disjunction; every term
-        // must resolve, which is what upstream's per-term loop enforces.
-        let flags = |what: &'static str, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
-            let MetadataFieldValue::Enum(spelling) = value else {
-                return Ok(());
-            };
-            for term in spelling.split('|') {
-                let term = term.trim();
-                if !term.is_empty() && lookup(term).is_none() {
-                    return Err(ParseError::InvalidMetadataFieldValue {
-                        what,
-                        value: term.to_owned(),
-                        loc,
-                    });
-                }
-            }
-            Ok(())
         };
 
         match field.kind() {
@@ -6406,8 +6380,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 keyword("DWARF calling convention", dwarf::calling_convention)
             }
             MetadataFieldKind::DwarfMacinfoType => keyword("DWARF macinfo type", dwarf::macinfo),
-            MetadataFieldKind::DiFlags => flags("debug info flag", dwarf::di_flag),
-            MetadataFieldKind::DispFlags => flags("subprogram debug info flag", dwarf::disp_flag),
+            // Both flag families are validated term by term as they are
+            // parsed, where `parseMDField`'s `parseFlag` validates them, so
+            // there is nothing left to check once the bitfield exists.
+            MetadataFieldKind::DiFlags | MetadataFieldKind::DispFlags => Ok(()),
             MetadataFieldKind::EmissionKind => keyword("emission kind", emission_kind),
             MetadataFieldKind::NameTableKind => keyword("nameTable kind", name_table_kind),
             MetadataFieldKind::ChecksumKind => keyword("checksum kind", checksum_kind),
@@ -6452,7 +6428,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         declared: llvmkit_ir::metadata::MetadataFieldKind,
     ) -> ParseResult<MetadataFieldValue<B>> {
-        use llvmkit_ir::metadata::MetadataFieldValue;
+        use llvmkit_ir::metadata::{MetadataFieldKind, MetadataFieldValue};
+        // The two flag families are dispatched on the *declared* kind rather
+        // than on the token, because upstream's `parseMDField(DIFlagField&)`
+        // and its `DISPFlagField` twin are separate overloads with their own
+        // grammar — a `do { parseFlag } while (EatIfPresent(lltok::bar))` loop
+        // over terms that may be a flag keyword *or* an unsigned integer.
+        // Reading them off the token, as every other field here is read, is
+        // what made `flags: 4 | DIFlagPublic` unparseable.
+        match declared {
+            MetadataFieldKind::DiFlags => {
+                return self.parse_di_flag_field();
+            }
+            MetadataFieldKind::DispFlags => {
+                return self.parse_disp_flag_field();
+            }
+            _ => {}
+        }
         match self.peek() {
             Token::Kw(Keyword::Null) => {
                 self.bump()?;
@@ -6534,31 +6526,94 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 Ok(MetadataFieldValue::Enum(value))
             }
-            // `flags:` and `spFlags:` take a `|`-joined disjunction, which
-            // upstream reads with a repeated `lltok::bar` loop in
-            // `LLParser::parseMDField` for `MDFieldImpl<DIFlags>` /
-            // `<DISPFlags>`. Kept here as the joined source text rather than a
-            // bitmask: modelling `DINode::DIFlags` / `DISubprogram::DISPFlags`
-            // as bitflags is deferred (see `docs/future-work.md`), and the
-            // joined form is byte-for-byte what `AsmWriter.cpp`'s
-            // `printDIFlags` emits, whose separator is `ListSeparator(" | ")`.
-            Token::DiFlag(s) | Token::DiSpFlag(s) => {
-                let mut value = (*s).to_owned();
-                self.bump()?;
-                while matches!(self.peek(), Token::Bar) {
-                    self.bump()?;
-                    let next = match self.peek() {
-                        Token::DiFlag(s) | Token::DiSpFlag(s) => (*s).to_owned(),
-                        _ => return Err(self.expected("debug info flag after '|'")),
-                    };
-                    self.bump()?;
-                    value.push_str(" | ");
-                    value.push_str(&next);
-                }
-                Ok(MetadataFieldValue::Enum(value))
-            }
             _ => Err(self.expected(expected_for_metadata_field_kind(declared))),
         }
+    }
+
+    /// `parseMDField(LocTy Loc, StringRef Name, DIFlagField &Result)`
+    /// (`LLParser.cpp`): `do { parseFlag } while (EatIfPresent(lltok::bar))`,
+    /// OR-ing the terms into one `DINode::DIFlags`.
+    fn parse_di_flag_field(&mut self) -> ParseResult<MetadataFieldValue<B>> {
+        use llvmkit_ir::metadata::{DiFlags, MetadataFieldValue};
+        // `DINode::DIFlags Combined = DINode::FlagZero;`
+        let mut combined = DiFlags::ZERO;
+        loop {
+            combined = combined.union(self.parse_di_flag()?);
+            if !matches!(self.peek(), Token::Bar) {
+                break;
+            }
+            self.bump()?;
+        }
+        Ok(MetadataFieldValue::DiFlags(combined))
+    }
+
+    /// The `parseFlag` lambda inside `parseMDField(DIFlagField&)`. An unsigned
+    /// `lltok::APSInt` is read through `parseUInt32`; anything that is not a
+    /// `lltok::DIFlag` is `expected debug info flag`; a `DIFlag*` the table
+    /// does not carry comes back as `FlagZero` from `DINode::getFlag` and is
+    /// `invalid debug info flag '…'`.
+    ///
+    /// A *signed* integer term falls through the first arm to the second, so
+    /// `flags: -1` answers `expected debug info flag` rather than being
+    /// accepted as a bitfield.
+    fn parse_di_flag(&mut self) -> ParseResult<llvmkit_ir::metadata::DiFlags> {
+        use llvmkit_ir::metadata::DiFlags;
+        if self.peek_unsigned_apsint().is_some() {
+            return Ok(DiFlags::from_bits(self.parse_uint32()?));
+        }
+        let Token::DiFlag(spelling) = self.peek() else {
+            return Err(self.expected("debug info flag"));
+        };
+        let spelling = (*spelling).to_owned();
+        let value = DiFlags::get_flag(&spelling);
+        if value == DiFlags::ZERO {
+            return Err(ParseError::InvalidMetadataFieldValue {
+                what: "debug info flag",
+                value: spelling,
+                loc: DiagLoc::span(self.loc()),
+            });
+        }
+        self.bump()?;
+        Ok(value)
+    }
+
+    /// `parseMDField(LocTy Loc, StringRef Name, DISPFlagField &Result)`, the
+    /// twin of [`Self::parse_di_flag_field`].
+    fn parse_disp_flag_field(&mut self) -> ParseResult<MetadataFieldValue<B>> {
+        use llvmkit_ir::metadata::{DispFlags, MetadataFieldValue};
+        let mut combined = DispFlags::ZERO;
+        loop {
+            combined = combined.union(self.parse_disp_flag()?);
+            if !matches!(self.peek(), Token::Bar) {
+                break;
+            }
+            self.bump()?;
+        }
+        Ok(MetadataFieldValue::DispFlags(combined))
+    }
+
+    /// The `DISPFlagField` overload's `parseFlag`. Note that only the
+    /// *invalid* message names the subprogram family — the token-kind
+    /// rejection is `expected debug info flag` in both overloads.
+    fn parse_disp_flag(&mut self) -> ParseResult<llvmkit_ir::metadata::DispFlags> {
+        use llvmkit_ir::metadata::DispFlags;
+        if self.peek_unsigned_apsint().is_some() {
+            return Ok(DispFlags::from_bits(self.parse_uint32()?));
+        }
+        let Token::DiSpFlag(spelling) = self.peek() else {
+            return Err(self.expected("debug info flag"));
+        };
+        let spelling = (*spelling).to_owned();
+        let value = DispFlags::get_flag(&spelling);
+        if value == DispFlags::ZERO {
+            return Err(ParseError::InvalidMetadataFieldValue {
+                what: "subprogram debug info flag",
+                value: spelling,
+                loc: DiagLoc::span(self.loc()),
+            });
+        }
+        self.bump()?;
+        Ok(value)
     }
 
     /// Consume a `!` token (Token::Exclaim). Helper for metadata parsing.
@@ -16904,7 +16959,10 @@ fn expected_for_metadata_field_kind(kind: llvmkit_ir::metadata::MetadataFieldKin
         MetadataFieldKind::DwarfMacinfoType => "DWARF macinfo type",
         MetadataFieldKind::DwarfEnumKind => "DWARF enum kind code",
         // Both flag overloads spell it the same way; only the *invalid*
-        // message distinguishes them.
+        // message distinguishes them. Unreachable through this table since the
+        // two overloads got their own routines — `parse_di_flag` and
+        // `parse_disp_flag` raise the message themselves, at the token — but
+        // kept so the mapping stays complete for the kind it names.
         MetadataFieldKind::DiFlags | MetadataFieldKind::DispFlags => "debug info flag",
         MetadataFieldKind::EmissionKind => "emission kind",
         MetadataFieldKind::NameTableKind => "nameTable kind",

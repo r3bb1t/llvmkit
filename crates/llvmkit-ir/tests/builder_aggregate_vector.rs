@@ -639,6 +639,57 @@ fn shuffle_vector_operands_reject_a_mask_from_another_module() -> Result<(), IrE
     Ok(())
 }
 
+/// `VectorType::const_vector`'s scalable arm is llvmkit's spelling of
+/// `ConstantVector::getSplat(ElementCount, V)` (`lib/IR/Constants.cpp`), the
+/// only constructor upstream has for a scalable vector constant:
+/// `ConstantVector::get` hands its list to
+/// `FixedVectorType::get(V.front()->getType(), V.size())`, and
+/// `ConstantVector`'s own constructor asserts
+/// `V.size() == cast<FixedVectorType>(T)->getNumElements()`.
+///
+/// **No upstream `.ll` fixture pins this**, because upstream cannot write the
+/// input: a non-uniform scalable vector constant has no LLVM spelling, so
+/// nothing under `test/` can produce or reject one. Searched at
+/// `llvmorg-22.1.4` with `grep -rn -a --include=*.ll 'vscale x [0-9]* x i32> <'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` — no matches. The
+/// source is therefore the two C++ constructors above, and
+/// the rule is that llvmkit builds no scalable constant they could not.
+///
+/// The second half is the reason it matters: what `const_vector` admits is
+/// what `AsmWriter`'s `splat (…)` arm has to be able to print, and a lane
+/// disagreement used to fall through to an element list that neither LLVM nor
+/// llvmkit's own `.ll` parser reads back.
+#[test]
+fn scalable_const_vector_admits_only_a_splat() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let vec_ty = m.scalable_vector_type(i32_ty.as_type(), 4);
+    let seven = i32_ty.const_int(7_i32).as_constant();
+    let eight = i32_ty.const_int(8_i32).as_constant();
+
+    // Lanes disagree — `getSplat` has one value, so there is nothing to build.
+    assert!(matches!(
+        vec_ty.const_vector::<llvmkit_ir::Constant<'_, _>, _>([seven, eight, seven, seven]),
+        Err(IrError::InvalidOperation { .. })
+    ));
+    // A short list is refused too: it used to be accepted for scalable types
+    // only, which let `<vscale x 4 x i32>` print a two-element list.
+    assert!(matches!(
+        vec_ty.const_vector::<llvmkit_ir::Constant<'_, _>, _>([seven, seven]),
+        Err(IrError::OperandWidthMismatch { .. })
+    ));
+
+    // The splat builds, and prints in the one form LLVM has for it.
+    let splat = vec_ty.const_vector::<llvmkit_ir::Constant<'_, _>, _>([seven; 4])?;
+    m.add_global("g", splat.as_constant())?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@g = global <vscale x 4 x i32> splat (i32 7)\n"),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
 // Suppress unused-import warning if a marker drifts.
 const _: fn() = || {
     let _ = std::any::TypeId::of::<IntValue<'static, i32, DynBrand>>();

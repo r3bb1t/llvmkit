@@ -510,22 +510,6 @@ that found them instead of a verifier's evidence block.
 
 llvmkit refuses IR that LLVM accepts — the worst kind, a parser that cannot read LLVM's own output.
 
-### 6. A numeric-only or mixed `DIFlags` / `DISPFlags` term is rejected, and written flags are never canonicalised
-
-*parser* — crates/llvmkit-asmparser/src/ll_parser.rs:5879-5903 (the `DiFlag`/`DiSpFlag` arm), :5668-5685 (per-term validation), :5768-5769 (field kinds); crates/llvmkit-ir/src/asm_writer.rs:3491, :3497
-
-- **LLVM:** `LLParser::parseMDField(DIFlagField&)` and its `DISPFlagField` twin loop `do { parseFlag } while (EatIfPresent(lltok::bar))`, and `parseFlag` accepts either an unsigned `lltok::APSInt` (read with `parseUInt32`) or a `lltok::DIFlag`, OR-ing the terms into one `DINode::DIFlags` / `DISubprogram::DISPFlags` bitfield. `MDFieldPrinter::printDIFlags` / `printDISPFlags` then re-emit it through `DINode::splitFlags` + `getFlagString`, so output is canonical: bit order from the table, composite spellings recovered, duplicates collapsed, and any unnamed remainder printed as a trailing number.
-- **llvmkit:** The `Token::DiFlag | Token::DiSpFlag` arm keeps the `|`-joined **source text** as `MetadataFieldValue::Enum(String)` (each term validated against `dwarf::di_flag` / `disp_flag`), and after a `|` it accepts only another flag token — `expected debug info flag after '|'`. So `spFlags: DISPFlagDefinition | 4096` and `flags: 4 | DIFlagPublic` are rejected though upstream accepts them, and a purely numeric `flags: 3` is stored as `Integer(3)` and printed back as `3` where `llvm-dis` prints `DIFlagPublic`. Written order, duplicates and alias spellings all round-trip verbatim instead of being canonicalised.
-- **Why:** Recorded reason covers only the storage half: modelling `DINode::DIFlags` / `DISubprogram::DISPFlags` as bitflags is deferred to the debug-info/metadata milestone, on the ground that the bitflag type is worth its keep once something reads it, and that the joined text matches `printDIFlags`'s `ListSeparator(" | ")`. That separator claim is true but narrower than the entry implies — the numeric term and the `splitFlags` canonicalisation are **unrecorded**.
-- **Fix:** Model both as `u32` bitflag types with `getFlag`/`getFlagString`/`splitFlags` ports (the tables already exist as `llvmkit_ir::dwarf::di_flag` / `disp_flag`), accept an unsigned integer term anywhere in the `|` chain as upstream's `parseFlag` does, store the OR, and print through the `splitFlags` + trailing-`Extra` shape. Land it with the DWARF-encoding storage fix below — both are the same normalisation milestone.
-- **Correction from verification:** The body of the claim is accurate; the TITLE is wrong on one half. A numeric-only term is NOT rejected — `flags: 3` parses fine, is stored as `MetadataFieldValue::Integer(3)` and printed back verbatim as `3` (llvm-dis prints `DIFlagPublic`). Only MIXED terms are rejected, in both orders and with two different messages: `flags: DIFlagPublic | 4` and `spFlags: DISPFlagDefinition | 4096` give `expected debug info flag after '|'`, while `flags: 4 | DIFlagPublic` gives `expected ')' here` (the integer parses as the whole value and the field loop then demands `,` or `)`). Corrected title: "A MIXED `DIFlags`/`DISPFlags` term is rejected, a numeric-only one is kept as an unconverted integer, and written flags are never canonicalised." One additional divergence not in the claim: because the `DiFlags`/`DispFlags` validator returns early for any non-`Enum` value, no unsigned/range check runs, so `flags: -1` is accepted, where upstream's `!Lex.getAPSIntVal().isSigned()` guard falls through to `expected debug info flag`.
-
-<details><summary>Verification evidence</summary>
-
-llvmkit source: crates/llvmkit-asmparser/src/ll_parser.rs:5890-5904 — the `Token::DiFlag(s) | Token::DiSpFlag(s)` arm builds a `MetadataFieldValue::Enum(String)` by pushing `" | "` plus the next term's source text, and after a `Token::Bar` matches only `Token::DiFlag|Token::DiSpFlag`, else `Err(self.expected("debug info flag after '|'"))`; there is no `Token::IntegerLit` case in that loop. :5668-5685 — the `flags` closure splits the stored string on `'|'` and checks each term against `dwarf::di_flag`/`disp_flag`, but opens with `let MetadataFieldValue::Enum(spelling) = value else { return Ok(()) }`, so an `Integer` bypasses all checking. :5768-5769 — `MetadataFieldKind::DiFlags`/`DispFlags` dispatch to that closure. :5397-5406 — after `parse_metadata_field_value` the field loop only accepts `,` then `)`. crates/llvmkit-ir/src/asm_writer.rs:3491,3497 — `Integer(v) => write!(f, "{v}")` and `Enum(s) => f.write_str(s)`, i.e. verbatim echo; and `dwarf::di_flag_string`/`disp_flag_string` (crates/llvmkit-ir/src/dwarf.rs:668-669) have zero call sites in the whole workspace, so no canonicalisation path exists. Upstream: orig_cpp/.../llvm/lib/AsmParser/LLParser.cpp `parseMDField(LocTy, StringRef, DIFlagField&)` and the `DISPFlagField&` twin — `parseFlag` accepts `lltok::APSInt` when `!Lex.getAPSIntVal().isSigned()` (via `parseUInt32`) or `lltok::DIFlag`/`lltok::DISPFlag`, and the `do { ... } while (EatIfPresent(lltok::bar))` loop ORs terms into one bitfield; lib/IR/AsmWriter.cpp `MDFieldPrinter::printDIFlags`/`printDISPFlags` re-emit through `splitFlags` + `getFlagString` with `ListSeparator(" | ")`, printing the unnamed remainder as a trailing number; lib/IR/DebugInfoMetadata.cpp `DINode::splitFlags` collapses the accessibility triple (comment: emit "DIFlagPublic" and not "DIFlagPrivate | DIFlagProtected") and the FlagPtrToMemberRep triple, then walks HANDLE_DI_FLAG in table order. Empirical: a temporary test run under `cargo +1.96.0 test --release -p llvmkit-asmparser` (file since deleted) printed: `flags: 3` -> OK, re-printed `flags: 3`; `flags: DIFlagPublic | 4` -> ERR "expected debug info flag after '|'"; `flags: 4 | DIFlagPublic` -> ERR "expected ')' here"; `spFlags: DISPFlagDefinition | 4096` -> ERR "expected debug info flag after '|'"; `flags: DIFlagProtected | DIFlagPrivate` -> OK, re-printed verbatim (upstream would print `DIFlagPublic`); `flags: DIFlagStaticMember | DIFlagPublic` -> OK, written order preserved (upstream reorders); `flags: -1` -> OK, re-printed `-1`. The gap is also recorded as deliberate-but-open at docs/future-work.md:1219-1233 ("`DIFlags` / `DISPFlags` are not bitflags").
-
-</details>
-
 ### 19. AutoUpgrade does not exist — legacy-but-valid modules are not upgraded — **PARTLY FIXED (W13d)**
 
 **Status 2026-08-16 (W13d).** `crates/llvmkit-ir/src/auto_upgrade.rs` now exists
@@ -557,7 +541,7 @@ llvmkit (absent): directory listing of crates/llvmkit-ir/src/ shows no auto_upgr
 
 </details>
 
-### 101. Six `LLLexer::LexError` sites are non-fatal upstream and fatal (or absent) here
+### 101. Six `LLLexer::LexError` sites are non-fatal upstream and fatal here — **NARROWED (W9)**
 
 *lexer* — crates/llvmkit-asmparser/src/ll_lexer.rs (`lex_uint`, `LexError::IntegerOverflow64` / `IntegerOverflow128`)
 
@@ -612,79 +596,119 @@ Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously
   against which of them also `return lltok::Error`. W14a's split of "the lexer
   writes a message" from "the lexer forms no token" is what made the two
   groups visible, and it is also what surfaced the two dead variants.
-- **Fix:** needs the error-*retention* model upstream has and llvmkit does
-  not: a single recorded diagnostic with a priority, consulted only if the
-  parse fails. That is the same missing machinery entry 32 needs, and the two
-  should land together. Reproducing the truncation without it would trade a
-  wrong rejection for a silent wrong value, which is worse. Until then the two
-  unconstructed variants should either gain their sites or be deleted — a
-  public variant nothing produces is a claim the tree does not honour.
+- **Narrowed 2026-08-29 (W9).** The unconstructed-variant half is closed:
+  `LexError::IntegerOverflow128` is deleted. It had no construction site —
+  `grep -rn -a 'LexError::IntegerOverflow128' crates/` returned exactly one
+  line, the `span()` accessor's own match arm — and llvmkit performs neither
+  `HexToIntPair`'s nor `FP80HexToIntPair`'s accumulate-and-detect-wraparound to
+  give it one. Two claims found wrong while closing it, both in llvmkit's own
+  tree rather than in this entry: `ll_lexer.rs`'s module comment still said
+  `IntegerOverflow64` was unreachable, which W14b's own correction to this
+  entry had already contradicted; and the same comment's "`LLLexer` produces an
+  `lltok::Error` at twenty-one places … ten record a message" split never
+  matched the enum it described, since a wording several call sites share is one
+  variant here. Both are rewritten without the numerals.
+- **Fix (the fatality half, unchanged):** needs the error-*retention* model
+  upstream has and llvmkit does not: a single recorded diagnostic with a
+  priority, consulted only if the parse fails. `LLLexer::Error` is
+  `if (Priority < ErrorInfo.Priority) return; ErrorInfo.Error = SM.GetMessage(...)`,
+  writing straight into the `SMDiagnostic &` the caller passed, and
+  `LLParser::Run` never consults it — the report-or-discard decision is
+  structural, in `parseAssembly`'s caller, which prints only when `Run` failed.
+  llvmkit has no counterpart: `Lexer::next_token` returns
+  `Result<Spanned<Token>, LexError>` and `ParseError` is a value returned by
+  `?`, with no sink anywhere (`grep -rn -a 'record_error\|Vec<Diagnostic\|DiagnosticSink\|HaveError' crates/`
+  finds only prose about upstream). That is the same missing machinery entry 32
+  needs, and the two should land together. Reproducing the truncation without it
+  would trade a wrong rejection for a silent wrong value, which is worse.
 
 ## Accepts invalid input
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
 
-### 132. `Verifier::visitIntrinsicCall`'s preamble and its per-intrinsic `switch` are unported, so an intrinsic's own rules are never checked
+### 132. `Verifier::visitIntrinsicCall`'s signature split, its `MetadataAsValue` walk and all but one arm of its `switch` are unported — **NARROWED (W9)**
 
 *verifier — call family* — crates/llvmkit-ir/src/verifier.rs (`check_intrinsic_call`)
 
 Found 2026-08-27 while porting `Verifier::visitCallBrInst` (former entry 128):
 `test/Verifier/callbr.ll`'s four `llvm.callbr.landingpad` functions could not
 be ported with the rest of the fixture, because the routine that answers them
-does not exist here.
+did not exist here.
 
-- **LLVM:** `visitIntrinsicCall` runs a preamble — `Intrinsic functions should
-  never be defined!`, `matchIntrinsicSignature` split into `Intrinsic has
-  incorrect return type!` and `Intrinsic has incorrect argument type!`,
-  `Intrinsic was not defined with variable arguments!` / `Callsite was not
-  defined with variable arguments!`, `Intrinsic has too few arguments!`,
-  `Intrinsic name not mangled correctly for type arguments!`, `visitMetadataAsValue`
-  on every `MetadataAsValue` argument, and `const x86_amx is not allowed in
-  argument!` — and then a `switch (ID)` in which each modelled intrinsic
-  carries its own `Check`s (`llvm.assume`'s operand bundles, `llvm.callbr.landingpad`'s
-  `Intrinsic in block must have 1 unique predecessor` / `Intrinsic's
-  corresponding callbr must have intrinsic's parent basic block in indirect
-  destination list` / `No other instructions may proceed intrinsic`, the
-  `experimental.gc.*` family, the constrained-FP family, and the rest).
-- **llvmkit:** `check_intrinsic_call` makes three checks and no others: the
-  descriptor's function type equals the call's, every `immarg` operand is an
-  integer or FP constant, and `verify_funclet_token`. `rg -n "Intrinsic has
-  incorrect return type|Intrinsic has too few arguments|not mangled
-  correctly|unique predecessor|may proceed intrinsic"
-  crates/llvmkit-ir/src/ crates/llvmkit-asmparser/src/` returns nothing, so no
-  other source file carries them either (the same search over `crates/` finds
-  only the vendored fixture and two test doc comments). `%out = call i32
-  @llvm.callbr.landingpad.i32(i32 %foo)` in a block with two predecessors —
-  `test/Verifier/callbr.ll`'s `@callbrpad_multi_preds` — verifies clean here.
-- **Why:** `check_intrinsic_call` grew from what the `call` builder needed
-  (a signature guard and `immarg`), and the funclet-token arm was added by the
-  commit that closed the `Missing funclet token on intrinsic call` gap. The
-  `switch` was never started.
-- **Fix:** port the preamble first — it is where the collapsed
-  `Intrinsic called with incompatible signature` message comes from, which
-  `docs/fixture-coverage.md`'s gap **G1** already names — then the `switch`
-  arm by arm, each with the `test/Verifier` fixture that pins it. The four
-  `llvm.callbr.landingpad` functions of `test/Verifier/callbr.ll` are already
-  vendored at
-  `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/callbr.ll` and
-  are the natural first arm; `parser_calls.rs::upstream_callbr_label_constraint_fixture_messages_match`
-  ports that fixture's other six functions and says why it stops there.
+**Narrowed 2026-08-29 (W9).** Three of those four now run, from
+`crates/llvmkit-asmparser/tests/parser_calls.rs::upstream_callbr_landingpad_fixture_messages_match`.
+`check_intrinsic_call` carries the preamble's `Intrinsic functions should never
+be defined!`, its `Intrinsic name not mangled correctly for type arguments!
+Should be: …`, the `const x86_amx is not allowed in argument!` half of its
+argument walk, and the `switch`'s `case Intrinsic::callbr_landingpad:` arm
+whole. What is left is below.
 
-### 22. A non-uniform scalable-vector constant is constructible through the IR builder and prints text neither LLVM nor llvmkit's own parser can read
+- **The `matchIntrinsicSignature` split, and the name-mangling `Check` behind
+  the same gate.** Upstream turns one `MatchIntrinsicTypesResult` into
+  `Intrinsic has incorrect return type!` and `Intrinsic has incorrect argument
+  type!`, then runs `Intrinsic::matchIntrinsicVarArg` for `Intrinsic was not
+  defined with variable arguments!` / `Callsite was not defined with variable
+  arguments!`, then `Check(TableRef.empty(), "Intrinsic has too few
+  arguments!")`, then `Check(ExpectedName == IF->getName(), "Intrinsic name not
+  mangled correctly for type arguments! Should be: " + ExpectedName)`.
 
-*IR model* — crates/llvmkit-ir/src/constants.rs:957-983 (`const_vector`), crates/llvmkit-ir/src/asm_writer.rs:1272-1278 (`prints_as_splat`) and :1301 (`fmt_aggregate_constant`)
+  **The root blocker is not the message split, it is which calls llvmkit treats
+  as intrinsic calls.** `intrinsics::descriptor_for_callee` derives the
+  descriptor from the callee's *name* and then requires the resulting
+  `FunctionType` to equal the callee's signature; when it does not it answers
+  `None`, and `check_intrinsic_call` returns before any `Check` runs. Upstream
+  has no such gate — `Function::getIntrinsicID()` is a name lookup, so a callee
+  whose types disagree with its name is still an intrinsic call and reaches
+  every one of the six messages above. So none of them can fire here, whatever
+  `match_intrinsic_signature` is reshaped to say, and the mangling `Check` is
+  deliberately *not* ported rather than ported dead — the site says so. Behind
+  that, `intrinsics::match_intrinsic_signature` still collapses everything into
+  one `Intrinsic called with incompatible signature`, and llvmkit's parser
+  reports its own `expected intrinsic signature mismatch` before the verifier
+  ever runs — which is what `docs/fixture-coverage.md`'s
+  `autoupgrade-invalid-name-mangling.ll` row records against gap **G1**. It has
+  no `MatchIntrinsicTypesResult`, no
+  `DeferredIntrinsicMatchPair` list, and re-derives the whole function type and
+  compares where upstream leaves a cursor for `matchIntrinsicVarArg` to
+  consume. The builder calls it too, so a second copy shaped for the verifier
+  would be the defect rather than the fix.
 
-- **LLVM:** `ConstantVector::get` takes a fixed element count, so LLVM has no element-list constant form for a scalable vector at all; a scalable constant can only be a splat, and `AsmWriter`'s `splat (…)` shorthand is the only spelling. There is consequently no upstream rule against a non-uniform scalable vector — the constant cannot be built.
-- **llvmkit:** `VectorType::const_vector` skips its element-count check for scalable types (`if !self.is_scalable() && n != expected`) and requires nothing of the lanes, so `<vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7>` builds. (The same text does **not** parse — see the correction below.) `prints_as_splat` collapses a *uniform* scalable vector to `splat (…)`, but a non-uniform one falls through `fmt_aggregate_constant` to the element-list fallback and prints text LLVM would reject — output that also quietly asserts `vscale == 1`.
-- **Why:** Recorded, and explicitly left as a policy decision rather than an oversight: requiring uniformity was tried and reverted because two deliberate tests take the permissive behaviour as their *premise* — `scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts` and `scalable_vector_fsub_negative_zero_pattern_controls_undef_fold` in `crates/llvmkit-ir/tests/constant_fold.rs` build non-uniform scalable vectors to check that the folder declines. The entry says: decide before changing anything. Printing it losslessly was judged better than collapsing it to a `splat (…)` it is not.
-- **Fix:** Decide the representation policy first. If uniformity becomes required, add the lane-agreement check to `const_vector` (and the parser's aggregate path), and rewrite the two `constant_fold.rs` tests whose premise it removes — they become unnecessary rather than merely red. If it stays permissive, the printer needs a spelling that is at least not *invalid* IR, or the case must be made unreachable from the parser alone. Either way, delete the stale note on `constant_fold::vector_splat_constant`, which still says the splat collapse covers only integer and floating-point elements so a uniform scalable vector of pointers or `undef` prints as an element list; `prints_as_splat` returns `true` for every scalable element category.
-- **Correction from verification (2026-08-21: the title and the `llvmkit:` bullet above were corrected in place from this block — "and parses" was false, and the `.ll` parser is not an entry point to the bad constant; re-probed at that date, `@g = global <vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7>` still fails with `constant expression type mismatch`):** What holds (verified by running it): - `VectorType::const_vector` skips the element-count check for scalable types (`crates/llvmkit-ir/src/constants.rs:977`, `if !self.is_scalable() && n != expected`) and requires nothing of the lanes. Building `<vscale x 4 x i32>` from `[7, 8, 7, 7]` succeeds and prints `<vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7>`. - `prints_as_splat` (`asm_writer.rs:1272-1278`) returns true unconditionally for `ScalableVector`, but only fires behind `aggregate_splat_id`, so a non-uniform vector falls through to the element-list fallback at `asm_writer.rs:1301`/`:1319-1342`. Cited line numbers are accurate. - Upstream confirmed: `ConstantVector::get` (orig_cpp/.../lib/IR/Constants.cpp:1444) always builds `FixedVectorType::get(V.front()->getType(), V.size())`, so LLVM has no element-list scalable constant and hence no rule against a non-uniform one. `ConstantVector::getSplat(ElementCount, …)` is the scalable path. What is wrong: - "and parses" is false. `@g = global <vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7>` fails with `constant expression type mismatch: got type '<4 x i32>' but expected '<vscale x 4 x i32>'`, as does the same constant in a function body. The parser's `<…>` arm builds a FIXED vector (`ll_parser.rs:7560-7563`, `self.module.vector_type(element_ty, len)`), mirroring upstream's `ConstantVector::get` → `FixedVectorType::get`, and `checked_constant_type` (`ll_parser.rs:7940-7956`) then compares types exactly — a faithful port of `convertValIDToValue`'s `t_Constant` arm (LLParser.cpp:6610-6614). llvmkit's parser matches upstream here. - `docs/future-work.md:429` states this text "parses today". That recorded premise is stale/wrong and should be corrected — it is likely where the claim came from. Two things the claim understates: - The lane count is unchecked entirely, not just "not required to be uniform": `<vscale x 4 x i32>` accepts a 2-element list and prints `<vscale x 4 x i32> <i32 7, i32 8>`. So the malformed shape is wider than a same-length non-uniform list. - Because the parser rejects the printed text, this is a genuine print/parse round-trip break in llvmkit's own contract, not merely "text LLVM would reject". The "quietly asserts vscale == 1" characterization is a fair reading of the semantics and matches the reasoning already recorded in the codebase's own comment at asm_writer.rs:1310-1318.
-
-<details><summary>Verification evidence</summary>
-
-1. crates/llvmkit-ir/src/constants.rs:955-985 (`VectorType::const_vector`) — the guard reads `if !self.is_scalable() && n != expected { return Err(OperandWidthMismatch) }`, so for a scalable type neither the count nor lane uniformity is checked. 2. crates/llvmkit-ir/src/asm_writer.rs:1272-1278 (`prints_as_splat`) returns `true` for `TypeData::ScalableVector`, but is only reached via `aggregate_splat_id` at :1301, which returns `None` when lanes differ; the element-list fallback at :1319-1342 then emits `<`…`>`. The in-tree comment at :1310-1318 explicitly acknowledges this prints invalid IR and names `const_vector`'s permissiveness as the real cause. 3. Ran a temporary probe under `cargo +1.96.0 test --release -p llvmkit-ir` (since deleted). Output: NONUNIFORM (4 lanes): <vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7> NONUNIFORM (2 lanes for vscale x 4): <vscale x 4 x i32> <i32 7, i32 8> UNIFORM: <vscale x 4 x i32> splat (i32 7) FIXED WRONG COUNT: Err(OperandWidthMismatch { lhs: 4, rhs: 2 }) 4. Ran a temporary probe under `cargo +1.96.0 test --release -p llvmkit-asmparser` (since deleted) calling `parser::parse_dynamic`. Output: GLOBAL RESULT: Err(Message { message: "constant expression type mismatch: got type '<4 x i32>' but expected '<vscale x 4 x i32>'" }) BODY RESULT: Err(same message) SPLAT RESULT: Ok(… "ret <vscale x 4 x i32> splat (i32 7)") This disproves the "and parses" half of the claim. 5. crates/llvmkit-asmparser/src/ll_parser.rs:7560-7563 builds the constant as a fixed vector; :7940-7956 (`checked_constant_type`) rejects any type mismatch; :8010 routes `ValId::Constant` through it. 6. orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/Constants.cpp:1444-1449 — `ConstantVector::get` always constructs `FixedVectorType::get(V.front()->getType(), V.size())`. 7. orig_cpp/.../llvm/lib/AsmParser/LLParser.cpp:6610-6614 — `convertValIDToValue`'s `t_Constant` arm emits exactly the "constant expression type mismatch" error llvmkit reproduces. 8. orig_cpp/.../llvm/lib/IR/AsmWriter.cpp:1775-1777 — `splat (` shorthand gated on `isa<ConstantInt> || isa<ConstantFP>`, the restriction `is_int_or_fp_splat_value` mirrors. 9. crates/llvmkit-ir/tests/constant_fold.rs:395-417 (`scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts`) constructs a non-uniform scalable vector via `const_vector` and is part of the passing suite — live proof the permissive behavior is still in effect and depended upon. 10. docs/future-work.md:424-441 records this as an open, deliberately-unresolved policy question ("Decide before changing anything here"), and at :429 makes the incorrect "parses today" assertion.
-
-</details>
+  `test/Verifier/callbr.ll`'s `@callbrpad_bad_type` is the fixture this blocks;
+  `upstream_callbr_label_constraint_fixture_messages_match` says so at the site.
+- **`test/Verifier/x86_amx9.ll` cannot be loaded**, though the `Check` it pins
+  now exists. Its argument is `x86_amx bitcast (<256 x i32> … to x86_amx)`, and
+  llvmkit's parser answers `invalid bitcast constant expression` for a
+  `bitcast` to `x86_amx`, so the module never reaches the verifier.
+  `verifier_basic.rs::const_x86_amx_intrinsic_argument_is_rejected` builds an
+  `undef` of that type instead and says why.
+- **`visitMetadataAsValue` on every `MetadataAsValue` argument.** The other half
+  of the argument walk, and a whole routine of its own — it is what rejects an
+  `MDNode` local to another function.
+  `rg -n "visit_metadata_as_value|MetadataAsValue" crates/llvmkit-ir/src/verifier.rs`
+  returns nothing.
+- **Every `switch (ID)` arm except `Intrinsic::callbr_landingpad`** — `llvm.assume`'s
+  operand bundles, the `experimental.gc.*` family, the constrained-FP family,
+  and the rest. Each needs the `test/Verifier` fixture that pins it.
+- **`define`-ing an intrinsic is a *parse* error here.** Upstream's `LLParser`
+  accepts `define void @llvm.donothing() { ret void }` and leaves the verdict to
+  `visitIntrinsicCall`'s `Intrinsic functions should never be defined!`, raised
+  per call site — so a defined-but-uncalled intrinsic verifies clean upstream.
+  llvmkit's `parse_define` refuses the name outright, in a message of its own
+  (`expected intrinsic functions should never be defined`). The verifier rule is
+  ported and reachable through the builder, which is where
+  `verifier_basic.rs::defined_intrinsic_called_from_a_body_is_rejected` drives
+  it; the parser half is the residue. A second llvmkit-invented copy of the same
+  rule lived in `visit_function` as a lowercase `InvalidOperation` and was
+  deleted with this narrowing — it shadowed the port and printed text upstream
+  never emits.
+- **Two checks are in the wrong routine.** llvmkit's collapsed signature check
+  and its `immarg operand has non-immediate parameter` loop live in
+  `check_intrinsic_call`; upstream has both in `visitCallBase`, the first
+  *before* the `swifterror` loop and the second inside the same per-argument
+  loop as it. `visitIntrinsicCall` is called after both. So on a module with two
+  faults llvmkit can report the second where upstream reports the first. Found
+  while porting the preamble, by reading where upstream raises each message
+  rather than which message it raises.
 
 ### 23. `Verifier::verifyFunctionAttrs` is unported, so two attribute-level `swifterror` rules do not fire — **NARROWED**
 
@@ -708,12 +732,21 @@ What is left is that fixture's last two lines, both `declare`s.
   `test/Verifier/swifterror2.ll` (`declare swifterror void @c(ptr swifterror
   %a)` → `this attribute does not apply to return values`) is a third from the
   same routine.
-- **llvmkit:** `rg -n "Cannot have multiple|applied to incompatible type"
-  crates/llvmkit-ir/src/` returns nothing, and the same search for
-  `verifyFunctionAttrs|verifyParameterAttrs` returns exactly one line — a
-  comment in `constant_range_list.rs` naming the routine as the place an empty
-  `initializes` list is rejected, not an implementation of it. None of the
-  three `declare`s is rejected.
+- **llvmkit:** neither routine exists. `grep -rn -a -E "Cannot have
+  multiple|applied to incompatible type" crates/llvmkit-ir/src/` matches one
+  line and `grep -rn -a -E "verifyFunctionAttrs|verifyParameterAttrs"
+  crates/llvmkit-ir/src/` matches two, and every one of the three is prose: the
+  first two are `verifier.rs`'s module header naming what is out of scope, the
+  third a comment in `constant_range_list.rs` naming `verifyParameterAttrs` as
+  the place an empty `initializes` list is rejected. None of the three
+  `declare`s is rejected.
+
+  *(Both commands used to be quoted here as returning "nothing" and "exactly one
+  line". Neither is true any more — the W6 re-scope that narrowed this entry
+  added the module-header lines the searches now match. The conclusion is
+  unchanged and the counts were re-derived at W9; the wording was not, which is
+  why it is restated as a match count and a reading of what matched.)*
+  [[verify-recorded-premises]]
 - **Why:** `verifyFunctionAttrs` and `verifyParameterAttrs` between them cover
   every function and parameter attribute — `sret`, `byval`, `byref`,
   `inalloca`, `nest`, `returned`, `preallocated`, alignment, the memory-effect
@@ -770,6 +803,25 @@ llvmkit-only remainder as attribute keywords.
   `NON_UPSTREAM_KEYWORDS`, which is the only permitted way to spell an
   llvmkit-only keyword; `the_extension_list_has_no_stale_entries` retires the
   entry automatically if a later LLVM adopts the spelling.
+- **Assessed for removal 2026-08-29 (W9); kept.** The exit plan above was
+  followed as far as picking the replacement representation, and there is none
+  that is not worse. `include/llvm/CodeGen/ValueTypes.td` and
+  `IntrinsicsWebAssembly.td` are the same spelling upstream uses, so there is no
+  other name to adopt: `grep -rn -a -i 'exnref' orig_cpp/…/llvm/include/ orig_cpp/…/llvm/lib/`
+  at `llvmorg-22.1.4` finds it only under `BinaryFormat/Wasm.h`,
+  `CodeGen/ValueTypes.{td,cpp}`, the two `.td` files above, `lib/Object`,
+  `lib/ObjectYAML` and `lib/Target/WebAssembly` — nothing in `lib/IR`,
+  `lib/AsmParser` or `lib/Bitcode`, and nothing in `include/llvm/IR/Type.h`. So
+  the type exists upstream at the MVT/MC layer and is simply unreachable from
+  `Type`. Remapping the exception-reference onto `externref`/`funcref` gives the
+  WebAssembly intrinsics the wrong signatures; a target extension type is a
+  different type with different rules; and reproducing upstream's own
+  encoding — `LLVMType<exnref>`'s `IITs` filter yields the empty list, because
+  `Intrinsics.td` has `IIT_EXTERNREF` and `IIT_FUNCREF` and no `IIT_VT<exnref>`,
+  so the type contributes *nothing* to the signature — means porting a latent
+  upstream bug into `llvmkit-tablegen`. The keyword is the last thing to go and
+  nothing has moved ahead of it, so this stays an extension. Recorded here so
+  the next wave does not re-derive the same three dead ends.
 
 ## Different diagnostic text
 
@@ -1464,22 +1516,6 @@ orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/Assembler/flags.ll lines 242-289:
 <details><summary>Verification evidence</summary>
 
 crates/llvmkit-ir/tests/ap_int_upstream.rs:5-9 — header still lists GCD/clmul/rotate as APIs llvmkit lacks; crates/llvmkit-ir/src/ap_int.rs:835-869, 930-954, 1161 — rotl/rotr/rotl_by/rotr_by, carryless_mul/_reversed/_high, greatest_common_divisor all exist as public methods citing APIntOps; crates/llvmkit-ir/tests/ap_int_upstream_ops.rs:123, 719, 868, 891 — "Port of TEST(APIntTest, Rotate)/(GCD)/(clmulr)/(clmulh)"; UPSTREAM.md:1907, 1921, 1924, 1925 — those four rows labeled `port`. crates/llvmkit-ir/src/fp_class.rs:3, 28, 223-250 — FpClassTest ports llvm::FPClassTest and FpClassTest::of(&ApFloat) reproduces APFloat::classify's five arms; fp_class.rs:1342-1405 — the classify() assertions from isSignaling and isDenormal ported as tests. crates/llvmkit-ir/src/ap_float.rs:14-22 — ApFloatSemantics has only seven variants, confirming Float8*/Float6*/Float4/TF32 are unmodeled (a repo-wide grep for Float8E/Float6E/Float4E2M1FN/FloatTF32 hits only the test comment). orig_cpp/.../llvm/unittests/ADT/APIntTest.cpp:1565, 1655, 1754, 2812, 3424, 3826, 3854, 3882 — upstream Rotate, tcDecrement, nearestLogBase2, GCD, SolveQuadraticEquationWrap, clmul, clmulr, clmulh. docs/future-work.md:480-499 — the audit section is marked closed (2026-08-01) and its deferral table lists tcDecrement and SolveQuadraticEquationWrap but not clmul, GCD or rotate. crates/llvmkit-ir/tests/ap_int_upstream_ops.rs:82-87 and ap_float_from_string.rs:1-12 — the nearestLogBase2 drop and the llvmkit-specific-subset framing are verbatim as claimed. git log shows commit 1701b58 "feat(apint)!: finish the APIntTest sweep" is what closed the APInt half after the claim was recorded.
-
-</details>
-
-### 77. `DIFlags` / `DISPFlags` are stored as joined source text, not bitfields
-
-*metadata model* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_metadata_field_value`), crates/llvmkit-ir/src/metadata.rs
-
-- **LLVM:** `DINode::DIFlags` and `DISubprogram::DISPFlags` are `uint32_t` bitfields with `getFlag`/`getFlagString`/`splitFlags`; `AsmWriter::printDIFlags` emits them with a `ListSeparator(" | ")`.
-- **llvmkit:** The parsing half landed (the `|`-joined form is read, mirroring upstream's repeated `lltok::bar` loop) but the written disjunction is kept as one `Enum(String)` field value, so `DIFlagPublic | DIFlagPrototyped` round-trips as text and never becomes a set. Printed bytes agree today because the separator matches.
-- **Why:** Recorded in docs/future-work.md: same milestone and same reason as the DWARF tables — the bitflag type is only worth its keep once something reads it.
-- **Fix:** Introduce the two bitflag types with `split_flags`/`flag_string` ports and store the decoded set; printing then derives the `|` list instead of echoing source text.
-- **Correction from verification:** The claim is accurate as to the model divergence, but its last sentence over-claims. "Printed bytes agree today because the separator matches" holds only for input that is already in upstream's canonical form. Upstream normalizes on the round-trip and llvmkit cannot, because it never builds the bitmask: (a) `DINode::splitFlags` emits a fixed order — accessibility first, then pointer-to-member representation, then `HANDLE_DI_FLAG` order — so `flags: DIFlagPrototyped | DIFlagPublic` prints back from LLVM as `DIFlagPublic | DIFlagPrototyped` while llvmkit echoes the source order; (b) `FlagPrivate=1`, `FlagProtected=2`, `FlagPublic=3`, so `DIFlagPrivate | DIFlagProtected` ORs to 3 and LLVM prints `DIFlagPublic`, while llvmkit prints both terms; (c) duplicates collapse under `|=` upstream and survive in llvmkit; (d) `printDIFlags` returns early on a zero mask, so `flags: 0` disappears from LLVM's output but is stored and reprinted by llvmkit as `Integer(0)`. A second, unrecorded consequence of the same root cause: upstream's grammar comment for `DIFlagField` is `::= DIFlagVector '|' DIFlagFwdDecl '|' uint32 '|' DIFlagPublic` and its `parseFlag` lambda accepts an unsigned `APSInt` as any term of the chain. llvmkit's `parse_metadata_field_value` dispatches on the leading token: `Token::IntegerLit` returns `MetadataFieldValue::Integer` with no `|` loop at all, and the `Token::DiFlag | Token::DiSpFlag` loop rejects anything but another flag token after a bar (`_ => return Err(self.expected("debug info flag after '|'"))`). So `flags: 4 | DIFlagPublic` and `flags: DIFlagPublic | 4` both fail to parse in llvmkit and both are legal upstream.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-ir/src/metadata.rs:2001-2009 — `pub enum MetadataFieldValue<B>` has variants `Null | Bool | Integer(i128) | String | Enum(String) | Metadata | MetadataList`. There is no bitflags variant and no `DiFlags`/`DispFlags` value type anywhere in llvmkit-ir; grep for `DiFlags|DispFlags` across crates/llvmkit-ir/src returns only `MetadataFieldKind::DiFlags` / `::DispFlags` (metadata.rs:477,479, documented as "one or more `DIFlag*` names joined with `|`") and the field-table rows that use them. crates/llvmkit-ir/src/dwarf.rs:668-669 has only `decl_lookup!(di_flag, di_flag_string, DI_FLAGS, ...)` / `disp_flag` — name-to-u32 lookups, not a stored type. crates/llvmkit-asmparser/src/ll_parser.rs:5890-5904 (`parse_metadata_field_value`) — the `Token::DiFlag(s) | Token::DiSpFlag(s)` arm builds `let mut value = (*s).to_owned()`, loops `while matches!(self.peek(), Token::Bar)`, and does `value.push_str(" | "); value.push_str(&next);`, returning `MetadataFieldValue::Enum(value)`. The comment at 5882-5889 states this outright: "Kept here as the joined source text rather than a bitmask: modelling `DINode::DIFlags` / `DISubprogram::DISPFlags` as bitflags is deferred (see `docs/future-work.md`)". crates/llvmkit-ir/src/asm_writer.rs:3497 — `MetadataFieldValue::Enum(s) => f.write_str(s)?`, i.e. the stored text is written back verbatim; nothing re-derives an ordering or collapses bits. Symptom that pins the practical cost: ll_parser.rs:5615-5618, the `parseDISubprogram` definition guard, tests for the definition bit by `flags.split('|').any(|flag| flag.trim() == "DISPFlagDefinition")` on the `Enum` string (falling back to a real bit test `bits & definition_bit != 0` only when the field was written as an integer). Upstream reads `SPFlags & SPFlagDefinition`. Upstream side, all in orig_cpp/llvm-project-llvmorg-22.1.4/llvm: include/llvm/IR/DebugInfoMetadata.h:223-240 declares `enum DIFlags : uint32_t`, `FlagAccessibility = FlagPrivate | FlagProtected | FlagPublic`, `LLVM_MARK_AS_BITMASK_ENUM(FlagLargest)`, plus `getFlag` / `getFlagString` / `splitFlags`; the same file at 2315-2321 declares the `DISPFlags` counterparts. lib/AsmParser/LLParser.cpp:5163-5195 (`parseMDField(..., DIFlagField&)`) accumulates `Combined |= Val` over a `do { } while (EatIfPresent(lltok::bar))` and calls `Result.assign(Combined)` — a uint32, not text; 5203-5235 is the `DISPFlagField` twin. lib/IR/AsmWriter.cpp:2014-2031 `MDFieldPrinter::printDIFlags` returns early on `!Flags`, calls `DINode::splitFlags`, and joins with `ListSeparator FlagsFS(" | ")`; 2033-2055 `printDISPFlags` does the same but always prints the field, emitting `0` for an empty mask. lib/IR/DebugInfoMetadata.cpp `DINode::splitFlags` special-cases `FlagAccessibility` and `FlagPtrToMemberRep` first, then walks `HANDLE_DI_FLAG` order — which is where the canonical output ordering comes from. The vendored include/llvm/IR/DebugInfoFlags.def gives `HANDLE_DI_FLAG(1, Private)`, `(2, Protected)`, `(3, Public)`. The project's own ledger agrees and does not claim closure: docs/future-work.md:1219-1233 is still an open bullet, "`DIFlags` / `DISPFlags` are not bitflags", recording that only the parsing half landed 2026-08-07.
 
 </details>
 

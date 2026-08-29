@@ -388,34 +388,6 @@ fn scalar_int_bitcast_to_vector_canonicalizes_as_vector_bitcast() -> Result<(), 
     Ok(())
 }
 
-/// llvmkit-specific regression for `ConstantFold.cpp::ConstantFoldBinaryInstruction`:
-/// scalar i1 shortcuts do not apply to non-splat scalable i1 vector constants
-/// after the scalable vector elementwise fold declines.
-#[test]
-fn scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts() -> Result<(), IrError> {
-    let m = module_new!("fold-scalable-i1-non-splat")?;
-    let i1_ty = m.bool_type();
-    let vec_ty = m.scalable_vector_type(i1_ty.as_type(), 2);
-    let one = i1_ty.const_int(true).as_constant();
-    let zero = i1_ty.const_int(false).as_constant();
-    let lhs = vec_ty
-        .const_vector::<Constant<'_, _>, _>([one, zero])?
-        .as_constant();
-    let rhs = vec_ty
-        .const_vector::<Constant<'_, _>, _>([one, zero])?
-        .as_constant();
-
-    assert_eq!(
-        constant_fold_binary_instruction(BinaryOpcode::Udiv, lhs, rhs)?,
-        None
-    );
-    assert_eq!(
-        constant_fold_binary_instruction(BinaryOpcode::Urem, lhs, rhs)?,
-        None
-    );
-    Ok(())
-}
-
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCastInstruction`
 /// lines 153-182: same-lane vector casts use `foldMaybeUndesirableCast`, so
 /// desirable scalar casts materialize per-lane constant expressions.
@@ -1422,49 +1394,43 @@ fn fp_undef_binary_rules_fold_to_undef_or_nan() -> Result<(), IrError> {
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
 /// lines 693-696 plus `PatternMatch.h::m_NegZeroFP`: scalable vector
 /// `-0.0 - undef` follows the scalar/scalable undef rule only when the
-/// left operand matches the negative-zero FP pattern. Poison lanes are
-/// ignored, but undef lanes and poison-only vectors do not match.
+/// left operand matches the negative-zero FP pattern; a poison-only vector
+/// does not match.
+///
+/// The mixed-lane cases this used to carry (`[-0.0, poison]` matching and
+/// `[-0.0, undef]` not) are gone with the constant that expressed them:
+/// `VectorType::const_vector` now requires a scalable constant's lanes to
+/// agree, because a non-uniform one has no LLVM spelling. Both remaining
+/// operands are splats, so both directions of the pattern claim are still
+/// exercised.
 #[test]
 fn scalable_vector_fsub_negative_zero_pattern_controls_undef_fold() -> Result<(), IrError> {
     let m = module_new!("fold-scalable-fp-negzero-undef")?;
     let f32_ty = m.f32_type();
     let vec_ty = m.scalable_vector_type(f32_ty.as_type(), 2);
     let neg_zero = f32_ty.const_float(-0.0).as_constant();
-    let undef_lane = f32_ty.as_type().undef().as_constant();
     let poison_lane = f32_ty.as_type().poison().as_constant();
     let rhs = vec_ty.as_type().undef().as_constant();
 
-    for lhs in [
-        vec_ty
-            .const_vector::<Constant<'_, _>, _>([neg_zero, neg_zero])?
-            .as_constant(),
-        vec_ty
-            .const_vector::<Constant<'_, _>, _>([neg_zero, poison_lane])?
-            .as_constant(),
-    ] {
-        let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, lhs, rhs)?
-            .expect("scalable -0.0 - undef folds");
-        assert_eq!(folded, rhs);
-    }
+    // Matches `m_NegZeroFP`: the fold answers `undef`.
+    let neg_zero_splat = vec_ty
+        .const_vector::<Constant<'_, _>, _>([neg_zero, neg_zero])?
+        .as_constant();
+    let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, neg_zero_splat, rhs)?
+        .expect("scalable -0.0 - undef folds");
+    assert_eq!(folded, rhs);
 
-    for lhs in [
-        vec_ty
-            .const_vector::<Constant<'_, _>, _>([neg_zero, undef_lane])?
-            .as_constant(),
-        vec_ty
-            .const_vector::<Constant<'_, _>, _>([poison_lane, poison_lane])?
-            .as_constant(),
-    ] {
-        let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, lhs, rhs)?
-            .expect("non-matching scalable fsub undef folds to NaN");
-        let lane_zero = constant_fold_extract_element_instruction(
-            folded,
-            m.i32_type().const_zero().as_constant(),
-        )?
-        .expect("folded NaN splat extracts lane zero");
-        let lane_zero = ConstantFloatValue::<FloatDyn, _>::try_from(lane_zero)?;
-        assert!(lane_zero.ap_float().is_nan());
-    }
+    // Does not match: the generic finite-op-with-undef rule answers NaN.
+    let poison_splat = vec_ty
+        .const_vector::<Constant<'_, _>, _>([poison_lane, poison_lane])?
+        .as_constant();
+    let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, poison_splat, rhs)?
+        .expect("non-matching scalable fsub undef folds to NaN");
+    let lane_zero =
+        constant_fold_extract_element_instruction(folded, m.i32_type().const_zero().as_constant())?
+            .expect("folded NaN splat extracts lane zero");
+    let lane_zero = ConstantFloatValue::<FloatDyn, _>::try_from(lane_zero)?;
+    assert!(lane_zero.ap_float().is_nan());
     Ok(())
 }
 

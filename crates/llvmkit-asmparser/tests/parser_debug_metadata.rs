@@ -421,20 +421,210 @@ fn required_fields_are_a_subset_of_accepted_fields() {
     }
 }
 
-/// Ports `test/Assembler/debug-info.ll`'s `DISubroutineType` flags case, whose
-/// `CHECK-NEXT` line pins the round-tripped text as byte-identical to the
-/// input: `!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types:
-/// !25)`. `AsmWriter.cpp::printDIFlags` joins with `ListSeparator(" | ")`, so
-/// the joined source text llvmkit stores prints back unchanged.
+/// Ports `test/Assembler/debug-info.ll`'s three `!DISubroutineType` lines
+/// (`!28`, `!29`, `!30`) against the two `CHECK-NEXT` lines that answer them:
+///
+/// ```text
+/// ; CHECK-NEXT: !26 = !DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !25)
+/// ; CHECK-NEXT: !27 = !DISubroutineType(types: !25)
+/// ```
+///
+/// Two `Check`s, not one. The disjunction re-emerges through
+/// `MDFieldPrinter::printDIFlags` — `DINode::splitFlags` plus
+/// `getFlagString`, joined by `ListSeparator(" | ")`. And `flags: 0` prints
+/// **nothing at all**, because `printDIFlags` opens `if (!Flags) return;`
+/// before it writes the field name — which is why upstream's three input nodes
+/// come back as two, `!29` and `!30` being identical once printed.
 #[test]
 fn debug_info_flag_disjunction_round_trips() {
     let text = parse_and_render(
-        "!0 = !{}\n!1 = !DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)\n",
+        "!0 = !{}\n\
+         !1 = !DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)\n\
+         !2 = !DISubroutineType(flags: 0, types: !0)\n\
+         !3 = !DISubroutineType(types: !0)\n",
     );
     assert!(
         text.contains("!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)"),
         "output:\n{text}"
     );
+    assert!(
+        !text.contains("flags: 0"),
+        "a zero `flags:` field prints nothing at all:\n{text}"
+    );
+    assert_eq!(
+        text.matches("!DISubroutineType(types: !0)").count(),
+        2,
+        "`flags: 0` and an omitted `flags:` print the same text:\n{text}"
+    );
+}
+
+/// `LLParser::parseMDField(DIFlagField&)`'s `parseFlag` accepts an unsigned
+/// `lltok::APSInt` term anywhere in the `|` chain — it is the first arm, ahead
+/// of the `lltok::DIFlag` one — and ORs it into the same bitfield. So all four
+/// spellings below are one constant, and
+/// `MDFieldPrinter::printDIFlags` prints the one canonical form for it.
+///
+/// `DIFlagPublic` is `0x3` and `DIFlagStaticMember` is `0x1000`, from
+/// `DebugInfoFlags.def`; the mixed forms are those two numbers written out.
+///
+/// **No upstream `.ll` fixture pins a mixed numeric/keyword term.** Searched at
+/// `llvmorg-22.1.4` with `grep -rn -a --include=*.ll -E 'flags: [0-9]+ \||flags:
+/// [A-Za-z]+ \| [0-9]' orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` — the
+/// only numeric `flags:` hits are `!DISubroutineType(flags: 0, …)` in
+/// `test/Assembler/debug-info.ll` (covered above) and the `^N = flags: <n>`
+/// lines of the module summary index, which are a different grammar. The
+/// source is therefore `parseFlag` itself.
+#[test]
+fn debug_info_flags_accept_numeric_terms_in_any_position() {
+    for spelling in [
+        "DIFlagPublic | DIFlagStaticMember",
+        "4099",
+        "3 | DIFlagStaticMember",
+        "DIFlagPublic | 4096",
+    ] {
+        let text = parse_and_render(&format!(
+            "!0 = !{{}}\n!1 = !DISubroutineType(flags: {spelling}, types: !0)\n"
+        ));
+        assert!(
+            text.contains("!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)"),
+            "`flags: {spelling}` printed:\n{text}"
+        );
+    }
+}
+
+/// `DINode::splitFlags` (`lib/IR/DebugInfoMetadata.cpp`) is why the printed
+/// form is canonical rather than an echo. Its first block carries upstream's
+/// own comment — "so that, for example, we emit `DIFlagPublic` and not
+/// `DIFlagPrivate | DIFlagProtected`" — and the whole routine then walks
+/// `HANDLE_DI_FLAG` in `.def` order, so a written order is not preserved and a
+/// bit written twice appears once. The trailing `Extra` is what
+/// `printDIFlags` emits for the bits no row names.
+///
+/// **No upstream `.ll` fixture pins any of these**, because they are all
+/// non-canonical *inputs* and every checked-in fixture is already canonical:
+/// the `grep` in [`debug_info_flags_accept_numeric_terms_in_any_position`]
+/// finds no numeric term to combine, and
+/// `grep -rn -a --include=*.ll 'DIFlagProtected | DIFlagPrivate'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` has no matches. The source
+/// is `splitFlags` and `printDIFlags` themselves.
+#[test]
+fn debug_info_flags_print_canonically_not_as_written() {
+    // The accessibility triple collapses to the composite spelling.
+    let cases = [
+        ("DIFlagProtected | DIFlagPrivate", "DIFlagPublic"),
+        // Written order does not survive: `.def` order is bit order.
+        (
+            "DIFlagStaticMember | DIFlagPublic",
+            "DIFlagPublic | DIFlagStaticMember",
+        ),
+        // A duplicate term is one bit.
+        ("DIFlagVector | DIFlagVector", "DIFlagVector"),
+        // `FlagPtrToMemberRep`'s triple collapses the same way the
+        // accessibility one does.
+        (
+            "DIFlagSingleInheritance | DIFlagMultipleInheritance",
+            "DIFlagVirtualInheritance",
+        ),
+        // An unnamed bit is the trailing number `printDIFlags` appends.
+        ("DIFlagVector | 2097152", "DIFlagVector | 2097152"),
+        // A wholly unnamed bitfield prints as the bare number, which is the
+        // `SplitFlags.empty()` half of the `if (Extra || SplitFlags.empty())`.
+        ("2097152", "2097152"),
+    ];
+    for (written, printed) in cases {
+        let text = parse_and_render(&format!(
+            "!0 = !{{}}\n!1 = !DISubroutineType(flags: {written}, types: !0)\n"
+        ));
+        assert!(
+            text.contains(&format!("!DISubroutineType(flags: {printed}, types: !0)")),
+            "`flags: {written}` should print `flags: {printed}`:\n{text}"
+        );
+    }
+}
+
+/// `MDFieldPrinter::printDISPFlags` differs from its `printDIFlags` twin in one
+/// statement, and carries its own comment for it: "Always print this field,
+/// because no flags in the IR at all will be interpreted as old-style
+/// isDefinition: true." So a zero `spFlags:` prints `spFlags: 0` where a zero
+/// `flags:` prints nothing.
+///
+/// Ports `test/Assembler/disubprogram.ll`'s
+/// `; CHECK: !9 = distinct !DISubprogram(scope: null, spFlags: 0)`.
+#[test]
+fn disubprogram_zero_sp_flags_prints_zero() {
+    let text = parse_and_render("!0 = distinct !DISubprogram(scope: null, spFlags: 0)\n");
+    assert!(
+        text.contains("distinct !DISubprogram(scope: null, spFlags: 0)"),
+        "output:\n{text}"
+    );
+}
+
+/// `DINode::getFlag` and `DISubprogram::getFlag` are `StringSwitch`es built by
+/// including `DebugInfoFlags.def` **without** `DI_FLAG_LARGEST_NEEDED` /
+/// `DISP_FLAG_LARGEST_NEEDED` — only `DebugInfoMetadata.h` defines those, to
+/// bound the bitmask enums — so neither `DIFlagLargest` nor `DISPFlagLargest`
+/// is a spelling either routine matches. Both fall to `.Default(FlagZero)`,
+/// and `parseFlag`'s `if (!Val)` then rejects them, exactly as it rejects
+/// `DIFlagZero` (which the switch *does* carry, at value zero) and an
+/// invented spelling.
+///
+/// `LLLexer::LexIdentifier` returns `lltok::DIFlag` for any word starting
+/// `DIFlag`, so all four reach `parseFlag` as flag tokens rather than as
+/// unknown keywords.
+///
+/// **No upstream `.ll` fixture pins these.** `test/Assembler/invalid-diflag-bad.ll`
+/// is the family's only negative and pins an invented spelling; searched at
+/// `llvmorg-22.1.4` with `grep -rn -a --include=*.ll 'DIFlagLargest\|DIFlagZero\|DISPFlagLargest'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` — no matches. The source is
+/// `getFlag`'s two include sites.
+#[test]
+fn debug_info_flag_names_the_string_switch_lacks_are_rejected() {
+    for (field, spelling, message) in [
+        ("flags", "DIFlagLargest", "invalid debug info flag"),
+        ("flags", "DIFlagZero", "invalid debug info flag"),
+        (
+            "spFlags",
+            "DISPFlagLargest",
+            "invalid subprogram debug info flag",
+        ),
+        (
+            "spFlags",
+            "DISPFlagZero",
+            "invalid subprogram debug info flag",
+        ),
+    ] {
+        let source = format!("!0 = distinct !DISubprogram(scope: null, {field}: {spelling})\n");
+        let error = parse_err(&source).to_string();
+        assert_eq!(
+            error,
+            format!("{message} '{spelling}'"),
+            "`{field}: {spelling}`"
+        );
+    }
+}
+
+/// `parseFlag`'s first arm is `Lex.getKind() == lltok::APSInt &&
+/// !Lex.getAPSIntVal().isSigned()`. A **signed** literal fails that guard and
+/// falls into the second, which demands a `lltok::DIFlag` and answers
+/// `expected debug info flag` — the same message the `DISPFlagField` overload
+/// gives, which does *not* say "subprogram".
+///
+/// No upstream `.ll` fixture writes a negative `flags:`; searched at
+/// `llvmorg-22.1.4` with `grep -rn -a --include=*.ll 'flags: -'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` — no matches. The source is
+/// the guard.
+#[test]
+fn debug_info_flags_reject_a_signed_numeric_term() {
+    for field in ["flags", "spFlags"] {
+        let error = parse_err(&format!(
+            "!0 = distinct !DISubprogram(scope: null, {field}: -1)\n"
+        ))
+        .to_string();
+        assert!(
+            error.contains("expected debug info flag"),
+            "`{field}: -1` gave: {error}"
+        );
+    }
 }
 
 /// Ports `test/Assembler/diexpression.ll`, whose `CHECK-SAME` lines are

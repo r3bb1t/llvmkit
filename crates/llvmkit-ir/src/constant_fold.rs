@@ -1958,11 +1958,12 @@ fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, 
 /// which is llvmkit's representation choice rather than upstream's, since
 /// `ConstantVector::get` needs a fixed count and so cannot hold one at all.
 /// It round-trips because [`fmt_aggregate_constant`](crate::asm_writer) prints
-/// a uniform vector as `splat (…)`. **That collapse only covers integer and
-/// floating-point elements**, mirroring `AsmWriter.cpp`'s own restriction, so a
-/// scalable vector of uniform *pointers* or `undef` still prints as an element
-/// list — which is not a form LLVM has for a scalable type. See
-/// `docs/future-work.md`; the fix belongs in the printer, not here.
+/// a uniform vector as `splat (…)`. `AsmWriter.cpp` restricts that shorthand to
+/// `ConstantInt` and `ConstantFP`, and `prints_as_splat` mirrors the
+/// restriction for *fixed* vectors only: a scalable vector takes the shorthand
+/// whatever its element category, because it has no other spelling. Nothing
+/// else can be built — `VectorType::const_vector` requires a scalable
+/// constant's lanes to agree.
 fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     scalar: Constant<'ctx, B>,

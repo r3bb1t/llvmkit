@@ -1042,11 +1042,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 name: name.to_owned(),
             });
         }
-        if f.basic_blocks().next().is_some() {
-            return Err(IrError::InvalidOperation {
-                message: "intrinsic functions should never be defined",
-            });
-        }
+        // An intrinsic with a body used to be rejected here, as an
+        // `InvalidOperation` reading `intrinsic functions should never be
+        // defined`. That is upstream's rule with upstream's wording lost:
+        // `Verifier::visitIntrinsicCall`'s first statement is
+        // `Check(IF->isDeclaration(), "Intrinsic functions should never be
+        // defined!", IF)`, raised per *call site* and carrying the capital and
+        // the `!`. `check_intrinsic_call` carries it now, and this site — which
+        // upstream's `visitFunction` has no counterpart for — is gone.
         let expected_attrs = descriptor
             .declaration_attributes(f.signature())
             .map_err(|err| match err {
@@ -3237,7 +3240,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `visitCallBase`'s `swifterror` loop, which sits between the
         // parameter-type loop above and the operand-bundle loop below.
         self.verify_call_swift_error_arguments(f, bb, call)?;
-        self.check_intrinsic_call(f, bb, call, cx)?;
+        self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
         // `if (Call.isInlineAsm()) verifyInlineAsmCall(Call);` — the tail of
         // `visitCallBase`, after the operand-bundle loop.
@@ -4372,6 +4375,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        instruction: ValueSlot,
         call: CallBaseParts<'_>,
         cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
@@ -4382,13 +4386,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             attrs,
         } = call;
         let callee_data = self.module.context().value_data(callee_id);
-        let ValueKindData::Function(_) = &callee_data.kind else {
+        let ValueKindData::Function(callee_function) = &callee_data.kind else {
             return Ok(());
         };
         let callee = Value::<B>::from_parts(callee_id, self.module, callee_data.ty);
         let Some(descriptor) = crate::intrinsics::descriptor_for_callee(callee) else {
             return Ok(());
         };
+        // `Check(IF->isDeclaration(), "Intrinsic functions should never be
+        //  defined!", IF);` — `Function::isDeclaration()` is
+        //  `BasicBlocks.empty()` for a non-materialisable function.
+        self.verifier_check(
+            f,
+            bb,
+            callee_function.basic_blocks.borrow().is_empty(),
+            VerifierRule::IntrinsicDefined,
+            "Intrinsic functions should never be defined!",
+        )?;
         let expected = descriptor
             .function_type_ref(ModuleRef::new(self.module))
             .map_err(|_| {
@@ -4408,6 +4422,47 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             ));
         }
         let descriptor_id = descriptor.id();
+        // `Check(ExpectedName == IF->getName(), "Intrinsic name not mangled
+        //  correctly for type arguments! Should be: " + ExpectedName, IF);`
+        // is **not** ported, because nothing here can reach it:
+        // `intrinsics::descriptor_for_callee` derives the descriptor from the
+        // callee's own name and then requires the resulting `FunctionType` to
+        // equal the callee's signature, so a name that disagrees with its types
+        // answers `None` and this routine has already returned. Upstream has no
+        // such gate — `Function::getIntrinsicID()` is looked up from the name
+        // alone — which is the same reason the three `matchIntrinsicSignature`
+        // messages cannot fire here. `docs/divergences.md` entry 132 names
+        // both.
+        //
+        // `for (Value *V : Call.args()) {
+        //    if (auto *MD = dyn_cast<MetadataAsValue>(V))
+        //      visitMetadataAsValue(*MD, Call.getCaller());
+        //    if (auto *Const = dyn_cast<Constant>(V))
+        //      Check(!Const->getType()->isX86_AMXTy(),
+        //            "const x86_amx is not allowed in argument!"); }`
+        //
+        // The `visitMetadataAsValue` half is unported; entry 132 of
+        // `docs/divergences.md` names it.
+        for arg in args {
+            let arg_data = self.module.context().value_data(arg.get());
+            if matches!(arg_data.kind, ValueKindData::Constant(_)) {
+                self.verifier_check(
+                    f,
+                    bb,
+                    !matches!(
+                        self.module.context().type_data(arg_data.ty),
+                        TypeData::X86Amx
+                    ),
+                    VerifierRule::ConstX86AmxArgument,
+                    "const x86_amx is not allowed in argument!",
+                )?;
+            }
+        }
+        // `switch (ID) { ... }`. Only the `Intrinsic::callbr_landingpad` arm is
+        // ported; `docs/divergences.md` entry 132 names the rest.
+        if descriptor_id == IntrinsicId::CALLBR_LANDINGPAD {
+            self.check_callbr_landingpad_intrinsic(f, bb, instruction, args, cx)?;
+        }
         for index in descriptor.immarg_operand_indices() {
             let Some(arg) = args.get(index) else {
                 return Err(self.fail(
@@ -4430,6 +4485,133 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
         }
         self.verify_funclet_token(f, bb, descriptor_id, attrs, cx)
+    }
+
+    /// `Verifier::visitIntrinsicCall`'s `case Intrinsic::callbr_landingpad:`
+    /// arm (`lib/IR/Verifier.cpp`), statement for statement — including the two
+    /// `CheckFailed` + `break` pairs, which stop the arm and not the function,
+    /// and upstream's `intrinstic` typo, which is contractual.
+    fn check_callbr_landingpad_intrinsic(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        instruction: ValueSlot,
+        args: &[core::cell::Cell<ValueSlot>],
+        cx: &FunctionContext<'_>,
+    ) -> IrResult<()> {
+        // `const auto *CBR = dyn_cast<CallBrInst>(Call.getOperand(0));
+        //  Check(CBR, "intrinstic requires callbr operand", &Call);
+        //  if (!CBR) break;`
+        let callbr = args
+            .first()
+            .map(core::cell::Cell::get)
+            .filter(|slot| self.is_callbr_instruction(*slot));
+        let Some(callbr) = callbr else {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallbrLandingPadPlacement,
+                "intrinstic requires callbr operand".to_owned(),
+            ));
+        };
+        // `const BasicBlock *LandingPadBB = Call.getParent();
+        //  const BasicBlock *PredBB = LandingPadBB->getUniquePredecessor();
+        //  if (!PredBB) { CheckFailed("Intrinsic in block must have 1 unique
+        //  predecessor", &Call); break; }`
+        //
+        // `getUniquePredecessor` is "exactly one *distinct* predecessor block",
+        // not "exactly one incoming edge" — a block one predecessor reaches
+        // twice still has a unique predecessor. `cx.predecessors` is the
+        // multiset, so the distinct count is what is taken here.
+        let landing_pad_bb = bb.slot();
+        let predecessors = cx
+            .predecessors
+            .get(&landing_pad_bb)
+            .map_or(&[][..], Vec::as_slice);
+        let mut unique_predecessor = None;
+        for predecessor in predecessors {
+            match unique_predecessor {
+                None => unique_predecessor = Some(*predecessor),
+                Some(seen) if seen == *predecessor => {}
+                Some(_) => {
+                    unique_predecessor = None;
+                    break;
+                }
+            }
+        }
+        let Some(predecessor) = unique_predecessor else {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallbrLandingPadPlacement,
+                "Intrinsic in block must have 1 unique predecessor".to_owned(),
+            ));
+        };
+        // `if (!isa<CallBrInst>(PredBB->getTerminator())) {
+        //    CheckFailed("Intrinsic must have corresponding callbr in
+        //    predecessor", &Call); break; }`
+        if !self
+            .block_terminator_slot(predecessor)
+            .is_some_and(|slot| self.is_callbr_instruction(slot))
+        {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallbrLandingPadPlacement,
+                "Intrinsic must have corresponding callbr in predecessor".to_owned(),
+            ));
+        }
+        // `Check(llvm::is_contained(CBR->getIndirectDests(), LandingPadBB),
+        //   "Intrinsic's corresponding callbr must have intrinsic's parent
+        //    basic block in indirect destination list", &Call);`
+        let in_indirect_dests = match &self.module.context().value_data(callbr).kind {
+            ValueKindData::Instruction(data) => match &data.kind {
+                InstructionKindData::CallBr(callbr_data) => callbr_data
+                    .indirect_dests
+                    .iter()
+                    .any(|dest| dest.get() == landing_pad_bb),
+                _ => false,
+            },
+            _ => false,
+        };
+        self.verifier_check(
+            f,
+            bb,
+            in_indirect_dests,
+            VerifierRule::CallbrLandingPadPlacement,
+            "Intrinsic's corresponding callbr must have intrinsic's parent basic block in \
+             indirect destination list",
+        )?;
+        // `const Instruction &First = *LandingPadBB->begin();
+        //  Check(&First == &Call, "No other instructions may proceed intrinsic",
+        //        &Call);`
+        self.verifier_check(
+            f,
+            bb,
+            self.first_instruction_in_block(landing_pad_bb) == Some(instruction),
+            VerifierRule::CallbrLandingPadPlacement,
+            "No other instructions may proceed intrinsic",
+        )
+    }
+
+    /// `isa<CallBrInst>(V)`.
+    fn is_callbr_instruction(&self, slot: ValueSlot) -> bool {
+        match &self.module.context().value_data(slot).kind {
+            ValueKindData::Instruction(data) => {
+                matches!(data.kind, InstructionKindData::CallBr(_))
+            }
+            _ => false,
+        }
+    }
+
+    /// `BasicBlock::getTerminator()` — the last instruction of the block, or
+    /// `None` where upstream answers null because the block is unterminated.
+    fn block_terminator_slot(&self, block: ValueSlot) -> Option<ValueSlot> {
+        let ValueKindData::BasicBlock(data) = &self.module.context().value_data(block).kind else {
+            return None;
+        };
+        let instructions = data.instructions.borrow();
+        instructions.last().copied()
     }
 
     /// Mirrors the tail of `Verifier::visitIntrinsicCall`
@@ -4855,7 +5037,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        inst: &InstructionView<'ctx, B>,
         d: &InvokeInstData,
         cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
@@ -4877,7 +5059,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             attrs: &d.attrs,
         };
         self.verify_call_swift_error_arguments(f, bb, call)?;
-        self.check_intrinsic_call(f, bb, call, cx)?;
+        self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
         // `if (Call.isInlineAsm()) verifyInlineAsmCall(Call);` — the same tail
         // of `visitCallBase` that `check_call` runs; `visitInvokeInst` calls
@@ -4924,7 +5106,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        inst: &InstructionView<'ctx, B>,
         d: &CallBrInstData,
         cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
@@ -5040,7 +5222,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
             // `visitIntrinsicCall(CBI.getIntrinsicID(), CBI);`
-            self.check_intrinsic_call(f, bb, call, cx)?;
+            self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
         }
 
         // `visitTerminator(CBI);` — llvmkit's spelling of the successor half

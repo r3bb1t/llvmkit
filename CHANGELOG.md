@@ -19,6 +19,67 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `DIFlags` / `DISPFlags` are bitfields, a scalable vector constant must be a splat, and `visitIntrinsicCall` grows a preamble
+
+- **BREAKING: `flags:` and `spFlags:` are read and printed as bitfields, not as
+  the text that was written.** `MetadataFieldValue` gains `DiFlags(DiFlags)` and
+  `DispFlags(DispFlags)` variants and loses its use of `Enum(String)` for the
+  two flag families; `metadata::DiFlags` / `metadata::DispFlags` are ports of
+  `DINode::getFlag` / `getFlagString` / `splitFlags` and their `DISubprogram`
+  twins.
+
+  Four behaviours change, all of them toward `llvm-as`. `parseMDField`'s
+  `parseFlag` accepts an unsigned integer term **anywhere** in the `|` chain —
+  it is the first arm, ahead of the flag-keyword one — so `flags: 4 |
+  DIFlagPublic`, `flags: DIFlagPublic | 4096` and `flags: 4099` all parse and
+  are one constant; llvmkit rejected the two mixed forms with `expected debug
+  info flag after '|'` and `expected ')' here`, neither of which upstream
+  prints, and that message is gone with them. `MDFieldPrinter::printDIFlags`
+  re-derives the printed form through `splitFlags`, so
+  `DIFlagProtected | DIFlagPrivate` prints as `DIFlagPublic`, a written order
+  is replaced by bit order, a duplicate term appears once, and bits no `.def`
+  row names are appended as a trailing number. A zero `flags:` prints
+  **nothing** — `printDIFlags` opens `if (!Flags) return;` — while a zero
+  `spFlags:` prints `spFlags: 0`, which is `printDISPFlags`'s one deliberate
+  difference from its twin. And a signed term is refused with upstream's
+  `expected debug info flag`, where `flags: -1` used to be accepted and echoed.
+
+  Two spellings llvmkit accepted are now rejected, with upstream's `invalid
+  debug info flag '…'`: `DIFlagLargest` and `DISPFlagLargest`. Both sit inside
+  `#ifdef DI_FLAG_LARGEST_NEEDED` in `DebugInfoFlags.def`, a macro only
+  `DebugInfoMetadata.h` defines, so `DINode::getFlag` has never matched them.
+  `dwarf_def_drift.rs`'s `flag_rows` read the `.def` line by line and swept the
+  guarded rows in, which is why the drift lock did not see it; it honours the
+  `#ifdef` now, and both flag tests assert the reverse direction as well.
+
+- **BREAKING: `VectorType::const_vector` requires a scalable vector constant to
+  be a splat.** Upstream has no element-list constructor for one —
+  `ConstantVector::get` hands its list to `FixedVectorType::get`, and the only
+  scalable constructor is `ConstantVector::getSplat` — so llvmkit built
+  constants LLVM cannot express: a lane disagreement, and a list shorter than
+  the type's minimum, because the element-count check was skipped outright for
+  scalable types. Both are `IrError` now. The printer's element-list fallback
+  is consequently fixed-width only; a non-uniform scalable vector used to
+  reach it and print text neither LLVM nor llvmkit's own `.ll` parser reads
+  back.
+
+- **`Verifier::visitIntrinsicCall` grows its preamble and one `switch` arm.**
+  New: `Intrinsic functions should never be defined!`, `Intrinsic name not
+  mangled correctly for type arguments! Should be: …`, `const x86_amx is not
+  allowed in argument!`, and the whole `case Intrinsic::callbr_landingpad:` arm
+  — `intrinstic requires callbr operand` (upstream's typo, kept),
+  `Intrinsic in block must have 1 unique predecessor`, `Intrinsic must have
+  corresponding callbr in predecessor`, `Intrinsic's corresponding callbr must
+  have intrinsic's parent basic block in indirect destination list` and
+  `No other instructions may proceed intrinsic`. Three more functions of
+  `test/Verifier/callbr.ll` now run.
+
+- **Removed: `LexError::IntegerOverflow128`.** It had no construction site
+  anywhere — llvmkit's lexer stores the numeric lexeme and lets the parser
+  decode it at the destination width, so it performs neither `HexToIntPair`'s
+  nor `FP80HexToIntPair`'s wraparound detection — and a public variant nothing
+  produces is a claim the tree does not honour.
+
 ### Fixed — a forward-referenced callee is an untyped placeholder, and the function-header attribute list has no lookahead
 
 - **A call may forward-reference a function whose later `declare` / `define`

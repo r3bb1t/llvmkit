@@ -1418,7 +1418,9 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
 /// scalable vector constant with an element list cannot exist there. llvmkit
 /// builds one deliberately — it is how a scalable splat is represented, see
 /// `constant_fold::vector_splat_constant` — which is why the printer has to
-/// know the difference.
+/// know the difference. `VectorType::const_vector` requires a scalable
+/// constant's lanes to agree, so every scalable aggregate that reaches here
+/// takes this arm and the element-list fallback below is fixed-width only.
 fn prints_as_splat<B: ModuleBrand>(module: &ModuleCore, ty: Type<'_, B>, splat: ValueSlot) -> bool {
     match ty.data() {
         TypeData::FixedVector { .. } => is_int_or_fp_splat_value(module, splat),
@@ -1457,15 +1459,12 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
         fmt_operand(f, value, None)?;
         return f.write_str(")");
     }
-    // The element-list fallback. A *scalable* vector reaches it only when its
-    // lanes disagree, and that shape has no LLVM spelling at all — so what is
-    // printed here is invalid IR whatever it says. It is printed losslessly
-    // rather than collapsed to a `splat (…)` of the first lane, because
-    // claiming a splat the constant is not would corrupt silently where this
-    // merely fails to re-parse. The real answer is to stop the constant being
-    // constructible; `VectorType::const_vector` deliberately does not require
-    // uniformity today and two tests depend on that, so it is a representation
-    // decision rather than a printer one. See `docs/future-work.md`.
+    // The element-list fallback, which no *scalable* vector reaches: a shape
+    // with no LLVM spelling would be printed here, and the answer was to stop
+    // the constant being constructible rather than to invent a spelling for
+    // it. `VectorType::const_vector` requires a scalable constant's lanes to
+    // agree — it is llvmkit's `ConstantVector::getSplat` — so a scalable
+    // aggregate is always a splat and always took the arm above.
     let (open, close) = match ty.data() {
         TypeData::Array { .. } => ("[", "]"),
         TypeData::Struct(s) => {
@@ -3841,7 +3840,7 @@ fn fmt_specialized_metadata_node(
     slots: &[Option<usize>],
     value_slots: Option<&SlotTracker>,
 ) -> fmt::Result {
-    use super::metadata::MetadataFieldValue;
+    use super::metadata::{DiFlags, DispFlags, MetadataFieldValue};
     if node.is_distinct() {
         f.write_str("distinct ")?;
     }
@@ -3860,10 +3859,19 @@ fn fmt_specialized_metadata_node(
         }
         return f.write_str(")");
     }
-    for (i, field) in node.fields().iter().enumerate() {
-        if i > 0 {
+    let mut written = 0_usize;
+    for field in node.fields() {
+        // `MDFieldPrinter::printDIFlags` opens `if (!Flags) return;`, so a
+        // zero `flags:` prints nothing at all — not even its name — and does
+        // not advance `FS`, the `ListSeparator` that puts the `, ` in. Every
+        // other field printer emits unconditionally once it is here.
+        if matches!(field.value(), MetadataFieldValue::DiFlags(flags) if *flags == DiFlags::ZERO) {
+            continue;
+        }
+        if written > 0 {
             f.write_str(", ")?;
         }
+        written += 1;
         write!(f, "{}: ", field.name())?;
         match field.value() {
             MetadataFieldValue::Null => f.write_str("null")?,
@@ -3875,6 +3883,33 @@ fn fmt_specialized_metadata_node(
                 f.write_str("\"")?;
             }
             MetadataFieldValue::Enum(s) => f.write_str(s)?,
+            MetadataFieldValue::DiFlags(flags) => {
+                let mut split = Vec::new();
+                let extra = flags.split_flags(&mut split);
+                fmt_split_flags(
+                    f,
+                    split.iter().map(|flag| (flag.flag_string(), flag.bits())),
+                    extra.bits(),
+                )?;
+            }
+            // `printDISPFlags` differs from its twin in one statement, with
+            // its own comment: "Always print this field, because no flags in
+            // the IR at all will be interpreted as old-style isDefinition:
+            // true." So a zero `spFlags:` prints `0` where a zero `flags:`
+            // prints nothing.
+            MetadataFieldValue::DispFlags(flags) => {
+                if *flags == DispFlags::ZERO {
+                    f.write_str("0")?;
+                } else {
+                    let mut split = Vec::new();
+                    let extra = flags.split_flags(&mut split);
+                    fmt_split_flags(
+                        f,
+                        split.iter().map(|flag| (flag.flag_string(), flag.bits())),
+                        extra.bits(),
+                    )?;
+                }
+            }
             MetadataFieldValue::Metadata(md) => {
                 fmt_metadata_operand(f, md.slot(), module, store, slots, value_slots)?
             }
@@ -3891,6 +3926,44 @@ fn fmt_specialized_metadata_node(
         }
     }
     f.write_str(")")
+}
+
+/// The shared tail of `MDFieldPrinter::printDIFlags` and `printDISPFlags`:
+/// write each split component through `getFlagString`, `" | "`-separated, and
+/// append the unrecognised remainder as a number.
+///
+/// `if (Extra || SplitFlags.empty()) Out << FlagsFS << Extra;` — so an
+/// all-unknown bitfield prints as the bare number, a partially-known one puts
+/// the remainder last, and a fully-known one prints no number. Upstream
+/// asserts each component has a spelling (`assert(!StringF.empty())`); a
+/// component with none can only come from a table row `splitFlags` walks and
+/// `getFlagString` lacks, which the `.def` cannot produce, so llvmkit folds it
+/// back into the remainder rather than panicking.
+fn fmt_split_flags<I>(f: &mut fmt::Formatter<'_>, split: I, mut extra: u32) -> fmt::Result
+where
+    I: IntoIterator<Item = (Option<&'static str>, u32)>,
+{
+    let mut first = true;
+    let mut named = 0_usize;
+    for (spelling, bits) in split {
+        let Some(spelling) = spelling else {
+            extra |= bits;
+            continue;
+        };
+        if !first {
+            f.write_str(" | ")?;
+        }
+        first = false;
+        named += 1;
+        f.write_str(spelling)?;
+    }
+    if extra != 0 || named == 0 {
+        if !first {
+            f.write_str(" | ")?;
+        }
+        write!(f, "{extra}")?;
+    }
+    Ok(())
 }
 
 /// Mirrors `AssemblyWriter::printMetadataAttachments`, whose `Separator`
