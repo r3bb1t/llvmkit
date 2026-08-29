@@ -2162,13 +2162,12 @@ deliberately deferred; each cites its upstream anchor.
   if wrong), so the current DCE stays conservative-but-safe. `Value::has_uses`
   also counts debug-record uses upstream ignores (upstream salvages debug info
   instead). (Unordered atomic loads are now removed.)
-- **InstSimplify unreachable-block skip** -- the pass still folds in
-  unreachable blocks that upstream skips (`runImpl` in
-  `InstSimplifyPass.cpp`, via `DT->isReachableFromEntry`), a
-  textual-only divergence in dead code; needs reachability (a dominator tree)
-  threaded into the pass. No InstSimplify tests cover freeze folds or
-  unreachable-block behavior yet (the latter blocked on this skip). (The
-  erase-only-when-trivially-dead behavior is now matched.)
+- **InstSimplify freeze folds** -- no InstSimplify test covers a `freeze`
+  fold yet. (The unreachable-block skip that used to be named here is closed:
+  the pass declares `DominatorTreeAnalysis` and carries `runImpl`'s
+  `if (!SQ.DT->isReachableFromEntry(&BB)) continue;`, pinned by
+  `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_leaves_unreachable_blocks_alone`.
+  The erase-only-when-trivially-dead behavior was already matched.)
 - **Deeper `swifterror` dataflow verification** -- the swifterror alloca
   support verifies the parse-level constraints (pointer type, non-array); the
   full `Verifier` use-site rules (swifterror values may only flow through

@@ -7,6 +7,7 @@
 
 use super::IrResult;
 use super::constant_folding::constant_fold_instruction;
+use super::dominator_tree::DominatorTreeAnalysis;
 use super::instruction::{InstructionKind, InstructionView};
 use super::module::ModuleBrand;
 use super::pass_access::PatchBody;
@@ -24,10 +25,17 @@ impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
     // Folding replaces uses and erases the folded instruction in place; the CFG
     // is untouched, so the `PatchBody` floor is exactly right.
     type Access = PatchBody;
-    type Requires = ();
+    // `runImpl`'s `SimplifyQuery` carries a real `DominatorTree` at both entry
+    // points, and the block loop's first statement reads it. Prefetching it is
+    // what makes that statement portable; a `PatchBody` pass cannot change the
+    // CFG, so the tree stays valid for the whole run.
+    type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = INSTSIMPLIFY.as_str();
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: FnCx<'m, '_, 'ctx, B, PatchBody, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -36,10 +44,21 @@ impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
         // `FnPatch::done` reports everything-preserved if nothing changed (the
         // dirty flag witnesses it) and the CFG-preserved floor otherwise.
         let patch = cx.mutate();
+        let dominators = patch.analysis::<DominatorTreeAnalysis, _>();
         let data_layout = patch.function().module().data_layout().clone();
         let scope = patch.worklist();
         while let Some(inst) = scope.step() {
             let view = inst.as_view();
+            // `for (BasicBlock &BB : F) { if (!SQ.DT->isReachableFromEntry(&BB))
+            // continue; ... }` — runImpl's first statement, with its own
+            // comment: "Unreachable code can take on strange forms that we are
+            // not prepared to handle. For example, an instruction may have
+            // itself as an operand." llvmkit walks a flat instruction worklist
+            // rather than upstream's block loop, so the block gate is asked per
+            // instruction, of the instruction's parent.
+            if !dominators.is_reachable_from_entry(view.parent()) {
+                continue;
+            }
             // Upstream runImpl only simplifies instructions with uses (!use_empty);
             // this also makes the ordered-atomic-load-from-constant-global case
             // terminate (folded once, kept, then use-empty on any re-visit).

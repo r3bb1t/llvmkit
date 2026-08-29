@@ -19,6 +19,22 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — InstSimplify leaves unreachable blocks alone
+
+- **`InstSimplifyPass` declares `DominatorTreeAnalysis` and carries `runImpl`'s
+  reachability gate**, `if (!SQ.DT->isReachableFromEntry(&BB)) continue;`, with
+  upstream's reason: "Unreachable code can take on strange forms that we are
+  not prepared to handle. For example, an instruction may have itself as an
+  operand." llvmkit's worklist is flat rather than upstream's block loop, so
+  the gate is asked per instruction, of the instruction's parent. Dead code now
+  comes out of the pass exactly as it went in (`docs/divergences.md` entry 46,
+  now closed).
+
+- **Behaviour note:** `InstSimplifyPass`'s `Requires` is no longer `()`, so a
+  pipeline running it will compute (or reuse) a dominator tree. The rung is
+  unchanged — `PatchBody` cannot edit the CFG, so the tree stays valid for the
+  whole run.
+
 ### Fixed — an attribute list prints in `AttributeImpl::cmp`'s order
 
 - **`AttributeComparator` and `addAttributeImpl`'s `lower_bound` are ported**,

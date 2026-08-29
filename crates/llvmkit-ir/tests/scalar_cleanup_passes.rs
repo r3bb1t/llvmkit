@@ -545,3 +545,54 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
     );
     Ok(())
 }
+
+/// An unreachable block is left exactly as written.
+///
+/// Ports `InstSimplifyPass.cpp::runImpl`'s first statement,
+/// `if (!SQ.DT->isReachableFromEntry(&BB)) continue;`, and the comment above
+/// it: "Unreachable code can take on strange forms that we are not prepared to
+/// handle. For example, an instruction may have itself as an operand."
+///
+/// **No upstream `.ll` fixture pins this arm.** Derived from
+/// `grep -rln "unreachable" orig_cpp/.../llvm/test/Transforms/InstSimplify/*.ll`
+/// at this commit: it matches `compare.ll`, `insertelement.ll`,
+/// `invalid-load-operand-infinite-loop.ll` and `known-non-zero.ll`, and none of
+/// the four is about the skip — the third is a `-passes=jump-threading` test
+/// and the others use `unreachable` only as a terminator in reachable code. So
+/// the routine is the anchor (D11), and this is llvmkit-specific.
+///
+/// This is also the test the gap did not have: before the gate, llvmkit folded
+/// in dead code and no InstSimplify test looked at an unreachable block at all
+/// — the divergence was recorded (former entry 46) rather than caught.
+#[test]
+fn instsimplify_leaves_unreachable_blocks_alone() -> Result<(), IrError> {
+    let m = module_new!("instsimplify-unreachable")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    // Nothing branches to `dead`, so it is not reachable from the entry block.
+    let dead = m.view(f).append_basic_block(&m, "dead");
+
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    b.ret(i32_ty.const_int(1_u32))?;
+
+    // The same foldable `add` the reachable-block test above folds to 42.
+    let d = IrBuilder::with_folder(&m, NoFolder).position_at_end(dead);
+    let sum =
+        d.int_add::<i32, _, _, _>(i32_ty.const_int(40_u32), i32_ty.const_int(2_u32), "sum")?;
+    d.ret(sum)?;
+
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
+    let reverified = unverified.verify()?;
+    let text = format!("{reverified}");
+
+    assert!(
+        text.contains("%sum = add i32 40, 2"),
+        "the unreachable block's add was folded:\n{text}"
+    );
+    assert!(text.contains("ret i32 %sum"), "{text}");
+    Ok(())
+}

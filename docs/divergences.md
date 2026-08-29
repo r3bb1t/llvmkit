@@ -1135,22 +1135,6 @@ crates/llvmkit-ir/src/dce.rs (is_trivially_dead, lines 48-75; cited 49-79 is min
 
 </details>
 
-### 46. InstSimplify folds inside unreachable blocks that upstream skips
-
-*passes* — crates/llvmkit-ir/src/inst_simplify.rs:23-68 (`type Requires = ()`, the ungated worklist loop)
-
-- **LLVM:** `InstSimplifyPass.cpp::runImpl` iterates reachable blocks only, gating each on `DT->isReachableFromEntry(&BB)`, so instructions in dead blocks are left exactly as written.
-- **llvmkit:** `InstSimplifyPass::run` walks the whole function worklist with no reachability gate — its `Requires` is `()` and no dominator tree is consulted — so it folds in unreachable blocks and the printed function differs from upstream's in that dead code.
-- **Why:** Recorded as a textual-only divergence in dead code; closing it needs reachability (a dominator tree) threaded into the pass. The entry also notes the knock-on test gap: no InstSimplify test covers unreachable-block behaviour, precisely because the skip is missing.
-- **Fix:** Change the pass's `Requires` to prefetch `DominatorTree`, skip any block failing `is_reachable_from_entry`, and port the upstream fixture that pins the skip. The analysis is already available (`DominatorTree::is_reachable_from_entry` is what the phi verifier rule uses), so this is plumbing plus one test.
-- **Correction from verification:** Accurate as written, with one refinement: because llvmkit gates on `!has_uses` and only erases after a successful fold, the divergence inside unreachable blocks is specifically folding-and-erasing-the-folded-instruction — upstream additionally skips its `isInstructionTriviallyDead` deletion arm there, which llvmkit never performs in that pass anyway. The core claim (no reachability gate, `Requires = ()`, no dominator tree consulted, dead-code text differs from upstream) is correct and unchanged in the tree.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-ir/src/inst_simplify.rs: line 27 is `type Requires = ();`; the run body (lines 38-66) enters `cx.mutate()`, opens `patch.worklist()`, and loops `while let Some(inst) = scope.step()` with only a `!view.to_erased().has_uses()` skip — grep for "reachab" in the file returns no matches. The worklist seed is block-unfiltered: `FnPatch::worklist` (crates/llvmkit-ir/src/pass_context.rs:1002-1006) pushes every item from `body_instructions()`, which is `self.function.as_function().basic_blocks().flat_map(|b| b.instruction_ids())` (pass_context.rs:934-943) — all blocks, reachable or not. Upstream orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp `runImpl` lines 33-37 open each block with `if (!SQ.DT->isReachableFromEntry(&BB)) continue;` (comment: unreachable code can take strange forms, e.g. an instruction may have itself as an operand), and both entry points build `SimplifyQuery` with a real DominatorTree (lines 96-104, 125-130). llvmkit has the capability but does not wire it: `is_reachable_from_entry` exists at crates/llvmkit-ir/src/dominator_tree.rs:189 and is used by crates/llvmkit-ir/src/verifier.rs:1130. Still present today: `git status --porcelain -- crates/llvmkit-ir/src/inst_simplify.rs` is empty and the file's last touching commit is 857ff39 (a naming refactor). The gap is also self-recorded at docs/future-work.md:1729-1735 as "InstSimplify unreachable-block skip".
-
-</details>
-
 ### 47. `SymbolicallyEvaluateGEP` sub-cases not ported — fewer folds than upstream
 
 *constant folder* — crates/llvmkit-ir/src/constant_folding.rs (the GEP symbolic-evaluation path)
