@@ -40,6 +40,11 @@ const NOT_YET_MODELED: &[&str] = &[];
 /// One attribute as `Attributes.td` declares it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct TdAttribute {
+    /// The `def <Name>` itself. This, not the keyword, is the sort key behind
+    /// `Attribute::AttrKind`'s enum values: `GET_ATTR_ENUM` numbers each
+    /// `getAllDerivedDefinitions` list, and TableGen returns those sorted by
+    /// record name.
+    name: String,
     keyword: String,
     /// `EnumAttr`, `IntAttr`, `TypeAttr`, … — decides the spelling we probe.
     kind: String,
@@ -122,6 +127,7 @@ fn parse_attributes_td(src: &str) -> Vec<TdAttribute> {
             continue;
         }
         out.push(TdAttribute {
+            name: name.trim().to_string(),
             keyword,
             kind: kind.to_string(),
             fn_attr: args.contains("FnAttr"),
@@ -429,5 +435,93 @@ fn a_lexed_keyword_with_no_td_def_does_not_print_as_itself() {
     let printed = format!("{m}");
     assert!(printed.contains("ptr captures(none) %p"), "{printed}");
     assert!(!printed.contains("nocapture"), "{printed}");
+    parse_dynamic(printed.as_str()).expect("round-trip");
+}
+
+/// A function attribute list prints in `Attributes.td`'s enum order, whatever
+/// order it was written in.
+///
+/// `AttrBuilder::addAttribute` goes through `addAttributeImpl`, which inserts
+/// at `lower_bound(Attrs, Kind, AttributeComparator())`, so the vector is
+/// sorted at every point and `AssemblyWriter` prints it sorted.
+/// `AttributeComparator` orders enum-kinded attributes by `AttrKind` enum
+/// value, and `utils/TableGen/Basic/Attributes.cpp` builds those values by
+/// numbering `getAllDerivedDefinitions("EnumAttr")` — sorted by **def name** —
+/// then `TypeAttr`, `IntAttr`, `ConstantRangeAttr`, `ConstantRangeListAttr`.
+/// Its own comment says the order is what `llvm::Attribute::operator<`
+/// expects.
+///
+/// llvmkit spells that order as `AttrKind`'s variant order, by hand. Nothing
+/// tied it to the `.td` — which is how it came to hold `Int` before `Type`,
+/// `AllocSize` after `Captures`, and `Memory`/`NoFpClass` after
+/// `StackAlignment`, none of which is upstream's. This test writes every
+/// bare-keyword function attribute in **reverse** `.td` order and asserts the
+/// printed list is in `.td` order, so a hand-placed variant cannot drift again.
+///
+/// Scope, and why each exclusion is here: only `EnumAttr`s in `[FnAttr]`
+/// position are probed, because those are the ones spelled by a bare keyword
+/// with no payload grammar. `readnone` / `readonly` / `writeonly` are excluded
+/// on top of that — `LLParser::parseFnAttributeValuePairs` runs them through
+/// `upgradeMemoryAttr` into a single `memory(...)` that is emitted after the
+/// loop, so they never reach the list as themselves. `builtin` is excluded for
+/// a third reason: it is `[FnAttr]` in the `.td` but legal only at a *call
+/// site*, which is what upstream's `BuiltinLoc` book-keeping and llvmkit's
+/// `'builtin' attribute not valid on function` enforce. The other four families
+/// are covered by the printed-order assertion transitively: they sort after
+/// every `EnumAttr`, and `an_attribute_list_holds_one_attribute_per_kind` in
+/// `parser_modifiers.rs` pins the string-attribute tail.
+///
+/// llvmkit-specific drift guard; `Attributes.td` is the anchor (D11).
+#[test]
+fn a_function_attribute_list_prints_in_attributes_td_enum_order() {
+    // `LLParser::parseFnAttributeValuePairs`'s `upgradeMemoryAttr` keywords,
+    // plus the one `[FnAttr]` that is call-site-only.
+    const NOT_ON_A_DECLARE: &[&str] = &["readnone", "readonly", "writeonly", "builtin"];
+
+    let mut fn_enums: Vec<TdAttribute> = parse_attributes_td(ATTRIBUTES_TD)
+        .into_iter()
+        .filter(|attr| {
+            attr.kind == "EnumAttr"
+                && attr.fn_attr
+                && !NOT_ON_A_DECLARE.contains(&attr.keyword.as_str())
+        })
+        .collect();
+    // `getAllDerivedDefinitions` order: by def name.
+    fn_enums.sort_by(|a, b| a.name.cmp(&b.name));
+    assert!(
+        fn_enums.len() > 50,
+        "expected most of the EnumAttr family to be [FnAttr], got {}",
+        fn_enums.len()
+    );
+
+    let reversed: Vec<&str> = fn_enums
+        .iter()
+        .rev()
+        .map(|attr| attr.keyword.as_str())
+        .collect();
+    let src = format!("declare void @f() {}\n", reversed.join(" "));
+    let m = parse_dynamic(src.as_str()).expect("every probed keyword is a function attribute");
+    let printed = format!("{m}");
+
+    // Every keyword must appear, and at a strictly increasing offset in `.td`
+    // order — the printed list is sorted even though the source was reversed.
+    // Newlines become spaces first so the last keyword on the header line is
+    // delimited the same way as the rest.
+    let haystack = printed.replace('\n', " ");
+    let mut previous = 0_usize;
+    let mut previous_keyword = "";
+    for attr in &fn_enums {
+        let needle = format!(" {} ", attr.keyword);
+        let at = haystack
+            .find(needle.as_str())
+            .unwrap_or_else(|| panic!("`{}` missing from:\n{printed}", attr.keyword));
+        assert!(
+            at > previous,
+            "`{}` printed before `{previous_keyword}`; Attributes.td orders it after:\n{printed}",
+            attr.keyword
+        );
+        previous = at;
+        previous_keyword = attr.keyword.as_str();
+    }
     parse_dynamic(printed.as_str()).expect("round-trip");
 }

@@ -1089,16 +1089,6 @@ llvmkit source, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_p
 
 The parser/printer contract is that printed output matches `AsmWriter.cpp` byte for byte and re-parses.
 
-### 24. An attribute list prints in insertion order, not `AttributeImpl::cmp`'s order — **NARROWED**
-
-*IR model / Attributes* — crates/llvmkit-ir/src/attributes.rs (`AttributeStorage::add_stored`), crates/llvmkit-ir/src/asm_writer.rs (`fmt_attribute_set`)
-
-- **LLVM:** `addAttributeImpl` inserts at `lower_bound(Attrs, Kind, AttributeComparator())`, so an `AttrBuilder`'s vector is always sorted, and `AttributeSetNode::get` sorts again with `llvm::sort` before uniquing. The order is `AttributeImpl::cmp`'s: enum-kinded attributes first, by `AttrKind` enum value, then string attributes by key. `AssemblyWriter` prints that order, so `declare void @f() "k"="1" "j"="2"` comes back as `"j"="2" "k"="1"`.
-- **llvmkit:** `AttributeStorage` keeps one `Vec<AttributeStored>` per `AttrIndex` and `add_stored` pushes to the end; `fmt_attribute_set` prints it as stored. Source order therefore survives into the output, and a list written out of upstream's sort order prints out of it too.
-- **Why:** the entry's other half — `add` de-duplicating by full structural equality, so `align 4 align 8` kept both — was the accepts-invalid behaviour and is closed: `add_stored` is now the port of `addAttributeImpl`'s `std::swap` branch, keyed by `AttrKind` for enum attributes and by key for string ones, and the redundant `AttributeStorage::set` is gone. The ordering half is left because it is a *different* change: it needs `AttributeComparator` and `AttributeImpl::cmp` ported as their own routines, and re-blessing every printed attribute list in the corpus that happens to be written out of order.
-- **Fix:** port `AttributeComparator` and insert at its `lower_bound` in `add_stored`, then re-run the byte-lock and corpus gates.
-- **Evidence (2026-08-21):** `crates/llvmkit-asmparser/tests/parser_modifiers.rs::an_attribute_list_holds_one_attribute_per_kind` asserts `declare void @f() "k"="1" "j"="2"` prints its two string attributes in *source* order, which is the divergence: `AttributeImpl::cmp`'s string arm is `getKindAsString().compare(AI.getKindAsString())`, so upstream would print `"j"` first. The closed half is asserted by the same test.
-
 ### 43. DWARF enumerations and `DIExpression` operands are stored as spellings, so numeric forms never normalise
 
 *IR model* — crates/llvmkit-asmparser/src/ll_token.rs (the nine `Token::Dwarf*` variants), crates/llvmkit-asmparser/src/ll_parser.rs:5865-5878 (`parse_metadata_field_value`'s enum arms), crates/llvmkit-ir/src/asm_writer.rs:3491, :3497

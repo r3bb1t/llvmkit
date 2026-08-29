@@ -19,6 +19,35 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — an attribute list prints in `AttributeImpl::cmp`'s order
+
+- **`AttributeComparator` and `addAttributeImpl`'s `lower_bound` are ported**,
+  so an attribute set is sorted at every point and `AsmWriter` prints it
+  sorted, as upstream does. `declare void @f() "k"="1" "j"="2"` comes back with
+  `"j"` first; a generated intrinsic declaration comes back
+  `nocallback nocreateundeforpoison nofree nosync nounwind speculatable
+  willreturn memory(none)` — the order
+  `test/Assembler/amdgcn-intrinsic-attributes.ll` CHECKs off `llvm-as |
+  llvm-dis`, with LLVM 22's `nocreateundeforpoison` in its enum slot. llvmkit
+  printed source/insertion order before (`docs/divergences.md` entry 24, now
+  closed).
+
+- **Breaking:** `AttrKind`'s variant order changed and it now derives `Ord`.
+  The order is `Attribute::AttrKind`'s — `Attributes.inc`'s `GET_ATTR_ENUM`
+  numbering, which walks `EnumAttr`, `TypeAttr`, `IntAttr`,
+  `ConstantRangeAttr`, `ConstantRangeListAttr`, each sorted by
+  `Attributes.td` **def name**. llvmkit had `IntAttr` before `TypeAttr`,
+  `AllocSize` after `Captures`, and `Memory`/`NoFpClass` after
+  `StackAlignment`, none of which is upstream's. `Ord` is the comparison
+  `AttributeImpl::cmp` makes, so it is part of the API rather than an
+  accident.
+
+- `attribute_td_drift.rs::a_function_attribute_list_prints_in_attributes_td_enum_order`
+  is the guard the ordering never had: it writes every bare-keyword function
+  attribute in **reverse** `.td` order and asserts the printed list comes back
+  in `.td` order, reading that order out of the vendored `Attributes.td` rather
+  than restating it.
+
 ### Fixed — `nocapture` is `captures(none)`, as LLVM 22 spells it
 
 - **`nocapture` no longer survives into printed IR.** LLVM 22 has no

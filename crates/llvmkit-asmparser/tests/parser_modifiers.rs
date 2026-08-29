@@ -434,9 +434,10 @@ fn legacy_memory_keyword_overwrites_explicit_memory() {
 /// "j"="2"` does not.
 ///
 /// llvmkit de-duplicated by full structural equality instead, so every pair
-/// below round-tripped with *both* members present. That half of ledger entry
-/// 24 is closed; the entry survives, narrowed to the print-order residual
-/// asserted at the end of this test.
+/// below round-tripped with *both* members present. Ledger entry 24 covered
+/// that and the print *order*; both halves are closed and the entry is gone —
+/// `lower_bound(Attrs, Kind, AttributeComparator())` is ported, so the last
+/// case below now prints `"j"` first, as upstream does.
 #[test]
 fn an_attribute_list_holds_one_attribute_per_kind() {
     for (spelled, expected) in [
@@ -468,15 +469,15 @@ fn an_attribute_list_holds_one_attribute_per_kind() {
     assert_check_lines(&text, &["declare void @f(float nofpclass(inf) %0)\n"]);
 
     // The negative: two string attributes with *different* keys both survive,
-    // because `hasAttribute(Kind)` compares the key. They print in *source*
-    // order, where `AttributeImpl::cmp` would sort them by key and put `"j"`
-    // first — that is what divergence 24 is narrowed to, and this line is what
-    // pins it.
+    // because `hasAttribute(Kind)` compares the key — and they come back in
+    // `AttributeImpl::cmp`'s order (its string arm is
+    // `getKindAsString().compare(AI.getKindAsString())`), not the order they
+    // were written in.
     let text = parse_fixture(
         "an_attribute_list_holds_one_attribute_per_kind_distinct_keys",
         b"declare void @f() \"k\"=\"1\" \"j\"=\"2\"\n",
     );
-    assert_check_lines(&text, &["declare void @f() \"k\"=\"1\" \"j\"=\"2\"\n"]);
+    assert_check_lines(&text, &["declare void @f() \"j\"=\"2\" \"k\"=\"1\"\n"]);
 }
 
 /// The same `expected access kind (none, read, write, readwrite)` arm, reached

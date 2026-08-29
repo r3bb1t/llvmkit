@@ -245,6 +245,15 @@ fn noncanonical_memory_expect_and_target_intrinsics_are_rejected() {
 /// `llvm/lib/IR/Verifier.cpp::visitFunction`: canonical function attributes
 /// may be supplied through an attribute group while preserving the generated
 /// intrinsic declaration.
+///
+/// The printed order is `AttributeImpl::cmp`'s, which is where `addAttributeImpl`'s
+/// `lower_bound` puts every attribute. `test/Assembler/amdgcn-intrinsic-attributes.ll`
+/// supplies it as ground truth off an `llvm-as | llvm-dis` RUN line:
+/// `CHECK: attributes #1 = { nocallback nofree nosync nounwind speculatable
+/// willreturn memory(none) }`. The three tests here spell the same list with
+/// LLVM 22's `nocreateundeforpoison` in its enum-order slot, between
+/// `nocallback` and `nofree`. They used to assert the intrinsic table's own
+/// emission order, which is not an order `llvm-dis` can print.
 #[test]
 fn intrinsic_declaration_accepts_matching_function_attr_group() {
     let text = parse_and_render(
@@ -252,7 +261,7 @@ fn intrinsic_declaration_accepts_matching_function_attr_group() {
     );
 
     assert!(
-        text.contains("declare i32 @llvm.bswap.i32(i32 %x) nounwind nocallback nosync nofree willreturn speculatable nocreateundeforpoison memory(none)"),
+        text.contains("declare i32 @llvm.bswap.i32(i32 %x) nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)"),
         "{text}"
     );
 }
@@ -262,7 +271,7 @@ fn intrinsic_declaration_accepts_matching_function_attr_group() {
 /// be supplied alone or duplicate a matching resolved group.
 #[test]
 fn intrinsic_declaration_accepts_inline_generated_attr_with_matching_group() {
-    let expected = "declare i32 @llvm.bswap.i32(i32 %x) nounwind nocallback nosync nofree willreturn speculatable nocreateundeforpoison memory(none)";
+    let expected = "declare i32 @llvm.bswap.i32(i32 %x) nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)";
     let inline = parse_and_render("declare i32 @llvm.bswap.i32(i32 %x) nounwind\n");
     let grouped = parse_and_render(
         "attributes #0 = { nounwind nocallback nosync nofree willreturn speculatable nocreateundeforpoison memory(none) }\ndeclare i32 @llvm.bswap.i32(i32 %x) nounwind #0\n",
@@ -281,7 +290,7 @@ fn intrinsic_declaration_accepts_partial_function_attr_group() {
         parse_and_render("attributes #0 = { nounwind }\ndeclare i32 @llvm.bswap.i32(i32 %x) #0\n");
 
     assert!(
-        text.contains("declare i32 @llvm.bswap.i32(i32 %x) nounwind nocallback nosync nofree willreturn speculatable nocreateundeforpoison memory(none)"),
+        text.contains("declare i32 @llvm.bswap.i32(i32 %x) nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)"),
         "{text}"
     );
 }
