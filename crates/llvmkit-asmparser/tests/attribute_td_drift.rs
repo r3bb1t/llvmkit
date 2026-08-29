@@ -392,3 +392,42 @@ fn not_yet_modeled_list_has_no_stale_entries() {
          (typo, or upstream removed them): {stale:?}"
     );
 }
+
+/// A keyword `LLLexer` still accepts but `Attributes.td` no longer *declares*
+/// must not print back as itself.
+///
+/// `nocapture` is the one such keyword in LLVM 22: the def is gone —
+/// `Attribute::NoCapture` does not exist — and
+/// `LLParser::parseOptionalParamOrReturnAttrs` turns the token into
+/// `B.addCapturesAttr(CaptureInfo::none())` before `tokenToAttribute` is ever
+/// consulted, so `llvm-dis` prints `captures(none)`.
+/// `test/Assembler/auto_upgrade_intrinsics.ll`'s
+/// `CHECK: declare void @llvm.lifetime.start.p0(ptr captures(none))` is that
+/// spelling taken off an `llvm-as | llvm-dis` RUN line.
+///
+/// This is the guard that was missing. llvmkit carried an
+/// `AttrKind::NoCapture` with no `.td` def behind it and printed `nocapture`,
+/// and every test in this file asks only whether a keyword *parses* — the
+/// keyword did, so the drift went unseen. The `.td` is read here rather than
+/// hard-coded so that the day upstream reinstates a `nocapture` def, this
+/// test says so instead of silently passing.
+///
+/// llvmkit-specific drift guard; `Attributes.td` and the fixture above are the
+/// anchors (D11).
+#[test]
+fn a_lexed_keyword_with_no_td_def_does_not_print_as_itself() {
+    let declared: BTreeSet<String> = parse_attributes_td(ATTRIBUTES_TD)
+        .into_iter()
+        .map(|attr| attr.keyword)
+        .collect();
+    assert!(
+        !declared.contains("nocapture"),
+        "Attributes.td declares `nocapture` again — this test's premise is stale"
+    );
+    let m = parse_dynamic("define void @f(ptr nocapture %p) {\n  ret void\n}\n")
+        .expect("`nocapture` still parses in parameter position");
+    let printed = format!("{m}");
+    assert!(printed.contains("ptr captures(none) %p"), "{printed}");
+    assert!(!printed.contains("nocapture"), "{printed}");
+    parse_dynamic(printed.as_str()).expect("round-trip");
+}

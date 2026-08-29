@@ -10288,7 +10288,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Keyword::Noinline => AttrKind::NoInline,
             Keyword::Writeonly => AttrKind::WriteOnly,
             Keyword::Returned => AttrKind::Returned,
-            Keyword::Nocapture => AttrKind::NoCapture,
             Keyword::Nofree => AttrKind::NoFree,
             Keyword::Writable => AttrKind::Writable,
             Keyword::Noreturn => AttrKind::NoReturn,
@@ -10530,6 +10529,39 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         String::new()
                     };
                     out.add(index, Attribute::<B>::string(key, value));
+                }
+                // `parseOptionalParamOrReturnAttrs`'s `if (Token ==
+                // lltok::kw_nocapture) { Lex.Lex();
+                // B.addCapturesAttr(CaptureInfo::none()); continue; }`, which
+                // sits between the string-attribute arm and `tokenToAttribute`.
+                // LLVM 22 has no `Attribute::NoCapture`: `nocapture` is spelled
+                // `captures(none)` in the IR and prints that way, which
+                // `test/Assembler/auto_upgrade_intrinsics.ll`'s
+                // `CHECK: declare void @llvm.lifetime.start.p0(ptr captures(none))`
+                // pins on `llvm-as | llvm-dis` output.
+                //
+                // The arm is `ParamOrReturn` only, exactly as upstream's is:
+                // `tokenToAttribute` has no `nocapture` case, so a `nocapture`
+                // in a function-attribute list or an attribute group is not an
+                // attribute at all and falls through to the loop's end / to
+                // `unterminated attribute group`.
+                //
+                // **One half of the arm is deliberately not ported.** Upstream
+                // `continue`s before the `canUseAsParamAttr` /
+                // `canUseAsRetAttr` checks, so its parser accepts `nocapture`
+                // on a *return* value and leaves the rejection to
+                // `Verifier::verifyFunctionAttrs` (`Attribute
+                // 'captures(none)' does not apply to function return values`).
+                // llvmkit has no `verifyFunctionAttrs` — `docs/divergences.md`
+                // entry 23 — so bypassing the position check here would trade
+                // a wrong-layer rejection for an accepts-invalid. The check
+                // stays; `Captures` is `[ParamAttr]` in `Attributes.td`, so the
+                // verdict matches and only the layer and the wording do not.
+                Token::Kw(Keyword::Nocapture) if context == AttrListContext::ParamOrReturn => {
+                    self.bump()?;
+                    let attr = Attribute::<B>::Captures(llvmkit_ir::CaptureInfo::none());
+                    self.check_attribute_position(index, &attr, attr_loc)?;
+                    out.add(index, attr);
                 }
                 Token::Kw(Keyword::Align) => {
                     // Inside a group the grammar is `align = N`, read with

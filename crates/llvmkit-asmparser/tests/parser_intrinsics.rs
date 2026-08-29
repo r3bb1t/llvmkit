@@ -32,17 +32,28 @@ fn assert_expected_error(src: &str, expected: &str) {
 /// Mirrors `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start` and
 /// `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall`: known direct
 /// intrinsic callees may be declared from the callsite.
+///
+/// The printed spelling is `test/Assembler/auto_upgrade_intrinsics.ll`'s own
+/// `CHECK: declare void @llvm.lifetime.start.p0(ptr captures(none))`, taken
+/// off a `llvm-as | llvm-dis` RUN line and therefore `AsmWriter`'s bytes:
+/// `IntrinsicEmitter.cpp` emits the `.td` `NoCapture` marker as
+/// `Attribute::getWithCaptureInfo(C, CaptureInfo::none())`, and LLVM 22 has no
+/// `Attribute::NoCapture` to emit instead. This assertion used to read
+/// `ptr nocapture %0`, which is not text `llvm-dis` can produce.
+///
+/// The trailing `%0` on a `declare` is divergence D14, not part of what this
+/// test is about.
 #[test]
 fn known_intrinsic_auto_declares_direct_callee() {
     let text = parse_and_render(
         "define void @f(ptr %p) {\nentry:\n  call void @llvm.lifetime.start.p0(ptr %p)\n  ret void\n}\n",
     );
     assert!(
-        text.contains("declare void @llvm.lifetime.start.p0(ptr nocapture %0)"),
+        text.contains("declare void @llvm.lifetime.start.p0(ptr captures(none) %0)"),
         "AsmWriter output: {text}"
     );
     let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("declare void @llvm.lifetime.start.p0(ptr nocapture %0)"));
+    assert!(reparsed.contains("declare void @llvm.lifetime.start.p0(ptr captures(none) %0)"));
 }
 
 /// Mirrors `llvm/lib/IR/Verifier.cpp` intrinsic validation: unknown `llvm.*`

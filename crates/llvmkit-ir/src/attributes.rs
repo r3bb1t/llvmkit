@@ -310,7 +310,6 @@ pub enum AttrKind {
     NoBuiltin,
     NoCallback,
     NoCreateUndefOrPoison,
-    NoCapture,
     NoCfCheck,
     NoDivergenceSource,
     NoDuplicate,
@@ -465,11 +464,6 @@ impl AttrKind {
             | Self::Writable
             | Self::WriteOnly => at(false, true, false),
 
-            // LLVM 22 has no `nocapture` def: it was replaced by
-            // `captures(none)`, which is `[ParamAttr]`. llvmkit still spells
-            // the parsed result `NoCapture`, so it inherits that position.
-            Self::NoCapture => at(false, true, false),
-
             // `[FnAttr]` — everything else. `AttrKind` is `#[non_exhaustive]`,
             // so a catch-all is unavoidable; what keeps it from silently
             // guessing wrong for a future variant is `attribute_td_drift.rs`,
@@ -527,7 +521,6 @@ impl AttrKind {
             Self::NoBuiltin => "nobuiltin",
             Self::NoCallback => "nocallback",
             Self::NoCreateUndefOrPoison => "nocreateundeforpoison",
-            Self::NoCapture => "nocapture",
             Self::NoCfCheck => "nocf_check",
             Self::NoDivergenceSource => "nodivergencesource",
             Self::NoDuplicate => "noduplicate",
@@ -1996,10 +1989,7 @@ mod tests {
     fn attribute_list_indexed_storage() {
         let mut l = TestAttributeList::<'_>::new();
         l.add(AttrIndex::Function, TestAttribute::Enum(AttrKind::NoReturn));
-        l.add(
-            AttrIndex::Param(0),
-            TestAttribute::Enum(AttrKind::NoCapture),
-        );
+        l.add(AttrIndex::Param(0), TestAttribute::Enum(AttrKind::NoAlias));
         assert!(
             l.get(AttrIndex::Function)
                 .unwrap()
@@ -2008,7 +1998,7 @@ mod tests {
         assert!(
             l.get(AttrIndex::Param(0))
                 .unwrap()
-                .has_kind(AttrKind::NoCapture)
+                .has_kind(AttrKind::NoAlias)
         );
         assert!(l.get(AttrIndex::Param(1)).is_none());
     }

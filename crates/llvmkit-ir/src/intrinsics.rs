@@ -6,7 +6,9 @@
 use core::num::NonZeroU32;
 
 use crate::Branded;
-use crate::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects};
+use crate::attributes::{
+    AttrIndex, AttrKind, Attribute, AttributeStorage, CaptureInfo, MemoryEffects,
+};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
 use crate::module::{Module, ModuleBrand, ModuleRef};
@@ -734,7 +736,12 @@ fn add_indexed_attr<B: ModuleBrand>(
 ) -> IrResult<()> {
     let index = attribute_index(indexed.index);
     let attr = match indexed.attr {
-        IntrinsicArgAttr::NoCapture => Attribute::<B>::Enum(AttrKind::NoCapture),
+        // `IntrinsicEmitter.cpp`'s `ArgAttribute` loop handles `NoCapture`
+        // "separately" from every other kind — `getArgAttrEnumName` is
+        // `llvm_unreachable` for it — and emits
+        // `Attribute::getWithCaptureInfo(C, CaptureInfo::none())`. There is no
+        // `Attribute::NoCapture` in LLVM 22 to emit.
+        IntrinsicArgAttr::NoCapture => Attribute::<B>::Captures(CaptureInfo::none()),
         IntrinsicArgAttr::NoAlias => Attribute::<B>::Enum(AttrKind::NoAlias),
         IntrinsicArgAttr::NoUndef => Attribute::<B>::Enum(AttrKind::NoUndef),
         IntrinsicArgAttr::NonNull => Attribute::<B>::Enum(AttrKind::NonNull),

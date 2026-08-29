@@ -19,6 +19,30 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `nocapture` is `captures(none)`, as LLVM 22 spells it
+
+- **`nocapture` no longer survives into printed IR.** LLVM 22 has no
+  `Attribute::NoCapture`: `LLParser::parseOptionalParamOrReturnAttrs` turns the
+  keyword into `B.addCapturesAttr(CaptureInfo::none())` before
+  `tokenToAttribute` is consulted, and the intrinsic tables emit
+  `Attribute::getWithCaptureInfo(C, CaptureInfo::none())` for the `.td`
+  `NoCapture` marker. llvmkit invented an `AttrKind::NoCapture` for both, so
+  `ptr nocapture %p` re-printed as `ptr nocapture %p` and an auto-declared
+  `@llvm.lifetime.start.p0` printed `(ptr nocapture)` — where
+  `test/Assembler/auto_upgrade_intrinsics.ll` CHECKs
+  `declare void @llvm.lifetime.start.p0(ptr captures(none))` off an
+  `llvm-as | llvm-dis` line. Both now print `captures(none)`.
+
+- **Breaking:** `AttrKind::NoCapture` is removed. It had no `Attributes.td`
+  def behind it; `Attribute::Captures(CaptureInfo::none())` is the spelling.
+
+- The `kw_nocapture` arm's *other* half is deliberately not ported: upstream
+  `continue`s before the `canUseAsParamAttr` / `canUseAsRetAttr` checks, so its
+  parser accepts `nocapture` on a return value and leaves the rejection to
+  `Verifier::verifyFunctionAttrs`, which llvmkit does not have
+  (`docs/divergences.md` entry 23). The position check stays; the verdict
+  matches upstream's and only the layer and wording differ.
+
 ### Fixed — a phi diagnostic names the block `AsmWriter` prints, not an arena index
 
 - **`IrError::AmbiguousPhiIncoming` and `IrError::PhiIncomingNotDominating`, and
