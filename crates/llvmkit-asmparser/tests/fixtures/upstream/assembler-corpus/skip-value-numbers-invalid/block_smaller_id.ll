@@ -7,3 +7,4 @@ define i32 @test() {
 5:
   ret i32 0
 }
+

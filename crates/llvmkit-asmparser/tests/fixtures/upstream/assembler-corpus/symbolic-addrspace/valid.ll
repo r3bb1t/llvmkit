@@ -11,6 +11,7 @@
 
 
 
+
 target datalayout = "A1-G2-P3"
 ; CHECK: target datalayout = "A1-G2-P3"
 
@@ -29,3 +30,4 @@ define void @bar() addrspace("P") {
   call addrspace("P") void @foo()
   ret void
 }
+

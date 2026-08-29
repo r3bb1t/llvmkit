@@ -29,7 +29,10 @@
 //! Fixtures under `fixtures/upstream/assembler-corpus/` are byte-for-byte copies of
 //! `llvm/test/Assembler/*.ll`; the ones in a subdirectory are the exact
 //! `split-file` output for one part of a multi-part container, which is the
-//! text upstream's own `RUN` line feeds to `llvm-as`.
+//! text upstream's own `RUN` line feeds to `llvm-as`. That last sentence used
+//! to be an unchecked claim; `split_file_parts_are_what_split_file_emits`
+//! below now checks it against the vendored containers in
+//! `fixtures/upstream/assembler-corpus/split-file-containers/`.
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::Module;
@@ -53,6 +56,9 @@ enum CorpusStatus {
 #[derive(Debug)]
 struct CorpusEntry<'a> {
     fixture: &'a str,
+    /// The row's second cell: the upstream test this fixture was copied from,
+    /// either `test/…/foo.ll` or `test/…/foo.ll split-file part bar.ll`.
+    upstream: &'a str,
     expected: Option<&'a str>,
     error: Option<&'a str>,
     loc: Option<(u32, u32)>,
@@ -74,7 +80,7 @@ fn fixture_entries() -> Vec<CorpusEntry<'static>> {
 fn parse_manifest_entry(line: &'static str) -> CorpusEntry<'static> {
     let mut parts = line.split('|').map(str::trim);
     let fixture = parts.next().filter(|part| !part.is_empty()).unwrap_or(line);
-    let _upstream = parts.next();
+    let upstream = parts.next().unwrap_or("");
     let mut expected = None;
     let mut error = None;
     let mut loc = None;
@@ -106,6 +112,7 @@ fn parse_manifest_entry(line: &'static str) -> CorpusEntry<'static> {
 
     CorpusEntry {
         fixture,
+        upstream,
         expected,
         error,
         loc,
@@ -259,6 +266,119 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
             }
         }
     }
+}
+
+/// The part `name` of a `split-file` container, rebuilt from `container`.
+///
+/// Mirrors `handle` in `llvm/utils/split-file/split-file.cpp`: a separator line
+/// is `^(.|//)--- ` — `markerLen` is 6 when the line opens `//` and 5 otherwise,
+/// and the four characters ending at `markerLen` must be `"--- "` — the part
+/// runs from the line after its separator to the line before the next one, and
+/// `--leading-lines` prepends `i.line_number() - 1` blank lines, where `i`
+/// already sits on the part's first line. That is the separator's own 1-based
+/// line number, so the part reproduces the container's line numbering exactly.
+///
+/// `EOL` is normalized to `\n` by the caller, so the padding is `\n`; upstream
+/// pads with the container's detected `EOL`. Upstream's three `error()` arms
+/// (empty part name, a name with surrounding space, a duplicate name) are not
+/// mirrored: they abort the tool rather than shape a part, and the callers here
+/// are the vendored containers, which have none.
+fn split_file_part(container: &str, name: &str, leading_lines: bool) -> Option<String> {
+    fn separator_part_name(line: &str) -> Option<&str> {
+        let marker_len = if line.starts_with("//") { 6 } else { 5 };
+        if line.len() >= marker_len
+            && line
+                .get(marker_len - 4..)
+                .is_some_and(|rest| rest.starts_with("--- "))
+        {
+            line.get(marker_len..)
+        } else {
+            None
+        }
+    }
+
+    let lines: Vec<&str> = container.split_inclusive('\n').collect();
+    let separator = lines
+        .iter()
+        .position(|line| separator_part_name(line.trim_end_matches('\n')) == Some(name))?;
+    let end = lines
+        .iter()
+        .skip(separator + 1)
+        .position(|line| separator_part_name(line.trim_end_matches('\n')).is_some())
+        .map_or(lines.len(), |offset| separator + 1 + offset);
+
+    let padding = if leading_lines { separator + 1 } else { 0 };
+    let mut part = "\n".repeat(padding);
+    part.extend(lines[separator + 1..end].iter().copied());
+    Some(part)
+}
+
+/// **No upstream counterpart** — a guard on this corpus, not on LLVM.
+///
+/// Every manifest row whose second cell reads `… split-file part <name>` must
+/// hold exactly what `split-file` writes for that part of the vendored
+/// container. Nothing checked this, and all thirty parts of the five containers
+/// whose `RUN` line passes `--leading-lines` were one line short: they carried
+/// `separator` blank lines where `split-file` writes `separator + 1`, so the
+/// part's line numbers were one *below* the container's.
+///
+/// That is exactly the fixture whose numbering a `CHECK` line adjudicates.
+/// `test/Assembler/ptrtoaddr-invalid-constexpr.ll` writes
+/// `; SRC_NOT_PTR: [[#@LINE-1]]:17: error: …` against container line 28, and
+/// the shifted part put that IR on line 27 — so a `loc=` pin taken from
+/// upstream could never have matched, and one derived from the part would have
+/// blessed llvmkit's own answer. The rule is pinned by `split-file`'s own test,
+/// `llvm/test/tools/split-file/basic.test`: `;--- bb` on line 3 yields
+/// `Inputs/basic-bb.txt`, whose first content line is line 4.
+#[test]
+fn split_file_parts_are_what_split_file_emits() {
+    let fixture_dir = fixture_dir();
+    let container_dir = fixture_dir.join("upstream/assembler-corpus/split-file-containers");
+    let mut checked = 0usize;
+
+    for entry in fixture_entries() {
+        let Some((container_path, part_name)) = entry.upstream.split_once(" split-file part ")
+        else {
+            continue;
+        };
+        let container_file = Path::new(container_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_else(|| panic!("row `{}` names no container file", entry.fixture));
+        let container = read_to_string(container_dir.join(container_file))
+            .unwrap_or_else(|err| {
+                panic!("vendored split-file container {container_file} should read: {err}")
+            })
+            .replace("\r\n", "\n");
+
+        // Upstream's own `RUN` line decides whether the parts preserve line
+        // numbers, so read it from the container rather than from a table here.
+        let leading_lines = container.contains("--leading-lines");
+        let rebuilt = split_file_part(&container, part_name.trim(), leading_lines)
+            .unwrap_or_else(|| panic!("{container_file} has no `--- {part_name}` separator"));
+
+        let actual = read_to_string(fixture_dir.join(entry.fixture))
+            .unwrap_or_else(|err| panic!("corpus fixture {} should read: {err}", entry.fixture))
+            .replace("\r\n", "\n");
+
+        assert_eq!(
+            actual,
+            rebuilt,
+            "corpus fixture {} is not `split-file{}` part `{part_name}` of {container_file}",
+            entry.fixture,
+            if leading_lines {
+                " --leading-lines"
+            } else {
+                ""
+            }
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "no manifest row names a split-file part; this guard has stopped guarding anything"
+    );
 }
 
 /// **No upstream counterpart** — a guard on this manifest, not on LLVM.

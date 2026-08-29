@@ -57,6 +57,8 @@
 
 
 
+
 target datalayout = "A1-G2"
 @str = private addrspace("AG") constant [4 x i8] c"str\00"
 ; ERR-MULTIPLE-CHARS: [[#@LINE-1]]:26: error: invalid symbolic addrspace 'AG'
+

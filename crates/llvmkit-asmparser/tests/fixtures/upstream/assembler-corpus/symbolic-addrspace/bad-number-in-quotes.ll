@@ -67,6 +67,7 @@
 
 
 
+
 target datalayout = "A1-G2"
 @str = private addrspace("10") constant [4 x i8] c"str\00"
 ; ERR-NUMBER-IN-QUOTES: [[#@LINE-1]]:26: error: invalid symbolic addrspace '10'

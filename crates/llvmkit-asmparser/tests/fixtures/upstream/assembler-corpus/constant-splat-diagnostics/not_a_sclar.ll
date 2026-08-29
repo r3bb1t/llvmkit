@@ -2,3 +2,4 @@
 define <4 x i32> @not_a_scalar() {
   ret <4 x i32> splat (<1 x i32> <i32 7>)
 }
+

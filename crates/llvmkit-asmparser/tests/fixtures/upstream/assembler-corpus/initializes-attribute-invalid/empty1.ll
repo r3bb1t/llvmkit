@@ -2,3 +2,4 @@
 define void @foo(ptr initializes() %a) {
   ret void
 }
+

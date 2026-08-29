@@ -31,6 +31,7 @@
 
 
 
+
 target datalayout = "A1-G2-P3"
 ; ALLOCA-IN-GLOBALS: target datalayout = "A1-G2-P3"
 
@@ -45,3 +46,4 @@ define void @foo() {
   %alloca4 = alloca i32, addrspace("P")
   ret void
 }
+

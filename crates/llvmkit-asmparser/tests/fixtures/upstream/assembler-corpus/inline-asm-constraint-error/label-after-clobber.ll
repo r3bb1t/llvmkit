@@ -7,3 +7,4 @@ define void @foo() {
 2:
   ret void
 }
+

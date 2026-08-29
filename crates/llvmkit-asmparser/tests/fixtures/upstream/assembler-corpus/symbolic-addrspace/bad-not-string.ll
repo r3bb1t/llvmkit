@@ -47,6 +47,8 @@
 
 
 
+
 target datalayout = "G2"
 @str = private addrspace(D) constant [4 x i8] c"str\00"
 ; ERR-NOT-STR: [[#@LINE-1]]:26: error: expected integer or string constant
+

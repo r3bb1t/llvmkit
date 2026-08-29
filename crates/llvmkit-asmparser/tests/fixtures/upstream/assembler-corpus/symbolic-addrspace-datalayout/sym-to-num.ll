@@ -46,6 +46,7 @@
 
 
 
+
 target datalayout = "P11-p2(global):32:8-p8(stack):8:8-p11(code):8:8"
 ; CHECK: target datalayout = "P11-p2(global):32:8-p8(stack):8:8-p11(code):8:8"
 
@@ -64,3 +65,4 @@ define void @bar() addrspace(11) {
   call addrspace("code") void @foo()
   ret void
 }
+

@@ -19,6 +19,30 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — the corpus' `split-file` parts are now what `split-file` writes
+
+- **Every `split-file part` row of `parser_corpus_manifest.txt` is rebuilt from
+  a vendored container and compared**, by
+  `parser_corpus.rs::split_file_parts_are_what_split_file_emits`, which mirrors
+  `handle` in `llvm/utils/split-file/split-file.cpp`. Nothing had checked the
+  parts against the tool that produces them, and they were wrong: the parts of
+  the containers whose `RUN` line passes `--leading-lines` each carried one
+  blank line too few, so their line numbers sat one *below* the container's,
+  and several other parts had lost the blank line before the next separator or
+  their final newline. All of them are regenerated.
+
+- **Why it matters:** `--leading-lines` exists so a part's line numbers match
+  the container the `CHECK` directives are resolved against.
+  `test/Assembler/ptrtoaddr-invalid-constexpr.ll` writes
+  `; SRC_NOT_PTR: [[#@LINE-1]]:17: error: …` against container line 28, and the
+  shifted part put that IR on line 27 — so a location pin taken from upstream
+  could not have matched, and one read off the part would have blessed
+  llvmkit's own answer as ground truth.
+
+- **New fixtures:** the vendored containers now sit in
+  `crates/llvmkit-asmparser/tests/fixtures/upstream/assembler-corpus/split-file-containers/`,
+  byte copies of the `llvm/test/Assembler/*.ll` files the parts come from.
+
 ### Fixed — InstSimplify leaves unreachable blocks alone
 
 - **`InstSimplifyPass` declares `DominatorTreeAnalysis` and carries `runImpl`'s

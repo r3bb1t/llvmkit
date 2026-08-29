@@ -5,3 +5,4 @@ define i32 @test() {
   %5 = add i32 %10, 3
   ret i32 %5
 }
+
