@@ -260,33 +260,49 @@ only observable consequence is that the
 `type of blockaddress must be a pointer and not '…'` check, which upstream
 runs only when it creates a *fresh* placeholder, runs on every reference here.
 
-### D9 — Attribute groups are never merged, and the alignment move is half-ported
+### D9 — Attribute groups are never merged, and the alignment move is half-ported — **ONE DUPLICATE MERGED (W11)**
 
 **Severity:** wrong-output, model-gap
 **Where:** `crates/llvmkit-ir/src/function.rs` — `function_attr_groups`;
-`crates/llvmkit-asmparser/src/ll_parser.rs` — `parse_optional_function_suffix`
+`crates/llvmkit-asmparser/src/ll_parser.rs` — `parse_optional_function_suffix`,
+and the end-of-module sweep
+
+This is the **parser** half of the attribute-group gap. Its printer twin is
+entry 58, which is where the group-*forming* side lives; neither entry
+restates the other. Former entry **41** ("`align` inside an attribute group is
+not moved onto the function") said only what this entry's alignment paragraph
+already says, and was deleted at W11 rather than left to be closed twice.
 
 **LLVM:** `validateEndOfModule`'s first step merges every referenced
 `#N` into the object's own attribute set, for five object kinds — `Function`,
 `CallInst`, `InvokeInst`, `CallBrInst`, `GlobalVariable`. In the `Function`
 arm only, an alignment that arrived as an *attribute* is moved to the
-alignment field and removed. Upstream then discards the parsed numbering:
-`AsmWriter` re-derives `#N` from `SlotTracker`'s dedup, so `attributes #7` on
-input can print as `#0`.
+alignment field and removed: `FnAttrs.getAlignment()` -> `Fn->setAlignment(*A)`
+-> `FnAttrs.removeAttribute(Attribute::Alignment)`, so `attributes #0 = { align
+= 8 }` re-prints as `define void @f() align 8` with the attribute gone from the
+group. Upstream then discards the parsed numbering: `AsmWriter` re-derives
+`#N` from `SlotTracker`'s dedup, so `attributes #7` on input can print as `#0`.
 
 **llvmkit:** no merge. Group ids are kept on the object and resolved lazily on
 lookup and at print time, so the input numbering round-trips. The alignment
 move exists only for *inline* attributes — mirroring upstream's other copy of
-the same hack in `parseFunctionHeader` — so `define void @f() #0` with
-`attributes #0 = { align 8 }` leaves `align` as a plain function attribute
-instead of setting the field.
+the same hack in `parseFunctionHeader`, ported in `parse_optional_function_suffix`
+with `check_attribute_position` carrying the matching `Alignment` exemption —
+so `define void @f() #0` with `attributes #0 = { align 8 }` leaves `align` as a
+plain function attribute instead of setting the field. The written text
+round-trips where `llvm-as | llvm-dis` normalises it.
 
 **Also:** an undefined `#N` is silently ignored by upstream (the
 `NumberedAttrBuilders` lookup simply misses). llvmkit likewise never errors,
 but then prints a dangling `#N` with no `attributes #N = { … }` line —
 output that does not re-parse.
 
-**Fix:** this is the item W7 blocked on, and it has to land with the
+**What pins the current behaviour:**
+`crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_equals_grammar_round_trips`
+asserts `attributes #0 = { align = 8 }` re-prints as `align=8` *inside* the
+group, so it turns red the day this entry closes.
+
+**Fix:** this is the item W7 blocked on, and it has to land with entry 58's
 group-*forming* half of the printer, because the merge decides what survives
 into the printed group. Brings `globalvariable-attributes.ll`'s `@g1`–`@g4`
 and `test/Bitcode/attributes.ll` with it.
@@ -1040,10 +1056,10 @@ llvmkit source, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_p
 *parser — end of module* — crates/llvmkit-asmparser/src/ll_parser.rs:1711 (`validate_end_of_module` region), :4786-4798 (comdat guard), :4756 (undefined types)
 
 - **LLVM:** `LLParser::validateEndOfModule` runs a fixed sequence: attribute-group merge + alignment-attr→field move, blockaddress leftovers, `dso_local_equivalent` resolution, undefined numbered/named types, undefined comdats, intrinsic auto-declaration and `@` leftovers, undefined metadata, metadata cycle resolution, the TBAA hook, then SlotMapping steal semantics. Which error fires first is itself observable.
-- **llvmkit:** The pieces exist but were landed wave by wave (W2.5 did intrinsic auto-declaration and `@` leftovers; W3 the undefined types; W2.6 comdats), and the sequence was landed before anyone checked it against upstream's — see the Status bullet for where that stands now. The attribute-group merge does not exist. Of upstream's *two* alignment-attribute→field moves, `parseFunctionHeader`'s is ported (in `parse_optional_function_suffix`, with `check_attribute_position` carrying the matching `Alignment` "hack" exemption); the one inside `validateEndOfModule`, which pulls `align` out of an attribute *group* after the merge, is not.
+- **llvmkit:** The pieces exist but were landed wave by wave (W2.5 did intrinsic auto-declaration and `@` leftovers; W3 the undefined types; W2.6 comdats), and the sequence was landed before anyone checked it against upstream's — see the Status bullet for where that stands now. Step one — the attribute-group merge and the `validateEndOfModule` half of the alignment-attribute→field move — is **D9**, and is not restated here; this entry owns only the *sequence*.
 - **Why:** Recorded as W13's opening item, with the ordering explicitly called "part of parity". Its group-merge half is the blocker under the printer's missing attribute-group forming.
 - **Fix:** Port the routine as one ordered sequence, add the attr-group merge + `align`-to-field move, and pin the order with negative fixtures that trip two rules at once. Also covers `getIntrinsicSignature` mangling-suffix cases (`llvm.umax` on `i32` declares `llvm.umax.i32`) and the `InstsWithTBAATag` hook W11 was to leave behind.
-- **Status (W13a, W13b):** the *sequence* is now upstream's, step by step, and the `dso_local_equivalent` step exists (see D7). The initializer deferral that made step 3 re-mint references after step 4 had run is gone (see D8), so `@g = global ptr blockaddress(@never_defined, %entry)` on its own is rejected rather than printing `<forward reference>`. **Still open:** the attribute-group merge, the `validateEndOfModule` half of the `align` move, the intrinsic auto-declaration loop (entry **37**, which is wider than this bullet — llvmkit's `intrinsic can only be used as callee` fires at reference time and rejects an address-taken reference to a *declared* intrinsic that upstream's parser accepts), metadata-cycle resolution, the TBAA hook and `Slots` steal semantics.
+- **Status (W13a, W13b):** the *sequence* is now upstream's, step by step, and the `dso_local_equivalent` step exists (see D7). The initializer deferral that made step 3 re-mint references after step 4 had run is gone (see D8), so `@g = global ptr blockaddress(@never_defined, %entry)` on its own is rejected rather than printing `<forward reference>`. **Still open:** step one (D9), the intrinsic auto-declaration loop (entry **37**, which is wider than this bullet — llvmkit's `intrinsic can only be used as callee` fires at reference time and rejects an address-taken reference to a *declared* intrinsic that upstream's parser accepts), metadata-cycle resolution, the TBAA hook and `Slots` steal semantics.
 
 > **`Correction from verification` block removed 2026-08-21.** It was a
 > snapshot taken before W13a/W13b, and each of its four empirical findings
@@ -1082,37 +1098,6 @@ The parser/printer contract is that printed output matches `AsmWriter.cpp` byte 
 - **Why:** the entry's other half — `add` de-duplicating by full structural equality, so `align 4 align 8` kept both — was the accepts-invalid behaviour and is closed: `add_stored` is now the port of `addAttributeImpl`'s `std::swap` branch, keyed by `AttrKind` for enum attributes and by key for string ones, and the redundant `AttributeStorage::set` is gone. The ordering half is left because it is a *different* change: it needs `AttributeComparator` and `AttributeImpl::cmp` ported as their own routines, and re-blessing every printed attribute list in the corpus that happens to be written out of order.
 - **Fix:** port `AttributeComparator` and insert at its `lower_bound` in `add_stored`, then re-run the byte-lock and corpus gates.
 - **Evidence (2026-08-21):** `crates/llvmkit-asmparser/tests/parser_modifiers.rs::an_attribute_list_holds_one_attribute_per_kind` asserts `declare void @f() "k"="1" "j"="2"` prints its two string attributes in *source* order, which is the divergence: `AttributeImpl::cmp`'s string arm is `getKindAsString().compare(AI.getKindAsString())`, so upstream would print `"j"` first. The closed half is asserted by the same test.
-
-### 40. Function attributes are never hoisted into an attribute group
-
-*printer* — crates/llvmkit-ir/src/asm_writer.rs:3311-3320 (input-carried groups only), :2115 / :2525 / :3070 (inline header printing)
-
-- **LLVM:** `SlotTracker::CreateAttributeSetSlot` mints one slot per distinct function `AttributeSet` and `AssemblyWriter::writeAllAttributeGroups` emits them at the end of the module, so a function header prints as `define void @f23() #13` with `attributes #13 = { alignstack=4 }` below.
-- **llvmkit:** `asm_writer.rs` prints function attributes inline on the header (`define void @f() alignstack(4)`) and emits an `attributes #N = { … }` block only for groups the *input* already carried, read straight out of `Module`'s attribute-group table. Output is bulkier than upstream's and diverges byte-for-byte from `llvm-dis` for any module with function attributes — which the parser/printer contract says should not happen.
-- **Why:** Recorded, with the sequencing reason: land it with the `validateEndOfModule` group-merge work (W13) rather than alone, because the merge decides which attributes survive into the printed group, so doing the writer first would pin output the merge then changes. A named consequence: `test/Bitcode/attributes.ll` — the fixture pinning the `InAttrGrp` spelling of all four attribute kinds that have one — cannot be ported as a round-trip; W5 ported the parse half only.
-- **Fix:** Port `SlotTracker::CreateAttributeSetSlot` (one slot per distinct function `AttributeSet`, assigned during the module pre-pass) and `AssemblyWriter::writeAllAttributeGroups`, switch the function-header printer to emit `#N`, and merge the input's own groups into the same slot space. Sequence it after the `validateEndOfModule` group merge, then port `test/Bitcode/attributes.ll` as the round-trip it is.
-- **Correction from verification:** Accurate as written, with two refinements. (1) The cited line pointers are slightly off: :2115 / :2525 / :3070 are the input-carried group-reference loops (`for group in ... { write!(f, " #{group}") }`), while the *inline* function-attribute printing is the adjacent `fmt_attribute_set(..., AttrIndex::Function, true, ...)` calls at :2108 (call), :2518 (invoke/callbr), and :3073 (function header). (2) The divergence is broader than the claim states: upstream `SlotTracker::processFunction` also mints attribute-group slots for every `CallBase`'s function attributes, so llvmkit's inline printing diverges at call sites as well, not only on function headers. Additionally, llvmkit never emits the `; Function Attrs: ...` comment line that `AssemblyWriter::printFunction` writes above any function carrying fn attrs — a related printer gap the claim does not mention.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-ir/src/asm_writer.rs:3070-3073 — `fmt_function` writes ` #{group}` only for `func.function_attr_groups()` (input-carried) and then prints the function AttributeSet inline via `fmt_attribute_set(f, &attrs, AttrIndex::Function, true, func.module())`. asm_writer.rs:3311-3341 — the `attributes #N = { ... }` emitter iterates `m.attribute_groups()` and nothing else. crates/llvmkit-ir/src/module.rs:2364 — `attribute_groups()` clones a `RefCell<Vec<(u32, AttributeStorage)>>` populated only by `set_attribute_group`, whose sole non-test caller is crates/llvmkit-asmparser/src/ll_parser.rs:9168 (the parser). A repo-wide grep for `CreateAttributeSetSlot|attribute_set_slot|AttributeSetSlot` over crates/ returns no matches — there is no print-time slot minting. Same inline shape at call sites: asm_writer.rs:2108-2117 and :2518-2527. Upstream, orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/AsmWriter.cpp: `SlotTracker::processModule` calls `CreateAttributeSetSlot(F.getAttributes().getFnAttrs())` per function (~:1128) and `processFunction` does the same per `CallBase` (~:1171); `AssemblyWriter::printFunction` prints `if (Attrs.hasFnAttrs()) Out << " #" << Machine.getAttributeGroupSlot(Attrs.getFnAttrs());` (~:4197); `printModule` calls `writeAllAttributeGroups()` (~:3169), defined at :5010, which emits `attributes #N = { ... }` from `asMap`. llvmkit's own tests confirm the gap: crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:148-164 (`inline_alignstack_parses_and_round_trips`) ports only the parse half of test/Bitcode/attributes.ll's @f23 because "llvmkit's printer emits function attributes inline on the header and never forms an attribute group"; docs/future-work.md:200-232 records the identical entry.
-
-</details>
-
-### 41. `align` inside an attribute group is not moved onto the function
-
-*parser* — crates/llvmkit-asmparser/src/ll_parser.rs:1470-1485 (the end-of-module sweep; no attribute-group merge among the `validate_*` calls); crates/llvmkit-ir/src/asm_writer.rs:3311
-
-- **LLVM:** `LLParser::validateEndOfModule` pulls `Alignment` out of a function's merged attribute set (`FnAttrs.getAlignment()` → `Fn->setAlignment(*A)` → `FnAttrs.removeAttribute(Attribute::Alignment)`), so `attributes #0 = { align = 8 }` re-prints as `define void @f() align 8` with the attribute gone from the group.
-- **llvmkit:** No group-merge step runs at end of module, so the `align` entry stays inside the printed group and never reaches the function's alignment field. The written text round-trips instead of being normalised the way `llvm-as | llvm-dis` normalises it.
-- **Why:** Recorded as part of the attribute-group entry, noted as having "no visible effect yet" only because the writer half is also missing; it is scheduled with the W13 `validateEndOfModule` group-merge work.
-- **Fix:** Add the group-merge step to llvmkit's end-of-module sweep: for each function, merge its referenced groups into one attribute set, move `Alignment` to the function's alignment field and drop it from the set, then let the (new) group writer print what survives. Do this before the writer-side hoisting so the printed group is pinned once.
-
-<details><summary>Verification evidence</summary>
-
-See above.
-
-</details>
 
 ### 43. DWARF enumerations and `DIExpression` operands are stored as spellings, so numeric forms never normalise
 
@@ -1237,37 +1222,69 @@ Upstream orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Support/APFloat.cpp, Doub
 
 </details>
 
-### 57. No attribute-group printer, so half of two upstream fixtures is unreachable
+### 58. Attribute groups are never *formed* by the printer — **TWO DUPLICATES MERGED (W11)**
 
-*printer (AsmWriter)* — crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:148-164; crates/llvmkit-asmparser/tests/parser_module_level.rs:26-29
+*printer (AsmWriter)* — crates/llvmkit-ir/src/asm_writer.rs (`fmt_function`, `fmt_global`, the `attributes #N = { … }` emitter), crates/llvmkit-ir/src/global_variable.rs, crates/llvmkit-asmparser/src/ll_parser.rs (`parse_global`)
 
-- **LLVM:** `test/Bitcode/attributes.ll`'s `@f23` writes `define void @f23() alignstack(4)` inline and CHECKs `attributes #13 = { alignstack=4 }`, pinning both halves of the group spelling at once. `test/Assembler/global-variable-attributes.ll`'s `@g1`–`@g4` likewise need the trailing global attribute list plus the group printer.
-- **llvmkit:** llvmkit's printer emits function attributes inline on the header and never forms an attribute group, so the CHECK lines cannot be produced from that input. Only the parse half of `@f23` is asserted; `@g1`–`@g4` are not ported. The group spelling itself is covered only from group-carrying *input*.
-- **Why:** Recorded — "The printer gap is recorded in `docs/future-work.md`", and the global half is tagged W7 work.
-- **Fix:** Port `AssemblyWriter::printModule`'s attribute-set collection: number distinct function attribute sets, print `attributes #N = { … }` blocks at module end, and emit `#N` on the headers. Then port `@f23` whole and add `@g1`–`@g4` with the trailing global attribute list.
-- **Correction from verification:** Substantively accurate; two refinements. (1) The fixture is `test/Assembler/globalvariable-attributes.ll`, not `global-variable-attributes.ll` — the hyphenated name in the claim does not exist upstream (llvmkit itself miscites it at ll_parser.rs:15502 and parser_module_level.rs:660, while parser_module_level.rs:18 spells it correctly). (2) For `@g1`-`@g4` the gap is not printer-only: llvmkit's global parser has no equivalent of upstream's `parseFnAttributeValuePairs(Attrs, FwdRefAttrGrps, false, BuiltinLoc)` call that `LLParser::parseGlobal` makes after its property loop, so the trailing `"key" = "value"` list and `#0` reference are not accepted as input either — the property loop falls through to `unknown global variable property!`. Also worth stating precisely: llvmkit does have an `attributes #N = { … }` emitter, but it is a pass-through of groups the *input* carried, never a synthesis from attribute sets, so the divergence is "never forms a group", not "no group printer exists at all".
+This is the **printer** half of the attribute-group gap. Its parser twin is
+**D9** (the `validateEndOfModule` group merge and the `align`-out-of-group
+move); neither entry restates the other, and the two close together because
+the merge decides what survives into the printed group.
 
-<details><summary>Verification evidence</summary>
+**Two entries were deleted into this one at W11**, both saying the same thing
+from a different angle and neither adding a defect the other lacked:
 
-crates/llvmkit-ir/src/asm_writer.rs:3070-3073 — fmt_function emits ` #{group}` only for groups the function already referenced (func.function_attr_groups()), then prints remaining fn attrs inline via fmt_attribute_set(f, &attrs, AttrIndex::Function, true, func.module()). asm_writer.rs:3310-3344 — the `attributes #{slot} = {` block is driven by m.attribute_groups(); grep shows the only producer of that table is ll_parser.rs:9168 (`self.module.set_attribute_group(id, storage)`) parsing a literal `attributes #N = { … }` block, plus one test at constant_folding_analysis.rs:769 — nothing mirrors SlotTracker::CreateAttributeSetSlot. asm_writer.rs:3596-3723 — fmt_global prints section/partition/code_model/sanitizer/comdat/align/metadata and stops; no attribute list, no ` #N`. ll_parser.rs:6931-6978 — the global property loop's else arm returns `unknown global variable property!` with no attribute parsing after it. Upstream lib/IR/AsmWriter.cpp: processModule calls CreateAttributeSetSlot for each global's getAttributes() (~line 1097) and each function's getAttributes().getFnAttrs() (~1128-1130); printFunction emits `Out << " #" << Machine.getAttributeGroupSlot(Attrs.getFnAttrs())` (~4202) with no inline path; printGlobal emits the same for globals (~3986-3987); writeAllAttributeGroups (~5010) prints `attributes #N = { … }` using getAsString(true). lib/AsmParser/LLParser.cpp:1499-1502 — parseGlobal builds AttrBuilder Attrs + FwdRefAttrGrps via parseFnAttributeValuePairs after its property loop. Fixtures: test/Bitcode/attributes.ll:137-138 (`define void @f23() alignstack(4)` / `; CHECK: define void @f23() #13`) and :598 (`; CHECK: attributes #13 = { alignstack=4 }`); test/Assembler/globalvariable-attributes.ll CHECKs `@g1 = global i32 7 #0` through `attributes #3 = { … }`. Cited llvmkit tests unchanged: parser_attribute_matrix.rs:148-164 (inline_alignstack_parses_and_round_trips, asserting only the parse half and saying so in its doc comment) and parser_module_level.rs:27-29 (`@g1`-`@g4` are not ported). docs/future-work.md:200-228 records the same gap under "Printer — function attributes are never hoisted into an attribute group".
+- former **40**, "Function attributes are never hoisted into an attribute
+  group" — the function-header framing, plus two facts kept below (upstream
+  mints a group slot per `CallBase` too, so *call sites* diverge as well; and
+  llvmkit never emits the `; Function Attrs: …` comment
+  `AssemblyWriter::printFunction` writes above a function carrying fn attrs);
+- former **57**, "No attribute-group printer, so half of two upstream fixtures
+  is unreachable" — the blocked-fixture framing, kept below with its test
+  citations and with its own correction: the fixture is
+  `test/Assembler/globalvariable-attributes.ll`, not the hyphenated
+  `global-variable-attributes.ll`, which does not exist upstream.
 
-</details>
-
-### 58. Function/global attributes are never hoisted into an attribute group by the printer
-
-*printer (AsmWriter)* — crates/llvmkit-ir/src/asm_writer.rs, crates/llvmkit-ir/src/global_variable.rs, crates/llvmkit-asmparser/src/ll_parser.rs
-
-- **LLVM:** `SlotTracker::CreateAttributeSetSlot` assigns one `#N` slot per distinct `AttributeSet` and `AssemblyWriter::writeAllAttributeGroups` emits the groups at the end of the module, so a function header prints `define void @f23() #13` with `attributes #13 = { alignstack=4 }` below. `validateEndOfModule` additionally moves a group's `Alignment` to `Fn->setAlignment()`, so `attributes #0 = { align = 8 }` re-prints as `define void @f() align 8`.
-- **llvmkit:** `asm_writer.rs` prints function attributes inline on the header and emits an `attributes #N = { … }` block only for groups the *input* already carried. A global's trailing attribute list is not printed at all, and the `align`-out-of-group move never happens.
-- **Why:** Recorded in docs/future-work.md (W5/W7): the group-*forming* machinery has never existed, and the item is routed to W13 deliberately — `validateEndOfModule`'s merge decides which attributes survive into the printed group, so building the writer first would pin output the merge then changes.
-- **Fix:** Port `CreateAttributeSetSlot` + `writeAllAttributeGroups` together with W13's `validateEndOfModule` attr-group merge and the alignment-attr→field move. Unblocks `globalvariable-attributes.ll`'s `@g1`–`@g4` and makes `test/Bitcode/attributes.ll` portable as a round-trip (its CHECK lines are group lines).
-- **Correction from verification:** Accurate, with one refinement and one sharpening. REFINEMENT (globals): the claim says a global's trailing attribute list "is not printed at all". It is worse than that — it is not *parsed* at all. `Parser::parse_global` in C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs ends its `, property` loop at the "unknown global variable property!" arm (~line 6977) and goes straight to `global_builder(...)`; it never runs upstream's trailing `parseFnAttributeValuePairs` (LLParser.cpp `parseGlobal`, lines 1499-1507). Feeding llvmkit the upstream fixture orig_cpp/.../llvm/test/Assembler/globalvariable-attributes.ll gives a hard error at line 3 col 20: `expected top-level entity` on `"key"`. `@gv = global i32 0, align 4 #0` fails the same way. Correspondingly `GlobalVariable`/`GlobalVariableData` in C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/global_variable.rs has no attribute field (a case-insensitive grep for "attr" in that file returns nothing), and `fmt_global` (asm_writer.rs:3596-3723) ends at metadata attachments with no ` #N` counterpart to `printGlobal`'s AsmWriter.cpp:3985-3987. SHARPENING (functions): llvmkit not only fails to hoist — it also never *merges* a referenced group into the function's own attribute set (upstream `validateEndOfModule`, LLParser.cpp:212-238, does). The `#N` is kept verbatim as a raw `u32` in `FunctionData::function_attr_groups` (function.rs:106) and re-emitted as-is (asm_writer.rs:3070-3072), while inline attributes print separately on the same header (asm_writer.rs:3073). So a header written `declare i32 @llvm.bswap.i32(i32 %x) nounwind #0` re-prints with both halves, where upstream would collapse them into one printer-derived group. Group numbering is input-preserved rather than derived: the module's group table is populated only by the parser via `ModuleCore::set_attribute_group` (module.rs:2354, called from ll_parser.rs:9168), and there is no analogue of `SlotTracker::CreateAttributeSetSlot` / `AssemblyWriter::writeAllAttributeGroups` anywhere in the tree. Everything else in the claim holds verbatim, including the `align` consequence.
-
-<details><summary>Verification evidence</summary>
-
-Empirical round-trip through the shipped parser/printer (cargo +1.96.0 run --release -p llvmkit-asmparser --example parse_file): Input C:/Users/olegg/AppData/Local/Temp/.../scratchpad/t1.ll — define void @f23() alignstack(4) { ret void } define void @g() #0 { ret void } attributes #0 = { align = 8 } Output — define void @f23() alignstack(4) { <- upstream: `define void @f23() #N` + `attributes #N = { alignstack=4 }` define void @g() #0 { <- upstream: `define void @g() align 8`, no group at all attributes #0 = { align=8 } <- upstream: gone (Alignment moved to Fn->setAlignment) Input orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/Assembler/globalvariable-attributes.ll — error: line 3 col 20 `expected top-level entity` on `@g1 = global i32 7 "key" = "value" ...` That fixture's CHECK lines are exactly the missing behavior: `@g1 = global i32 7 #0` … `attributes #0 = { "key"="value" "key2"="value2" }`, with `@g3 = global i32 2 #0` re-printing as `#2` — proof the numbering is printer-derived, not input-preserved. Upstream C++ read (C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/): - IR/AsmWriter.cpp:1128-1130 (`CreateAttributeSetSlot(F.getAttributes().getFnAttrs())`), 1096-1098 (same for globals), 1434-1439 (slot assignment), 4201-4202 (`printFunction` emits only ` #N`, never inline fn attrs), 3985-3987 (`printGlobal` emits ` #N`), 5010-5020 (`writeAllAttributeGroups`), 3166-3169 (called from `printModule`). - AsmParser/LLParser.cpp:212-238 (`validateEndOfModule` merges groups into the Function and moves `Alignment` to `Fn->setAlignment`, removing it from the set), 6834-6836 (same move for inline header attrs), 1499-1507 (`parseGlobal` accepts the trailing attribute list and stores it on the GV). llvmkit source read: - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/asm_writer.rs:3070-3073 (prints input-carried `#N` refs, then fn attributes inline), 3310-3344 (`attributes #N = {…}` block driven solely by `m.attribute_groups()`), 3596-3723 (`fmt_global`, no attribute output). - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/module.rs:1573, 2354-2366, 3110-3117 (group table written only by `set_attribute_group`). - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/function.rs:106, 666-682, 1593-1598 (groups held as raw ids, never merged). - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs:9160-9169 (only writer of the table), 6974-7059 (`parse_global` with no trailing attr parse). The tree's own tests pin the divergence and pass today on the pin (`cargo +1.96.0 test --release -p llvmkit-asmparser --test parser_attribute_matrix -- inline_alignstack attribute_group_equals_grammar_round_trips` → 2 passed): crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:148-164 states in its doc comment that "llvmkit's printer emits function attributes inline on the header and never forms an attribute group", and :720-724 asserts `attributes #0 = { align = 8 }` re-prints as `align=8` inside the group. The gap is also recorded at C:/Users/olegg/Desktop/llvmkit/docs/future-work.md:200-234, deferred to the W13 `validateEndOfModule` group-merge work — and that ledger entry checks out against the tree rather than being stale.
-
-</details>
+- **LLVM:** `SlotTracker::CreateAttributeSetSlot` assigns one `#N` slot per
+  distinct `AttributeSet` — `processModule` calls it for every function's
+  `getAttributes().getFnAttrs()` and every global's `getAttributes()`, and
+  `processFunction` calls it for every `CallBase`'s function attributes — and
+  `AssemblyWriter::writeAllAttributeGroups` emits the groups at the end of the
+  module. `printFunction` therefore writes `define void @f23() #13`, never an
+  inline function attribute, with `attributes #13 = { alignstack=4 }` below and
+  a `; Function Attrs: alignstack(4)` comment above; `printGlobal` emits the
+  same `#N` for a global.
+- **llvmkit:** `asm_writer.rs` prints function attributes inline on the header
+  and at the call site, and emits an `attributes #N = { … }` block only for
+  groups the *input* already carried — the module's group table is written
+  only by `ModuleCore::set_attribute_group`, whose sole non-test caller is the
+  parser. Numbering is therefore input-preserved, not printer-derived. A
+  global's trailing attribute list is not printed at all, and is not *parsed*
+  either: `parse_global`'s property loop ends at `unknown global variable
+  property!` with no counterpart to upstream's trailing
+  `parseFnAttributeValuePairs`, and `GlobalVariableData` has no attribute
+  field. The `; Function Attrs:` comment is never emitted. Output is bulkier
+  than upstream's and diverges byte-for-byte from `llvm-dis` for any module
+  with function attributes — which the parser/printer contract says should not
+  happen.
+- **Why:** recorded in `docs/future-work.md` (W5/W7) and routed to W13
+  deliberately: D9's merge decides which attributes survive into the printed
+  group, so building the writer first would pin output the merge then changes.
+- **Fix:** port `CreateAttributeSetSlot` + `writeAllAttributeGroups` together
+  with D9's merge and alignment move, switch the function-header, call-site and
+  global printers to `#N`, add the `; Function Attrs:` comment line, accept the
+  trailing global attribute list in `parse_global`, and merge the input's own
+  groups into the same slot space.
+- **What is blocked by it:** `test/Bitcode/attributes.ll`'s `@f23` writes
+  `define void @f23() alignstack(4)` inline and CHECKs
+  `attributes #13 = { alignstack=4 }`, pinning both halves of the group
+  spelling at once; only the parse half is asserted, by
+  `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::inline_alignstack_parses_and_round_trips`,
+  whose doc comment says so. `test/Assembler/globalvariable-attributes.ll`'s
+  `@g1`–`@g4` need the trailing global attribute list *and* the group printer
+  and are not ported at all
+  (`crates/llvmkit-asmparser/tests/parser_module_level.rs`, whose
+  `@g5`–`@g14` half is ported and whose doc comment names the gap).
 
 ### 99. Metadata is numbered by arena position, not reachability, so a node AutoUpgrade replaces still prints
 

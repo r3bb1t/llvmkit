@@ -269,7 +269,7 @@ fn a_module_without_flags_is_untouched() {
 /// Two spelling differences from the `CHECK` block, neither introduced here:
 /// upstream hoists function attributes into numbered `attributes #N = { … }`
 /// groups where llvmkit prints them inline on the header
-/// (`docs/divergences.md` entries 40 and 58), and llvmkit prints every node in
+/// (`docs/divergences.md` entry 58), and llvmkit prints every node in
 /// the metadata arena where `opt` prints only the reachable ones — so `!14`
 /// and the emptied entries survive. The attribute *contents* the `CHECK`
 /// lines name are asserted verbatim.
