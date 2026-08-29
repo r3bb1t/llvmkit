@@ -146,8 +146,10 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// round-trips (no bracket-less `phi i32` is printed).
 ///
 /// Without the fix the phi survives with zero incomings: `verify()` still
-/// accepts it (0 == 0) but the printed IR carries a `phi` LLVM's parser rejects,
-/// so the `!contains("phi")` assertion below fails.
+/// accepts it (0 == 0) but the printed IR carries a bracket-less `phi` that
+/// LLVM's *Verifier* rejects in a reachable block; `LLParser::parsePHI` itself
+/// accepts the spelling, breaking cleanly out of its loop on the missing `[`.
+/// So the `!contains("phi")` assertion below fails.
 #[test]
 fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
     let m = crate::module_new!("remove-edge-empty-phi")?;
@@ -163,8 +165,11 @@ fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
         .expect("remove_then output must re-verify after emptying a phi");
     let printed = format!("{reverified}");
     // The emptied phi is erased entirely — never left as a bracket-less
-    // `phi i32`, the shape LLVM's LL parser rejects. (Match the instruction
-    // form, not the bare word: the module name also contains "phi".)
+    // `phi i32`. That shape is rejected by LLVM's *Verifier* ("PHI node entries
+    // do not match predecessors"), not by `LLParser::parsePHI`, which breaks
+    // cleanly out of its loop on the missing `[` and builds a zero-incoming
+    // PHINode. (Match the instruction form, not the bare word: the module name
+    // also contains "phi".)
     assert!(
         !printed.contains("= phi"),
         "the emptied phi must have been erased, got:\n{printed}"
@@ -270,8 +275,11 @@ fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
         .expect("redirect_then output must re-verify after emptying a phi");
     let printed = format!("{reverified}");
     // The emptied phi is erased entirely — never left as a bracket-less
-    // `phi i32`, the shape LLVM's LL parser rejects. (Match the instruction
-    // form, not the bare word: the module name also contains "phi".)
+    // `phi i32`. That shape is rejected by LLVM's *Verifier* ("PHI node entries
+    // do not match predecessors"), not by `LLParser::parsePHI`, which breaks
+    // cleanly out of its loop on the missing `[` and builds a zero-incoming
+    // PHINode. (Match the instruction form, not the bare word: the module name
+    // also contains "phi".)
     assert!(
         !printed.contains("= phi"),
         "the emptied phi must have been erased, got:\n{printed}"
