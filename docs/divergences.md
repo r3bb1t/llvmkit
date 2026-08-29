@@ -1166,21 +1166,6 @@ CONFIRMED — real, accurate, and still present in the committed tree. Upstream 
 
 </details>
 
-### 52. Phi known-bits recurses at `depth + 1` instead of upstream's fixed deep depth
-
-*analysis / ValueTracking* — crates/llvmkit-ir/src/value_tracking.rs:1726 (definition), reason at crates/llvmkit-ir/src/value_tracking.rs:1715-1725
-
-- **LLVM:** The `Instruction::PHI` arm of `computeKnownBitsFromOperator` gates its intersection loop on `Depth < MaxAnalysisRecursionDepth - 1` and then recurses at the fixed depth `MaxAnalysisRecursionDepth - 1`, capping the search under any incoming value at one level so the walk does not "spin around in loops".
-- **llvmkit:** `phi_known_bits` recurses at `depth + 1`, so a shallow phi gets a full remaining budget under each incoming and can prove strictly more bits than upstream.
-- **Why:** Recorded inline: llvmkit already terminates by a different mechanism — the `stack` set rejects re-entering a value that is mid-computation — and `compute_known_bits_inner` memoizes on `(slot, query)` with no depth component, so entering an incoming at a fixed deep depth would cache the weak answer and hand it to a later shallow query of the same value.
-- **Fix:** The recorded reason is sound and the fix is not the depth but the cache: add the depth (or a "budget remaining" bucket) to the memo key, or mark entries computed under a truncated budget as non-cacheable. With that in place the fixed `MaxAnalysisRecursionDepth - 1` recursion can be restored and the port becomes faithful.
-
-<details><summary>Verification evidence</summary>
-
-Verified on both sides; the code is committed (no working-tree modification to value_tracking.rs — it is not in the dirty list, and `git diff HEAD` on it is empty). llvmkit side — C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/value_tracking.rs: - `phi_known_bits` is defined at line 1726 and is live: dispatched from line 761, `InstructionKindData::Phi(data) => phi_known_bits(value, data, query, depth, stack)`. - The intersection loop (lines 1757-1778) has NO depth gate at all — the only early exit before it is `if !known.is_unknown() { return Ok(known); }` (line 1748) plus the empty-incoming check. The recursive call at lines 1763-1768 is `compute_known_bits_inner(value_from_slot(value, incoming_value.get()), query, depth + 1, stack)`. - The rationale the claim cites is verbatim in the rustdoc at lines 1715-1725: "Upstream gates the intersection loop on `Depth < MaxAnalysisRecursionDepth - 1` and then recurses at the fixed depth `MaxAnalysisRecursionDepth - 1` ... llvmkit recurses at `depth + 1` instead", justified by the `stack` re-entry guard (line 502) and by `compute_known_bits_inner` memoizing on `(slot, query)` with no depth component (cache key built at line 505, stored at line 531) — a fixed-deep entry would poison the cache for later shallow queries. - `MAX_ANALYSIS_RECURSION_DEPTH = 6` (line 46), matching upstream's constant. Upstream side — orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/ValueTracking.cpp, `Instruction::PHI` arm of `computeKnownBitsFromOperator`: the loop is gated `if (Depth < MaxAnalysisRecursionDepth - 1 && Known.isUnknown())`, and the recursion is `computeKnownBits(IncValue, DemandedElts, Known2, RecQ, MaxAnalysisRecursionDepth - 1);` directly under the comment "Recurse, but cap the recursion to one level, because we don't want to waste time spinning around in loops." (plus a TODO about basing the limiter on incoming edge count). So the divergence is real in both halves the claim names: the missing `Depth < MaxAnalysisRecursionDepth - 1` gate and the `depth + 1` recursion in place of the fixed `MaxAnalysisRecursionDepth - 1`. Concretely, a phi reached at depth 0 gets 6 further levels under each incoming in llvmkit versus 1 upstream, and at depth >= 5 upstream skips the intersection entirely while llvmkit still runs it. Two nuances worth noting (neither contradicts the claim): (1) the "strictly more bits" phrasing is really "at least as many, sometimes more" — the llvmkit comment itself says "more precisely ... never less"; (2) llvmkit's general cap is `if depth > query.max_depth()` (line 499) whereas upstream is `if (Depth == MaxAnalysisRecursionDepth) return;` (before the operator walk in `computeKnownBits`), an independent off-by-one that lets llvmkit process one level deeper everywhere, not just at phis.
-
-</details>
-
 ### 56. ppc_fp128 component pair stored mirrored from upstream
 
 *IR model / ApFloat* — crates/llvmkit-ir/tests/ap_float_ppc_word_order.rs:1-20; crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs:57-77; crates/llvmkit-asmparser/tests/parser_hex_float_word_order.rs:22-26
@@ -1335,7 +1320,20 @@ crates/llvmkit-ir/src/ir_builder.rs: `int_add` (line 1234) and `int_sub` (line 1
 
 </details>
 
-### 62. The phi known-bits arm recurses deeper than upstream, and answers more precisely
+### 62. The phi known-bits arm recurses deeper than upstream, and answers more precisely — **ONE DUPLICATE MERGED (W11)**
+
+Former entry **52**, "Phi known-bits recurses at `depth + 1` instead of
+upstream's fixed deep depth", was this entry written a second time: same
+routine (`phi_known_bits`), same coordinates, same rationale (the memo key has
+no depth component, so a fixed-deep entry would poison later shallow queries),
+same fix (key the cache by depth first, then restore
+`MaxAnalysisRecursionDepth - 1`). It also sat in the *printed bytes* band,
+which is the wrong one — a known-bits precision difference is a model gap, and
+this entry is already filed as one. Deleted at W11 rather than left to be
+closed twice; the two sub-findings its evidence block carried (llvmkit drops
+upstream's `Depth < MaxAnalysisRecursionDepth - 1` gate outright, and the
+global `depth > max_depth()` guard is an independent off-by-one) are in this
+entry's own correction below.
 
 *analysis* — crates/llvmkit-ir/src/value_tracking.rs:1715-1726 (the recorded decision on `phi_known_bits`)
 
