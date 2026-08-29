@@ -2680,14 +2680,37 @@ matcher — the one this item already records above, which exists precisely
 because of these spellings — returns a much larger population. The narrow regex
 made a large backlog look finished. Use the recorded matcher, with `-a`.
 
-**Still open, unchanged by this round:**
+**Landed 2026-08-29 (divergence-closing wave 12): the `loc=` retrofit, over the
+whole corpus.** Every `status=reject` row carrying an `error=` pin was swept:
+its checked-in fixture was searched for a line holding the pin *and* a column,
+in any of upstream's spellings (`[[@LINE+N]]:C:`, `[[#@LINE-N]]:C:`, a bare
+`:L:C: error:`), and where the fixture pins one the row now pins it too. Two
+things had to be fixed for the sweep to be trustworthy at all, and both are
+findings the old oracle could not see:
+
+- The corpus' `split-file` parts were not what `split-file` writes, so the line
+  numbers a `[[#@LINE-1]]` resolves against were wrong for thirty of them. That
+  is fixed and now guarded — see
+  `parser_corpus.rs::split_file_parts_are_what_split_file_emits`.
+- Nine rows disagreed with their fixture's column, in two clusters, and both
+  were llvmkit defects rather than pin defects: `parseValID`'s constant-expr
+  arms reported at the current token instead of `ID.Loc` (`invalid cast opcode
+  for cast from …` landed at end of file), and `check_metadata_field_value`
+  reported at the token *after* the value it rejected (`arg: -1` put `expected
+  unsigned integer` on the `)`). Both are fixed; the rows pin the columns now.
+
+The population is not written here — derive it with the matcher this item
+records, over `parser_corpus_manifest.txt` at whatever commit you are asking
+about.
+
+**Still open:**
 
 - **`contains` rather than equality**, everywhere. None of the three tiers above
   switched. The location half and the containment half are separate weaknesses;
-  only the first moved, and only for the rows named above.
-- **`loc=` for the rest of the corpus.** Most reject rows whose fixture carries
-  a column still pin text alone. That is the retrofit the `loc=` bullet
-  describes and it was deliberately not attempted here.
+  only the first has moved.
+- **Reject rows whose fixture pins no column at all** get no location oracle.
+  Pinning those would bless llvmkit's own output as ground truth, which is the
+  failure this file exists to prevent, so they stay on text alone.
 - **Diagnostics with no vendored fixture get no location oracle from this
   harness at all.** `getGlobalVal`'s `"@" + Name` / `"@" + Twine(ID)` spellings
   are exactly that case — the vendored tree pins the `%`-spelling only — so

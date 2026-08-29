@@ -6035,7 +6035,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .field(&field_name)
                     .unwrap_or_else(|| unreachable!("accepts_field just matched {field_name}"));
                 self.bump()?;
-                let value_loc = DiagLoc::span(self.loc());
+                let value_loc = self.loc();
                 let value = self.parse_metadata_field_value(declared.kind())?;
                 self.check_metadata_field_value(declared, &value, value_loc)?;
                 fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
@@ -6275,11 +6275,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &self,
         field: llvmkit_ir::metadata::SpecializedMetadataField,
         value: &MetadataFieldValue<B>,
-        loc: DiagLoc,
+        value_loc: Span,
     ) -> ParseResult<()> {
         use llvmkit_ir::dwarf;
         use llvmkit_ir::metadata::{MetadataFieldKind, MetadataFieldValue};
 
+        // Every `parseMDField` overload opens with its token-kind check and
+        // reports through `tokError`, i.e. at the value token — which llvmkit
+        // has already consumed by the time this runs, so `self.loc()` would
+        // name the token *after* it. `arg: -1` is the case with a vendored
+        // pin: `test/Assembler/invalid-dilocalvariable-arg-negative.ll` puts
+        // `expected unsigned integer` on the `-`, not on the `)` behind it.
+        let loc = DiagLoc::span(value_loc);
         let name = field.name();
 
         // A keyword family: reject a spelling its table does not contain, and
@@ -6326,7 +6333,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Ok(());
                 };
                 if *parsed < 0 {
-                    return Err(self.expected("unsigned integer"));
+                    return Err(self.expected_at(value_loc, "unsigned integer"));
                 }
                 if u128::try_from(*parsed).is_ok_and(|v| v > u128::from(max)) {
                     return Err(ParseError::MetadataFieldValueTooLarge {
@@ -6341,7 +6348,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let MetadataFieldValue::Integer(parsed) = value else {
                     // `parseMDField(MDSignedField&)` opens by demanding an
                     // `APSInt`; anything else never reaches the range checks.
-                    return Err(self.expected("signed integer"));
+                    return Err(self.expected_at(value_loc, "signed integer"));
                 };
                 if *parsed < i128::from(min) {
                     return Err(ParseError::MetadataFieldValueTooSmall {
@@ -6363,7 +6370,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if matches!(value, MetadataFieldValue::Bool(_)) {
                     Ok(())
                 } else {
-                    Err(self.expected("'true' or 'false'"))
+                    Err(self.expected_at(value_loc, "'true' or 'false'"))
                 }
             }
             MetadataFieldKind::DwarfTag => keyword("DWARF tag", dwarf::tag),
@@ -6406,7 +6413,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         })
                     }
                 }
-                _ => Err(self.expected("DWARF enum kind code")),
+                _ => Err(self.expected_at(value_loc, "DWARF enum kind code")),
             },
             MetadataFieldKind::ApsInt
             | MetadataFieldKind::MetadataList
@@ -9474,6 +9481,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `convertValIDToValue`'s `constant expression type mismatch`, one layer
     /// up, not a malformed-operands error down here.
     fn parse_constant_expr(&mut self) -> ParseResult<Constant<'ctx, B>> {
+        // `parseValID` opens with `ID.Loc = Lex.getLoc();`, and every
+        // *semantic* rejection in these arms is an `error(ID.Loc, …)` rather
+        // than a `tokError` — so the caret sits on the opcode keyword, not on
+        // whatever token the parse has reached by then. Three arms below need
+        // it, and all three used to anchor at the current token: for
+        // `@g = global i64 ptrtoaddr (i32 1 to i64)` that was the token *after*
+        // the closing paren, i.e. end of file.
+        let id_loc = self.loc();
         let op = match self.peek() {
             Token::Instruction(op) => *op,
             _ => return Err(self.expected("constant expression opcode")),
@@ -9507,15 +9522,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let lhs = self.parse_global_type_and_value()?;
                 self.expect_punct(PunctKind::Comma, "comma in binary constantexpr")?;
                 let rhs = self.parse_global_type_and_value()?;
+                // Upstream runs the closing `parseToken` *before* both checks,
+                // in one `if (… || … || …)` chain, so a binary constantexpr
+                // that is both mistyped and unterminated is reported as
+                // unterminated.
+                self.expect_punct(PunctKind::RParen, "')' in binary constantexpr")?;
                 if lhs.ty() != rhs.ty() {
-                    return Err(self.message("operands of constexpr must have same type"));
-                }
-                if !is_int_or_int_vector_type(lhs.ty()) {
                     return Err(
-                        self.message("constexpr requires integer or integer vector operands")
+                        self.message_at(id_loc, "operands of constexpr must have same type")
                     );
                 }
-                self.expect_punct(PunctKind::RParen, "')' in binary constantexpr")?;
+                if !is_int_or_int_vector_type(lhs.ty()) {
+                    return Err(self.message_at(
+                        id_loc,
+                        "constexpr requires integer or integer vector operands",
+                    ));
+                }
                 // `ConstantExpr::get(Opc, Val0, Val1, Flags)` — an integer
                 // binop's result type is its operands'.
                 let result_ty = lhs.ty();
@@ -9542,7 +9564,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             "invalid cast opcode for cast from '{src_ty}' to '{dst_ty}'"
                         )
                         .into(),
-                        loc: DiagLoc::span(self.loc()),
+                        loc: DiagLoc::span(id_loc),
                     });
                 }
                 // `ConstantExpr::getCast(Opc, SrcVal, DestTy)` — upstream's own

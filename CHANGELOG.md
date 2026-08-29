@@ -19,6 +19,30 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — two constant-expression / metadata-field diagnostics point at upstream's token
+
+- **`LLParser::parseValID`'s constant-expression arms report at `ID.Loc`.**
+  Upstream sets `ID.Loc = Lex.getLoc()` on entry and every *semantic* rejection
+  in those arms is `error(ID.Loc, …)` rather than a `tokError`, so the caret
+  sits on the opcode keyword. llvmkit anchored all three at the current token:
+  for `@g = global i64 ptrtoaddr (i32 1 to i64)`, `invalid cast opcode for cast
+  from 'i32' to 'i64'` landed at end of file rather than on `ptrtoaddr`.
+  `operands of constexpr must have same type` and `constexpr requires integer
+  or integer vector operands` moved with it, and the binary arm now runs its
+  closing `')'` check before both, as upstream's single `if (… || … || …)`
+  chain does.
+
+- **A rejected metadata field value reports at the value, not behind it.**
+  Every `parseMDField` overload checks the token kind before consuming and
+  reports through `tokError`; llvmkit checks after parsing, so `expected
+  unsigned integer` for `!DILocalVariable(…, arg: -1)` sat on the `)`.
+  `test/Assembler/invalid-dilocalvariable-arg-negative.ll` pins column 40, the
+  `-`; llvmkit reported 42. The four checks in `check_metadata_field_value`
+  that spell an `expected …` now anchor at the value token.
+
+- Both were found by the corpus `loc=` sweep and are pinned by manifest rows
+  now, so a re-drift turns the corpus red.
+
 ### Fixed — the corpus' `split-file` parts are now what `split-file` writes
 
 - **Every `split-file part` row of `parser_corpus_manifest.txt` is rebuilt from
