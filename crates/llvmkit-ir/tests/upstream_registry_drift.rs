@@ -10,16 +10,24 @@
 //! narrower earlier sweep missed them because the rows sit next to siblings
 //! that still resolve.
 //!
-//! This test asserts what the registry claims: the cited file exists, and when
-//! the row names a test, that file defines it. It says nothing about whether
-//! the *upstream* citation in the second column is right — that is a review
-//! judgement, not a mechanical one.
+//! Two tests here assert what the registry claims: the cited file exists, and
+//! when the row names a test, that file defines it. A third walks the other
+//! way — every `#[test]` in the tree must carry a row or a line in the frozen
+//! `tests/fixtures/upstream_provenance_debt.txt` — so the provenance backlog
+//! can shrink but not grow.
+//!
+//! None of them says anything about whether the *upstream* citation in the
+//! second column is right; that is a review judgement, not a mechanical one.
 //!
 //! No upstream counterpart: LLVM has no provenance registry to keep honest.
 
 use std::path::{Path, PathBuf};
 
 const REGISTRY: &str = include_str!("../../../UPSTREAM.md");
+
+/// The frozen backlog of tests that carry no registry row — see
+/// [`every_test_carries_a_registry_row_or_a_line_in_the_frozen_debt_list`].
+const PROVENANCE_DEBT: &str = include_str!("fixtures/upstream_provenance_debt.txt");
 
 /// The repository root, reached from this crate's manifest directory.
 fn repo_root() -> PathBuf {
@@ -104,5 +112,139 @@ fn every_registry_row_names_a_test_its_cited_file_defines() {
         unresolved.is_empty(),
         "UPSTREAM.md rows name tests their cited file does not define:\n{}",
         unresolved.join("\n")
+    );
+}
+
+/// Every `#[test]` in the workspace, as `(path relative to the repo root, name)`.
+///
+/// The scan is deliberately literal: a line that trims to exactly `#[test]`,
+/// then the first `fn <name>` at or after it. Doc comments in this tree quote
+/// `` `#[test]` `` in prose often enough that a looser match invents tests —
+/// `crates/llvmkit-ir/tests/analysis_basic.rs` has a `///` line saying "not a
+/// `#[test]` body" directly above a helper `fn`.
+fn workspace_tests(root: &Path) -> Vec<(String, String)> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    walk(&root.join("crates"), &mut files);
+    files.sort_unstable();
+
+    let mut tests = Vec::new();
+    for file in files {
+        let Ok(source) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(relative) = file.strip_prefix(root) else {
+            continue;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let lines: Vec<&str> = source.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            if line.trim() != "#[test]" {
+                continue;
+            }
+            let name = lines[at..].iter().find_map(|following| {
+                let rest = following.split_once("fn ")?.1;
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                (!name.is_empty()).then_some(name)
+            });
+            if let Some(name) = name {
+                tests.push((relative.clone(), name));
+            }
+        }
+    }
+    tests
+}
+
+/// **No upstream counterpart** — D11 house law, made mechanical in the one
+/// direction the sibling tests do not cover.
+///
+/// `every_registry_row_names_a_file_in_the_tree` and its twin walk from
+/// `UPSTREAM.md` to the tree. Nothing walked the other way, so a test could
+/// land with no row at all — which is how the residue
+/// `docs/divergences.md` calls the provenance debt accumulated in the first
+/// place, silently, one commit at a time.
+///
+/// This test closes the *growth*, not the backlog: every `#[test]` must either
+/// be covered by a row (its own, or a whole-file row for the file it lives in)
+/// or appear verbatim in `tests/fixtures/upstream_provenance_debt.txt`, which
+/// is frozen. A new test with no row fails here. Paying a debt line down means
+/// deleting it, and a line that no longer names an uncovered test fails too, so
+/// the file cannot rot in either direction.
+///
+/// A debt line means missing *provenance*, never "no upstream counterpart":
+/// clearing one means naming a real source or saying in the row that the test
+/// is llvmkit-specific.
+#[test]
+fn every_test_carries_a_registry_row_or_a_line_in_the_frozen_debt_list() {
+    let root = repo_root();
+
+    let mut whole_file_rows: Vec<&str> = Vec::new();
+    let mut named_rows: Vec<(&str, &str)> = Vec::new();
+    for (path, name) in row_targets() {
+        match name {
+            Some(name) => named_rows.push((path, name)),
+            None => whole_file_rows.push(path),
+        }
+    }
+
+    let mut uncovered: Vec<String> = workspace_tests(&root)
+        .into_iter()
+        .filter(|(path, name)| {
+            !whole_file_rows.contains(&path.as_str())
+                && !named_rows.contains(&(path.as_str(), name.as_str()))
+        })
+        .map(|(path, name)| format!("{path}::{name}"))
+        .collect();
+    uncovered.sort_unstable();
+    uncovered.dedup();
+
+    let debt: Vec<&str> = PROVENANCE_DEBT
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+
+    let unlisted: Vec<&String> = uncovered
+        .iter()
+        .filter(|entry| !debt.contains(&entry.as_str()))
+        .collect();
+    assert!(
+        unlisted.is_empty(),
+        "these tests have no `UPSTREAM.md` row (D11 wants one in the same commit):\n{}",
+        unlisted
+            .iter()
+            .map(|entry| entry.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    let paid: Vec<&&str> = debt
+        .iter()
+        .filter(|entry| !uncovered.iter().any(|found| found == **entry))
+        .collect();
+    assert!(
+        paid.is_empty(),
+        "these debt lines no longer name an unrowed test; delete them from \
+         tests/fixtures/upstream_provenance_debt.txt:\n{}",
+        paid.iter()
+            .map(|entry| **entry)
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

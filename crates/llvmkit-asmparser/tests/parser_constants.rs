@@ -985,9 +985,13 @@ fn nested_forward_blockaddress_resolves_later_signature() {
 /// below the reference.
 ///
 /// The IR shape is `test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll`
-/// with its address spaces dropped; that fixture itself is still blocked on
-/// the *program* address space (`target datalayout = "P2"` reaching a function
-/// that declares none), which is W3 work.
+/// with its address spaces dropped. The fixture itself is in the corpus and
+/// passing — `parser_corpus_manifest.txt` drives
+/// `upstream/blockaddress-addrspace/return_self_good.ll` at `status=pass`,
+/// program address space and all — so this is not a stand-in for a blocked
+/// fixture. Dropping the address spaces is what isolates the `BlockAddressPFS`
+/// route from `parseOptionalProgramAddrSpace`, which the corpus row exercises
+/// together with it.
 #[test]
 fn same_function_forward_blockaddress_resolves_by_name() {
     const FIXTURE: &[u8] =

@@ -19,6 +19,37 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — the provenance registry is checked in both directions
+
+- **`upstream_registry_drift.rs::every_test_carries_a_registry_row_or_a_line_in_the_frozen_debt_list`.**
+  Two existing tests walked from `UPSTREAM.md` to the tree; nothing walked back,
+  so a `#[test]` could land with no row at all — which is how the D11 backlog
+  accumulated, one commit at a time. Every test must now carry a row or a line
+  in the frozen `crates/llvmkit-ir/tests/fixtures/upstream_provenance_debt.txt`,
+  and a debt line that no longer names an unrowed test fails too. The backlog
+  can shrink but not grow, and cannot rot in either direction.
+
+### Fixed — three test-oracle repairs that were asserting less than they claimed
+
+- **`invalid-diexpression-large.ll`'s reject half asserts its `CHECK` line.** It
+  discarded the error and its doc comment justified that with a divergence that
+  no longer existed: llvmkit emits `element too large, limit is
+  18446744073709551615` verbatim, and a *different* test in the same file
+  already asserted it.
+
+- **A `void` argument is pinned at all three `parseArgumentList` call sites.**
+  That `LLParser`'s `argument can not have void type` is dead — `parseType`'s
+  `AllowVoid = false` default refuses the type first — had been asserted only in
+  a doc comment. `parser_module_level.rs::a_void_argument_is_refused_by_parse_type_not_by_the_dead_guard`
+  now pins the message *and* its caret for the function-type, `declare` and
+  `define` paths.
+
+- **`same_function_forward_blockaddress_resolves_by_name` no longer claims its
+  fixture is blocked.** `test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll`
+  has been running in the corpus at `status=pass`, program address space and
+  all; the test's doc comment and its `UPSTREAM.md` row both still said
+  otherwise.
+
 ### Fixed — two constant-expression / metadata-field diagnostics point at upstream's token
 
 - **`LLParser::parseValID`'s constant-expression arms report at `ID.Loc`.**

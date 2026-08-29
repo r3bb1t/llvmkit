@@ -4228,9 +4228,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Mirrors `LLParser::parseOptionalRefs`, which sorts the references so
     /// that the read-only and write-only ones sit at the end — the order
     /// `FunctionSummary::specialRefCounts` and the printer both rely on.
-    /// Upstream's sort is `llvm::sort`, which is unstable and is deliberately
-    /// shuffled first under expensive checks; llvmkit sorts stably, so ties
-    /// keep source order rather than an unspecified one.
+    ///
+    /// Upstream's sort is the comparator overload of `llvm::sort`, i.e.
+    /// `std::sort` preceded by `detail::presortShuffle` under
+    /// `EXPENSIVE_CHECKS`, so **ties are left unspecified**: two references of
+    /// one access class may come out in either order. `sort_by_key` is Rust's
+    /// stable sort, so llvmkit pins source order — which is one of the orders
+    /// `llvm::sort` may produce, not a different one. This is a deliberate
+    /// refinement of an unspecified contract, not a divergence from a
+    /// specified one — and a ported fixture *does* depend on the permutation:
+    /// `test/Assembler/thinlto-vtable-summary.ll`'s `RUN` line is a `diff` of
+    /// the `^`-lines before and after a `llvm-as | llvm-dis` round-trip, over
+    /// a summary carrying `refs: (^3, ^1)` and `refs: (^1, ^5)`, both ties.
+    /// Source order is the only permutation that survives that `diff`, so
+    /// `sort_unstable_by_key` here would be a regression rather than a
+    /// closer port.
+    ///
+    /// Both ends order the classes themselves identically: upstream's
+    /// `ValueInfo::getAccessSpecifier` yields `0 < ReadOnly < WriteOnly` from
+    /// `{HaveGV = 1, ReadOnly = 2, WriteOnly = 4}`, and llvmkit's derived `Ord`
+    /// on `AccessSpecifier { None, ReadOnly, WriteOnly }` yields the same
+    /// sequence.
     fn parse_optional_refs(&mut self) -> ParseResult<Vec<ValueReference>> {
         self.expect_keyword(Keyword::Refs, "'refs' here")?;
         self.expect_punct(PunctKind::Colon, "':' in refs")?;

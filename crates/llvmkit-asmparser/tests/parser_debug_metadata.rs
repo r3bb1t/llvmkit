@@ -657,12 +657,9 @@ fn diexpression_forms_round_trip() {
 }
 
 /// Ports `test/Assembler/invalid-diexpression-large.ll`: an element of exactly
-/// `UINT64_MAX` is accepted (`CHECK-NOT: error:`) and one above it is not.
-///
-/// Same logic as upstream, different diagnostic: upstream reports "element too
-/// large, limit is 18446744073709551615" from `parseDIExpressionBody`, while
-/// llvmkit reports the structured `Expected` error its parser uses throughout,
-/// so this asserts on the accept/reject behaviour rather than on message text.
+/// `UINT64_MAX` is accepted (`CHECK-NOT: error:`) and one above it is not,
+/// with `parseDIExpressionBody`'s own
+/// `CHECK: … error: element too large, limit is 18446744073709551615`.
 #[test]
 fn diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected() {
     let text = parse_and_render("!named = !{!0}\n!0 = !DIExpression(18446744073709551615)\n");
@@ -670,7 +667,10 @@ fn diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected() {
         text.contains("!DIExpression(18446744073709551615)"),
         "output:\n{text}"
     );
-    let _ = parse_err("!0 = !DIExpression(18446744073709551616)\n");
+    assert_eq!(
+        parse_err("!0 = !DIExpression(18446744073709551616)\n").to_string(),
+        "element too large, limit is 18446744073709551615"
+    );
 }
 
 /// The 14 specialized classes added on 2026-08-07, closing the modelled set to

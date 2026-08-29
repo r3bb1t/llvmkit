@@ -806,6 +806,54 @@ fn void_in_value_position_is_rejected() {
     );
 }
 
+/// **No upstream `.ll` counterpart** — the vendored tree pins this message only
+/// from `byval(void)` (`test/Assembler/invalid-byval-type2.ll`, in the corpus),
+/// never from an argument's own type. The *rule* is upstream's, and this is the
+/// oracle for a claim `docs/divergences.md` had been carrying on a doc comment
+/// alone: `LLParser::parseArgumentList`'s `argument can not have void type` is
+/// **dead**. Its guard reads `if (parseType(ArgTy) || …)` and
+/// `parseType(Type *&, bool AllowVoid = false)` (`LLParser.h`) already refuses
+/// a literal `void` with `void type only allowed for function results`, at the
+/// type token, before `ArgTy->isVoidTy()` is ever asked.
+///
+/// All three of `parseArgumentList`'s callers are exercised, because a
+/// divergence could reach any one of them: `parseFunctionType`,
+/// `parseDeclare`'s header and `parseDefine`'s. If llvmkit ever grows a path
+/// that answers `argument can not have void type` here, this turns red.
+#[test]
+fn a_void_argument_is_refused_by_parse_type_not_by_the_dead_guard() {
+    for (source, void_at) in [
+        // `parseFunctionType`, reached through a type definition.
+        ("%t = type void (void)\n", "void)"),
+        // `parseFunctionHeader` from `parseDeclare`.
+        ("declare void @f(void)\n", "void)"),
+        // `parseFunctionHeader` from `parseDefine`.
+        (
+            "define void @f(void %x) {\nentry:\n  ret void\n}\n",
+            "void %x",
+        ),
+    ] {
+        let module = llvmkit_ir::Module::dynamic("void_argument");
+        let error = Parser::new(source.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("upstream runs `not llvm-as` on a void argument");
+        assert_eq!(
+            error.to_string(),
+            "void type only allowed for function results",
+            "for {source:?}"
+        );
+        assert_eq!(
+            reported_line_and_column(source.as_bytes(), &error),
+            support::line_and_column(
+                source.as_bytes(),
+                source.find(void_at).expect("the source spells this token"),
+            ),
+            "the caret belongs on the argument's own `void`, for {source:?}"
+        );
+    }
+}
+
 /// Mirrors `LLParser::parseTopLevelEntities`'s default arm: any unknown
 /// leading token is reported as a typed `top-level entity` error.
 #[test]
