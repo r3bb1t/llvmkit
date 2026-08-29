@@ -1699,7 +1699,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `ForwardRefVals` sweep above reaches the same pair for an
         // undeclared one), `llvm::UpgradeDebugInfo`, `UpgradeModuleFlags`,
         // `UpgradeNVVMAnnotations`, `UpgradeSectionAttributes` and
-        // `copyModuleAttrToFunctions`. Three of them are ported; the six that
+        // `copyModuleAttrToFunctions`. Four of them are ported; the five that
         // are not are recorded in `docs/future-work.md` with what each is
         // blocked on. The ported ones sit at their own positions, so adding
         // the rest is insertion, not re-ordering.
@@ -1710,6 +1710,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // slot that `metadata_set` fills in place — so there is no step here.
         self.upgrade_tbaa_tags();
         llvmkit_ir::auto_upgrade::upgrade_module_flags(self.module);
+        llvmkit_ir::auto_upgrade::upgrade_nvvm_annotations(self.module);
         llvmkit_ir::auto_upgrade::upgrade_section_attributes(self.module);
 
         // `Run` is `parseTopLevelEntities() || validateEndOfModule(...) ||

@@ -724,7 +724,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .map(|value| value == "true")
     }
 
-    fn function_string_attribute(self, key: &str) -> Option<String> {
+    pub(crate) fn function_string_attribute(self, key: &str) -> Option<String> {
         {
             let attrs = self.data().attributes.borrow();
             if let Some(value) = Self::string_attribute_in_storage(&attrs, key) {

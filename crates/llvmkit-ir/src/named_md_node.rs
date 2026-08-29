@@ -321,6 +321,17 @@ impl<B: ModuleBrand> NamedMetadataNode<B> {
         self.operands.push(op);
     }
 
+    /// Drop every operand, keeping the node (and its name) in place. Mirrors
+    /// `NamedMDNode::clearOperands` (`llvm/include/llvm/IR/Metadata.h`).
+    ///
+    /// Upstream is `getNMDOps(Operands).clear()` over a
+    /// `SmallVector<TrackingMDRef>`, so clearing also drops each operand's
+    /// tracking reference. llvmkit's operands are arena ids that track
+    /// nothing, so the `Vec` truncation is the whole of it.
+    pub fn clear_operands(&mut self) {
+        self.operands.clear();
+    }
+
     /// All operands in insertion order.
     pub fn operands(&self) -> &[MetadataId<B>] {
         &self.operands

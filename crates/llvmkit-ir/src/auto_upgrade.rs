@@ -13,15 +13,25 @@
 //! | upstream | here |
 //! |---|---|
 //! | `llvm::UpgradeModuleFlags` | [`upgrade_module_flags`] |
+//! | `llvm::UpgradeNVVMAnnotations` | [`upgrade_nvvm_annotations`] |
 //! | `llvm::UpgradeSectionAttributes` | [`upgrade_section_attributes`] |
 //! | `llvm::UpgradeTBAANode` | [`upgrade_tbaa_node`] |
+//!
+//! `UpgradeNVVMAnnotations` is in that list despite its name: it rewrites no
+//! intrinsic and consults no target, it moves one named metadata node onto
+//! function attributes.
 //!
 //! Each is a mechanical translation of its upstream counterpart: same guards,
 //! same order, same rebuilt node contents. Where a C++ shape has no Rust
 //! spelling (an `unsigned` truncation, an `assert` on a malformed operand) the
 //! difference is called out at the site.
 
+use crate::ap_int::ApInt;
+use crate::attributes::{AttrIndex, AttrKind, Attribute};
+use crate::calling_conv::CallingConv;
 use crate::error::IrResult;
+use crate::function::FunctionValue;
+use crate::marker::Dyn;
 use crate::metadata::MetadataId;
 use crate::module::{Module, ModuleBrand, Unverified};
 use crate::module_flags::ModuleFlagBehavior;
@@ -329,6 +339,338 @@ fn add_flag<'ctx, B: ModuleBrand + 'ctx>(
     module
         .add_module_flag(behavior, key, value)
         .unwrap_or_else(|_| unreachable!("value was interned in this module"));
+}
+
+/// Convert legacy `!nvvm.annotations` entries into function attributes,
+/// dropping every entry the conversion consumed and keeping the rest. Mirrors
+/// `llvm::UpgradeNVVMAnnotations` (`llvm/lib/IR/AutoUpgrade.cpp`).
+///
+/// Nothing here is target-specific in the sense the AutoUpgrade milestone uses
+/// the word: no intrinsic is rewritten and no target is consulted. The routine
+/// reads one named metadata node and writes function attributes, which is why
+/// it ports ahead of the intrinsic framework.
+///
+/// Four of upstream's `assert`/`cast` sites are reachable from malformed but
+/// parseable input. Each is called out at its arm; in every case llvmkit
+/// leaves the offending entry untouched rather than panicking, so a module
+/// that would abort `llvm-as` round-trips here unchanged.
+pub fn upgrade_nvvm_annotations<'ctx, B: ModuleBrand + 'ctx>(module: &'ctx Module<B, Unverified>) {
+    let name = NamedMetadataName::from_name("nvvm.annotations");
+    // `NamedMDNode *NamedMD = M.getNamedMetadata("nvvm.annotations");
+    //  if (!NamedMD) return;`
+    let Some(named_md) = module.named_metadata(&name) else {
+        return;
+    };
+
+    let mut new_nodes: Vec<MetadataId<B>> = Vec::new();
+    // `SmallPtrSet<const MDNode *, 8> SeenNodes` — a `Vec` scan rather than a
+    // set, matching the eight-element inline capacity upstream expects and
+    // avoiding a `Hash` bound on the brand.
+    let mut seen_nodes: Vec<MetadataId<B>> = Vec::new();
+    let operands = module
+        .named_metadata_get(named_md)
+        .map_or_else(Vec::new, |node| node.operands().to_vec());
+
+    for md in operands {
+        // `if (!SeenNodes.insert(MD).second) continue;`
+        if seen_nodes.contains(&md) {
+            continue;
+        }
+        seen_nodes.push(md);
+
+        // `for (MDNode *MD : NamedMD->operands())` is a `cast<MDNode>` on each
+        // operand. Two upstream shapes collapse into this one `continue`: an
+        // operand that is not an `MDNode` at all (the `cast` asserts), and one
+        // that is a *specialized* node — `!DIBasicType(…)` and friends pass the
+        // `cast` upstream, then take the `if (!GV) continue` arm two lines down
+        // because operand 0 of such a node is never a `ConstantAsMetadata`.
+        // Same observable answer, one step earlier.
+        let Some(entry) = module.metadata_tuple_operands(md) else {
+            continue;
+        };
+        // `MD->getOperand(0)` indexes an empty node out of bounds upstream.
+        let Some(&global_op) = entry.first() else {
+            continue;
+        };
+        // `auto *GV = mdconst::dyn_extract_or_null<GlobalValue>(MD->getOperand(0));
+        //  if (!GV) continue;`
+        let Some(global) = module.metadata_constant_global_value(global_op) else {
+            continue;
+        };
+        // Every arm of `upgradeSingleNVVMAnnotation` opens with
+        // `cast<Function>(GV)`, so an annotation on a global *variable* is an
+        // upstream assertion rather than a defined answer. Here it upgrades
+        // nothing, which rebuilds the entry verbatim — the `continue` above is
+        // deliberately not reused, because that arm *drops* the entry and
+        // dropping an annotation nobody upgraded would lose information.
+        let function = FunctionValue::<'ctx, Dyn, B>::try_from(global).ok();
+
+        // `SmallVector<Metadata *, 8> NewOperands{MD->getOperand(0)};`
+        let mut new_operands = vec![global_op];
+        // `for (unsigned j = 1, je = MD->getNumOperands(); j < je; j += 2)`,
+        // which reads `j + 1` under the `assert((MD->getNumOperands() % 2) == 1)`
+        // just above it. The bound is `j + 1 < je` here so an even-length node
+        // stops one pair early instead of reading past the end.
+        let mut j = 1;
+        while j + 1 < entry.len() {
+            let key_op = entry[j];
+            let value_op = entry[j + 1];
+            // `MDString *K = cast<MDString>(MD->getOperand(j));` — a
+            // non-string key asserts upstream; here it upgrades nothing, so
+            // the pair survives into the rebuilt node.
+            let upgraded = function.is_some_and(|function| {
+                module.metadata_string_value(key_op).is_some_and(|key| {
+                    upgrade_single_nvvm_annotation(module, function, &key, value_op)
+                })
+            });
+            // `if (!Upgraded) NewOperands.append({K, V});`
+            if !upgraded {
+                new_operands.push(key_op);
+                new_operands.push(value_op);
+            }
+            j += 2;
+        }
+
+        // `if (NewOperands.size() > 1) NewNodes.push_back(MDNode::get(...));`
+        if new_operands.len() > 1 {
+            new_nodes.push(tuple(module, &new_operands));
+        }
+    }
+
+    // `NamedMD->clearOperands(); for (MDNode *N : NewNodes) NamedMD->addOperand(N);`
+    module
+        .named_metadata_clear_operands(named_md)
+        .unwrap_or_else(|_| unreachable!("the id was looked up in this module"));
+    for node in new_nodes {
+        module
+            .named_metadata_add_operand(named_md, node)
+            .unwrap_or_else(|_| unreachable!("the node was interned in this module"));
+    }
+}
+
+/// `true` when `s` is one of the three dimension suffixes. Mirrors `isXYZ`
+/// (`llvm/lib/IR/AutoUpgrade.cpp`).
+fn is_xyz(s: &str) -> bool {
+    s == "x" || s == "y" || s == "z"
+}
+
+/// Convert one `key`/`value` pair of an `!nvvm.annotations` entry into a
+/// function attribute, answering whether it was consumed. Mirrors
+/// `upgradeSingleNVVMAnnotation` (`llvm/lib/IR/AutoUpgrade.cpp`).
+///
+/// `GV` is already narrowed to a function: see the caller.
+fn upgrade_single_nvvm_annotation<'ctx, B: ModuleBrand + 'ctx>(
+    module: &'ctx Module<B, Unverified>,
+    function: FunctionValue<'ctx, Dyn, B>,
+    key: &str,
+    value: MetadataId<B>,
+) -> bool {
+    // `StringRef K` is `consume_front`ed in place by the three suffix arms
+    // below, so a later arm sees whatever an earlier one left behind — that is
+    // upstream's own behaviour, not an accident: `"maxntidw"` reaches the
+    // `reqntid` test as `"w"`.
+    let mut k = key;
+
+    if k == "kernel" {
+        // `if (!mdconst::extract<ConstantInt>(V)->isZero())`.
+        let Some(v) = constant_int(module, value) else {
+            return false;
+        };
+        if !v.is_zero() {
+            function.set_calling_conv(module, CallingConv::PTX_KERNEL);
+        }
+        return true;
+    }
+    if k == "align" {
+        // V is a bitfeild specifying two 16-bit values. The alignment value is
+        // specfied in low 16-bits, The index is specified in the high bits. For
+        // the index, 0 indicates the return value while higher values correspond
+        // to each parameter (idx = param + 1).
+        let Some(align_idx_value_pair) = constant_u64(module, value) else {
+            return false;
+        };
+        // `const unsigned Idx = (AlignIdxValuePair >> 16);` — the C++ narrowing
+        // to `unsigned` is spelled as the mask it performs.
+        let index = align_idx_value_pair >> 16 & 0xFFFF_FFFF;
+        let stack_align = align_idx_value_pair & 0xFFFF;
+        // `Align(V)` asserts `V > 0 && isPowerOf2_64(V)`, and
+        // `AttrBuilder::addStackAlignmentAttr` asserts `*Align <= 0x100`. A
+        // pair that violates any of the three is left unconverted.
+        if stack_align == 0 || !stack_align.is_power_of_two() || stack_align > 0x100 {
+            return false;
+        }
+        let attr = Attribute::<B>::int(AttrKind::StackAlignment, stack_align)
+            .unwrap_or_else(|| unreachable!("StackAlignment is an integer-flavoured kind"));
+        function.add_attribute(module, attribute_index(index), attr);
+        return true;
+    }
+    if k == "maxclusterrank" || k == "cluster_max_blocks" {
+        let Some(cv) = constant_u64(module, value) else {
+            return false;
+        };
+        function.set_string_attribute(
+            module,
+            AttrIndex::Function,
+            "nvvm.maxclusterrank",
+            cv.to_string(),
+        );
+        return true;
+    }
+    if k == "minctasm" {
+        let Some(cv) = constant_u64(module, value) else {
+            return false;
+        };
+        function.set_string_attribute(module, AttrIndex::Function, "nvvm.minctasm", cv.to_string());
+        return true;
+    }
+    if k == "maxnreg" {
+        let Some(cv) = constant_u64(module, value) else {
+            return false;
+        };
+        function.set_string_attribute(module, AttrIndex::Function, "nvvm.maxnreg", cv.to_string());
+        return true;
+    }
+    if let Some(rest) = k.strip_prefix("maxntid") {
+        k = rest;
+        if is_xyz(k) {
+            return upgrade_nvvm_fn_vector_attr(module, "nvvm.maxntid", k, function, value);
+        }
+    }
+    if let Some(rest) = k.strip_prefix("reqntid") {
+        k = rest;
+        if is_xyz(k) {
+            return upgrade_nvvm_fn_vector_attr(module, "nvvm.reqntid", k, function, value);
+        }
+    }
+    if let Some(rest) = k.strip_prefix("cluster_dim_") {
+        k = rest;
+        if is_xyz(k) {
+            return upgrade_nvvm_fn_vector_attr(module, "nvvm.cluster_dim", k, function, value);
+        }
+    }
+    if k == "grid_constant" {
+        // `cast<MDNode>(V)->operands()` — a non-node operand asserts upstream.
+        let Some(indices) = module.metadata_tuple_operands(value) else {
+            return false;
+        };
+        for op in indices {
+            // For some reason, the index is 1-based in the metadata. Good thing
+            // we're able to auto-upgrade it!
+            let Some(one_based) = constant_u64(module, op) else {
+                return false;
+            };
+            // `getZExtValue() - 1` wraps on a `0` index upstream and names a
+            // parameter that cannot exist; the pair is skipped instead.
+            let Some(index) = one_based.checked_sub(1) else {
+                continue;
+            };
+            let attr = Attribute::<B>::string("nvvm.grid_constant", "");
+            function.add_attribute(module, AttrIndex::Param(narrow(index)), attr);
+        }
+        return true;
+    }
+
+    false
+}
+
+/// Merge one dimension into a comma-separated three-vector function attribute.
+/// Mirrors `upgradeNVVMFnVectorAttr` (`llvm/lib/IR/AutoUpgrade.cpp`), with a
+/// `bool` result standing in for the `mdconst::extract` assertion its `void`
+/// signature relies on.
+fn upgrade_nvvm_fn_vector_attr<'ctx, B: ModuleBrand + 'ctx>(
+    module: &'ctx Module<B, Unverified>,
+    attr: &str,
+    dim: &str,
+    function: FunctionValue<'ctx, Dyn, B>,
+    value: MetadataId<B>,
+) -> bool {
+    // `constexpr StringLiteral DefaultValue = "1";`
+    const DEFAULT_VALUE: &str = "1";
+    let mut vect3 = [
+        DEFAULT_VALUE.to_owned(),
+        DEFAULT_VALUE.to_owned(),
+        DEFAULT_VALUE.to_owned(),
+    ];
+    let mut length = 0usize;
+
+    // `if (F->hasFnAttribute(Attr))` plus the `getValueAsString()` that
+    // follows: one lookup here, because the miss and the value are one
+    // `Option`.
+    if let Some(existing) = function.function_string_attribute(attr) {
+        // We expect the existing attribute to have the form "x[,y[,z]]". Here
+        // we parse these elements placing them into Vect3
+        let mut s = existing.as_str();
+        while length < 3 && !s.is_empty() {
+            // `auto [Part, Rest] = S.split(',')` leaves `Rest` empty when the
+            // separator is absent, which is what ends the loop.
+            let (part, rest) = s.split_once(',').unwrap_or((s, ""));
+            // `StringRef::trim()` strips the ASCII whitespace set
+            // `" \t\n\v\f\r"`; `str::trim` strips Unicode whitespace, a
+            // superset that coincides on every value NVVM emits.
+            vect3[length] = part.trim().to_owned();
+            s = rest;
+            length += 1;
+        }
+    }
+
+    // `const unsigned Dim = DimC - 'x'; assert(Dim < 3 && "Unexpected dim char");`
+    let dim = match dim {
+        "x" => 0,
+        "y" => 1,
+        "z" => 2,
+        _ => unreachable!("isXYZ has already established the dimension suffix"),
+    };
+
+    // `const uint64_t VInt = mdconst::extract<ConstantInt>(V)->getZExtValue();`
+    let Some(v_int) = constant_u64(module, value) else {
+        return false;
+    };
+
+    // `const std::string VStr = llvm::utostr(VInt); Vect3[Dim] = VStr;`
+    vect3[dim] = v_int.to_string();
+    length = length.max(dim + 1);
+
+    // `const std::string NewAttr = llvm::join(ArrayRef(Vect3, Length), ",");
+    //  F->addFnAttr(Attr, NewAttr);`
+    let new_attr = vect3[..length].join(",");
+    function.set_string_attribute(module, AttrIndex::Function, attr, new_attr);
+    true
+}
+
+/// `mdconst::extract<ConstantInt>(V)`, whose failure upstream is an assertion.
+fn constant_int<'ctx, B: ModuleBrand + 'ctx>(
+    module: &'ctx Module<B, Unverified>,
+    id: MetadataId<B>,
+) -> Option<ApInt> {
+    module.metadata_constant_int_value(id).map(|(_, v)| v)
+}
+
+/// `mdconst::extract<ConstantInt>(V)->getZExtValue()`, whose own assertion is
+/// `getActiveBits() <= 64`.
+fn constant_u64<'ctx, B: ModuleBrand + 'ctx>(
+    module: &'ctx Module<B, Unverified>,
+    id: MetadataId<B>,
+) -> Option<u64> {
+    constant_int(module, id)
+        .as_ref()
+        .and_then(ApInt::try_zext_u64)
+}
+
+/// `Function::addAttributeAtIndex`'s `unsigned Idx`, in llvmkit's spelling:
+/// `AttributeList::ReturnIndex` is `0` and `FirstArgIndex` is `1`, so a
+/// non-zero index names parameter `Idx - 1`.
+fn attribute_index(index: u64) -> AttrIndex {
+    match index.checked_sub(1) {
+        None => AttrIndex::Return,
+        Some(param) => AttrIndex::Param(narrow(param)),
+    }
+}
+
+/// The implicit `uint64_t` → `unsigned` narrowing at
+/// `Function::addParamAttr(unsigned, Attribute)`, spelled as the mask it is.
+fn narrow(value: u64) -> u32 {
+    u32::try_from(value & 0xFFFF_FFFF)
+        .unwrap_or_else(|_| unreachable!("a value masked to 32 bits fits a u32"))
 }
 
 /// Canonicalise Objective-C category-list section names by removing the

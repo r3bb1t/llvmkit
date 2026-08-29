@@ -19,6 +19,33 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — legacy `!nvvm.annotations` are upgraded onto function attributes
+
+- **`llvm::UpgradeNVVMAnnotations` is ported**, closing the seventh of the nine
+  `AutoUpgrade.h` entry points `LLParser::validateEndOfModule` calls
+  (`docs/divergences.md` entry 19; four are ported now, five remain). A parsed
+  module carrying `!nvvm.annotations` comes back with `ptx_kernel` calling
+  conventions, `alignstack` at the return and parameter indices, the
+  `"nvvm.maxclusterrank"` / `"nvvm.minctasm"` / `"nvvm.maxnreg"` string
+  attributes, the comma-joined `"nvvm.maxntid"` / `"nvvm.reqntid"` /
+  `"nvvm.cluster_dim"` three-vectors and `"nvvm.grid_constant"` on the named
+  parameters — and with every consumed entry removed from the named node, as
+  `llvm-as` produces it. The call sits between `upgrade_module_flags` and
+  `upgrade_section_attributes`, its position in `validateEndOfModule`.
+
+  `upgrade_single_nvvm_annotation`, `upgrade_nvvm_fn_vector_attr` and `is_xyz`
+  are ported under their own names beside it, including the `consume_front`
+  aliasing that lets `"maxntidw"` reach the `reqntid` test as `"w"`.
+
+- **New:** `NamedMetadataNode::clear_operands` and
+  `Module::named_metadata_clear_operands`, ports of
+  `NamedMDNode::clearOperands` — the named-metadata list was append-only.
+
+- The `assert`/`cast<>` sites inside the three upstream routines that are
+  reachable from parseable-but-malformed input have no defined upstream answer.
+  Each is read here as *upgrade nothing and keep the entry*, so a module that
+  aborts `llvm-as` round-trips unchanged instead of panicking.
+
 ### Fixed — `DIFlags` / `DISPFlags` are bitfields, a scalable vector constant must be a splat, and `visitIntrinsicCall` grows a preamble
 
 - **BREAKING: `flags:` and `spFlags:` are read and printed as bitfields, not as

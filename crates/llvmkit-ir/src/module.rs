@@ -57,7 +57,8 @@ use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
 use super::constant::{
-    Constant, ConstantExprFlags, ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant,
+    Constant, ConstantData, ConstantExprFlags, ConstantExprOpcode, ForwardRefValue,
+    IntoConstantValue, IsConstant,
 };
 use super::constant_range::metadata_constant_int;
 use super::constants::ConstantExprOptions;
@@ -2680,6 +2681,25 @@ impl<'ctx> ModuleCore {
         Ok(())
     }
 
+    /// Drop every operand of a named metadata node. Mirrors
+    /// `NamedMDNode::clearOperands`.
+    ///
+    /// `Err(IrError::ForeignNamedMetadataId)` when `id` was minted by another
+    /// module. As with [`named_metadata_add_operand`](Self::named_metadata_add_operand)
+    /// there is no unknown-slot case: the named-metadata list is append-only.
+    pub fn named_metadata_clear_operands<B>(&self, id: NamedMetadataId<B>) -> IrResult<()>
+    where
+        B: ModuleBrand,
+    {
+        let slot = id.into_stored(self.id)?.slot();
+        let mut nmd = self.named_metadata.borrow_mut();
+        let node = nmd.get_mut(slot.0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        node.clear_operands();
+        Ok(())
+    }
+
     /// Look up a named metadata node by id, cloning it out. `None` when `id`
     /// belongs to another module — never another module's node. A native id
     /// always resolves: the named-metadata list is append-only.
@@ -2859,6 +2879,31 @@ impl<'ctx> ModuleCore {
         let (_, value) = metadata_constant_int(self, &store, slot)?;
         let bits = value.bit_width();
         Some((bits, value))
+    }
+
+    /// The global value behind a constant metadata operand, with
+    /// [`MetadataKind::Ref`] links followed. `None` for anything that is not
+    /// a `GlobalValue` — the `mdconst::dyn_extract_or_null<GlobalValue>`
+    /// shape.
+    ///
+    /// The extra hop upstream does not have: llvmkit gives a global object its
+    /// *value* type and interns a pointer-typed
+    /// [`ConstantData::GlobalValueRef`] to stand for `@name` where a constant
+    /// is wanted, so the operand names the wrapper and the answer is its
+    /// referent.
+    pub(super) fn metadata_constant_global_value(
+        &self,
+        id: MetadataId<StoredBrand>,
+    ) -> Option<ValueSlot> {
+        let store = self.metadata.borrow();
+        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let MetadataKind::Constant(value_id) = store.get(slot)? else {
+            return None;
+        };
+        match &self.context().value_data(value_id.slot()).kind {
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Some(*value),
+            _ => None,
+        }
     }
 
     /// The replace half of `Module::setModuleFlag` (`lib/IR/Module.cpp`):
@@ -4554,6 +4599,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().named_metadata_add_operand(id, operand)
     }
 
+    /// Drop every operand of a named metadata node, keeping the node itself.
+    /// Mirrors `NamedMDNode::clearOperands`.
+    ///
+    /// `Err(IrError::ForeignNamedMetadataId)` when `id` was minted by another
+    /// module.
+    pub fn named_metadata_clear_operands(&'ctx self, id: NamedMetadataId<B>) -> IrResult<()> {
+        self.core().named_metadata_clear_operands(id)
+    }
+
     /// Look up a named metadata node by id, cloning it out. `None` when `id`
     /// belongs to another module — never another module's node. A native id
     /// always resolves: the named-metadata list is append-only.
@@ -4701,6 +4755,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ) -> Option<(u32, ApInt)> {
         let id = id.into_stored(self.core().id()).ok()?;
         self.core().metadata_constant_int_value(id)
+    }
+
+    /// Crate-internal: the global value behind a constant metadata operand,
+    /// with [`MetadataKind::Ref`] links followed. `None` for anything that is
+    /// not a `GlobalValue` — the `mdconst::dyn_extract_or_null<GlobalValue>`
+    /// shape.
+    pub(crate) fn metadata_constant_global_value(
+        &'ctx self,
+        id: MetadataId<B>,
+    ) -> Option<Value<'ctx, B>> {
+        let id = id.into_stored(self.core().id()).ok()?;
+        let slot = self.core().metadata_constant_global_value(id)?;
+        let ty = self.core().ctx.value_data(slot).ty;
+        Some(Value::from_parts(slot, self.module_ref(), ty))
     }
 
     /// Shared tuple constructor for

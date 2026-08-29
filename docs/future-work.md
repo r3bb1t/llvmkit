@@ -210,7 +210,7 @@ Two fixtures are vendored and waiting on a divergence rather than on this work:
 `AmbiguousPhi.ll` (entry 130 — the builder does). Both assert their blocker
 today, so they fail the day it closes.
 
-## AutoUpgrade — six of nine `validateEndOfModule` call sites still open (measured 2026-08-16, LLParser parity W13d)
+## AutoUpgrade — five of nine `validateEndOfModule` call sites still open (measured 2026-08-29, divergence-closing W10)
 
 `crates/llvmkit-ir/src/auto_upgrade.rs` exists now and carries the
 target-independent, module-level half of `llvm/lib/IR/AutoUpgrade.cpp`. This
@@ -230,7 +230,7 @@ only the number is wrong. In call order:
 | 4 | `UpgradeCallsToIntrinsic` (per `Function`) | not ported |
 | 5 | `llvm::UpgradeDebugInfo` | not ported |
 | 6 | `UpgradeModuleFlags` | **ported (W13d)** |
-| 7 | `UpgradeNVVMAnnotations` | not ported |
+| 7 | `UpgradeNVVMAnnotations` | **ported (W10)** |
 | 8 | `UpgradeSectionAttributes` | **ported (W13d)** |
 | 9 | `copyModuleAttrToFunctions` | not ported |
 
@@ -291,13 +291,23 @@ exists. This is also why `ParserConfig::upgrade_debug_info` (W13c) still
 selects nothing: it is the flag on the call site that does not exist yet, and
 `docs/divergences.md` D11 counts it among the settings that read as inert.
 
-### 7 — `UpgradeNVVMAnnotations`
+### 7 — `UpgradeNVVMAnnotations` — closed (W10)
 
-Mechanically portable and target-independent in shape (it moves
-`!nvvm.annotations` entries onto function attributes), but it needs three
-things llvmkit has not got: `NamedMDNode::clearOperands` (the named-metadata
-node is append-only), `Function::addParamAttr` at a computed index from
-metadata, and `CallingConv::PTX_Kernel`. Not blocked on anything deep.
+Ported as `auto_upgrade::upgrade_nvvm_annotations` with
+`upgrade_single_nvvm_annotation`, `upgrade_nvvm_fn_vector_attr` and `is_xyz`,
+wired between `upgrade_module_flags` and `upgrade_section_attributes`.
+`test/CodeGen/NVPTX/upgrade-nvvm-annotations.ll` passes whole.
+
+This entry used to record three blockers — `NamedMDNode::clearOperands`,
+`Function::addParamAttr` at a computed index, and `CallingConv::PTX_Kernel`.
+**Two of the three were wrong**, which is the worked example of why a recorded
+reason is a hypothesis: `CallingConv::PTX_KERNEL` had been in
+`crates/llvmkit-ir/src/calling_conv.rs` since the table was written, and
+`addParamAttr` at a computed index is `FunctionValue::add_attribute` with
+`AttrIndex::Param`. Only `clearOperands` was genuinely absent. A primitive the
+record did *not* name was also needed and is now present:
+`mdconst::dyn_extract_or_null<GlobalValue>`, as
+`Module::metadata_constant_global_value`.
 
 ### 9 — `copyModuleAttrToFunctions`
 
@@ -325,10 +335,16 @@ only by target-specific legacy input keep `N/A(autoupgrade-milestone)`.
 `autoupgrade-wasm-intrinsics.ll`, `autoupgrade-invalid-mem-intrinsics.ll`,
 `autoupgrade-invalid-masked-align.ll`, `autoupgrade-invalid-name-mangling.ll`,
 `struct-ret-without-upgrade.ll` and `auto_upgrade_nvvm_intrinsics.ll` all need
-the intrinsic framework above; none was trimmed to fit. The three fixtures that
-*could* be ported whole were (`test/Bitcode/upgrade-module-flag.ll`,
-`upgrade-garbage-collection-for-{objc,swift}.ll`, `upgrade-section-name.ll`) —
-see `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs`.
+the intrinsic framework above; none was trimmed to fit. Note that
+`auto_upgrade_nvvm_intrinsics.ll` is about NVVM *intrinsics*, not
+`!nvvm.annotations`, so call site 7 closing does not unblock it. What has been
+ported so far, with each row's fidelity spelled out in `UPSTREAM.md`:
+`test/Bitcode/upgrade-module-flag.ll`,
+`upgrade-garbage-collection-for-objc.ll`, `upgrade-section-name.ll` and
+`test/CodeGen/NVPTX/upgrade-nvvm-annotations.ll` whole, plus
+`upgrade-garbage-collection-for-swift.ll`'s four `CHECK` lines (its
+typed-pointer function body is named by no `CHECK`) — see
+`crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs`.
 
 ## The gate is ~90% build, and trybuild builds `dev` whatever you ask for (measured 2026-08-16)
 

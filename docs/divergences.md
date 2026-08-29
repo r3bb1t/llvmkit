@@ -510,7 +510,34 @@ that found them instead of a verifier's evidence block.
 
 llvmkit refuses IR that LLVM accepts — the worst kind, a parser that cannot read LLVM's own output.
 
-### 19. AutoUpgrade does not exist — legacy-but-valid modules are not upgraded — **PARTLY FIXED (W13d)**
+### 19. AutoUpgrade does not exist — legacy-but-valid modules are not upgraded — **PARTLY FIXED (W13d, W10)**
+
+**Status 2026-08-29 (W10).** `UpgradeNVVMAnnotations` is ported —
+`auto_upgrade::upgrade_nvvm_annotations`, with `upgrade_single_nvvm_annotation`,
+`upgrade_nvvm_fn_vector_attr` and `is_xyz` under their own names — and wired at
+its own position in `Parser::parse_module_with_config`'s end-of-module block,
+between `upgrade_module_flags` and `upgrade_section_attributes`, exactly where
+`validateEndOfModule` calls it. `test/CodeGen/NVPTX/upgrade-nvvm-annotations.ll`
+now passes whole (all fourteen entries, every `CHECK`), as
+`parser_auto_upgrade.rs::nvvm_annotations_become_function_attributes`.
+**Four of the nine call sites are ported; five remain.**
+
+Two of the three blockers `docs/future-work.md` recorded against this call site
+were **wrong**, which is why it ported in one pass:
+`CallingConv::PTX_KERNEL` has existed since the calling-convention table was
+written (`crates/llvmkit-ir/src/calling_conv.rs`), and `addParamAttr` at a
+computed index is `FunctionValue::add_attribute` with `AttrIndex::Param`. Only
+`NamedMDNode::clearOperands` was genuinely absent; it is
+`NamedMetadataNode::clear_operands` plus `Module::named_metadata_clear_operands`
+now. One further primitive the record did not name was also needed —
+`mdconst::dyn_extract_or_null<GlobalValue>`, now
+`Module::metadata_constant_global_value`.
+
+The `assert`/`cast<>` sites inside the three upstream routines that are
+reachable from parseable-but-malformed input have no defined upstream answer.
+Each is read here as *upgrade nothing and keep the entry*, and each is
+enumerated and pinned by
+`parser_auto_upgrade.rs::malformed_nvvm_annotations_are_preserved_rather_than_upgraded`.
 
 **Status 2026-08-16 (W13d).** `crates/llvmkit-ir/src/auto_upgrade.rs` now exists
 under upstream's `lib/IR` layering and carries three of the nine call sites:
@@ -518,7 +545,7 @@ under upstream's `lib/IR` layering and carries three of the nine call sites:
 `InstsWithTBAATag`), `UpgradeModuleFlags` and `UpgradeSectionAttributes`, each
 wired at its own position in `Parser::parse_module_with_config`'s end-of-module
 block. The **count is nine, verified again** — see the correction below. The six
-that remain (`UpgradeIntrinsicFunction`, `UpgradeIntrinsicCall`,
+that remained then (`UpgradeIntrinsicFunction`, `UpgradeIntrinsicCall`,
 `UpgradeCallsToIntrinsic`, `llvm::UpgradeDebugInfo`, `UpgradeNVVMAnnotations`,
 `copyModuleAttrToFunctions`) each have a named blocker recorded in
 `docs/future-work.md` — the intrinsic trio needs the descriptor check moved out
@@ -1244,7 +1271,7 @@ Empirical round-trip through the shipped parser/printer (cargo +1.96.0 run --rel
 *printer* — crates/llvmkit-ir/src/asm_writer.rs (the numbered-metadata loop and `metadata_slot_map`); exposed by crates/llvmkit-ir/src/auto_upgrade.rs
 
 - **LLVM:** `SlotTracker::processModule` mints metadata slots by *walking* — named metadata operands, global and function attachments, instruction attachments, function-local metadata — so a node nothing references is never numbered and `writeAllMDNodes` never prints it. `MDNode::get` also uniques, so rebuilding a tuple with identical contents yields the same node.
-- **llvmkit:** the printer walks `metadata_store().nodes()` and numbers *every* non-`MDString` node in arena order. Before W13d that was invisible: the parser only interned nodes the text named, so every node was reachable. `UpgradeModuleFlags` breaks that — it replaces a flag tuple with a freshly interned one, and the superseded tuple stays in the arena and still prints. `test/Bitcode/upgrade-module-flag.ll` therefore prints its five upgraded flags plus three orphaned pre-upgrade tuples, where `llvm-dis` prints six nodes numbered `!0`–`!5`. The output still re-parses (a dead `!N = ...` definition is legal), so only the byte-for-byte half of the contract is broken.
+- **llvmkit:** the printer walks `metadata_store().nodes()` and numbers *every* non-`MDString` node in arena order. Before W13d that was invisible: the parser only interned nodes the text named, so every node was reachable. `UpgradeModuleFlags` breaks that — it replaces a flag tuple with a freshly interned one, and the superseded tuple stays in the arena and still prints. `test/Bitcode/upgrade-module-flag.ll` therefore prints its five upgraded flags plus three orphaned pre-upgrade tuples, where `llvm-dis` prints six nodes numbered `!0`–`!5`. The output still re-parses (a dead `!N = ...` definition is legal), so only the byte-for-byte half of the contract is broken. **W10 added a second producer**: `UpgradeNVVMAnnotations` rebuilds every `!nvvm.annotations` entry it did not fully consume, and `MetadataStore::get_tuple_with_distinct` never uniques (`get_string` does — tuples do not), so a rebuilt entry with *identical contents* gets a fresh slot and both print. `parser_auto_upgrade.rs::a_repeated_nvvm_annotation_entry_is_visited_once` and `::malformed_nvvm_annotations_are_preserved_rather_than_upgraded` assert the fresh numbers and say why.
 - **Why:** the fix is a real `SlotTracker` port, not a patch: upstream's numbering is *encounter* order over a specific traversal, so switching to reachability also changes which number every surviving node gets. That is a workstream of its own, and doing it inside an AutoUpgrade stage would have re-pinned every metadata-bearing expected output at the same time.
 - **Fix:** port `SlotTracker::processModule` / `processFunction`'s metadata pre-pass and drive `metadata_slot_map` from it, then re-bless the metadata numbering in the corpus in the same commit. `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs` asserts on flag *contents* rather than `!N` numbering precisely because of this, and says so.
 
