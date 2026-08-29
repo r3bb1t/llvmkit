@@ -19,6 +19,27 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — the verifier's aggregate index walk agrees with the other two again
+
+- **`extractvalue` / `insertvalue` into an array longer than `u32::MAX` no
+  longer fails verification.** Upstream's `ExtractValueInst::getIndexedType`
+  (`llvm/lib/IR/Instructions.cpp`) compares an `unsigned` index against a
+  `uint64_t` `ArrayType::getNumElements()`, so the comparison happens at 64
+  bits and `extractvalue [4294967296 x i8] %a, 4294967295` is in range. llvmkit
+  keeps three copies of that one routine; the verifier's narrowed the count
+  with `u32::try_from(n).unwrap_or(u32::MAX)`, so the `.ll` parser and the
+  builder accepted the instruction (both widen the index instead) and the
+  verifier then rejected the module they had just built — **rejects-valid**,
+  reachable straight from `.ll` text, since an index-list entry is a `uint32`
+  and an array length is a `uint64`. The reported `count` was wrong too
+  (`4294967295` for a `4294967296`-element array).
+
+  Nothing had pinned the three walks against each other, which is why they
+  could drift; `builder_aggregate_vector.rs::the_three_aggregate_index_walks_agree_at_the_u32_boundary`
+  now drives the same boundary through all three and is the law that they
+  agree. Consolidating them onto one implementation remains open in
+  `docs/future-work.md`.
+
 ### Added — the provenance registry is checked in both directions
 
 - **`upstream_registry_drift.rs::every_test_carries_a_registry_row_or_a_line_in_the_frozen_debt_list`.**

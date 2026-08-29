@@ -6814,9 +6814,24 @@ fn is_int_or_int_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
 
 enum AggWalkErr {
     NotAggregate(TypeSlot),
-    OutOfRange { idx: u32, count: u32 },
+    /// `count` is a `u64` because upstream's array arm compares against
+    /// `ArrayType::getNumElements`, which is a `uint64_t`. See
+    /// [`walk_aggregate_path`].
+    OutOfRange {
+        idx: u32,
+        count: u64,
+    },
 }
 
+/// Verifier-side copy of `ExtractValueInst::getIndexedType`
+/// (`lib/IR/Instructions.cpp`), carrying *why* the walk failed so
+/// `check_extract_value` / `check_insert_value` can pick upstream's message.
+///
+/// Two other copies of the same routine exist —
+/// [`crate::indexed_aggregate_type`] (the public port the parser calls) and
+/// `ir_builder.rs::walk_aggregate_for_builder`. They must agree on every
+/// input: `builder_aggregate_vector.rs::the_three_aggregate_index_walks_agree_at_the_u32_boundary`
+/// is the law that says so.
 fn walk_aggregate_path(
     m: &ModuleCore,
     root: TypeSlot,
@@ -6827,9 +6842,18 @@ fn walk_aggregate_path(
         let d = m.context().type_data(cur);
         match d {
             TypeData::Array { elem, n } => {
-                let n_u32 = u32::try_from(*n).unwrap_or(u32::MAX);
-                if idx >= n_u32 {
-                    return Err(AggWalkErr::OutOfRange { idx, count: n_u32 });
+                // `Index >= AT->getNumElements()` promotes the `unsigned`
+                // index to the `uint64_t` element count, so the comparison
+                // happens at 64 bits and an array longer than `u32::MAX` is
+                // indexed against its true length. Truncating the count to
+                // `u32` instead made this walk disagree with the other two
+                // copies of it (`indexed_aggregate_type`,
+                // `walk_aggregate_for_builder`), which both widen the index:
+                // the parser and the builder accepted `extractvalue
+                // [4294967296 x i8] %a, 4294967295` and the verifier then
+                // rejected the module they had just built.
+                if u64::from(idx) >= *n {
+                    return Err(AggWalkErr::OutOfRange { idx, count: *n });
                 }
                 cur = *elem;
             }
@@ -6837,8 +6861,13 @@ fn walk_aggregate_path(
                 let body = s.body.borrow();
                 match body.as_ref() {
                     Some(b) => {
-                        let count = u32::try_from(b.elements.len()).unwrap_or(u32::MAX);
-                        if idx >= count {
+                        // `elements.len()` is a `usize` count of an in-memory
+                        // `Vec`, so it always fits `u64` on every platform this
+                        // targets; treat overflow as out-of-range rather than
+                        // masking it, exactly as `walk_aggregate_for_builder`
+                        // does.
+                        let count = u64::try_from(b.elements.len()).unwrap_or(u64::MAX);
+                        if u64::from(idx) >= count {
                             return Err(AggWalkErr::OutOfRange { idx, count });
                         }
                         let Ok(field_index) = usize::try_from(idx) else {

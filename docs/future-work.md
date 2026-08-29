@@ -497,8 +497,18 @@ upstream predicate exactly — and the fix is the same: one port, three callers.
 The verifier's error-distinguishing variant needs a richer return type than
 `Option`, so the consolidation is not a pure deletion.
 
-Not urgent: all three currently agree. It is recorded because a predicate with
-three implementations is one diagnostic away from having three behaviours.
+**Now urgent, because the prediction came true (2026-08-29).** This entry used
+to close "Not urgent: all three currently agree. It is recorded because a
+predicate with three implementations is one diagnostic away from having three
+behaviours." They did not agree. `walk_aggregate_path` narrowed the array
+length to `u32` before comparing while the other two widen the index to `u64`,
+so `extractvalue [4294967296 x i8] %a, 4294967295` — which upstream accepts,
+since `Index >= AT->getNumElements()` promotes an `unsigned` index to a
+`uint64_t` count — parsed, built, and then failed verification with a wrong
+count as well as a wrong verdict. That is fixed, and
+`builder_aggregate_vector.rs::the_three_aggregate_index_walks_agree_at_the_u32_boundary`
+now pins the three against each other. The consolidation below is still open;
+the law is a guard, not a fix.
 
 ## Parser — `resolve_direct_callee` returns a three-way sum where `convertValIDToValue` returns one `Value *` (found 2026-08-21, divergence-closing task 6)
 
