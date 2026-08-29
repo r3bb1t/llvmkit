@@ -19,6 +19,66 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `getReturnedArgOperand` had two readers, each wrong where the other was right
+
+- **`returned` on a call-site argument past the first is now seen, and
+  `returned` on a callee's declaration now reaches `computeKnownBits`.**
+  `CallBase::getArgOperandWithAttribute` (`llvm/lib/IR/Instructions.cpp`) has
+  two legs — the call site's own parameter attributes, then the called
+  function's — and llvmkit had two partial copies of it. `value_tracking.rs`
+  had no callee leg, so `declare ptr @f(ptr returned)` with a call that does not
+  repeat the attribute was missed. `pointer_analysis.rs` had the callee leg but
+  read the **call site's** per-argument storage with the *function*'s key
+  (`AttrIndex::Param(index)` where a call site files every argument at
+  `Param(0)`), so `call ptr @f(ptr %x, ptr returned %y)` answered nothing —
+  affecting `getUnderlyingObject` and `getArgumentAliasingToReturnedPointer`.
+  Both are now one `returned_arg_operand` taking the call value.
+
+  In the same arm, `computeKnownBitsFromOperator`'s `Call`/`Invoke` case now
+  reads `!range` metadata **first**, as upstream does, instead of unioning it in
+  after the fact: the `if (Known.hasConflict()) Known.resetAll();` that follows
+  the `returned` union exists to discard a disagreement between exactly those
+  two inputs, and llvmkit's ordering put the metadata beyond its reach.
+
+  Nothing had driven either leg at a parameter position past 0, and nothing had
+  driven the callee leg through `computeKnownBits` at all — every existing
+  fixture used a one-argument `@retptr(ptr returned)`. Upstream's
+  `ComputeKnownBitsReturnedRangeConflict` is now ported (it fails on the old
+  code, answering 32 from the range metadata alone), and
+  `returned_arg_operand.rs::returned_is_found_on_either_the_call_site_or_the_callee_at_any_position`
+  drives the full two-leg × two-position matrix through both readers.
+
+### Fixed — `canIgnoreSignBitOfNaN`'s `ret` arm was unported behind a stale comment
+
+- **A `ret` in a function declared `nofpclass(nan)` now ignores the sign of a
+  NaN.** Upstream's `case Instruction::Ret: return
+  User->getFunction()->getAttributes().getRetNoFPClass() & FPClassTest::fcNan;`
+  had no llvmkit counterpart, and the comment explaining its absence said
+  `nofpclass` was unmodeled — false since `no_fp_class_of` landed. The comment
+  was found while correcting the same stale premise elsewhere; it was the
+  fourth copy, and the only one hiding real missing behaviour rather than just
+  misdescribing working code.
+
+### Fixed — `matchSelectPattern` reads the `select`'s own fast-math flags
+
+- **`nsz` written on a `select` now reaches the min/max matcher.**
+  `llvm::matchSelectPattern` (`llvm/lib/Analysis/ValueTracking.cpp`) forwards
+  `isa<FPMathOperator>(SI) ? SI->getFastMathFlags() : FastMathFlags()`;
+  llvmkit's `match_select_pattern` handed a literal `FastMathFlags::empty()`
+  down instead. `matchDecomposedSelectPattern` lifts `nnan` off the `fcmp` but
+  never `nsz`, so the `select` is the only place `nsz` can come from outside the
+  `fptosi`/`fptoui` cast path — and two `nsz`-gated arms declined float min/max
+  idioms upstream accepts. `select nsz i1 %c, float %a, float 0.0` over an
+  `fcmp ole` now matches `SPF_FMINNUM` as upstream does.
+
+  The reason recorded at the port site — "llvmkit's `select` carries no flag
+  word" — had been false since `8b2e3de`, which gave `SelectInstData` its
+  `fmf` and taught the parser and printer to carry it. The stale premise is
+  corrected along with the code, and upstream's `FMinConstantZero` /
+  `FMinConstantZeroNsz` pair — the only `MatchSelectPatternTest` cases that
+  turn on a flag written on the `select` — is now ported as the law that would
+  have caught it.
+
 ### Fixed — the verifier's aggregate index walk agrees with the other two again
 
 - **`extractvalue` / `insertvalue` into an array longer than `u32::MAX` no

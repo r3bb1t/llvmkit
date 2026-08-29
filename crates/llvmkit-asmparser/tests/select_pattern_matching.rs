@@ -180,6 +180,55 @@ define float @test(float %a) {
     ]);
 }
 
+/// `FMinConstantZero` and `FMinConstantZeroNsz` — the pair that pins where
+/// `nsz` comes from.
+///
+/// These two differ only in the flags, and only the `select`'s flag matters:
+/// `matchDecomposedSelectPattern` lifts `nnan` off the `fcmp`
+/// (`if (isa<FPMathOperator>(CmpI) && CmpI->hasNoNaNs()) FMF.setNoNaNs();`) and
+/// never lifts `nsz`, so the `nsz` on `%1` in the second case is inert. The one
+/// that moves the answer is `select nsz`, which reaches the matcher only
+/// through `matchSelectPattern`'s
+/// `isa<FPMathOperator>(SI) ? SI->getFastMathFlags() : FastMathFlags()`.
+///
+/// This is the fixture that closed the gap: `match_select_pattern` used to hand
+/// a literal `FastMathFlags::empty()` down, and `FMinConstantZeroNsz` answered
+/// `None` — upstream's `SPF_UNKNOWN` — because the signed-zero guard on the
+/// non-strict `ole` predicate declined.
+#[test]
+fn fmin_constant_zero_matches_only_when_nsz_is_written_on_the_select() {
+    check(&[
+        (
+            "FMinConstantZero",
+            r"
+define float @test(float %a) {
+  %1 = fcmp ole float %a, 0.0
+  %A = select i1 %1, float %a, float 0.0
+  ret float %A
+}
+",
+            // This shouldn't be matched, as %a could be -0.0.
+            None,
+        ),
+        (
+            "FMinConstantZeroNsz",
+            r"
+define float @test(float %a) {
+  %1 = fcmp nsz ole float %a, 0.0
+  %A = select nsz i1 %1, float %a, float 0.0
+  ret float %A
+}
+",
+            // But this should be, because we've ignored signed zeroes.
+            Some((
+                SelectPatternFlavor::FminNum,
+                SelectPatternNanBehavior::ReturnsOther,
+                true,
+            )),
+        ),
+    ]);
+}
+
 /// `DoubleCastU`, `DoubleCastS` and `DoubleCastBad` — the `look_through_cast`
 /// path.
 ///

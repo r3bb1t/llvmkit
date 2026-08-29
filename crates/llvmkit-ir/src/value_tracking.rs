@@ -796,7 +796,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 callee_id: data.callee.get(),
                 args: &data.args,
                 return_attrs: data.attrs.return_attrs(),
-                arg_attrs: data.attrs.arg_attrs(),
+                instruction: inst,
             },
             query,
             depth,
@@ -808,7 +808,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 callee_id: data.callee.get(),
                 args: &data.args,
                 return_attrs: data.attrs.return_attrs(),
-                arg_attrs: data.attrs.arg_attrs(),
+                instruction: inst,
             },
             query,
             depth,
@@ -853,15 +853,16 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | InstructionKindData::Br(_)
         | InstructionKindData::Unreachable(_) => Ok(KnownBits::unknown(width)),
     }?;
+    // `case Instruction::Load: if (MDNode *MD = Q.IIQ.getMetadata(…,
+    //  LLVMContext::MD_range)) computeKnownBitsFromRangeMetadata(*MD, Known);`
+    //
+    // `Load` only. The `Call`/`Invoke` arm reads the same metadata, but *inside*
+    // `call_known_bits` and before the `returned`-argument union, because the
+    // conflict reset that follows that union exists to catch a disagreement
+    // between the two. Hoisting the read to here would put it after the reset,
+    // where the conflict survives.
     Ok(
-        if query.uses_instruction_info()
-            && matches!(
-                &inst.kind,
-                InstructionKindData::Load(_)
-                    | InstructionKindData::Call(_)
-                    | InstructionKindData::Invoke(_)
-            )
-        {
+        if query.uses_instruction_info() && matches!(&inst.kind, InstructionKindData::Load(_)) {
             known.union_with(&range_metadata_known_bits(value, inst, width))
         } else {
             known
@@ -943,9 +944,20 @@ struct CallKnownBitsInputs<'a> {
     callee_id: ValueSlot,
     args: &'a [Cell<ValueSlot>],
     return_attrs: &'a AttributeStorage,
-    arg_attrs: &'a [AttributeStorage],
+    instruction: &'a InstructionData,
 }
 
+/// `computeKnownBitsFromOperator`'s `case Instruction::Call: case
+/// Instruction::Invoke:` arm.
+///
+/// The order of the four steps is load-bearing, not incidental. `!range`
+/// metadata is read **first**, so that the conflict check after the
+/// `returned`-argument union sees it; a call may carry range metadata saying one
+/// thing and a `returned` argument saying another, and upstream's comment on
+/// that reset ("If the function doesn't return properly for all input values
+/// … there might be conflicts between the argument value and the range
+/// metadata") names exactly that pair. `KnownBits::unionWith` ORs the known-bit
+/// masks, so it is the operation that *creates* the conflict this discards.
 fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     inputs: CallKnownBitsInputs<'_>,
@@ -954,8 +966,25 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(anchor, query.data_layout()).unwrap_or(0);
-    let mut known = range_attribute_known_bits(anchor, inputs.return_attrs, width);
-    if let Some(returned_arg) = returned_arg_operand(anchor, inputs.args, inputs.arg_attrs)
+    // `if (MDNode *MD = Q.IIQ.getMetadata(cast<Instruction>(I),
+    //      LLVMContext::MD_range))
+    //    computeKnownBitsFromRangeMetadata(*MD, Known);` — `Q.IIQ.getMetadata`
+    // answers null when the query does not use instruction info.
+    let mut known = if query.uses_instruction_info() {
+        range_metadata_known_bits(anchor, inputs.instruction, width)
+    } else {
+        KnownBits::unknown(width)
+    };
+    // `if (std::optional<ConstantRange> Range = CB->getRange())
+    //    Known = Known.unionWith(Range->toKnownBits());`
+    known = known.union_with(&range_attribute_known_bits(
+        anchor,
+        inputs.return_attrs,
+        width,
+    ));
+    // `if (const Value *RV = CB->getReturnedArgOperand())
+    //    if (RV->getType() == I->getType()) { … }`
+    if let Some(returned_arg) = returned_arg_operand(anchor)
         && returned_arg.ty() == anchor.ty()
     {
         known = known.union_with(&compute_known_bits_inner(
@@ -964,46 +993,95 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             depth + 1,
             stack,
         )?);
+        // `if (Known.hasConflict()) Known.resetAll();`
+        if known.has_conflict() {
+            known = KnownBits::unknown(width);
+        }
     }
+    // `if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(I)) switch (…)`
     if let Some(semantic) = intrinsic_semantic_for_callee(anchor, inputs.callee_id) {
         let intrinsic_known =
             intrinsic_known_bits(anchor, semantic, inputs.args, query, depth, stack)?;
         known = known.union_with(&intrinsic_known);
     }
-    if known.has_conflict() {
-        Ok(KnownBits::unknown(width))
-    } else {
-        Ok(known)
-    }
+    Ok(known)
 }
 
+/// The argument a call marks `returned`, or `None`.
+///
+/// Ports `CallBase::getReturnedArgOperand`, which is
+/// `getArgOperandWithAttribute(Attribute::Returned)` (`Instructions.cpp`). Both
+/// of that routine's legs are load-bearing and each is the *only* one that sees
+/// its own shape:
+///
+/// - `Attrs.hasAttrSomewhere(Kind, &Index)` — the call site's own parameter
+///   attributes, which is where `call ptr @f(ptr %x, ptr returned %y)` files it
+///   and the callee's declaration does not.
+/// - `F->getAttributes().hasAttrSomewhere(Kind, &Index)` when the call names a
+///   function directly — `declare ptr @f(ptr returned)` puts the attribute on
+///   the declaration and a call site that does not repeat it still returns its
+///   argument.
+///
+/// The two storages are keyed differently, which is the trap this routine
+/// exists to hold in one place. A **call site** gives every argument its own
+/// [`AttributeStorage`] and files it at `AttrIndex::Param(0)`
+/// (`LLParser::parseOptionalParamAttrs` builds one storage per argument and
+/// `AsmWriter` reads it back at `Param(0)`), so the parameter position is the
+/// slice index, not the key. A **`Function`**'s single `AttributeList` keys
+/// parameter `i` at `AttrIndex::Param(i)`. Reading either storage with the
+/// other's key silently answers `None`.
 pub(crate) fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    args: &[Cell<ValueSlot>],
-    arg_attrs: &[AttributeStorage],
+    call: Value<'ctx, B>,
 ) -> Option<Value<'ctx, B>> {
-    arg_attrs.iter().enumerate().find_map(|(idx, attrs)| {
-        returned_attr(attrs, idx)
-            .then(|| args.get(idx).map(|arg| value_from_slot(anchor, arg.get())))?
-    })
-}
-
-fn returned_attr(attrs: &AttributeStorage, idx: usize) -> bool {
-    let direct_slot = attrs
-        .get(AttrIndex::Param(0))
-        .is_some_and(attribute_slice_has_returned);
-    if direct_slot {
-        return true;
-    }
-    let Some(idx) = u32::try_from(idx).ok() else {
-        return false;
+    // `dyn_cast<CallBase>`.
+    let (args, callee, arg_attrs) = match instruction_kind(call)? {
+        InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs.arg_attrs()),
+        InstructionKindData::Invoke(data) => {
+            (&data.args, data.callee.get(), data.attrs.arg_attrs())
+        }
+        InstructionKindData::CallBr(data) => {
+            (&data.args, data.callee.get(), data.attrs.arg_attrs())
+        }
+        _ => return None,
     };
-    attrs
-        .get(AttrIndex::Param(idx))
-        .is_some_and(attribute_slice_has_returned)
+
+    // `if (Attrs.hasAttrSomewhere(Kind, &Index))`.
+    let index = returned_parameter_index(arg_attrs.len(), |index| {
+        arg_attrs
+            .get(index)
+            .and_then(|attrs| attrs.get(AttrIndex::Param(0)))
+            .is_some_and(has_returned)
+    })
+    // `if (const Function *F = getCalledFunction())
+    //    if (F->getAttributes().hasAttrSomewhere(Kind, &Index))`.
+    .or_else(|| {
+        let callee = value_from_slot(call, callee);
+        let ValueKindData::Function(data) = &callee.data().kind else {
+            return None;
+        };
+        let attributes = data.attributes.borrow();
+        returned_parameter_index(args.len(), |index| {
+            u32::try_from(index).ok().is_some_and(|slot| {
+                attributes
+                    .get(AttrIndex::Param(slot))
+                    .is_some_and(has_returned)
+            })
+        })
+    })?;
+
+    // `return getArgOperand(Index - AttributeList::FirstArgIndex);`
+    Some(value_from_slot(call, args.get(index)?.get()))
 }
 
-fn attribute_slice_has_returned(attrs: &[AttributeStored]) -> bool {
+/// The first parameter position below `count` for which `carries` holds.
+///
+/// Stands in for `AttributeList::hasAttrSomewhere`'s `Index` out-parameter,
+/// already rebased to a parameter number.
+fn returned_parameter_index<F: Fn(usize) -> bool>(count: usize, carries: F) -> Option<usize> {
+    (0..count).find(|index| carries(*index))
+}
+
+fn has_returned(attrs: &[AttributeStored]) -> bool {
     attrs
         .iter()
         .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::Returned)))

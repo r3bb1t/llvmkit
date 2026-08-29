@@ -351,6 +351,7 @@ use crate::instr_types::CastOpcode;
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::int_width::IntDyn;
 use crate::module::{ModuleBrand, ModuleRef};
+use crate::operator::is_supported_floating_point_type;
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::value_tracking::{
     MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, is_known_negation, is_known_non_zero,
@@ -386,12 +387,11 @@ pub struct SelectPatternMatch<'ctx, B: ModuleBrand> {
 /// select arms and reports which cast in [`SelectPatternMatch::cast`], where
 /// passing a null `CastOp` upstream disables that path.
 ///
-/// **Fast-math flags on the `select` are not read.** Upstream takes
-/// `SI->getFastMathFlags()` when the select is an `FPMathOperator`; llvmkit's
-/// `select` carries no flag word, so `nnan` / `nsz` written on the select
-/// cannot be consulted. Flags on the `fcmp` *are* read, which is where they
-/// normally sit. Some float patterns upstream accepts are therefore declined
-/// here — never the reverse.
+/// Fast-math flags written on the `select` itself are read, as upstream reads
+/// them: `isa<FPMathOperator>(SI) ? SI->getFastMathFlags() : FastMathFlags()`.
+/// `nsz` is the flag that only ever reaches the matcher this way or through the
+/// `fptosi`/`fptoui` cast path — `matchDecomposedSelectPattern` takes `nnan`
+/// from the `fcmp` but never `nsz`.
 pub fn match_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     look_through_cast: bool,
@@ -416,11 +416,20 @@ pub fn match_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
     let true_value = value_from_slot(value, select.true_val.get());
     let false_value = value_from_slot(value, select.false_val.get());
+    // `isa<FPMathOperator>(SI) ? SI->getFastMathFlags() : FastMathFlags()`.
+    // `FPMathOperator::classof`'s `Select` arm is
+    // `isSupportedFloatingPointType(V->getType())`, which is wider than
+    // `isFPOrFPVectorTy` — a homogeneous FP struct qualifies too.
+    let fast_math_flags = if is_supported_floating_point_type(value.ty()) {
+        select.fmf.get()
+    } else {
+        FastMathFlags::empty()
+    };
     match_decomposed_select_pattern(
         &condition,
         true_value,
         false_value,
-        FastMathFlags::empty(),
+        fast_math_flags,
         look_through_cast,
         query,
         depth,

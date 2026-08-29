@@ -1138,8 +1138,12 @@ of a claim nobody checked. They are now ports; `UPSTREAM.md` records which case
 each one takes. Two hand-written tests were deleted rather than kept, their
 coverage being subsumed by the real ports.
 
-`nofpclass` on a parameter or call return is still unmodeled, which is why two of
-`SqrtNszSignBit`'s four blocks are not ported.
+All four of `SqrtNszSignBit`'s blocks are ported. This paragraph used to say
+`nofpclass` on a parameter or call return was unmodeled and that two of the four
+were therefore unportable; that had been false since `no_fp_class_of` landed
+(`known_fp_class.rs`, porting `CallBase::getRetNoFPClass` and
+`Argument::getNoFPClass`), and the stale sentence outlived the work by weeks
+because nothing re-derives a blocker before it is used to schedule.
 
 ### Order for the remaining 8 (recorded 2026-08-04)
 
@@ -1269,14 +1273,20 @@ Two things tranche 6 turned up that are worth carrying forward:
 
 ### Found while porting tranche 5
 
-- **`CallBase::getReturnedArgOperand` reads the callee's parameter attributes,
-  not just the call site's.** `declare ptr @f(ptr returned)` puts `returned` on
-  the *declaration*; a call that does not repeat it still returns its argument.
-  `pointer_analysis.rs` ports both halves — an upstream fixture caught the
-  missing one — but `value_tracking.rs`'s own `returned_arg_operand` still
-  reads only what its caller hands it, which is the call site's `arg_attrs`.
-  Same shortfall, different function; closing it would sharpen the `returned`
-  arm of `call_known_bits`.
+- **`CallBase::getReturnedArgOperand` had two llvmkit readers and each was
+  wrong where the other was right.** *Closed 2026-08-29.* This entry used to
+  say `pointer_analysis.rs` "ports both halves" and only `value_tracking.rs`
+  fell short. Half of that was true and half was not. `value_tracking.rs` had
+  no callee leg, so `declare ptr @f(ptr returned)` — `returned` on the
+  *declaration*, not repeated at the call — was missed. `pointer_analysis.rs`
+  had the callee leg but read the **call site's** per-argument storage with the
+  *function*'s key (`AttrIndex::Param(index)` where a call site files every
+  argument at `Param(0)`), so it saw a call-site `returned` only on parameter
+  0. Both readers are now the single
+  `value_tracking.rs::returned_arg_operand`, taking the call value and porting
+  `getArgOperandWithAttribute`'s two legs in order. The lesson worth keeping:
+  the two attribute storages are keyed differently, and reading either with the
+  other's key answers `None` in silence.
 - **Constant uniquing does work that upstream's pointer identity does for
   free.** `isBytewiseValue` compares against a single `UndefValue::get(i8)`
   sentinel by pointer, which works because LLVM uniques constants. llvmkit

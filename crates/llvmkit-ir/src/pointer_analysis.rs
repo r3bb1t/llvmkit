@@ -43,7 +43,7 @@ use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
-use crate::value_tracking::value_from_slot;
+use crate::value_tracking::{returned_arg_operand, value_from_slot};
 use std::collections::HashSet;
 
 /// How many layers [`underlying_object`] peels before giving up.
@@ -366,7 +366,7 @@ pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
             | InstructionKindData::CallBr(_) => {
                 // A call only continues the walk through a `returned` argument;
                 // anything else could have produced the pointer from nowhere.
-                pending.push(returned_argument(current)?);
+                pending.push(returned_arg_operand(current)?);
             }
             _ => return None,
         }
@@ -445,7 +445,7 @@ fn argument_aliasing_to_returned_pointer_impl<'ctx, B: ModuleBrand + 'ctx>(
     call: Value<'ctx, B>,
     must_preserve_nullness: bool,
 ) -> Option<Value<'ctx, B>> {
-    if let Some(returned) = returned_argument(call) {
+    if let Some(returned) = returned_arg_operand(call) {
         return Some(returned);
     }
     if !intrinsic_returns_aliasing_argument(call, must_preserve_nullness) {
@@ -1145,7 +1145,7 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
             //    continue; } … } return V; }` — the
             //    `launder`/`strip.invariant.group` arm below it is
             //    `PSK_ForAliasAnalysis` only.
-            _ => call_base_returned_arg_operand(current),
+            _ => returned_arg_operand(current),
         };
         let Some(next) = next else {
             return current;
@@ -1156,22 +1156,6 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
             return current;
         }
     }
-}
-
-/// `dyn_cast<CallBase>(V)` followed by `Call->getReturnedArgOperand()`.
-fn call_base_returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
-    let ValueKindData::Instruction(instruction) = &value.data().kind else {
-        return None;
-    };
-    let (args, attrs) = match &instruction.kind {
-        InstructionKindData::Call(call) => (&call.args, &call.attrs),
-        InstructionKindData::Invoke(invoke) => (&invoke.args, &invoke.attrs),
-        InstructionKindData::CallBr(callbr) => (&callbr.args, &callbr.attrs),
-        _ => return None,
-    };
-    crate::value_tracking::returned_arg_operand(value, args, attrs.arg_attrs())
 }
 
 /// Ports `Value::stripPointerCastsSameRepresentation` (`llvm/lib/IR/Value.cpp`),
@@ -1401,61 +1385,6 @@ fn call_argument<'ctx, B: ModuleBrand + 'ctx>(
         _ => return None,
     };
     Some(value_from_slot(call, args.get(index)?.get()))
-}
-
-/// The argument a call marks `returned`.
-///
-/// Ports `CallBase::getReturnedArgOperand`, via
-/// `CallBase::getArgOperandWithAttribute`: the call site's own parameter
-/// attributes first, then — when it names a function directly — that
-/// function's. The fallback is load-bearing, because `declare ptr @f(ptr
-/// returned)` puts the attribute on the declaration and a call site that does
-/// not repeat it still returns its argument.
-fn returned_argument<'ctx, B: ModuleBrand + 'ctx>(call: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
-    let (args, callee, arg_attrs) = match instruction_kind(call)? {
-        InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs.arg_attrs()),
-        InstructionKindData::Invoke(data) => {
-            (&data.args, data.callee.get(), data.attrs.arg_attrs())
-        }
-        InstructionKindData::CallBr(data) => {
-            (&data.args, data.callee.get(), data.attrs.arg_attrs())
-        }
-        _ => return None,
-    };
-
-    let index = returned_parameter_index(arg_attrs.len(), |index| {
-        arg_attrs
-            .get(index)
-            .and_then(|attrs| attrs.get(AttrIndex::Param(u32::try_from(index).ok()?)))
-            .is_some_and(has_returned)
-    })
-    .or_else(|| {
-        let callee = value_from_slot(call, callee);
-        let ValueKindData::Function(data) = &callee.data().kind else {
-            return None;
-        };
-        let attributes = data.attributes.borrow();
-        returned_parameter_index(args.len(), |index| {
-            u32::try_from(index).ok().is_some_and(|slot| {
-                attributes
-                    .get(AttrIndex::Param(slot))
-                    .is_some_and(has_returned)
-            })
-        })
-    })?;
-
-    Some(value_from_slot(call, args.get(index)?.get()))
-}
-
-/// The first parameter position below `count` for which `carries` holds.
-fn returned_parameter_index<F: Fn(usize) -> bool>(count: usize, carries: F) -> Option<usize> {
-    (0..count).find(|index| carries(*index))
-}
-
-fn has_returned(attrs: &[AttributeStored]) -> bool {
-    attrs
-        .iter()
-        .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::Returned)))
 }
 
 /// The return-position attributes of a call/invoke/callbr.

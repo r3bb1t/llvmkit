@@ -1560,9 +1560,12 @@ pub fn compute_known_fp_sign_bit<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `llvm::canIgnoreSignBitOfZero`.
 ///
-/// The `ret` arm of upstream's sibling reads the enclosing function's
-/// `nofpclass` return attribute, which llvmkit does not model; this predicate
-/// has no such arm, so nothing is lost here.
+/// Upstream's sibling `canIgnoreSignBitOfNaN` has a `case Instruction::Ret:`
+/// reading the enclosing function's `nofpclass` return attribute;
+/// `canIgnoreSignBitOfZero` has no such arm, so its absence here is upstream's
+/// shape and not a gap. (This comment used to justify the absence with
+/// "`nofpclass` … llvmkit does not model", which was false and was masking the
+/// sibling's arm being genuinely unported — see [`can_ignore_sign_bit_of_nan`].)
 pub fn can_ignore_sign_bit_of_zero<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ctx, B>) -> bool {
     let user = use_edge.user();
     let Some(kind) = instruction_kind(user) else {
@@ -1623,11 +1626,32 @@ pub fn can_ignore_sign_bit_of_nan<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ct
         InstructionKindData::Fneg(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Phi(_) => false,
+        // `case Instruction::Ret:
+        //    return User->getFunction()->getAttributes().getRetNoFPClass() &
+        //           FPClassTest::fcNan;`
+        InstructionKindData::Ret(_) => enclosing_function_slot(user)
+            .and_then(|function| function_no_fp_class(user, function, AttrIndex::Return))
+            .is_some_and(|mask| mask.contains(FpClassTest::NAN)),
         InstructionKindData::Call(_) | InstructionKindData::Invoke(_) => {
             sign_indifferent_intrinsic(user, kind, use_edge.index(), SignOf::Nan)
         }
         _ => false,
     }
+}
+
+/// `Instruction::getFunction()` — the function owning the block owning
+/// `instruction`, or `None` for an instruction not yet in one.
+fn enclosing_function_slot<'ctx, B: ModuleBrand + 'ctx>(
+    instruction: Value<'ctx, B>,
+) -> Option<ValueSlot> {
+    let ValueKindData::Instruction(data) = &instruction.data().kind else {
+        return None;
+    };
+    let block = value_from_slot(instruction, data.parent.get());
+    let ValueKindData::BasicBlock(block) = &block.data().kind else {
+        return None;
+    };
+    *block.parent.borrow()
 }
 
 /// Which of the two sign questions [`sign_indifferent_intrinsic`] is answering.
