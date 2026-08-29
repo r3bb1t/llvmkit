@@ -854,55 +854,58 @@ llvmkit-only remainder as attribute keywords.
 
 Same verdict, different wording. Upstream's text is contractual, including its own inconsistencies.
 
-### 130. `test/Verifier/AmbiguousPhi.ll` is answered by the builder, in a message naming an arena index
+### 130. `test/Verifier/AmbiguousPhi.ll` is answered by the builder, not the verifier — **NARROWED (W11)**
 
-*IR builder / diagnostics* — crates/llvmkit-ir/src/instructions.rs (`PhiInst::add_incoming` and its two siblings), crates/llvmkit-ir/src/ir_builder.rs (`make_phi_in_block`); crates/llvmkit-ir/src/llvm_context.rs (`block_diag_name`)
+*IR builder / diagnostics* — crates/llvmkit-ir/src/instructions.rs (`PhiInst::add_incoming` and its two siblings), crates/llvmkit-ir/src/ir_builder.rs (`make_phi_in_block`)
 
 Found 2026-08-27 while porting `test/Verifier` fixtures by message text (former
-entry 121). Two halves, both observable on that one fixture.
+entry 121). Two halves were recorded; the second is closed.
 
+- **Closed half (W11) — the block name.** The message used to name `%4`, an
+  internal arena index from `LlvmContext::block_diag_name`'s
+  `id.arena_index().to_string()` fallback. That routine is gone. Every phi
+  diagnostic now goes through `asm_writer::block_slot_label`, which resolves the
+  block's owning function and asks `SlotTracker::for_function` — the same
+  routine the verifier's `slot_label` already used, and the same answer
+  `Verifier::CheckFailed` gets from `WriteAsOperand` → `Machine.getLocalSlot`.
+  The vendored fixture's implicit entry block is now named `%0`, matching both
+  upstream and the `%0` the fixture's own `phi` operands are written with.
+  Pinned by `crates/llvmkit-ir/src/phi_raw_tests/fmf.rs::ambiguous_phi_names_the_block_asm_writer_prints`
+  (unnamed block → `SlotTracker` number, cross-checked against printed IR) and
+  `::ambiguous_phi_names_a_named_block_by_its_name` (written name used
+  verbatim). Those two are the gap that hid the defect: every prior test on
+  this error matched only the `IrError` variant, never the rendered text.
 - **LLVM:** a phi with two differing entries for the same predecessor parses
   cleanly and is rejected by `Verifier::visitBasicBlock` —
   `PHI node has multiple entries for the same basic block with different incoming
-  values!` — with the offending block printed through the module's `SlotTracker`,
-  so `test/Verifier/AmbiguousPhi.ll`'s implicit entry block is named `%0`.
+  values!`
 - **llvmkit:** `add_incoming` refuses the second entry at the *builder* call site
   with `IrError::AmbiguousPhiIncoming`, which the parser surfaces as
-  `expected valid phi.add_incoming: phi already has an entry for block %4 with a
+  `expected valid phi.add_incoming: phi already has an entry for block %0 with a
   different value`. Same verdict, wrong layer, and a message upstream never
   prints — the `VerifierRule::AmbiguousPhi` that would print upstream's literal
-  is unreachable from parsed text. The block name is the second half: it comes
-  from `LlvmContext::block_diag_name`, whose unnamed-value fallback is
-  `id.arena_index().to_string()`. `%4` is an internal arena handle; it appears
-  nowhere in the source and nowhere in `AsmWriter`'s output, where the same block
-  is `%0`.
+  is unreachable from parsed text.
 - **Why:** the layer choice is deliberate and documented on the error variant —
   "enforced at the edge-add call site rather than deferred to `Module::verify`'s
-  `AmbiguousPhi` rule", citing `llvm/llvm-project#196954`. The arena-index
-  fallback is not deliberate; it is the same defect the verifier's own
-  `slot_label` had (`format!("{:?}", block_id)`), which is fixed — `slot_label`
-  now asks `asm_writer::SlotTracker::for_function`, exactly as
-  `Verifier::CheckFailed` asks the module's. `block_diag_name` was not reached by
-  that change.
+  `AmbiguousPhi` rule", citing `llvm/llvm-project#196954`.
 - **What is blocked by it:** `test/Verifier/AmbiguousPhi.ll` is vendored at
   `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/AmbiguousPhi.ll` and
   cannot be driven through the parser.
   `crates/llvmkit-asmparser/tests/parser_function_body.rs::upstream_ambiguous_phi_fixture_is_rejected_by_the_builder`
-  asserts *this* entry's diagnostic, `%4` included, so the day either half closes
-  the test fails and the real port replaces it. The verifier rule's own text is
+  asserts *this* entry's diagnostic, so the day the remaining half closes the
+  test fails and the real port replaces it. The verifier rule's own text is
   asserted separately, against the same fixture's `CHECK` line, by
   `crates/llvmkit-ir/src/verifier.rs::ambiguous_phi_duplicate_predecessor`.
-- **Fix:** the second half first and on its own — give `block_diag_name` the
-  `SlotTracker` number `AsmWriter` would print, or the parser's own written text,
-  and never an arena index. The first half is the same shape as entry 26 and
-  wants the same decision: a builder that records what was written and lets
-  `Module::verify` judge it, rather than refusing at the edge.
+- **Fix:** the same shape as entry 26, and it wants the same decision: a builder
+  that records what was written and lets `Module::verify` judge it, rather than
+  refusing at the edge.
 
-<details><summary>Verification evidence (2026-08-27)</summary>
-
-llvmkit: `crates/llvmkit-ir/src/error.rs` — `IrError::AmbiguousPhiIncoming { block: String }`, `#[error("phi already has an entry for block %{block} with a different value")]`, with the doc line quoted above. `crates/llvmkit-ir/src/instructions.rs` — three `add_incoming` bodies raise it, each passing `module.context().block_diag_name(block_id)`; `crates/llvmkit-ir/src/ir_builder.rs` raises it once more. `crates/llvmkit-ir/src/llvm_context.rs::block_diag_name` — `self.value_data(id).name.borrow().clone().unwrap_or_else(|| id.arena_index().to_string())`. Empirical, running the vendored fixture through `parser::parse_assembly`: `expected valid phi.add_incoming: phi already has an entry for block %4 with a different value`, pinned by the test named above. Upstream: `lib/IR/Verifier.cpp::Verifier::visitBasicBlock` carries the `Check`, and `Verifier::CheckFailed` renders each value through `WriteAsOperand`, which uses `Machine.getLocalSlot`. Ledger scope check before opening this entry: `grep -niE "ambiguous|multiple entries for the same basic block|duplicate predecessor" docs/divergences.md docs/future-work.md docs/fixture-coverage.md` returned no matches, and `grep -rn "already has an entry for block" crates/` found only the `error.rs` variant — no entry covered either half.
-
-</details>
+> **Evidence block removed 2026-08-29 (W11).** It was a 2026-08-27 snapshot of
+> the closed half: it quoted `LlvmContext::block_diag_name`, which no longer
+> exists, and the `%4` the fixture no longer produces. Its upstream half —
+> `Verifier::visitBasicBlock` carries the `Check`, and `Verifier::CheckFailed`
+> renders each value through `WriteAsOperand`/`Machine.getLocalSlot` — is
+> restated by symbol in the bullets above.
 
 ### 26. A misplaced `phi` is rejected by the parser, with a message upstream never prints
 

@@ -57,7 +57,7 @@ use super::metadata::{
     DebugMetadataOperand, DebugRecord, MetadataAttachmentSet, MetadataKind, MetadataSlot,
     MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
 };
-use super::module::{DynBrand, ModuleBrand, ModuleCore, ModuleView};
+use super::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef, ModuleView};
 use super::module_summary_index::{
     AliasSummary, ConstantVirtualCall, FunctionSummary, GlobalValueSummary, GlobalValueSummaryInfo,
     GlobalVariableSummary, Guid, Hotness, ModuleSummaryIndex, REGULAR_LTO_MODULE_NAME,
@@ -142,6 +142,48 @@ impl SlotTracker {
     pub(super) fn block(&self, id: ValueSlot) -> Option<u32> {
         self.blocks.get(&id).copied()
     }
+}
+
+/// The text `AsmWriter` prints after the `%` for `id` inside `f`: its written
+/// name, or the [`SlotTracker`] number an unnamed value or block is given.
+///
+/// Mirrors how `Verifier::CheckFailed` renders a `Value` — through
+/// `WriteAsOperand`, which asks the module's `SlotTracker` for the number and
+/// so always names something the reader can find in the printed IR.
+pub(super) fn slot_label<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>, id: ValueSlot) -> String {
+    let module = f.module();
+    if let Some(name) = module.context().value_data(id).name.borrow().as_ref() {
+        return name.clone();
+    }
+    let slots = SlotTracker::for_function(f);
+    match slots.local(id).or_else(|| slots.block(id)) {
+        Some(number) => number.to_string(),
+        // `AsmWriter`'s own spelling for a value it cannot number.
+        None => BAD_REF.to_owned(),
+    }
+}
+
+/// [`slot_label`] for a *block* reached without its owning function in hand.
+///
+/// The diagnostics that need this — the phi edge-add paths and
+/// [`crate::phi_check::render_phi_violation`] — hold only the block's arena
+/// slot, so the owning function is recovered from the block itself. A block
+/// with no parent has no `SlotTracker` to ask and gets upstream's `<badref>`,
+/// the same answer `slot_label` gives a value its function cannot number.
+pub(super) fn block_slot_label<B: ModuleBrand>(module: ModuleRef<'_, B>, id: ValueSlot) -> String {
+    if let Some(name) = module.value_data(id).name.borrow().as_ref() {
+        return name.clone();
+    }
+    let ValueKindData::BasicBlock(data) = &module.value_data(id).kind else {
+        return BAD_REF.to_owned();
+    };
+    let Some(parent_id) = *data.parent.borrow() else {
+        return BAD_REF.to_owned();
+    };
+    slot_label(
+        FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, module),
+        id,
+    )
 }
 
 /// `true` if `inst` produces a result that gets a textual name (or

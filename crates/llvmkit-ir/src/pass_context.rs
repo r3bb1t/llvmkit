@@ -2363,10 +2363,10 @@ where
             }
         }
         if let Some((value_block, pred_block)) = dom_failure {
-            let ctx = self.patch.module_mut().core_ref().context();
+            let module = self.patch.module_mut().module_ref();
             return Err(IrError::PhiIncomingNotDominating {
-                value_block: ctx.block_diag_name(value_block),
-                pred_block: ctx.block_diag_name(pred_block),
+                value_block: crate::asm_writer::block_slot_label(module, value_block),
+                pred_block: crate::asm_writer::block_slot_label(module, pred_block),
             });
         }
 

@@ -181,3 +181,77 @@ fn same_value_duplicate_incoming_is_legal() -> Result<(), IrError> {
     assert_eq!(phi.incoming_count(), 2);
     Ok(())
 }
+
+/// The block named in [`IrError::AmbiguousPhiIncoming`] is the one
+/// `AsmWriter` prints, never an internal arena handle.
+///
+/// **No upstream counterpart as a test.** The message itself is llvmkit's own
+/// — upstream defers this verdict to `Verifier::visitBasicBlock`'s `PHI node
+/// has multiple entries for the same basic block with different incoming
+/// values!`, which is the remaining half of `docs/divergences.md` entry 130.
+/// What this pins *is* upstream's rule: `Verifier::CheckFailed` renders every
+/// `Value` through `WriteAsOperand`, so an unnamed block is named by the
+/// `SlotTracker` number `AsmWriter` would print for it, and a written name is
+/// used verbatim. The fallback used to be `ValueSlot::arena_index`, an
+/// internal handle that appears neither in the source nor in printed IR;
+/// every other test on this error matched only the variant, which is why
+/// nothing caught it. Asserting the rendered text is the guard.
+#[test]
+fn ambiguous_phi_names_the_block_asm_writer_prints() -> Result<(), IrError> {
+    let m = crate::module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    m.view(f).param(0)?.set_name(&m, "i");
+    // An UNNAMED entry block: `SlotTracker::for_function` numbers it, and
+    // with the one parameter named it takes slot 0 — the same `%0` the
+    // vendored `test/Verifier/AmbiguousPhi.ll` writes for its own implicit
+    // entry block.
+    let entry = m.view(f).append_basic_block(&m, "");
+    let entry_label = entry.id();
+    let a = m.view(f).append_basic_block(&m, "a");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(a);
+    let phi = b.view(b.int_phi::<i32, _>("p")?);
+    let err = phi
+        .add_incoming(1_i32, entry_label)?
+        .add_incoming(2_i32, entry_label)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "phi already has an entry for block %0 with a different value"
+    );
+    // The number is `AsmWriter`'s, not a coincidence: the accepted first
+    // edge prints its predecessor operand with the same `%0`. (The block's
+    // own `; <label>:N` line is absent because `printBasicBlock` omits it
+    // for a function's entry block, which is what this one is.)
+    let printed = format!("{m}");
+    assert!(printed.contains("[ 1, %0 ]"), "{printed}");
+    Ok(())
+}
+
+/// The named-block arm of [`ambiguous_phi_names_the_block_asm_writer_prints`]:
+/// a block with a written name is named by it, matching
+/// `WriteAsOperand`'s `if (V->hasName())` branch.
+///
+/// **No upstream counterpart as a test**, for the same reason as its sibling.
+#[test]
+fn ambiguous_phi_names_a_named_block_by_its_name() -> Result<(), IrError> {
+    let m = crate::module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let a = m.view(f).append_basic_block(&m, "a");
+    let a_label = a.id();
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let phi = b.view(b.int_phi::<i32, _>("p")?);
+    let err = phi
+        .add_incoming(1_i32, a_label)?
+        .add_incoming(2_i32, a_label)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "phi already has an entry for block %a with a different value"
+    );
+    Ok(())
+}

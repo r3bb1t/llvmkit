@@ -132,28 +132,28 @@ pub(crate) fn render_phi_violation<B: ModuleBrand>(
     result_ty: TypeSlot,
     module: &Module<B, Unverified>,
 ) -> String {
-    let ctx = module.core_ref().context();
+    let module_ref = module.module_ref();
     match violation {
         PhiViolation::CountMismatch { entries, preds } => {
             format!("phi has {entries} incoming entries but block has {preds} predecessors")
         }
         PhiViolation::NotAPredecessor { block } => format!(
             "phi incoming block %{} is not a predecessor",
-            ctx.block_diag_name(*block)
+            crate::asm_writer::block_slot_label(module_ref, *block)
         ),
         PhiViolation::TooManyFromBlock { block } => format!(
             "phi has too many incoming entries from block %{}",
-            ctx.block_diag_name(*block)
+            crate::asm_writer::block_slot_label(module_ref, *block)
         ),
         PhiViolation::AmbiguousValues { block } => format!(
             "phi has multiple entries for block %{} with different values",
-            ctx.block_diag_name(*block)
+            crate::asm_writer::block_slot_label(module_ref, *block)
         ),
         PhiViolation::IncomingTypeMismatch { block, value_ty } => format!(
             "phi expects {} but incoming from %{} is {}",
-            Type::new(result_ty, module.module_ref()),
-            ctx.block_diag_name(*block),
-            Type::new(*value_ty, module.module_ref()),
+            Type::new(result_ty, module_ref),
+            crate::asm_writer::block_slot_label(module_ref, *block),
+            Type::new(*value_ty, module_ref),
         ),
     }
 }

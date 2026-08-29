@@ -19,6 +19,24 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — a phi diagnostic names the block `AsmWriter` prints, not an arena index
+
+- **`IrError::AmbiguousPhiIncoming` and `IrError::PhiIncomingNotDominating`, and
+  every message `phi_check::render_phi_violation` builds, now name a block the
+  way `Verifier::CheckFailed` does** — through the `SlotTracker` number
+  `AsmWriter` would print, or the block's written name. The previous fallback
+  was the block's internal arena index, a number that appears neither in the
+  source nor in printed IR: `test/Verifier/AmbiguousPhi.ll` reported
+  `block %4` where its own `phi` operands, and `llvm-dis`, say `%0`
+  (`docs/divergences.md` entry 130, second half; the first half — that the
+  verdict comes from the builder rather than `Module::verify` — is unchanged
+  and still recorded).
+
+- `LlvmContext::block_diag_name` is deleted. The verifier's `slot_label` moved
+  to `asm_writer.rs` beside the `SlotTracker` it asks, and `block_slot_label`
+  is its adapter for the paths that hold only a block slot; a detached block
+  gets upstream's `<badref>` rather than a fabricated number.
+
 ### Fixed — legacy `!nvvm.annotations` are upgraded onto function attributes
 
 - **`llvm::UpgradeNVVMAnnotations` is ported**, closing the seventh of the nine

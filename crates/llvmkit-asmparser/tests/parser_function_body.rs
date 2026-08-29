@@ -2130,8 +2130,12 @@ fn upstream_phi_grouping_fixture_is_rejected_at_parse_time() {
 /// `Verifier::visitBasicBlock`'s `PHI node has multiple entries for the same
 /// basic block with different incoming values!` is never reached.
 ///
-/// The `%4` in the parse message is entry 130's second half: an internal arena
-/// index where upstream prints the `SlotTracker` number `%0`.
+/// The block *name* is no longer part of the divergence: the message names
+/// `%0`, the `SlotTracker` number `AsmWriter` gives the fixture's implicit
+/// entry block and the number the fixture's own `phi` operands are written
+/// with. Asserted here rather than left loose because the previous spelling
+/// was `%4`, an internal arena index that appeared nowhere in the source and
+/// nowhere in printed IR.
 ///
 /// The verifier rule the fixture is really about, `VerifierRule::AmbiguousPhi`,
 /// is asserted against this fixture's `CHECK` text by
@@ -2142,7 +2146,7 @@ fn upstream_ambiguous_phi_fixture_is_rejected_by_the_builder() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/AmbiguousPhi.ll");
     let message = parse_expect_error(FIXTURE);
     assert!(
-        message.contains("phi already has an entry for block %4 with a different value"),
+        message.contains("phi already has an entry for block %0 with a different value"),
         "{message:?}"
     );
 }

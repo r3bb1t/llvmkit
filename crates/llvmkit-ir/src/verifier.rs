@@ -40,6 +40,7 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 
+use super::asm_writer::slot_label;
 use super::cfg::FunctionCfg;
 use super::constant::{Constant, ConstantData};
 use super::eh_personalities::{
@@ -6975,31 +6976,6 @@ fn type_bit_width(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
         TypeData::Pointer { .. } => None,
         TypeData::FixedVector { elem, n } => type_bit_width(m, *elem).map(|w| w * *n),
         _ => None,
-    }
-}
-
-// --------------------------------------------------------------------------
-// Slot label helper
-// --------------------------------------------------------------------------
-
-/// The text `AsmWriter` prints after the `%` for `id` inside `f`: its written
-/// name, or the `SlotTracker` number an unnamed value or block is given.
-///
-/// Mirrors how `Verifier::CheckFailed` renders a `Value` — through
-/// `WriteAsOperand`, which asks the module's `SlotTracker` for the number and
-/// so always names something the reader can find in the printed IR. The
-/// previous fallback was `format!("{:?}", block_id)`, the `Debug` of an
-/// internal arena handle, which named nothing in the source or the output.
-fn slot_label<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>, id: ValueSlot) -> String {
-    let module = f.module();
-    if let Some(name) = module.context().value_data(id).name.borrow().as_ref() {
-        return name.clone();
-    }
-    let slots = crate::asm_writer::SlotTracker::for_function(f);
-    match slots.local(id).or_else(|| slots.block(id)) {
-        Some(number) => number.to_string(),
-        // `AsmWriter`'s own spelling for a value it cannot number.
-        None => "<badref>".to_owned(),
     }
 }
 

@@ -902,7 +902,10 @@ where
             .any(|(v, b)| *b == block_id && v.get() != val.id)
         {
             return Err(IrError::AmbiguousPhiIncoming {
-                block: self.module.context().block_diag_name(block_id),
+                block: crate::asm_writer::block_slot_label(
+                    ModuleRef::<B>::new(self.module),
+                    block_id,
+                ),
             });
         }
         phi_payload
