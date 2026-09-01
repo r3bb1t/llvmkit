@@ -9,7 +9,7 @@ use super::array_len::ArrLenDyn;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
-    ConstantExprOpcode,
+    ConstantExprOpcode, is_poison, is_undef, is_undef_or_poison,
 };
 use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::FunctionPtrAlignType;
@@ -2951,24 +2951,6 @@ fn constant_int_same_unsigned_value<'ctx, B: ModuleBrand + 'ctx>(
     lhs.ap_int()
         .zext_or_trunc(width)
         .eq_ap_int(&rhs.ap_int().zext_or_trunc(width))
-}
-
-fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    matches!(
-        &constant.as_erased().data().kind,
-        ValueKindData::Constant(ConstantData::Poison)
-    )
-}
-
-fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    matches!(
-        &constant.as_erased().data().kind,
-        ValueKindData::Constant(ConstantData::Undef)
-    )
-}
-
-fn is_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    is_undef(constant) || is_poison(constant)
 }
 
 fn binop_identity<'ctx, B: ModuleBrand + 'ctx>(

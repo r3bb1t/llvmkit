@@ -2286,11 +2286,15 @@ impl<B: ModuleBrand> MetadataField<B> {
 /// Upstream stores these as `uint64_t` encodings — `DIExpression`'s `Elements`,
 /// filled by `LLParser::parseDIExpressionBody` (`LLParser.cpp`) through
 /// `dwarf::getOperationEncoding` / `getAttributeEncoding`. llvmkit keeps the
-/// **source spelling** instead: the `Dwarf.def` tables are not modelled yet
-/// (see `docs/future-work.md`), and `AsmWriter.cpp`'s `writeDIExpression`
-/// prints a known operation back by name anyway, so the written form is what
-/// round-trips. An unrecognised `DW_OP_*` is therefore accepted here where
-/// upstream rejects it — recorded as the remaining half of that gap.
+/// **source spelling** instead, and recovers the encoding on demand through
+/// [`Self::element`]: [`crate::dwarf`] is a drift-locked transcription of
+/// `Dwarf.def`, so that mapping is total for every spelling the parser
+/// accepts — it rejects one the tables do not carry, exactly as upstream does.
+///
+/// What the spelling model still costs is *normalisation*: a numerically
+/// written element such as `!DIExpression(15)` stays a [`Self::Literal`] and
+/// prints back as `15`, where `llvm-dis` prints the operation name that value
+/// encodes. That direction is a separate recorded difference.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DwarfExpressionOperand {
     /// A `DW_OP_*` or `DW_ATE_*` keyword, kept as written.
@@ -2298,6 +2302,197 @@ pub enum DwarfExpressionOperand {
     /// A literal unsigned element. Upstream rejects a signed or `> u64::MAX`
     /// element in `parseDIExpressionBody`; so does the parser here.
     Literal(u64),
+}
+
+impl DwarfExpressionOperand {
+    /// The `uint64_t` this operand contributes to upstream's
+    /// `DIExpression::Elements`.
+    ///
+    /// `None` only for an [`Self::Operation`] spelling neither
+    /// [`crate::dwarf::operation_encoding`] nor
+    /// [`crate::dwarf::attribute_encoding`] carries — unreachable from the
+    /// parser, which rejects such a spelling, and reachable only by building
+    /// the node through the IR API.
+    pub fn element(&self) -> Option<u64> {
+        match self {
+            Self::Literal(value) => Some(*value),
+            Self::Operation(name) => crate::dwarf::operation_encoding(name)
+                .or_else(|| crate::dwarf::attribute_encoding(name))
+                .map(u64::from),
+        }
+    }
+}
+
+/// The `uint64_t` element list an operand list stands for — upstream's
+/// `DIExpression::getElements()`.
+///
+/// `None` when any operand fails [`DwarfExpressionOperand::element`].
+pub fn expression_elements(operands: &[DwarfExpressionOperand]) -> Option<Vec<u64>> {
+    operands
+        .iter()
+        .map(DwarfExpressionOperand::element)
+        .collect()
+}
+
+/// The canonical `DW_OP_*` spelling for an element, if it is one.
+///
+/// llvmkit's `Dwarf.def` transcription is a name/encoding *table* rather than
+/// a set of named C++ constants, so the ports below switch on the spelling
+/// where upstream switches on `dwarf::DW_OP_*`. The two are the same set: the
+/// table is the `.def` file, and `dwarf_def_drift.rs` keeps it so.
+fn expression_operation_name(element: u64) -> Option<&'static str> {
+    u32::try_from(element)
+        .ok()
+        .and_then(crate::dwarf::operation_encoding_string)
+}
+
+/// `name` is `DW_OP_reg0` … `DW_OP_reg31` — upstream's
+/// `Op >= dwarf::DW_OP_reg0 && Op <= dwarf::DW_OP_reg31`. `DW_OP_regx` sits
+/// outside that range upstream, and its `x` suffix is what excludes it here.
+fn is_numbered_register_operation(name: &str) -> bool {
+    numbered_operation_suffix(name, "DW_OP_reg").is_some_and(|number| number <= 31)
+}
+
+/// `name` is `DW_OP_breg0` … `DW_OP_breg31`, upstream's second range.
+/// `DW_OP_bregx` is likewise excluded.
+fn is_numbered_base_register_operation(name: &str) -> bool {
+    numbered_operation_suffix(name, "DW_OP_breg").is_some_and(|number| number <= 31)
+}
+
+fn numbered_operation_suffix(name: &str, prefix: &str) -> Option<u32> {
+    name.strip_prefix(prefix)?.parse::<u32>().ok()
+}
+
+/// The number of elements one expression operand occupies — the operation
+/// itself plus its arguments.
+///
+/// Ports `DIExpression::ExprOperand::getSize` (`DebugInfoMetadata.cpp`).
+pub fn expression_operand_size(element: u64) -> usize {
+    let Some(name) = expression_operation_name(element) else {
+        return 1;
+    };
+    if is_numbered_base_register_operation(name) {
+        return 2;
+    }
+    match name {
+        "DW_OP_LLVM_convert"
+        | "DW_OP_LLVM_fragment"
+        | "DW_OP_LLVM_extract_bits_sext"
+        | "DW_OP_LLVM_extract_bits_zext"
+        | "DW_OP_bregx" => 3,
+        "DW_OP_constu"
+        | "DW_OP_consts"
+        | "DW_OP_deref_size"
+        | "DW_OP_plus_uconst"
+        | "DW_OP_LLVM_tag_offset"
+        | "DW_OP_LLVM_entry_value"
+        | "DW_OP_LLVM_arg"
+        | "DW_OP_regx" => 2,
+        _ => 1,
+    }
+}
+
+/// Whether an element list is a well-formed `DIExpression` body.
+///
+/// Ports `DIExpression::isValid` (`DebugInfoMetadata.cpp`) element for
+/// element: upstream walks `expr_op_begin()` … `expr_op_end()` over a
+/// `uint64_t` array, and this walks the same array by index, so upstream's
+/// `I->get() + I->getSize()` reads here as `index + size`.
+pub fn expression_is_valid(elements: &[u64]) -> bool {
+    let mut index = 0;
+    while index < elements.len() {
+        let operation = elements[index];
+        let size = expression_operand_size(operation);
+        // Check that there is space for the operand.
+        if index + size > elements.len() {
+            return false;
+        }
+
+        let name = expression_operation_name(operation);
+        if name.is_some_and(|name| {
+            is_numbered_register_operation(name) || is_numbered_base_register_operation(name)
+        }) {
+            return true;
+        }
+
+        // Check that the operand is valid.
+        match name {
+            // A fragment operator must appear at the end.
+            Some("DW_OP_LLVM_fragment") => return index + size == elements.len(),
+            // Must be the last one or followed by a DW_OP_LLVM_fragment.
+            Some("DW_OP_stack_value") => {
+                if index + size != elements.len()
+                    && expression_operation_name(elements[index + size])
+                        != Some("DW_OP_LLVM_fragment")
+                {
+                    return false;
+                }
+            }
+            // Must be more than one implicit element on the stack.
+            Some("DW_OP_swap") => {
+                if elements.len() == 1 {
+                    return false;
+                }
+            }
+            // An entry value operator must appear at the beginning or
+            // immediately following `DW_OP_LLVM_arg 0`, and the number of
+            // operations it covers can currently only be 1, because only
+            // entry values of a simple register location are supported.
+            Some("DW_OP_LLVM_entry_value") => {
+                let mut first = 0;
+                if expression_operation_name(elements[0]) == Some("DW_OP_LLVM_arg")
+                    && elements.get(1) == Some(&0)
+                {
+                    first = expression_operand_size(elements[0]);
+                }
+                return index == first && elements[index + 1] == 1;
+            }
+            Some(
+                "DW_OP_LLVM_implicit_pointer"
+                | "DW_OP_LLVM_convert"
+                | "DW_OP_LLVM_arg"
+                | "DW_OP_LLVM_tag_offset"
+                | "DW_OP_LLVM_extract_bits_sext"
+                | "DW_OP_LLVM_extract_bits_zext"
+                | "DW_OP_constu"
+                | "DW_OP_plus_uconst"
+                | "DW_OP_plus"
+                | "DW_OP_minus"
+                | "DW_OP_mul"
+                | "DW_OP_div"
+                | "DW_OP_mod"
+                | "DW_OP_or"
+                | "DW_OP_and"
+                | "DW_OP_xor"
+                | "DW_OP_shl"
+                | "DW_OP_shr"
+                | "DW_OP_shra"
+                | "DW_OP_deref"
+                | "DW_OP_deref_size"
+                | "DW_OP_xderef"
+                | "DW_OP_lit0"
+                | "DW_OP_not"
+                | "DW_OP_dup"
+                | "DW_OP_regx"
+                | "DW_OP_bregx"
+                | "DW_OP_push_object_address"
+                | "DW_OP_over"
+                | "DW_OP_rot"
+                | "DW_OP_consts"
+                | "DW_OP_eq"
+                | "DW_OP_ne"
+                | "DW_OP_gt"
+                | "DW_OP_ge"
+                | "DW_OP_lt"
+                | "DW_OP_le"
+                | "DW_OP_neg"
+                | "DW_OP_abs",
+            ) => {}
+            _ => return false,
+        }
+        index += size;
+    }
+    true
 }
 
 /// The body of a specialized `DI*` node.

@@ -22,7 +22,7 @@ use super::{
 };
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::float_kind::FloatKind;
-use crate::instr_types::OverflowFlags;
+use crate::instr_types::{ExactFlags, OverflowFlags};
 use crate::int_width::IntWidth;
 use crate::value::{FloatValue, IntValue};
 
@@ -46,8 +46,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         opcode: BinaryOpcode,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
+        exact: ExactFlags,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        fold_exact_binary(opcode, lhs, rhs)
+        fold_exact_binary(opcode, lhs, rhs, exact)
     }
 
     fn fold_no_wrap_bin_op_dyn(
@@ -432,11 +433,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         opcode: BinaryOpcode,
         lhs: IntValue<'ctx, W, B>,
         rhs: IntValue<'ctx, W, B>,
+        exact: ExactFlags,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
         // Expected: fold_exact_bin_op_dyn -> fold_exact_binary ->
         // fold_binary_constants, the same lhs.ty()-pinned path. Checked, per
         // the note on fold_int_bin_op.
-        self.fold_exact_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased())?
+        self.fold_exact_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased(), exact)?
             .map(W::narrow)
             .transpose()
     }
@@ -578,11 +580,23 @@ fn fold_exact_binary<'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
     lhs: Value<'ctx, B>,
     rhs: Value<'ctx, B>,
+    exact: ExactFlags,
 ) -> IrResult<Option<Value<'ctx, B>>> {
     let (lhs, rhs) = match constants2(lhs, rhs) {
         Some(values) => values,
         None => return Ok(None),
     };
+    // Upstream `ConstantFolder::FoldExactBinOp` passes
+    // `IsExact ? PossiblyExactOperator::IsExact : 0` to `ConstantExpr::get`,
+    // but only on its `ConstantExpr::isDesirableBinOp` arm.
+    // `binary_constant_expr_opcode` (inside `fold_binary_constants`) is that
+    // gate here, and `ConstantExpr::isDesirableBinOp` answers `false` for
+    // every opcode this hook is reachable with -- `udiv`, `sdiv`, `lshr` and
+    // `ashr` are all in its `return false` list -- so the exactness bit never
+    // has a `ConstantExpr` to attach to and both arms fall through to
+    // `ConstantFoldBinaryInstruction`. The parameter is threaded to keep the
+    // seam shaped like upstream's, not because this folder reads it.
+    let _ = exact;
     fold_binary_constants(opcode, lhs, rhs, ConstantExprFlags::none())
 }
 
@@ -621,7 +635,7 @@ fn pointer_cast_opcode<B: ModuleBrand>(
     let Some(source) = ptr_or_ptr_vector_address_space(source_ty) else {
         return invalid_pointer_cast();
     };
-    if is_int_or_int_vector(dest_ty) {
+    if dest_ty.is_int_or_int_vector() {
         if !lane_shape_matches(source_ty, dest_ty) {
             return invalid_pointer_cast();
         }
@@ -673,19 +687,6 @@ fn ptr_or_ptr_vector_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u3
             ptr_or_ptr_vector_address_space(Type::new(*elem, ty.module()))
         }
         _ => None,
-    }
-}
-
-fn is_int_or_int_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
-    match ty.data() {
-        TypeData::Integer { .. } => true,
-        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            matches!(
-                Type::new(*elem, ty.module()).data(),
-                TypeData::Integer { .. }
-            )
-        }
-        _ => false,
     }
 }
 

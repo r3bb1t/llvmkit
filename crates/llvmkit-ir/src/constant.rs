@@ -227,6 +227,32 @@ impl ConstantGepFlags {
     }
 }
 
+/// `isa<UndefValue>(C)` **minus** poison.
+///
+/// Upstream's `PoisonValue` derives from `UndefValue`, so a bare
+/// `isa<UndefValue>` there answers `true` for both. llvmkit splits the two so a
+/// port can say which it means; a caller mirroring upstream's `isa<UndefValue>`
+/// wants [`is_undef_or_poison`].
+pub(crate) fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    matches!(
+        &constant.as_erased().data().kind,
+        ValueKindData::Constant(ConstantData::Undef)
+    )
+}
+
+/// `isa<PoisonValue>(C)`.
+pub(crate) fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    matches!(
+        &constant.as_erased().data().kind,
+        ValueKindData::Constant(ConstantData::Poison)
+    )
+}
+
+/// Upstream's plain `isa<UndefValue>(C)`, which catches `poison` too.
+pub(crate) fn is_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    is_undef(constant) || is_poison(constant)
+}
+
 /// Optional optimization and predicate flags attached to a constant expression.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ConstantExprFlags {

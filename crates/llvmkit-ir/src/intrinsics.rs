@@ -1014,7 +1014,7 @@ fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx>(
             Ok(())
         }
         IitDescriptor::Argument { index, kind } => {
-            validate_overload_kind(module, actual, kind)?;
+            validate_overload_kind(actual, kind)?;
             match_overload_slot(overloads, index, actual)
         }
         IitDescriptor::ExtendArgument(index) => {
@@ -2049,7 +2049,7 @@ where
         }
         IitDescriptor::Argument { index, kind } => {
             let ty = *overloads.get(index).ok_or_else(intrinsic_mismatch)?;
-            validate_overload_kind(module, ty, kind)?;
+            validate_overload_kind(ty, kind)?;
             Ok(ty)
         }
         IitDescriptor::ExtendArgument(index) => {
@@ -2093,70 +2093,21 @@ where
     }
 }
 
-fn validate_overload_kind<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
-    kind: IitArgKind,
-) -> IrResult<()>
+fn validate_overload_kind<'ctx, B>(ty: Type<'ctx, B>, kind: IitArgKind) -> IrResult<()>
 where
     B: ModuleBrand + 'ctx,
 {
     let ok = match kind {
         IitArgKind::Any | IitArgKind::MatchType => true,
-        IitArgKind::AnyInteger => is_integer_or_integer_vector(module, ty),
-        IitArgKind::AnyFloat => is_float_or_float_vector(module, ty),
-        IitArgKind::AnyVector => is_vector(ty),
-        IitArgKind::AnyPointer => matches!(ty.data(), TypeData::Pointer { .. }),
+        IitArgKind::AnyInteger => ty.is_int_or_int_vector(),
+        IitArgKind::AnyFloat => ty.is_float_or_float_vector(),
+        IitArgKind::AnyVector => ty.is_vector(),
+        IitArgKind::AnyPointer => ty.is_pointer(),
     };
     if ok {
         Ok(())
     } else {
         Err(intrinsic_mismatch())
-    }
-}
-
-fn is_integer_or_integer_vector<'ctx, B>(module: ModuleRef<'ctx, B>, ty: Type<'ctx, B>) -> bool
-where
-    B: ModuleBrand + 'ctx,
-{
-    matches!(scalar_type_data(module, ty), TypeData::Integer { .. })
-}
-
-fn is_float_or_float_vector<'ctx, B>(module: ModuleRef<'ctx, B>, ty: Type<'ctx, B>) -> bool
-where
-    B: ModuleBrand + 'ctx,
-{
-    matches!(
-        scalar_type_data(module, ty),
-        TypeData::Half
-            | TypeData::Bfloat
-            | TypeData::Float
-            | TypeData::Double
-            | TypeData::X86Fp80
-            | TypeData::Fp128
-            | TypeData::PpcFp128
-    )
-}
-
-fn is_vector<'ctx, B>(ty: Type<'ctx, B>) -> bool
-where
-    B: ModuleBrand + 'ctx,
-{
-    matches!(
-        ty.data(),
-        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
-    )
-}
-
-fn scalar_type_data<'ctx, B>(module: ModuleRef<'ctx, B>, ty: Type<'ctx, B>) -> &'ctx TypeData
-where
-    B: ModuleBrand + 'ctx,
-{
-    match ty.data() {
-        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            Type::new(*elem, module).data()
-        }
-        data => data,
     }
 }
 

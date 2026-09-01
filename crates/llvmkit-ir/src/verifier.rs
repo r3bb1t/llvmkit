@@ -85,7 +85,13 @@ use crate::module::{Invariant, ModuleBrand, ModuleCore, ModuleView};
 use crate::module_flags::{ModuleFlagBehavior, module_flag_tuple, resolve_metadata_ref};
 use crate::named_md_node::NamedMetadataName;
 use crate::phi_check::{PhiViolation, check_phi_incoming};
-use crate::r#type::{Type, TypeData, TypeSlot};
+// `Type::getScalarType` and the three scalar-or-vector predicates are ported
+// once, at the slot layer, in `type.rs`; these four names are imports, not
+// local definitions.
+use crate::r#type::{
+    Type, TypeData, TypeSlot, is_float_or_float_vector, is_int_or_int_vector, is_ptr_or_ptr_vector,
+    scalar_type_slot,
+};
 use crate::value::{IsValue, ValueKindData, ValueSlot};
 
 // --------------------------------------------------------------------------
@@ -1354,7 +1360,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             bb,
             inst,
             range_id.slot(),
-            scalar_type_id(self.module, inst.ty().id),
+            scalar_type_slot(self.module, inst.ty().id),
             RangeLikeMetadataKind::Range,
         )
     }
@@ -1595,7 +1601,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if !is_fp_or_fp_vector(self.module, lhs_ty) {
+        if !is_float_or_float_vector(self.module, lhs_ty) {
             return Err(self.fail(
                 f,
                 bb,
@@ -1647,7 +1653,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if !is_fp_or_fp_vector(self.module, src_ty) {
+        if !is_float_or_float_vector(self.module, src_ty) {
             return Err(self.fail(
                 f,
                 bb,
@@ -2210,7 +2216,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             ));
         }
         let val_ty = self.value_type(d.value.get());
-        if d.op.is_fp_operation() && !is_fp_or_fp_vector(self.module, val_ty) {
+        if d.op.is_fp_operation() && !is_float_or_float_vector(self.module, val_ty) {
             return Err(self.fail(
                 f,
                 bb,
@@ -2278,8 +2284,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if !is_int_or_int_vector(self.module, lhs_ty)
-            && !is_pointer_or_pointer_vector(self.module, lhs_ty)
+        if !is_int_or_int_vector(self.module, lhs_ty) && !is_ptr_or_ptr_vector(self.module, lhs_ty)
         {
             return Err(self.fail(
                 f,
@@ -2334,7 +2339,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if !is_fp_or_fp_vector(self.module, lhs_ty) {
+        if !is_float_or_float_vector(self.module, lhs_ty) {
             return Err(self.fail(
                 f,
                 bb,
@@ -2495,7 +2500,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         "FPToSI result must be integer or integer vector",
                     ),
                 };
-                if !is_fp_or_fp_vector(self.module, src_ty) {
+                if !is_float_or_float_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
@@ -2531,7 +2536,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         format!("{source_message} (got {})", self.type_label(src_ty)),
                     ));
                 }
-                if !is_fp_or_fp_vector(self.module, dst_ty) {
+                if !is_float_or_float_vector(self.module, dst_ty) {
                     return Err(self.fail(
                         f,
                         bb,
@@ -2551,7 +2556,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         "PtrToInt result must be integral",
                     ),
                 };
-                if !is_pointer_or_pointer_vector(self.module, src_ty) {
+                if !is_ptr_or_ptr_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
@@ -2609,7 +2614,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         ),
                     ));
                 }
-                if !is_pointer_or_pointer_vector(self.module, dst_ty) {
+                if !is_ptr_or_ptr_vector(self.module, dst_ty) {
                     return Err(self.fail(
                         f,
                         bb,
@@ -2673,7 +2678,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             CastOpcode::AddrSpaceCast => {
-                if !is_pointer_or_pointer_vector(self.module, src_ty) {
+                if !is_ptr_or_ptr_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
@@ -2684,7 +2689,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         ),
                     ));
                 }
-                if !is_pointer_or_pointer_vector(self.module, dst_ty) {
+                if !is_ptr_or_ptr_vector(self.module, dst_ty) {
                     return Err(self.fail(
                         f,
                         bb,
@@ -2803,7 +2808,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         l: &LoadInstData,
     ) -> IrResult<()> {
         let ptr_ty = self.value_type(l.ptr.get());
-        if !is_pointer_or_pointer_vector(self.module, ptr_ty) {
+        if !is_ptr_or_ptr_vector(self.module, ptr_ty) {
             return Err(self.fail(
                 f,
                 bb,
@@ -2882,7 +2887,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         s: &StoreInstData,
     ) -> IrResult<()> {
         let ptr_ty = self.value_type(s.ptr.get());
-        if !is_pointer_or_pointer_vector(self.module, ptr_ty) {
+        if !is_ptr_or_ptr_vector(self.module, ptr_ty) {
             return Err(self.fail(
                 f,
                 bb,
@@ -2951,8 +2956,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         message: &str,
     ) -> IrResult<()> {
         if is_int_or_int_vector(self.module, ty)
-            || is_fp_or_fp_vector(self.module, ty)
-            || is_pointer_or_pointer_vector(self.module, ty)
+            || is_float_or_float_vector(self.module, ty)
+            || is_ptr_or_ptr_vector(self.module, ty)
         {
             return Ok(());
         }
@@ -3016,7 +3021,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         g: &GepInstData,
     ) -> IrResult<()> {
         let base_ty = self.value_type(g.ptr.get());
-        if !is_pointer_or_pointer_vector(self.module, base_ty) {
+        if !is_ptr_or_ptr_vector(self.module, base_ty) {
             return Err(self.fail(
                 f,
                 bb,
@@ -3097,7 +3102,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         if !self
             .module
             .context()
-            .type_data(scalar_type_id(self.module, result_ty))
+            .type_data(scalar_type_slot(self.module, result_ty))
             .is_pointer_data()
         {
             return Err(self.fail(
@@ -6780,13 +6785,6 @@ fn type_contains_scalable(m: &ModuleCore, ty: TypeSlot) -> bool {
     }
 }
 
-fn scalar_type_id(m: &ModuleCore, ty: TypeSlot) -> TypeSlot {
-    match m.context().type_data(ty) {
-        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
-        _ => ty,
-    }
-}
-
 /// The element count and scalability of `ty`, or `None` when it is a scalar.
 ///
 /// Two types agree in shape when this answers equal for both, which is how
@@ -6797,19 +6795,6 @@ fn vector_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, bool)> {
         .type_data(ty)
         .as_vector()
         .map(|(_, count, scalable)| (count, scalable))
-}
-
-fn is_int_or_int_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
-    let d = m.context().type_data(ty);
-    if d.as_integer().is_some() {
-        return true;
-    }
-    if let Some((elem, _, _)) = d.as_vector()
-        && m.context().type_data(elem).as_integer().is_some()
-    {
-        return true;
-    }
-    false
 }
 
 enum AggWalkErr {
@@ -6884,31 +6869,6 @@ fn walk_aggregate_path(
     Ok(cur)
 }
 
-fn is_fp_or_fp_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
-    let d = m.context().type_data(ty);
-    if is_fp_data(d) {
-        return true;
-    }
-    if let Some((elem, _, _)) = d.as_vector()
-        && is_fp_data(m.context().type_data(elem))
-    {
-        return true;
-    }
-    false
-}
-
-fn is_pointer_or_pointer_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
-    let d = m.context().type_data(ty);
-    if d.is_pointer_data() {
-        return true;
-    }
-    if let Some((elem, _, _)) = d.as_vector()
-        && m.context().type_data(elem).is_pointer_data()
-    {
-        return true;
-    }
-    false
-}
 fn pointer_source_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, Option<(u32, bool)>)> {
     match m.context().type_data(ty) {
         TypeData::Pointer { addr_space } => Some((*addr_space, None)),
@@ -6953,19 +6913,6 @@ fn is_i1_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
 
 fn is_i1_data(d: &TypeData) -> bool {
     matches!(d.as_integer(), Some(1))
-}
-
-fn is_fp_data(d: &TypeData) -> bool {
-    matches!(
-        d,
-        TypeData::Half
-            | TypeData::Bfloat
-            | TypeData::Float
-            | TypeData::Double
-            | TypeData::Fp128
-            | TypeData::X86Fp80
-            | TypeData::PpcFp128
-    )
 }
 
 /// Floating-point precision rank for `fpext` / `fptrunc` ordering.

@@ -39,7 +39,7 @@ use crate::pass_context::FunctionView;
 use crate::speculation::{
     instruction_may_have_side_effects, instructions_transfer_execution_to_successor,
 };
-use crate::r#type::{Type, TypeKind};
+use crate::r#type::TypeKind;
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::{ApInt, IntPredicate, IsValue};
 use std::collections::{HashMap, HashSet};
@@ -912,7 +912,7 @@ fn assume_bundle_operands<'ctx, B: ModuleBrand + 'ctx>(
 fn logical_op_operands<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
-    if !is_int_or_int_vector_of_width_one(value) {
+    if !value.ty().is_int_or_int_vector_of_width(1) {
         return None;
     }
     match instruction_kind(value)? {
@@ -1161,17 +1161,6 @@ fn binary_operands<'ctx, B: ModuleBrand + 'ctx>(
         value_from_slot(anchor, data.lhs.get()),
         value_from_slot(anchor, data.rhs.get()),
     )
-}
-
-/// Whether the value's type is `i1` or a vector of `i1`. Ports
-/// `Type::isIntOrIntVectorTy(1)`.
-fn is_int_or_int_vector_of_width_one<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
-    let ty = value.ty();
-    let scalar = match ty.data().as_vector() {
-        Some((element, _, _)) => Type::new(element, ty.module()),
-        None => ty,
-    };
-    matches!(scalar.kind(), TypeKind::Integer { bits: 1 })
 }
 
 /// Whether `value` is any constant. Ports `m_Constant`.

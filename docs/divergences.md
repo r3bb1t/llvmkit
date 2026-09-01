@@ -509,7 +509,6 @@ its `expected '(' here` negative case.
 
 ---
 
-
 ---
 
 # Inventory
@@ -1330,82 +1329,42 @@ two the tree had already closed (`flags.ll`'s vector trunc functions, and
 that duplicated **D11** and **D13** — so the band is no longer a mix of open
 defects and dead rows.
 
-### 61. `add`/`sub`/`udiv`/`sdiv`/`lshr`/`ashr` consult the wrong folder hook, and the erased path consults it even when flags are set — **NARROWED (2026-08-29)**
+### 62. The phi known-bits arm recurses at `depth + 1` where upstream recurses at a fixed deep depth — **ONE DUPLICATE MERGED (W11); NARROWED (2026-08-29); NARROWED AGAIN (divergence W14)**
 
-> **Triage 2026-08-29: pending work, scope corrected.** The title used to say
-> "Plain `add`/`sub`/`div`/shift builders". `int_shl` and `int_mul` do **not**
-> diverge — both route through `int_binop_flagged`, whose dispatch sends
-> `{Add, Sub, Mul, Shl}` to `fold_int_bin_op_no_wrap` with empty
-> `OverflowFlags`, matching upstream `CreateShl`/`CreateMul`; `int_urem` /
-> `int_srem` correctly match upstream's plain `FoldBinOp`. The diverging set is
-> exactly `int_add`, `int_sub`, `int_udiv`, `int_sdiv`, `int_lshr`, `int_ashr`.
-> In the other direction the gap is larger than the title implied: see the two
-> extensions in the `llvmkit:` bullet.
-
-
-*IR builder* — crates/llvmkit-ir/src/ir_builder.rs (`int_add` / `int_sub` and the div/shift emitters), crates/llvmkit-ir/src/ir_builder/folder.rs (the hook trait)
-
-- **LLVM:** `IRBuilder::CreateAdd` funnels through `FoldNoWrapBinOp(.., false, false)`, and `CreateUDiv` and friends through `FoldExactBinOp(.., false)`, so a folder sees the no-wrap/exact hook even when no flag is set.
-- **llvmkit:** `int_add` / `int_sub` consult the plain `fold_int_bin_op` hook where upstream funnels through `FoldNoWrapBinOp(.., false, false)`, and `int_udiv` / `int_sdiv` / `int_lshr` / `int_ashr` consult it where upstream funnels through `FoldExactBinOp(.., false)`. Two extensions beyond the bare builders: (1) the `_with_flags` variants (`int_udiv_with_flags`, `int_sdiv_with_flags`, `int_lshr_with_flags`, `int_ashr_with_flags`) also hit the plain hook whenever the exact bit is absent; (2) the erased path `int_binop_dyn_with_flags` calls `fold_bin_op_dyn` **unconditionally — even when nuw/nsw/exact are set** — so `int_binop_erased` (the `.ll` parser's entry point) and every `int_*_dyn` wrapper never reach `fold_no_wrap_bin_op_dyn` or `fold_exact_bin_op_dyn` at all. That last is a strictly larger gap than the flagless one. Results are identical with the shipped folders; a third-party folder that overrides only the no-wrap or exact hooks observes the difference.
-- **Why:** Recorded under the 2026-07-06 upstream-parity follow-ups, with the observability boundary stated: identical results with the shipped folders, observable only by third-party folders overriding just those hooks.
-- **Fix:** Two halves, and only one is a one-liner. The add/sub half needs a switch to `fold_int_bin_op_no_wrap` with empty flags, exactly as mul/shl already do. The exact half needs a **signature change first**: `IrBuilderFolder::fold_exact_bin_op_dyn` deliberately drops upstream's `bool IsExact` parameter (documented in its own rustdoc), so calling it with `IsExact = false` is unspellable today. The erased half needs `int_binop_dyn_with_flags` to dispatch on the flags it is handed rather than ignoring them. Add a test folder that overrides only those hooks to witness the dispatch — the divergence is unobservable without one, and `crates/llvmkit-ir/tests/constant_folder_builder.rs`'s `custom_folder_no_wrap_hook_receives_mul` / `..._shl` are the shape to copy.
-- **Correction from verification:** Still present, but the title's "shift" is over-broad and the scope is understated in two ways. Accurate statement: llvmkit's `int_add` and `int_sub` consult the plain `fold_int_bin_op` hook where upstream `CreateAdd`/`CreateSub` funnel through `FoldNoWrapBinOp(.., false, false)`; and `int_udiv`/`int_sdiv`/`int_lshr`/`int_ashr` consult the plain hook where upstream `CreateUDiv`/`CreateSDiv`/`CreateLShr`/`CreateAShr` funnel through `FoldExactBinOp(.., false)`. `int_shl` and `int_mul` do NOT diverge -- both route through `int_binop_flagged`, whose dispatch sends {Add, Sub, Mul, Shl} to `fold_int_bin_op_no_wrap` with empty `OverflowFlags`, matching upstream `CreateShl`/`CreateMul`. `int_urem`/`int_srem` correctly match upstream's plain `FoldBinOp`. Two extensions the entry omits: (1) the `_with_flags` variants (`int_udiv_with_flags`, `int_sdiv_with_flags`, `int_lshr_with_flags`, `int_ashr_with_flags`) also hit the plain hook whenever the exact bit is absent, so the divergence is not limited to the bare builders; (2) the erased path `int_binop_dyn_with_flags` calls `fold_bin_op_dyn` unconditionally -- even when nuw/nsw/exact ARE set -- so `int_binop_erased` (the .ll parser's entry point) and every `int_*_dyn` wrapper never reach `fold_no_wrap_bin_op_dyn` or `fold_exact_bin_op_dyn` at all, a strictly larger gap than the recorded one. Root cause for the exact half: `IrBuilderFolder::fold_exact_bin_op_dyn` deliberately drops upstream's `bool IsExact` parameter (documented in its own rustdoc), so calling it with IsExact=false is unspellable without a signature change; the add/sub half needs only a one-line switch to `fold_int_bin_op_no_wrap` with empty flags, exactly as mul/shl already do. The claim's "results are identical with the shipped folders" is verified correct.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-ir/src/ir_builder.rs: `int_add` (line 1234) and `int_sub` (line 1258) each call `self.folder.fold_int_bin_op(BinaryOpcode::Add/Sub, lhs, rhs)?` inline. `int_udiv` (1304), `int_sdiv` (1327), `int_lshr` (1420), `int_ashr` (1443) delegate to `int_binop`, whose sole fold call is `self.folder.fold_int_bin_op(opcode, lhs, rhs)` (line 1837). `int_mul` (1280) and `int_shl` (1396) delegate to `int_binop_flagged`, whose dispatch at lines 1798-1809 reads: `if payload.is_exact { fold_int_bin_op_exact } else if matches!(opcode, Add|Sub|Mul|Shl) { fold_int_bin_op_no_wrap(.., OverflowFlags::from_parts(nuw, nsw)) } else { fold_int_bin_op }` -- so mul/shl reach the no-wrap hook with empty flags (matching upstream) while udiv/sdiv/lshr/ashr fall to the final else. `int_binop_dyn_with_flags` (line 1911) calls `self.folder.fold_bin_op_dyn(opcode, lhs, rhs)` before `opcode.accepted_flags(flags).apply(&mut payload)`, so the erased/parser path ignores flags for folding entirely. orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/IR/IRBuilder.h: CreateAdd (1403-1406) and CreateSub (1420-1423) call `Folder.FoldNoWrapBinOp(Instruction::Add/Sub, LHS, RHS, HasNUW, HasNSW)` with `HasNUW = HasNSW = false` defaults; CreateUDiv (1454-1456), CreateSDiv (1467-1469), CreateLShr (1513-1515), CreateAShr (1532-1534) call `Folder.FoldExactBinOp(..., isExact)` with `isExact = false` default; CreateShl (1492-1495) and CreateMul (1437-1440) call FoldNoWrapBinOp; CreateURem/CreateSRem (1480-1490) call plain FoldBinOp. crates/llvmkit-ir/src/ir_builder/folder.rs lines 59-71: `fold_exact_bin_op_dyn` has no `is_exact` parameter, with a rustdoc note saying "The builder only ever calls this with exactness implied by the method (there is no non-exact caller), so unlike upstream's FoldExactBinOp(..., bool IsExact) there is no is_exact parameter to thread." Equivalence check: crates/llvmkit-ir/src/ir_builder/constant_folder.rs `fold_exact_binary` (577-587) calls `fold_binary_constants(opcode, lhs, rhs, ConstantExprFlags::none())` -- byte-identical to what `fold_bin_op_dyn` (35-42) does via `fold_binary`; `fold_no_wrap_bin_op_dyn` (53-66) with empty OverflowFlags yields `ConstantExprFlags::overflowing(false, false)`, which `canonical_constant_expr_flags` in crates/llvmkit-ir/src/constants.rs (1468-1470, applied at line 1091) maps to `ConstantExprFlags::None`. crates/llvmkit-ir/src/ir_builder/no_folder.rs: `impl IrBuilderFolder for NoFolder {}` -- every default body returns Ok(None). docs/future-work.md lines 1740-1745 records this as a known open item titled "Plain add/sub/div/shift hook dispatch", and crates/llvmkit-ir/tests/constant_folder_builder.rs tests `custom_folder_no_wrap_hook_receives_mul` / `..._shl` pin the mul/shl no-wrap routing as already-correct behavior.
-
-</details>
-
-### 62. The phi known-bits arm recurses deeper than upstream, and answers more precisely — **ONE DUPLICATE MERGED (W11); NARROWED (2026-08-29)**
-
-> **Triage 2026-08-29: split.** The *phi arm* half is a settled design decision
-> and should not be scheduled on its own — llvmkit terminates by a different
-> mechanism (the `stack` set) and memoizes on `(slot, query)` with no depth
-> component, so upstream's fixed-depth recursion would cache a weak answer and
-> hand it to a later shallow query. It becomes portable when, and only when,
-> the known-bits cache is depth-keyed; that is the trigger, not a backlog row.
-> Two things in this entry **are** ordinary pending work and are independent of
-> the cache: llvmkit drops upstream's `Depth < MaxAnalysisRecursionDepth - 1`
-> gate outright rather than merely relaxing the recursion depth, and the global
-> guard `if depth > query.max_depth()` in `compute_known_bits_inner` differs
-> from upstream's `Depth == MaxAnalysisRecursionDepth` in two ways — it admits
-> one extra operator level, and it sits *before* the constant fast path, so at
-> depth 7 llvmkit returns unknown for a constant where upstream returns its
-> exact value at any depth. That second one is a plain answers-differently gap
-> with no cache blocker; it is the portable part of this entry.
+> **Divergence W14: the two portable halves are ported; only the cache-blocked half is
+> left.** The global guard in `compute_known_bits_inner` now reads
+> `depth >= query.max_depth()` and sits **after** the constant fast path, which
+> is where upstream's `if (Depth == MaxAnalysisRecursionDepth) return;` sits
+> relative to its `match(V, m_APInt(C))` arm ("All recursive calls that increase
+> depth must come after this"). `phi_known_bits` now carries upstream's
+> `Depth < MaxAnalysisRecursionDepth - 1` gate on the intersection loop.
 >
-> The entry's original witness was **false** and has been struck from the
-> `llvmkit:` bullet: upstream proves the same 60 leading zeros on
-> `@test_udiv_neg`. No fixture in the tree exhibits the phi-arm divergence.
-
+> What remains is the *recursion depth under an incoming value*, and it is the
+> one piece the entry always said was blocked: upstream recurses at the fixed
+> `MaxAnalysisRecursionDepth - 1`, llvmkit at `depth + 1`, because
+> `compute_known_bits_inner` memoizes on `(slot, query)` with no depth
+> component — a fixed-deep entry would cache the weak answer and hand it to a
+> later shallow query. It becomes portable when, and only when, the known-bits
+> cache is depth-keyed; that is the trigger, not a backlog row.
+>
+> The entry's original witness was **false** and was struck at the 2026-08-29
+> triage: upstream proves the same 60 leading zeros on `@test_udiv_neg`. No
+> fixture in the tree exhibits the surviving difference, and none was written
+> for it — exhibiting it needs a phi at shallow depth whose incoming value is an
+> expression chain more than one operator deep.
 
 Former entry **52**, "Phi known-bits recurses at `depth + 1` instead of
 upstream's fixed deep depth", was this entry written a second time: same
-routine (`phi_known_bits`), same coordinates, same rationale (the memo key has
-no depth component, so a fixed-deep entry would poison later shallow queries),
-same fix (key the cache by depth first, then restore
-`MaxAnalysisRecursionDepth - 1`). It also sat in the *printed bytes* band,
-which is the wrong one — a known-bits precision difference is a model gap, and
-this entry is already filed as one. Deleted at W11 rather than left to be
-closed twice; the two sub-findings its evidence block carried (llvmkit drops
-upstream's `Depth < MaxAnalysisRecursionDepth - 1` gate outright, and the
-global `depth > max_depth()` guard is an independent off-by-one) are in this
-entry's own correction below.
+routine (`phi_known_bits`), same coordinates, same rationale, same fix.
+Deleted at W11 rather than left to be closed twice.
 
-*analysis* — crates/llvmkit-ir/src/value_tracking.rs:1715-1726 (the recorded decision on `phi_known_bits`)
+*analysis* — crates/llvmkit-ir/src/value_tracking.rs (`phi_known_bits`)
 
 - **LLVM:** `computeKnownBitsFromOperator`'s `Instruction::PHI` arm gates its incoming-value intersection on `Depth < MaxAnalysisRecursionDepth - 1` and then recurses at that fixed depth, capping the search under an incoming value at one level so it does not spin around loops.
-- **llvmkit:** `phi_known_bits` has no depth gate at all (only the `if !known.is_unknown() { return }` early exit) and recurses at `depth + 1`, so it can prove strictly more about a shallow phi than upstream does. Exhibiting it needs a phi at shallow depth whose incoming value is an expression chain more than one operator deep; **no fixture in the tree is that shape**, and the witness this bullet used to name (`@test_udiv_neg` in the ported `recurrence-knownbits.ll`) does not work — upstream proves the same 60 leading zeros there, because the incoming value is one operator deep and upstream's cutoff sits after the `ConstantInt` fast path.
-- **Why:** Recorded and deliberate, with two reasons: llvmkit already terminates by a different mechanism — the `stack` set rejects re-entering a value mid-computation — and `compute_known_bits_inner` memoizes on `(slot, query)` with no depth component, so entering an incoming value at a fixed deep depth would cache the weak answer computed there and hand it to a later shallow query. The entry flags the trigger to revisit: if the cache ever becomes depth-keyed, the upstream cap becomes portable as-is.
-- **Fix:** Leave it until the known-bits cache becomes depth-keyed. At that point add the depth component to the memo key, adopt upstream's `MaxAnalysisRecursionDepth - 1` gate and fixed-depth recursion, and re-run `recurrence-knownbits.ll` — `@test_udiv_neg`'s llvmkit-specific extra precision is the assertion that will move.
-- **Correction from verification:** The code-level divergence is real and still present, but the witness sentence is wrong and should be dropped. Accurate half: upstream's `Instruction::PHI` arm in `computeKnownBitsFromOperator` (ValueTracking.cpp) guards the intersection with `if (Depth < MaxAnalysisRecursionDepth - 1 && Known.isUnknown())` and then calls `computeKnownBits(IncValue, DemandedElts, Known2, RecQ, MaxAnalysisRecursionDepth - 1)` — a fixed depth, not `Depth + 1`. llvmkit's `phi_known_bits` has no depth gate at all (only the `if !known.is_unknown() { return }` early exit) and recurses with `depth + 1`. So llvmkit can indeed prove strictly more about a shallow phi. That part stands, in the source and in the recorded rationale (memoization on `(slot, query)` with no depth component, `stack`-set termination). Wrong half: "`@test_udiv_neg` witnesses it: llvmkit proves 60 leading zeros where upstream proves none." Upstream proves the same 60 leading zeros there. Trace, with `MaxAnalysisRecursionDepth = 6`: `%iv` is reached at Depth 1, `matchSimpleRecurrence` matches `udiv` but bails on `if (BO->getOperand(0) != I) break;`, so the intersection loop runs (1 < 5). Incoming `%iv.next = udiv i64 9, %iv` is recursed at the fixed depth 5 — which still processes the operator; only its operands land at depth 6. Upstream's cutoff `if (Depth == MaxAnalysisRecursionDepth) return;` sits *after* the ConstantInt fast path, so at depth 6 the numerator `9` is still a known constant and only `%iv` comes back unknown. `KnownBits::udiv(9, unknown)` takes `MinDenom = 0`, hence `MaxRes = MaxNum = 9`, hence `Zero.setHighBits(60)`. Intersected with the constant-`2` incoming (62 leading zeros) that leaves exactly 60 leading zeros — the same answer llvmkit reaches via `depth + 1` (its `compute_for_udiv` is a line-for-line port of the same routine). The fixed-depth cap costs upstream nothing in this function because the incoming value is one operator deep. The cited test does not witness the divergence either: `value_tracking_recurrence.rs` asserts only that `%res` of `@test_udiv_neg` folds to `None`, which both sides agree on. I found no fixture in the tree that actually exhibits the divergence — it would need a phi at shallow depth whose incoming value is an expression chain more than one operator deep. Two smaller notes on the same code, unclaimed: llvmkit also drops upstream's `Depth < MaxAnalysisRecursionDepth - 1` gate outright rather than just relaxing the recursion depth; and the global guard `if depth > query.max_depth()` in `compute_known_bits_inner` differs from upstream's `Depth == MaxAnalysisRecursionDepth` in two ways — it admits one extra operator level (depth 6), and it sits *before* the constant fast path, so at depth 7 llvmkit returns unknown for a constant where upstream would return its exact value at any depth.
-
-<details><summary>Verification evidence</summary>
-
-C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/value_tracking.rs — the doc comment at 1715-1725 records the deliberate divergence verbatim, and the code at 1746-1779 confirms it: no depth gate, `compute_known_bits_inner(value_from_slot(value, incoming_value.get()), query, depth + 1, stack)`. The global guard at 499 is `if depth > query.max_depth()`, with `MAX_ANALYSIS_RECURSION_DEPTH: u32 = 6` at line 46. C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/ValueTracking.cpp — the `Instruction::PHI` arm of `computeKnownBitsFromOperator` shows `if (Depth < MaxAnalysisRecursionDepth - 1 && Known.isUnknown())` and the recursion `computeKnownBits(IncValue, DemandedElts, Known2, RecQ, MaxAnalysisRecursionDepth - 1)`; the `Instruction::UDiv` arm recurses at `Depth + 1` and calls `KnownBits::udiv`; the entry-point guard `if (Depth == MaxAnalysisRecursionDepth) return;` in `computeKnownBits` sits after the ConstantInt/ConstantData handling, with the comment "All recursive calls that increase depth must come after this." C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/Analysis/ValueTracking.h — `constexpr unsigned MaxAnalysisRecursionDepth = 6;` C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Support/KnownBits.cpp — `KnownBits::udiv` computes `MaxRes = MinDenom.isZero() ? MaxNum : MaxNum.udiv(MinDenom)` then `Known.Zero.setHighBits(MaxRes.countLeadingZeros())`, which gives 60 for numerator 9 at i64. C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/known_bits.rs `compute_for_udiv` is the identical port. C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/tests/fixtures/upstream/Analysis/ValueTracking/recurrence-knownbits.ll — `@test_udiv_neg` is `%iv = phi i64 [2, %entry], [%iv.next, %loop]` / `%iv.next = udiv i64 9, %iv`, CHECK keeps `and i64 [[IV]], 4`. C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/tests/value_tracking_recurrence.rs lists `("test_udiv_neg", None)` — it asserts only that `%res` is not a constant, never a leading-zero count. C:/Users/olegg/Desktop/llvmkit/docs/future-work.md:1103-1114 — the origin of the claim, including the incorrect "llvmkit proves 60 leading zeros where upstream proves none" sentence at line 1111.
-
-</details>
+- **llvmkit:** the gate is ported; the recursion is at `depth + 1`, so llvmkit can prove strictly more about a shallow phi than upstream does.
+- **Why:** `compute_known_bits_inner` memoizes on `(slot, query)` with no depth component, so entering an incoming value at a fixed deep depth would cache the weak answer computed there and hand it to a later shallow query. llvmkit also terminates by a different mechanism — the `stack` set rejects re-entering a value mid-computation — so the cap is not load-bearing for termination here.
+- **Fix:** Leave it until the known-bits cache becomes depth-keyed. At that point add the depth component to the memo key and adopt upstream's fixed-depth recursion.
+- **Divergence-W14 evidence for the two halves that closed:** `crates/llvmkit-asmparser/tests/value_tracking_depth.rs::an_operator_at_the_recursion_limit_is_not_walked` was watched failing on the pre-fix guard (it read 24 known leading zeros where upstream reads 0) and passes after; its sibling `a_constant_at_the_recursion_limit_still_reports_its_value` passes on both sides and says so in its own doc comment — it pins the *coupling* between the comparison and the fast path's placement, not a bug that was caught.
 
 ### 65. Two min/max matcher arms decline matches upstream accepts, rather than minting a constant — **WILL NOT CLOSE**
 
@@ -1419,7 +1378,6 @@ C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/value_tracking.rs — the d
 > gives these matchers a mutation-capable variant taking a module token — at
 > which point all three land together. It is recorded so the weaker answers are
 > not read as an oversight; do not re-triage it.
-
 
 *analysis* — crates/llvmkit-ir/src/select_pattern.rs:1210-1216 (`not_value`), :1449-1456 (`look_through_cast_arm`)
 
@@ -1448,7 +1406,6 @@ Claim is accurate and the divergence is unchanged in the working tree (`git stat
 > count guard. The `Fix:` bullet below records the two shapes a future
 > ergonomic improvement could take; neither is a defect to schedule.
 
-
 *IR model / Instructions* — crates/llvmkit-ir/src/instructions.rs:1430 (helper), crates/llvmkit-ir/src/instructions.rs:1637 (public `PhiInstDyn::remove_incoming` doc), crates/llvmkit-ir/src/phi_raw_tests/remove_incoming.rs:13
 
 - **LLVM:** `PHINode::removeIncomingValue(unsigned Idx, bool DeletePHIIfEmpty = true)` (`lib/IR/Instructions.cpp`) defaults to `true`: after `swap_remove`ing the entry, if the phi has no operands left it is `replaceAllUsesWith(PoisonValue)`d and `eraseFromParent()`ed. Callers that drop a predecessor rely on that.
@@ -1463,42 +1420,48 @@ crates/llvmkit-ir/src/instructions.rs:1430 `fn phi_remove_incoming` — body is 
 
 </details>
 
-### 67. Nothing ports `DIExpression::isValid()`, so no operand-arity check runs and the printer never takes upstream's raw-number branch — **NARROWED (2026-08-29)**
+### 67. `DIExpression::isValid()` is ported, but no verifier walk calls it — **NARROWED (2026-08-29); NARROWED AGAIN (divergence W14)**
 
-> **Triage 2026-08-29: narrowed to the half that is not entry 43.** The
-> *storage and normalisation* half — elements kept as source spelling, so a
-> numerically-written operand prints back as a number where `llvm-dis` prints a
-> name — is entry **43**, whose `Fix:` line already says the consequence
-> belongs here and must not be restated there. What is left, and is this
-> entry's whole content: (1) nothing performs `DIExpression::isValid()`'s
-> per-operation operand-count, fragment-must-be-last, stack_value and
-> entry_value checks, so a `DIExpression` **built through the IR API** (rather
-> than parsed) can hold an arbitrary `Operation(String)` that prints straight
-> back out — `Operation` is a public tuple variant, `with_expression_operands`
-> only `extend`s, and `verifier.rs` never mentions `DIExpression`; and (2)
-> upstream's `AsmWriter::writeDIExpression` *branches* on `isValid()` — a valid
-> expression prints operation names, an invalid one falls through to printing
-> the raw `uint64_t` elements — and llvmkit's writer has no such branch, so an
-> expression upstream would dump as bare numbers prints as names here.
+> **Divergence W14: the model and printer halves are closed.**
+> `llvmkit_ir::metadata::expression_is_valid` ports `DIExpression::isValid`
+> element for element, `expression_operand_size` ports
+> `DIExpression::ExprOperand::getSize`, and `DwarfExpressionOperand::element` /
+> `expression_elements` recover upstream's `uint64_t` element array from the
+> stored spellings through the drift-locked `crate::dwarf` tables. The
+> AsmWriter now carries `writeDIExpression`'s branch on `isValid()`: a valid
+> expression prints operation names, an invalid one prints the raw elements.
+> The two stale in-code comments (`ll_parser.rs`'s `parse_di_expression_body`
+> and `metadata.rs`'s `DwarfExpressionOperand`), which both claimed the
+> `Dwarf.def` tables were unmodelled and that an unrecognised `DW_OP` round-trips
+> rather than being rejected, are corrected in place.
 >
-> The *parse* path is not a gap and never was: it validates the spelling
-> against `llvmkit_ir::dwarf::operation_encoding` / `attribute_encoding` and
-> rejects an unknown one, matching upstream.
+> Two residuals, both narrower than what was here:
+>
+> 1. **Nothing calls it.** Upstream's `Verifier::visitDIExpression` is
+>    `CheckDI(N.isValid(), "invalid expression", &N)`, and llvmkit's verifier
+>    has no metadata-node walk at all to hang that on
+>    (`grep -n "MetadataKind::Specialized" crates/llvmkit-ir/src/verifier.rs`
+>    returns one hit, inside the module-flag `append` check). So a
+>    `DIExpression` **built through the IR API** can still hold an invalid
+>    operand list and print straight back out — it just now prints upstream's
+>    raw-number form when it does.
+> 2. **An unresolvable spelling has no raw form.** `Operation(String)` is a
+>    public tuple variant, so the IR API can store a `DW_OP` spelling no
+>    `Dwarf.def` table carries. `expression_elements` answers `None` for it and
+>    the writer falls back to printing the spelling, because there is no
+>    `uint64_t` to print. The parser cannot produce one.
+>
+> The *parse* path is not a gap and never was, and the reverse-normalisation
+> half — a numerically written element printing back as a number — is entry
+> **43**, not this one.
 
+*IR model / metadata, verifier* — crates/llvmkit-ir/src/metadata.rs (`expression_is_valid`), crates/llvmkit-ir/src/asm_writer.rs (the `writeDIExpression` branch), crates/llvmkit-ir/src/verifier.rs (no metadata walk)
 
-*IR model / metadata, parser* — crates/llvmkit-ir/src/metadata.rs:2100-2107 (model), crates/llvmkit-asmparser/src/ll_parser.rs:5440-5478 (parser), stale reasons at crates/llvmkit-asmparser/src/ll_parser.rs:5433-5439 and crates/llvmkit-ir/src/metadata.rs:2092-2099
-
-- **LLVM:** `LLParser::parseDIExpressionBody` maps each `DW_OP_*` / `DW_ATE_*` through `dwarf::getOperationEncoding` / `getAttributeEncoding` and stores a `uint64_t` in `DIExpression::Elements`. Downstream, `DIExpression::isValid()` walks those encodings and checks each operation's operand count and shape; `AsmWriter::writeDIExpression` prints them back by name.
-- **llvmkit:** `DwarfExpressionOperand::Operation(String)` keeps the written spelling. The parser does validate the spelling against `llvmkit_ir::dwarf::operation_encoding` / `attribute_encoding` and rejects an unknown one, so the *parse* path matches upstream — but the model itself carries no encodings, so nothing performs `DIExpression::isValid()`'s operand-arity checking, and a `DIExpression` built through the IR API (rather than parsed) can hold an arbitrary `Operation(String)` that prints straight back out.
-- **Why:** Recorded at `metadata.rs:2092-2099` and `ll_parser.rs:5433-5439`: the `Dwarf.def` tables were unmodelled when this landed, and `writeDIExpression` prints a known op back by name regardless, so the written form is what round-trips. Note the two recorded texts are now stale in opposite directions — `ll_parser.rs:5438` claims an unrecognised op "round-trips rather than being rejected" and `metadata.rs:2098` claims it is "accepted here where upstream rejects it", but the code immediately below `ll_parser.rs:5450` rejects it by name, and `dwarf.rs` does model the tables.
-- **Fix:** Two steps, in this order. First, correct the two stale comments (`crates/llvmkit-asmparser/src/ll_parser.rs` and `crates/llvmkit-ir/src/metadata.rs`, both still asserting today that the `Dwarf.def` tables are unmodelled and that an unknown `DW_OP` round-trips rather than being rejected — both false; `dwarf.rs` is a drift-locked transcription of `Dwarf.def` and the rejection sits sixteen lines below one of the comments). The backlog entry in `docs/future-work.md` is **not** stale and needs no edit. Second, port `DIExpression::isValid()` and give the printer upstream's branch on it. Storing the resolved encoding rather than the spelling is the natural way to do that, but that change is entry 43's — take them together or take `isValid()` against the spelling, either closes this entry.
-- **Correction from verification:** Accurate as written; two refinements. (1) The "stale reasons" charge applies only to the two in-code doc comments (crates/llvmkit-asmparser/src/ll_parser.rs:5433-5439 and crates/llvmkit-ir/src/metadata.rs:2092-2099), both of which assert the Dwarf.def tables are unmodelled and that an unknown DW_OP round-trips rather than being rejected — both false. The backlog entry at docs/future-work.md:1198-1212 is NOT stale: it correctly records that half the gap closed in LLParser-parity W11 (validation on the way in) and that only storage remains. (2) The printer consequence is broader than the claim states. Upstream's AsmWriter::writeDIExpression branches on isValid(): a valid expression prints operation names and decodes DW_OP_LLVM_convert's second argument through dwarf::AttributeEncodingString, while an INVALID one falls through to printing the raw uint64_t elements. llvmkit's writer (crates/llvmkit-ir/src/asm_writer.rs:3471-3482) has no such branch and prints the stored spelling unconditionally, so an expression upstream would dump as bare numbers prints as names here. The reverse normalisation also diverges: a numeric source element such as !DIExpression(15) prints back as 15 in llvmkit where llvm-dis prints the operation name that value encodes.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-ir/src/metadata.rs:2100-2107 defines `pub enum DwarfExpressionOperand { Operation(String), Literal(u64) }` — source spelling, no encoding, confirming the model half. crates/llvmkit-asmparser/src/ll_parser.rs:5455-5478 calls `llvmkit_ir::dwarf::operation_encoding(&name).is_none()` / `attribute_encoding(&name).is_none()` and returns ParseError::InvalidMetadataFieldValue on failure, then pushes `DwarfExpressionOperand::Operation(name)` — the encoding is looked up, tested, and thrown away; upstream LLParser.cpp `parseDIExpressionBody` (LLParser.cpp:6257-6297) performs the identical lookup via `dwarf::getOperationEncoding` / `getAttributeEncoding` but does `Elements.push_back(Op)`. Upstream Verifier.cpp:1813-1815 `visitDIExpression` is `CheckDI(N.isValid(), "invalid expression", &N)`, and DebugInfoMetadata.cpp:1725+ `DIExpression::isValid()` walks `expr_ops()` checking per-op operand counts, fragment-must-be-last, stack_value placement, and entry_value position. llvmkit has no equivalent: grepping `DiExpression|expression_operands|invalid expression` across crates/llvmkit-ir/src/ outside metadata.rs returns a single hit (asm_writer.rs:3573), and crates/llvmkit-ir/src/verifier.rs never mentions DIExpression. Nothing guards API construction: `Operation(String)` is a public tuple variant, `with_expression_operands` (metadata.rs:2198-2206) only `extend`s, `into_stored` (metadata.rs:2254-2256) is a plain move commented "Operands carry no metadata reference, so there is no tag to check", and asm_writer.rs:3477 emits `f.write_str(name)` verbatim. The staleness of the two cited comments is settled by crates/llvmkit-ir/src/dwarf.rs (675 lines of generated DW_* tables with `pub fn operation_encoding`/`attribute_encoding`, guarded by dwarf_def_drift.rs) and by the rejection code sitting 16 lines below ll_parser.rs:5439's claim that an unrecognised op "round-trips rather than being rejected".
-
-</details>
+- **LLVM:** `Verifier::visitDIExpression` is `CheckDI(N.isValid(), "invalid expression", &N)`, reached from the metadata-node walk `Verifier::visitMDNode` drives.
+- **llvmkit:** `expression_is_valid` exists and the printer branches on it, but no verifier path asks it, so an invalid expression built through the IR API verifies.
+- **Why:** llvmkit's verifier has no `visitMDNode` equivalent; adding one is the whole metadata-verification subsystem, not this check.
+- **Fix:** Port `Verifier::visitMDNode`'s dispatch far enough to reach the specialized-node visitors, then add `visitDIExpression`. `expression_is_valid` is already the predicate it needs.
+- **Divergence-W14 fixture:** `crates/llvmkit-ir/tests/di_expression.rs::is_valid` is `TEST_F(DIExpressionTest, isValid)` from `llvm/unittests/IR/MetadataTest.cpp`, ported verbatim, and it passes.
 
 ### 69. Shuffle mask transforms model the IR alphabet only — **WILL NOT CLOSE**
 
@@ -1512,7 +1475,6 @@ crates/llvmkit-ir/src/metadata.rs:2100-2107 defines `pub enum DwarfExpressionOpe
 > llvmkit spelling are listed in `tests/vector_utils_masks.rs` and should carry
 > `UPSTREAM.md` rows marked "no llvmkit spelling" so the coverage gap reads as
 > deliberate. Do not re-triage the transforms themselves.
-
 
 *analysis / VectorUtils* — crates/llvmkit-ir/src/vector_utils.rs:34-43 (module header), crates/llvmkit-ir/src/vector_utils.rs:208-213
 
@@ -1528,167 +1490,78 @@ crates/llvmkit-ir/src/instr_types.rs:2575-2613 — `pub enum ShuffleMaskElem { L
 
 </details>
 
-### 70. `simplifyPHINode`'s undef **and poison** blending is missing only where the common value is non-constant — **NARROWED (2026-08-29)**
+### 76. Unported APInt/APFloat upstream tests — **NARROWED (2026-08-29); NARROWED AGAIN (divergence W14)**
 
-> **Triage 2026-08-29: pending work, materially narrower than recorded, and
-> not blocked.** The `Why:` bullet's "documented as out of scope" is not a
-> blocker — `undef` and `poison` are both representable — and the entry's
-> blanket "an undef incoming makes the phi mixed, so the fold is declined"
-> overstates the pass-level effect. `InstSimplifyPass::run` calls
-> `constant_fold_instruction` first, and its `fold_phi` **does** skip undef and
-> poison incomings, so `phi [i32 7, undef]` folds to `7` today and an
-> all-undef/poison phi folds to undef. The surviving gap is exactly the case
-> where the common value is **not** a constant: `phi [%x, undef]` /
-> `phi [%x, poison]` with `%x` an instruction or argument — `fold_phi` bails at
-> the first non-constant incoming and `uniform_phi_value` then sees a mixed
-> phi. Poison blending is missing on the same path, which the entry omitted.
-
-
-*passes / InstSimplify* — crates/llvmkit-ir/src/inst_simplify.rs:78 (definition), reason at crates/llvmkit-ir/src/inst_simplify.rs:72-77
-
-- **LLVM:** `llvm::simplifyPHINode` folds a phi whose incomings are one common value *blended with* `undef` — `[X, undef]` simplifies to `X` — in addition to tolerating self-references.
-- **llvmkit:** `uniform_phi_value` ignores only self-referencing incomings; an `undef` incoming makes the phi mixed, so the fold is declined. llvmkit's InstSimplify pass simplifies strictly fewer phis.
-- **Why:** Recorded inline at `inst_simplify.rs:75-77`: "Undef blending (upstream folds `[X, undef]` to `X`) is deliberately not mirrored here; it is documented as out of scope." The recorded reason names a scope decision but not what blocks it — llvmkit does model `undef` constants, so the blocker is not obviously representational.
-- **Fix:** Extend `uniform_phi_value` to skip incomings that are `undef` **or `poison`** alongside self-references, returning `None` only when two distinct non-undef, non-poison, non-self values appear, and return the common value when at least one such incoming exists. Upstream guards that return with `valueDominatesPHI`, plus `isGuaranteedNotToBePoison` when an undef input is present; both are moot on the constant path `fold_phi` already covers and are load-bearing on the non-constant path this fix adds, so port them with it. Take the matching `test/Transforms/InstSimplify/phi.ll` cases in the same commit, choosing ones whose common value is **not** a constant — a constant-valued fixture passes today and would pin nothing. Also correct the `inst_simplify.rs` doc comment claiming the omission is out of scope.
-- **Correction from verification:** Real and still present, but narrower than described. Correct statement: upstream `llvm::simplifyPHINode` (InstructionSimplify.cpp) skips self-referencing, `PoisonValue`, and `Q.isUndefValue` incomings, so `[X, undef]` and `[X, poison]` fold to `X` (guarded by `valueDominatesPHI`, plus `isGuaranteedNotToBePoison` when an undef input is present). llvmkit's `uniform_phi_value` (crates/llvmkit-ir/src/inst_simplify.rs:78) skips only self-references, so an undef or poison incoming makes the phi mixed and the fold is declined. However, the claim's blanket "an undef incoming makes the phi mixed, so the fold is declined" overstates the pass-level effect: `InstSimplifyPass::run` calls `constant_fold_instruction` first (inst_simplify.rs:49), and its `fold_phi` (crates/llvmkit-ir/src/constant_folding.rs:1354-1383) DOES skip undef and poison incomings, so `phi [i32 7, undef]` folds to `7` today, and an all-undef/poison phi folds to undef. The surviving gap is exactly the case where the common value is a non-constant: `phi [%x, undef]` / `phi [%x, poison]` with `%x` an instruction or argument — `fold_phi` bails at the first non-constant incoming and `uniform_phi_value` then sees a mixed phi. The claim also omits that poison blending is missing on the same path, and that llvmkit's constant-path blending carries neither of upstream's dominance / not-poison guards (moot there, since constants satisfy both).
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-ir/src/inst_simplify.rs (working tree == HEAD; `git status --short` does not list this file): line 78 defines `fn uniform_phi_value`, its doc comment at 72-77 states verbatim that "Undef blending (upstream folds `[X, undef]` to `X`) is deliberately not mirrored here; it is documented as out of scope", and the loop at 86-95 `continue`s only on `value == self_value`, returning `None` on any second distinct incoming. orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/InstructionSimplify.cpp, `simplifyPHINode`: the incoming loop skips `Incoming == PN`, sets `HasPoisonInput` and continues on `isa<PoisonValue>`, sets `HasUndefInput` and continues on `Q.isUndefValue(Incoming)`, and only then bails on `CommonValue && Incoming != CommonValue`; a null `CommonValue` yields `UndefValue::get`/`PoisonValue::get`, and a non-null one with `HasPoisonInput || HasUndefInput` is returned after `valueDominatesPHI` and (for undef) `isGuaranteedNotToBePoison`. crates/llvmkit-ir/src/constant_folding.rs:364-379 shows `constant_fold_instruction` dispatching `InstructionKindData::Phi` to `fold_phi`, and `fold_phi` at 1354-1383 `continue`s on `is_undef(constant) || is_poison(constant)` (returning `ty.undef()` when nothing else remains) but returns `Ok(None)` as soon as an incoming is not a constant — which is what confines the divergence to non-constant common values. No other phi-simplification path exists: grep for `uniform_phi_value`/`simplifyPHINode` outside orig_cpp hits only this pass, its tests in crates/llvmkit-ir/tests/scalar_cleanup_passes.rs, and planning docs.
-
-</details>
-
-### 71. `getVScaleRange` is unported, and four recorded reasons say it is blocked when it is not — **NARROWED (2026-08-29)**
-
-> **Triage 2026-08-29: pending work; the row stays, its reason goes.**
-> Re-verified today: `getVScaleRange` genuinely has no port anywhere
-> (`grep -rn "vscale_range\|VScaleRange" crates/ --include=*.rs` returns the
-> attribute payload, its parser and its printer, and nothing that reads the
-> pair into a `ConstantRange`), so listing it as a gap is correct — only the
-> *stated reason* is false, in **four** places, one of which is production
-> source:
+> **Divergence W14: the three wrong headers and the undocumented gap are closed.**
+> `TEST(APIntTest, clmul)` is ported
+> (`ap_int_upstream_ops.rs::carryless_mul`, `UPSTREAM.md` row marked `port`).
+> `ap_int_upstream.rs`'s header no longer calls GCD, clmul and the rotate family
+> "APIs llvmkit does not have"; `ap_float_upstream_predicates.rs`'s no longer
+> says `FPClassTest` is unmodelled (it is `llvmkit_ir::fp_class::FpClassTest`,
+> and the `classify()` assertions live beside it in `fp_class.rs`);
+> `ap_float_from_string.rs`'s no longer cites a `docs/future-work.md` entry that
+> did not exist, no longer counts `makeNaN` among the unported fixtures, and the
+> backlog entry it claimed has now been written.
 >
-> - `crates/llvmkit-ir/tests/value_tracking_parity.rs`, the `VALUE_TRACKING_GAPS` row (still verbatim as quoted below)
-> - `crates/llvmkit-ir/src/value_tracking.rs`, the rustdoc on `is_known_to_be_a_power_of_two` — production source
-> - `docs/future-work.md`, **twice**: once adding a third false clause ("so the parser cannot even produce a function carrying one"), and again inside the milestone-3e table row
->
-> All of them rest on `attribute_td_drift.rs`'s `NOT_YET_MODELED`, which is
-> `&[]`, and on a "single u64 payload" that is really
-> `Attribute::VScaleRange { min: u32, max: Option<u32> }` — structurally
-> identical to upstream's own `(unsigned, std::optional<unsigned>)`.
-> `grep -n NOT_YET_MODELED ROADMAP.md docs/future-work.md crates/llvmkit-ir/src/value_tracking.rs crates/llvmkit-ir/tests/value_tracking_parity.rs`
-> is the census. An earlier correction to this entry named `ROADMAP.md` as a
-> fourth site; **that is no longer true** — ROADMAP now says the list is empty
-> and records that it "used to say 42 keywords remained". The fourth site is
-> the second `future-work.md` occurrence, which that correction missed.
+> What is left is what the 2026-08-29 triage already found still true, and every
+> row of it carries a recorded reason in `docs/future-work.md`: the
+> `Float8*` / `Float6*` / `Float4E2M1FN` / `FloatTF32` semantics and their
+> `APFloatTest.cpp` rows (`ApFloatSemantics` has seven variants);
+> `TEST(APIntTest, SolveQuadraticEquationWrap)` and the `tc*` primitives;
+> `nearestLogBase2`'s final `APInt(UINT32_MAX, 0)` row, dropped in place; and
+> the two `APFloat` string fixtures `fromHexadecimalString` /
+> `fromStringSpecials`, which `ap_float_from_string.rs` covers with
+> llvmkit-chosen boundary spellings rather than verbatim.
 
+*ADT ports* — crates/llvmkit-ir/tests/{ap_int_upstream_ops.rs, ap_float_upstream_predicates.rs, ap_float_from_string.rs}
 
-*ValueTracking parity ledger* — crates/llvmkit-ir/tests/value_tracking_parity.rs:495-498; contradicted by crates/llvmkit-asmparser/tests/attribute_td_drift.rs:34-38, crates/llvmkit-ir/src/attributes.rs:819-830, crates/llvmkit-asmparser/src/ll_parser.rs:9974-9981, crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:966-968
+- **LLVM:** `llvm/unittests/ADT/APFloatTest.cpp` covers `Float8*`, `Float6*`, `Float4E2M1FN` and `FloatTF32` semantics and the two string-parsing fixtures; `APIntTest.cpp` covers `SolveQuadraticEquationWrap` and the `tc*` word-level primitives.
+- **llvmkit:** those are not ported.
+- **Why:** each is recorded in `docs/future-work.md` with its reason — the semantics are genuine model additions, the `tc*` family is an internal API llvmkit deliberately does not expose, `SolveQuadraticEquationWrap` belongs with a SCEV port, and the two string fixtures are ordinary pending work.
+- **Fix:** the two `APFloat` string fixtures are the cheap half and need only be written down; the semantics are the expensive half and each is independent.
 
-- **LLVM:** `llvm::getVScaleRange` (`ValueTracking.h`) reads the `vscale_range` function attribute's (min, max) pair and returns a `ConstantRange`.
-- **llvmkit:** Listed in `VALUE_TRACKING_GAPS` as "blocked on the `vscale_range` attribute itself, which attribute_td_drift.rs lists as NOT_YET_MODELED: upstream reads a packed (min, max) pair and llvmkit's payload is a single u64, so porting it would mean inventing the second half." **Both halves of that reason are false today.** `attribute_td_drift.rs`'s `NOT_YET_MODELED` is `&[]` with a doc saying "**The list is empty**", and the payload is not a u64 — `Attribute::VScaleRange { min: u32, max: Option<u32> }` is a structured pair with an explicit note that `Option` is what keeps "unbounded" apart from "max defaults to min". `LLParser::parseVScaleRangeArguments` is ported as `parse_vscale_range_attribute`, and `vscale_range(1,16)` / `vscale_range(4,4)` round-trip in a passing test.
-- **Why:** Unrecorded — the row was never revised after `vscale_range` landed. This is the same failure mode `vector_utils_parity.rs` documents for its own table ("An earlier revision of this table recorded eight of these as blocked on 'needs `Intrinsic::ID`', and that reason was wrong").
-- **Corrected reason, to replace all four:** `getVScaleRange` is **unported but not blocked** — a pending port. Everything it needs exists: `Attribute::VScaleRange { min: u32, max: Option<u32> }`, `ConstantRange`, and function-attribute lookup.
-- **Fix:** Port `getVScaleRange` against `Attribute::VScaleRange { min, max }` — `max: None` maps to upstream's packed-`0` unbounded case — move the symbol from `VALUE_TRACKING_GAPS` to the modeled table (the surface-accounting assertion in `value_tracking_surface_is_accounted_for` keeps the counts honest), and port upstream's `ValueTrackingTest` vscale fixtures. The body is the arithmetic (bit-width poison check, `Option`-max handling, `ConstantRange` construction) plus its two call sites in `computeKnownBits` (the `Intrinsic::vscale` arm) and `getRangeForIntrinsic`. Correct all four recorded reasons in the same commit — a fix that leaves three of them standing has resolved nothing.
-- **Correction from verification:** Accurate as stated, and still present at HEAD (dev @ 2ac3e3a). Two refinements: (1) The gap row's *listing* is correct — there is no port of `getVScaleRange` anywhere in the tree (no `vscale_range`-reading function exists in `llvmkit-ir/src/value_tracking.rs` or elsewhere; a repo-wide grep for `fn vscale_range|vscale_range_min|vscale_range_max|pub fn .*vscale` returns zero matches). Only the row's stated *reason* is false. The fix is to rewrite the reason, not to delete the row. (2) The same stale premise appears in two places the claim does not cite, and one of them is production source, not a test: - `crates/llvmkit-ir/src/value_tracking.rs:2558-2559` — the rustdoc on `is_known_to_be_a_power_of_two` says the `vscale` arm is omitted because "`vscale_range` is on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list, so the attribute it reads does not exist here". Both clauses are false; the attribute is modeled and parsed. - `docs/future-work.md:748-753` — repeats the packed-`(min, max)`/`NOT_YET_MODELED`/"single-`u64` payload" reason and adds a third false clause, "so the parser cannot even produce a function carrying one", which `parser_attribute_matrix.rs` disproves by parsing, printing and re-parsing `vscale_range(1, 16)` and `vscale_range(4)`. Corrected reason for the row: `getVScaleRange` is unported but no longer blocked — it is a pending port. Everything it needs exists: `Attribute::VScaleRange { min: u32, max: Option<u32> }`, `ConstantRange`, and function-attribute lookup. What remains is the arithmetic body (bit-width poison check, `Option`-max handling, `ConstantRange` construction) plus its two call sites in `computeKnownBits` (the `Intrinsic::vscale` arm) and `getRangeForIntrinsic`. Side observation from the same grep, outside this claim's scope: `ROADMAP.md:837` still says the remaining unmodeled attribute keywords are "`NOT_YET_MODELED`, 42 today", which is also stale against the empty list.
+### 78. An already-defined `!DIAssignID !N` attachment survives here; on a reading of `LLParser.cpp` it is dropped upstream — **NARROWED (2026-08-29); FIXTURES ADDED (divergence W14)**
 
-<details><summary>Verification evidence</summary>
-
-Read all four cited anchors plus upstream. 1. `crates/llvmkit-ir/tests/value_tracking_parity.rs:495-498` — the row is verbatim as quoted, inside `VALUE_TRACKING_GAPS`: `("getVScaleRange", "blocked on the \`vscale_range\` attribute itself, which attribute_td_drift.rs lists as NOT_YET_MODELED: upstream reads a packed (min, max) pair and llvmkit's payload is a single u64, so porting it would mean inventing the second half")`. 2. `crates/llvmkit-asmparser/tests/attribute_td_drift.rs:29-38` — `const NOT_YET_MODELED: &[&str] = &[];`, with the doc reading "**The list is empty** — every attribute `Attributes.td` declares is accepted in every position it declares". So `vscale_range` is not on that list; nothing is. First half of the reason is false. 3. `crates/llvmkit-ir/src/attributes.rs:819-830` — the payload is `VScaleRange { min: u32, max: Option<u32> }`, not a `u64`, with a doc explicitly noting that upstream reserves `0` for unbounded and defaults a missing max to *min*, "and only the `Option` keeps them apart". Second half of the reason is false: the pair is already modeled, nothing needs inventing. 4. `crates/llvmkit-asmparser/src/ll_parser.rs:9976-9995` — `parse_vscale_range_attribute`, documented as porting `LLParser::parseVScaleRangeArguments`, parses `min`, defaults a missing max to `min`, and maps `0` to `None` via `(max > 0).then_some(max)` — mirroring `addVScaleRangeAttr(Min, Max > 0 ? Max : std::nullopt)`. 5. `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:961-979` — `the_argument_carrying_function_attributes_round_trip` drives `("vscale_range(1, 16)", "vscale_range(1,16)")` and `("vscale_range(4)", "vscale_range(4,4)")` through `parse_print_reparse`. 6. Upstream `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/ValueTracking.cpp:1279-1296` — `ConstantRange llvm::getVScaleRange(const Function *F, unsigned BitWidth)` does `F->getFnAttribute(Attribute::VScaleRange)`, then `Attr.getVScaleRangeMin()` and `std::optional<unsigned> AttrMax = Attr.getVScaleRangeMax()`; absent attribute gives `[1, 0)`, min wider than `BitWidth` gives empty, absent/too-wide max gives `[Min, 0)`, else `[Min, Max+1)`. Note upstream's own accessor pair is `(unsigned, std::optional<unsigned>)` — structurally identical to llvmkit's `(u32, Option<u32>)`, so the claimed representational mismatch does not exist in either direction. Callers at lines 2230, 2253 (`Intrinsic::vscale`) and 10163. 7. Repo-wide grep for `NOT_YET_MODELED` surfaced the two uncited repetitions of the same stale premise: `crates/llvmkit-ir/src/value_tracking.rs:2559` and `docs/future-work.md:750`. Grep for any vscale-range accessor or port in `crates/` returned nothing, confirming the entry point itself is still genuinely unmodeled.
-
-</details>
-
-### 76. Unported APInt/APFloat upstream tests, and three in-tree headers naming APIs that now exist — **NARROWED (2026-08-29)**
-
-> **Triage 2026-08-29: the residue is real, the reasons are half stale.**
-> Re-verified today. **Still unported, correctly:** the `Float8*` / `Float6*` /
-> `Float4E2M1FN` / `FloatTF32` semantics (`ApFloatSemantics` has exactly seven
-> variants) and their `APFloatTest.cpp` rows; `TEST(APIntTest,
-> SolveQuadraticEquationWrap)` and the `tc*` primitives, each recorded with a
-> reason; `nearestLogBase2`'s final `APInt(UINT32_MAX, 0)` row, deliberately
-> dropped in place; the two remaining `ApFloat` string fixtures.
-> **No longer true, and now the bulk of the work:** four APIs this entry names
-> as missing exist and their tests are ported — `greatest_common_divisor` with
-> `TEST(APIntTest, GCD)`, the `rotl`/`rotr` family with `TEST(APIntTest,
-> Rotate)`, `carryless_mul*` with `clmulr`/`clmulh`, and `FpClassTest::of` as
-> the port of `APFloat::classify()`. So three in-tree headers are factually
-> wrong today and are the actionable part of this entry:
-> `ap_int_upstream.rs` (GCD/clmul/rotate as "APIs llvmkit does not have"),
-> `ap_float_upstream_predicates.rs` (`FPClassTest` "which llvmkit does not
-> model"), and `ap_float_from_string.rs` (cites a `docs/future-work.md` entry
-> that does not exist — `grep -c "fromHexadecimalString\|fromStringSpecials"
-> docs/future-work.md` returns 0 — and says "three fixtures" when `makeNaN` is
-> now a genuine port, leaving two).
-> **One undocumented gap:** the plain `TEST(APIntTest, clmul)` is unported and,
-> unlike the other deferrals, is recorded nowhere.
-
-
-*ADT ports* — crates/llvmkit-ir/tests/ap_int_upstream.rs:5-9,390-396; crates/llvmkit-ir/tests/ap_int_upstream_ops.rs:82-87; crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs:5-10,205-206; crates/llvmkit-ir/tests/ap_float_from_string.rs:9-12
-
-- **LLVM:** `llvm/unittests/ADT/APIntTest.cpp` covers `GCD`, `SolveQuadraticEquationWrap`, `clmul`, the rotate family and the `tc*` word-level primitives; `APFloatTest.cpp` covers `Float8*`, `Float6*`, `Float4E2M1FN` and `FloatTF32` semantics and asserts through `classify() -> FPClassTest`.
-- **llvmkit:** Those tests are not ported. `ap_int_upstream.rs` states the APIs do not exist; `ap_float_upstream_predicates.rs` omits the unmodeled semantics and notes each `classify()` line as unmodeled rather than approximating it with the coarser `ApFloatCategory`. `TEST(APIntTest, nearestLogBase2)`'s final `APInt(UINT32_MAX, 0)` row is deliberately dropped (half a gigabyte to re-check an answer an adjacent row already checks). The three `APFloat` string-parsing fixtures are marked `llvmkit-specific subset` rather than claiming to be ports.
-- **Why:** Recorded in every case, at the module-doc level, with the missing API or semantics named. `docs/future-work.md` holds the APFloat-string remainder.
-- **Fix:** Lowest-cost first: correct the three stale headers listed in the triage note above, and give the plain `TEST(APIntTest, clmul)` either a port or a recorded reason. Then restore the omitted `classify()` assertions — `FpClassTest::of(&ApFloat)` already exists, so this is writing them down, not building anything — and port the two remaining `APFloat` string fixtures verbatim. The `Float8*`/`Float6*`/`Float4E2M1FN`/`FloatTF32` semantics, `SolveQuadraticEquationWrap` and the `tc*` primitives are genuine model additions, each independent.
-- **Correction from verification:** A residue of unported ADT tests is still real, but the claim's specifics are substantially stale on both halves. STILL TRUE: - `ApFloatSemantics` (crates/llvmkit-ir/src/ap_float.rs:14-22) has exactly seven variants (IeeeHalf, Bfloat, IeeeSingle, IeeeDouble, IeeeQuad, X87DoubleExtended, PpcDoubleDouble). `Float8*`, `Float6*`, `Float4E2M1FN` and `FloatTF32` are unmodeled and their `APFloatTest.cpp` rows are unported; the header note at ap_float_upstream_predicates.rs:5-7 is accurate. - `TEST(APIntTest, SolveQuadraticEquationWrap)` and the `tc*` primitives (e.g. `tcDecrement`) are still unported, and docs/future-work.md:492,498 records each with a reason. - `TEST(APIntTest, nearestLogBase2)`'s final `APInt(UINT32_MAX, 0)` row is still deliberately dropped, documented in place at ap_int_upstream_ops.rs:82-87. - ap_float_from_string.rs:1-12 still marks itself `llvmkit-specific subset`, and all its UPSTREAM.md rows (1834-1841) carry that label rather than `port`. NOW FALSE — the claim names four APIs as unmodeled/unported that llvmkit has since gained: 1. GCD: `ApInt::greatest_common_divisor` exists (ap_int.rs:1161) and `TEST(APIntTest, GCD)` is ported verbatim at ap_int_upstream_ops.rs:719-721, with an UPSTREAM.md row marked `port` (line 1921). 2. Rotate family: `rotl`, `rotr`, `rotl_by`, `rotr_by` exist (ap_int.rs:835-869) and `TEST(APIntTest, Rotate)` is ported at ap_int_upstream_ops.rs:123-125 (UPSTREAM.md:1907, `port`). 3. clmul: `carryless_mul` / `carryless_mul_reversed` / `carryless_mul_high` exist (ap_int.rs:930/943/953), and `TEST(APIntTest, clmulr)` and `TEST(APIntTest, clmulh)` are ported (ap_int_upstream_ops.rs:868, 891). Only the plain `TEST(APIntTest, clmul)` (upstream APIntTest.cpp:3826) is still unported — and unlike the other deferrals it is NOT recorded in the future-work.md table, so it is an undocumented gap rather than a deliberate one. 4. classify()/FPClassTest: llvmkit DOES model it. `crates/llvmkit-ir/src/fp_class.rs` ports `llvm::FPClassTest` as `FpClassTest`, and `FpClassTest::of(&ApFloat)` (fp_class.rs:223-250) is the port of `APFloat::classify()`. The `classify()` assertions from `TEST(APFloatTest, isSignaling)` and `TEST(APFloatTest, isDenormal)` are ported as fp_class.rs unit tests at lines 1347 and 1369. Consequently three in-tree comments are now factually wrong and should be corrected: - ap_int_upstream.rs:5-9 still says GCD, clmul and the rotate family are "APIs llvmkit does not have". - ap_float_upstream_predicates.rs:8-10 and :205-206 still say `FPClassTest` is "a finer classification than llvmkit's ApFloatCategory ... which llvmkit does not model". - ap_float_from_string.rs:11-12 says the verbatim port of those fixtures "is recorded as remaining work in docs/future-work.md"; no such entry exists there (grep for fromHexadecimalString/fromStringSpecials/makeNaN returns nothing), and that document instead declares the whole ApFloat/ApInt audit closed as of 2026-08-01. That header also says "three fixtures", but one of the three — `TEST(APFloatTest, makeNaN)` — is now a genuine port (UPSTREAM.md:1851, ap_float_upstream_predicates.rs::make_nan), leaving two.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-ir/tests/ap_int_upstream.rs:5-9 — header still lists GCD/clmul/rotate as APIs llvmkit lacks; crates/llvmkit-ir/src/ap_int.rs:835-869, 930-954, 1161 — rotl/rotr/rotl_by/rotr_by, carryless_mul/_reversed/_high, greatest_common_divisor all exist as public methods citing APIntOps; crates/llvmkit-ir/tests/ap_int_upstream_ops.rs:123, 719, 868, 891 — "Port of TEST(APIntTest, Rotate)/(GCD)/(clmulr)/(clmulh)"; UPSTREAM.md:1907, 1921, 1924, 1925 — those four rows labeled `port`. crates/llvmkit-ir/src/fp_class.rs:3, 28, 223-250 — FpClassTest ports llvm::FPClassTest and FpClassTest::of(&ApFloat) reproduces APFloat::classify's five arms; fp_class.rs:1342-1405 — the classify() assertions from isSignaling and isDenormal ported as tests. crates/llvmkit-ir/src/ap_float.rs:14-22 — ApFloatSemantics has only seven variants, confirming Float8*/Float6*/Float4/TF32 are unmodeled (a repo-wide grep for Float8E/Float6E/Float4E2M1FN/FloatTF32 hits only the test comment). orig_cpp/.../llvm/unittests/ADT/APIntTest.cpp:1565, 1655, 1754, 2812, 3424, 3826, 3854, 3882 — upstream Rotate, tcDecrement, nearestLogBase2, GCD, SolveQuadraticEquationWrap, clmul, clmulr, clmulh. docs/future-work.md:480-499 — the audit section is marked closed (2026-08-01) and its deferral table lists tcDecrement and SolveQuadraticEquationWrap but not clmul, GCD or rotate. crates/llvmkit-ir/tests/ap_int_upstream_ops.rs:82-87 and ap_float_from_string.rs:1-12 — the nearestLogBase2 drop and the llvmkit-specific-subset framing are verbatim as claimed. git log shows commit 1701b58 "feat(apint)!: finish the APIntTest sweep" is what closed the APInt half after the claim was recorded.
-
-</details>
-
-### 78. An already-defined `!DIAssignID !N` attachment survives here and is dropped upstream — **NARROWED (2026-08-29)**
-
-> **Triage 2026-08-29: the recorded half will not close; a different,
-> confirmed divergence replaces it.**
->
-> **Will not close — structural, and nothing observable is lost.** llvmkit
-> resolves metadata forward references by reserve-then-fill on a stable
-> `MetadataId` (`resolve_md_slot` → `metadata_reserve`, `define_md_slot` →
-> `metadata_set`), so there are no temporary MDNodes and no
+> **The recorded RAUW half will not close — structural, and nothing observable
+> is lost.** llvmkit resolves metadata forward references by reserve-then-fill
+> on a stable `MetadataId` (`resolve_md_slot` → `metadata_reserve`,
+> `define_md_slot` → `metadata_set`), so there are no temporary MDNodes and no
 > `replaceAllUsesWith` anywhere in the parser. Upstream needs the DIAssignID
 > special case *only* because `Instruction::setMetadata(MD_DIAssignID, …)`
 > maintains `LLVMContextImpl::AssignmentIDToInstrs` via
 > `updateDIAssignIDMapping`, a side map a temporary RAUW cannot fix —
 > `LLParser.h` says so in as many words. llvmkit has no `AssignmentIDToInstrs`
-> equivalent (`grep -rn "AssignmentIDToInstrs\|assignment_id_to_instr\|assignment_tracking" crates/`
+> equivalent
+> (`grep -rn "AssignmentIDToInstrs\|assignment_id_to_instr\|assignment_tracking" crates/`
 > returns nothing), so the machinery has nothing to protect. The gap becomes
 > real only if llvmkit ports assignment tracking; that is the trigger.
 >
-> **Real, confirmed, and in the opposite direction.** Upstream's
-> `parseInstructionMetadata` pushes to `TempDIAssignIDAttachments[N]`
-> *unconditionally* when `MDK == MD_DIAssignID` and never calls
-> `Inst.setMetadata` on that path, while the drain in `parseStandaloneMetadata`
-> runs only inside the `ForwardRefMDNodes.find` hit. So an attachment whose
-> `!N` was **already defined earlier in the file** is pushed, never drained, and
-> silently dropped by `llvm-as`. llvmkit has no `MD_DIAssignID` branch at all —
-> `skip_trailing_metadata` calls `inst.set_metadata(...)` for every kind — so it
-> attaches the node in both orderings. **Probed 2026-08-29, llvmkit side only:**
-> `%a = alloca i32, align 4, !DIAssignID !0` reprints the attachment whether
-> `!0 = distinct !DIAssignID()` sits above the function or below it. The
-> upstream half is a *reading of `LLParser.cpp`*, not an observation — no
-> `llvm-as` was run — and it says `llvm-as | llvm-dis` keeps the attachment only
-> in the forward-referenced ordering, because that is the only one the drain
-> sees. Confirm it against a real `llvm-as` before acting on it.
-> That is a **wrong-output** difference on the already-defined ordering, and the
-> open question is which way to resolve it — this file's precedent (entry 92,
-> `riscv_vls_cc`) is that an upstream bug is reproduced deliberately, and no
-> llvmkit fixture exercises a `!DIAssignID !N` instruction attachment at all.
+> **The residual is an opposite-direction difference, and its upstream half is
+> still a *reading*.** `parseInstructionMetadata` pushes to
+> `TempDIAssignIDAttachments[N]` *unconditionally* when `MDK == MD_DIAssignID`
+> and never calls `Inst.setMetadata` on that path, while the drain in
+> `parseStandaloneMetadata` runs only inside the `ForwardRefMDNodes.find` hit.
+> On that reading, an attachment whose `!N` was **already defined earlier in the
+> file** is pushed, never drained, and silently dropped by `llvm-as`. **No
+> `llvm-as` has been run against it.** llvmkit has no `MD_DIAssignID` branch at
+> all — `skip_trailing_metadata` calls `inst.set_metadata(..)` for every kind —
+> so it attaches the node in both orderings.
+>
+> **Divergence W14:** both orderings are now pinned by fixtures
+> (`crates/llvmkit-asmparser/tests/di_assign_id_attachment.rs`), which assert
+> **llvmkit's** answer only and say in their own doc comments that the upstream
+> half is unexecuted. That closes the "unexercised in the tree in either
+> arrangement" half of the old `Fix:` line. What it does not do is settle which
+> way to resolve the difference: this file's precedent (entry 92,
+> `riscv_vls_cc`) is that an upstream bug is reproduced deliberately, and that
+> decision needs a real `llvm-as` run first.
 
+*metadata parser* — crates/llvmkit-asmparser/src/ll_parser.rs (`skip_trailing_metadata`, the only attachment path; the `missing 'distinct', required for !DIAssignID()` guard is the only DIAssignID site)
 
-*metadata parser* — crates/llvmkit-asmparser/src/ll_parser.rs:5344-5350 (the only DIAssignID site)
-
-- **LLVM:** `LLParser` collects instructions carrying a forward-referenced `!DIAssignID` attachment in `TempDIAssignIDAttachments` and RAUWs the temporary nodes when the real node is defined (`validateEndOfModule`).
-- **llvmkit:** Only the `missing 'distinct', required for !DIAssignID()` rejection exists (landed W7 part 5); no DIAssignID-specific attachment RAUW appears in the parser — the generic metadata forward-reference map is all there is. Verified by grep: `DIAssignID` occurs in ll_parser.rs only around the distinct check.
-- **Why:** Recorded as still open at W7 ("the `TempDIAssignIDAttachments` RAUW machinery … is metadata-layer work and belongs with W11"). The routing was a hypothesis and it was wrong: the machinery is not deferred work, it is machinery llvmkit's forward-reference model does not need. See the triage note above.
-- **Fix:** Nothing for the RAUW machinery. For the residual: decide whether to reproduce upstream's silent drop (this file's standing precedent for an upstream bug) or to keep llvmkit's attachment and record the difference, then pin the choice with a fixture — an `!DIAssignID !N` instruction attachment is unexercised in the tree in either arrangement, forward-referenced or already-defined, so both need one.
-- **Correction from verification:** Still present, with two corrections to the description. (1) Upstream's RAUW drain lives in `LLParser::parseStandaloneMetadata`, not `validateEndOfModule` — `TempDIAssignIDAttachments` has exactly three sites in LLVM 22.1.4 (LLParser.h declaration, push in `parseInstructionMetadata`, drain in `parseStandaloneMetadata`) and `validateEndOfModule` never names it. (2) The absence in llvmkit is structural, not an oversight: llvmkit resolves metadata forward references by reserve-then-fill on a stable `MetadataId` (`resolve_md_slot` -> `metadata_reserve`, `define_md_slot` -> `metadata_set`), so there are no temporary MDNodes and no `replaceAllUsesWith` anywhere in the parser. Upstream needs the DIAssignID special case only because `Instruction::setMetadata(MD_DIAssignID, ...)` maintains `LLVMContextImpl::AssignmentIDToInstrs` via `updateDIAssignIDMapping`, a side map that a temporary RAUW cannot fix (LLParser.h: "DIAssignID metadata does not support temporary RAUW so we cannot use the normal metadata forward reference resolution method"). llvmkit has no `AssignmentIDToInstrs` equivalent at all, so nothing observable is lost by the omission today; the gap becomes real only if llvmkit ports assignment tracking. Additional finding not in the claim: upstream pushes to `TempDIAssignIDAttachments[N]` unconditionally and drains only the forward-referenced entry, so a `!DIAssignID !N` attachment whose `!N` was already defined earlier in the file is silently dropped by upstream while llvmkit attaches it — a genuine behavioral divergence, but in the opposite direction from a missing feature.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-asmparser/src/ll_parser.rs: lines 5344-5350 remain the only DIAssignID site (the `missing 'distinct', required for !DIAssignID()` guard in `parse_specialized_metadata_body`) — cited range still exact. The instruction-attachment loop is `skip_trailing_metadata` (lines 6089-6123, doc-commented "Mirrors the metadata-attachment loop in LLParser::parseInstructionMetadata"); it calls `inst.set_metadata(self.module, MetadataAttachmentKind::from_name(&name), id)` for every kind with no MD_DIAssignID branch and no deferral list. Forward refs: `resolve_md_slot` (line 1347) mints `module.metadata_reserve()`; `define_md_slot` (line 1363) later `metadata_set`s the same id — no temporary, no RAUW. crates/llvmkit-ir/src/instruction.rs:764-773: `set_metadata` is a plain `self.data().metadata.borrow_mut().insert(kind, id)`. Grep for `AssignmentIDToInstrs|assignment_id_to_instr|assignment_tracking` across crates/: no matches. Upstream: orig_cpp/.../llvm/include/llvm/AsmParser/LLParser.h:128 declares `DenseMap<MDNode*, SmallVector<Instruction*,2>> TempDIAssignIDAttachments` with the "does not support temporary RAUW" comment; LLParser.cpp:2383 pushes in `parseInstructionMetadata` (`if (MDK == LLVMContext::MD_DIAssignID) TempDIAssignIDAttachments[N].push_back(&Inst); else Inst.setMetadata(MDK, N);`); LLParser.cpp:1030-1038 drains inside `parseStandaloneMetadata` under `if (isa<DIAssignID>(Init))` before `ToReplace->replaceAllUsesWith(Init)`. lib/IR/Metadata.cpp:1757 shows why — `MD_DIAssignID` routes through `updateDIAssignIDMapping` into `getContext().pImpl->AssignmentIDToInstrs`, asserting `!Node->isTemporary()`. `LLParser::parseMDNodeID` returns the real node when the id is already in `NumberedMetadata`, which is what makes upstream's unconditional push drop already-defined-node attachments. No llvmkit fixture exercises a `!DIAssignID !N` instruction attachment (grep over crates/*/tests found only standalone `distinct !DIAssignID()` definitions in parser_debug_metadata.rs and the dbg-record-invalid fixtures).
-
-</details>
+- **LLVM:** on the reading above, `llvm-as` keeps a `!DIAssignID` instruction attachment only in the forward-referenced ordering.
+- **llvmkit:** keeps it in both.
+- **Why:** llvmkit's forward-reference model does not need the special case, so no branch was ever written; the difference in the already-defined ordering is a consequence, not a decision.
+- **Fix:** run `llvm-as | llvm-dis` on the already-defined ordering and confirm or refute the reading. If it is confirmed, decide between reproducing the drop (this file's precedent for an upstream bug) and keeping llvmkit's attachment as a documented improvement, then update the fixture that pins the chosen answer.
 
 ### 80. `attr_kind_for_keyword` is a hand-written table, not generated from `Attributes.td` — **NARROWED (W13)**
 
@@ -1735,7 +1608,6 @@ crates/llvmkit-asmparser/src/ll_parser.rs: lines 5344-5350 remain the only DIAss
 > string→`Keyword` map would sidestep that; nobody has costed it. **Not
 > scheduled** — it buys no behaviour the guard does not already hold.
 
-
 *parser — attributes* — crates/llvmkit-asmparser/src/ll_parser.rs (`attr_kind_for_keyword`), crates/llvmkit-ir/src/attributes.rs, crates/llvmkit-asmparser/tests/attribute_td_drift.rs, crates/llvmkit-asmparser/tablegen/llvm-22.1.4/Attributes.td
 
 - **LLVM:** `LLParser::tokenToAttribute` is generated from `llvm/IR/Attributes.td`, so a new attribute cannot be silently missing.
@@ -1775,7 +1647,6 @@ Claim #85 is REAL and STILL PRESENT; the description is accurate on every materi
 > The law is a guard, not a fix; three implementations of one routine are still
 > three, and the next diagnostic added to one of them can diverge again.
 
-
 *IR model* — crates/llvmkit-ir/src/instructions.rs (`indexed_aggregate_type`), crates/llvmkit-ir/src/ir_builder.rs (`walk_aggregate_for_builder`), crates/llvmkit-ir/src/verifier.rs (`walk_aggregate_path`)
 
 - **LLVM:** `ExtractValueInst::getIndexedType` is one routine, used by the parser, the builder and the verifier alike.
@@ -1787,51 +1658,6 @@ Claim #85 is REAL and STILL PRESENT; the description is accurate on every materi
 <details><summary>Verification evidence</summary>
 
 Upstream, C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/IR/Instructions.cpp — `ExtractValueInst::getIndexedType(Type *Agg, ArrayRef<unsigned> Idxs)` is a single ~20-line loop (array: `Index >= AT->getNumElements()` -> nullptr; struct: `Index >= ST->getNumElements()` -> nullptr; anything else -> nullptr). Its callers confirm the "one routine, three consumers" half of the claim: the parser calls it in `LLParser::parseExtractValue` / `parseInsertValue` (LLParser.cpp), the builder path calls it from the `ExtractValueInst` constructor via `checkGEPType(getIndexedType(...))` in include/llvm/IR/Instructions.h plus the `InsertValueInst::init` assert in Instructions.cpp, and the verifier calls it in `Verifier::visitExtractValueInst` / `visitInsertValueInst` (Verifier.cpp). llvmkit, all three copies read in the working tree (none touched by the uncommitted diff — `git diff -U0` on instructions.rs/ir_builder.rs shows no hunk mentioning `aggregate` or `indexed`): - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/instructions.rs:4011 `pub fn indexed_aggregate_type` — walks `AnyTypeEnum`, array arm `u64::from(index) >= array.len()`, struct arm `structure.field_type(...)` (derived_types.rs:1113, which returns `None` for an opaque body). Its own rustdoc at instructions.rs:4008 admits "Two private near-copies of this walk exist, in `ir_builder.rs` and `verifier.rs`". Only callers are the parser: ll_parser.rs:12655 and :12722, producing "invalid indices for extractvalue"/"...insertvalue". - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/ir_builder.rs:10528 `fn walk_aggregate_for_builder` — same walk over `TypeData`, returns `IrError::AggregateIndexOutOfRange` / `IrError::TypeMismatch`; called at ir_builder.rs:3423 (`extract_value_dyn`), :3490 (`insert_value_dyn`), :3520. - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/verifier.rs:3525 `fn walk_aggregate_path` with `enum AggWalkErr { NotAggregate, OutOfRange }` at :3520; called at verifier.rs:1537 (`check_extract_value`) and :1577 (`check_insert_value`). Not a fourth copy: `constant_fold.rs::constant_fold_extract_value_instruction` / `..._insert_value_instruction` walk constant *elements*, mirroring upstream's `ConstantFoldExtractValueInstruction`, not the type walk. The ledger entry is still open and unedited at C:/Users/olegg/Desktop/llvmkit/docs/future-work.md:76-94, including the "Not urgent: all three currently agree" line that my refinement above corrects.
-
-</details>
-
-### 83. Private `Type`-predicate duplicates were never consolidated onto the public ports — **NARROWED (2026-08-29)**
-
-> **Triage 2026-08-29: pending work; the entry's upstream framing is wrong and
-> its own correction is now partly stale too.** The four upstream routines the
-> `LLVM:` bullet names are precisely the ones llvmkit did *not* duplicate —
-> `Type::isSized`, `Type::isScalableTy`, `CastInst::castIsValid` and the
-> `isValid*Type` family each have exactly one definition here, and W4's
-> `type_contains_scalable_vector` consolidation genuinely landed (that
-> identifier no longer appears in `crates/`). The surviving duplication is
-> entirely in the `isIntOrIntVectorTy` / `isPtrOrPtrVectorTy` /
-> `isFPOrFPVectorTy` / `getScalarType` family, which upstream defines **inline
-> in `Type.h`**, not in `Type.cpp`.
->
-> Re-counted 2026-08-29 with
-> `grep -rn "fn is_int_or_int_vector\|fn is_ptr_or_ptr_vector\|fn is_fp_or_fp_vector_type\|fn is_integer_or_integer_vector\|fn is_float_or_float_vector\|fn scalar_type_data\|fn scalar_type_id\|fn is_vector" crates/llvmkit-ir/src crates/llvmkit-asmparser/src`:
-> private copies live in `ll_parser.rs` (three), `constants.rs` (three),
-> `intrinsics.rs` (four), `ir_builder.rs` (two methods), `ir_builder/constant_folder.rs`,
-> `implied_conditions.rs`, `value_tracking.rs` and `verifier.rs` (two).
-> A previous correction said `is_fp_or_fp_vector_type` had "no public
-> counterpart"; `Type::is_float_or_float_vector` exists today, so that half is
-> closed and the parser copy is now a pure shadow like the rest.
->
-> Severity nuance for scheduling: `constant_folder.rs`'s copy takes a
-> `Type<'_, B>` view — the exact receiver of the public method — and the
-> parser's take one too (the same file already calls `ty.is_valid_pointer_element()`),
-> so those are pure shadows with no layering excuse. Only `constants.rs`,
-> `value_tracking.rs` and `verifier.rs` have a defense: they take
-> `&ModuleCore + TypeSlot`, a layer below where a `Type` view is
-> constructible, so consolidating them is not a pure deletion.
-
-
-*IR model* — crates/llvmkit-asmparser/src/ll_parser.rs; crates/llvmkit-ir/src/{constants.rs, intrinsics.rs, ir_builder/constant_folder.rs, assumptions.rs, implied_conditions.rs}
-
-- **LLVM:** `Type::isSized`, `Type::isScalableTy`, `CastInst::castIsValid` and the `isValid*Type` family are each one routine in `llvm/IR/Type.cpp` / `Instructions.cpp`.
-- **llvmkit:** W4 (`a8b619c`) landed seven public `Type` predicates plus `cast_is_valid`, but private near-copies remain: `is_int_or_int_vector_type` and `is_ptr_or_ptr_vector_type` local in `ll_parser.rs`, plus duplicates recorded in `constants.rs`, `intrinsics.rs`, `ir_builder/constant_folder.rs`, `assumptions.rs`, `implied_conditions.rs`.
-- **Why:** Recorded under "follow-ups deliberately not folded into parity commits". W4.5 had to fix the three `type_contains_scalable_vector` copies because they were all wrong (missing the target-extension arm, the cycle guard, or recursing where upstream does not) — the remaining copies were left because they were not load-bearing for a diagnostic at the time.
-- **Fix:** Delete each private copy in favour of the public predicate, checking each against its upstream counterpart first — the W4 lesson is that a predicate llvmkit already has may be answering a different question.
-- **Correction from verification:** Still present, but the upstream framing is wrong and the file list needs two corrections. The four upstream routines the claim names as the point of comparison are precisely the ones llvmkit did NOT duplicate. Each has exactly one definition in the tree and no private near-copies: Type::isSized -> Type::is_sized (type.rs:604); Type::isScalableTy -> Type::is_scalable (type.rs:615, with derived_types.rs:1006 being VectorType::isScalable, a genuinely different predicate that type.rs:608-614 explicitly distinguishes); CastInst::castIsValid -> cast_is_valid (instructions.rs:3883, one definition, one external caller at ll_parser.rs:8589); the isValid*Type family -> Type::is_valid_{struct,array,vector,pointer}_element (type.rs:712/725/732/747, all called from ll_parser.rs). W4's type_contains_scalable_vector consolidation genuinely landed - that identifier no longer appears anywhere in crates/. Corrected statement: the surviving duplication is entirely in the isIntOrIntVectorTy / isPtrOrPtrVectorTy / isFPOrFPVectorTy / getScalarType family, which upstream defines INLINE IN Type.h (lines 246, 250, 270), not in Type.cpp. W4 landed public ports as Type::is_int_or_int_vector (type.rs:686), Type::is_ptr_or_ptr_vector (type.rs:691), Type::is_vector (type.rs:535) and Type::scalar_type (type.rs:633), and then consolidated nothing onto them. Twelve private near-copies remain: ll_parser.rs:818 (is_int_or_int_vector_type), :870 (is_ptr_or_ptr_vector_type), :828 (is_fp_or_fp_vector_type, no public counterpart exists); constants.rs:2512, :2391, :2362; intrinsics.rs:2033 (is_integer_or_integer_vector), :2040 (is_float_or_float_vector), :2056 (is_vector), :2066 (scalar_type_data); ir_builder/constant_folder.rs:679; implied_conditions.rs:1200 (is_vector). Two refinements to the claim's cited file list. (1) assumptions.rs:1168 and implied_conditions.rs:1206 are the weakest entries: is_int_or_int_vector_of_width_one ports Type::isIntOrIntVectorTy(1), the bit-width overload, which llvmkit has no public port of at all - so those two duplicate each other, not an existing public port. (2) The list omits two further slot-level copies of Type::scalar_type: value_tracking.rs:1164 and verifier.rs:3488, both named scalar_type_id. Severity nuance the claim does not draw: constant_folder.rs:679 takes a Type<'_, B> view - the exact receiver type of the public method - so it is a pure shadow with no layering excuse, as are the parser's two (ll_parser.rs:6453 already calls ty.is_valid_pointer_element(), proving public Type methods are reachable from that file). Only constants.rs's copies have a real defense: they take &ModuleCore + TypeSlot, a layer below where a Type view is constructible, so consolidating them would not be a pure deletion.
-
-<details><summary>Verification evidence</summary>
-
-Decisive single fact: grep for callers of the public predicates `is_int_or_int_vector()` / `is_ptr_or_ptr_vector()` across crates/ returns exactly one file - crates/llvmkit-ir/src/instructions.rs (i.e. cast_is_valid itself). Every other consumer in the workspace calls a local copy. Files read: - crates/llvmkit-ir/src/type.rs:580-760 - the public ports: is_sized (604), is_scalable (615), scalar_type (633), is_int_or_int_vector (686, `self.scalar_type().is_integer()`), is_ptr_or_ptr_vector (691), is_valid_struct/array/vector/pointer_element (712/725/732/747), is_vector (535). Free slot-level helpers is_sized/is_scalable at 934/1011 are private to type.rs. - crates/llvmkit-asmparser/src/ll_parser.rs:818-883 - private `is_int_or_int_vector_type` (matches on AnyTypeEnum::Int / Vector-with-integer-element), `is_fp_or_fp_vector_type`, `is_ptr_or_ptr_vector_type`; called at :8566, :8764, :11370, :11535, :12160. Same file calls the public `ty.is_valid_pointer_element()` at :6453/:6921/:11817 and `llvmkit_ir::cast_is_valid` at :8589, so the public Type surface is demonstrably reachable there. - crates/llvmkit-ir/src/constants.rs:2362 (scalar_type_id), :2391 (is_ptr_or_ptr_vector), :2512 (is_int_or_int_vector) - all `(&ModuleCore, TypeSlot)`-shaped; ~10 call sites at :1903, :2090-2133, :2242, :2300-2305. - crates/llvmkit-ir/src/intrinsics.rs:2033-2069 - is_integer_or_integer_vector, is_float_or_float_vector, is_vector, scalar_type_data. - crates/llvmkit-ir/src/ir_builder/constant_folder.rs:679-690 - `fn is_int_or_int_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool`, same receiver type as the public method, called at :624. - crates/llvmkit-ir/src/assumptions.rs:1166-1175 and implied_conditions.rs:1199-1217 - both carry the rustdoc "Ports `Type::isIntOrIntVectorTy(1)`"; implied_conditions.rs:1200 also has a bare `is_vector`. - grep "type_contains_scalable_vector" across crates/ - zero hits, confirming that W4 consolidation did land. Upstream confirmed: - orig_cpp/.../llvm/include/llvm/IR/Type.h:246 `isIntOrIntVectorTy()`, :250 the `(unsigned BitWidth)` overload, :270 `isPtrOrPtrVectorTy()` - all inline in the header, not Type.cpp. - orig_cpp/.../llvm/lib/IR/Type.cpp:61/69 Type::isScalableTy, :263 isSizedDerivedType, :703/765/789/875 the four isValidElementType. - orig_cpp/.../llvm/lib/IR/Instructions.cpp:3312 CastInst::castIsValid. Context: docs/future-work.md:76-94 records the identical shape for the aggregate index walk ("one port, three callers"; "a predicate with three implementations is one diagnostic away from having three behaviours") and cites W4's type_contains_scalable_vector as the precedent - but there is no future-work entry covering the Type int/ptr/fp/scalar predicate family.
 
 </details>
 
@@ -1849,7 +1675,6 @@ Decisive single fact: grep for callers of the public predicates `is_int_or_int_v
 > trigger, not a backlog row. One thing to fix whenever this is next touched:
 > the doc comment on `AllocationType` states the power-of-two OR rationale
 > while the type offers no OR and cannot hold the result.
-
 
 *IR model — summary index* — crates/llvmkit-ir/src/module_summary_index.rs
 
@@ -1934,7 +1759,6 @@ Files read: `C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_lexe
 > are recorded so the missing `Check`s are not read as oversights. The check
 > comes back if a future change ever stores a result element type; that is the
 > trigger, not a backlog row.
-
 
 *verifier / IR model* — crates/llvmkit-ir/src/verifier.rs (`check_gep`); crates/llvmkit-ir/src/instr_types.rs (`GepInstData`)
 

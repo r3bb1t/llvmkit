@@ -186,8 +186,10 @@ date:
   modeling all of it and would mean generating part of the 700-variant
   `Keyword` enum. The guard gives the same "cannot silently drift" property —
   verified red-green in both directions — at a fraction of the cost. Growing
-  the modeled set is now a matter of deleting lines from that list, which
-  currently names 42 attributes.
+  the modeled set is a matter of deleting lines from that list; the list is now
+  empty (`const NOT_YET_MODELED: &[&str] = &[];` in
+  `crates/llvmkit-asmparser/tests/attribute_td_drift.rs`). This paragraph used
+  to say it named 42 attributes.
 
 ### Why this was first — the 2026-07-27 measurement (historical)
 

@@ -13,8 +13,8 @@ use super::{
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::derived_types::{FloatType, IntType};
 use crate::float_kind::FloatKind;
-use crate::instr_types::OverflowFlags;
 use crate::instr_types::ShuffleMaskElem;
+use crate::instr_types::{ExactFlags, OverflowFlags};
 use crate::int_width::IntWidth;
 use crate::value::{FloatValue, IntValue, Typed};
 
@@ -56,17 +56,20 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         Ok(None)
     }
 
-    /// The builder only ever calls this with exactness implied by the
-    /// method (there is no non-exact caller), so unlike upstream's
-    /// `FoldExactBinOp(Instruction::BinaryOps, Value *, Value *, bool
-    /// IsExact)` there is no `is_exact` parameter to thread.
+    /// Mirrors `IRBuilderFolder::FoldExactBinOp(Instruction::BinaryOps,
+    /// Value *, Value *, bool IsExact)`. `exact` carries upstream's
+    /// `IsExact` parameter — the four `udiv` / `sdiv` / `lshr` / `ashr`
+    /// emitters reach this hook whether or not the bit is set, exactly as
+    /// `IRBuilder::CreateUDiv` and friends call `FoldExactBinOp` with their
+    /// `isExact` default of `false`.
     fn fold_exact_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
+        exact: ExactFlags,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        let _ = (opcode, lhs, rhs);
+        let _ = (opcode, lhs, rhs, exact);
         Ok(None)
     }
 
@@ -274,8 +277,9 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         opcode: BinaryOpcode,
         lhs: IntValue<'ctx, W, B>,
         rhs: IntValue<'ctx, W, B>,
+        exact: ExactFlags,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
-        let folded = self.fold_exact_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased())?;
+        let folded = self.fold_exact_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased(), exact)?;
         narrow_folded_int(folded, lhs)
     }
 

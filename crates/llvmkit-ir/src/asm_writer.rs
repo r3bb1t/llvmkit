@@ -3886,8 +3886,28 @@ fn fmt_specialized_metadata_node(
     }
     write!(f, "!{}(", node.kind().name())?;
     // `DIExpression` prints a positional element list, not `name: value` pairs.
-    // Mirrors `AsmWriter.cpp::writeDIExpression`.
+    // Mirrors `AsmWriter.cpp::writeDIExpression`, including its branch on
+    // `N->isValid()`: a valid expression prints operation names, an invalid one
+    // falls through to printing the raw `uint64_t` elements.
     if let super::metadata::SpecializedMetadataBody::Expression(operands) = node.body() {
+        let elements = super::metadata::expression_elements(operands);
+        let valid = elements
+            .as_deref()
+            .is_some_and(super::metadata::expression_is_valid);
+        if !valid && let Some(elements) = elements {
+            // `for (const auto &I : N->getElements()) Out << FS << I;`
+            for (i, element) in elements.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{element}")?;
+            }
+            return f.write_str(")");
+        }
+        // An operand whose spelling no `Dwarf.def` table carries has no
+        // `uint64_t` to print at all, so the raw branch is unreachable for it
+        // and the spelling is written back instead. Only the IR API can build
+        // one; the parser rejects the spelling.
         for (i, operand) in operands.iter().enumerate() {
             if i > 0 {
                 f.write_str(", ")?;

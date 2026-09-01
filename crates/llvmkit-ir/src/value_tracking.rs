@@ -21,6 +21,7 @@ use crate::constant_range::{
 };
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
+use crate::function::FunctionValue;
 use crate::instr_types::{
     AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CastOpData,
     CastOpcode, CmpInstData, ExtractElementInstData, GepInstData, InsertElementInstData, LshrFlags,
@@ -28,12 +29,15 @@ use crate::instr_types::{
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
+use crate::marker::ReturnMarker;
 use crate::metadata::MetadataAttachmentKind;
-use crate::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef};
+use crate::module::{DynBrand, ModuleBrand, ModuleRef};
 use crate::pass_context::FunctionView;
 use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
-use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
+// `Type::getScalarType` is ported once, at the slot layer, in `type.rs`;
+// `scalar_type_slot` is an import, not a local definition.
+use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, scalar_type_slot};
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::vector_utils::splat_value;
 use crate::{ApInt, IrResult, KnownBits, ShiftAmountKnowledge};
@@ -512,7 +516,28 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    if depth > query.max_depth() {
+    // Upstream's constant fast path runs *before* the recursion cutoff.
+    // `computeKnownBits` answers `m_APInt` with `KnownBits::makeConstant`,
+    // `ConstantPointerNull` / `ConstantAggregateZero` with `setAllZero` and
+    // `UndefValue` with `resetAll`, returning from each; only afterwards does
+    // `if (Depth == MaxAnalysisRecursionDepth) return;` gate the recursive
+    // walk, under the comment "All recursive calls that increase depth must
+    // come after this." A constant therefore reports its exact value at any
+    // depth, and -- like upstream's early `return` -- never reaches
+    // `computeKnownBitsFromContext`. The recursive constant arms
+    // (`ConstantExpr`, aggregates) are *not* part of that fast path upstream
+    // either: a `ConstantExpr` is an `Operator`, so it goes through
+    // `computeKnownBitsFromOperator` below the cutoff.
+    if let ValueKindData::Constant(constant) = &value.data().kind
+        && let Some(known) = leaf_constant_known_bits(constant, width)
+    {
+        return Ok(known);
+    }
+    // Upstream writes this as `Depth == MaxAnalysisRecursionDepth`, resting on
+    // the `assert(Depth <= MaxAnalysisRecursionDepth)` above it. llvmkit takes
+    // no runtime panics in production paths, so the assert and the equality
+    // are folded into one comparison rather than dropped.
+    if depth >= query.max_depth() {
         return Ok(KnownBits::unknown(width));
     }
     if stack.contains(&value.slot()) {
@@ -548,6 +573,23 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     Ok(known)
 }
 
+/// The non-recursive half of the constant arm: the cases upstream's
+/// `computeKnownBits` answers *above* its `Depth == MaxAnalysisRecursionDepth`
+/// cutoff. `None` for the arms that are `Operator`s or aggregates upstream and
+/// so sit below it.
+fn leaf_constant_known_bits(constant: &ConstantData, width: u32) -> Option<KnownBits> {
+    Some(match constant {
+        // `match(V, m_APInt(C))` -> `KnownBits::makeConstant(*C)`.
+        ConstantData::Int(words) => KnownBits::from_ap_int(ApInt::from_words(width, words)),
+        // `isa<ConstantPointerNull>(V)` -> `Known.setAllZero()`.
+        ConstantData::PointerNull => KnownBits::from_ap_int(ApInt::zero(width)),
+        // `isa<UndefValue>(V)` -> `Known.resetAll(); return;`. `PoisonValue`
+        // derives from `UndefValue`, so it lands on the same arm.
+        ConstantData::Undef | ConstantData::Poison => KnownBits::unknown(width),
+        _ => return None,
+    })
+}
+
 fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     constant: &ConstantData,
@@ -556,17 +598,29 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    // The leaf arms (`m_APInt`, `ConstantPointerNull`, `UndefValue`) are
+    // answered by `leaf_constant_known_bits` above the recursion cutoff in
+    // `compute_known_bits_inner`, exactly as upstream answers them above its
+    // `Depth == MaxAnalysisRecursionDepth` return; this dispatch reads them
+    // from the same helper rather than restating them.
+    if let Some(known) = leaf_constant_known_bits(constant, width) {
+        return Ok(known);
+    }
     Ok(match constant {
-        ConstantData::Int(words) => KnownBits::from_ap_int(ApInt::from_words(width, words)),
-        ConstantData::PointerNull => KnownBits::from_ap_int(ApInt::zero(width)),
         ConstantData::Expr(expr) => {
             compute_constant_expr_known_bits(value, expr, query, depth, stack)?
         }
-        ConstantData::Undef | ConstantData::Poison => KnownBits::unknown(width),
         ConstantData::Aggregate(elements) => {
             aggregate_constant_known_bits(value, elements, query, depth, stack)?
         }
-        ConstantData::Float(_)
+        // Answered above, by `leaf_constant_known_bits`; listed so a new
+        // `ConstantData` variant is a non-exhaustive-match error here rather
+        // than a silent `unknown`.
+        ConstantData::Int(_)
+        | ConstantData::PointerNull
+        | ConstantData::Undef
+        | ConstantData::Poison
+        | ConstantData::Float(_)
         | ConstantData::GlobalValueRef { .. }
         | ConstantData::ForwardRefPlaceholder
         | ConstantData::GepOffset { .. }
@@ -881,7 +935,7 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = value.module();
     let module = module_view.core_ref();
     let store = module_view.metadata_store();
-    let expected_ty = scalar_type_id(module, value.ty().id);
+    let expected_ty = scalar_type_slot(module, value.ty().id);
     let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id.slot(), expected_ty)
     else {
         return KnownBits::unknown(bit_width);
@@ -898,7 +952,7 @@ fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx>(
         return KnownBits::unknown(bit_width);
     };
     let module_view = value.module();
-    let expected_ty = scalar_type_id(module_view.core_ref(), value.ty().id);
+    let expected_ty = scalar_type_slot(module_view.core_ref(), value.ty().id);
     let ranges = stored.iter().filter_map(|attr| match attr {
         AttributeStored::Range { ty, lower, upper } if *ty == expected_ty => {
             let range = ConstantRange::new(lower.clone(), upper.clone()).ok()?;
@@ -1229,8 +1283,90 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let mask = arg_bits(1, stack)?.anyext_or_trunc(width);
             Ok(KnownBits::bitand(&ptr, &mask))
         }
+        IntrinsicSemantic::Vscale => {
+            // `if (!II->getParent() || !II->getFunction()) break;` then
+            // `Known = getVScaleRange(II->getFunction(), BitWidth).toKnownBits();`
+            let Some(function) = enclosing_function(anchor) else {
+                return Ok(KnownBits::unknown(width));
+            };
+            Ok(get_vscale_range(function, width)?.to_known_bits())
+        }
         _ => Ok(KnownBits::unknown(width)),
     }
+}
+
+/// The range `vscale` can take inside `function`, read off its
+/// `vscale_range` function attribute.
+///
+/// Ports `llvm::getVScaleRange` (`ValueTracking.cpp`). Upstream's
+/// `Attribute::getVScaleRangeMin` / `getVScaleRangeMax` pair is
+/// `AttributeStorage::vscale_range` here, and upstream's
+/// `std::optional<unsigned>` max — where a packed `0` means "unbounded" — is
+/// already an `Option<u32>` in [`crate::Attribute::VScaleRange`].
+///
+/// Fallible where upstream is not, for the reason
+/// [`ConstantRange::new`](crate::ConstantRange::new) is: upstream asserts its
+/// `Lower != Upper || isFullSet || isEmptySet` invariant in the
+/// `ConstantRange` constructor and llvmkit returns the error instead. The one
+/// input that can trip it is a `vscale_range(min, max)` with `max + 1 == min`,
+/// which the verifier rejects.
+pub fn get_vscale_range<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, R, B>,
+    bit_width: u32,
+) -> IrResult<ConstantRange> {
+    let Some((attr_min, attr_max)) = function_vscale_range(function.as_erased()) else {
+        // Without vscale_range, we only know that vscale is non-zero.
+        return ConstantRange::new(ApInt::from_words(bit_width, &[1]), ApInt::zero(bit_width));
+    };
+
+    // Minimum is larger than vscale width, result is always poison.
+    if bit_width_u32(attr_min) > bit_width {
+        return Ok(ConstantRange::empty(bit_width));
+    }
+
+    let min = ApInt::from_words(bit_width, &[u64::from(attr_min)]);
+    match attr_max {
+        // `APInt(BitWidth, *AttrMax) + 1`: `attr_max` is known to fit in
+        // `bit_width` by the test above, so adding one before the truncation
+        // `from_words` performs is the same modular result.
+        Some(attr_max) if bit_width_u32(attr_max) <= bit_width => ConstantRange::new(
+            min,
+            ApInt::from_words(bit_width, &[u64::from(attr_max) + 1]),
+        ),
+        _ => ConstantRange::new(min, ApInt::zero(bit_width)),
+    }
+}
+
+/// The `vscale_range` pair on `function`, if that value really is a function
+/// and carries the attribute. Ports `F->getFnAttribute(Attribute::VScaleRange)`.
+fn function_vscale_range<'ctx, B: ModuleBrand + 'ctx>(
+    function: Value<'ctx, B>,
+) -> Option<(u32, Option<u32>)> {
+    let ValueKindData::Function(data) = &function.data().kind else {
+        return None;
+    };
+    data.attributes.borrow().vscale_range(AttrIndex::Function)
+}
+
+/// `match(V, m_VScale())`: a call to `@llvm.vscale`.
+fn is_vscale_call<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    let callee = match instruction_kind(value) {
+        Some(InstructionKindData::Call(data)) => data.callee.get(),
+        Some(InstructionKindData::Invoke(data)) => data.callee.get(),
+        _ => return false,
+    };
+    intrinsic_semantic_for_callee(value, callee) == Some(IntrinsicSemantic::Vscale)
+}
+
+/// The function an instruction belongs to, as a handle. `II->getFunction()` /
+/// `Q.CxtI->getFunction()`; the walk itself is
+/// [`crate::known_fp_class::enclosing_function_slot`], which already ports
+/// `Instruction::getFunction`.
+fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
+    instruction: Value<'ctx, B>,
+) -> Option<FunctionValue<'ctx, crate::marker::Dyn, B>> {
+    let slot = crate::known_fp_class::enclosing_function_slot(instruction)?;
+    FunctionValue::try_from(value_from_slot(instruction, slot)).ok()
 }
 
 fn argument_constant<'ctx, B: ModuleBrand + 'ctx>(value: Option<Value<'ctx, B>>) -> Option<ApInt> {
@@ -1251,13 +1387,6 @@ fn bit_width_u32(value: u32) -> u32 {
         0
     } else {
         u32::BITS - value.leading_zeros()
-    }
-}
-
-fn scalar_type_id(module: &ModuleCore, ty: TypeSlot) -> TypeSlot {
-    match module.context().type_data(ty) {
-        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
-        _ => ty,
     }
 }
 
@@ -1805,17 +1934,20 @@ fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
 /// - The `m_Br(m_c_ICmp(..))` refinement that narrows an incoming value by the
 ///   branch condition guarding its edge.
 ///
-/// One piece is deliberately **not** copied. Upstream gates the intersection
-/// loop on `Depth < MaxAnalysisRecursionDepth - 1` and then recurses at the
-/// fixed depth `MaxAnalysisRecursionDepth - 1`, capping the search under an
-/// incoming value at one level so it does not "spin around in loops". llvmkit
-/// recurses at `depth + 1` instead, because it already terminates by a
-/// different mechanism — the `stack` set rejects re-entering a value that is
-/// mid-computation — and because [`compute_known_bits_inner`] memoizes on
-/// `(slot, query)` with no depth component. Entering an incoming value at a
-/// fixed deep depth would cache the weak answer computed there and hand it to
-/// a later shallow query of the same value. The result is that llvmkit can
-/// answer *more* precisely than upstream for a shallow phi, never less.
+/// One piece is deliberately **not** copied, and it is narrower than the whole
+/// guard. Upstream gates the intersection loop on
+/// `Depth < MaxAnalysisRecursionDepth - 1` **and** then recurses at the fixed
+/// depth `MaxAnalysisRecursionDepth - 1`, capping the search under an incoming
+/// value at one level so it does not "spin around in loops". The *gate* is
+/// ported below. The *fixed recursion depth* is not: llvmkit recurses at
+/// `depth + 1`, because it already terminates by a different mechanism — the
+/// `stack` set rejects re-entering a value that is mid-computation — and
+/// because [`compute_known_bits_inner`] memoizes on `(slot, query)` with no
+/// depth component. Entering an incoming value at a fixed deep depth would
+/// cache the weak answer computed there and hand it to a later shallow query
+/// of the same value. The result is that llvmkit can answer *more* precisely
+/// than upstream for a shallow phi, never less; keying the known-bits cache by
+/// depth is what makes the fixed depth portable.
 fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &PhiData,
@@ -1837,8 +1969,10 @@ fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // Otherwise take the intersection of the incoming known-bit sets, taking
-    // conservative care to avoid excessive recursion.
-    if !known.is_unknown() {
+    // conservative care to avoid excessive recursion. Upstream's guard is
+    // `if (Depth < MaxAnalysisRecursionDepth - 1 && Known.isUnknown())`; both
+    // halves are ported.
+    if depth >= query.max_depth().saturating_sub(1) || !known.is_unknown() {
         return Ok(known);
     }
     // `None` until the first non-self incoming is folded in, which is what
@@ -2644,12 +2778,11 @@ where
 /// Ports `llvm::isKnownToBeAPowerOfTwo` (`ValueTracking.cpp`). `or_zero`
 /// widens the claim to "a power of two, or zero".
 ///
-/// Three of upstream's sources are not consulted, each because llvmkit does
+/// Two of upstream's sources are not consulted, each because llvmkit does
 /// not model the input rather than because the reasoning was skipped, and each
 /// omission only makes the answer weaker: the `@llvm.assume` refinement (no
-/// `AssumptionCache`), the dominating-condition refinement (no `DomConditionCache`),
-/// and the `vscale` arm (`vscale_range` is on `attribute_td_drift.rs`'s
-/// `NOT_YET_MODELED` list, so the attribute it reads does not exist here).
+/// `AssumptionCache`) and the dominating-condition refinement (no
+/// `DomConditionCache`).
 pub fn is_known_to_be_a_power_of_two<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     or_zero: bool,
@@ -2683,6 +2816,17 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let Some(kind) = instruction_kind(value) else {
         return Ok(false);
     };
+
+    // `if (Q.CxtI && match(V, m_VScale()))` -- the presence of a
+    // `vscale_range` attribute on the *context instruction's* function is
+    // itself the proof, because the attribute indicates vscale is a
+    // power of two.
+    if let Some(context) = query.context_instruction()
+        && is_vscale_call(value)
+    {
+        return Ok(enclosing_function(context)
+            .is_some_and(|function| function_vscale_range(function.as_erased()).is_some()));
+    }
 
     // `1 << X` is a power of two unless the one is shifted off the end, in
     // which case the result is poison rather than wrong.

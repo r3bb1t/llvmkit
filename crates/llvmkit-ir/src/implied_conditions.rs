@@ -222,15 +222,15 @@ fn is_implied_condition_decomposed_at_depth<'ctx, B: ModuleBrand + 'ctx>(
 
     // A mismatch occurs when a scalar compare is weighed against a vector one.
     // A bare literal is never a vector.
-    let rhs_is_vector = rhs_op0.value().is_some_and(is_vector);
-    if rhs_is_vector != is_vector(lhs) {
+    let rhs_is_vector = rhs_op0.value().is_some_and(|value| value.ty().is_vector());
+    if rhs_is_vector != lhs.ty().is_vector() {
         return None;
     }
 
     // Upstream asserts `LHS->getType()->isIntOrIntVectorTy(1)`. A caller that
     // hands over a non-boolean condition has broken the contract; declining is
     // the honest answer where upstream aborts, and no arm below could fire.
-    if !is_int_or_int_vector_of_width_one(lhs) {
+    if !lhs.ty().is_int_or_int_vector_of_width(1) {
         return None;
     }
 
@@ -960,7 +960,7 @@ fn logical_operands<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     want_and: bool,
 ) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
-    if !is_int_or_int_vector_of_width_one(value) {
+    if !value.ty().is_int_or_int_vector_of_width(1) {
         return None;
     }
     match instruction_kind(value)? {
@@ -1194,17 +1194,6 @@ fn constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Ap
         ValueKindData::Constant(ConstantData::Int(words)) => Some(ApInt::from_words(bits, words)),
         _ => None,
     }
-}
-
-/// Whether the value's type is a vector.
-fn is_vector<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
-    value.ty().data().as_vector().is_some()
-}
-
-/// Whether the value's type is `i1` or a vector of `i1`. Ports
-/// `Type::isIntOrIntVectorTy(1)`.
-fn is_int_or_int_vector_of_width_one<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
-    matches!(scalar_kind(value), Some(TypeKind::Integer { bits: 1 }))
 }
 
 /// The kind of the value's scalar type, peeling one vector layer.

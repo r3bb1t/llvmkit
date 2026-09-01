@@ -372,6 +372,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "getUnderlyingObjectsForCodeGen",
         "underlying_objects_for_code_gen",
     ),
+    ("getVScaleRange", "get_vscale_range"),
     ("haveNoCommonBitsSet", "have_no_common_bits_set"),
     ("impliesPoison", "implies_poison"),
     ("intrinsicPropagatesPoison", "intrinsic_propagates_poison"),
@@ -491,10 +492,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "getIntrinsicForCallSite",
         "pending, not blocked. This row previously read 'no public intrinsic-id type', which was wrong: IntrinsicId is public, generated-backed and spans the whole intrinsic space; the pub(crate) type is IntrinsicSemantic, a 31-name subset, and the two were conflated. vector_utils.rs now ports five Intrinsic::ID functions against the public type. What is genuinely left here is the library-function half — upstream maps ~60 LibFunc values onto intrinsics and gates them on CallBase::onlyReadsMemory",
-    ),
-    (
-        "getVScaleRange",
-        "blocked on the `vscale_range` attribute itself, which attribute_td_drift.rs lists as NOT_YET_MODELED: upstream reads a packed (min, max) pair and llvmkit's payload is a single u64, so porting it would mean inventing the second half",
     ),
     (
         "isOverflowIntrinsicNoWrap",
@@ -742,10 +739,10 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         compute_max_significant_bits, compute_num_sign_bits, compute_overflow_for_signed_add,
         compute_overflow_for_signed_mul, compute_overflow_for_signed_sub,
         compute_overflow_for_unsigned_add, compute_overflow_for_unsigned_mul,
-        compute_overflow_for_unsigned_sub, have_no_common_bits_set, implies_poison,
-        is_known_inversion, is_known_negation, is_known_negative, is_known_non_equal,
-        is_known_non_negative, is_known_non_zero, is_known_not_poison, is_known_not_undef,
-        is_known_not_undef_or_poison, is_known_one, is_known_positive,
+        compute_overflow_for_unsigned_sub, get_vscale_range, have_no_common_bits_set,
+        implies_poison, is_known_inversion, is_known_negation, is_known_negative,
+        is_known_non_equal, is_known_non_negative, is_known_non_zero, is_known_not_poison,
+        is_known_not_undef, is_known_not_undef_or_poison, is_known_one, is_known_positive,
         is_known_to_be_a_power_of_two, is_known_zero, is_only_used_in_zero_comparison,
         is_only_used_in_zero_equality_comparison, is_sign_bit_check, masked_value_is_zero,
         propagates_poison,
@@ -768,6 +765,8 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _compute_overflow_for_unsigned_add = compute_overflow_for_unsigned_add::<DynBrand>;
     let _compute_overflow_for_unsigned_mul = compute_overflow_for_unsigned_mul::<DynBrand>;
     let _compute_overflow_for_unsigned_sub = compute_overflow_for_unsigned_sub::<DynBrand>;
+    // Takes a `FunctionValue<R, B>`, so both markers have to be named.
+    let _get_vscale_range = get_vscale_range::<llvmkit_ir::Dyn, DynBrand>;
     let _is_known_non_zero = is_known_non_zero::<DynBrand>;
     let _masked_value_is_zero = masked_value_is_zero::<DynBrand>;
     let _have_no_common_bits_set = have_no_common_bits_set::<DynBrand>;

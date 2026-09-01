@@ -977,24 +977,6 @@ fn check_value_id(
     Ok(())
 }
 
-fn is_int_or_int_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
-    match AnyTypeEnum::from(ty) {
-        AnyTypeEnum::Int(_) => true,
-        AnyTypeEnum::Vector(v) => v.element().is_integer(),
-        _ => false,
-    }
-}
-
-/// Whether `ty` is what `isa<FPMathOperator>` accepts: a floating-point scalar
-/// or a vector of them.
-fn is_fp_or_fp_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
-    match AnyTypeEnum::from(ty) {
-        AnyTypeEnum::Float(_) => true,
-        AnyTypeEnum::Vector(v) => v.element().is_floating_point(),
-        _ => false,
-    }
-}
-
 /// Mirrors `AtomicCmpXchgInst::isValidSuccessOrdering`.
 fn cmpxchg_success_ordering_is_valid(ordering: AtomicOrdering) -> bool {
     !matches!(
@@ -1027,14 +1009,6 @@ fn atomicrmw_op_is_floating_point(op: AtomicRmwBinOp) -> bool {
             | AtomicRmwBinOp::Fmaximum
             | AtomicRmwBinOp::Fminimum
     )
-}
-
-fn is_ptr_or_ptr_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
-    match AnyTypeEnum::from(ty) {
-        AnyTypeEnum::Pointer(_) => true,
-        AnyTypeEnum::Vector(v) => v.element().is_pointer(),
-        _ => false,
-    }
 }
 
 fn vector_shape_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<(u32, bool)> {
@@ -5864,11 +5838,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ///
     /// Upstream maps each `DW_OP_*` / `DW_ATE_*` through
     /// `dwarf::getOperationEncoding` / `getAttributeEncoding` and stores a
-    /// `uint64_t`. llvmkit stores the written spelling — the `Dwarf.def` tables
-    /// are unmodelled (`docs/future-work.md`) and `AsmWriter.cpp`'s
-    /// `writeDIExpression` prints a known op back by name regardless — so an
-    /// operation llvmkit does not recognise round-trips rather than being
-    /// rejected. That is the one deliberate divergence here.
+    /// `uint64_t`. llvmkit stores the written spelling and recovers the
+    /// encoding on demand (`DwarfExpressionOperand::element`), because
+    /// `llvmkit_ir::dwarf` is a drift-locked transcription of the same
+    /// `Dwarf.def` tables. A spelling those tables do not carry is **rejected**
+    /// here, by name, exactly as upstream rejects it — see the two arms below.
+    ///
+    /// (This comment used to say the `Dwarf.def` tables were unmodelled and
+    /// that an unrecognised operation round-tripped rather than being
+    /// rejected. Both halves were false, the second contradicted by the code
+    /// sixteen lines below it.)
+    ///
+    /// What the spelling model still costs is *normalisation*: a numerically
+    /// written element prints back as a number where `llvm-dis` prints the
+    /// operation name that value encodes.
     fn parse_di_expression_body(
         &mut self,
         distinct: bool,
@@ -9322,7 +9305,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(id_loc, "operands of constexpr must have same type")
                     );
                 }
-                if !is_int_or_int_vector_type(lhs.ty()) {
+                if !lhs.ty().is_int_or_int_vector() {
                     return Err(self.message_at(
                         id_loc,
                         "constexpr requires integer or integer vector operands",
@@ -9522,7 +9505,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
         let mut gep_width = vector_shape_type(base.ty());
         for index in indices {
-            if !is_int_or_int_vector_type(index.ty()) {
+            if !index.ty().is_int_or_int_vector() {
                 return Err(self.message("getelementptr index must be an integer"));
             }
             if let Some(index_shape) = vector_shape_type(index.ty()) {
@@ -12419,7 +12402,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `parseLogical`'s — the two differ only in wording, and upstream
         // routes `and` / `or` / `xor` through the second. Neither existed
         // here: a non-integer operand reached the builder.
-        if !is_int_or_int_vector_type(ty) {
+        if !ty.is_int_or_int_vector() {
             let message = if matches!(op, IntBinOp::And | IntBinOp::Or | IntBinOp::Xor) {
                 "instruction requires integer or integer vector operands"
             } else {
@@ -12434,7 +12417,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // convert. Upstream has one path for both (`LLParser::parseArithmetic`
         // hands the operands straight to `BinaryOperator::Create`); the split
         // here is llvmkit's typed-handle layer, not a grammar difference.
-        if is_vector_type(ty) {
+        if ty.is_vector() {
             let name = result_name.as_str();
             let flags = int_binop_flags(nuw, nsw, exact, disjoint_or);
             let v = b
@@ -12584,7 +12567,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `LLParser::parseCompare` accepts integers **and pointers** here
         // (`isIntOrIntVectorTy() || isPtrOrPtrVectorTy()`); `icmp eq ptr %a,
         // %b` is ordinary IR that a scalar-integer-only path rejected.
-        if !is_int_or_int_vector_type(ty) && !is_ptr_or_ptr_vector_type(ty) {
+        if !ty.is_int_or_int_vector() && !ty.is_ptr_or_ptr_vector() {
             return Err(self.message_at(operand_loc, "icmp requires integer operands"));
         }
 
@@ -12592,7 +12575,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // the result is `<N x i1>`, which no `IntValueId<bool, B>` describes.
         // Pointers take it for the same reason in the other direction —
         // `IntValue<IntDyn>` cannot name a `ptr`.
-        if is_vector_type(ty) || ty.is_pointer() {
+        if ty.is_vector() || ty.is_pointer() {
             let name = result_name.as_str();
             let flags = if samesign {
                 llvmkit_ir::instr_types::IcmpFlags::new().samesign()
@@ -12655,7 +12638,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // which describe a *scalar* width, so `<N x iM>` converts to neither.
         // Upstream has one path for both — `LLParser::parseCast` hands the
         // operand straight to `CastInst::Create`.
-        if is_vector_type(src_ty) || is_vector_type(dst_ty) {
+        if src_ty.is_vector() || dst_ty.is_vector() {
             let flags = IntCastFlags::new();
             let flags = if trunc_nuw { flags.nuw() } else { flags };
             let flags = if trunc_nsw { flags.nsw() } else { flags };
@@ -12841,7 +12824,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::Comma, "',' after compare value")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
         // `LLParser::parseCompare`'s `FCmp` arm.
-        if !is_fp_or_fp_vector_type(ty) {
+        if !ty.is_float_or_float_vector() {
             return Err(self.message_at(operand_loc, "fcmp requires floating point operands"));
         }
         // Erased: a vector compare has neither a typed float operand nor a
@@ -13221,7 +13204,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let elt_loc = self.loc();
             let idx_ty = self.parse_type(false)?;
             let idx_v = self.parse_value(state, idx_ty)?;
-            if !is_int_or_int_vector_type(idx_v.ty()) {
+            if !idx_v.ty().is_int_or_int_vector() {
                 return Err(self.message_at(elt_loc, "getelementptr index must be an integer"));
             }
             if let Some(index_shape) = vector_shape_type(idx_v.ty()) {
@@ -13325,7 +13308,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `if (!isa<FPMathOperator>(Inst))`, whose `Select` arm is
         // `FPMathOperator::isSupportedFloatingPointType(V->getType())` — wider
         // than `isFPOrFPVectorTy`, which is why this is not
-        // `is_fp_or_fp_vector_type`. The anchor is upstream's `Loc`, taken in
+        // `Type::is_float_or_float_vector`. The anchor is upstream's `Loc`, taken in
         // `parseInstruction` *before* the opcode keyword is eaten.
         if !fmf.is_empty() && !llvmkit_ir::is_supported_floating_point_type(true_ty) {
             return Err(self.message_at(
@@ -13570,7 +13553,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::Comma, "',' after extract value")?;
         let idx_ty = self.parse_type(false)?;
         let idx_v = self.parse_value(state, idx_ty)?;
-        if !is_vector_type(vec_ty) || !idx_ty.is_integer() {
+        if !vec_ty.is_vector() || !idx_ty.is_integer() {
             return Err(self.message_at(operand_loc, "invalid extractelement operands"));
         }
         let idx: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = idx_v
@@ -14884,7 +14867,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 ));
             }
         } else if atomicrmw_op_is_floating_point(op) {
-            if !is_fp_or_fp_vector_type(val_ty) {
+            if !val_ty.is_float_or_float_vector() {
                 return Err(self.message_at(
                     val_loc,
                     format!("atomicrmw {op} operand must be a floating point type"),
@@ -16567,17 +16550,6 @@ impl IntBinOp {
             Self::Xor => "xor",
         }
     }
-}
-
-/// `true` for `<N x T>` and `<vscale x N x T>`.
-///
-/// The parser splits on this because llvmkit's typed integer handles carry a
-/// scalar width; upstream's `LLParser` has one path for both shapes.
-fn is_vector_type<B: llvmkit_ir::ModuleBrand>(ty: llvmkit_ir::Type<'_, B>) -> bool {
-    matches!(
-        ty.kind(),
-        llvmkit_ir::TypeKind::FixedVector | llvmkit_ir::TypeKind::ScalableVector
-    )
 }
 
 /// Collect the parsed flag keywords into the combined form the erased builder

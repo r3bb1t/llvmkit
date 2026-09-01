@@ -1819,6 +1819,26 @@ impl AttributeStorage {
             })
     }
 
+    /// The `vscale_range` pair recorded at `index`, if one is.
+    ///
+    /// Ports the `Attribute::getVScaleRangeMin` / `getVScaleRangeMax` pair
+    /// that `llvm::getVScaleRange` reads off `getFnAttribute`. Answers the
+    /// pair itself rather than the stored attribute, so the crate-private
+    /// storage type stays private — the same shape as [`Self::no_fp_class`].
+    /// `None` for "no attribute here"; the inner `None` is upstream's
+    /// `std::optional<unsigned>` "unbounded" max.
+    pub fn vscale_range(&self, index: AttrIndex) -> Option<(u32, Option<u32>)> {
+        self.entries
+            .iter()
+            .find(|(stored_index, _)| *stored_index == index)?
+            .1
+            .iter()
+            .find_map(|attr| match attr {
+                AttributeStored::VScaleRange { min, max } => Some((*min, *max)),
+                _ => None,
+            })
+    }
+
     pub fn is_subset_of(&self, other: &Self) -> bool {
         self.entries.iter().all(|(index, attrs)| {
             other

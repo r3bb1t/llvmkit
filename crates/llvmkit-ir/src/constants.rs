@@ -46,7 +46,12 @@ use super::instr_types::{BinaryOpcode, CastOpcode};
 use super::instruction::{rewrite_debug_record_value, rewrite_operand_cells};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{DynBrand, Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
-use super::r#type::{Type, TypeData, TypeSlot};
+// `Type::getScalarType` / `isIntOrIntVectorTy` / `isPtrOrPtrVectorTy` are
+// ported once, at the slot layer, in `type.rs`; these three names are imports,
+// not local definitions.
+use super::r#type::{
+    Type, TypeData, TypeSlot, is_int_or_int_vector, is_ptr_or_ptr_vector, scalar_type_slot,
+};
 use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueUse, sealed,
 };
@@ -2127,8 +2132,8 @@ pub(super) fn validate_constant_expr_data(
             if !is_ptr_or_ptr_vector(module, src_ty.id())
                 || !is_ptr_or_ptr_vector(module, result_ty.id())
                 || !lane_shape_matches(module, src_ty.id(), result_ty.id())
-                || pointer_address_space(module, scalar_type_id(module, src_ty.id()))
-                    == pointer_address_space(module, scalar_type_id(module, result_ty.id()))
+                || pointer_address_space(module, scalar_type_slot(module, src_ty.id()))
+                    == pointer_address_space(module, scalar_type_slot(module, result_ty.id()))
             {
                 return Err(IrError::InvalidOperation {
                     message: "invalid addrspacecast constant expression",
@@ -2258,7 +2263,7 @@ pub(super) fn verify_constant_expr_data(
             });
         };
         let src_ty = Type::<DynBrand>::new(module.context().value_data(*src).ty, module);
-        let addr_bits = pointer_address_space(module, scalar_type_id(module, src_ty.id()))
+        let addr_bits = pointer_address_space(module, scalar_type_slot(module, src_ty.id()))
             .map(|as_id| module.data_layout().index_size_in_bits(as_id));
         if addr_bits != scalar_int_bits(module, result_ty.id()) {
             return Err(IrError::InvalidOperation {
@@ -2303,13 +2308,14 @@ fn validate_gep_constant_expr(
             message: "invalid getelementptr constant expression",
         });
     }
-    let Some(base_addr_space) = pointer_address_space(module, scalar_type_id(module, base_ty.id()))
+    let Some(base_addr_space) =
+        pointer_address_space(module, scalar_type_slot(module, base_ty.id()))
     else {
         return Err(IrError::InvalidOperation {
             message: "invalid getelementptr constant expression",
         });
     };
-    if pointer_address_space(module, scalar_type_id(module, result_ty.id()))
+    if pointer_address_space(module, scalar_type_slot(module, result_ty.id()))
         != Some(base_addr_space)
     {
         return Err(IrError::InvalidOperation {
@@ -2348,18 +2354,10 @@ fn validate_gep_constant_expr(
 }
 
 fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
-    match module.context().type_data(scalar_type_id(module, id)) {
+    match module.context().type_data(scalar_type_slot(module, id)) {
         TypeData::Integer { bits } => Some(*bits),
         _ => None,
     }
-}
-
-fn scalar_type_id(module: &ModuleCore, id: TypeSlot) -> TypeSlot {
-    module
-        .context()
-        .type_data(id)
-        .as_vector()
-        .map_or(id, |(elem, _, _)| elem)
 }
 
 fn vector_shape(module: &ModuleCore, id: TypeSlot) -> Option<(u32, bool)> {
@@ -2383,13 +2381,6 @@ fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeSlot, dst: TypeSl
     }
 }
 
-fn is_ptr_or_ptr_vector(module: &ModuleCore, id: TypeSlot) -> bool {
-    matches!(
-        module.context().type_data(scalar_type_id(module, id)),
-        TypeData::Pointer { .. }
-    )
-}
-
 fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(id) {
         TypeData::Pointer { addr_space } => Some(*addr_space),
@@ -2398,8 +2389,8 @@ fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
 }
 
 fn valid_bitcast_constant(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> bool {
-    let src_scalar = scalar_type_id(module, src);
-    let dst_scalar = scalar_type_id(module, dst);
+    let src_scalar = scalar_type_slot(module, src);
+    let dst_scalar = scalar_type_slot(module, dst);
     let src_ptr = pointer_address_space(module, src_scalar);
     let dst_ptr = pointer_address_space(module, dst_scalar);
     match (src_ptr, dst_ptr) {
@@ -2504,15 +2495,6 @@ fn type_bit_width(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     }
 }
 
-fn is_int_or_int_vector(module: &ModuleCore, id: TypeSlot) -> bool {
-    match module.context().type_data(id) {
-        TypeData::Integer { .. } => true,
-        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            matches!(module.context().type_data(*elem), TypeData::Integer { .. })
-        }
-        _ => false,
-    }
-}
 // Internal helpers
 // --------------------------------------------------------------------------
 

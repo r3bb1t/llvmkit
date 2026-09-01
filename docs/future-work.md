@@ -882,6 +882,13 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 | `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
 | `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
 
+What is **not yet** ported from `APFloatTest.cpp`, and is ordinary pending work
+rather than a scope decision:
+
+| Family | Status |
+|---|---|
+| `fromHexadecimalString`, `fromStringSpecials` | Unported. `crates/llvmkit-ir/tests/ap_float_from_string.rs` covers the same rules with llvmkit-chosen boundary spellings and says so — it is marked `llvmkit-specific subset` in `UPSTREAM.md`, not a port. Its header used to claim this backlog entry existed; it did not until now. `TEST(APFloatTest, makeNaN)`, the third fixture that header named, **is** ported (`ap_float_upstream_predicates.rs::make_nan`). |
+
 ## ValueTracking.h — remaining tranches, and the order to take them
 
 **Status after the residue port (2026-08-04):** 93 of 101 entry
@@ -1131,14 +1138,16 @@ because nothing re-derives a blocker before it is used to schedule.
 2. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
    upstream takes an `MDNode` where llvmkit's helper is value-shaped, so the
    public parameter is a real design decision.
-3. **Sibling and blocked (2).** `matchSimpleBinaryIntrinsicRecurrence` needs
+3. **Sibling (1).** `matchSimpleBinaryIntrinsicRecurrence` needs
    `match_simple_recurrence` generalised over the intrinsic-call form, so that
-   its `II == I` identity check has something to bind. `getVScaleRange` stays
-   recorded: upstream reads a packed `(min, max)` out of one attribute, and
-   `vscale_range` is on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list with a
-   single-`u64` payload — so the parser cannot even produce a function carrying
-   one, and porting it would mean inventing the max half. It unblocks when the
-   *attribute* is modeled, which is an attribute-layer task, not this one.
+   its `II == I` identity check has something to bind. (`getVScaleRange` used
+   to be listed here as *blocked* on the `vscale_range` attribute — a packed
+   `(min, max)` against a "single-`u64` payload", with the attribute on
+   `attribute_td_drift.rs`'s `NOT_YET_MODELED` list and unproducible by the
+   parser. All three clauses were false: the list is empty, the payload is
+   `Attribute::VScaleRange { min: u32, max: Option<u32> }`, and
+   `parser_attribute_matrix.rs` round-trips `vscale_range(1, 16)`. It is ported
+   as `value_tracking::get_vscale_range`.)
 4. **`analyzeKnownFPClassFromSelect` (1)** never closes: there is no upstream
    definition to port. It is recorded, not scheduled.
 
@@ -1376,7 +1385,7 @@ sequenced:
    | 3d-iv ✅ | 8 | **done 2026-08-02**: the saturating family. Six share one frame (`saturating_pairwise`); `smul_sat` needs all four corners and `sshl_sat` picks its shift by endpoint sign. |
    | 3d-v ✅ | 3 | **done 2026-08-02**: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
    | 3d-vi ✅ | 8 | **done 2026-08-02**: `binary_op`, `overflowing_binary_op`, `intrinsic`, `is_intrinsic_supported`, `add_with_no_wrap`, `sub_with_no_wrap`, `multiply_with_no_wrap`, `smul_fast`. **`shlWithNoWrap` is not ported** — it is three helper functions (`computeShlNUW`, `computeShlNSWWithNNegLHS`, `computeShlNSWWithNegLHS`) plus a dispatcher, and no llvmkit caller needs it yet; `overflowing_binary_op` sends `shl` to the plain `shl`, which is sound and only weaker. |
-   | ~~**3e**~~ ✅ | 8 | **done 2026-08-02**: `compute_constant_range`, `compute_constant_range_including_known_bits`, and all six `compute_overflow_for_*`. Also added the five `ConstantRange` overflow predicates (`unsigned_add_may_overflow` and siblings) that an earlier count missed — the real public surface is **83**, not 78; those five span two lines in the header and the extraction grep skipped them. **`getVScaleRange` is not ported**: it reads `vscale_range`'s packed `(min, max)` pair, and that attribute is already on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list with a single-`u64` payload here. Porting it would mean inventing the second half. |
+   | ~~**3e**~~ ✅ | 8 | **done 2026-08-02**: `compute_constant_range`, `compute_constant_range_including_known_bits`, and all six `compute_overflow_for_*`. Also added the five `ConstantRange` overflow predicates (`unsigned_add_may_overflow` and siblings) that an earlier count missed — the real public surface is **83**, not 78; those five span two lines in the header and the extraction grep skipped them. `getVScaleRange` was recorded here as unported and blocked on `vscale_range`'s "packed `(min, max)` pair" against a "single-`u64` payload" on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list; every clause of that was already false when written, and it is now ported as `value_tracking::get_vscale_range`. |
 
    `ConstantRangeTest.cpp` (~2800 lines) is the test source throughout; its
    exhaustive-over-4-bit-ranges harness ports directly and is the right

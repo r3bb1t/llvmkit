@@ -541,19 +541,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 
     /// Mirrors `isIEEELikeFPTy`.
     pub fn is_ieee_like_fp(self) -> bool {
-        matches!(
-            self.data(),
-            TypeData::Half
-                | TypeData::Bfloat
-                | TypeData::Float
-                | TypeData::Double
-                | TypeData::Fp128
-        )
+        is_ieee_like_fp_data(self.data())
     }
 
     /// Mirrors `isFloatingPointTy`.
     pub fn is_floating_point(self) -> bool {
-        self.is_ieee_like_fp() || matches!(self.data(), TypeData::X86Fp80 | TypeData::PpcFp128)
+        is_floating_point_data(self.data())
     }
 
     /// Mirrors `isFPOrFPVectorTy` — a floating-point type, or a fixed or
@@ -567,12 +560,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// predicate `parseCompare`'s `FCmp` arm and `parseAtomicRMW`'s
     /// floating-point-operand check ask.
     pub fn is_float_or_float_vector(self) -> bool {
-        match self.data() {
-            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-                Type::new(*elem, self.module).is_floating_point()
-            }
-            _ => self.is_floating_point(),
-        }
+        is_float_or_float_vector(self.module.module(), self.id)
     }
 
     /// Mirrors `isAggregateType`. Vectors are first-class but not
@@ -634,12 +622,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// The element type of a vector, or `self` for anything else.
     /// Mirrors `Type::getScalarType`.
     pub fn scalar_type(self) -> Self {
-        match self.data() {
-            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-                Type::new(*elem, self.module)
-            }
-            _ => self,
-        }
+        Type::new(scalar_type_slot(self.module.module(), self.id), self.module)
     }
 
     /// Element count of a vector — the *minimum* count for a scalable one, as
@@ -687,12 +670,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 
     /// Mirrors `Type::isIntOrIntVectorTy`.
     pub fn is_int_or_int_vector(self) -> bool {
-        self.scalar_type().is_integer()
+        is_int_or_int_vector(self.module.module(), self.id)
+    }
+
+    /// Mirrors `Type::isIntegerTy(unsigned BitWidth)`.
+    #[inline]
+    pub fn is_integer_of_width(self, bit_width: u32) -> bool {
+        matches!(self.data(), TypeData::Integer { bits } if *bits == bit_width)
+    }
+
+    /// Mirrors `Type::isIntOrIntVectorTy(unsigned BitWidth)` — the width-taking
+    /// overload, `getScalarType()->isIntegerTy(BitWidth)`. `i1`/`<N x i1>` is
+    /// the width every caller here asks for, and is what `m_LogicalOp`'s
+    /// `LogicalOp_match` and `isImpliedCondition`'s entry assertion require.
+    #[inline]
+    pub fn is_int_or_int_vector_of_width(self, bit_width: u32) -> bool {
+        self.scalar_type().is_integer_of_width(bit_width)
     }
 
     /// Mirrors `Type::isPtrOrPtrVectorTy`.
     pub fn is_ptr_or_ptr_vector(self) -> bool {
-        self.scalar_type().is_pointer()
+        is_ptr_or_ptr_vector(self.module.module(), self.id)
     }
 
     /// Address space of a pointer type, or `None` if this is not one.
@@ -940,6 +938,55 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
+
+/// `Type::getScalarType` one layer below [`Type::scalar_type`].
+///
+/// The scalar/vector projection family needs a slot-level form because
+/// `constants.rs`, `verifier.rs` and `value_tracking.rs` reach it from inside
+/// routines that hold a `&ModuleCore` and a `TypeSlot` and cannot construct a
+/// `Type` view. These four are the one implementation of each predicate; the
+/// `Type` methods above are thin wrappers, not second copies.
+pub(crate) fn scalar_type_slot(module: &ModuleCore, id: TypeSlot) -> TypeSlot {
+    match module.context().type_data(id) {
+        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
+        _ => id,
+    }
+}
+
+/// `Type::isIntOrIntVectorTy`, at the slot layer.
+pub(crate) fn is_int_or_int_vector(module: &ModuleCore, id: TypeSlot) -> bool {
+    matches!(
+        module.context().type_data(scalar_type_slot(module, id)),
+        TypeData::Integer { .. }
+    )
+}
+
+/// `Type::isPtrOrPtrVectorTy`, at the slot layer.
+pub(crate) fn is_ptr_or_ptr_vector(module: &ModuleCore, id: TypeSlot) -> bool {
+    matches!(
+        module.context().type_data(scalar_type_slot(module, id)),
+        TypeData::Pointer { .. }
+    )
+}
+
+/// `Type::isFPOrFPVectorTy`, at the slot layer.
+pub(crate) fn is_float_or_float_vector(module: &ModuleCore, id: TypeSlot) -> bool {
+    is_floating_point_data(module.context().type_data(scalar_type_slot(module, id)))
+}
+
+/// `Type::isIEEELikeFPTy` against the payload, so [`Type::is_ieee_like_fp`] and
+/// the slot-layer predicates share one list rather than restating it.
+pub(crate) fn is_ieee_like_fp_data(data: &TypeData) -> bool {
+    matches!(
+        data,
+        TypeData::Half | TypeData::Bfloat | TypeData::Float | TypeData::Double | TypeData::Fp128
+    )
+}
+
+/// `Type::isFloatingPointTy` against the payload.
+pub(crate) fn is_floating_point_data(data: &TypeData) -> bool {
+    is_ieee_like_fp_data(data) || matches!(data, TypeData::X86Fp80 | TypeData::PpcFp128)
+}
 
 fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
     let data = module.context().type_data(id);

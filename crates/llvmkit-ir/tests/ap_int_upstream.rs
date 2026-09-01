@@ -3,10 +3,15 @@
 //! models.
 //!
 //! This file is the first sweep of that fixture — before it, `ApInt` had only
-//! llvmkit-written tests. Upstream tests covering APIs llvmkit does not have
-//! (`GCD`, `SolveQuadraticEquationWrap`, `clmul`, the rotate family, the
-//! `tc*` word-level primitives) are not ported; what is here is ported as
-//! written.
+//! llvmkit-written tests; what is here is ported as written.
+//!
+//! `GCD`, the rotate family and the three `clmul` variants used to be listed
+//! here as APIs llvmkit does not have. It has them
+//! (`ApInt::greatest_common_divisor`, `rotl`/`rotr`/`rotl_by`/`rotr_by`,
+//! `carryless_mul`/`_reversed`/`_high`), and their upstream tests are ported
+//! next door in `ap_int_upstream_ops.rs`. What is genuinely unported from
+//! `APIntTest.cpp` is `SolveQuadraticEquationWrap` and the `tc*` word-level
+//! primitives, each recorded with its reason in `docs/future-work.md`.
 //!
 //! Upstream constructs `APInt(width, value, isSigned)`; llvmkit spells that
 //! `ApInt::new(width, value, signedness)`, sign-extending the `u64` when the

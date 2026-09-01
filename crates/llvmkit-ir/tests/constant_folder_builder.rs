@@ -9,10 +9,10 @@ use llvmkit_ir::ShuffleMaskElem;
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
-    ConstantIntValue, Dyn, GepNoWrapFlags, InstructionKind, InstructionView, IntDyn, IntPredicate,
-    IntValue, IntValueId, IntWidth, IrBuilder, IrBuilderFolder, IrError, IrResult, Linkage,
-    ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UdivFlags, Value,
-    constant_fold_binary_instruction, module_new,
+    ConstantIntValue, Dyn, ExactFlags, GepNoWrapFlags, InstructionKind, InstructionView, IntDyn,
+    IntPredicate, IntValue, IntValueId, IntWidth, IrBuilder, IrBuilderFolder, IrError, IrResult,
+    Linkage, ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type,
+    UdivFlags, Value, constant_fold_binary_instruction, module_new,
 };
 use llvmkit_macros::Branded;
 
@@ -905,16 +905,40 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
         _rhs: Value<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
         // Deliberately answers with a 64-bit constant zero regardless of the
-        // (32-bit) operand width -- this IS the erased hook (it has no
-        // default body to bypass), so overriding only this hook routes the
-        // typed `int_add::<IntDyn, ...>` call through
-        // `fold_int_bin_op`'s *default* body, which re-narrows this erased
-        // result via `narrow_folded_int`'s TypeSlot check. That is the seam
-        // this test exercises -- not the builder's separate
-        // `accept_folded_int` type check, which only runs behind a typed
-        // hook's *native* override (see the struct doc comment above for
-        // why no such override is reachable from this external crate).
+        // (32-bit) operand width -- these ARE the erased hooks (they have no
+        // default body to bypass), so overriding only them routes the typed
+        // `int_add::<IntDyn, ...>` call through the matching *typed* hook's
+        // default body, which re-narrows this erased result via
+        // `narrow_folded_int`'s TypeSlot check. That is the seam this test
+        // exercises -- not the builder's separate `accept_folded_int` type
+        // check, which only runs behind a typed hook's *native* override
+        // (see the struct doc comment above for why no such override is
+        // reachable from this external crate).
         Ok(Some(self.replacement))
+    }
+
+    // `IRBuilder::CreateAdd` reaches `FoldNoWrapBinOp` and `CreateUDiv`
+    // reaches `FoldExactBinOp`, so an erased folder that means to answer
+    // *any* integer emitter has to answer through all three. Which one a
+    // given emitter picks is the dispatch's subject, not this folder's.
+    fn fold_no_wrap_bin_op_dyn(
+        &self,
+        opcode: BinaryOpcode,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
+        _flags: OverflowFlags,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
+        self.fold_bin_op_dyn(opcode, lhs, rhs)
+    }
+
+    fn fold_exact_bin_op_dyn(
+        &self,
+        opcode: BinaryOpcode,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
+        _exact: ExactFlags,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
+        self.fold_bin_op_dyn(opcode, lhs, rhs)
     }
 }
 
@@ -996,10 +1020,9 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
 /// drives exactly that case.
 ///
 /// Contrast [`WideningDynFolder`] above, which overrides only the *erased*
-/// `fold_bin_op_dyn` hook and is therefore caught one seam earlier, by
-/// `narrow_folded_int` inside `fold_int_bin_op`'s default body. A native
-/// override replaces that default body outright, so `narrow_folded_int`
-/// never runs here.
+/// hooks and is therefore caught one seam earlier, by `narrow_folded_int`
+/// inside the matching typed hook's default body. A native override replaces
+/// that default body outright, so `narrow_folded_int` never runs here.
 ///
 /// What stays closed is forging a *static* `W`: the sibling compile-fail
 /// golden `tests/compile_fail/folder_typed_wrong_width.rs` locks
@@ -1038,6 +1061,29 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
         // of the default body this override replaced and never runs.
         Ok(Some(W::narrow(self.replacement)?))
     }
+
+    // As `WideningDynFolder`: the emitter picks its hook by opcode, so a
+    // folder meaning to answer `int_add` has to override the hook
+    // `IRBuilder::CreateAdd` reaches.
+    fn fold_int_bin_op_no_wrap<W: IntWidth>(
+        &self,
+        opcode: BinaryOpcode,
+        lhs: IntValue<'ctx, W, B>,
+        rhs: IntValue<'ctx, W, B>,
+        _flags: OverflowFlags,
+    ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+        self.fold_int_bin_op(opcode, lhs, rhs)
+    }
+
+    fn fold_int_bin_op_exact<W: IntWidth>(
+        &self,
+        opcode: BinaryOpcode,
+        lhs: IntValue<'ctx, W, B>,
+        rhs: IntValue<'ctx, W, B>,
+        _exact: ExactFlags,
+    ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+        self.fold_int_bin_op(opcode, lhs, rhs)
+    }
 }
 
 /// `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract, from
@@ -1050,9 +1096,11 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
 /// from a downstream user's visibility.
 ///
 /// Trace confirming *this* line rejects, not `narrow_folded_int`:
-/// `int_add::<IntDyn, _, _, _>` calls
-/// `self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)`.
-/// [`NarrowingTypedFolder`]'s override is *native*, so it runs directly and
+/// `int_add::<IntDyn, _, _, _>` routes through `int_binop_flagged`, whose
+/// `Add` arm calls `self.folder.fold_int_bin_op_no_wrap(BinaryOpcode::Add,
+/// lhs, rhs, OverflowFlags::new())` -- the hook `IRBuilder::CreateAdd`
+/// reaches. [`NarrowingTypedFolder`]'s override of it is *native*, so it
+/// runs directly and
 /// the trait's default body -- the only caller of `fold_bin_op_dyn` and
 /// `narrow_folded_int` -- is bypassed entirely. Inside the override,
 /// `IntDyn::narrow(replacement)` succeeds: the payload is an integer, and

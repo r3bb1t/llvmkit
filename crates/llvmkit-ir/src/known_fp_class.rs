@@ -1641,7 +1641,10 @@ pub fn can_ignore_sign_bit_of_nan<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ct
 
 /// `Instruction::getFunction()` — the function owning the block owning
 /// `instruction`, or `None` for an instruction not yet in one.
-fn enclosing_function_slot<'ctx, B: ModuleBrand + 'ctx>(
+/// The function an instruction belongs to. Ports `Instruction::getFunction`,
+/// which upstream reaches through `User->getFunction()`,
+/// `II->getFunction()` and `Q.CxtI->getFunction()`.
+pub(crate) fn enclosing_function_slot<'ctx, B: ModuleBrand + 'ctx>(
     instruction: Value<'ctx, B>,
 ) -> Option<ValueSlot> {
     let ValueKindData::Instruction(data) = &instruction.data().kind else {

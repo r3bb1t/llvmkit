@@ -82,8 +82,8 @@ use super::instr_types::{
     ZextFlags,
 };
 use super::instr_types::{
-    BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, LoadInstData,
-    OverflowFlags, ReturnOpData, ShuffleMaskElem, StoreInstData, UnaryOpcode,
+    BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, ExactFlags,
+    LoadInstData, OverflowFlags, ReturnOpData, ShuffleMaskElem, StoreInstData, UnaryOpcode,
 };
 use super::instruction::{
     Instruction, InstructionKind, InstructionKindData, InstructionView, build_instruction_value,
@@ -1232,15 +1232,15 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
-        let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)? {
-            return self.accept_folded_int(folded, lhs).map(|v| v.id());
-        }
-        let payload = BinaryOpData::new(lhs.slot(), rhs.slot());
-        Ok(self
-            .append_int_like(lhs, InstructionKindData::Add(payload), name)
-            .id())
+        self.int_binop_flagged(
+            BinaryOpcode::Add,
+            lhs,
+            rhs,
+            name,
+            AddFlags::new(),
+            InstructionKindData::Add,
+        )
+        .map(|v| v.id())
     }
 
     /// Produce `sub lhs, rhs`. Mirrors `IRBuilder::CreateSub`.
@@ -1256,15 +1256,15 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
-        let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Sub, lhs, rhs)? {
-            return self.accept_folded_int(folded, lhs).map(|v| v.id());
-        }
-        let payload = BinaryOpData::new(lhs.slot(), rhs.slot());
-        Ok(self
-            .append_int_like(lhs, InstructionKindData::Sub(payload), name)
-            .id())
+        self.int_binop_flagged(
+            BinaryOpcode::Sub,
+            lhs,
+            rhs,
+            name,
+            SubFlags::new(),
+            InstructionKindData::Sub,
+        )
+        .map(|v| v.id())
     }
 
     /// Produce `mul lhs, rhs`. Mirrors `IRBuilder::CreateMul`.
@@ -1304,11 +1304,12 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.int_binop(
+        self.int_binop_flagged(
             BinaryOpcode::Udiv,
             lhs,
             rhs,
             name,
+            UdivFlags::new(),
             InstructionKindData::Udiv,
         )
         .map(|v| v.id())
@@ -1327,11 +1328,12 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.int_binop(
+        self.int_binop_flagged(
             BinaryOpcode::Sdiv,
             lhs,
             rhs,
             name,
+            SdivFlags::new(),
             InstructionKindData::Sdiv,
         )
         .map(|v| v.id())
@@ -1420,11 +1422,12 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.int_binop(
+        self.int_binop_flagged(
             BinaryOpcode::Lshr,
             lhs,
             rhs,
             name,
+            LshrFlags::new(),
             InstructionKindData::Lshr,
         )
         .map(|v| v.id())
@@ -1443,11 +1446,12 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.int_binop(
+        self.int_binop_flagged(
             BinaryOpcode::Ashr,
             lhs,
             rhs,
             name,
+            AshrFlags::new(),
             InstructionKindData::Ashr,
         )
         .map(|v| v.id())
@@ -1798,17 +1802,29 @@ where
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
         let mut payload = BinaryOpData::new(lhs.slot(), rhs.slot());
         flags.apply(&mut payload);
-        let folded = if payload.is_exact {
-            self.folder.fold_int_bin_op_exact(opcode, lhs, rhs)?
-        } else if matches!(
-            opcode,
-            BinaryOpcode::Add | BinaryOpcode::Sub | BinaryOpcode::Mul | BinaryOpcode::Shl
-        ) {
-            let flags = OverflowFlags::from_parts(payload.no_unsigned_wrap, payload.no_signed_wrap);
-            self.folder
-                .fold_int_bin_op_no_wrap(opcode, lhs, rhs, flags)?
-        } else {
-            self.folder.fold_int_bin_op(opcode, lhs, rhs)?
+        // Upstream picks the hook by *opcode*, not by whether a flag happens
+        // to be set: `IRBuilder::CreateAdd`/`CreateSub`/`CreateMul`/`CreateShl`
+        // always call `FoldNoWrapBinOp`, `CreateUDiv`/`CreateSDiv`/
+        // `CreateLShr`/`CreateAShr` always call `FoldExactBinOp`, and
+        // `CreateURem`/`CreateSRem`/`CreateAnd`/`CreateOr`/`CreateXor` call
+        // plain `FoldBinOp` -- each passing the flag values it was handed,
+        // including all-false.
+        let folded = match opcode {
+            BinaryOpcode::Add | BinaryOpcode::Sub | BinaryOpcode::Mul | BinaryOpcode::Shl => {
+                let flags =
+                    OverflowFlags::from_parts(payload.no_unsigned_wrap, payload.no_signed_wrap);
+                self.folder
+                    .fold_int_bin_op_no_wrap(opcode, lhs, rhs, flags)?
+            }
+            BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Lshr | BinaryOpcode::Ashr => {
+                self.folder.fold_int_bin_op_exact(
+                    opcode,
+                    lhs,
+                    rhs,
+                    ExactFlags::from_parts(payload.is_exact),
+                )?
+            }
+            _ => self.folder.fold_int_bin_op(opcode, lhs, rhs)?,
         };
         if let Some(folded) = folded {
             return self.accept_folded_int(folded, lhs);
@@ -1906,32 +1922,44 @@ where
                 message: "integer binop operands must have the same type",
             });
         }
-        if !self.is_int_or_int_vector(lhs.ty()) {
+        if !lhs.ty().is_int_or_int_vector() {
             return Err(IrError::InvalidOperation {
                 message: "integer binop operand is neither an integer nor an integer vector",
             });
         }
-        if let Some(folded) = self.folder.fold_bin_op_dyn(opcode, lhs, rhs)? {
+        // Same opcode-keyed hook choice the typed `int_binop_flagged` path
+        // makes, and for the same upstream reason: `IRBuilder::CreateAdd` and
+        // friends pick `FoldNoWrapBinOp` / `FoldExactBinOp` / `FoldBinOp` by
+        // opcode and pass whatever flag values they were handed. Before this
+        // was keyed, the erased path -- the `.ll` parser's entry point, and
+        // every `int_*_dyn` wrapper -- called `fold_bin_op_dyn`
+        // unconditionally, so `nuw`/`nsw`/`exact` never reached a folder here
+        // even when they were set.
+        let accepted = opcode.accepted_flags(flags);
+        let folded = match opcode {
+            BinaryOpcode::Add | BinaryOpcode::Sub | BinaryOpcode::Mul | BinaryOpcode::Shl => {
+                let overflow =
+                    OverflowFlags::from_parts(accepted.no_unsigned_wrap, accepted.no_signed_wrap);
+                self.folder
+                    .fold_no_wrap_bin_op_dyn(opcode, lhs, rhs, overflow)?
+            }
+            BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Lshr | BinaryOpcode::Ashr => {
+                self.folder.fold_exact_bin_op_dyn(
+                    opcode,
+                    lhs,
+                    rhs,
+                    ExactFlags::from_parts(accepted.is_exact),
+                )?
+            }
+            _ => self.folder.fold_bin_op_dyn(opcode, lhs, rhs)?,
+        };
+        if let Some(folded) = folded {
             return self.checked_folded_value(folded, lhs.ty);
         }
         let mut payload = BinaryOpData::new(lhs.id, rhs.id);
-        opcode.accepted_flags(flags).apply(&mut payload);
+        accepted.apply(&mut payload);
         let inst = self.append_instruction(lhs.ty().id(), kind_ctor(payload), name);
         Ok(inst.to_erased())
-    }
-
-    /// `true` for `iN` and for `<N x iM>` / `<vscale x N x iM>`.
-    ///
-    /// Mirrors the verifier's `is_int_or_int_vector`, which is the rule the
-    /// built instruction is checked against.
-    fn is_int_or_int_vector(&self, ty: Type<'ctx, B>) -> bool {
-        let scalar = match ty.data() {
-            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-                self.module.context().type_data(*elem)
-            }
-            other => other,
-        };
-        matches!(scalar, TypeData::Integer { .. })
     }
 
     /// `<N x i1>` when `operand_ty` is a vector, `i1` when it is a scalar —
@@ -2114,7 +2142,7 @@ where
                 message: "icmp operands must have the same type",
             });
         }
-        if !self.is_int_or_int_vector(lhs.ty()) && !self.is_pointer_or_pointer_vector(lhs.ty()) {
+        if !lhs.ty().is_int_or_int_vector() && !lhs.ty().is_ptr_or_ptr_vector() {
             return Err(IrError::InvalidOperation {
                 message: "icmp operand is neither an integer nor a pointer",
             });
@@ -2251,29 +2279,6 @@ where
         Ok(inst.to_erased().id())
     }
 
-    /// `true` for a float type and for a vector of one.
-    ///
-    /// Mirrors the verifier's `is_fp_or_fp_vector`, which is the rule the built
-    /// instruction is checked against.
-    fn is_float_or_float_vector(&self, ty: Type<'ctx, B>) -> bool {
-        let scalar = match ty.data() {
-            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-                self.module.context().type_data(*elem)
-            }
-            other => other,
-        };
-        matches!(
-            scalar,
-            TypeData::Half
-                | TypeData::Bfloat
-                | TypeData::Float
-                | TypeData::Double
-                | TypeData::X86Fp80
-                | TypeData::Fp128
-                | TypeData::PpcFp128
-        )
-    }
-
     /// `opcode lhs, rhs` on erased floating-point operands — a scalar float or
     /// a float vector — carrying `fmf`.
     ///
@@ -2317,7 +2322,7 @@ where
                 message: "floating-point binop operands must have the same type",
             });
         }
-        if !self.is_float_or_float_vector(lhs.ty()) {
+        if !lhs.ty().is_float_or_float_vector() {
             return Err(IrError::InvalidOperation {
                 message: "floating-point binop operand is neither a float nor a float vector",
             });
@@ -2359,7 +2364,7 @@ where
                 message: "fcmp operands must have the same type",
             });
         }
-        if !self.is_float_or_float_vector(lhs.ty()) {
+        if !lhs.ty().is_float_or_float_vector() {
             return Err(IrError::InvalidOperation {
                 message: "fcmp operand is neither a float nor a float vector",
             });
@@ -2387,7 +2392,7 @@ where
         Src: IntoErasedValue<'ctx, B>,
     {
         let value = value.into_erased_value(ModuleRef::new(self.module))?;
-        if !self.is_float_or_float_vector(value.ty()) {
+        if !value.ty().is_float_or_float_vector() {
             return Err(IrError::InvalidOperation {
                 message: "fneg operand is neither a float nor a float vector",
             });
@@ -2402,18 +2407,6 @@ where
         let inst =
             self.append_instruction(value.ty().id(), InstructionKindData::Fneg(payload), name);
         Ok(inst.to_erased().id())
-    }
-
-    /// `true` for `ptr` and for a vector of `ptr`. Mirrors the verifier's
-    /// `is_pointer_or_pointer_vector`.
-    fn is_pointer_or_pointer_vector(&self, ty: Type<'ctx, B>) -> bool {
-        let scalar = match ty.data() {
-            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-                self.module.context().type_data(*elem)
-            }
-            other => other,
-        };
-        matches!(scalar, TypeData::Pointer { .. })
     }
 
     /// `add lhs, rhs` on erased operands (scalar or integer vector).
@@ -10935,6 +10928,33 @@ mod tests {
             )))
         }
 
+        // `IRBuilder::CreateAdd` reaches `FoldNoWrapBinOp`, `CreateUDiv`
+        // reaches `FoldExactBinOp` and `CreateAnd` reaches `FoldBinOp`, so a
+        // folder that means to lie to *any* integer emitter has to lie through
+        // all three. Which one a given emitter picks is the dispatch's subject,
+        // not this folder's, and keeping the three in step here is what stops a
+        // re-route turning these tests green by accident -- "no fold happened"
+        // and "the fold was rejected" both end in `expect_err` otherwise.
+        fn fold_int_bin_op_no_wrap<W: IntWidth>(
+            &self,
+            opcode: BinaryOpcode,
+            lhs: IntValue<'ctx, W, B>,
+            rhs: IntValue<'ctx, W, B>,
+            _flags: OverflowFlags,
+        ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+            self.fold_int_bin_op(opcode, lhs, rhs)
+        }
+
+        fn fold_int_bin_op_exact<W: IntWidth>(
+            &self,
+            opcode: BinaryOpcode,
+            lhs: IntValue<'ctx, W, B>,
+            rhs: IntValue<'ctx, W, B>,
+            _exact: ExactFlags,
+        ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+            self.fold_int_bin_op(opcode, lhs, rhs)
+        }
+
         fn fold_cast_to_int<W: IntWidth>(
             &self,
             _opcode: CastOpcode,
@@ -11001,10 +11021,12 @@ mod tests {
     /// still write by hand via `from_value_unchecked`.
     ///
     /// Trace confirming *this* line rejects, not `narrow_folded_int`:
-    /// `int_add::<IntDyn, _, _, _>` (this file, `int_add`)
-    /// calls `self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)`.
+    /// `int_add::<IntDyn, _, _, _>` (this file, `int_add`) routes through
+    /// `int_binop_flagged`, whose `Add` arm calls
+    /// `self.folder.fold_int_bin_op_no_wrap(BinaryOpcode::Add, lhs, rhs,
+    /// OverflowFlags::new())` -- the hook `IRBuilder::CreateAdd` reaches.
     /// `HostileTypedFolder`'s override above is a *native* override of
-    /// `fold_int_bin_op`, so it runs directly -- it never calls
+    /// that hook, so it runs directly -- it never calls
     /// `fold_bin_op_dyn` or `folder::narrow_folded_int` (those only run
     /// inside the *trait's default* body, which this override replaces).
     /// The native override returns `Ok(Some(wrong_width_value))`

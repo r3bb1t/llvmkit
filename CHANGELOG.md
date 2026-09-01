@@ -19,6 +19,130 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — one implementation each for the four scalar/vector `Type` predicates *(breaking)*
+
+- **`Type::getScalarType`, `isIntOrIntVectorTy`, `isPtrOrPtrVectorTy` and
+  `isFPOrFPVectorTy` now have exactly one body apiece.** W4 landed the public
+  ports and consolidated nothing onto them. Private near-copies remained,
+  spread over `ll_parser.rs`, `constants.rs`, `intrinsics.rs`, `ir_builder.rs`,
+  `ir_builder/constant_folder.rs`, `assumptions.rs`, `implied_conditions.rs`,
+  `value_tracking.rs` and `verifier.rs` — 23 of them, counted at `4a1ed2b` with
+  `grep -cE '^\s*(pub\(crate\) )?fn (is_int_or_int_vector|is_ptr_or_ptr_vector|is_fp_or_fp_vector|is_pointer_or_pointer_vector|is_integer_or_integer_vector|is_float_or_float_vector|is_vector|is_vector_type|is_int_or_int_vector_type|is_ptr_or_ptr_vector_type|is_fp_or_fp_vector_type|is_int_or_int_vector_of_width_one|scalar_type_id|scalar_type_data)\b'`
+  over those nine files. They are gone.
+  The implementations live in `type.rs` at the *slot* layer
+  (`scalar_type_slot`, `is_int_or_int_vector`, `is_ptr_or_ptr_vector`,
+  `is_float_or_float_vector`, all `pub(crate)`), which is what the copies in
+  `constants.rs`, `verifier.rs` and `value_tracking.rs` needed — they run below
+  the layer where a `Type` view is constructible — and the public `Type` methods
+  are thin wrappers over the same four routines rather than a fifth copy.
+
+  This is a consolidation, not a bug fix: `grep` confirms every copy answered
+  the same question, and the suite is unchanged by it. It is recorded because
+  the W4 lesson was the opposite case — three copies of
+  `type_contains_scalable_vector`, each wrong somewhere the others were right —
+  and W13 found two copies of the aggregate index walk that had already drifted.
+
+- **New public API:** `Type::is_integer_of_width` and
+  `Type::is_int_or_int_vector_of_width`, porting
+  `Type::isIntegerTy(unsigned)` and `Type::isIntOrIntVectorTy(unsigned)`. The
+  `i1`/`<N x i1>` test that `m_LogicalOp` and `isImpliedCondition` need had two
+  private copies and no public port at all.
+
+### Fixed — the IR builder's folder hooks are chosen by opcode, as upstream chooses them *(breaking)*
+
+- **`int_add` / `int_sub` reach `FoldNoWrapBinOp` and `int_udiv` / `int_sdiv` /
+  `int_lshr` / `int_ashr` reach `FoldExactBinOp`, flags or no flags.**
+  `IRBuilder::CreateAdd` and friends pick the hook by *opcode* and pass whatever
+  flag values they were handed, including the all-`false` defaults; llvmkit
+  picked it by whether a flag happened to be set, so the flagless emitters fell
+  through to the plain `FoldBinOp`.
+
+- **The erased path forwards its flags.** `int_binop_erased` — the `.ll`
+  parser's entry point — and every `int_*_dyn` wrapper called `fold_bin_op_dyn`
+  unconditionally, so `nuw` / `nsw` / `exact` never reached a folder through
+  that path *even when they were set*. It now makes the same opcode-keyed
+  choice, after `BinaryOpcode::accepted_flags` has dropped whatever the opcode
+  does not take.
+
+- **`IrBuilderFolder::fold_exact_bin_op_dyn` and `fold_int_bin_op_exact` now
+  take an `ExactFlags`**, restoring upstream's `FoldExactBinOp(.., bool
+  IsExact)` parameter, which the trait had deliberately dropped. `ExactFlags`
+  is new public API (`PossiblyExactOperator` in `IR/Operator.h`), and stands to
+  that `bool` as `OverflowFlags` already stood to `HasNUW`/`HasNSW`.
+
+  Results are identical under the shipped `ConstantFolder` and `NoFolder`;
+  only a third-party folder that overrides one hook and not the others can see
+  the difference. `tests/folder_hook_dispatch.rs` is such a folder, and all four
+  of its tests were watched failing on the pre-fix code.
+
+### Fixed — `simplifyPHINode` is ported, including its `undef` and `poison` blending
+
+- **`phi [%x, undef]` and `phi [%x, poison]` with a non-constant `%x` now
+  simplify.** `InstSimplifyPass`'s phi handling was the common-value core only;
+  it now ports `llvm::simplifyPHINode` whole, with `valueDominatesPHI` (also
+  newly ported) and the `isGuaranteedNotToBePoison` guard that stops an `undef`
+  being replaced by something that might be poison.
+
+- **A phi is answered by `simplifyPHINode`, not by `ConstantFoldInstruction`.**
+  `InstSimplifyPass.cpp::runImpl` never calls `ConstantFoldInstruction`; llvmkit
+  called its port of that routine first, and the ordering was observable — an
+  all-`poison` phi folded to `undef` where upstream folds it to `poison`. The
+  five `undef`/`poison` functions of
+  `llvm/test/Transforms/InstSimplify/phi.ll` are ported and pass.
+
+### Added — `getVScaleRange`, and its two `ValueTracking` readers
+
+- **`llvmkit_ir::get_vscale_range` ports `llvm::getVScaleRange`**, reading the
+  `vscale_range` function attribute into a `ConstantRange`. The
+  `Intrinsic::vscale` arm of `computeKnownBits` and the `m_VScale` arm of
+  `isKnownToBeAPowerOfTwo` now read it.
+
+  It was recorded as *blocked* in four places — `value_tracking_parity.rs`'s
+  gap table, `value_tracking.rs`'s own rustdoc, and `docs/future-work.md`
+  twice — on a reason that was false in every clause: `vscale_range` is not on
+  `attribute_td_drift.rs`'s `NOT_YET_MODELED` list (that list is empty), the
+  payload is not "a single `u64`" but
+  `Attribute::VScaleRange { min: u32, max: Option<u32> }`, and the parser does
+  produce functions carrying one. All four are corrected, along with a fifth
+  copy of the same stale premise in `ROADMAP.md` ("names 42 attributes").
+
+### Added — `DIExpression::isValid`, and the AsmWriter branch that reads it
+
+- **`llvmkit_ir::metadata::expression_is_valid` and `expression_operand_size`**
+  port `DIExpression::isValid` and `DIExpression::ExprOperand::getSize`, and
+  `DwarfExpressionOperand::element` / `metadata::expression_elements` recover
+  upstream's `uint64_t` element array from the stored spellings.
+  `TEST_F(DIExpressionTest, isValid)` is ported verbatim.
+
+- **An invalid `!DIExpression` now prints as raw numbers**, which is
+  `AsmWriter::writeDIExpression`'s `else` branch. llvmkit printed operation
+  names unconditionally.
+
+- Two in-code comments claiming the `Dwarf.def` tables were unmodelled and that
+  an unrecognised `DW_OP` round-trips rather than being rejected are corrected;
+  both were false, the second contradicted by the code sixteen lines below it.
+
+### Fixed — the known-bits recursion cutoff sits where upstream's sits
+
+- **`computeKnownBits`' depth guard is `>=`, not `>`, and it runs *after* the
+  constant fast path.** Upstream's `if (Depth == MaxAnalysisRecursionDepth)
+  return;` carries the comment "All recursive calls that increase depth must
+  come after this" and sits below `match(V, m_APInt(C))`; llvmkit's admitted one
+  extra operator level and sat above the constant arm. The `phi` arm also gains
+  upstream's `Depth < MaxAnalysisRecursionDepth - 1` gate on its intersection
+  loop. The remaining difference — recursing at `depth + 1` rather than the
+  fixed `MaxAnalysisRecursionDepth - 1` — stays, and stays blocked on the
+  known-bits cache gaining a depth component.
+
+### Added — `TEST(APIntTest, clmul)`
+
+- The last unported member of the `clmul` family, and the only one of the three
+  that was recorded nowhere. Three test-module headers naming APIs llvmkit has
+  since gained (`GCD`, `rotl`/`rotr`, `clmul`, `FPClassTest`) or citing a
+  backlog entry that did not exist are corrected, and that backlog entry —
+  `APFloatTest.cpp`'s `fromHexadecimalString` / `fromStringSpecials` — is now
+  written down.
+
 ### Fixed — `getReturnedArgOperand` had two readers, each wrong where the other was right
 
 - **`returned` on a call-site argument past the first is now seen, and
