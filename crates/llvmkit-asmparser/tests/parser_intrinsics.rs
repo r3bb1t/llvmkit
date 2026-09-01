@@ -81,14 +81,87 @@ fn unknown_intrinsic_declaration_is_rejected() {
     }
 }
 
-/// Mirrors `llvm/lib/IR/Verifier.cpp::visitFunction` and
-/// `llvm/lib/IR/Verifier.cpp::visitInstruction`: intrinsic globals are
-/// callable symbols, not ordinary pointer constants.
+/// Mirrors `LLParser::validateEndOfModule`'s `ForwardRefVals` loop: an
+/// `llvm.`-prefixed name the module never declares is auto-declared from its
+/// call sites, and a use that is not one is
+/// `intrinsic can only be used as callee`.
+///
+/// `@llvm.lifetime.start.p0` here is *undeclared*, which is what puts it in
+/// `ForwardRefVals` and reaches that loop. The declared spelling is the other
+/// half of the same rule and belongs to the Verifier —
+/// [`upstream_intrinsic_addr_taken_fixture_messages_match`].
 #[test]
 fn intrinsic_non_callee_use_is_rejected() {
     let err = parse_err("@p = global ptr @llvm.lifetime.start.p0\n");
     assert!(matches!(err, ParseError::Message { .. }));
     assert_eq!(err.to_string(), "intrinsic can only be used as callee");
+
+    // `no_cfi` is the one spelling where llvmkit's placeholder has no uses at
+    // all: `parse_no_cfi_constant` registers the referent in
+    // `forward_ref_globals` and builds the `NoCFIValue` over a second,
+    // separate stand-in. Upstream has one placeholder, and the `NoCFIValue`
+    // wrapping it is a non-`CallBase` user — an offender — so the empty edge
+    // list answers the same way. It used to fall through to
+    // `use of undefined value`.
+    assert_eq!(
+        parse_err("@p = global ptr no_cfi @llvm.lifetime.start.p0\n").to_string(),
+        "intrinsic can only be used as callee"
+    );
+}
+
+/// `test/Verifier/intrinsic-addr-taken.ll`, vendored verbatim at
+/// `tests/fixtures/upstream/Verifier/intrinsic-addr-taken.ll`.
+///
+/// Upstream's `RUN` line is `not llvm-as`, and both `CHECK` lines are the same
+/// `Verifier::visitFunction` diagnostic: an `llvm.`-prefixed function named
+/// anywhere but the callee position of a direct call fails
+/// `Function::hasAddressTaken` and is
+/// `Invalid user of intrinsic instruction!`. The `.ll` **parses** — the
+/// declaration retires the forward reference before `validateEndOfModule`
+/// runs, so nothing reaches its `intrinsic can only be used as callee`.
+///
+/// **Partial in one named place; nothing is trimmed and both halves are
+/// asserted.** The fixture's second declaration,
+/// `declare i32 @llvm.my.custom.intrinsic()`, is an unknown `llvm.`-prefixed
+/// name, which llvmkit's parser rejects where `LLParser::parseFunctionHeader`
+/// keeps it — gap **G3** in `docs/fixture-coverage.md`. The whole file is
+/// therefore asserted as that parse rejection, and the `@g1` half — the one
+/// llvmkit's model can express — is driven on its own for the verifier text,
+/// which is read out of the fixture's own `CHECK` line rather than repeated
+/// here.
+#[test]
+fn upstream_intrinsic_addr_taken_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/intrinsic-addr-taken.ll");
+
+    let expected = FIXTURE
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("; CHECK:"))
+        .map(str::trim)
+        .expect("the fixture carries a `; CHECK:` directive");
+
+    // G3: the whole file stops on the unknown `llvm.` declaration.
+    let err = parse_err(FIXTURE);
+    assert_eq!(err.to_string(), "expected unknown intrinsic");
+
+    // The `@g1` half, whose two lines are copied out of the fixture.
+    let g1: String = FIXTURE
+        .lines()
+        .filter(|line| !line.contains("my.custom.intrinsic") && !line.trim().starts_with(';'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let module = Module::dynamic("intrinsic_addr_taken");
+    Parser::new(g1.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .unwrap_or_else(|e| panic!("upstream's llvm-as parses this: {e}\n{g1}"));
+    let message = match module.verify_borrowed() {
+        Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => message,
+        other => panic!("expected a verifier failure, got {other:?}"),
+    };
+    assert!(
+        message.contains(expected),
+        "{message:?} does not contain {expected:?}"
+    );
 }
 
 /// Mirrors `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start`: direct

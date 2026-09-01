@@ -171,8 +171,8 @@ Which fixture sits on which gap:
 - **G14**: `incomplete-ir-metadata.ll`
 - **G15**: `skip-value-numbers-globals.ll`
 - **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
-- **G17**: `2007-01-16-CrashOnBadCast.ll`, `alias-redefinition.ll`, `dicompileunit-invalid-language.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `ptrtoaddr-invalid.ll`
-- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-dicompileunit-emissionkind-bad.ll`, `invalid-dicompileunit-language-overflow.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid-generic-debug-node-tag-overflow.ll`, `invalid-generic-debug-node-tag-wrong-type.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
+- **G17**: `2007-01-16-CrashOnBadCast.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `ptrtoaddr-invalid.ll`
+- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
 - **G19**: `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
 - **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
 - **G21**: `thinlto-summary.ll`
@@ -370,7 +370,7 @@ collision.
 | `addrspacecast-alias.ll` | ported | 1 pass; its `CHECK` line is pinned by `parser_module_level.rs::a_self_typed_addrspacecast_aliasee_round_trips` |
 | `aggregate-constant-values.ll` | ported | 1 pass |
 | `aggregate-return-single-value.ll` | ported | 1 pass |
-| `alias-redefinition.ll` | blocked-model | **G17** — reported `expected valid alias definition: a global named "bar" already exists in this module`, upstream `redefinition of global '@bar'` |
+| `alias-redefinition.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `alias-use-list-order.ll` | ported | 1 pass |
 | `align-inst-alloca.ll` | ported | 1 reject (0 with upstream's diagnostic pinned) |
 | `align-inst-load.ll` | ported | 1 reject (0 with upstream's diagnostic pinned) |
@@ -462,7 +462,7 @@ collision.
 | `debug-variant-discriminator.ll` | ported | 1 pass |
 | `dicompileunit-conflicting-language-fields.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `dicompileunit-invalid-language-version.ll` | ported | 4 reject (4 with upstream's diagnostic pinned) |
-| `dicompileunit-invalid-language.ll` | blocked-model | **G17** — 2/4 parts blocked. reported `invalid DWARF language 'DW_LNAME_C'`, upstream `expected DWARF language` |
+| `dicompileunit-invalid-language.ll` | ported | 4 split-file parts, 4 rejects (4 with upstream's diagnostic pinned) |
 | `dicompileunit.ll` | ported | 1 pass |
 | `dicompositetype-members.ll` | ported | 1 pass |
 | `diexpression.ll` | ported | 1 pass |
@@ -563,9 +563,9 @@ collision.
 | `invalid-comdat2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-datalayout-override.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-debug-info-version.ll` | ported | 1 pass |
-| `invalid-dicompileunit-emissionkind-bad.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `value for 'emissionKind' too large` |
+| `invalid-dicompileunit-emissionkind-bad.ll` | ported | 1 reject (1 with upstream's diagnostic and caret pinned) |
 | `invalid-dicompileunit-language-bad.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `invalid-dicompileunit-language-overflow.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `value for 'language' too large, limit is 65535` |
+| `invalid-dicompileunit-language-overflow.ll` | ported | 1 reject (1 with upstream's diagnostic and caret pinned) |
 | `invalid-dicompileunit-missing-language.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-dicompileunit-null-file.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-dicompileunit-uniqued.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
@@ -611,8 +611,8 @@ collision.
 | `invalid-fp80hex.ll` | blocked-model | **G17** — reported `expected '=' after global name`, upstream `expected '=' in global variable` |
 | `invalid-generic-debug-node-tag-bad.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-generic-debug-node-tag-missing.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `invalid-generic-debug-node-tag-overflow.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `value for 'tag' too large, limit is 65535` |
-| `invalid-generic-debug-node-tag-wrong-type.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `expected DWARF tag` |
+| `invalid-generic-debug-node-tag-overflow.ll` | ported | 1 reject (1 with upstream's diagnostic and caret pinned) |
+| `invalid-generic-debug-node-tag-wrong-type.ll` | ported | 1 reject (1 with upstream's diagnostic and caret pinned) |
 | `invalid-gep-missing-explicit-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-hexint.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-immarg.ll` | blocked-model | **G3** — reported `expected unknown intrinsic`, upstream `Attribute 'immarg' is incompatible with other attributes except the 'range' attribute` |

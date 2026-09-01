@@ -1488,6 +1488,84 @@ fn end_of_module_checks_run_in_upstream_order() {
         )),
         "use of undefined comdat '$never_defined'"
     );
+
+    // An undefined comdat (6) beats the `ForwardRefVals` loop's intrinsic
+    // branch (7). llvmkit used to raise `intrinsic can only be used as callee`
+    // during `parseTopLevelEntities`, ahead of every step here, so this pair
+    // reported the intrinsic.
+    assert_eq!(
+        header_err(concat!(
+            "@c = global i32 0, comdat($never_defined)\n",
+            "@g = global ptr @llvm.umax\n",
+        )),
+        "use of undefined comdat '$never_defined'"
+    );
+
+    // The intrinsic branch (7) beats an undefined metadata node (8).
+    assert_eq!(
+        header_err(concat!("@g = global ptr @llvm.umax\n", "!named = !{!7}\n",)),
+        "intrinsic can only be used as callee"
+    );
+
+    // Within step 7, upstream's loop walks **every** `ForwardRefVals` entry
+    // before the `use of undefined value` report, which reads
+    // `ForwardRefVals.begin()` afterwards. So an intrinsic offender later in
+    // key order still preempts an ordinary leftover earlier in it —
+    // `aaa_undefined` sorts before `llvm.umax`.
+    assert_eq!(
+        header_err(concat!(
+            "@a = global ptr @aaa_undefined\n",
+            "@b = global ptr @llvm.umax\n",
+        )),
+        "intrinsic can only be used as callee"
+    );
+}
+
+/// `LLParser::parseGlobal` and `LLParser::parseAliasOrIFunc` each claim a
+/// forward reference to their own name **at the definition site**, with the
+/// same three-branch block: take the `ForwardRefVals` entry and erase it, else
+/// report `redefinition of global '@N'` if `M->getNamedValue(Name)` answers,
+/// else nothing. The comparison that follows is anchored at the *definition's*
+/// type — `TyLoc` for a global, `ExplicitTypeLoc` for an alias — not at the
+/// reference.
+///
+/// **No upstream `.ll` pins the alias twin**: a search of `llvm/test` for
+/// `of alias have different types` returns nothing, and `alias-redefinition.ll`
+/// (a corpus row) pins only the redefinition half. The global twin *is*
+/// pinned, by `test/Assembler/opaque-ptr-invalid-forward-ref-2.ll`, also a
+/// corpus row. This is therefore a rule anchor against the two routines for
+/// the parts no fixture reaches — the erase, and the alias wording.
+#[test]
+fn a_definition_claims_its_own_forward_reference() {
+    // The erase: without it the `M->getNamedValue` guard keeps seeing the map
+    // entry, and every later definition of a once-forward-referenced name
+    // slips past the redefinition check into the builder.
+    assert_eq!(
+        header_err(concat!(
+            "@r = global ptr @g\n",
+            "@g = global i32 0\n",
+            "@g = global i32 1\n",
+        )),
+        "redefinition of global '@g'"
+    );
+
+    // `M->getNamedValue` is the whole symbol table, so a `declare` and a
+    // global under one name collide here rather than in the builder.
+    assert_eq!(
+        header_err(concat!("declare void @f()\n", "@f = global i32 0\n")),
+        "redefinition of global '@f'"
+    );
+
+    // The alias twin of `forward reference and definition of global have
+    // different types`, worded "alias" by upstream for the ifunc spelling too.
+    assert_eq!(
+        header_err(concat!(
+            "@r = global ptr addrspace(1) @a\n",
+            "@a = alias i32, ptr @g\n",
+            "@g = global i32 0\n",
+        )),
+        "forward reference and definition of alias have different types"
+    );
 }
 
 /// Mirrors the module-asm arm of `AssemblyWriter::printModule`, which opens

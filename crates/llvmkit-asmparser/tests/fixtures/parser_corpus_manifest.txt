@@ -128,6 +128,7 @@ upstream/assembler-corpus/DIGlobalVariableExpression.ll | test/Assembler/DIGloba
 upstream/assembler-corpus/aarch64-intrinsics-attributes.ll | test/Assembler/aarch64-intrinsics-attributes.ll | status=pass
 upstream/assembler-corpus/absolute_symbol.ll | test/Assembler/absolute_symbol.ll | status=pass
 upstream/assembler-corpus/addrspacecast-alias.ll | test/Assembler/addrspacecast-alias.ll | status=pass
+upstream/assembler-corpus/alias-redefinition.ll | test/Assembler/alias-redefinition.ll | status=reject | error=redefinition of global '@bar'
 upstream/assembler-corpus/aggregate-constant-values.ll | test/Assembler/aggregate-constant-values.ll | status=pass
 upstream/assembler-corpus/aggregate-return-single-value.ll | test/Assembler/aggregate-return-single-value.ll | status=pass
 upstream/assembler-corpus/align-inst-alloca.ll | test/Assembler/align-inst-alloca.ll | status=reject
@@ -218,7 +219,9 @@ upstream/assembler-corpus/dicompileunit-invalid-language-version/negative.ll | t
 upstream/assembler-corpus/dicompileunit-invalid-language-version/overflow.ll | test/Assembler/dicompileunit-invalid-language-version.ll split-file part overflow.ll | status=reject | error=value for 'sourceLanguageVersion' too large, limit is 4294967295
 upstream/assembler-corpus/dicompileunit-invalid-language-version/version_without_name.ll | test/Assembler/dicompileunit-invalid-language-version.ll split-file part version_without_name.ll | status=reject | error=missing one of 'language' or 'sourceLanguageName', required for !DICompileUnit
 upstream/assembler-corpus/dicompileunit-invalid-language/invalid_dw_lang.ll | test/Assembler/dicompileunit-invalid-language.ll split-file part invalid_dw_lang.ll | status=reject | error=invalid DWARF language 'DW_LANG_blah'
+upstream/assembler-corpus/dicompileunit-invalid-language/invalid_dw_lang_2.ll | test/Assembler/dicompileunit-invalid-language.ll split-file part invalid_dw_lang_2.ll | status=reject | error=expected DWARF language
 upstream/assembler-corpus/dicompileunit-invalid-language/invalid_dw_lname.ll | test/Assembler/dicompileunit-invalid-language.ll split-file part invalid_dw_lname.ll | status=reject | error=invalid DWARF source language name 'DW_LNAME_blah'
+upstream/assembler-corpus/dicompileunit-invalid-language/invalid_dw_lname_2.ll | test/Assembler/dicompileunit-invalid-language.ll split-file part invalid_dw_lname_2.ll | status=reject | error=expected DWARF source language name
 upstream/assembler-corpus/dicompileunit.ll | test/Assembler/dicompileunit.ll | status=pass
 upstream/assembler-corpus/dicompositetype-members.ll | test/Assembler/dicompositetype-members.ll | status=pass
 upstream/assembler-corpus/diexpression.ll | test/Assembler/diexpression.ll | status=pass
@@ -332,7 +335,9 @@ upstream/assembler-corpus/invalid-comdat.ll | test/Assembler/invalid-comdat.ll |
 upstream/assembler-corpus/invalid-comdat2.ll | test/Assembler/invalid-comdat2.ll | status=reject | error=redefinition of comdat '$v'
 upstream/assembler-corpus/invalid-datalayout-override.ll | test/Assembler/invalid-datalayout-override.ll | status=reject | error=address space must be a 24-bit integer
 upstream/assembler-corpus/invalid-debug-info-version.ll | test/Assembler/invalid-debug-info-version.ll | status=pass
+upstream/assembler-corpus/invalid-dicompileunit-emissionkind-bad.ll | test/Assembler/invalid-dicompileunit-emissionkind-bad.ll | status=reject | loc=5:71 | error=value for 'emissionKind' too large
 upstream/assembler-corpus/invalid-dicompileunit-language-bad.ll | test/Assembler/invalid-dicompileunit-language-bad.ll | status=reject | loc=4:40 | error=invalid DWARF language 'DW_LANG_NoSuchLanguage'
+upstream/assembler-corpus/invalid-dicompileunit-language-overflow.ll | test/Assembler/invalid-dicompileunit-language-overflow.ll | status=reject | loc=8:40 | error=value for 'language' too large, limit is 65535
 upstream/assembler-corpus/invalid-dicompileunit-missing-language.ll | test/Assembler/invalid-dicompileunit-missing-language.ll | status=reject | loc=4:15 | error=missing one of 'language' or 'sourceLanguageName', required for !DICompileUnit
 upstream/assembler-corpus/invalid-dicompileunit-null-file.ll | test/Assembler/invalid-dicompileunit-null-file.ll | status=reject | loc=4:36 | error='file' cannot be null
 upstream/assembler-corpus/invalid-dicompileunit-uniqued.ll | test/Assembler/invalid-dicompileunit-uniqued.ll | status=reject | loc=4:6 | error=missing 'distinct', required for !DICompileUnit
@@ -371,6 +376,8 @@ upstream/assembler-corpus/invalid-ditemplatetypeparameter-missing-type.ll | test
 upstream/assembler-corpus/invalid-ditemplatevalueparameter-missing-value.ll | test/Assembler/invalid-ditemplatevalueparameter-missing-value.ll | status=reject | error=missing required field 'value' | loc=5:41
 upstream/assembler-corpus/invalid-generic-debug-node-tag-bad.ll | test/Assembler/invalid-generic-debug-node-tag-bad.ll | status=reject | loc=4:26 | error=invalid DWARF tag 'DW_TAG_badtag'
 upstream/assembler-corpus/invalid-generic-debug-node-tag-missing.ll | test/Assembler/invalid-generic-debug-node-tag-missing.ll | status=reject | loc=4:44 | error=missing required field 'tag'
+upstream/assembler-corpus/invalid-generic-debug-node-tag-overflow.ll | test/Assembler/invalid-generic-debug-node-tag-overflow.ll | status=reject | loc=7:26 | error=value for 'tag' too large, limit is 65535
+upstream/assembler-corpus/invalid-generic-debug-node-tag-wrong-type.ll | test/Assembler/invalid-generic-debug-node-tag-wrong-type.ll | status=reject | loc=4:26 | error=expected DWARF tag
 upstream/assembler-corpus/invalid-gep-missing-explicit-type.ll | test/Assembler/invalid-gep-missing-explicit-type.ll | status=reject | loc=4:26 | error=expected comma after getelementptr's type
 upstream/assembler-corpus/invalid-hexint.ll | test/Assembler/invalid-hexint.ll | status=reject | error=expected value token
 upstream/assembler-corpus/invalid-immarg2.ll | test/Assembler/invalid-immarg2.ll | status=reject | error=this attribute does not apply to functions

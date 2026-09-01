@@ -2723,18 +2723,18 @@ fn parse_and_verify(name: &str, source: &str) -> Result<Result<(), String>, Stri
 /// `Verifier::verifyAttachedCallBundle` — plus each function's `CHECK-NOT`
 /// tail, which must verify clean.
 ///
-/// **Partial in one named place; nothing is trimmed and every line of the
-/// fixture is asserted.** Seven of `@f_clang_arc_attachedcall`'s thirteen
-/// calls name an intrinsic by address (`ptr @llvm.objc.…`, `ptr @llvm.assume`).
-/// Upstream parses those and `Verifier::visitInstruction` exempts an
-/// `OB_clang_arc_attachedcall` operand from `Cannot take the address of an
-/// intrinsic!` precisely so `verifyAttachedCallBundle` can judge them; llvmkit
-/// rejects every `llvm.`-prefixed non-callee reference at *parse* time, which
-/// is `docs/divergences.md` entry **37**. Those seven assert that parse
-/// rejection with entry 37's message, so this test starts failing the day
-/// entry 37 closes and the remaining coverage has to land with it.
-/// Consequently the whole-file `RUN` line is asserted as a parse failure
-/// rather than a verify failure.
+/// **Whole, with nothing trimmed and every line of the fixture asserted.**
+/// Seven of `@f_clang_arc_attachedcall`'s thirteen calls name an intrinsic by
+/// address (`ptr @llvm.objc.…`, `ptr @llvm.assume`), and used to stop at a
+/// *parse* error, which this fixture's seven asserted rather than upstream's
+/// answer. They parse now: the
+/// declarations at the foot of the file retire those forward references
+/// before `validateEndOfModule` runs, so nothing reaches its
+/// `intrinsic can only be used as callee`, and
+/// `Function::hasAddressTaken`'s `IgnoreARCAttachedCall` exempts a
+/// `clang.arc.attachedcall` bundle operand from
+/// `Invalid user of intrinsic instruction!` precisely so
+/// `verifyAttachedCallBundle` gets to judge it.
 ///
 /// `@f0` and `@f1` were the second partial place until the verifier carried
 /// upstream's `Check` literals: they pin `Instruction does not dominate all
@@ -2748,18 +2748,23 @@ fn parse_and_verify(name: &str, source: &str) -> Result<Result<(), String>, Stri
 /// half already used.
 #[test]
 fn upstream_verifier_operand_bundles_fixture_messages_match() {
-    /// `docs/divergences.md` entry 37 — llvmkit's parse-time stand-in for
-    /// upstream's `Cannot take the address of an intrinsic!`.
-    const ENTRY_37: &str = "intrinsic can only be used as callee";
-
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles.ll");
     let prelude = top_level_lines(FIXTURE);
 
-    // Upstream's `RUN` line is `not opt -passes=verify`; llvmkit stops one
-    // layer earlier, on entry 37.
-    assert_eq!(
-        parse_and_verify("verifier-operand-bundles", FIXTURE),
-        Err(ENTRY_37.to_owned())
+    // Upstream's `RUN` line is `not opt -passes=verify`. The whole file
+    // parses, and `Module::verify_borrowed` stops at the first failure, which
+    // is the file's first `CHECK` — `@f0`'s.
+    let first_check = FIXTURE
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("; CHECK:"))
+        .map(str::trim)
+        .expect("the fixture carries a `; CHECK:` directive");
+    let whole = parse_and_verify("verifier-operand-bundles", FIXTURE)
+        .unwrap_or_else(|e| panic!("upstream's opt parses the whole fixture: {e}"))
+        .expect_err("upstream runs `not opt -passes=verify` over it");
+    assert!(
+        whole.contains(first_check),
+        "{whole:?} does not contain {first_check:?}"
     );
 
     // Whole-function cases. The expectation is the function's first `CHECK`
@@ -2832,16 +2837,10 @@ fn upstream_verifier_operand_bundles_fixture_messages_match() {
     assert_eq!(expectations.len(), 8, "fixture CHECK count changed");
     assert_eq!(body.len(), 13, "fixture call count changed");
 
-    let mut blocked = 0;
     for line in &body {
         let source = format!("{prelude}\n{header}\n{line}\n  ret void\n}}\n");
-        let answer = parse_and_verify("verifier-operand-bundles", &source);
-        if line.contains("ptr @llvm.") {
-            blocked += 1;
-            assert_eq!(answer, Err(ENTRY_37.to_owned()), "entry 37 blocks {line:?}");
-            continue;
-        }
-        let answer = answer.unwrap_or_else(|e| panic!("{line:?} parses: {e}"));
+        let answer = parse_and_verify("verifier-operand-bundles", &source)
+            .unwrap_or_else(|e| panic!("{line:?} parses: {e}"));
         match expectations
             .iter()
             .find(|(instruction, _)| *instruction == line.trim())
@@ -2861,5 +2860,4 @@ fn upstream_verifier_operand_bundles_fixture_messages_match() {
             ),
         }
     }
-    assert_eq!(blocked, 7, "entry 37's blocked set changed");
 }

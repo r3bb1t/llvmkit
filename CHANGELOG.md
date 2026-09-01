@@ -19,6 +19,96 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — four decisions moved to the point in the parse upstream makes them *(breaking)*
+
+Four `docs/divergences.md` entries from the *Different diagnostic text* band
+shared one shape: the message was right and the *moment* was not. Entry **38**
+(`validateEndOfModule` is not a 1:1 port) was the root, and is retired — see
+the last bullet.
+
+- **`intrinsic can only be used as callee` is `validateEndOfModule`'s again,
+  not the reference site's** *(rejects-valid)*. The guard opened
+  `resolve_global_name_as_value` and `resolve_global_name_as_constant`, ahead
+  of the symbol-table lookup, so `@g1 = global ptr @llvm.umax.i32` was refused
+  even with `declare i32 @llvm.umax.i32(i32, i32)` in the module — input
+  `llvm-as` accepts. It is now the `llvm.`-prefixed branch of the
+  `ForwardRefVals` loop, walking the placeholder's uses the way upstream's
+  `for (Use &U : …) { if (!CB || !CB->isCallee(&U)) … }` does, at step 7 of the
+  sequence — so an undefined comdat (step 6) preempts it, which it did not
+  before. `declare` retires the reference first, intrinsic declarations
+  included: `parse_declare`'s intrinsic arm returned before
+  `claim_function_forward_ref` ran, so a *declared* intrinsic was still
+  reported as never declared.
+
+- **The Verifier says `Invalid user of intrinsic instruction!`**, upstream's
+  wording, over a port of `Function::hasAddressTaken` at the flag combination
+  `Verifier::visitFunction` passes — `IgnoreAssumeLikeCalls` and
+  `IgnoreARCAttachedCall` on. llvmkit had a hand-rolled use walk with its own
+  message, no ARC exemption (so a `clang.arc.attachedcall` bundle operand never
+  reached `Verifier::verifyAttachedCallBundle`), and no sight of the
+  non-instruction edges — a global initializer naming an intrinsic was invisible
+  to it. New `VerifierRule::IntrinsicAddressTaken`.
+  `test/Verifier/intrinsic-addr-taken.ll` is vendored and driven; all thirteen
+  calls of `test/Verifier/operand-bundles.ll` now assert upstream's own `CHECK`
+  text where seven asserted a parse rejection.
+
+- **A global, alias or ifunc definition claims its own forward reference**,
+  where one end-of-module sweep used to retire every one of them. That is
+  `parseGlobal`'s and `parseAliasOrIFunc`'s shared
+  `GlobalValue *GVal = nullptr;` block, and it brings three things with it: the
+  type comparison is anchored at the *definition's* type (`TyLoc` /
+  `ExplicitTypeLoc`) rather than at the reference; the alias twin
+  `forward reference and definition of alias have different types` exists at
+  all; and the map entry is **erased**, which is what makes the
+  `M->getNamedValue(Name)` arm beside it a redefinition check. That arm was
+  `contains_key` before, never a removal, so every later definition of a
+  once-forward-referenced name slipped past it into the builder — and it looked
+  only at globals where upstream looks at the whole symbol table, so
+  `declare void @f()` + `@f = global i32 0` collided in the builder too.
+  `test/Assembler/alias-redefinition.ll` passes as a result.
+
+  The sweep is upstream's shape now that nothing else is left in it: no symbol
+  lookup (upstream's does none), and the loop runs to the end before the
+  `use of undefined value` report reads `begin()` — so an intrinsic offender
+  late in key order preempts an ordinary leftover early in it, which it did not
+  when the loop returned on the first miss.
+
+- **A metadata keyword field accepts what its `parseMDField` overload accepts,
+  and nothing else** *(accepts-invalid)*. The twelve keyword families are typed
+  at the token now, as upstream's overloads are — an integer goes to the
+  `MDUnsignedField` base, the family's own keyword is read, and `null`, a
+  string, a `!`-reference and a keyword from a *sibling* family are the
+  family's `expected …`. Each family's `Max` is carried, so
+  `emissionKind: 99` is `value for 'emissionKind' too large, limit is 3` rather
+  than round-tripping. Five upstream fixtures pass as a result:
+  `invalid-generic-debug-node-tag-wrong-type.ll`,
+  `invalid-generic-debug-node-tag-overflow.ll`,
+  `invalid-dicompileunit-emissionkind-bad.ll`,
+  `invalid-dicompileunit-language-overflow.ll`, and the `invalid_dw_lang_2` /
+  `invalid_dw_lname_2` parts of `dicompileunit-invalid-language.ll`.
+
+  Found while adding the range check: the parser's `name_table_kind` table read
+  `Apple => 2, None => 3` where `DICompileUnit::DebugNameTableKind` is
+  `GNU = 1, None = 2, Apple = 3`. Unobservable until something read the number,
+  which is exactly what the `Max` check now does.
+
+- **Ledger:** entry **38** is retired. Its *sequence* half was closed in W13a
+  and is pinned by
+  `parser_module_level.rs::end_of_module_checks_run_in_upstream_order`; three of
+  the five items its `Still open` bullet listed were already done and the bullet
+  had not been re-read (the `InstsWithTBAATag` hook is `upgrade_tbaa_tags`, the
+  `Slots` steal is `into_slot_mapping`, and metadata-cycle resolution has no
+  counterpart because llvmkit's arena has no temporary-node forwarding). The two
+  that were real are owned by other entries — the attribute-group merge by
+  **D9**, the intrinsic auto-declaration by **37** — so nothing is lost by
+  deleting it. Entry **36** is closed. Entries **37** and **34** are narrowed to
+  one residual each: intrinsic auto-declaration still happens at the call site
+  rather than in the sweep, and `ChecksumKindField` still cannot quote the
+  stale `Lex.getStrVal()` upstream interpolates. Entry **26** is kept, and its
+  premise re-read: both phi insertion paths in `ir_builder.rs` still end in
+  `BasicBlock::insert_instruction_at_phi_head`, so deleting the parse guard
+  would silently hoist a misplaced phi into a legal position.
+
 ### Changed — one implementation each for the four scalar/vector `Type` predicates *(breaking)*
 
 - **`Type::getScalarType`, `isIntOrIntVectorTy`, `isPtrOrPtrVectorTy` and

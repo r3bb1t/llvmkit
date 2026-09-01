@@ -938,19 +938,18 @@ entry 121). Two halves were recorded; the second is closed.
 
 ### 26. A misplaced `phi` is rejected by the parser, with a message upstream never prints
 
-*parser* — crates/llvmkit-asmparser/src/ll_parser.rs:11125-11133 (the `seen_non_phi` guard)
+*parser* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_basic_block`'s `seen_non_phi` guard)
 
 - **LLVM:** `LLParser` accepts a `phi` written after a non-phi instruction and lets `Verifier::visitPHINode` reject it with `PHI nodes not grouped at top of basic block!`.
-- **llvmkit:** `parse_basic_block` tracks a `seen_non_phi` flag and rejects at parse time with `phi must be grouped at the top of its basic block`. Same verdict, wrong layer, and a message upstream never prints.
-- **Why:** Recorded, with an explicit "do not fix this by deleting the parser check": every phi llvmkit builds goes through `IrBuilder::make_phi_in_block` → `BasicBlock::insert_instruction_at_phi_head`, which places the phi at the block's phi head regardless of the insertion point. Drop the parse check and a misplaced phi is *silently hoisted* into a legal position, so llvmkit's own `VerifierRule::PhiNotAtTop` never fires — accepting invalid IR and quietly rewriting it, strictly worse than the current strictness.
-- **Fix:** Add a non-hoisting insertion path for parsed phis so the instruction lands where it was written, then delete the parse-time check and let `VerifierRule::PhiNotAtTop` deliver upstream's verdict and wording. That is entangled with llvmkit's head-phi design — block parameters are operandless head-phis per `IrBuilder::append_block_with_params`, and `insert_instruction_at_phi_head` is the only phi insertion path today — so it wants deciding alongside that model rather than as a parser patch.
-- **Correction from verification:** Accurate, with two refinements. (1) The guard now spans lines 11125-11134 (the claim cited 11125-11133; the `else { seen_non_phi = true; }` arm closes at 11134). (2) The message is emitted via `self.expected(...)`, whose ParseError variant renders as `#[error("expected {expected}")]`, so the actual user-visible string is the ungrammatical `expected phi must be grouped at the top of its basic block`, not the bare production the claim quotes. Additional context strengthening the claim: llvmkit already carries the same rule in its verifier (crates/llvmkit-ir/src/verifier.rs:1036-1051, VerifierRule::PhiNotAtTop), so the parse-time guard is strictly redundant with the correct layer, and it prevents a misplaced phi from ever reaching that rule. Worth noting the guard is deliberate, not an oversight: the in-source comment and the test doc both state the rationale (the auto-hoisting phi builders would silently reorder a misplaced phi into valid position, laundering ill-formed .ll into valid IR).
+- **llvmkit:** `parse_basic_block` tracks a `seen_non_phi` flag and rejects at parse time. The message is emitted through `self.expected(...)`, whose `ParseError::Expected` renders `#[error("expected {expected}")]`, so the user-visible string is the ungrammatical `expected phi must be grouped at the top of its basic block`. Same verdict, wrong layer, and a message upstream never prints.
+- **Why:** Recorded, with an explicit "do not fix this by deleting the parser check": every phi llvmkit builds goes through `IrBuilder::make_phi_in_block` or `IrBuilder::append_phi_instruction`, and **both** end in `BasicBlock::insert_instruction_at_phi_head`, which places the phi at the block's phi head regardless of the insertion point. Drop the parse check and a misplaced phi is *silently hoisted* into a legal position, so llvmkit's own `VerifierRule::PhiNotAtTop` never fires — accepting invalid IR and quietly rewriting it, strictly worse than the current strictness.
+- **Fix:** Add a non-hoisting insertion path for parsed phis so the instruction lands where it was written, then delete the parse-time check and let `VerifierRule::PhiNotAtTop` deliver upstream's verdict and wording. That is entangled with llvmkit's head-phi design — block parameters are the leading run of head-phis, which is what `basic_block::block_parameter_phis` reads and `IrBuilder::append_block_with_params` writes — so it wants deciding alongside that model rather than as a parser patch.
 - **Narrowed, and a duplicate merged.** Two halves used to be recorded here. The *message-text* half — `VerifierRule::PhiNotAtTop` rendering `PHI nodes not grouped at top of block`, dropping upstream's `basic` and its `!` — is closed: the rule now carries `PHI nodes not grouped at top of basic block!` in `IrError::VerifierFailure`'s `message`, asserted by `crates/llvmkit-ir/src/verifier.rs::phi_not_at_top` against the vendored fixture's own `CHECK` text. Only the *wrong-layer* half above is left. This entry also absorbed a second entry that recorded the same divergence in the same terms (former **35**, "A misplaced `phi` is rejected at parse time, not by the verifier"); nothing distinguished the two, and the duplicate was deleted rather than left to be closed twice.
 - **What is blocked by it:** `test/Verifier/PhiGrouping.ll` is vendored at `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/PhiGrouping.ll` and cannot be driven through the parser. `crates/llvmkit-asmparser/tests/parser_function_body.rs::upstream_phi_grouping_fixture_is_rejected_at_parse_time` asserts *this* entry's parse diagnostic instead, so the day the entry closes the test fails and the real port replaces it.
 
-<details><summary>Verification evidence</summary>
+<details><summary>Verification evidence — re-read 2026-09-01 (divergence W15)</summary>
 
-llvmkit: C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs — `let mut seen_non_phi = false;` at 10956 (set at 11005, 11013, 11094, 11133) and the guard at 11125-11134: `if matches!(opcode, Opcode::Phi) { if seen_non_phi { return Err(self.expected("phi must be grouped at the top of its basic block")); } } else { seen_non_phi = true; }`. Confirmed also in HEAD (2ac3e3a) via `git show HEAD:...` at lines 11121-11125, so it is not a working-tree-only artifact. Message rendering: crates/llvmkit-asmparser/src/parse_error.rs:171-175 (`#[error("expected {expected}")]` on `ParseError::Expected`). Pinned by test `phi_after_non_phi_is_a_parse_error` at crates/llvmkit-asmparser/tests/parser_errors.rs:77-105, asserting the message contains "phi must be grouped at the top". Upstream: orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp — `LLParser::parseBasicBlock` (declared at 7050) has no ordering state in its instruction loop, and `LLParser::parsePHI` (8314) rejects only `phi node must have first class type` plus bracket-syntax errors; nothing about placement. orig_cpp/.../llvm/lib/IR/Verifier.cpp:3808-3815 — `Verifier::visitPHINode` holds the check: `Check(&PN == &PN.getParent()->front() || isa<PHINode>(--BasicBlock::iterator(&PN)), "PHI nodes not grouped at top of basic block!", &PN, PN.getParent());`. llvmkit's counterpart verifier rule: crates/llvmkit-ir/src/verifier.rs:1035-1051 and crates/llvmkit-ir/src/error.rs:474.
+llvmkit: `crates/llvmkit-asmparser/src/ll_parser.rs` — `let mut seen_non_phi = false;` opens `parse_basic_block`'s instruction loop and the guard reads `if matches!(opcode, Opcode::Phi) { if seen_non_phi { return Err(self.expected("phi must be grouped at the top of its basic block")); } } else { seen_non_phi = true; }`. Message rendering: `crates/llvmkit-asmparser/src/parse_error.rs`, `#[error("expected {expected}")]` on `ParseError::Expected`. Pinned by `crates/llvmkit-asmparser/tests/parser_errors.rs::phi_after_non_phi_is_a_parse_error`. The hoisting claim, re-read rather than re-probed: `crates/llvmkit-ir/src/ir_builder.rs` has exactly two phi insertion paths, `IrBuilder::make_phi_in_block` and `IrBuilder::append_phi_instruction`, and each ends `bb.insert_instruction_at_phi_head(id);` under a comment saying placement ignores the builder's cursor; `rg -n 'insert_instruction_at_phi_head' crates/` lists those two call sites and the definition. Upstream: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp` — `LLParser::parseBasicBlock` has no ordering state in its instruction loop, and `LLParser::parsePHI` rejects only `phi node must have first class type` plus bracket-syntax errors. `orig_cpp/.../llvm/lib/IR/Verifier.cpp` — `Verifier::visitPHINode` holds the check: `Check(&PN == &PN.getParent()->front() || isa<PHINode>(--BasicBlock::iterator(&PN)), "PHI nodes not grouped at top of basic block!", &PN, PN.getParent());`. llvmkit's counterpart rule is `VerifierRule::PhiNotAtTop` in `crates/llvmkit-ir/src/verifier.rs`.
 
 </details>
 
@@ -971,132 +970,95 @@ UPSTREAM (C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/ll
 
 </details>
 
-### 34. A metadata field accepts values its `parseMDField` overload rejects (plan divergence #2, residual)
+### 34. `ChecksumKindField` quotes a `Lex.getStrVal()` llvmkit does not keep — **NARROWED (W15)**
 
-**Severity:** accepts-invalid
+*metadata parser* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_metadata_field_value`, `check_metadata_field_value`)
 
-*metadata parser* — crates/llvmkit-asmparser/src/ll_parser.rs (`check_metadata_field_value`)
-
-- **Closed half (W14a):** the diagnostic half of this entry is gone. A word
-  matching no keyword now lexes as `Token::Error` and reaches the field
-  parser, so `emissionKind: Bogus` / `nameTableKind: Bogus` /
-  `!DIFixedPointType(kind: Bogus)` answer `expected emission kind` /
-  `expected nameTable kind` / `expected fixed-point kind`, and the sibling
-  `DW_*` families answer their own `expected …` the same way. Pinned by
-  `parser_debug_metadata.rs::exact_word_kind_families_reject_an_unknown_spelling`
-  and `::dwarf_kind_families_reject_a_word_that_is_no_keyword`.
-- **LLVM:** each `LLParser::parseMDField` overload is *typed*: the token must
-  be `lltok::APSInt` or the one kind that overload wants. Anything else —
-  `null`, a string, a metadata reference — is `expected <family>`, and an
-  integer past the field's `Max` is `value for '<name>' too large, limit is
-  <max>`.
-- **llvmkit:** the value is parsed first and validated afterwards, and
-  `check_metadata_field_value`'s `keyword` closure only rejects an `Enum`
-  spelling its table does not carry (`_ => Ok(())` for everything else), with
-  no `max` on the kind families. So `emissionKind: null`, `emissionKind: "x"`,
-  `nameTableKind: null` and `emissionKind: 99` all parse and round-trip, where
-  upstream rejects the first three with `expected emission kind` /
-  `expected nameTable kind` and the fourth with `value for 'emissionKind' too
-  large, limit is 3` (`EmissionKindField : MDUnsignedField(0,
-  DICompileUnit::LastEmissionKind)`).
-- **Why:** parse-then-validate is llvmkit's own shape for `PARSE_MD_FIELDS`,
-  and narrowing what each field *accepts* changes round-tripping, not just
-  wording. `expected_for_metadata_field_kind` (`ll_parser.rs`) already carries
-  the per-family phrase for the no-value-at-all case; the acceptance rule is
-  the part still outstanding.
-- **Fix:** make `parse_metadata_field_value` typed the way upstream's
-  overloads are — accept only `APSInt` plus the family's own token, and route
-  the range check through `MDUnsignedField`'s `Max` for the kind families
-  rather than leaving it unbounded.
-- **Note on `ChecksumKindField`:** upstream's is the one overload that reports
+- **Closed half (W14a):** a word matching no keyword now lexes as
+  `Token::Error` and reaches the field parser, so `emissionKind: Bogus` /
+  `nameTableKind: Bogus` / `!DIFixedPointType(kind: Bogus)` answer
+  `expected emission kind` / `expected nameTable kind` /
+  `expected fixed-point kind`, and the sibling `DW_*` families answer their
+  own `expected …` the same way.
+- **Closed half (W15):** the *acceptance* rule. `parse_metadata_field_value`
+  dispatches on the field's declared kind for the twelve keyword families the
+  way upstream's typed overloads do — `if (Lex.getKind() == lltok::APSInt)
+  return parseMDField(…, MDUnsignedField &); if (Lex.getKind() != lltok::X)
+  return tokError("expected <family>");` — so `null`, a string, a
+  `!`-reference and a keyword from a *sibling* family are all the family's
+  `expected …`, and `metadata_keyword_field_max` carries each family's
+  `MDUnsignedField` `Max` so a raw encoding past it is
+  `value for '<name>' too large, limit is <max>`. Five upstream fixtures pass
+  as a result, all corpus rows:
+  `test/Assembler/invalid-generic-debug-node-tag-wrong-type.ll`,
+  `test/Assembler/invalid-generic-debug-node-tag-overflow.ll`,
+  `test/Assembler/invalid-dicompileunit-emissionkind-bad.ll`,
+  `test/Assembler/invalid-dicompileunit-language-overflow.ll` and the
+  `invalid_dw_lang_2` / `invalid_dw_lname_2` parts of
+  `test/Assembler/dicompileunit-invalid-language.ll`. The parser's
+  `name_table_kind` table was also wrong while it was there — it read
+  `Apple => 2, None => 3` where `DICompileUnit::DebugNameTableKind` is
+  `GNU = 1, None = 2, Apple = 3` — unobservable only because nothing read the
+  number until the `Max` check did.
+- **Still open — the one residual.** `ChecksumKindField` is the single
+  overload that is not an `MDUnsignedField`: it reports
   `invalid checksum kind '<Lex.getStrVal()>'` even when the *token kind* is
-  wrong, so on an error token it quotes whatever the previous token left in
-  `StrVal`. llvmkit carries no stale `StrVal` and cannot reproduce that
-  string; it answers `expected metadata field value` instead.
+  wrong, so on any other token it quotes whatever the previous token left in
+  `StrVal`. llvmkit's lexer keeps no such carry-over and cannot reproduce that
+  string; `checksumkind: 1` answers `expected metadata field value` instead
+  of `invalid checksum kind '…'`. The *verdict* matches — both reject — and no
+  upstream `.ll` pins the text: `rg --no-ignore -l "invalid checksum kind"
+  orig_cpp/…/llvm/test/Assembler` returns nothing. Pinned from llvmkit's side
+  by `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_kind_family_rejects_every_token_but_an_integer_and_its_own_keyword`.
 
-<details><summary>Verification evidence</summary>
+### 37. Intrinsic auto-declaration happens at the call site, not in `validateEndOfModule` — **NARROWED (W15)**
 
-Built and ran C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/examples/parse_file.rs on `+1.96.0 --release` against hand-written fixtures: - `emissionKind: Bogus` -> `unknown keyword 'Bogus'` (upstream: `expected emission kind`) - `nameTableKind: Bogus` -> `unknown keyword 'Bogus'`; `!DIFixedPointType(kind: Bogus)` -> `unknown keyword 'Bogus'` - `emissionKind: DW_TAG_class_type` -> `invalid emission kind 'DW_TAG_class_type'` (upstream: `expected emission kind`) - `emissionKind: null`, `emissionKind: "x"`, `emissionKind: 99`, `nameTableKind: null` -> ALL parsed successfully and printed back verbatim. Source read: - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_lexer.rs lines 1060-1067 (`classify_prefixed` word lists) and 980-990 (the fallthrough `Err(LexError::UnknownToken { UnknownKeyword })`, with a comment noting it mirrors upstream's cursor rewind); lines 94-101 document the deliberate departure: upstream "returns a bare `lltok::Error` at every one of these sites and records no message". - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs lines 5652-5666 (`keyword` closure -> `ParseError::InvalidMetadataFieldValue`, `_ => Ok(())` for non-Enum), 5770-5773 (the three arms), 5865-5881 (`parse_metadata_field_value` token arms), 15388-15432 (the `emission_kind` / `name_table_kind` / `fixed_point_kind` tables). - C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/parse_error.rs lines 299-309: `#[error("invalid {what} '{value}'")]`. Repo-wide grep finds zero producible `expected emission kind` / `expected nameTable kind` / `expected fixed-point kind` strings. - Upstream C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp lines 5082-5135 (the three `parseMDField` overloads: APSInt fallback, then `Lex.getKind() != lltok::X` -> `tokError("expected ... kind")`) and 4798-4812 (`EmissionKindField`/`FixedPointKindField`/`NameTableKindField` Max bounds). - Upstream LLLexer.cpp `LexIdentifier`: identical word lists, then `// Finally, if this isn't known, return an error. CurPtr = TokStart+1; return lltok::Error;`. - Upstream lib/IR/DebugInfoMetadata.cpp lines 928-934, 1255-1272: the StringSwitch cases equal the lexer word lists, proving upstream's `invalid ... kind` arms are dead. Also in-tree: C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/tests/parser_debug_metadata.rs lines 697-715 already records this divergence in a doc comment, but only for the unknown-spelling case, and its body is `let _ = parse_err(src);` — it asserts nothing about which error, so it would not catch items (3) or (4).
+*parser — intrinsics* — crates/llvmkit-asmparser/src/ll_parser.rs (`resolve_direct_callee`, `resolve_forward_ref_globals`)
 
-</details>
+**Status (W15).** The two halves this entry was opened for are closed.
 
-### 36. Global and alias forward references resolve in one end-of-module sweep, not per definition site — **NARROWED (W8)**
+- The `intrinsic can only be used as callee` guard no longer fires at
+  reference time. It is `resolve_forward_ref_globals`'s `llvm.` branch now —
+  upstream's `for (Use &U : make_early_inc_range(Info.first->uses())) { auto
+  *CB = dyn_cast<CallBase>(U.getUser()); if (!CB || !CB->isCallee(&U)) return
+  error(Info.second, "intrinsic can only be used as callee"); }`, at step 7 of
+  `validateEndOfModule`, so an undefined comdat now preempts it as upstream's
+  order says it should. `test/Assembler/implicit-intrinsic-declaration-invalid2.ll`
+  still passes, from the new site.
+- The **rejects-valid** half is closed with it: an address-taken reference to
+  a *declared* intrinsic parses, because the `declare` retires the forward
+  reference before the sweep runs. `Verifier::visitFunction`'s guard answers
+  instead, in upstream's words — `Invalid user of intrinsic instruction!` —
+  over a port of `Function::hasAddressTaken` at the flag combination that
+  caller passes, `IgnoreARCAttachedCall` included, so a
+  `clang.arc.attachedcall` bundle operand reaches
+  `Verifier::verifyAttachedCallBundle` rather than being refused first.
+  `test/Verifier/intrinsic-addr-taken.ll` is vendored and driven
+  (`crates/llvmkit-asmparser/tests/parser_intrinsics.rs::upstream_intrinsic_addr_taken_fixture_messages_match`,
+  partial in one named place: its `@llvm.my.custom.intrinsic` declaration is
+  gap **G3**), and all thirteen calls of `test/Verifier/operand-bundles.ll`
+  now assert upstream's own `CHECK` text where seven used to assert this
+  entry's parse rejection.
 
-*parser — forward references* — crates/llvmkit-asmparser/src/ll_parser.rs — the `forward_ref_globals` guard in `parse_global`, `resolve_forward_ref_globals`
+**Still open, and the reason the entry survives:** upstream auto-declares an
+intrinsic *in that sweep*, from the call site's `FunctionType` via
+`Intrinsic::getIntrinsicSignature` and `getOrInsertDeclaration`. llvmkit does
+it at the call site itself, in `resolve_direct_callee`'s
+`IntrinsicNameResolution::Known` arm, so no `llvm.`-prefixed name ever reaches
+`global_forward_ref` from callee position and the sweep's declaration arm has
+nothing to build. The two diagnostics that arm owns are therefore raised
+elsewhere and worded differently: `unknown intrinsic '<name>'` becomes
+`expected unknown intrinsic` at the call site, and `invalid intrinsic
+signature` becomes `expected intrinsic signature mismatch`. Both are blocked
+fixtures — `test/Assembler/implicit-intrinsic-declaration-invalid.ll` and
+`-invalid3.ll`, gaps **G1** and **G3** in `docs/fixture-coverage.md`.
 
-**Status 2026-08-28 (W8).** The **function** half is closed:
-`claim_function_forward_ref` is a port of `parseFunctionHeader`'s
-`if (!FunctionName.empty()) { … } else { … }` block, so a `declare` / `define`
-now retires its own `ForwardRefVals` / `ForwardRefValIDs` entry, compares
-`FwdFn->getType() != PFT` there, and emits both of upstream's per-site
-texts — `invalid forward reference to function '<n>' with wrong type: expected
-'T' but was 'U'` (pinned by `test/Assembler/opaque-ptr-invalid-forward-ref.ll`,
-now a corpus row) and `type of definition and forward reference of '@N'
-disagree`. The bullets below are the residual: `parse_global` and
-`parse_alias_or_ifunc`.
-
-- **LLVM:** `LLParser::parseGlobal` and `parseAliasOrIFunc` compare types where the definition is written, producing `forward reference and definition of global have different types` at the type location, and the alias twin.
-- **llvmkit:** A reference to an unknown `@name`/`@N` mints a `ForwardRefValue` at the demanded pointer type and one end-of-module sweep retires it. The global text is emitted, but from the sweep and anchored at the *reference* rather than at the definition's type; the alias twin does not exist at all.
-- **Why:** Recorded as a W2.5 correction and carried: "resolution is a single end-of-module sweep, not per-definition-site — same verdicts, but upstream's per-site texts stay unreachable".
-- **Fix:** Move resolution into `parse_global` and `parse_alias_or_ifunc` the way `claim_function_forward_ref` moved it into the two function headers, comparing at the type location. Upstream also **erases** the map entry there; llvmkit's global guard only calls `contains_key`, so the redefinition check stays suppressed for every later definition of that name and the collision surfaces from the builder instead — that half is part of this entry too.
-- **Correction from verification:** Substantially accurate and still present, with one wording correction. The sweep design is exactly as described: `global_forward_ref` (ll_parser.rs:1765) mints a placeholder at the demanded pointer type, and `resolve_forward_ref_globals` (:1714), called once at :1475, retires every entry; neither `parse_alias_or_ifunc`'s tail (:7151-7231) nor `parse_declare`'s function tail (:10461-10592) retires a forward ref or compares types at the definition. But "upstream's per-site texts are unreachable" is wrong for one of the three: `forward reference and definition of global have different types` IS implemented, at :1748, emitted from the sweep. What is unreachable is upstream's ANCHOR for it — llvmkit reports at `entry.loc` (where the reference was written), upstream at `TyLoc` (the definition's type). The other two texts are genuinely absent from `crates/`: the alias twin (`...of alias have different types`) and `type of definition and forward reference of '@N' disagree` exist nowhere in llvmkit source (the latter appears only as a backlog note in docs/future-work.md:140). The numbered-function case falls through to the global text from the same sweep; the function-header path instead carries an unrelated llvmkit-only rule, `forward function declaration with matching signature` (:10474-10479), which compares the whole FunctionType where upstream compares only the address space (`FwdFn->getType() != PFT`). Also unclaimed but real: upstream ERASES the map entry at the definition site (`ForwardRefVals.erase(I)`), so a second definition of a forward-referenced name gets `redefinition of global '@g'`; llvmkit's guard at :6991-7000 only calls `.contains_key`, never removes, so the redefinition check stays suppressed for every later definition of that name and the collision surfaces from the builder as `expected valid global definition: ...` — the exact message the guard's own comment says it was added to avoid.
-
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-asmparser/src/ll_parser.rs — :1765-1809 `global_forward_ref` mints `forward_ref_value_placeholder(ty)` into `forward_ref_globals`/`forward_ref_global_ids` (call sites :8172, :8194, :8223, :8238); :1475 calls `resolve_forward_ref_globals` in the end-of-module tail; :1714-1740 sweeps both maps; :1742-1759 `resolve_global_forward_ref` holds the single `entry.placeholder.ty() != target.ty()` check emitting "forward reference and definition of global have different types" at `entry.loc`; :6991-7000 the `forward_ref_globals.contains_key` guard (reads, never removes); :7151-7231 alias/ifunc definition tail has no forward-ref handling; :10461-10592 function-header tail has none either, only `forward function declaration with matching signature` at :10474-10479. Repo-wide Grep excluding orig_cpp for "alias have different types|type of definition and forward reference|disagree: expected" returns zero hits in crates/. orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp — parseGlobal (read via sed 1370-1460) does `ForwardRefVals.erase(I)` / else `redefinition of global '@'+Name`, then `if (GVal) { if (GVal->getAddressSpace() != AddrSpace) return error(TyLoc, "forward reference and definition of global have different types"); GVal->replaceAllUsesWith(GV); GVal->eraseFromParent(); }`; parseAliasOrIFunc has the same shape at ExplicitTypeLoc with "...of alias have different types"; parseFunctionHeader has `if (FwdFn->getType() != PFT) return error(NameLoc, "type of definition and forward reference of '@N' disagree: expected ... but was ...")` plus `ForwardRefValIDs.erase(I)`. docs/future-work.md:134-145 already records this as an open item with a matching rationale.
-
-</details>
-
-### 37. `intrinsic can only be used as callee` fires at reference time, not at end of module
-
-*parser — intrinsics* — crates/llvmkit-asmparser/src/ll_parser.rs:8158, :8209
-
-- **LLVM:** Upstream auto-declares `llvm.`-prefixed leftovers from call-site function types in `validateEndOfModule`, and the `intrinsic can only be used as callee` rejection happens there, in that ordered sequence.
-- **llvmkit:** The message is emitted at the point of reference (two sites), so a construct upstream would only reject at end of module is rejected earlier and the end-of-module error ordering differs.
-- **Why:** Recorded as a W2 carried item ("`intrinsic can only be used as callee` still fires at reference time"). Error *ordering* in `validateEndOfModule` is itself part of parity, which is why it routes to W13.
-- **Fix:** Fold into W13's `validateEndOfModule` 1:1 sequence: defer the check to the intrinsic auto-declaration step so it fires in upstream's order relative to blockaddress leftovers, dso_local_equivalent resolution, undefined types/comdats and `@` leftovers. The verifier half has to land with it: upstream's `Verifier::visitInstruction` exempts an `OB_clang_arc_attachedcall` bundle operand from `Cannot take the address of an intrinsic!` precisely so `verifyAttachedCallBundle` can judge it, so deferring the parse guard without that exemption trades a rejects-valid for an accepts-invalid.
-- **Blocks a fixture, named here so the cost is visible:** `test/Verifier/operand-bundles.ll`'s `@f_clang_arc_attachedcall` writes `ptr @llvm.objc.retainAutoreleasedReturnValue` and `ptr @llvm.assume` as bundle operands. Seven of its thirteen calls therefore stop at this parse error, and `crates/llvmkit-asmparser/tests/parser_calls.rs::upstream_verifier_operand_bundles_fixture_messages_match` asserts *that* for them rather than the diagnostic upstream prints — so it turns red the day this entry closes, which is when the remaining `verifyAttachedCallBundle` coverage has to land.
-- **Correction from verification:** Accurate, and understated. Two corrections/refinements: (1) The ordering point is right but the mechanism is stronger than "rejected earlier": llvmkit has NO end-of-module `llvm.*` handling at all. `Parser::parse_module`'s end-of-module sequence (crates/llvmkit-asmparser/src/ll_parser.rs:1457-1480) contains no counterpart to upstream's `ForwardRefVals` auto-declaration loop; the guard was relocated wholesale into the two reference-time sites. So the rejection does not merely fire earlier within `validateEndOfModule` — it fires during `parseTopLevelEntities`, ahead of every end-of-module check. (2) The claim misses a second, larger consequence: because the guard is the *first* statement in each function, running before the `self.module.global(&name)` / `function_dyn(&name)` lookups, llvmkit also rejects address-taken references to an intrinsic that IS declared in the module. Upstream's `getGlobalVal` resolves those to the existing `Function` with no `ForwardRefVals` entry, so LLParser accepts them; the rejection comes from the Verifier with a different message, "Invalid user of intrinsic instruction!" (Verifier.cpp:3293, fixture test/Verifier/intrinsic-addr-taken.ll). llvmkit turns a verifier diagnostic into a parse error and renames it. Relatedly, llvmkit's own verifier (crates/llvmkit-ir/src/verifier.rs:965) emits "intrinsic can only be used as callee" where upstream emits "Invalid user of intrinsic instruction!" — a third site the claim does not list.
-
-<details><summary>Verification evidence — three probes re-run 2026-08-21, all still as recorded</summary>
-
-llvmkit source, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_parser.rs — both cited lines are live and at the exact offsets given. `resolve_global_name_as_value` (:8148) and `resolve_global_name_as_constant` (:8199) each open with `if !matches!(resolve_intrinsic_name(&name), IntrinsicNameResolution::NonIntrinsic) { return Err(ParseError::Message { message: "intrinsic can only be used as callee", ... }) }` at :8153-8161 and :8204-8212, before any module lookup. `IntrinsicId::resolve_name` (crates/llvmkit-ir/src/intrinsics.rs:323) returns NonIntrinsic only for names not starting with "llvm.", so the guard covers every `llvm.`-prefixed name, known or unknown. Callers are `convert_val_id_to_value` (:7972) and `convert_val_id_to_constant` (:8035), both parse-time. Upstream, C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp — the one occurrence of the message is line 341, inside `LLParser::validateEndOfModule`, in the `for (const auto &[Name, Info] : make_early_inc_range(ForwardRefVals))` loop (:328), reached only for names never declared, and ordered after the ForwardRefBlockAddresses guard (:271), the dso_local_equivalent resolution (:302-311), the undefined-type checks (:313-321) and the undefined-comdat check (:323). Fixture test/Assembler/implicit-intrinsic-declaration-invalid2.ll pins that message for an undeclared `@llvm.umax`. Empirical probe (temporary test in crates/llvmkit-asmparser/tests/, run with `cargo +1.96.0 test --release -p llvmkit-asmparser`, since deleted): - `declare i32 @llvm.umax.i32(i32, i32)` + `@g1 = global ptr @llvm.umax.i32` (verbatim test/Verifier/intrinsic-addr-taken.ll) -> llvmkit PARSER errors "intrinsic can only be used as callee"; upstream parses this and the Verifier says "Invalid user of intrinsic instruction!". - `@c = global i32 0, comdat($nope)` alone -> llvmkit errors "use of undefined comdat '$nope'" (so the check exists and works). - `@c = global i32 0, comdat($nope)` followed by `@g = global ptr @llvm.umax` -> llvmkit errors "intrinsic can only be used as callee", preempting the comdat error. Upstream's order (LLParser.cpp:323 before :328) reports the comdat error instead. This is the ordering divergence, demonstrated. - `call i8 @llvm.umax.i8(...)` still parses OK, confirming the callee path routes elsewhere and only non-callee references hit the guard.
-
-</details>
-
-### 38. `validateEndOfModule` is not a 1:1 port, and its error order is not pinned
-
-*parser — end of module* — crates/llvmkit-asmparser/src/ll_parser.rs:1711 (`validate_end_of_module` region), :4786-4798 (comdat guard), :4756 (undefined types)
-
-- **LLVM:** `LLParser::validateEndOfModule` runs a fixed sequence: attribute-group merge + alignment-attr→field move, blockaddress leftovers, `dso_local_equivalent` resolution, undefined numbered/named types, undefined comdats, intrinsic auto-declaration and `@` leftovers, undefined metadata, metadata cycle resolution, the TBAA hook, then SlotMapping steal semantics. Which error fires first is itself observable.
-- **llvmkit:** The pieces exist but were landed wave by wave (W2.5 did intrinsic auto-declaration and `@` leftovers; W3 the undefined types; W2.6 comdats), and the sequence was landed before anyone checked it against upstream's — see the Status bullet for where that stands now. Step one — the attribute-group merge and the `validateEndOfModule` half of the alignment-attribute→field move — is **D9**, and is not restated here; this entry owns only the *sequence*.
-- **Why:** Recorded as W13's opening item, with the ordering explicitly called "part of parity". Its group-merge half is the blocker under the printer's missing attribute-group forming.
-- **Fix:** Port the routine as one ordered sequence, add the attr-group merge + `align`-to-field move, and pin the order with negative fixtures that trip two rules at once. Also covers `getIntrinsicSignature` mangling-suffix cases (`llvm.umax` on `i32` declares `llvm.umax.i32`) and the `InstsWithTBAATag` hook W11 was to leave behind.
-- **Status (W13a, W13b):** the *sequence* is now upstream's, step by step, and the `dso_local_equivalent` step exists (see D7). The initializer deferral that made step 3 re-mint references after step 4 had run is gone (see D8), so `@g = global ptr blockaddress(@never_defined, %entry)` on its own is rejected rather than printing `<forward reference>`. **Still open:** step one (D9), the intrinsic auto-declaration loop (entry **37**, which is wider than this bullet — llvmkit's `intrinsic can only be used as callee` fires at reference time and rejects an address-taken reference to a *declared* intrinsic that upstream's parser accepts), metadata-cycle resolution, the TBAA hook and `Slots` steal semantics.
-
-> **`Correction from verification` block removed 2026-08-21.** It was a
-> snapshot taken before W13a/W13b, and each of its four empirical findings
-> now behaves the other way. Re-probed at that date with
-> `crates/llvmkit-asmparser/examples/parse_file.rs` built at this commit:
-> `@x = external global %undefined.type` plus a leftover `blockaddress`
-> reports `expected function name in blockaddress` — upstream's order, not the
-> undefined type; an undefined callee plus `!named = !{!5}` reports the
-> undefined value, not the metadata; `@g = global ptr
-> blockaddress(@never_defined, %entry)` alone is rejected, with no
-> `<forward reference>` reaching printed IR; and
-> `@a = global ptr dso_local_equivalent @nosuch` reports
-> `unknown function 'nosuch' referenced by dso_local_equivalent`, the message
-> that block said existed nowhere in the tree. Its two surviving sub-clauses —
-> the split alignment move, and the attribute-group merge still being absent —
-> are folded into the `llvmkit:` bullet above. Its remaining structural note,
-> that the steps are inlined in `parse_module` rather than in a
-> `validate_end_of_module` routine, is no longer a divergence: they run there
-> in upstream's order under a comment naming each upstream step. The
-> `undefined global` / `undefined value` noun split it did not mention is
-> gone: every `@`-reference, callee or not, now goes through the one
-> `forward_ref_globals` map and its one `SymbolKind`.
-
-> **Evidence block removed 2026-08-20 (fix round 3).** It recorded a single verification pass taken before W13a and was superseded by the `Status (W13a, W13b)` paragraph above: its central finding, "11 calls in an order that does not match upstream's", is no longer true, and its llvmkit coordinate for the sequence (`ll_parser.rs:1457-1480`) had drifted into metadata-slot code. The upstream half it cited (`LLParser::validateEndOfModule`, and `parseValID`'s blockaddress leftovers) still holds and is named by symbol in the bullets above.
+- **Why not now:** moving auto-declaration into the sweep means a call to an
+  undeclared `llvm.` name must mint `getGlobalVal`'s untyped placeholder and
+  leave the mangling suffix undecided until end of module, which is the same
+  reshape `AutoUpgrade`'s unported call sites want (`docs/future-work.md`).
+  Doing half of it would put the declaration in one place and the upgrade in
+  another.
 
 ## Different printed bytes
 

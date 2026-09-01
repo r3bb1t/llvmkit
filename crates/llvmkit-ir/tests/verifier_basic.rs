@@ -187,9 +187,16 @@ fn intrinsic_declaration_by_name_applies_generated_argument_names() -> Result<()
     Ok(())
 }
 
-/// Mirrors `Verifier::visitFunction` / `visitInstruction`: intrinsic
-/// declarations may only be used as the direct callee operand, not as an
-/// ordinary call argument.
+/// Mirrors `Verifier::visitFunction`'s address-taken guard: an
+/// `llvm.`-prefixed function may only be named as the direct callee operand of
+/// a call, never as an ordinary argument, and the diagnostic is
+/// `Invalid user of intrinsic instruction!`.
+///
+/// The assertion used to read `intrinsic can only be used as callee`, which is
+/// `LLParser::validateEndOfModule`'s wording for the *parser's* leftover
+/// sweep, not the Verifier's — llvmkit had borrowed it for a rule upstream
+/// words differently, so the test agreed with the code and neither agreed with
+/// LLVM. The text below is `Verifier.cpp`'s own `Check` literal.
 #[test]
 fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), IrError> {
     let m = module_new!("intrinsic-noncallee-use")?;
@@ -209,7 +216,7 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
         .expect_err("non-callee intrinsic operand rejected");
     assert!(
         err.to_string()
-            .contains("intrinsic can only be used as callee"),
+            .contains("Invalid user of intrinsic instruction!"),
         "{err}"
     );
     Ok(())

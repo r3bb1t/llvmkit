@@ -321,6 +321,11 @@ pub enum VerifierRule {
     /// `Verifier::visitIntrinsicCall` ("Intrinsic functions should never be
     /// defined!").
     IntrinsicDefined,
+    /// An `llvm.`-prefixed function is named somewhere other than the callee
+    /// position of a direct call. Mirrors `Verifier::visitFunction`'s
+    /// `Function::hasAddressTaken` guard ("Invalid user of intrinsic
+    /// instruction!").
+    IntrinsicAddressTaken,
     /// A constant argument to an intrinsic has type `x86_amx`. Mirrors
     /// `Verifier::visitIntrinsicCall`'s argument walk ("const x86_amx is not
     /// allowed in argument!").
@@ -676,6 +681,7 @@ impl fmt::Display for VerifierRule {
             }
             Self::MissingFuncletToken => "intrinsic call in an EH funclet has no funclet token",
             Self::IntrinsicDefined => "an intrinsic function has a body",
+            Self::IntrinsicAddressTaken => "an intrinsic is used other than as a call target",
             Self::ConstX86AmxArgument => "a constant argument to an intrinsic has type x86_amx",
             Self::CallbrLandingPadPlacement => {
                 "llvm.callbr.landingpad is not first in a block reached only by its callbr"

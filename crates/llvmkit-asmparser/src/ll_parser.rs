@@ -1793,55 +1793,171 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `@`-reference is a `use of undefined **value**`, where a *redefinition*
     /// of the same namespace says `global`.
     fn resolve_forward_ref_globals(&mut self, allow_incomplete_ir: bool) -> ParseResult<()> {
+        // `for (const auto &[Name, Info] : make_early_inc_range(ForwardRefVals))`
+        //
+        // Every definition site erases its own entry before this runs —
+        // `parseGlobal` and `parseAliasOrIFunc` through
+        // [`Self::claim_global_forward_ref`], `parseFunctionHeader` through
+        // [`Self::claim_function_forward_ref`] — so an entry that is still
+        // here names something the module never defined. That is why the loop
+        // never looks a name up: upstream's does not either.
+        //
+        // The loop runs to the end before anything is reported. The
+        // `use of undefined value` below is `ForwardRefVals.begin()` *after*
+        // it, so an intrinsic offender late in key order still preempts an
+        // ordinary leftover early in it.
         let named = core::mem::take(&mut self.forward_ref_globals);
+        let mut leftovers: BTreeMap<String, ForwardRef<'ctx, B>> = BTreeMap::new();
         for (name, entry) in named {
-            let target = match self.resolve_global_name_as_ref(name.clone()) {
-                Ok(target) => target,
-                // `if (!AllowIncompleteIR) continue;` — with the option on, a
-                // leftover that is *not* an intrinsic gets a declaration
-                // synthesised for it instead of ending the parse. Names under
-                // `llvm.` never reach the option upstream: the intrinsic
-                // auto-declaration branch above it has already `continue`d.
-                Err(_) if allow_incomplete_ir && !name.starts_with("llvm.") => {
-                    let placeholder = entry.placeholder.as_value();
-                    self.declare_incomplete_forward_ref(&name, placeholder, entry.loc)?
-                }
-                Err(_) => {
-                    return Err(ParseError::UndefinedSymbol {
-                        kind: SymbolKind::GlobalValue,
-                        id: SymbolId::Named(name),
-                        loc: DiagLoc::span(entry.loc),
-                    });
-                }
-            };
+            // `if (StringRef(Name).starts_with("llvm."))`
+            if name.starts_with("llvm.") {
+                self.reject_intrinsic_non_callee(&entry)?;
+                // Every use is a callee use, which is where upstream
+                // auto-declares the intrinsic from the call site's
+                // `FunctionType` and then erases the entry. llvmkit
+                // auto-declares at the call site instead
+                // (`resolve_direct_callee`'s `IntrinsicNameResolution::Known`
+                // arm), so no `llvm.` name reaches `global_forward_ref` from
+                // callee position and there is no declaration here to point
+                // the placeholder at — the entry stays a leftover rather than
+                // being dropped with its uses still dangling
+                // (recorded in `docs/divergences.md`, under the
+                // auto-declaration site).
+                leftovers.insert(name, entry);
+                continue;
+            }
+            // `if (!AllowIncompleteIR) continue;` — with the option on, a
+            // leftover that is *not* an intrinsic gets a declaration
+            // synthesised for it instead of ending the parse.
+            if !allow_incomplete_ir {
+                leftovers.insert(name, entry);
+                continue;
+            }
+            let placeholder = entry.placeholder.as_value();
+            let target = self.declare_incomplete_forward_ref(&name, placeholder, entry.loc)?;
             let target = self.global_ref_to_constant(target);
-            Self::resolve_global_forward_ref(entry, target)?;
+            Self::rauw_forward_ref(entry, target)?;
         }
+        // `if (!ForwardRefVals.empty()) return error(begin()->second.second,
+        //    "use of undefined value '@" + begin()->first + "'");`
+        if let Some((name, entry)) = leftovers.into_iter().next() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: SymbolKind::GlobalValue,
+                id: SymbolId::Named(name),
+                loc: DiagLoc::span(entry.loc),
+            });
+        }
+        // `if (!ForwardRefValIDs.empty()) return error(begin()->second.second,
+        //    "use of undefined value '@" + Twine(begin()->first) + "'");` —
+        // numbers carry no `llvm.` prefix and no `AllowIncompleteIR` arm, so
+        // the numbered map has only the leftover report.
         let numbered = core::mem::take(&mut self.forward_ref_global_ids);
-        for (id, entry) in numbered {
-            let Some(target) = self.numbered_globals.get(id).copied() else {
-                return Err(ParseError::UndefinedSymbol {
-                    kind: SymbolKind::GlobalValue,
-                    id: SymbolId::Numbered(id),
-                    loc: DiagLoc::span(entry.loc),
-                });
-            };
-            let target = self.global_ref_to_constant(target);
-            Self::resolve_global_forward_ref(entry, target)?;
+        if let Some((id, entry)) = numbered.into_iter().next() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: SymbolKind::GlobalValue,
+                id: SymbolId::Numbered(id),
+                loc: DiagLoc::span(entry.loc),
+            });
         }
         Ok(())
     }
 
-    fn resolve_global_forward_ref(
+    /// `parseGlobal`'s and `parseAliasOrIFunc`'s shared forward-reference
+    /// block, which the two spell identically:
+    ///
+    /// ```text
+    /// GlobalValue *GVal = nullptr;
+    /// if (!Name.empty()) {
+    ///   auto I = ForwardRefVals.find(Name);
+    ///   if (I != ForwardRefVals.end()) {
+    ///     GVal = I->second.first;
+    ///     ForwardRefVals.erase(I);
+    ///   } else if (M->getNamedValue(Name)) {
+    ///     return error(NameLoc, "redefinition of global '@" + Name + "'");
+    ///   }
+    /// } else {
+    ///   auto I = ForwardRefValIDs.find(NameID);
+    ///   if (I != ForwardRefValIDs.end()) {
+    ///     GVal = I->second.first;
+    ///     ForwardRefValIDs.erase(I);
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// The **erase** is the load-bearing half: without it a name that was
+    /// forward-referenced once could be defined any number of times, because
+    /// the guard would keep seeing the map entry and skipping the
+    /// redefinition check. `M->getNamedValue` is the whole symbol table, not
+    /// the globals alone, so a `declare` and a `@g = global` under one name
+    /// collide here rather than in the builder.
+    ///
+    /// The numbered arm has no redefinition check upstream, and none here:
+    /// a repeated `@N` is caught by `NumberedValues::add` instead.
+    fn claim_global_forward_ref(
+        &mut self,
+        name_id: &NameOrId,
+        name_loc: Span,
+    ) -> ParseResult<Option<ForwardRef<'ctx, B>>> {
+        match name_id {
+            NameOrId::Name(name) if !name.is_empty() => {
+                if let Some(entry) = self.forward_ref_globals.remove(name.as_str()) {
+                    return Ok(Some(entry));
+                }
+                if self.global_symbol_lookup(name).is_some() {
+                    return Err(ParseError::Redefinition {
+                        kind: SymbolKind::Global,
+                        id: SymbolId::Named(name.clone()),
+                        loc: DiagLoc::span(name_loc),
+                    });
+                }
+                Ok(None)
+            }
+            // `@""` is a name syntactically present but semantically missing.
+            // Upstream reaches the numbered arm for it and replaces
+            // `NameID == (unsigned)-1` with `NumberedVals.getNext()`; llvmkit
+            // carries it as an empty `NameOrId::Name` that takes no number at
+            // all — the gap catalogued as **G15** in
+            // `docs/fixture-coverage.md`, not introduced here.
+            NameOrId::Name(_) => Ok(None),
+            NameOrId::Id(id) => Ok(self.forward_ref_global_ids.remove(id)),
+        }
+    }
+
+    /// The `if (GVal) { … }` tail `parseAliasOrIFunc` runs **after** its
+    /// property loop: `if (GVal->getType() != GV->getType()) return
+    /// error(ExplicitTypeLoc, "forward reference and definition of alias have
+    /// different types"); GVal->replaceAllUsesWith(GV);
+    /// GVal->eraseFromParent();`.
+    ///
+    /// One message serves both spellings — upstream words the ifunc case
+    /// "alias" too. `GV->getType()` is `PointerType::get(C, AddrSpace)` with
+    /// `AddrSpace` taken off the *aliasee's* pointer type, which is what
+    /// `target_ty` is.
+    fn resolve_alias_forward_ref(
+        forward_ref: Option<ForwardRef<'ctx, B>>,
+        definition: llvmkit_ir::Constant<'ctx, B>,
+        target_ty: Type<'ctx, B>,
+        explicit_type_loc: Span,
+    ) -> ParseResult<()> {
+        let Some(entry) = forward_ref else {
+            return Ok(());
+        };
+        if entry.placeholder.ty() != target_ty {
+            return Err(ParseError::Message {
+                message: "forward reference and definition of alias have different types".into(),
+                loc: DiagLoc::span(explicit_type_loc),
+            });
+        }
+        Self::rauw_forward_ref(entry, definition)
+    }
+
+    /// `GVal->replaceAllUsesWith(GV); GVal->eraseFromParent();` — the half of
+    /// every forward-reference block that carries no diagnostic. The erase is
+    /// implicit: nothing holds the placeholder once its uses are rewritten.
+    fn rauw_forward_ref(
         entry: ForwardRef<'ctx, B>,
         target: llvmkit_ir::Constant<'ctx, B>,
     ) -> ParseResult<()> {
-        if entry.placeholder.ty() != target.ty() {
-            return Err(ParseError::Message {
-                message: "forward reference and definition of global have different types".into(),
-                loc: DiagLoc::span(entry.loc),
-            });
-        }
         entry
             .placeholder
             .replace_all_uses_with(target.as_erased())
@@ -1849,6 +1965,56 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 message: format!("cannot resolve forward reference: {e}").into(),
                 loc: DiagLoc::span(entry.loc),
             })
+    }
+
+    /// The guard that opens `validateEndOfModule`'s intrinsic branch:
+    ///
+    /// ```text
+    /// for (Use &U : make_early_inc_range(Info.first->uses())) {
+    ///   auto *CB = dyn_cast<CallBase>(U.getUser());
+    ///   if (!CB || !CB->isCallee(&U))
+    ///     return error(Info.second, "intrinsic can only be used as callee");
+    /// ```
+    ///
+    /// It runs on a `ForwardRefVals` entry, so it is reached only for a
+    /// `llvm.`-prefixed name the module never defined — a name a later
+    /// `declare` / `define` claimed has already left the map through
+    /// [`Self::claim_function_forward_ref`], and one an earlier one defined
+    /// never entered it. The diagnostic is anchored at `Info.second`, the
+    /// location of the *first* reference, which is what the entry's `loc`
+    /// holds.
+    ///
+    /// Two spellings differ from upstream's `Use` walk, both forced by
+    /// llvmkit's use list:
+    ///
+    /// * [`Value::users`](llvmkit_ir::Value::users) yields only the
+    ///   instruction edges, so a constant-expression or global-field edge —
+    ///   a `User` upstream that is not a `CallBase` — is counted through
+    ///   [`Value::num_uses`](llvmkit_ir::Value::num_uses) instead, exactly as
+    ///   [`Self::common_call_site_function_type`] counts it. That count also
+    ///   includes the metadata and debug-record edges upstream models as no
+    ///   `Use` at all (`docs/divergences.md` D5).
+    /// * A placeholder with *no* edges at all is llvmkit's `no_cfi` spelling:
+    ///   [`Self::parse_no_cfi_constant`] registers the referent in
+    ///   `forward_ref_globals` and then builds the `NoCFIValue` over a
+    ///   second, separate stand-in. Upstream has one placeholder, and the
+    ///   `NoCFIValue` wrapping it is a non-`CallBase` user — an offender —
+    ///   so the empty edge list is treated as one here.
+    fn reject_intrinsic_non_callee(&self, entry: &ForwardRef<'ctx, B>) -> ParseResult<()> {
+        let placeholder = entry.placeholder.as_value();
+        let users: Vec<_> = placeholder.users().collect();
+        let only_callee_uses = !users.is_empty()
+            && users.len() == placeholder.num_uses()
+            && users
+                .iter()
+                .all(|user| Self::callee_function_type(user, placeholder).is_some());
+        if only_callee_uses {
+            return Ok(());
+        }
+        Err(ParseError::Message {
+            message: "intrinsic can only be used as callee".into(),
+            loc: DiagLoc::span(entry.loc),
+        })
     }
 
     /// Synthesise a declaration for a `@name` that was never defined, under
@@ -6062,8 +6228,29 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let loc = DiagLoc::span(value_loc);
         let name = field.name();
 
+        // The `MDUnsignedField` base every keyword family but
+        // `ChecksumKindField` inherits: `if (Lex.getKind() != lltok::APSInt ||
+        // Lex.getAPSIntVal().isSigned()) return tokError("expected unsigned
+        // integer"); if (U.ugt(Result.Max)) return tokError("value for '" +
+        // Name + "' too large, limit is " + Twine(Result.Max));`. The token
+        // half is `parse_metadata_field_value`'s; only the value half is left
+        // once the integer exists.
+        let unsigned_in_range = |parsed: &i128, max: u64| -> ParseResult<()> {
+            if *parsed < 0 {
+                return Err(self.expected_at(value_loc, "unsigned integer"));
+            }
+            if u128::try_from(*parsed).is_ok_and(|v| v > u128::from(max)) {
+                return Err(ParseError::MetadataFieldValueTooLarge {
+                    field: name.to_owned(),
+                    limit: max,
+                    loc,
+                });
+            }
+            Ok(())
+        };
+
         // A keyword family: reject a spelling its table does not contain, and
-        // let a raw unsigned encoding through as upstream's overloads do.
+        // range-check a raw encoding against the family's own `Max`.
         let keyword = |what: &'static str, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
             match value {
                 MetadataFieldValue::Enum(spelling) => {
@@ -6076,6 +6263,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     Ok(())
                 }
+                MetadataFieldValue::Integer(parsed) => {
+                    match metadata_keyword_field_max(field.kind()) {
+                        Some(max) => unsigned_in_range(parsed, max),
+                        // `ChecksumKindField` is not an `MDUnsignedField`, so it
+                        // has no integer spelling at all — and none reaches here,
+                        // since `parse_metadata_field_value` refuses the token.
+                        None => Ok(()),
+                    }
+                }
+                // `parse_metadata_field_value` admits nothing else for these
+                // families.
                 _ => Ok(()),
             }
         };
@@ -6174,7 +6372,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // keyword is `expected DWARF enum kind code`, while a keyword the
             // table does not carry is `invalid DWARF enum kind code '...'`.
             MetadataFieldKind::DwarfEnumKind => match value {
-                MetadataFieldValue::Integer(_) => Ok(()),
+                MetadataFieldValue::Integer(parsed) => unsigned_in_range(
+                    parsed,
+                    metadata_keyword_field_max(MetadataFieldKind::DwarfEnumKind)
+                        .unwrap_or(u64::MAX),
+                ),
                 MetadataFieldValue::Enum(spelling) => {
                     if llvmkit_ir::dwarf::apple_enum_kind(spelling).is_some() {
                         Ok(())
@@ -6225,6 +6427,39 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 return self.parse_disp_flag_field();
             }
             _ => {}
+        }
+        // The twelve keyword families, each of whose `parseMDField` overload
+        // is shaped
+        //
+        // ```text
+        // if (Lex.getKind() == lltok::APSInt)
+        //   return parseMDField(Loc, Name, static_cast<MDUnsignedField &>(Result));
+        // if (Lex.getKind() != lltok::X)
+        //   return tokError("expected <family>");
+        // ```
+        //
+        // so an integer is read through the `MDUnsignedField` base, the
+        // family's **own** keyword token is read, and everything else —
+        // `null`, a string, a `!`-reference, or a keyword belonging to a
+        // sibling family — stops at the `expected`. Reading the value off
+        // whatever token was there and validating it afterwards let all of
+        // those through — recorded in `docs/divergences.md` under the
+        // metadata-field acceptance rule.
+        if is_metadata_keyword_field(declared) {
+            if metadata_keyword_field_max(declared).is_some()
+                && matches!(self.peek(), Token::IntegerLit(_))
+            {
+                let parsed = self.parse_int_literal()?;
+                let value = parsed_apsint_to_i128(&parsed)
+                    .ok_or_else(|| self.expected("metadata integer literal in i128 range"))?;
+                return Ok(MetadataFieldValue::Integer(value));
+            }
+            let Some(spelling) = metadata_field_keyword_spelling(self.peek(), declared) else {
+                return Err(self.expected(expected_for_metadata_field_kind(declared)));
+            };
+            let spelling = spelling.to_owned();
+            self.bump()?;
+            return Ok(MetadataFieldValue::Enum(spelling));
         }
         match self.peek() {
             Token::Kw(Keyword::Null) => {
@@ -7457,6 +7692,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if ty.is_function() || !ty.is_valid_pointer_element() {
             return Err(self.message_at(type_loc, "invalid type for global variable"));
         }
+        // `GlobalValue *GVal = nullptr;` and the block that fills it: a
+        // forward reference to this name (or number) is claimed **here**, at
+        // the definition site, and its map entry erased. The erase is what
+        // makes the `else if (M->getNamedValue(Name))` arm a redefinition
+        // check rather than a false positive on a name that was only
+        // forward-referenced — and what makes a *second* definition of the
+        // same name reach it.
+        let forward_ref = self.claim_global_forward_ref(&name_id, decl_loc)?;
+        // `if (GVal) { if (GVal->getAddressSpace() != AddrSpace) return
+        //    error(TyLoc, "forward reference and definition of global have
+        //    different types"); GVal->replaceAllUsesWith(GV);
+        //    GVal->eraseFromParent(); }`
+        //
+        // Upstream runs the whole block between the property *assignments* and
+        // the property *loop*. llvmkit's builder wants every property before
+        // `build()`, so the halves are split around it: the comparison stays
+        // here, ahead of the loop, where its diagnostic order is upstream's,
+        // and the RAUW — which has no diagnostic — moves past the build, where
+        // there is a definition to point at. The comparison is on the address
+        // space, which for llvmkit is the whole of a pointer type's identity.
+        if let Some(entry) = &forward_ref
+            && entry.placeholder.ty() != self.module.ptr_type(address_space).as_type()
+        {
+            return Err(self.message_at(
+                type_loc,
+                "forward reference and definition of global have different types",
+            ));
+        }
         let mut section = None;
         let mut partition = None;
         let mut align = MaybeAlign::NONE;
@@ -7518,22 +7781,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             NameOrId::Name(n) => n.clone(),
             NameOrId::Id(_) => String::new(),
         };
-        // `else if (M->getNamedValue(Name))` — a name already in the module is
-        // a redefinition *unless* it is only there as a forward reference,
-        // which this definition satisfies. Without this, the collision reached
-        // the builder instead and surfaced as
-        // `expected valid global definition: a global named "g" already
-        // exists in this module`, so upstream's message was unreachable.
-        if !name_string.is_empty()
-            && !self.forward_ref_globals.contains_key(&name_string)
-            && self.module.global(&name_string).is_some()
-        {
-            return Err(ParseError::Redefinition {
-                kind: SymbolKind::Global,
-                id: SymbolId::Named(name_string),
-                loc: DiagLoc::span(decl_loc),
-            });
-        }
         let mut builder = self
             .module
             .global_builder(&name_string, ty)
@@ -7579,6 +7826,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         for (kind, id) in metadata {
             own_metadata(g.set_metadata(self.module, kind, id));
+        }
+        // The `GVal->replaceAllUsesWith(GV); GVal->eraseFromParent();` half of
+        // the block above, run once the definition exists.
+        if let Some(entry) = forward_ref {
+            Self::rauw_forward_ref(entry, g.as_global_constant_ptr())?;
         }
         if let NameOrId::Id(id) = name_id {
             self.numbered_globals
@@ -7628,6 +7880,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // right.
         Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
 
+        // `LocTy ExplicitTypeLoc = Lex.getLoc();`, taken before the type is
+        // read — the anchor for `forward reference and definition of alias
+        // have different types`.
+        let explicit_type_loc = self.loc();
         let value_type = self.parse_type(false)?;
         self.expect_punct(PunctKind::Comma, "comma after alias or ifunc's type")?;
         // `AliaseeLoc`, captured before the aliasee is read — upstream anchors
@@ -7684,6 +7940,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !matches!(target_ty.into_type_enum(), AnyTypeEnum::Pointer(_)) {
             return Err(self.message_at(aliasee_loc, "An alias or ifunc must have pointer type"));
         }
+        // `GlobalValue *GVal = nullptr;` and the block that fills it — the
+        // same claim `parseGlobal` makes, at the same point relative to the
+        // property loop: after the aliasee's address space is known and
+        // before the alias itself is created. The comparison this feeds is
+        // *not* here; upstream runs it after the property loop, and so does
+        // the tail below.
+        let forward_ref = self.claim_global_forward_ref(&name_id, decl_loc)?;
 
         let mut partition = None;
         let mut ifunc_metadata = Vec::new();
@@ -7728,6 +7991,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             })?;
             let a_view = self.module.view(a);
+            Self::resolve_alias_forward_ref(
+                forward_ref,
+                a_view.as_global_constant_ptr(),
+                target_ty,
+                explicit_type_loc,
+            )?;
             if let Some(name) = forward_target {
                 self.deferred_alias_targets.push(DeferredAliasTarget {
                     object: DeferredAliasObject::Alias(a_view),
@@ -7766,6 +8035,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             })?;
             let i_view = self.module.view(i);
+            Self::resolve_alias_forward_ref(
+                forward_ref,
+                i_view.as_global_constant_ptr(),
+                target_ty,
+                explicit_type_loc,
+            )?;
             for (kind, id) in ifunc_metadata {
                 own_metadata(i_view.set_metadata(self.module, kind, id));
             }
@@ -8694,24 +8969,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         })
     }
 
-    /// llvmkit's pre-emption of `validateEndOfModule`'s
-    /// `intrinsic can only be used as callee` sweep — see
-    /// `docs/divergences.md` entry 37. Kept where it was, after
-    /// [`Self::check_global_reference_pointer_type`], so upstream's own guard
-    /// still reports first.
-    fn reject_intrinsic_non_callee(&self, loc: Span, name: &str) -> ParseResult<()> {
-        if matches!(
-            resolve_intrinsic_name(name),
-            IntrinsicNameResolution::NonIntrinsic
-        ) {
-            return Ok(());
-        }
-        Err(ParseError::Message {
-            message: "intrinsic can only be used as callee".into(),
-            loc: DiagLoc::span(loc),
-        })
-    }
-
     /// `M->getValueSymbolTable().lookup(Name)`, narrowed to the four global
     /// kinds llvmkit keeps in separate tables.
     fn global_symbol_lookup(&self, name: &str) -> Option<GlobalRef<'ctx, B>> {
@@ -8766,7 +9023,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         self.check_global_reference_pointer_type(loc, ty)?;
-        self.reject_intrinsic_non_callee(loc, &name)?;
         if let Some(resolved) = self.global_symbol_lookup(&name) {
             self.check_resolved_global_type(loc, &format!("@{name}"), ty, resolved)?;
             return Ok(self.global_ref_to_value(resolved));
@@ -8797,7 +9053,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         self.check_global_reference_pointer_type(loc, ty)?;
-        self.reject_intrinsic_non_callee(loc, &name)?;
         if let Some(resolved) = self.global_symbol_lookup(&name) {
             self.check_resolved_global_type(loc, &format!("@{name}"), ty, resolved)?;
             return Ok(self.global_ref_to_constant(resolved));
@@ -11338,11 +11593,37 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 {
                     return Err(self.intrinsic_attribute_error(decl_loc));
                 }
+                // `parseFunctionHeader`'s `GlobalValue *FwdFn = nullptr;`
+                // block. Upstream has **one** path here and an intrinsic
+                // takes it like anything else; llvmkit's intrinsic arm builds
+                // the declaration through
+                // `get_or_insert_intrinsic_declaration` rather than
+                // `Function::Create`, so the claim is spelled out here. The
+                // redefinition arms beside it upstream are deliberately not:
+                // llvmkit materialises a real `Function` for any call site
+                // that named this intrinsic, where upstream at this point
+                // still holds only a `ForwardRefVals` placeholder, so
+                // `M->getFunction(FunctionName)` answers for inputs upstream
+                // accepts. Without the claim the reference stayed in
+                // `forward_ref_globals` and `validateEndOfModule` reported a
+                // *declared* intrinsic as never declared.
+                let forward_ref = match &name_id {
+                    NameOrId::Name(n) if !n.is_empty() => {
+                        self.forward_ref_globals.remove(n.as_str())
+                    }
+                    NameOrId::Name(_) => None,
+                    NameOrId::Id(id) => self.forward_ref_global_ids.remove(id),
+                };
                 let f = self
                     .module
                     .get_or_insert_intrinsic_declaration(&descriptor)
                     .map_err(|e| self.intrinsic_parse_error(decl_loc, e))?;
                 let f = self.module.view(f);
+                // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn);
+                // FwdFn->eraseFromParent(); }`.
+                if let Some(entry) = forward_ref {
+                    Self::rauw_forward_ref(entry, f.as_global_constant_ptr())?;
+                }
                 for (slot, name) in param_names.into_iter().enumerate() {
                     if let Some(name) = name {
                         let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
@@ -11451,7 +11732,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // every setter and the argument-name loop, and before `parseDeclare`
         // resumes with the attachments it read ahead of the header.
         if let Some(entry) = forward_ref {
-            Self::resolve_global_forward_ref(entry, f.as_global_constant_ptr())?;
+            Self::rauw_forward_ref(entry, f.as_global_constant_ptr())?;
         }
         // `parseDeclare` applies the attachments it read *before* the header,
         // in the order they were written. There is no trailing form: a
@@ -11657,7 +11938,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // recursive call in the body below sees the real `Function`, not the
         // placeholder.
         if let Some(entry) = forward_ref {
-            Self::resolve_global_forward_ref(entry, f.as_global_constant_ptr())?;
+            Self::rauw_forward_ref(entry, f.as_global_constant_ptr())?;
         }
         // `parseDefine` reads the attachments *after* the header, through
         // `parseOptionalFunctionMetadata`, and before the body's `{`.
@@ -16780,6 +17061,94 @@ fn expected_for_metadata_field_kind(kind: llvmkit_ir::metadata::MetadataFieldKin
     }
 }
 
+/// Whether this field's `parseMDField` overload is one of the twelve typed on
+/// a single `lltok` keyword family — the overloads that open
+/// `if (Lex.getKind() != lltok::X) return tokError("expected …")`.
+fn is_metadata_keyword_field(kind: llvmkit_ir::metadata::MetadataFieldKind) -> bool {
+    use llvmkit_ir::metadata::MetadataFieldKind;
+    matches!(
+        kind,
+        MetadataFieldKind::DwarfTag
+            | MetadataFieldKind::DwarfAttEncoding
+            | MetadataFieldKind::DwarfVirtuality
+            | MetadataFieldKind::DwarfLang
+            | MetadataFieldKind::DwarfSourceLangName
+            | MetadataFieldKind::DwarfCc
+            | MetadataFieldKind::DwarfMacinfoType
+            | MetadataFieldKind::DwarfEnumKind
+            | MetadataFieldKind::EmissionKind
+            | MetadataFieldKind::NameTableKind
+            | MetadataFieldKind::FixedPointKind
+            | MetadataFieldKind::ChecksumKind
+    )
+}
+
+/// The `Max` each keyword family's `MDUnsignedField` base is constructed with
+/// in `LLParser.cpp` — `struct DwarfTagField : public MDUnsignedField {
+/// DwarfTagField() : MDUnsignedField(0, dwarf::DW_TAG_hi_user) {} };` and its
+/// ten siblings.
+///
+/// `None` for `ChecksumKindField`, the one family that is an
+/// `MDFieldImpl<DIFile::ChecksumKind>` rather than an `MDUnsignedField`: it
+/// has no integer spelling, and its overload rejects every token but
+/// `lltok::ChecksumKind`. `None` for every non-keyword kind too, so the
+/// answer doubles as "does this family accept an integer at all".
+fn metadata_keyword_field_max(kind: llvmkit_ir::metadata::MetadataFieldKind) -> Option<u64> {
+    use llvmkit_ir::metadata::MetadataFieldKind;
+    Some(match kind {
+        // `dwarf::DW_TAG_hi_user`
+        MetadataFieldKind::DwarfTag => 0xffff,
+        // `dwarf::DW_ATE_hi_user`
+        MetadataFieldKind::DwarfAttEncoding => 0xff,
+        // `dwarf::DW_VIRTUALITY_max`
+        MetadataFieldKind::DwarfVirtuality => 0x02,
+        // `dwarf::DW_LANG_hi_user`
+        MetadataFieldKind::DwarfLang => 0xffff,
+        // `UINT32_MAX`
+        MetadataFieldKind::DwarfSourceLangName => u64::from(u32::MAX),
+        // `dwarf::DW_CC_hi_user`
+        MetadataFieldKind::DwarfCc => 0xff,
+        // `dwarf::DW_MACINFO_vendor_ext`
+        MetadataFieldKind::DwarfMacinfoType => 0xff,
+        // `dwarf::DW_APPLE_ENUM_KIND_max`
+        MetadataFieldKind::DwarfEnumKind => 0x01,
+        // `DICompileUnit::LastEmissionKind` (`DebugDirectivesOnly`)
+        MetadataFieldKind::EmissionKind => 3,
+        // `DICompileUnit::DebugNameTableKind::LastDebugNameTableKind` (`Apple`)
+        MetadataFieldKind::NameTableKind => 3,
+        // `DIFixedPointType::LastFixedPointKind` (`FixedPointRational`)
+        MetadataFieldKind::FixedPointKind => 2,
+        _ => return None,
+    })
+}
+
+/// `Lex.getKind() != lltok::X` for the one `X` a keyword family's overload
+/// accepts, with `Lex.getStrVal()` when it matches. A keyword from a *sibling*
+/// family answers `None` here, which is what makes
+/// `emissionKind: DW_TAG_class_type` the family's `expected …` rather than an
+/// `invalid …` naming a spelling the field never had a table for.
+fn metadata_field_keyword_spelling<'src>(
+    token: &Token<'src>,
+    declared: llvmkit_ir::metadata::MetadataFieldKind,
+) -> Option<&'src str> {
+    use llvmkit_ir::metadata::MetadataFieldKind;
+    match (declared, token) {
+        (MetadataFieldKind::DwarfTag, Token::DwarfTag(s))
+        | (MetadataFieldKind::DwarfAttEncoding, Token::DwarfAttEncoding(s))
+        | (MetadataFieldKind::DwarfVirtuality, Token::DwarfVirtuality(s))
+        | (MetadataFieldKind::DwarfLang, Token::DwarfLang(s))
+        | (MetadataFieldKind::DwarfSourceLangName, Token::DwarfSourceLangName(s))
+        | (MetadataFieldKind::DwarfCc, Token::DwarfCc(s))
+        | (MetadataFieldKind::DwarfMacinfoType, Token::DwarfMacinfo(s))
+        | (MetadataFieldKind::DwarfEnumKind, Token::DwarfEnumKind(s))
+        | (MetadataFieldKind::EmissionKind, Token::EmissionKind(s))
+        | (MetadataFieldKind::NameTableKind, Token::NameTableKind(s))
+        | (MetadataFieldKind::FixedPointKind, Token::FixedPointKind(s))
+        | (MetadataFieldKind::ChecksumKind, Token::ChecksumKind(s)) => Some(s),
+        _ => None,
+    }
+}
+
 /// `DICompileUnit::DebugEmissionKind` spellings
 /// (`DebugInfoMetadata.h`; parsed by `LLParser`'s `EmissionKindField`).
 fn emission_kind(spelling: &str) -> Option<u32> {
@@ -16797,8 +17166,8 @@ fn name_table_kind(spelling: &str) -> Option<u32> {
     match spelling {
         "Default" => Some(0),
         "GNU" => Some(1),
-        "Apple" => Some(2),
-        "None" => Some(3),
+        "None" => Some(2),
+        "Apple" => Some(3),
         _ => None,
     }
 }

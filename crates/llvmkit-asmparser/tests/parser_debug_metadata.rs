@@ -1049,6 +1049,121 @@ fn dwarf_kind_families_reject_a_word_that_is_no_keyword() {
     }
 }
 
+/// The rest of what each keyword family's `parseMDField` overload refuses.
+/// Every one opens
+///
+/// ```text
+/// if (Lex.getKind() == lltok::APSInt)
+///   return parseMDField(Loc, Name, static_cast<MDUnsignedField &>(Result));
+/// if (Lex.getKind() != lltok::X)
+///   return tokError("expected <family>");
+/// ```
+///
+/// so the accepted set is exactly *an integer within the family's `Max`* plus
+/// *the family's own keyword token* — and `null`, a string, a `!`-reference
+/// and a keyword from a **sibling** family are all the `expected …`, not
+/// values to be validated afterwards. llvmkit parsed whatever token was there
+/// and validated it afterwards, so all four round-tripped
+/// — recorded in `docs/divergences.md` under the metadata-field acceptance
+/// rule.
+///
+/// The sibling-keyword and string cases are pinned by upstream fixtures, both
+/// corpus rows: `test/Assembler/dicompileunit-invalid-language.ll`'s
+/// `invalid_dw_lang_2` / `invalid_dw_lname_2` parts, and
+/// `test/Assembler/invalid-generic-debug-node-tag-wrong-type.ll`. The `null`
+/// and `!`-reference cases below have no upstream `.ll` — a search of
+/// `llvm/test/Assembler` for the `expected …` texts of these families returns
+/// only those two files — so they are rule anchors against the overloads,
+/// with upstream's wording verbatim.
+#[test]
+fn a_kind_family_rejects_every_token_but_an_integer_and_its_own_keyword() {
+    for (src, expected) in [
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: null)\n",
+            "expected emission kind",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: \"x\")\n",
+            "expected emission kind",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: !0)\n",
+            "expected emission kind",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: null)\n",
+            "expected nameTable kind",
+        ),
+        // A keyword from a sibling family: the token is a `DwarfTag`, never an
+        // `EmissionKind`, so the `expected` arm fires and the `invalid emission
+        // kind '…'` arm beside it never sees a spelling it has no table for.
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: DW_TAG_class_type)\n",
+            "expected emission kind",
+        ),
+        // `ChecksumKindField` is the one family that is not an
+        // `MDUnsignedField`, so it has no integer spelling either.
+        (
+            "!0 = !DIFile(filename: \"a\", directory: \"b\", checksumkind: 1, checksum: \"x\")\n",
+            "expected metadata field value",
+        ),
+    ] {
+        assert_eq!(parse_err(src).to_string(), expected, "for {src:?}");
+    }
+}
+
+/// The `MDUnsignedField` base each keyword family but `ChecksumKindField`
+/// inherits, at its own `Max`: `if (U.ugt(Result.Max)) return tokError("value
+/// for '" + Name + "' too large, limit is " + Twine(Result.Max));`.
+///
+/// Three upstream fixtures pin this and are corpus rows —
+/// `invalid-dicompileunit-emissionkind-bad.ll` (`emissionKind`, limit 3),
+/// `invalid-dicompileunit-language-overflow.ll` (`language`, limit 65535) and
+/// `invalid-generic-debug-node-tag-overflow.ll` (`tag`, limit 65535). The
+/// families below have no fixture of their own; each limit is the `Max` its
+/// `XField` constructor passes in `LLParser.cpp`, and the value one under it
+/// must still be accepted.
+#[test]
+fn a_kind_family_range_checks_a_raw_encoding_against_its_own_max() {
+    for (src, expected) in [
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: 4)\n",
+            "value for 'nameTableKind' too large, limit is 3",
+        ),
+        (
+            "!0 = !DIFixedPointType(name: \"fx\", kind: 3)\n",
+            "value for 'kind' too large, limit is 2",
+        ),
+        (
+            "!0 = !DIBasicType(encoding: 256)\n",
+            "value for 'encoding' too large, limit is 255",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DISubprogram(scope: !0, virtuality: 3)\n",
+            "value for 'virtuality' too large, limit is 2",
+        ),
+        (
+            "!0 = !DISubroutineType(cc: 256, types: !1)\n!1 = !{}\n",
+            "value for 'cc' too large, limit is 255",
+        ),
+        (
+            "!0 = !DIMacro(type: 256, line: 1, name: \"x\")\n",
+            "value for 'type' too large, limit is 255",
+        ),
+    ] {
+        assert_eq!(parse_err(src).to_string(), expected, "for {src:?}");
+    }
+    // One under each limit still parses.
+    let text = parse_and_render(
+        "!named = !{!1, !2, !3}\n\
+!0 = !{}\n\
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: 3)\n\
+!2 = !DIFixedPointType(name: \"fx\", kind: 2)\n\
+!3 = !DIBasicType(encoding: 255)\n",
+    );
+    assert!(text.contains("!DIFixedPointType"), "output:\n{text}");
+}
+
 /// llvmkit-specific: no upstream counterpart, but it guards a bug this port
 /// nearly shipped. The parser's `fixed_point_kind` table originally read
 /// `Unsigned`/`Signed`/`Rational`, which would have *rejected valid IR* —

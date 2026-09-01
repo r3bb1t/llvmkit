@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::asm_writer::slot_label;
 use super::cfg::FunctionCfg;
-use super::constant::{Constant, ConstantData};
+use super::constant::{Constant, ConstantData, ConstantExprOpcode};
 use super::eh_personalities::{
     classify_eh_personality, color_eh_funclets, first_non_phi_kind, is_funclet_pad_kind,
     is_scoped_eh_personality,
@@ -59,11 +59,10 @@ use super::instr_types::{
     ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData,
     VaArgInstData,
 };
-use super::instruction::{InstructionKind, TerminatorKind};
 use super::instructions::ShuffleVectorInst;
 use super::intrinsics::{IntrinsicId, IntrinsicNameResolution};
 use super::module::ModuleRef;
-use super::value::Value;
+use super::value::{Value, ValueUse};
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
@@ -956,6 +955,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     // ------------------------------------------------------------------
 
     fn visit_function(&self, f: FunctionValue<'ctx, Dyn, B>) -> IrResult<()> {
+        self.verify_intrinsic_address_not_taken(f)?;
         self.verify_intrinsic_function(f)?;
         // Build a CFG predecessor map for this function so phi-validation
         // and use-before-def checks can consult it without re-walking
@@ -1077,27 +1077,188 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 message: "intrinsic declaration modifier",
             });
         }
-        let intrinsic_value = f.as_erased();
-        for user in intrinsic_value.users() {
-            let used_as_callee = match user.kind() {
-                Some(InstructionKind::Call(call)) => call.callee().slot() == intrinsic_value.slot(),
-                _ => match user.terminator_kind() {
-                    Some(TerminatorKind::Invoke(invoke)) => {
-                        invoke.callee().slot() == intrinsic_value.slot()
-                    }
-                    Some(TerminatorKind::CallBr(callbr)) => {
-                        callbr.callee().slot() == intrinsic_value.slot()
-                    }
-                    _ => false,
-                },
-            };
-            if !used_as_callee {
-                return Err(IrError::InvalidOperation {
-                    message: "intrinsic can only be used as callee",
-                });
-            }
-        }
         Ok(())
+    }
+
+    /// `visitFunction`'s address-taken guard, which sits between the metadata
+    /// attachment walk and the `switch (F.getIntrinsicID())` signature checks:
+    ///
+    /// ```text
+    /// if (F.isIntrinsic() && F.getParent()->isMaterialized()) {
+    ///   const User *U;
+    ///   if (F.hasAddressTaken(&U, false, true, false,
+    ///                         /*IgnoreARCAttachedCall=*/true))
+    ///     Check(false, "Invalid user of intrinsic instruction!", U);
+    /// }
+    /// ```
+    ///
+    /// `Function::isIntrinsic()` is the *name prefix* — `HasLLVMReservedName`,
+    /// set for every `llvm.`-prefixed name whether or not it names a known
+    /// intrinsic — so this runs ahead of, and independently of,
+    /// [`Self::verify_intrinsic_function`]'s signature work.
+    /// `Module::isMaterialized()` is always true here: llvmkit has no lazy
+    /// bitcode loader, so a module's use lists are always complete.
+    fn verify_intrinsic_address_not_taken(&self, f: FunctionValue<'ctx, Dyn, B>) -> IrResult<()> {
+        if matches!(
+            crate::intrinsics::resolve_intrinsic_name(f.name()),
+            IntrinsicNameResolution::NonIntrinsic
+        ) {
+            return Ok(());
+        }
+        if !self.function_address_is_taken(f) {
+            return Ok(());
+        }
+        Err(IrError::VerifierFailure {
+            rule: VerifierRule::IntrinsicAddressTaken,
+            function: Some(format!("@{}", f.name())),
+            block: None,
+            message: "Invalid user of intrinsic instruction!".to_owned(),
+        })
+    }
+
+    /// `Function::hasAddressTaken` (`lib/IR/Function.cpp`), at the one flag
+    /// combination llvmkit's single caller passes —
+    /// `IgnoreCallbackUses = false`, `IgnoreAssumeLikeCalls = true`,
+    /// `IgnoreLLVMUsed = false`, `IgnoreARCAttachedCall = true`,
+    /// `IgnoreCastedDirectCall = false` (its default). Upstream also hands the
+    /// offending `User` back through `PutOffender`; the one caller passes it
+    /// only to `Check`'s value-rendering tail, which llvmkit's
+    /// [`IrError::VerifierFailure`] has no slot for, so the answer here is the
+    /// bare predicate.
+    ///
+    /// Two spellings differ from upstream's `Use` walk, both forced by
+    /// llvmkit's use list:
+    ///
+    /// * `U.getOperandNo()` has no counterpart — llvmkit's use list records
+    ///   the user, not the operand index (`docs/divergences.md` D4). Both
+    ///   places upstream reads it are therefore answered from the call's own
+    ///   operands instead: `Call->isCallee(&U)` becomes "the callee operand
+    ///   *is* this function", and `isOperandBundleOfType(OB_…, OperandNo)`
+    ///   becomes "this function is an input of a `clang.arc.attachedcall`
+    ///   bundle on that call". A call that names the function both as its
+    ///   callee and as an argument therefore answers `false` here where
+    ///   upstream answers `true` for the argument use.
+    /// * Upstream's `uses()` covers metadata-borne references through no
+    ///   `Use` at all, while llvmkit records an edge for each
+    ///   (`docs/divergences.md` D5); those edges are skipped so the two sets
+    ///   agree.
+    fn function_address_is_taken(&self, f: FunctionValue<'ctx, Dyn, B>) -> bool {
+        let value = f.as_erased();
+        let signature = f.signature();
+        let edges: Vec<ValueUse> = value.data().use_list.borrow().iter().copied().collect();
+        for edge in edges {
+            // `IgnoreCallbackUses` is false at this call site, so the
+            // `AbstractCallSite` arm never runs.
+            let user = match edge {
+                // Upstream models neither as a `Use`.
+                ValueUse::Metadata(_) | ValueUse::DebugRecord { .. } => continue,
+                ValueUse::Instruction(user)
+                | ValueUse::Constant(user)
+                | ValueUse::GlobalField { owner: user, .. } => user,
+            };
+            // `const auto *Call = dyn_cast<CallBase>(FU); if (!Call) { … }`
+            let Some(call) = self.as_call_base(user) else {
+                // The `IgnoreAssumeLikeCalls` arm exempts a `bitcast` /
+                // `addrspacecast` operator whose every user is an
+                // assume-like intrinsic call; `IgnoreLLVMUsed` is false here,
+                // so its arm never runs.
+                if self.is_cast_operator_used_only_by_assume_like_calls(user) {
+                    continue;
+                }
+                return true;
+            };
+            // `if (IgnoreAssumeLikeCalls) { if (const auto *I =
+            //    dyn_cast<IntrinsicInst>(Call)) if (I->isAssumeLikeIntrinsic())
+            //    continue; }`
+            if crate::speculation::is_assume_like_intrinsic(&InstructionView::<B>::from_parts(
+                user,
+                self.module,
+            )) {
+                continue;
+            }
+            // `if (!Call->isCallee(&U) || (!IgnoreCastedDirectCall &&
+            //      Call->getFunctionType() != getFunctionType()))`
+            if call.callee == value.slot() && call.fn_ty == signature.id {
+                continue;
+            }
+            // `if (IgnoreARCAttachedCall &&
+            //      Call->isOperandBundleOfType(OB_clang_arc_attachedcall,
+            //                                  U.getOperandNo())) continue;`
+            if call.attrs.operand_bundles_slice().iter().any(|bundle| {
+                bundle.tag() == &OperandBundleTag::ClangArcAttachedCall
+                    && bundle.inputs().any(|input| input == value.slot())
+            }) {
+                continue;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// `dyn_cast<CallBase>(V)` — a `call`, `invoke` or `callbr`, projected
+    /// onto the fields the `CallBase` interface exposes.
+    fn as_call_base(&self, slot: ValueSlot) -> Option<CallBaseParts<'_>> {
+        let ValueKindData::Instruction(instruction) = &self.module.context().value_data(slot).kind
+        else {
+            return None;
+        };
+        match &instruction.kind {
+            InstructionKindData::Call(c) => Some(CallBaseParts {
+                callee: c.callee.get(),
+                fn_ty: c.fn_ty,
+                args: &c.args,
+                attrs: &c.attrs,
+            }),
+            InstructionKindData::Invoke(i) => Some(CallBaseParts {
+                callee: i.callee.get(),
+                fn_ty: i.fn_ty,
+                args: &i.args,
+                attrs: &i.attrs,
+            }),
+            InstructionKindData::CallBr(c) => Some(CallBaseParts {
+                callee: c.callee.get(),
+                fn_ty: c.fn_ty,
+                args: &c.args,
+                attrs: &c.attrs,
+            }),
+            _ => None,
+        }
+    }
+
+    /// `hasAddressTaken`'s `IgnoreAssumeLikeCalls` arm for a non-`CallBase`
+    /// user: `isa<BitCastOperator, AddrSpaceCastOperator>(FU) &&
+    /// all_of(FU->users(), [](const User *U) { if (const auto *I =
+    /// dyn_cast<IntrinsicInst>(U)) return I->isAssumeLikeIntrinsic(); return
+    /// false; })`.
+    ///
+    /// Only the `addrspacecast` half has a reachable trigger here: llvmkit's
+    /// pointers are opaque, so a `bitcast` constant expression between two
+    /// pointer types does not exist to be written.
+    fn is_cast_operator_used_only_by_assume_like_calls(&self, slot: ValueSlot) -> bool {
+        let data = self.module.context().value_data(slot);
+        let ValueKindData::Constant(constant) = &data.kind else {
+            return false;
+        };
+        let ConstantData::Expr(expr) = constant else {
+            return false;
+        };
+        if expr.opcode != ConstantExprOpcode::AddrSpaceCast {
+            return false;
+        }
+        let users: Vec<ValueSlot> = data
+            .use_list
+            .borrow()
+            .iter()
+            .filter_map(|edge| edge.user())
+            .collect();
+        // `all_of` over an empty range is true, so a cast operator with no
+        // users of its own is exempt upstream too.
+        users.iter().all(|user| {
+            crate::speculation::is_assume_like_intrinsic(&InstructionView::<B>::from_parts(
+                *user,
+                self.module,
+            ))
+        })
     }
 
     fn function_attrs_with_groups(

@@ -141,10 +141,11 @@ lists and the derivation command all live there.
 The gaps with the most fixtures behind them, and why each is worth pulling out:
 
 - **G18** — a check upstream's `llvm-as` performs at parse or verify time
-  that llvmkit does not: `MDField` range bounds (`count`, `lowerBound`,
-  `emissionKind`, `language`, `tag`), attribute applicability (`align` on a
+  that llvmkit does not: the `MDSignedOrMDField` / `MDUnsignedOrMDField` range
+  bounds (`count`, `lowerBound`), attribute applicability (`align` on a
   function, `byval` on an unsized type, `captures(none)` on a non-pointer), and
-  target-extension-type legality.
+  target-extension-type legality. The keyword families' bounds
+  (`emissionKind`, `language`, `tag`) used to be listed here and are done.
 - **G17** — diagnostic text that differs from upstream's. Most of it is one
   wording bug: a complete upstream message routed through llvmkit's
   `expected …` wrapper (`expected
