@@ -233,29 +233,66 @@ and within the interpolating sites:
 | `{result_ty}` / `{element_ty}` | 7 | a type handle where expressible, else owned text |
 | `{name}` | 12 | owned text — genuinely arbitrary input |
 
+**The 65 is an overcount, and Phase 5 must re-derive it.** Some `format!` sites are not
+diagnostics at all: `format!("@{name}")` at `ll_parser.rs` :2140, :9027, :9057, :14688 and
+`format!("%{id}")` in `LocalRef::display` build a *symbol display name* passed into
+`check_valid_variable_type` / `check_resolved_global_type`. They are untouched by this refactor.
+Filter them out before counting, or the ~19 prediction is measured against the wrong
+denominator.
+
 **The 24 nested-error sites are the most valuable part of this refactor, and they are worse than
 stringly-typing.** `format!("valid ret: {e}")` takes a fully structured `IrError` and flattens it
 into a string: D3 erasure at its most destructive, since the entire error is destroyed and only
 its rendering survives. A caller wanting to know *why* the builder refused has to parse text.
 They become:
 
-```rust
-BuilderRejected { context: BuilderContext, source: IrError },
+**Split them by diagnostic identity. Do not parameterise the identity.** An earlier draft of
+this spec proposed a single `BuilderRejected { context: BuilderContext, source: IrError }`
+covering all 123. That is `ErrorExpected { expected: str }` with the string typed: the variant
+stops naming the finding, and a `match` on the error tells you nothing until you also match the
+context field. The governing rule is **`ExpectedOpcode { got, expected: Opcode }` beats
+`ErrorExpected { got, expected: str }`** — a field carries data that varies *within* one
+diagnostic, never the diagnostic's identity.
 
-/// What the parser was building. Reuses `llvmkit_ir::Opcode` rather than
-/// minting a parallel set: 54 of the 87 hand-typed labels are Opcode names.
-enum BuilderContext {
-    Opcode(Opcode),          // "add", "alloca", "call", … — 54 of 87
-    ArrayConstant,           // the ~33 that are constructs, not opcodes
-    BlockAddressPlaceholder,
-    …
-}
+The sites confirm it: they do not even render alike. `cannot create forward reference: {e}`
+goes through `Message` (`ll_parser.rs:2155`) and `valid alias definition: {e}` through
+`Expected` (`:7990`), so one renders with an `expected ` prefix and one without. A collapsed
+variant would need a field to decide the *prefix*.
+
+```rust
+/// 54 sites, ONE shape — "the builder refused this instruction" — where the
+/// opcode is genuinely data. Reuses `llvmkit_ir::Opcode` rather than minting a
+/// parallel set: 54 of the 87 hand-typed labels are already Opcode names.
+#[error("expected valid {opcode}: {source}")]
+InstructionBuilderRejected { opcode: Opcode, source: IrError },
+
+/// Distinct shapes. Each is its own diagnostic, not a parameterisation.
+#[error("expected function parameter slot {slot}: {source}")]
+FunctionParameterRejected { slot: u32, source: IrError },
+#[error("expected valid datalayout: {source}")]           DataLayoutRejected       { source: IrError },
+#[error("expected valid alias definition: {source}")]     AliasDefinitionRejected  { source: IrError },
+#[error("expected valid global definition: {source}")]    GlobalDefinitionRejected { source: IrError },
+#[error("cannot create forward reference: {source}")]     ForwardReferenceCreationFailed { source: IrError },
+#[error("cannot resolve forward reference: {source}")]    ForwardReferenceUnresolved     { source: IrError },
 ```
 
-with `Display` emitting `valid {context}: {source}` — byte-identical output, structure intact,
-and the underlying `IrError` finally `match`-able. **`ll_parser.rs`'s two private mnemonic enums
-are subsumed by this and should go**; they are a third copy of the same naming, and one of them
-is already used at a single call site while 87 others hardcode its strings.
+Output is byte-identical, structure intact, and the underlying `IrError` is finally
+`match`-able. The cost of obeying the rule is **~35 variants instead of 1**, and `BuilderContext`
+is deleted — it was the collapsed identity wearing an enum. **`ll_parser.rs`'s two private
+mnemonic enums still go**: they are a third copy of the opcode naming, and one of them is used
+at a single call site while 87 others hardcode its strings.
+
+The same rule keeps pairs apart that look collapsible:
+
+```rust
+#[error("atomicrmw {op} operand must be an integer")]
+AtomicRmwOperandNotInteger { op: AtomicRmwBinOp },
+#[error("atomicrmw {op} operand must be a floating point type")]
+AtomicRmwOperandNotFloat   { op: AtomicRmwBinOp },
+```
+
+A single `AtomicRmwOperandWrongType { op, wanted: TypeKind }` would render both, and would be
+exactly the collapse this rule forbids.
 
 The rest follow the same rule:
 
@@ -337,11 +374,35 @@ an over-wide return type forces the same lie at whatever boundary consumes it ne
 `BrandError` in `llvmkit-ir` makes the catch-all arm unspellable — which is the fix, and it lands
 with the deletion rather than after it. Same rule applies to `branded_once`.
 
+`BrandError` lives in `crates/llvmkit-ir/src/error.rs`, beside `IrError` and `VerifierRule` —
+that file already holds four top-level enums, so no new module. It can derive `Copy`, which
+`IrError` cannot:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum BrandError {
+    #[error("module brand `{brand}` is already held by a live module")]
+    InUse { brand: &'static str },
+    #[error("module brand `{brand}` was permanently retired")]
+    Retired { brand: &'static str },
+}
+```
+
 The change is bounded: `grep -rn "BrandInUse\|BrandRetired" crates/ --include=*.rs` at `84a66ea`
 finds exactly **one** producer (`module.rs`, the two `Err(IrError::Brand*)` arms in the registry
 claim), 4 doctests, and ~11 test assertions — plus the parser sites Phase 1 is already deleting.
 The two variants then leave `IrError` entirely, since nothing constructs them any more; that is a
 breaking change to a `#[non_exhaustive]` public enum and gets its own `CHANGELOG.md` line.
+
+**`DataLayout::parse` has the same disease, and Phase 1 fixes it too.** `set_data_layout`
+(`ll_parser.rs:3067`) matches on the returned `IrError` with a two-arm `match` whose second arm
+is a catch-all rendering *differently* from the first — so one failure prints two ways depending
+on which arm catches it. `DataLayout::parse` returns `IrResult<Self>` and constructs exactly one
+variant (`grep -oE "IrError::[A-Za-z]+" data_layout.rs | sort -u` → `IrError::InvalidDataLayout`,
+3 sites, at `84a66ea`). Narrowing its return type to that one error deletes the catch-all and
+collapses the parser's `match` to a single `.map_err`. Three over-declarations found in one
+session by asking the same question of each `IrResult`; there may be more, and Phase 1's
+last step is to ask it of every `IrResult` the parser consumes.
 
 **Phase 2 — the shape, no site changes.** Introduce `ParseError`/`ParseErrorKind` with
 `Expected` and `Message` retained as transitional kind variants. The `self.expected(…)` and
