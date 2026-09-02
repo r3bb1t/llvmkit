@@ -8,13 +8,13 @@
 use std::fs::read as read_file;
 use std::path::Path;
 
-use llvmkit_ir::{BrandError, Constant, DynBrand, Module, ModuleBrand, Type, Unverified};
+use llvmkit_ir::{Constant, DynBrand, Module, ModuleBrand, Type, Unverified};
 
 use super::asm_parser_context::AsmParserContext;
 use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
 
 use super::ll_parser::{ParsedModule, Parser};
-use super::parse_error::{ParseError, ParseResult};
+use super::parse_error::ParseResult;
 use super::slot_mapping::SlotMapping;
 
 // --------------------------------------------------------------------------
@@ -166,7 +166,7 @@ impl core::fmt::Debug for ParserConfig<'_> {
 ///
 /// # Errors
 ///
-/// Any [`ParseError`] the source provokes. On failure the module is dropped
+/// Any [`crate::parse_error::ParseError`] the source provokes. On failure the module is dropped
 /// along with whatever was parsed into it, so a half-built module never
 /// escapes.
 pub fn parse_into<B, S>(module: Module<B, Unverified>, src: S) -> ParseResult<Module<B, Unverified>>
@@ -186,7 +186,7 @@ where
 ///
 /// # Errors
 ///
-/// Any [`ParseError`] the source provokes. On failure the module is dropped
+/// Any [`crate::parse_error::ParseError`] the source provokes. On failure the module is dropped
 /// along with whatever was parsed into it.
 pub fn parse_into_with_config<B, S>(
     module: Module<B, Unverified>,
@@ -201,51 +201,6 @@ where
     // that borrow, which is what lets the token be returned by value.
     Parser::new(src.as_ref(), &module)?.parse_module_with_config(config)?;
     Ok(module)
-}
-
-/// Parse a complete textual IR module under the **named** brand `B`, returning
-/// the owned module.
-///
-/// ```
-/// use llvmkit_asmparser::parse_branded;
-/// use llvmkit_ir::ModuleBrand;
-///
-/// struct Lifted;
-/// impl ModuleBrand for Lifted {}
-///
-/// let m = parse_branded::<Lifted, _>("define void @f() {\nentry:\n  ret void\n}\n")?;
-/// let m = m.verify()?;
-/// assert!(m.to_string().contains("define void @f()"));
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-///
-/// # Errors
-///
-/// [`ParseError::BrandInUse`] / [`ParseError::BrandRetired`] if `B` is not
-/// available, plus any [`ParseError`] the source provokes.
-pub fn parse_branded<B, S>(src: S) -> ParseResult<Module<B, Unverified>>
-where
-    B: ModuleBrand,
-    S: AsRef<[u8]>,
-{
-    parse_branded_with_config(src, &ParserConfig::DEFAULT)
-}
-
-/// [`parse_branded`] under an explicit [`ParserConfig`].
-///
-/// # Errors
-///
-/// [`ParseError::BrandInUse`] / [`ParseError::BrandRetired`] if `B` is not
-/// available, plus any [`ParseError`] the source provokes.
-pub fn parse_branded_with_config<B, S>(
-    src: S,
-    config: &ParserConfig<'_>,
-) -> ParseResult<Module<B, Unverified>>
-where
-    B: ModuleBrand,
-    S: AsRef<[u8]>,
-{
-    parse_into_with_config(branded_module::<B>("asm")?, src, config)
 }
 
 /// Parse a complete textual IR module under [`DynBrand`], returning the owned
@@ -291,7 +246,7 @@ where
 ///
 /// # Errors
 ///
-/// Any [`ParseError`] the source provokes.
+/// Any [`crate::parse_error::ParseError`] the source provokes.
 pub fn parse_dynamic_with_config<S>(
     src: S,
     config: &ParserConfig<'_>,
@@ -302,31 +257,13 @@ where
     parse_into_with_config(Module::dynamic("asm"), src, config)
 }
 
-/// Read and parse a file under the named brand `B`, returning the owned
-/// module. The module is named after the file.
-///
-/// # Errors
-///
-/// [`ParseError::Io`] if the file cannot be read,
-/// [`ParseError::BrandInUse`] / [`ParseError::BrandRetired`] if `B` is not
-/// available, plus any [`ParseError`] the source provokes.
-pub fn parse_file_branded<B, P>(path: P) -> ParseResult<Module<B, Unverified>>
-where
-    B: ModuleBrand,
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    let bytes = read_file(path)?;
-    parse_into(branded_module::<B>(module_name_for(path))?, bytes)
-}
-
 /// Read and parse a file under [`DynBrand`], returning the owned module. The
 /// module is named after the file.
 ///
 /// # Errors
 ///
-/// [`ParseError::Io`] if the file cannot be read, plus any [`ParseError`] the
-/// source provokes.
+/// [`crate::parse_error::ParseError::Io`] if the file cannot be read, plus any
+/// [`crate::parse_error::ParseError`] the source provokes.
 pub fn parse_file_dynamic<P>(path: P) -> ParseResult<Module<DynBrand, Unverified>>
 where
     P: AsRef<Path>,
@@ -334,19 +271,6 @@ where
     let path = path.as_ref();
     let bytes = read_file(path)?;
     parse_into(Module::dynamic(module_name_for(path)), bytes)
-}
-
-/// Claim brand `B`, translating the registry's refusal into a [`ParseError`].
-fn branded_module<B: ModuleBrand>(name: &str) -> ParseResult<Module<B, Unverified>> {
-    // Exhaustive over `BrandError`, which has exactly the two arms the registry
-    // can report. There is no catch-all here any more: while `Module::branded`
-    // returned the `#[non_exhaustive]` `IrError`, this match owed an arm for 54
-    // variants it could never see, and filled it by stringifying the error into
-    // `ParseError::Io` with `ErrorKind::Other`.
-    Module::branded::<B, _>(name).map_err(|err| match err {
-        BrandError::Retired { brand } => ParseError::BrandRetired { brand },
-        BrandError::InUse { brand } => ParseError::BrandInUse { brand },
-    })
 }
 
 /// Module name for a parsed file: the file name, or `"asm"` if the path has
@@ -364,9 +288,9 @@ fn module_name_for(path: &Path) -> &str {
 /// Parse a complete textual IR module and inspect it together with its
 /// [`ParsedModule`] slot mapping.
 ///
-/// Prefer [`parse_dynamic`] / [`parse_branded`] unless you need the slot
-/// tables: they return the module by value, so it can be verified, stored, and
-/// moved. This form exists because [`ParsedModule`] *borrows* the module it was
+/// Prefer [`parse_dynamic`] unless you need the slot tables: it returns the
+/// module by value, so it can be verified, stored, and moved. This form
+/// exists because [`ParsedModule`] *borrows* the module it was
 /// parsed against, so the two cannot both be returned from one call — the
 /// closure is what provides a region for the by-product to borrow for.
 ///

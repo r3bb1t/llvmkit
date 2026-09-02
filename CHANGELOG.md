@@ -91,6 +91,43 @@ narrowing is at the *declaration*, which is where the defect was: code that
 handles a parse failure now matches one shape and is done, and nothing is
 obliged to invent an arm for the 54 outcomes a layout string cannot produce.
 
+### Changed — the parser no longer claims module brands; `ParseError` drops both brand variants *(breaking)*
+
+`parse_branded`, `parse_branded_with_config` and `parse_file_branded` are
+deleted from `llvmkit-asmparser`. All three existed to bundle a brand claim
+with a parse, folding the brand registry's refusal into `ParseError` through a
+private `branded_module` helper — but `Module::branded` is public, so the
+bundle bought the caller nothing beyond one fewer line:
+
+```rust
+// was
+let m = parse_branded::<MyBrand, _>(src)?;
+// now
+let m = parse_into(Module::branded::<MyBrand, _>("name")?, src)?;
+```
+
+`parse_file_branded` is not one of the file-reading entry points a pending,
+separate change removes for performing I/O the parser has no business doing —
+it is deleted here because it shared `branded_module` with
+`parse_branded_with_config`, and a brand-claim failure has nowhere left to go
+once `ParseError` stops being able to represent one. Narrowing `branded_module`
+for one caller while leaving it standing for the other was not an option: the
+helper had exactly one job, translating `BrandError` into a `ParseError`
+variant, and that job cannot be done at all once neither variant exists —
+`branded_module` and both of its callers leave together.
+
+`ParseError::BrandInUse` and `ParseError::BrandRetired` are deleted with their
+last producer. Existing code that matched them updates as:
+
+```rust
+// was
+Err(ParseError::BrandInUse { brand }) => ...
+// now, on the claim itself
+Err(BrandError::InUse { brand }) => ...
+```
+
+Doctrine D7.
+
 ### Fixed — four decisions moved to the point in the parse upstream makes them *(breaking)*
 
 Four `docs/divergences.md` entries from the *Different diagnostic text* band

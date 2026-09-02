@@ -7,10 +7,9 @@ use llvmkit_asmparser::file_loc::{FileLoc, FileLocRange};
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_asmparser::parser;
 use llvmkit_asmparser::{
-    ParserConfig, parse_branded, parse_dynamic, parse_dynamic_with_config, parse_file_dynamic,
-    parse_into,
+    ParserConfig, parse_dynamic, parse_dynamic_with_config, parse_file_dynamic, parse_into,
 };
-use llvmkit_ir::{AnyTypeEnum, Module, module_new};
+use llvmkit_ir::{AnyTypeEnum, BrandError, Module, module_new};
 
 const MINIMAL: &str = include_str!("fixtures/facade_minimal.ll");
 const INCOMPLETE_IR_DECLARATIONS: &str =
@@ -65,27 +64,28 @@ fn parse_dynamic_modules_collect_into_a_vec() {
     assert!(format!("{}", modules[2]).contains("@c = global i32 3"));
 }
 
-/// A named brand survives the parse: the returned token carries `B`, so its
-/// handles are statically separated from every other module's.
+/// llvmkit-specific (**no upstream counterpart**): C++ has no compile-time
+/// module identity. Locks the replacement for the deleted `parse_branded`:
+/// the caller claims the brand, names the module, and hands both to
+/// `parse_into`, so no brand outcome enters `ParseError`.
 #[test]
-fn parse_branded_returns_the_named_brand() {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+fn a_branded_module_is_claimed_by_the_caller_then_parsed_into() {
     struct ParsedFacade;
     impl llvmkit_ir::ModuleBrand for ParsedFacade {}
 
-    let module: Module<ParsedFacade, _> =
-        parse_branded::<ParsedFacade, _>(MINIMAL).expect("branded parse succeeds");
+    let module = Module::branded::<ParsedFacade, _>("facade.ll").expect("brand is free");
+    let module = parse_into(module, MINIMAL).expect("branded parse succeeds");
+    assert_eq!(module.name(), "facade.ll");
+
+    // The brand is held, so a second claim is refused — by `BrandError`, which
+    // `ParseError` no longer has a variant for.
+    assert!(matches!(
+        Module::branded::<ParsedFacade, _>("again"),
+        Err(BrandError::InUse { .. })
+    ));
+
     let module = module.verify().expect("parsed module verifies");
     assert!(format!("{module}").contains("define i32 @main()"));
-
-    // The brand is claimed for as long as the module lives.
-    assert!(matches!(
-        parse_branded::<ParsedFacade, _>(MINIMAL),
-        Err(ParseError::BrandInUse { .. })
-    ));
-    drop(module);
-    // ...and released when it dies.
-    assert!(parse_branded::<ParsedFacade, _>(MINIMAL).is_ok());
 }
 
 /// `parse_into` lets the caller pick the module — here an unnameable
