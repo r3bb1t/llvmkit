@@ -3064,15 +3064,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// the diagnostic falls back to the current token.
     fn set_data_layout(&mut self, layout: &str, layout_loc: Option<Span>) -> ParseResult<()> {
         let loc = layout_loc.unwrap_or_else(|| self.loc());
-        let parsed = DataLayout::parse(layout).map_err(|e| match e {
-            IrError::InvalidDataLayout { reason } => ParseError::Expected {
-                expected: format!("valid datalayout: {reason}").into(),
-                loc: DiagLoc::span(loc),
-            },
-            other => ParseError::Expected {
-                expected: format!("valid datalayout: {other}").into(),
-                loc: DiagLoc::span(loc),
-            },
+        let parsed = DataLayout::parse(layout).map_err(|e| ParseError::Expected {
+            expected: format!("valid datalayout: {}", e.reason).into(),
+            loc: DiagLoc::span(loc),
         })?;
         self.module.set_data_layout(parsed);
         Ok(())

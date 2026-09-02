@@ -57,6 +57,40 @@ invent an arm for the 54 outcomes the registry cannot produce.
 
 Doctrine D7.
 
+### Changed — `DataLayout::parse` returns `DataLayoutError`, not the 55-variant `IrError` *(breaking)*
+
+`DataLayout::parse` (and the private `parse_layout_string` and its helpers)
+returned `IrResult<Self>` for an operation whose `Expected<DataLayout>` mirror
+in `lib/IR/DataLayout.cpp` carries exactly one failure kind. Declaring 55
+obliged every consumer to write an arm for the other 54, and the one consumer
+that had to write it wrote two different renderings of the same failure:
+`llvmkit-asmparser`'s `LLParser::set_data_layout` matched the reachable
+`IrError::InvalidDataLayout` arm in one way and a catch-all `other` arm in
+another, so the identical parse failure printed different diagnostic text
+depending on which arm caught it.
+
+`DataLayout::parse` now returns `Result<Self, DataLayoutError>`, and
+`set_data_layout` is an exhaustive `.map_err` with no catch-all, because the
+type no longer admits one. The flat `IrError::InvalidDataLayout` variant is
+**replaced** by a single wrapping `IrError::DataLayout(DataLayoutError)`.
+`DataLayoutError` carries the same `reason: String` and renders identically
+(`invalid datalayout: {reason}`), so no diagnostic text changes.
+
+Existing code that matched the flat variant updates as:
+
+```rust
+// was
+Err(IrError::InvalidDataLayout { reason }) => ...
+// now, on the parse itself
+Err(DataLayoutError { reason }) => ...
+```
+
+`?` still widens a parse into an `IrResult` function, through the `#[from]` on
+the wrapper — the crate-level-error idiom `AGENTS.md` prescribes. The
+narrowing is at the *declaration*, which is where the defect was: code that
+handles a parse failure now matches one shape and is done, and nothing is
+obliged to invent an arm for the 54 outcomes a layout string cannot produce.
+
 ### Fixed — four decisions moved to the point in the parse upstream makes them *(breaking)*
 
 Four `docs/divergences.md` entries from the *Different diagnostic text* band

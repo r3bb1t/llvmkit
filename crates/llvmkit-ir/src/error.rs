@@ -886,6 +886,21 @@ pub enum BrandError {
     },
 }
 
+/// A `target datalayout = "..."` string could not be parsed.
+///
+/// Mirrors the `Error` returns of
+/// `lib/IR/DataLayout.cpp::DataLayout::parseLayoutString`, whose
+/// `Expected<DataLayout>` likewise carries exactly one failure kind. A struct
+/// rather than an enum because there is one outcome; making it a variant of
+/// [`IrError`] would oblige every consumer to write an arm for 54 unreachable
+/// ones.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+#[error("invalid datalayout: {reason}")]
+pub struct DataLayoutError {
+    /// Why the `target datalayout` string could not be parsed.
+    pub reason: String,
+}
+
 /// Crate-wide error.
 ///
 /// Variants are added incrementally as new subsystems land. Marked
@@ -1192,14 +1207,6 @@ pub enum IrError {
     InvalidOperation {
         /// Human-readable description of the violated LangRef invariant.
         message: &'static str,
-    },
-    /// `target datalayout = "..."` directive could not be parsed.
-    /// Mirrors the `Error` returns of
-    /// `lib/IR/DataLayout.cpp::DataLayout::parseLayoutString`.
-    #[error("invalid datalayout: {reason}")]
-    InvalidDataLayout {
-        /// Why the `target datalayout` string could not be parsed.
-        reason: String,
     },
     /// A `.ll` keyword did not name any variant of the enum it was parsed
     /// into — the error of the [`FromStr`](core::str::FromStr) family
@@ -1512,6 +1519,27 @@ pub enum IrError {
     /// for an operation with two.
     #[error(transparent)]
     Brand(#[from] BrandError),
+
+    /// A `target datalayout` string failed to parse — see [`DataLayoutError`]
+    /// for its single outcome.
+    ///
+    /// This is a *wrapper*, and the distinction is the whole point of the
+    /// split. [`DataLayout::parse`](crate::DataLayout::parse) returns the
+    /// narrow [`DataLayoutError`] directly, so code that handles a parse
+    /// failure needs no arm for the 54 outcomes a layout string cannot
+    /// produce. This variant exists only so a caller whose function already
+    /// returns [`IrResult`] can widen with `?` when it does not want to
+    /// distinguish — the crate-level-error idiom in `AGENTS.md`, "wrap
+    /// third-party errors with `#[from]` so `?` works".
+    ///
+    /// Renders transparently, so the text is [`DataLayoutError`]'s and the
+    /// two spellings cannot drift.
+    ///
+    /// It replaces the former flat `InvalidDataLayout` variant, whose
+    /// presence here is what let `DataLayout::parse` declare 55 outcomes for
+    /// an operation with one.
+    #[error(transparent)]
+    DataLayout(#[from] DataLayoutError),
 }
 
 /// Crate-wide `Result` alias.

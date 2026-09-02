@@ -239,7 +239,9 @@ pub use derived_types::{
     TargetExtProperty, TargetExtType, TokenType, VectorType, VoidType,
 };
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
-pub use error::{BrandError, IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
+pub use error::{
+    BrandError, DataLayoutError, IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule,
+};
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};
 pub use function_signature::{
