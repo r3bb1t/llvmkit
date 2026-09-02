@@ -27,8 +27,9 @@ Shipped today:
   `module_new!`, `Module::branded::<B>`, `Module::dynamic`. `Module::with_new`
   and the generative lifetime brand `Brand<'id>` no longer exist.
 - Textual `.ll` lexer and constructive-subset parser, with closure-free entry
-  points (`parse_branded::<B>`, `parse_dynamic`, `parse_file_branded::<B>`,
-  `parse_file_dynamic`, `parse_into`) that return the owned `Module`.
+  points (`parse_dynamic`, `parse_into`) that return the owned `Module`. The
+  parser takes `&[u8]` and performs no I/O of its own; reading a file is the
+  caller's job.
 - Typed IR model, constants, globals, functions, basic blocks, instructions, verifier, AsmWriter.
 - Schema-typed IR construction: compile-checked calls (`call` +
   `TypedCallInst`), typed pointers (`TypedPointerValue` + compile-time field
@@ -798,14 +799,17 @@ The per-API delta is tracked in [`docs/inkwell-migration.md`](docs/inkwell-migra
 
 ### Shipped
 
-> - **Owned, brand-preserving parse entry points.** `parse_branded::<B>(src)`,
->   `parse_dynamic(src)`, `parse_file_branded::<B>(path)`,
->   `parse_file_dynamic(path)`, and `parse_into(module, src)` all return the
->   owned `Module` with its brand type intact, so a parsed module can be
->   verified, stored in a struct, and moved across a thread boundary. The
->   closure form (`parse_assembly`) remains only for callers who need the
->   `ParsedModule` slot mapping, which borrows the module it was parsed from.
->   Printing is `Display` on `Module` / `ModuleView` (`format!("{module}")`).
+> - **Owned parse entry points, and no file I/O in the parser.** `parse_dynamic(src)`
+>   and `parse_into(module, src)` return the owned `Module` with its brand type
+>   intact — `parse_into` takes a caller-branded module
+>   (`Module::branded::<B, _>(name)?`), so a parsed module can be verified,
+>   stored in a struct, and moved across a thread boundary. Neither takes a
+>   path: the parser takes `&[u8]` only, and reading a file is the caller's
+>   job, mirroring upstream's own split between `lib/AsmParser` and Support's
+>   `MemoryBuffer::getFileOrSTDIN`. The closure form (`parse_assembly`) remains
+>   only for callers who need the `ParsedModule` slot mapping, which borrows
+>   the module it was parsed from. Printing is `Display` on `Module` /
+>   `ModuleView` (`format!("{module}")`).
 > - **A settled public API.** 0.0.4 stops the churn in the module, handle/id,
 >   builder, and pass surfaces, and closes it out with a Rust API Guidelines
 >   sweep: no `build_` prefix on emitters, bare-noun lookups with `get_`
@@ -841,8 +845,9 @@ The per-API delta is tracked in [`docs/inkwell-migration.md`](docs/inkwell-migra
 - Overloaded intrinsic typing beyond the represented signature families.
 - Bitcode reader/writer or an explicit bridge plan if bitcode stays out longer.
 - Better error spans for parser/verifier failures. The *message* half landed in
-  0.0.4 — asmparser errors no longer embed `{:?}`-formatted locations and `Io`
-  carries a structured `{ kind, message }` — but spans are still coarse.
+  0.0.4 — asmparser errors no longer embed `{:?}`-formatted locations, and
+  `ParseError` carries only diagnostics (no I/O outcome mixed in; reading a
+  file is the caller's own `std::io::Error`) — but spans are still coarse.
 
 ### UX goals
 

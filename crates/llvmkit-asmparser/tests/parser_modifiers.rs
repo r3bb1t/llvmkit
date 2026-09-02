@@ -627,11 +627,7 @@ fn comdat_definition_diagnostics_match_upstream_text_and_anchor() {
     ] {
         let err = parse_err(src.as_bytes());
         assert_eq!(err.to_string(), expected, "message text for `{src}`");
-        let start = err
-            .loc()
-            .unwrap_or_else(|| panic!("`{expected}` should carry a location"))
-            .span
-            .start;
+        let start = err.loc().span.start;
         let offset = usize::try_from(start).unwrap_or(usize::MAX);
         assert_eq!(
             line_and_column(src.as_bytes(), offset),

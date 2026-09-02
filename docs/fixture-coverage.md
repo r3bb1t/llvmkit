@@ -110,7 +110,7 @@ The reason `N/A` is one row and not fifty: `test/Assembler` is overwhelmingly
 
 | Upstream spelling | Fixtures | llvmkit |
 |---|---|---|
-| `llvm-as` / `not llvm-as` | most | `parser::parse_assembly_file` succeeding or failing |
+| `llvm-as` / `not llvm-as` | most | `parser::parse_assembly_with_name` succeeding or failing |
 | `llvm-as \| llvm-dis` | many | parse then `format!("{module}")` |
 | `opt` (43 fixtures; mostly `opt -S` with no passes) | 43 | same as `llvm-as \| llvm-dis` for these fixtures |
 | `-disable-output`, `-o /dev/null` | many | no output is compared; irrelevant here |

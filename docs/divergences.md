@@ -363,13 +363,12 @@ leaves it `true`. Nothing is silently *wrong* — llvmkit never upgrades — but
 the setting is a promise about a future behaviour rather than a live switch,
 and the rustdoc says so.
 
-**Also:** every module-parsing entry point has a `*_with_config` twin except
-the two file-path convenience forms, `parse_file_branded` and
-`parse_file_dynamic` — `parse_assembly_file_with_config` covers upstream's
-`parseAssemblyFile(…, DataLayoutCallbackTy)` shape, so this is an llvmkit-side
-convenience gap, not a missing upstream knob. The standalone `parse_type*` /
-`parse_constant_value*` family and `parse_summary_index_assembly*` correctly
-take none: their upstream counterparts do not either.
+**Also:** the standalone `parse_type*` / `parse_constant_value*` family and
+`parse_summary_index_assembly*` correctly take no `*_with_config` twin: their
+upstream counterparts do not either. (An earlier revision of this note flagged
+the file-path convenience forms, `parse_file_branded` and `parse_file_dynamic`,
+as the same kind of correct exception. Both are gone now — the parser reads no
+files at all — so there is no longer a file-path form to except.)
 
 **Fix:** lands with `AutoUpgrade`. The flag already reaches
 `Parser::parse_module_with_config`; only the guarded call is missing.

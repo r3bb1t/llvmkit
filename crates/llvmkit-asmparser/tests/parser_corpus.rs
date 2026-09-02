@@ -155,8 +155,12 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
             allow_incomplete_ir: entry.allow_incomplete_ir,
             ..parser::ParserConfig::DEFAULT
         };
+        let module_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<string>");
         let parse_result =
-            parser::parse_assembly_file_with_config(&path, &config, |module, _parsed| {
+            parser::parse_assembly_with_name(module_name, &source, &config, |module, _parsed| {
                 let printed = format!("{module}");
 
                 if let Some(expected) = entry.expected {
@@ -206,16 +210,7 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
                     );
                 }
                 if let Some((line, column)) = entry.loc {
-                    let start = error
-                        .loc()
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "corpus fixture {} pins a location but reported none",
-                                entry.fixture
-                            )
-                        })
-                        .span
-                        .start;
+                    let start = error.loc().span.start;
                     let offset = usize::try_from(start).unwrap_or(usize::MAX);
                     assert_eq!(
                         line_and_column(&source, offset),
@@ -239,13 +234,12 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
                 let printed = parse_result.unwrap_or_else(|err| {
                     panic!("corpus fixture {} should parse: {err}", entry.fixture)
                 });
-                // `parse_assembly_file` names the module after the file, so the
-                // second pass has to be handed the same name or the `ModuleID`
-                // comment alone would differ.
+                // Both passes are handed the same module name explicitly; the
+                // `ModuleID` comment alone would differ otherwise.
                 let name = path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or("asm");
+                    .unwrap_or("<string>");
                 let reparsed = parser::parse_into_with_config(
                     Module::dynamic(name),
                     printed.as_bytes(),

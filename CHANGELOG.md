@@ -19,6 +19,56 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — the parser reads no files; `ParseError::loc` returns a value, not an `Option` *(breaking)*
+
+`parse_file_dynamic`, `parse_assembly_file`, `parse_assembly_file_with_config`
+and `parse_summary_index_assembly_file` are deleted from `llvmkit-asmparser`.
+All four read a file with `std::fs::read` before handing the bytes to the
+parser — I/O the parser itself never needed, since every entry point beneath
+them already took `&[u8]`. Upstream draws the same line: `parseAssemblyInto`
+takes a `MemoryBufferRef`, and the file read lives in Support
+(`MemoryBuffer::getFileOrSTDIN`), outside `lib/AsmParser` entirely.
+
+```rust
+// was
+let module = parse_file_dynamic(path)?;
+// now
+let source = std::fs::read(path)?;
+let module = parse_into(Module::dynamic(module_name), &source)?;
+```
+
+The closure-form primitive `parse_assembly_with_name(name, src, config, f)` —
+previously private, already what `parse_assembly` and
+`parse_assembly_with_config` called internally with their fixed `"asm"`
+identifier — is now public, for a caller of the closure family that wants to
+name the module itself instead of reading a file for it:
+
+```rust
+// was
+parser::parse_assembly_file(path, |module, parsed| ...)?;
+// now
+let source = std::fs::read(path)?;
+parser::parse_assembly_with_name(module_name, &source, &config, |module, parsed| ...)?;
+```
+
+`ParseError::Io` — the last variant that was not a diagnostic — is deleted
+with its last producer, along with `impl From<std::io::Error> for
+ParseError`. `ParseError::loc` now returns `DiagLoc` unconditionally instead
+of `Option<DiagLoc>`: the `Option` existed only for the non-diagnostic
+variants (`Io`, and the `BrandInUse` / `BrandRetired` pair a preceding change
+already removed), and none remain. `ParseError` carries 18 variants now,
+down from 19 (`grep -c '#\[error(' crates/llvmkit-asmparser/src/parse_error.rs`
+at the parent commit and at this one).
+
+```rust
+// was
+let span = err.loc().map(|l| l.span);
+// now
+let span = err.loc().span;
+```
+
+Doctrine D1.
+
 ### Changed — a brand claim returns `BrandError`, not the 56-variant `IrError` *(breaking)*
 
 `Module::branded` and `Module::branded_once` now return

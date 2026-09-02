@@ -334,38 +334,19 @@ pub enum ParseError {
     /// `EmptyIs::Error`.
     #[error("'{field}' cannot be empty")]
     MetadataFieldCannotBeEmpty { field: String, loc: DiagLoc },
-
-    /// I/O failure pulling source bytes. The lexer itself does not perform
-    /// I/O; this is for the file-reading entry points and callers using
-    /// [`crate::read_to_owned`]-style helpers. `message` is the `Display`
-    /// form of the underlying [`std::io::Error`]; we don't keep the
-    /// [`std::io::Error`] itself because it lacks `Clone`/`Eq`/`Hash`,
-    /// which the rest of [`ParseError`] derives. `kind` is kept beside it
-    /// because [`std::io::ErrorKind`] *is* `Copy + Eq + Hash`, so a caller
-    /// can still tell `NotFound` from `PermissionDenied` without parsing
-    /// the message back.
-    #[error("I/O error reading source: {message}")]
-    Io {
-        kind: std::io::ErrorKind,
-        message: String,
-    },
-}
-
-impl From<std::io::Error> for ParseError {
-    #[inline]
-    fn from(e: std::io::Error) -> Self {
-        ParseError::Io {
-            kind: e.kind(),
-            message: e.to_string(),
-        }
-    }
 }
 
 impl ParseError {
-    /// The diagnostic location to highlight, when the variant carries one.
-    pub fn loc(&self) -> Option<DiagLoc> {
+    /// The diagnostic location to highlight.
+    ///
+    /// Every `ParseError` is a diagnostic about a token, so this is total —
+    /// the `Option` it used to return existed only for the variants (`Io`,
+    /// `BrandInUse`, `BrandRetired`) that were not diagnostics at all, and
+    /// all three are gone. Doctrine D1: a two-state value does not carry its
+    /// state in a predicate.
+    pub fn loc(&self) -> DiagLoc {
         match self {
-            ParseError::Lex(e) => Some(DiagLoc::span(e.span())),
+            ParseError::Lex(e) => DiagLoc::span(e.span()),
             ParseError::Expected { loc, .. }
             | ParseError::Message { loc, .. }
             | ParseError::Redefinition { loc, .. }
@@ -382,8 +363,7 @@ impl ParseError {
             | ParseError::MetadataFieldValueTooLarge { loc, .. }
             | ParseError::MetadataFieldValueTooSmall { loc, .. }
             | ParseError::MetadataFieldCannotBeNull { loc, .. }
-            | ParseError::MetadataFieldCannotBeEmpty { loc, .. } => Some(*loc),
-            ParseError::Io { .. } => None,
+            | ParseError::MetadataFieldCannotBeEmpty { loc, .. } => *loc,
         }
     }
 }
@@ -406,7 +386,7 @@ mod tests {
             expected: "type".into(),
             loc: DiagLoc::span(span),
         };
-        let loc = err.loc().unwrap();
+        let loc = err.loc();
         assert_eq!(loc.span, span);
         assert!(loc.file.is_none());
     }
@@ -473,25 +453,6 @@ mod tests {
         assert_eq!(expected.to_string(), "expected type");
     }
 
-    /// llvmkit-specific (no upstream counterpart: `llvm::SMDiagnostic` keeps
-    /// no `std::error_code`): an I/O failure keeps the
-    /// [`std::io::ErrorKind`] beside its message, so `NotFound` stays
-    /// matchable without parsing the rendered string back.
-    #[test]
-    fn io_errors_keep_their_kind() {
-        let err: ParseError =
-            std::io::Error::new(std::io::ErrorKind::NotFound, "no such file").into();
-        match &err {
-            ParseError::Io { kind, message } => {
-                assert_eq!(*kind, std::io::ErrorKind::NotFound);
-                assert_eq!(message, "no such file");
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-        assert_eq!(err.to_string(), "I/O error reading source: no such file");
-        assert_eq!(err.loc(), None);
-    }
-
     /// llvmkit-specific (**no upstream counterpart**): lexer errors flow
     /// through [`ParseError::Lex`] without re-encoding. Closest upstream
     /// anchor: `LLLexer::LexError` recording at `ErrorPriority::Lexer`, which
@@ -502,7 +463,7 @@ mod tests {
             span: Span::new(0, 4),
         };
         let err: ParseError = lex.clone().into();
-        assert_eq!(err.loc().map(|l| l.span), Some(lex.span()));
+        assert_eq!(err.loc().span, lex.span());
         // The variant survives the conversion rather than being flattened to
         // a generic string, so a caller can still match on it.
         assert!(matches!(

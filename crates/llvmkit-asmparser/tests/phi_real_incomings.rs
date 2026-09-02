@@ -211,7 +211,7 @@ define i32 @f(i32 %a, i1 %c) {
         msg.contains("phi") && msg.contains("predecessor"),
         "expected an incomplete-phi parse error, got: {msg}"
     );
-    let span = err.loc().expect("error carries a location").span;
+    let span = err.loc().span;
     assert!(
         span.start > 0,
         "a numbered incomplete phi must be located at the phi, not the default \

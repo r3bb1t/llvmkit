@@ -558,12 +558,11 @@ A single crate-level `enum Error` with variants per failure mode is preferred. W
 
 C++ takes `const char *Filename` or `MemoryBufferRef`. Rust takes:
 
-- `impl AsRef<Path>` for filesystem entry points (`parser::parse_file_branded` / `parse_file_dynamic` / `parse_assembly_file`).
-- `impl AsRef<[u8]>` for in-memory parser variants (`parse_branded` / `parse_dynamic` / `parse_assembly`, and the fragment parsers `parse_type` / `parse_type_at_beginning` / `parse_constant_value`). A `&str` satisfies `AsRef<[u8]>` directly, so there is no separate `_string` twin. The fragment parsers no longer thread an `Option<&SlotMapping>` parameter — the slot-consuming variants are the explicit `*_with_slots` twins (`parse_type_with_slots` / `parse_type_at_beginning_with_slots` / `parse_constant_value_with_slots`).
+- `impl AsRef<[u8]>` for the parser itself (`parse_dynamic` / `parse_into` / `parse_assembly`, and the fragment parsers `parse_type` / `parse_type_at_beginning` / `parse_constant_value`). A `&str` satisfies `AsRef<[u8]>` directly, so there is no separate `_string` twin. The fragment parsers no longer thread an `Option<&SlotMapping>` parameter — the slot-consuming variants are the explicit `*_with_slots` twins (`parse_type_with_slots` / `parse_type_at_beginning_with_slots` / `parse_constant_value_with_slots`). There is no `impl AsRef<Path>` entry point anywhere in the parser facade: reading a file is the caller's job (`std::fs::read` before parsing), the same split upstream draws between `lib/AsmParser` (`MemoryBufferRef`-only) and Support's `MemoryBuffer::getFileOrSTDIN`.
 - `impl Read` helpers should read once into owned bytes before handing a borrowed slice to the lexer / parser (`llvmkit_asmparser::read_to_owned`).
 - `fmt::Display` (`format!("{module}")`) for printers until a dedicated `Write` facade exists.
 
-Prefer the closure-free entry points: `parse_branded::<B>` / `parse_dynamic` / `parse_file_*` / `parse_into` all return the **owned** `Module<B, Unverified>`. The `parse_assembly*` family still takes a closure, and the reason is not the brand — `ParsedModule` holds borrowing handles into the module, so handing both back would be a self-reference.
+Prefer the closure-free entry points: `parse_dynamic` / `parse_into` return the **owned** `Module<B, Unverified>`. The `parse_assembly*` family still takes a closure, and the reason is not the brand — `ParsedModule` holds borrowing handles into the module, so handing both back would be a self-reference.
 
 This mirrors `serde_json::from_reader` / `from_slice` / `from_str`. **Default to streaming**; load into a `Vec<u8>` only when the parser genuinely requires random access.
 

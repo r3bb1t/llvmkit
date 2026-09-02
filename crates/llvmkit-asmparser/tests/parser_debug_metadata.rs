@@ -183,13 +183,7 @@ fn a_debug_record_value_operand_goes_through_parse_metadata() {
 /// offset — the same "text alone cannot see the anchor" guard
 /// `parser_module_level.rs` spells with line and column.
 fn reported_offset(err: &ParseError) -> usize {
-    usize::try_from(
-        err.loc()
-            .expect("a rejection reports a location")
-            .span
-            .start,
-    )
-    .expect("span start fits in usize")
+    usize::try_from(err.loc().span.start).expect("span start fits in usize")
 }
 
 /// Regression (broad-review Critical): an align-less alloca with attached

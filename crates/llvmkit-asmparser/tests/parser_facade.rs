@@ -6,9 +6,7 @@
 use llvmkit_asmparser::file_loc::{FileLoc, FileLocRange};
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_asmparser::parser;
-use llvmkit_asmparser::{
-    ParserConfig, parse_dynamic, parse_dynamic_with_config, parse_file_dynamic, parse_into,
-};
+use llvmkit_asmparser::{ParserConfig, parse_dynamic, parse_dynamic_with_config, parse_into};
 use llvmkit_ir::{AnyTypeEnum, BrandError, Module, module_new};
 
 const MINIMAL: &str = include_str!("fixtures/facade_minimal.ll");
@@ -101,35 +99,52 @@ fn parse_into_fills_a_caller_supplied_module() {
     assert!(format!("{module}").contains("define i32 @main()"));
 }
 
-/// The file entry point names the module after the file and returns it owned.
+/// llvmkit-specific (**no upstream counterpart**): upstream's file entry points
+/// exist because `MemoryBufferRef` bundles the bytes with their identifier;
+/// llvmkit hangs the identifier on the `Module`, so the caller supplies both
+/// directly. Locks that the parser never opens a file: reading is the caller's
+/// `std::io::Error`, and parsing is `ParseError`, with no type spanning both.
 #[test]
-fn parse_file_dynamic_returns_an_owned_module_named_after_the_file() {
-    let module = parse_file_dynamic(concat!(
+fn the_caller_reads_the_file_and_names_the_module() {
+    let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/facade_minimal.ll"
-    ))
-    .expect("owned file parse succeeds");
+    );
+    let source = std::fs::read(path).expect("fixture reads");
+
+    let module =
+        parse_into(Module::dynamic("facade_minimal.ll"), &source).expect("owned parse succeeds");
     assert_eq!(module.name(), "facade_minimal.ll");
+
     let module = module.verify().expect("parsed module verifies");
     assert!(format!("{module}").contains("define i32 @main()"));
 }
 
-/// Ports `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` file-loading
-/// wrapper shape.
+/// Ports the closure half of `llvm/lib/AsmParser/Parser.cpp::parseAssembly`,
+/// whose `MemoryBufferRef` carries the buffer identifier that becomes the
+/// module's. `parse_assembly_with_name` is llvmkit's spelling of that pairing:
+/// the closure form constructs the module itself, so the name must be a
+/// parameter rather than a property of the bytes.
 #[test]
-fn parse_assembly_file_reads_file() {
-    parser::parse_assembly_file(
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/facade_minimal.ll"
-        ),
+fn parse_assembly_with_name_uses_the_given_module_name() {
+    let source = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/facade_minimal.ll"
+    ))
+    .expect("fixture reads");
+
+    parser::parse_assembly_with_name(
+        "facade_minimal.ll",
+        &source,
+        &ParserConfig::DEFAULT,
         |module, _parsed| {
+            assert_eq!(module.name(), "facade_minimal.ll");
             let printed = format!("{module}");
             assert!(printed.contains("define i32 @main()"));
             assert!(printed.contains("ret i32 0"));
         },
     )
-    .expect("facade file parse succeeds");
+    .expect("closure parse succeeds");
 }
 
 /// Mirrors `LLParser.cpp::parseTypeAtBeginning`: parsing stops after the

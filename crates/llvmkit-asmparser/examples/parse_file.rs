@@ -20,7 +20,7 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_asmparser::read_to_owned;
 use llvmkit_ir::module_new;
-use llvmkit_support::{SourceMap, Span};
+use llvmkit_support::SourceMap;
 
 fn main() -> ExitCode {
     let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 
 fn report_error(path: &Path, src: &[u8], err: &ParseError) {
     let sm = SourceMap::new(src);
-    let span = err.loc().map(|l| l.span).unwrap_or(Span::new(0, 0));
+    let span = err.loc().span;
     let (line, col) = sm.line_col(span.start);
     eprintln!("{path}:{line}:{col}: {err}", path = path.display());
     if let Some(line_bytes) = sm.line_text(line) {
