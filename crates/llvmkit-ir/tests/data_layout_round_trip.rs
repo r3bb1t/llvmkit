@@ -17,6 +17,8 @@ fn parse(s: &str) -> DataLayout {
 fn parse_err(s: &str) -> String {
     match DataLayout::parse(s) {
         Ok(_) => panic!("expected error for {s:?}"),
+        // Exhaustive, no `_` arm: pins `DataLayoutError` to its one shape —
+        // a second variant would stop this from compiling.
         Err(DataLayoutError { reason }) => reason,
     }
 }
@@ -784,21 +786,4 @@ fn equal_layouts_hash_equal() {
     cache.insert(a.clone(), 1);
     assert_eq!(cache.get(&b), Some(&1));
     assert_eq!(cache.get(&other), None);
-}
-
-/// Ports the failure half of `lib/IR/DataLayout.cpp::DataLayout::parse`, whose
-/// `Expected<DataLayout>` carries exactly one error kind. Locks the narrowed
-/// return type: a parse that can only fail one way must not return a
-/// 55-variant type, which is what let `LLParser::set_data_layout` grow a
-/// catch-all arm rendering differently from the real one.
-#[test]
-fn data_layout_parse_error_has_exactly_one_kind() {
-    let err = DataLayout::parse("z").expect_err("'z' is not a valid specifier");
-    // Exhaustive over `DataLayoutError` — no `_` arm.
-    let DataLayoutError { reason } = &err;
-    assert!(
-        reason.contains("unknown specifier"),
-        "reason was {reason:?}"
-    );
-    assert_eq!(err.to_string(), format!("invalid datalayout: {reason}"));
 }
