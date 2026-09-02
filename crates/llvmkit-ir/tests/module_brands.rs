@@ -19,8 +19,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Barrier};
 
 use llvmkit_ir::{
-    Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand, Unverified,
-    module_new,
+    BrandError, Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand,
+    Unverified, module_new,
 };
 
 /// Declare a brand type exactly as a user would: a bare unit struct and the
@@ -68,7 +68,7 @@ fn a_brand_admits_one_live_module_at_a_time() -> Result<(), IrError> {
     assert!(
         matches!(
             Module::branded::<OneAtATime, _>("second"),
-            Err(IrError::BrandInUse { .. })
+            Err(BrandError::InUse { .. })
         ),
         "a second live module must not share the brand",
     );
@@ -103,7 +103,7 @@ fn branded_once_retires_its_brand_permanently() -> Result<(), IrError> {
     assert!(
         matches!(
             Module::branded::<RetiredForever, _>("nope"),
-            Err(IrError::BrandInUse { .. })
+            Err(BrandError::InUse { .. })
         ),
         "while alive it is merely in use, not yet retired",
     );
@@ -114,11 +114,11 @@ fn branded_once_retires_its_brand_permanently() -> Result<(), IrError> {
     for _ in 0..3 {
         assert!(matches!(
             Module::branded::<RetiredForever, _>("nope"),
-            Err(IrError::BrandRetired { .. })
+            Err(BrandError::Retired { .. })
         ));
         assert!(matches!(
             Module::branded_once::<RetiredForever, _>("nope"),
-            Err(IrError::BrandRetired { .. })
+            Err(BrandError::Retired { .. })
         ));
     }
     Ok(())
@@ -136,7 +136,7 @@ fn the_claim_rides_through_the_typestate_transitions() -> Result<(), IrError> {
     assert!(
         matches!(
             Module::branded::<Typestate, _>("x"),
-            Err(IrError::BrandInUse { .. })
+            Err(BrandError::InUse { .. })
         ),
         "verify() moved the module, not its claim",
     );
@@ -144,7 +144,7 @@ fn the_claim_rides_through_the_typestate_transitions() -> Result<(), IrError> {
     let back = verified.unverify();
     assert!(matches!(
         Module::branded::<Typestate, _>("x"),
-        Err(IrError::BrandInUse { .. })
+        Err(BrandError::InUse { .. })
     ));
 
     drop(back);
@@ -165,7 +165,7 @@ fn leaking_a_module_consumes_its_brand_forever() {
 
     assert!(matches!(
         Module::branded::<Leaked, _>("again"),
-        Err(IrError::BrandInUse { .. })
+        Err(BrandError::InUse { .. })
     ));
 }
 
@@ -304,7 +304,7 @@ fn module_new_in_a_loop_reuses_one_brand() {
     for i in 0..4 {
         match module_new!(format!("loop{i}")) {
             Ok(module) => live.push(module),
-            Err(IrError::BrandInUse { .. }) => collisions += 1,
+            Err(BrandError::InUse { .. }) => collisions += 1,
             Err(other) => panic!("unexpected error: {other}"),
         }
     }
@@ -359,4 +359,36 @@ fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
         "{via_named_brand}"
     );
     Ok(())
+}
+
+/// llvmkit-specific (**no upstream counterpart**): LLVM has no compile-time
+/// module identity, so there is no brand registry to port. Locks the *width* of
+/// the claim's error rather than its behaviour: a brand claim reports exactly
+/// two outcomes, so the error it returns must have exactly two variants and no
+/// catch-all for a consumer to fill with something untrue.
+///
+/// The `match` below is exhaustive with no `_` arm. That is the assertion — a
+/// third variant, or a `#[non_exhaustive]` on [`BrandError`], stops this
+/// compiling. It exists because the previous 56-variant return type obliged
+/// `llvmkit-asmparser`'s brand mapper to write an arm for 54 unreachable
+/// variants, and it filled that arm by stuffing a stringified `IrError` into an
+/// I/O error with `ErrorKind::Other`.
+#[test]
+fn brand_claim_error_has_exactly_two_outcomes() {
+    brand!(NarrowClaim);
+
+    let first = Module::branded::<NarrowClaim, _>("first").expect("brand is free");
+    let second: Result<Module<NarrowClaim, Unverified>, BrandError> =
+        Module::branded::<NarrowClaim, _>("second");
+
+    match second {
+        Err(BrandError::InUse { brand }) => assert!(
+            brand.contains("NarrowClaim"),
+            "the brand type should name itself, got {brand:?}"
+        ),
+        Err(BrandError::Retired { .. }) => panic!("this brand was never retired"),
+        Ok(_) => panic!("a live module still holds the brand"),
+    }
+
+    drop(first);
 }

@@ -68,7 +68,7 @@ use super::derived_types::{
     TargetExtType, TokenType, VectorType, VoidType,
 };
 use super::element::{ElemDyn, StaticVecElem};
-use super::error::{IrError, IrResult, TypeKindLabel};
+use super::error::{BrandError, IrError, IrResult, TypeKindLabel};
 use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
@@ -317,7 +317,7 @@ impl<B> BrandGuard<B> {
     /// No user code runs inside the section: `B` is only ever fed to
     /// [`TypeId::of`] and [`core::any::type_name`], both of which are compiler
     /// intrinsics, and both are evaluated *before* the lock is taken.
-    fn claim(retire_on_drop: bool) -> IrResult<Self>
+    fn claim(retire_on_drop: bool) -> Result<Self, BrandError>
     where
         B: ModuleBrand,
     {
@@ -325,8 +325,8 @@ impl<B> BrandGuard<B> {
         let name = core::any::type_name::<B>();
         match lock_brands().entry(brand) {
             Entry::Occupied(slot) => match slot.get() {
-                BrandState::InUse => Err(IrError::BrandInUse { brand: name }),
-                BrandState::Retired => Err(IrError::BrandRetired { brand: name }),
+                BrandState::InUse => Err(BrandError::InUse { brand: name }),
+                BrandState::Retired => Err(BrandError::Retired { brand: name }),
             },
             Entry::Vacant(slot) => {
                 slot.insert(BrandState::InUse);
@@ -371,7 +371,7 @@ impl<B> Drop for BrandGuard<B> {
 /// owned, movable token rather than one pinned to the callback's frame.
 ///
 /// ```
-/// use llvmkit_ir::{IrError, module_new};
+/// use llvmkit_ir::{BrandError, module_new};
 ///
 /// let m = module_new!("lifted")?;
 /// assert_eq!(m.name(), "lifted");
@@ -379,7 +379,7 @@ impl<B> Drop for BrandGuard<B> {
 /// // A second expansion site is a *different* brand, so both are live at once.
 /// let other = module_new!("other")?;
 /// assert_ne!(m.id(), other.id());
-/// # Ok::<(), IrError>(())
+/// # Ok::<(), BrandError>(())
 /// ```
 ///
 /// # One brand per expansion *site*, not per evaluation
@@ -387,16 +387,16 @@ impl<B> Drop for BrandGuard<B> {
 /// The brand is minted where the macro is *written*, not each time control
 /// reaches it. A `module_new!` inside a loop therefore asks for the same brand
 /// on every iteration, and the second iteration fails with
-/// [`IrError::BrandInUse`] while the first module is still alive:
+/// [`BrandError::InUse`] while the first module is still alive:
 ///
 /// ```
-/// use llvmkit_ir::{IrError, Module, module_new};
+/// use llvmkit_ir::{BrandError, Module, module_new};
 ///
 /// let mut held = Vec::new();
 /// for i in 0..2 {
 ///     match module_new!(format!("m{i}")) {
 ///         Ok(m) => held.push(m),
-///         Err(e) => assert!(matches!(e, IrError::BrandInUse { .. })),
+///         Err(e) => assert!(matches!(e, BrandError::InUse { .. })),
 ///     }
 /// }
 /// assert_eq!(held.len(), 1);
@@ -3022,11 +3022,11 @@ impl Module<DynBrand, Unverified> {
     /// Construct a fresh module under the **named** brand `B`.
     ///
     /// At most one live module may hold a given brand type. A second call for a
-    /// brand whose module is still alive fails with [`IrError::BrandInUse`];
+    /// brand whose module is still alive fails with [`BrandError::InUse`];
     /// once that module is dropped the brand is free again.
     ///
     /// ```
-    /// use llvmkit_ir::{IrError, Module};
+    /// use llvmkit_ir::{BrandError, Module};
     ///
     /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// struct LiftedBin;
@@ -3035,12 +3035,12 @@ impl Module<DynBrand, Unverified> {
     /// let m = Module::branded::<LiftedBin, _>("lifted")?;
     /// assert!(matches!(
     ///     Module::branded::<LiftedBin, _>("again"),
-    ///     Err(IrError::BrandInUse { .. })
+    ///     Err(BrandError::InUse { .. })
     /// ));
     ///
     /// drop(m);
     /// let _reused = Module::branded::<LiftedBin, _>("again")?;
-    /// # Ok::<(), IrError>(())
+    /// # Ok::<(), BrandError>(())
     /// ```
     ///
     /// # Leaking
@@ -3055,10 +3055,10 @@ impl Module<DynBrand, Unverified> {
     ///
     /// # Errors
     ///
-    /// [`IrError::BrandInUse`] if a live module already holds `B`;
-    /// [`IrError::BrandRetired`] if `B` was retired by
+    /// [`BrandError::InUse`] if a live module already holds `B`;
+    /// [`BrandError::Retired`] if `B` was retired by
     /// [`branded_once`](Self::branded_once).
-    pub fn branded<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    pub fn branded<B, N>(name: N) -> Result<Module<B, Unverified>, BrandError>
     where
         B: ModuleBrand,
         N: Into<String>,
@@ -3070,14 +3070,14 @@ impl Module<DynBrand, Unverified> {
     /// permanently** when the module is dropped.
     ///
     /// Where [`branded`](Self::branded) frees the brand for reuse, this marks it
-    /// dead: every later claim fails with [`IrError::BrandRetired`], forever.
+    /// dead: every later claim fails with [`BrandError::Retired`], forever.
     /// Use it when handles minted from the module may outlive it — a retired
     /// brand can never name a *successor* module, so a stale handle can never be
     /// replayed against fresh storage even if the runtime [`ModuleId`] check
     /// were bypassed.
     ///
     /// ```
-    /// use llvmkit_ir::{IrError, Module};
+    /// use llvmkit_ir::{BrandError, Module};
     ///
     /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// struct BuiltOnce;
@@ -3086,16 +3086,16 @@ impl Module<DynBrand, Unverified> {
     /// drop(Module::branded_once::<BuiltOnce, _>("once")?);
     /// assert!(matches!(
     ///     Module::branded_once::<BuiltOnce, _>("twice"),
-    ///     Err(IrError::BrandRetired { .. })
+    ///     Err(BrandError::Retired { .. })
     /// ));
-    /// # Ok::<(), IrError>(())
+    /// # Ok::<(), BrandError>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// [`IrError::BrandInUse`] if a live module already holds `B`;
-    /// [`IrError::BrandRetired`] if `B` has already been retired.
-    pub fn branded_once<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    /// [`BrandError::InUse`] if a live module already holds `B`;
+    /// [`BrandError::Retired`] if `B` has already been retired.
+    pub fn branded_once<B, N>(name: N) -> Result<Module<B, Unverified>, BrandError>
     where
         B: ModuleBrand,
         N: Into<String>,
@@ -3118,7 +3118,7 @@ impl Module<DynBrand, Unverified> {
     ///    partially-constructed module can never strand a brand as `InUse`. (If
     ///    it could, the guard's `Drop` would still release it on unwind — but
     ///    the ordering means that never has to happen.)
-    fn registered<B, N>(name: N, retire_on_drop: bool) -> IrResult<Module<B, Unverified>>
+    fn registered<B, N>(name: N, retire_on_drop: bool) -> Result<Module<B, Unverified>, BrandError>
     where
         B: ModuleBrand,
         N: Into<String>,

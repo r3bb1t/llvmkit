@@ -19,6 +19,44 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — a brand claim returns `BrandError`, not the 56-variant `IrError` *(breaking)*
+
+`Module::branded` and `Module::branded_once` now return
+`Result<Module<B, Unverified>, BrandError>` instead of `IrResult<_>`. The brand
+registry reports exactly two outcomes, and declaring 56 obliged every consumer
+to write an arm for the unreachable rest.
+
+That arm was not hypothetical. `llvmkit-asmparser`'s brand mapper filled it by
+stringifying the error into `ParseError::Io` with `ErrorKind::Other`, its own
+comment conceding that was *"the honest label for 'not an I/O failure at
+all'"* — an I/O error reported for a failure that involved no I/O. The mapper
+is now an exhaustive two-arm `match` with no catch-all, because the type no
+longer admits one.
+
+The flat `IrError::BrandInUse` and `IrError::BrandRetired` variants are
+**replaced** by a single wrapping `IrError::Brand(BrandError)`. `BrandError`
+carries the same `&'static str` brand name and renders transparently, so no
+diagnostic text changes. `BrandError` is `Copy`, which `IrError` is not, and is
+deliberately **not** `#[non_exhaustive]`: matching both arms should be a
+complete answer.
+
+Existing code that matched the flat variants updates as:
+
+```rust
+// was
+Err(IrError::BrandInUse { brand }) => ...
+// now, on the claim itself
+Err(BrandError::InUse { brand }) => ...
+```
+
+`?` still widens a claim into an `IrResult` function, through the `#[from]` on
+the wrapper — the crate-level-error idiom `AGENTS.md` prescribes. The narrowing
+is at the *declaration*, which is where the defect was: the code that handles a
+refused claim now matches two arms and is done, and nothing is obliged to
+invent an arm for the 54 outcomes the registry cannot produce.
+
+Doctrine D7.
+
 ### Fixed — four decisions moved to the point in the parse upstream makes them *(breaking)*
 
 Four `docs/divergences.md` entries from the *Different diagnostic text* band

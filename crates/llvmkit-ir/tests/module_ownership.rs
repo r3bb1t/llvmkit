@@ -26,10 +26,10 @@ use llvmkit_ir::metadata::{
     DebugMetadataOperand, DebugRecord, DebugVariableRecord, DebugVariableRecordKind,
 };
 use llvmkit_ir::{
-    BlockId, Dyn, DynBrand, FunctionId, InstructionView, IntValue, IrBuilder, IrError, Linkage,
-    MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataKind, Module, ModuleBrand,
-    NamedMetadataName, NoFolder, SpecializedMetadataKind, SpecializedMetadataNode, Unverified,
-    Verified, module_new,
+    BlockId, BrandError, Dyn, DynBrand, FunctionId, InstructionView, IntValue, IrBuilder, IrError,
+    Linkage, MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataKind, Module,
+    ModuleBrand, NamedMetadataName, NoFolder, SpecializedMetadataKind, SpecializedMetadataNode,
+    Unverified, Verified, module_new,
 };
 
 /// Declare a brand type exactly as a user would.
@@ -395,11 +395,11 @@ fn branded_once_retires_the_brand_so_no_successor_can_exist() -> Result<(), IrEr
     let _ = stale;
     assert!(matches!(
         Module::branded::<OnceOnly, _>("successor"),
-        Err(IrError::BrandRetired { .. })
+        Err(BrandError::Retired { .. })
     ));
     assert!(matches!(
         Module::branded_once::<OnceOnly, _>("successor"),
-        Err(IrError::BrandRetired { .. })
+        Err(BrandError::Retired { .. })
     ));
     Ok(())
 }

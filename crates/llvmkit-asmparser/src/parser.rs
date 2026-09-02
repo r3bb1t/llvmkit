@@ -8,7 +8,7 @@
 use std::fs::read as read_file;
 use std::path::Path;
 
-use llvmkit_ir::{Constant, DynBrand, IrError, Module, ModuleBrand, Type, Unverified};
+use llvmkit_ir::{BrandError, Constant, DynBrand, Module, ModuleBrand, Type, Unverified};
 
 use super::asm_parser_context::AsmParserContext;
 use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
@@ -338,18 +338,14 @@ where
 
 /// Claim brand `B`, translating the registry's refusal into a [`ParseError`].
 fn branded_module<B: ModuleBrand>(name: &str) -> ParseResult<Module<B, Unverified>> {
+    // Exhaustive over `BrandError`, which has exactly the two arms the registry
+    // can report. There is no catch-all here any more: while `Module::branded`
+    // returned the `#[non_exhaustive]` `IrError`, this match owed an arm for 54
+    // variants it could never see, and filled it by stringifying the error into
+    // `ParseError::Io` with `ErrorKind::Other`.
     Module::branded::<B, _>(name).map_err(|err| match err {
-        IrError::BrandRetired { brand } => ParseError::BrandRetired { brand },
-        // `Module::branded` reports exactly `BrandInUse` or `BrandRetired`.
-        IrError::BrandInUse { brand } => ParseError::BrandInUse { brand },
-        // `IrError` is `#[non_exhaustive]`, so this arm exists for a variant
-        // the registry does not currently produce. It carries the message
-        // rather than panicking; `ErrorKind::Other` is the honest label for
-        // "not an I/O failure at all" until a variant is worth naming.
-        other => ParseError::Io {
-            kind: std::io::ErrorKind::Other,
-            message: other.to_string(),
-        },
+        BrandError::Retired { brand } => ParseError::BrandRetired { brand },
+        BrandError::InUse { brand } => ParseError::BrandInUse { brand },
     })
 }
 

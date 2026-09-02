@@ -828,6 +828,64 @@ impl fmt::Display for VerifierRule {
     }
 }
 
+/// Why a brand claim was refused.
+///
+/// The brand registry reports exactly these two outcomes, so this is the whole
+/// error, and it is what [`Module::branded`](crate::Module::branded) returns.
+///
+/// These used to be two flat variants of [`IrError`], which meant a claim that
+/// can fail two ways declared 56 outcomes. Every consumer then owed an arm for
+/// the unreachable rest, and that is not hypothetical: `llvmkit-asmparser`'s
+/// brand mapper filled its arm by stringifying the error into an I/O failure
+/// with `ErrorKind::Other`, its own comment conceding that was "the honest
+/// label for 'not an I/O failure at all'". Code that *handles* a refused claim
+/// now matches two arms and is finished.
+///
+/// [`IrError`] keeps a single wrapping [`IrError::Brand`] variant so a caller
+/// whose function already returns [`IrResult`] can widen with `?` when it does
+/// not want to distinguish. The narrowing that matters is at the declaration,
+/// not the absence of a conversion.
+///
+/// Deliberately **not** `#[non_exhaustive]`, unlike [`IrError`]: the point is
+/// that a caller can match both arms and be finished. Adding a third outcome
+/// would be a breaking change, which is the correct signal.
+///
+/// `Copy`, which [`IrError`] cannot be — both payloads are `&'static str` from
+/// [`core::any::type_name`].
+///
+/// llvmkit-specific: LLVM's `Module` has no compile-time identity, so there is
+/// no upstream counterpart to port. See Doctrine D7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum BrandError {
+    /// A **live** module already holds the requested brand.
+    ///
+    /// At most one module may carry a given brand at a time, which is what lets
+    /// the brand stand in for module identity at compile time. Drop the
+    /// incumbent module to free the brand, pick a different brand type, or use
+    /// [`Module::dynamic`](crate::Module::dynamic) when the module count is not
+    /// statically known.
+    ///
+    /// Note that leaking a module (e.g. [`core::mem::forget`]) never releases
+    /// its brand — see [`Module::branded`](crate::Module::branded).
+    #[error("module brand `{brand}` is already held by a live module")]
+    InUse {
+        /// Rendered name of the brand type, from [`core::any::type_name`].
+        brand: &'static str,
+    },
+
+    /// A brand retired by [`Module::branded_once`](crate::Module::branded_once)
+    /// was claimed again.
+    ///
+    /// Retirement is permanent by design: a brand whose module is gone must
+    /// never name a *successor*, or handles minted from two different
+    /// generations of storage would share one static type.
+    #[error("module brand `{brand}` was permanently retired by a `branded_once` module")]
+    Retired {
+        /// Rendered name of the brand type, from [`core::any::type_name`].
+        brand: &'static str,
+    },
+}
+
 /// Crate-wide error.
 ///
 /// Variants are added incrementally as new subsystems land. Marked
@@ -1435,32 +1493,25 @@ pub enum IrError {
         message: String,
     },
 
-    /// [`Module::branded`](crate::Module::branded) /
-    /// [`branded_once`](crate::Module::branded_once) was asked for a brand type
-    /// that a **live** module already holds. At most one module may carry a
-    /// given brand at a time, which is what lets the brand stand in for module
-    /// identity at compile time. Drop the incumbent module to free the brand,
-    /// pick a different brand type, or use
-    /// [`Module::dynamic`](crate::Module::dynamic) when the module count is not
-    /// statically known.
+    /// A brand claim was refused — see [`BrandError`] for the two outcomes.
     ///
-    /// Note that leaking a module (e.g. [`core::mem::forget`]) never releases
-    /// its brand — see [`Module::branded`](crate::Module::branded).
-    #[error("module brand `{brand}` is already held by a live module")]
-    BrandInUse {
-        /// Rendered name of the brand type, from [`core::any::type_name`].
-        brand: &'static str,
-    },
-
-    /// A brand retired by [`Module::branded_once`](crate::Module::branded_once)
-    /// was claimed again. Retirement is permanent by design: a brand whose
-    /// module is gone must never name a *successor*, or handles minted from two
-    /// different generations of storage would share one static type.
-    #[error("module brand `{brand}` was permanently retired by a `branded_once` module")]
-    BrandRetired {
-        /// Rendered name of the brand type, from [`core::any::type_name`].
-        brand: &'static str,
-    },
+    /// This is a *wrapper*, and the distinction is the whole point of the
+    /// split. [`Module::branded`](crate::Module::branded) returns the narrow
+    /// [`BrandError`], so the code that actually handles a refused claim
+    /// matches two arms and is done; nothing is obliged to write a catch-all
+    /// for variants the registry cannot produce. This variant exists only so a
+    /// caller whose function already returns [`IrResult`] can widen with `?`
+    /// when it does not want to distinguish — the crate-level-error idiom in
+    /// `AGENTS.md`, "wrap third-party errors with `#[from]` so `?` works".
+    ///
+    /// Renders transparently, so the text is [`BrandError`]'s and the two
+    /// spellings cannot drift.
+    ///
+    /// It replaces the former flat `BrandInUse` / `BrandRetired` variants,
+    /// whose presence here is what let `Module::branded` declare 56 outcomes
+    /// for an operation with two.
+    #[error(transparent)]
+    Brand(#[from] BrandError),
 }
 
 /// Crate-wide `Result` alias.
