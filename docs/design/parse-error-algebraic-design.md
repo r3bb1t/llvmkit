@@ -1,7 +1,8 @@
 # `ParseError` becomes an algebraic type
 
-**Status:** design, approved for planning. Measured at `1034272`; every figure carries the
-command that produced it. Re-derive before quoting — they move with the parser.
+**Status:** design, approved for planning. Diagnostic-surface figures measured at `1034272`;
+entry-point and divergence figures at `84a66ea`. Every figure carries the command that produced
+it — re-derive before quoting, they move with the parser.
 
 ## The problem
 
@@ -16,7 +17,14 @@ Expected { expected: Cow<'static, str>, loc: DiagLoc },
 Message { message: Cow<'static, str>, loc: DiagLoc },
 ```
 
-This violates two doctrine rules.
+This violates three doctrine rules.
+
+**D1 — "State machines are typestates."** `ParseError` has two operational states today — *has
+a source location* and *has none* — and the distinction is carried by a runtime predicate,
+`loc() -> Option<DiagLoc>`, whose `match` must be hand-extended for every one of the 21 variants
+(`grep -c '#\[error(' parse_error.rs`, at `84a66ea`). That is exactly the `is_attached()` shape
+D1 exists to forbid. Exactly three return `None`, and they are the same three that are not
+diagnostics at all: `Io`, `BrandInUse`, `BrandRetired`.
 
 **D3 — "Erased forms are explicitly opt-in."** `Message` *is* an erased form: it erases which
 diagnostic this is down to a string. It is the opposite of opt-in — the default at 296 sites and
@@ -32,6 +40,44 @@ supported`, `expected 'label'` at thirteen sites — was a `Cow` someone typed. 
 anything; a variant must be added, and adding one is visible in review.** Divergence 121 was
 closed in a single sweep precisely because `VerifierRule` is an enum you can enumerate; there is
 no equivalent lever for the parser today.
+
+**And the erasure destroys structure, not just names.** The parser has an error-constructing
+helper, `builder_err`, whose whole body is:
+
+```rust
+fn builder_err(&self, label: &str, e: IrError) -> ParseError {
+    ParseError::Expected { expected: format!("valid {label}: {e}").into(), loc: … }
+}
+```
+
+It is called **123 times**. Each call takes a fully structured `IrError` and flattens it into
+text, so nothing downstream can `match` on why the builder refused — it can only parse the
+rendering. That is the single largest cluster in the file and on its own it justifies the
+change. Counting only direct `format!` sites misses it entirely; the helpers are where the mass
+is.
+
+**Worse, the labels duplicate an enum that already exists.** The 123 calls pass **87 distinct
+literal labels** — `"add"`, `"alloca"`, `"call"`, `"shufflevector"` — and **54 of them are
+variant names of `llvmkit_ir::Opcode` (73 variants)**. `ll_parser.rs` also carries two private
+mnemonic enums whose 16 mnemonics are *all* among the 87, and exactly one call site uses one of
+them (`builder_err(op.mnemonic(), e)`) while the rest hardcode the same strings. That is the
+second-parallel-copy shape the porting rules treat as a defect in itself.
+
+## Doctrine anchors
+
+In the row form `docs/type-safety-vs-llvm.md` uses. The right-hand column is what this design
+delivers; none of it exists today.
+
+| Problem shape | Doctrine | Upstream LLVM C++ | llvmkit after this change |
+| --- | --- | --- | --- |
+| Invent a diagnostic upstream never emits | D3, D5 | `error(Loc, "any text you like")` — a `Twine` accepts anything | A `ParseErrorKind` variant must be added, and a drift test rejects text absent from the vendored `LLParser.cpp` |
+| Ask why the builder refused a construct | D3 | n/a — upstream's parser calls IR constructors that assert | `BuilderRejected { context, source: IrError }` keeps the structured error instead of `format!`-ing it into 123 strings |
+| Handle an error that has no source position | D1 | `SMDiagnostic` carries an *optional* `SMLoc`; the open-file failure uses the empty one | Unrepresentable: `loc: DiagLoc` is a field, not an `Option`, so a non-diagnostic cannot enter the type |
+| Discover which entry points can fail how | Fallibility honesty | one `SMDiagnostic &Err` out-parameter for every failure kind | Every entry point returns `Result<T, ParseError>`, and each of the 17 can produce every variant of it |
+| Match on a diagnostic rather than its rendering | D3, D6 | `Err.getMessage()` is a `std::string` | `match e.kind { … }`, exhaustive, with typed fields |
+
+The last row is the one that pays for the rest: it is what let divergence 121 be closed in a
+single sweep over `VerifierRule`, and what the parser has no equivalent of today.
 
 ## Measured surface
 
@@ -51,6 +97,8 @@ so two thirds of the conversion is mechanical.
 
 ## Design
 
+**One type. No sum, no wrapper, no optional location.**
+
 ```rust
 /// A diagnostic at a source position. Every one has a location, so `loc` is not optional.
 pub struct ParseError { pub kind: ParseErrorKind, pub loc: DiagLoc }
@@ -58,21 +106,92 @@ pub struct ParseError { pub kind: ParseErrorKind, pub loc: DiagLoc }
 /// One variant per upstream diagnostic. No `Cow`, no free-form string.
 pub enum ParseErrorKind { /* ~205 nullary, ~57 with typed fields */ }
 
-/// Failures that are not diagnostics and have no source position.
-pub enum ParseFailure {
-    Parse(ParseError),
-    Io { kind: std::io::ErrorKind, message: String },
-    BrandInUse { brand: &'static str },
-    BrandRetired { brand: &'static str },
-}
+pub type ParseResult<T> = Result<T, ParseError>;   // alias unchanged; the claim becomes true
 ```
 
-`loc` moves out of the variants and onto the struct, appearing **once** instead of ~205 times,
-and the hand-maintained `loc() -> Option<DiagLoc>` accessor disappears. `Io` and `BrandInUse`
-are not diagnostics — they have no location, which is why that `Option` exists today — so they
-move to `ParseFailure` rather than being given a fake one. This mirrors upstream, where
-`LLParser::error` always takes a `LocTy` and I/O failure lives in the `MemoryBuffer` layer,
-outside the parser's error type.
+`loc` moves out of the variants onto the struct, appearing **once** instead of ~205 times, and
+the hand-maintained `loc() -> Option<DiagLoc>` accessor disappears — D1.
+
+The three non-diagnostic variants are **not** relocated into a wrapper type. An earlier draft of
+this spec proposed a `ParseFailure { Parse, Io, BrandInUse, BrandRetired }`; that was wrong. It
+preserved the coupling and added a level. They are removed along with the entry points that
+produce them, because each of those entry points does work the parser has no business doing.
+
+### The entry points shrink 24 → 17
+
+`grep -oE "^pub fn [a-z_]+" parser.rs | wc -l` gives 24. Classified by which of the three
+non-diagnostic variants each can actually produce:
+
+| entry points | can produce | disposition |
+| --- | --- | --- |
+| `parse_file_dynamic`, `parse_file_branded`, `parse_assembly_file`, `parse_assembly_file_with_config`, `parse_summary_index_assembly_file` | `Io` | **deleted** — the caller reads the file |
+| `parse_branded`, `parse_branded_with_config` | `BrandInUse` / `BrandRetired` | **deleted** — the caller claims the brand |
+| the remaining **17** | none, yet declare all three | unchanged, and now honest |
+
+Both replacements are one line, and both are strictly more explicit than what they replace:
+
+```rust
+// was: parse_file_dynamic("dir/foo.ll")   — derived the module name from the path
+let m = parse_into(Module::dynamic("dir/foo.ll"), std::fs::read("dir/foo.ll")?)?;
+
+// was: parse_branded::<MyBrand, _>(src)   — silently named the module "asm"
+let m = parse_into(Module::branded::<MyBrand, _>("foo.ll")?, src)?;
+```
+
+`parse_into` was always the primitive; these seven were conveniences that **supplied inputs the
+caller never wrote down**. `parse_file_dynamic` derived a module name from a `Path` through
+`module_name_for` (`path.file_name()`), and that name is printed as `; ModuleID = '…'` — so a
+`Path` argument silently became bytes of output, with the directory component dropped on the
+way. `parse_branded` hardcoded `"asm"`.
+
+### Why the parser performs no I/O — in either tree
+
+This is not an llvmkit preference. Upstream's parser primitive takes a buffer, not a stream:
+
+```cpp
+// Parser.cpp — the primitive every entry point funnels into
+static bool parseAssemblyInto(MemoryBufferRef F, Module *M, ModuleSummaryIndex *Index,
+                              SMDiagnostic &Err, …);
+```
+
+and the file read lives in **Support**, outside `lib/AsmParser` entirely
+(`MemoryBuffer::getFileOrSTDIN`). `parseAssemblyFile` is a six-line wrapper around it. So
+`ParseError::Io` is not merely a doctrine violation — it merges a Support-layer concern into the
+parser's error type at a boundary upstream keeps separate.
+
+A `Read`-based lexer is not an option in either tree, and `LLLexer.h` shows why:
+
+```cpp
+const char *CurPtr;
+StringRef   CurBuf;
+const char *PrevTokEnd = nullptr;
+const char *TokStart;
+```
+
+Backtracking, `PrevTokEnd`, and token spans are pointer arithmetic into one buffer. A stream
+forces internal buffering, and spans can then no longer be byte offsets into the caller's bytes —
+which is what `DiagLoc` is built on. `Lexer::new(src: &'src [u8])` already matches.
+
+### The module name cannot come from the text
+
+Worth recording, because it is the obvious alternative and it does not work. `; ModuleID = '…'`
+is a **comment**: `LLLexer.cpp` has `case ';': SkipLineComment();` and no `ModuleID` token. It is
+written by `AsmWriter` and never read back, in either tree. The directive that *is* parsed —
+`source_filename`, `LLParser::parseSourceFileName` — is a different field (the original source,
+`foo.c` for clang output), printed separately, and aliasing the two would be exactly the silent
+derivation this change removes.
+
+That is why upstream hardcodes `MemoryBufferRef F(AsmString, "<string>")` in
+`parseAssemblyString` and passes the filename in `parseAssemblyFile`: the identifier can only
+come from the caller. Making the caller pass it is the only honest source, not ceremony.
+
+**Divergence, verified, closed by this change.** `parse_dynamic` calls `Module::dynamic("asm")`
+where `parseAssemblyString` uses `"<string>"`, and both trees print the identifier verbatim
+(`fmt_module_with_options`, mirroring `AssemblyWriter::printModule`) — so a string-parsed module
+round-trips with a different `; ModuleID` line than upstream's. `grep -rniE
+"moduleid|<string>|buffer identifier|module identifier" docs/divergences.md docs/future-work.md`
+returns nothing, at `84a66ea`. Fixed by changing the constant, in the same commit that deletes
+the file entry points; no ledger row is opened for a defect closed on arrival.
 
 ### Text carrier
 
@@ -90,28 +209,74 @@ visible act in review. An enumerated exemption list would rot; this cannot.
 ### Field typing — store the thing, not its rendering
 
 **D6: "modeled directly rather than flattened into weak runtime predicates."** A parameterised
-variant's fields carry the *value*, not its text:
+variant's fields carry the *value*, not its rendering. Measuring what the 65 `format!` sites in
+`ll_parser.rs` actually interpolate settles what each should become
+(`grep -ohE 'format!\("[^"]*"' ll_parser.rs`, at `1034272`):
+
+**Count the helpers, not just `format!`.** `builder_err` (113) and `builder_err_at` (10) build
+their message internally, so a `format!` census misses 123 sites. Full picture:
+
+| construction path | sites | becomes |
+|---|---|---|
+| `builder_err` / `builder_err_at` | **123** | `BuilderRejected { context, source: IrError }` |
+| `expected` / `expected_at` | 177 | nullary variants |
+| `message_at` / `message` | 167 | nullary variants, or fields below |
+| direct `format!` | 65 | fields below |
+
+and within the interpolating sites:
+
+| interpolates | sites | becomes |
+|---|---|---|
+| `{e}` — **a nested error** | 24 direct, **123 via helper** | `source: IrError` |
+| `{id}` / `{slot}` / `{index}` / `{next_id}` | 15 | `u32` / `u64` |
+| `{kind}` / `{opcode}` / `{label}` / `{what}` / `{prefix}` | 6 | the enum it already is |
+| `{result_ty}` / `{element_ty}` | 7 | a type handle where expressible, else owned text |
+| `{name}` | 12 | owned text — genuinely arbitrary input |
+
+**The 24 nested-error sites are the most valuable part of this refactor, and they are worse than
+stringly-typing.** `format!("valid ret: {e}")` takes a fully structured `IrError` and flattens it
+into a string: D3 erasure at its most destructive, since the entire error is destroyed and only
+its rendering survives. A caller wanting to know *why* the builder refused has to parse text.
+They become:
 
 ```rust
-ExpectedKeyword { keyword: TokenKind },                  // not String — the token is an enum
-MetadataFieldValueTooLarge { value: u64, max: u64 },     // not String — they are numbers
-InvalidSymbolicAddrSpace { name: String },               // String is right: arbitrary input text
+BuilderRejected { context: BuilderContext, source: IrError },
+
+/// What the parser was building. Reuses `llvmkit_ir::Opcode` rather than
+/// minting a parallel set: 54 of the 87 hand-typed labels are Opcode names.
+enum BuilderContext {
+    Opcode(Opcode),          // "add", "alloca", "call", … — 54 of 87
+    ArrayConstant,           // the ~33 that are constructs, not opcodes
+    BlockAddressPlaceholder,
+    …
+}
 ```
 
-`String` is correct **only** when the value is arbitrary text from the source; `&'static str`
-when it is a compile-time constant; otherwise the typed value.
+with `Display` emitting `valid {context}: {source}` — byte-identical output, structure intact,
+and the underlying `IrError` finally `match`-able. **`ll_parser.rs`'s two private mnemonic enums
+are subsumed by this and should go**; they are a third copy of the same naming, and one of them
+is already used at a single call site while 87 others hardcode its strings.
 
-Note `Cow<'static, str>` is not an option for input-derived text: that text is never `'static`,
-so the `Cow` could only ever be its `Owned` arm — a `String` with extra ceremony, which is why
-the present code reaches for `format!`. Borrowing the source properly would mean
-`Cow<'a, str>` and a lifetime on `ParseError`, which is currently lifetime-free, `Clone + Eq +
-Hash`, and crossing the public API. That lifetime would infect every signature that touches an
-error, to save one allocation on a path that runs once, at failure, after which the parse ends.
-**Rejected: the cost is structural and the saving is not.**
+The rest follow the same rule:
 
-This gives Phase 3 its quality signal. **Count how many of the 57 land on `String`.** A high
-count means the stringly-typing was moved rather than removed, and that is the point to stop and
-record why — not a reason to push through.
+```rust
+ExpectedKeyword { keyword: TokenKind },               // not text — the token is an enum
+MetadataFieldValueTooLarge { value: u64, max: u64 },  // not text — they are numbers
+UndefinedTypeNamed { name: Box<str> },                // owned text: arbitrary input
+```
+
+Owned text is therefore **~19 fields, not 57** — and `Box<str>` rather than `String`: 16 bytes
+against 24, immutable, and it says the payload is fixed. `Cow<'static, str>` cannot help:
+input-derived text is never `'static`, so the `Cow` could only ever be its `Owned` arm — a
+`String` with ceremony, which is why the present code reaches for `format!`. Borrowing properly
+would mean `Cow<'a, str>` and a lifetime on `ParseError`, which is lifetime-free today,
+`Clone + Eq + Hash`, and crosses the public API. That lifetime would infect every signature
+touching an error to save one allocation on a path that runs once, at failure, after which the
+parse ends. **Rejected: the cost is structural, the saving is not.**
+
+This gives Phase 5 its quality signal. **Count how many fields land on owned text.** The
+measurement above predicts ~19; materially more means the stringly-typing was moved rather than
+removed, and that is the point to stop and record why.
 
 ### One source of truth
 
@@ -121,11 +286,11 @@ A declarative macro (`macro_rules!`, no proc-macro needed) declares the enum, th
 ```rust
 parse_error_kinds! {
     ExpectedTypeKeyword      => "expected type",
-    InvalidSymbolicAddrSpace => "invalid symbolic addrspace" { name: String },
+    InvalidSymbolicAddrSpace => "invalid symbolic addrspace" { name: Box<str> },
 }
 ```
 
-## Migration — four phases, each independently green
+## Migration — six phases, each independently green
 
 `Display` output must stay **byte-identical** throughout. That makes the refactor
 behaviour-preserving, which makes the existing suite the oracle.
@@ -136,20 +301,68 @@ both directions; print the counts. This measures how many invented messages exis
 If that number is near zero, the case rests entirely on preventing future ones — decide on the
 measurement, not on the argument above.
 
-**Phase 1 — the shape, no site changes.** Introduce `ParseError`/`ParseErrorKind`/`ParseFailure`
-with `Expected` and `Message` retained as transitional kind variants. The `self.expected(…)` and
+**Phase 1 — narrow the surface. Independent of everything else, and shippable alone.** Delete
+the seven entry points in the table above, delete `Io` / `BrandInUse` / `BrandRetired`, delete
+`module_name_for`, `branded_module` and `impl From<std::io::Error> for ParseError`, and change
+`parse_dynamic`'s module name from `"asm"` to `"<string>"`. **`loc()` can then return `DiagLoc`
+rather than `Option<DiagLoc>` — the D1 fix lands here**, before any variant work. No
+`ParseErrorKind` yet; `Expected` and `Message` are untouched, so the diff is small and the
+existing suite is the whole oracle.
+
+One call site moves — `parser_corpus.rs:159`, from `parse_assembly_file_with_config` to a read
+plus `parse_assembly_with_config`. Four tests go with the functions they cover:
+`parse_file_dynamic_returns_an_owned_module_named_after_the_file` and
+`parse_branded_returns_the_named_brand` cover deleted conveniences and simply go. The other two
+need their reasoning written down rather than being quietly dropped:
+
+- `io_errors_keep_their_kind` (`parse_error.rs`) declares itself *"llvmkit-specific (no upstream
+  counterpart)"* and asserts our own invention. It never noticed that our I/O message drops the
+  filename `SMDiagnostic(Filename, …)` carries — an oracle that pins a behaviour nobody chose is
+  worse than no oracle. Deleted with the variant.
+- `parse_assembly_file_reads_file` (`parser_facade.rs`) cites *"Ports
+  `Parser.cpp::parseAssemblyFile` file-loading wrapper shape"* — a port of an **API shape**, not
+  of behaviour, so under D11 it was never a ported test. Deleted with the function.
+
+Both `UPSTREAM.md` rows go in the same commit, and `upstream_registry_drift.rs` is what catches
+it if they do not.
+
+**Phase 1 also narrows `Module::branded`, and that is not scope creep.** Deleting
+`branded_module` removes the *consumer* of a defect without removing the defect. `Module::branded`
+returns `IrResult<Module<B, Unverified>>` — the 56-variant, `#[non_exhaustive]` `IrError` — for
+an operation that structurally reports exactly `BrandInUse` or `BrandRetired`. Rust demands an
+arm for the other 54, and `branded_module` filled it by stuffing a stringified `IrError` into
+`ParseError::Io` with `ErrorKind::Other`, its own comment conceding *"the honest label for 'not
+an I/O failure at all'"*. Ask what would have caught that: nothing did, and nothing would, because
+an over-wide return type forces the same lie at whatever boundary consumes it next. A two-variant
+`BrandError` in `llvmkit-ir` makes the catch-all arm unspellable — which is the fix, and it lands
+with the deletion rather than after it. Same rule applies to `branded_once`.
+
+The change is bounded: `grep -rn "BrandInUse\|BrandRetired" crates/ --include=*.rs` at `84a66ea`
+finds exactly **one** producer (`module.rs`, the two `Err(IrError::Brand*)` arms in the registry
+claim), 4 doctests, and ~11 test assertions — plus the parser sites Phase 1 is already deleting.
+The two variants then leave `IrError` entirely, since nothing constructs them any more; that is a
+breaking change to a `#[non_exhaustive]` public enum and gets its own `CHANGELOG.md` line.
+
+**Phase 2 — the shape, no site changes.** Introduce `ParseError`/`ParseErrorKind` with
+`Expected` and `Message` retained as transitional kind variants. The `self.expected(…)` and
 `self.message_at(…)` helpers absorb the change, so most call sites do not move.
 
-**Phase 2 — the `expected` half.** 105 literals, 163 sites, zero `format!`. Mechanical. Delete
-`Expected` once it reaches zero uses. Split commits by parser routine, not by variant — a
-512-site diff is unreviewable as one commit.
+**Phase 3 — `builder_err`, and do it before the bulk.** 123 sites, one helper, the largest single
+win: a structured `IrError` stops being flattened into text. Land `BuilderContext` reusing
+`llvmkit_ir::Opcode`, convert both helpers, and delete `ll_parser.rs`'s two private mnemonic
+enums. Those 123 sites stop constructing `Expected`, which shrinks Phase 4 before it starts.
+**This phase is worth doing even if everything after it is abandoned.**
 
-**Phase 3 — the `Message` half.** 100 literals become nullary variants; **57 become variants with
-typed fields — no `Cow` survives.** This is where real defects surface: a field the message
-interpolates that the site does not cleanly have is a bug the string form was hiding. Delete
-`Message`.
+**Phase 4 — the `expected` half.** 105 literals, zero `format!`, mechanical. Delete `Expected`
+once it reaches zero uses. Split commits by parser routine, not by variant — a 500-site diff is
+unreviewable as one commit.
 
-**Phase 4 — widen the corpus oracle** to match kind-and-fields rather than substring, closing the
+**Phase 5 — the `message` half.** 100 literals become nullary variants; the rest become variants
+with typed fields per the table above. **No `Cow` survives.** Real defects surface here: a field
+the message interpolates that the site does not cleanly have is a bug the string form was hiding.
+Delete `Message`.
+
+**Phase 6 — widen the corpus oracle** to match kind-and-fields rather than substring, closing the
 `contains`-not-equality hole recorded in `docs/future-work.md`.
 
 ## Testing
@@ -175,17 +388,31 @@ such.
 
 ## Risks, and the case against
 
-- **Phase 3 is where this can stall**, and the field-typing rule above is how you will know.
-  If many of the 57 sites interpolate something with no typed form available, those variants
-  grow a `String` and the stringly-typing has been *moved*, not removed. Count them; if it is
-  most, stop after Phase 2 and record why rather than pushing through.
+- **Phase 5 is where this can stall**, and the field-typing table is how you will know. The
+  measurement predicts ~19 owned-text fields of 65 interpolations; materially more means the
+  stringly-typing was moved rather than removed. Count them, and if the number runs away, stop
+  after Phase 3 and record why rather than pushing through.
+- **The 7 type renderings are the genuinely uncertain ones.** A `TypeId` needs a module to
+  render, and an error can outlive the borrow that produced it. If they cannot be typed, they
+  fall back to owned text and the ~19 grows. Settle those first in Phase 5 — they decide whether
+  the phase is worth starting.
 - **This closes no ledger entry directly.** It competes with ~11 remaining tractable entries. Its
   value is making a *class* of defect unspellable and mechanically checkable.
-- **The two-level error type** (`ParseFailure` wrapping `ParseError`) is a visible change to
-  every public entry point's signature. That is the price of not inventing fake locations.
+- **Phase 1 removes seven public functions**, which is the only user-visible break in the plan.
+  Pre-1.0 and each replacement is one line, but it is a real break and belongs in `CHANGELOG.md`
+  as one. The alternative — keeping them and wrapping the error in a `ParseFailure` sum — was
+  considered and rejected above: it keeps the coupling and adds a level.
+- **`ParseError` and `ParseErrorKind` are one variant apart from being the same type.** If
+  `~205 + ~57` variants make the struct wrapper feel like overhead, the check is whether any
+  variant would want a `loc` that is not the parser's current position. None does today, which
+  is what makes the split safe rather than merely tidy.
 
 ## Not in scope
 
 `LexError` is already algebraic. `VerifierRule` is the model being copied, not changed. The lexer
 error-**retention** model (divergences 101 and 32) touches the same file and must not be
 interleaved with this.
+
+**`Module::branded`'s over-declaration is in scope, and is part of Phase 1** — see there for
+why. It is named here only because the obvious reading of "delete `branded_module`" is that the
+problem left with it, and it did not.
