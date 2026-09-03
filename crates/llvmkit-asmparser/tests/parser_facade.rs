@@ -439,3 +439,14 @@ fn data_layout_callback_declining_keeps_the_files_layout() {
         .expect("declined override parses");
     assert!(format!("{module}").contains("target datalayout = \"e-p:64:64\""));
 }
+
+/// Ports `llvm/lib/AsmParser/Parser.cpp::parseAssemblyString`, which builds
+/// `MemoryBufferRef F(AsmString, "<string>")` — so a module parsed from a
+/// string, with no filename to take an identifier from, is named `<string>`
+/// and prints that in its `; ModuleID` comment.
+#[test]
+fn a_string_parsed_module_is_named_like_upstreams() {
+    let module = parse_dynamic(MINIMAL).expect("parse succeeds");
+    assert_eq!(module.name(), "<string>");
+    assert!(format!("{module}").starts_with("; ModuleID = '<string>'\n"));
+}

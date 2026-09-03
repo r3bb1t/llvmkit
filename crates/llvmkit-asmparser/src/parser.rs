@@ -207,6 +207,11 @@ where
 /// Parse a complete textual IR module under [`DynBrand`], returning the owned
 /// module.
 ///
+/// Named `"<string>"`, matching `parseAssemblyString`'s `MemoryBufferRef
+/// F(AsmString, "<string>")`; use [`parse_into`] with
+/// [`Module::dynamic`](llvmkit_ir::Module::dynamic) to choose a different
+/// name.
+///
 /// Infallible in the brand: `DynBrand` is registry-exempt, so this can be
 /// called any number of times concurrently and every result is a separate
 /// module, separated by the runtime [`ModuleId`](llvmkit_ir::ModuleId) tag.
@@ -255,7 +260,7 @@ pub fn parse_dynamic_with_config<S>(
 where
     S: AsRef<[u8]>,
 {
-    parse_into_with_config(Module::dynamic("asm"), src, config)
+    parse_into_with_config(Module::dynamic("<string>"), src, config)
 }
 
 // --------------------------------------------------------------------------
@@ -264,6 +269,10 @@ where
 
 /// Parse a complete textual IR module and inspect it together with its
 /// [`ParsedModule`] slot mapping.
+///
+/// Named `"<string>"`, matching `parseAssemblyString`'s `MemoryBufferRef
+/// F(AsmString, "<string>")`; use [`parse_assembly_with_name`] to choose a
+/// different name.
 ///
 /// Prefer [`parse_dynamic`] unless you need the slot tables: it returns the
 /// module by value, so it can be verified, stored, and moved. This form
@@ -282,7 +291,7 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    parse_assembly_with_name("asm", src, &ParserConfig::DEFAULT, f)
+    parse_assembly_with_name("<string>", src, &ParserConfig::DEFAULT, f)
 }
 
 /// [`parse_assembly`] under an explicit [`ParserConfig`].
@@ -295,7 +304,7 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    parse_assembly_with_name("asm", src, config, f)
+    parse_assembly_with_name("<string>", src, config, f)
 }
 
 /// Parse a complete textual IR module under a caller-supplied module name, and
@@ -306,9 +315,9 @@ where
 /// identifier on the [`Module`] instead, so the closure forms — which
 /// construct the module themselves — take it as a parameter here.
 /// [`parse_assembly`] and [`parse_assembly_with_config`] pass the fixed name
-/// `"asm"` rather than upstream's `parseAssemblyString` default of
-/// `"<string>"`; this function does not change that existing naming
-/// difference, only publishes the parameter that lets a caller pick.
+/// `"<string>"`, matching `parseAssemblyString`'s `MemoryBufferRef
+/// F(AsmString, "<string>")`; this function publishes that parameter so a
+/// caller can pick a different name instead.
 ///
 /// # Errors
 ///
@@ -349,8 +358,15 @@ where
 }
 
 /// [`parse_assembly_with_index`] under an explicit [`ParserConfig`]. Mirrors
-/// `parseAssemblyFileWithIndex` and its
-/// `…NoUpgradeDebugInfo` twin, which differ only in what they pass here.
+/// `parseAssemblyWithIndex(MemoryBufferRef F, …)`, the buffer-taking
+/// primitive `parseAssemblyFileWithIndex` and its `…NoUpgradeDebugInfo` twin
+/// wrap after reading a file; the two file-taking wrappers differ from each
+/// other only in what they pass through to it.
+///
+/// Its default module name is `"<string>"`, upstream's convention for a
+/// caller-supplied buffer with no name of its own — an inference rather than
+/// a direct port, since `parseAssemblyWithIndex` has no string-only overload
+/// to take the identifier from.
 pub fn parse_assembly_with_index_and_config<R, S, F>(
     src: S,
     config: &ParserConfig<'_>,
@@ -360,7 +376,7 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    let module = Module::dynamic("asm");
+    let module = Module::dynamic("<string>");
     let parsed =
         Parser::with_summary_index(src.as_ref(), &module)?.parse_module_with_config(config)?;
     Ok(f(&module, parsed))
@@ -415,7 +431,7 @@ where
         AsmParserContext<'ctx, DynBrand>,
     ) -> R,
 {
-    let module = Module::dynamic("asm");
+    let module = Module::dynamic("<string>");
     let mut parsed =
         Parser::with_context(src.as_ref(), &module)?.parse_module_with_config(config)?;
     // `Parser::with_context` installs the registry, so `parse_module` always

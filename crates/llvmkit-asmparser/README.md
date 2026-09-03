@@ -54,7 +54,7 @@ when you need the slot mapping; use the closure-free forms otherwise.
 `parse_assembly` takes `impl AsRef<[u8]>`, so a `&str` source goes straight in —
 the separate `parse_assembly_string` it used to need is gone.
 `parse_assembly_with_name` is the same closure form under a caller-supplied
-module name, in place of `parse_assembly`'s fixed `"asm"`.
+module name, in place of `parse_assembly`'s fixed `"<string>"`.
 
 Also public: `parse_type` / `parse_type_at_beginning` / `parse_constant_value`
 for single fragments (each with a `_with_slots` twin that threads a

@@ -57,7 +57,7 @@ let module = parse_into(Module::dynamic(module_name), &source)?;
 
 The closure-form primitive `parse_assembly_with_name(name, src, config, f)` —
 previously private, already what `parse_assembly` and
-`parse_assembly_with_config` called internally with their fixed `"asm"`
+`parse_assembly_with_config` called internally with their fixed `"<string>"`
 identifier — is now public, for a caller of the closure family that wants to
 name the module itself instead of reading a file for it:
 
@@ -196,6 +196,29 @@ Err(BrandError::InUse { brand }) => ...
 ```
 
 Doctrine D7.
+
+### Fixed — a string-parsed module is named `<string>`, as upstream names it
+
+`parse_dynamic`, `parse_assembly`, `parse_assembly_with_config`,
+`parse_assembly_with_context_and_config` and
+`parse_assembly_with_index_and_config` named their module `"asm"`;
+`Parser.cpp::parseAssemblyString` builds `MemoryBufferRef F(AsmString,
+"<string>")`, and both trees print the identifier verbatim as the `;
+ModuleID` comment, so a string-parsed module's first printed line differed
+from upstream's on every call.
+
+`parse_assembly_with_index_and_config` has no string-taking upstream
+counterpart to port the identifier from — `parseAssemblyWithIndex` takes a
+`MemoryBufferRef` and reads whatever identifier the caller gave it — so
+`"<string>"` there is an inference from upstream's own convention for a
+nameless buffer, not a literal port.
+
+Two default-name sites are unchanged on purpose: `parse_assembly_with_name`'s
+name is a caller-supplied parameter, not a default, so there is nothing to
+match; and `parse_summary_index_assembly`'s `Module::dynamic("summary")` is
+scaffolding for `parseSummaryIndexAssembly`, which upstream runs against a
+null `Module*` — there is no upstream module identifier to match because
+upstream builds no module at all.
 
 ### Fixed — four decisions moved to the point in the parse upstream makes them *(breaking)*
 
