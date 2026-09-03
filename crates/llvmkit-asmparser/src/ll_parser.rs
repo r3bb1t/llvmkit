@@ -77,7 +77,7 @@ use llvmkit_ir::module_summary_index::{
 
 use super::numbered_values::AddError;
 use super::numbered_values::NumberedValues;
-use super::parse_error::{DiagLoc, ParseError, ParseResult};
+use super::parse_error::{ParseError, ParseResult};
 use super::parse_error::{SymbolId, SymbolKind};
 use super::slot_mapping::{GlobalRef, SlotMapping};
 
@@ -942,7 +942,7 @@ fn reject_named_void(lhs: &LocalLhs, loc: Span) -> ParseResult<()> {
         LocalLhs::None => Ok(()),
         LocalLhs::Named(_) | LocalLhs::Numbered(_) => Err(ParseError::Message {
             message: "instructions returning void cannot have a name".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }),
     }
 }
@@ -971,7 +971,7 @@ fn check_value_id(
         return Err(ParseError::Message {
             message: format!("{kind} expected to be numbered '{prefix}{next_id}' or greater")
                 .into(),
-            loc: DiagLoc::span(loc),
+            loc,
         });
     }
     Ok(())
@@ -1116,7 +1116,7 @@ fn map_lex_error(e: LexError) -> ParseError {
             ParseError::IntegerWidthOutOfRange {
                 width,
                 max,
-                loc: DiagLoc::span(span),
+                loc: span,
             }
         }
         other => ParseError::Lex(other),
@@ -1292,7 +1292,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // and `parseOrdering`.
                 return Err(ParseError::Message {
                     message: "Metadata id is already used".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 });
             }
             // The id was reserved by *this* module (`resolve_md_slot` ->
@@ -1431,7 +1431,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 return Err(ParseError::UndefinedSymbol {
                     kind: SymbolKind::Metadata,
                     id: SymbolId::Numbered(*slot),
-                    loc: DiagLoc::span(entry.first_ref),
+                    loc: entry.first_ref,
                 });
             }
         }
@@ -1528,14 +1528,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::Message {
                 message: format!("unknown function '{name}' referenced by dso_local_equivalent")
                     .into(),
-                loc: DiagLoc::span(entry.loc),
+                loc: entry.loc,
             });
         };
         if !global_ref_value_type_is_function(global) {
             return Err(ParseError::Message {
                 message: "expected a function, alias to function, or ifunc in dso_local_equivalent"
                     .into(),
-                loc: DiagLoc::span(entry.loc),
+                loc: entry.loc,
             });
         }
         let equivalent = self
@@ -1567,7 +1567,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         NameOrId::Name(name) => SymbolId::Named(name),
                         NameOrId::Id(id) => SymbolId::Numbered(id),
                     },
-                    loc: DiagLoc::span(item.loc),
+                    loc: item.loc,
                 });
             };
             let no_cfi = self
@@ -1609,7 +1609,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let Some(block) = state.defined_block(&item.label) else {
                 return Err(ParseError::Message {
                     message: "referenced value is not a basic block".into(),
-                    loc: DiagLoc::span(item.label_loc),
+                    loc: item.label_loc,
                 });
             };
             let block = state.value_as_block_view(block, item.label_loc)?;
@@ -1644,7 +1644,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             "constant expression type mismatch: got type '{got}' but expected '{expected}'"
                         )
                         .into(),
-                        loc: DiagLoc::span(item.value_loc),
+                        loc: item.value_loc,
                     },
                     DeferredBlockAddressFunction::Forward(_) => ParseError::DefinedWithWrongType {
                         name: match &item.label {
@@ -1653,7 +1653,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         },
                         defined: got.to_string(),
                         expected: expected.to_string(),
-                        loc: DiagLoc::span(item.label_loc),
+                        loc: item.label_loc,
                     },
                 });
             }
@@ -1672,7 +1672,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(item) = self.deferred_block_addresses.first() {
             return Err(ParseError::Expected {
                 expected: "function name in blockaddress".into(),
-                loc: DiagLoc::span(item.function_loc),
+                loc: item.function_loc,
             });
         }
         Ok(())
@@ -1687,7 +1687,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
                         kind,
                         id,
-                        loc: DiagLoc::span(item.loc),
+                        loc: item.loc,
                     },
                     other => other,
                 })?;
@@ -1712,7 +1712,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
                         kind,
                         id,
-                        loc: DiagLoc::span(item.loc),
+                        loc: item.loc,
                     },
                     other => other,
                 })?;
@@ -1844,7 +1844,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::GlobalValue,
                 id: SymbolId::Named(name),
-                loc: DiagLoc::span(entry.loc),
+                loc: entry.loc,
             });
         }
         // `if (!ForwardRefValIDs.empty()) return error(begin()->second.second,
@@ -1856,7 +1856,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::GlobalValue,
                 id: SymbolId::Numbered(id),
-                loc: DiagLoc::span(entry.loc),
+                loc: entry.loc,
             });
         }
         Ok(())
@@ -1907,7 +1907,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Err(ParseError::Redefinition {
                         kind: SymbolKind::Global,
                         id: SymbolId::Named(name.clone()),
-                        loc: DiagLoc::span(name_loc),
+                        loc: name_loc,
                     });
                 }
                 Ok(None)
@@ -1945,7 +1945,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if entry.placeholder.ty() != target_ty {
             return Err(ParseError::Message {
                 message: "forward reference and definition of alias have different types".into(),
-                loc: DiagLoc::span(explicit_type_loc),
+                loc: explicit_type_loc,
             });
         }
         Self::rauw_forward_ref(entry, definition)
@@ -1963,7 +1963,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .replace_all_uses_with(target.as_erased())
             .map_err(|e| ParseError::Message {
                 message: format!("cannot resolve forward reference: {e}").into(),
-                loc: DiagLoc::span(entry.loc),
+                loc: entry.loc,
             })
     }
 
@@ -2013,7 +2013,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         Err(ParseError::Message {
             message: "intrinsic can only be used as callee".into(),
-            loc: DiagLoc::span(entry.loc),
+            loc: entry.loc,
         })
     }
 
@@ -2036,7 +2036,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .add_function_dyn(name, signature, Linkage::External)
                     .map_err(|e| ParseError::Message {
                         message: format!("cannot declare incomplete forward reference: {e}").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     })?;
                 Ok(GlobalRef::Function(self.module.view(id)))
             }
@@ -2048,7 +2048,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .add_external_global(name, self.module.i8_type().as_type())
                     .map_err(|e| ParseError::Message {
                         message: format!("cannot declare incomplete forward reference: {e}").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     })?;
                 Ok(GlobalRef::Variable(self.module.view(id)))
             }
@@ -2124,7 +2124,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !ty.is_pointer() {
             return Err(ParseError::Message {
                 message: "global variable reference must have pointer type".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         // `getGlobalVal`'s `ForwardRefVals` / `ForwardRefValIDs` hit is the
@@ -2153,7 +2153,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .forward_ref_value_placeholder(ty)
                 .map_err(|e| ParseError::Message {
                     message: format!("cannot create forward reference: {e}").into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })?;
         let constant = placeholder.as_constant();
         let entry = ForwardRef { placeholder, loc };
@@ -2180,21 +2180,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         ParseError::Expected {
             expected: expected.into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
     fn intrinsic_modifier_error(&self, loc: Span) -> ParseError {
         ParseError::Expected {
             expected: "intrinsic declaration modifier".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
     fn intrinsic_attribute_error(&self, loc: Span) -> ParseError {
         ParseError::Expected {
             expected: "intrinsic declaration attribute mismatch".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -2294,7 +2294,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             Err(ParseError::Expected {
                 expected: "end of string".into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })
         }
     }
@@ -2305,7 +2305,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let consumed = self.loc().start.saturating_sub(start);
         let consumed = usize::try_from(consumed).map_err(|_| ParseError::Expected {
             expected: "type byte count fits in usize".into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: self.loc(),
         })?;
         Ok((ty, consumed))
     }
@@ -2364,7 +2364,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             | ValIdKind::Value(_) => {
                 return Err(ParseError::Message {
                     message: "expected a constant value".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 });
             }
         };
@@ -2430,7 +2430,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn expected(&self, expected: impl Into<Cow<'static, str>>) -> ParseError {
         ParseError::Expected {
             expected: expected.into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: self.loc(),
         }
     }
 
@@ -2449,7 +2449,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn message_at(&self, loc: Span, message: impl Into<Cow<'static, str>>) -> ParseError {
         ParseError::Message {
             message: message.into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -2458,7 +2458,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn expected_at(&self, loc: Span, expected: impl Into<Cow<'static, str>>) -> ParseError {
         ParseError::Expected {
             expected: expected.into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -2516,7 +2516,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         None => {
                             return Err(ParseError::Message {
                                 message: format!("invalid symbolic addrspace '{name}'").into(),
-                                loc: DiagLoc::span(self.loc()),
+                                loc: self.loc(),
                             });
                         }
                     },
@@ -2849,13 +2849,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if visibility != Visibility::Default {
             return Err(ParseError::Message {
                 message: "symbol with local linkage must have default visibility".into(),
-                loc: DiagLoc::span(name_loc),
+                loc: name_loc,
             });
         }
         if dll_storage_class != DllStorageClass::Default {
             return Err(ParseError::Message {
                 message: "symbol with local linkage cannot have a DLL storage class".into(),
-                loc: DiagLoc::span(name_loc),
+                loc: name_loc,
             });
         }
         Ok(())
@@ -3066,7 +3066,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let loc = layout_loc.unwrap_or_else(|| self.loc());
         let parsed = DataLayout::parse(layout).map_err(|e| ParseError::Expected {
             expected: format!("valid datalayout: {}", e.reason).into(),
-            loc: DiagLoc::span(loc),
+            loc,
         })?;
         self.module.set_data_layout(parsed);
         Ok(())
@@ -5211,7 +5211,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::Type,
                 id: SymbolId::Numbered(*id),
-                loc: DiagLoc::span(*loc),
+                loc: *loc,
             });
         }
         let mut named: Vec<(&String, Span)> = self
@@ -5223,7 +5223,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some((name, loc)) = named.first() {
             return Err(ParseError::Message {
                 message: format!("use of undefined type named '{name}'").into(),
-                loc: DiagLoc::span(*loc),
+                loc: *loc,
             });
         }
         Ok(())
@@ -5237,7 +5237,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::Comdat,
                 id: SymbolId::Named(name.clone()),
-                loc: DiagLoc::span(*loc),
+                loc: *loc,
             });
         }
         Ok(())
@@ -5288,7 +5288,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::Redefinition {
                 kind: SymbolKind::Comdat,
                 id: SymbolId::Named(name),
-                loc: DiagLoc::span(name_loc),
+                loc: name_loc,
             });
         }
         let comdat = self.module.get_or_insert_comdat(&name);
@@ -5934,7 +5934,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let mut fields: Vec<llvmkit_ir::metadata::MetadataField<B>> = Vec::new();
         if !matches!(self.peek(), Token::RParen) {
             loop {
-                let field_loc = DiagLoc::span(self.loc());
+                let field_loc = self.loc();
                 let field_name = match self.peek() {
                     Token::LabelStr(bytes) => std::str::from_utf8(bytes.as_ref())
                         .map_err(|_| self.expected("valid UTF-8 metadata field name"))?
@@ -5968,7 +5968,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         }
-        let closing_loc = DiagLoc::span(self.loc());
+        let closing_loc = self.loc();
         self.expect_punct(PunctKind::RParen, "')' here")?;
         for required in kind.required_fields() {
             if !fields.iter().any(|f| f.name() == required.name()) {
@@ -6033,7 +6033,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             return Err(ParseError::InvalidMetadataFieldValue {
                                 what: "DWARF op",
                                 value: name,
-                                loc: DiagLoc::span(self.loc()),
+                                loc: self.loc(),
                             });
                         }
                         self.bump()?;
@@ -6045,7 +6045,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             return Err(ParseError::InvalidMetadataFieldValue {
                                 what: "DWARF attribute encoding",
                                 value: name,
-                                loc: DiagLoc::span(self.loc()),
+                                loc: self.loc(),
                             });
                         }
                         self.bump()?;
@@ -6219,7 +6219,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // name the token *after* it. `arg: -1` is the case with a vendored
         // pin: `test/Assembler/invalid-dilocalvariable-arg-negative.ll` puts
         // `expected unsigned integer` on the `-`, not on the `)` behind it.
-        let loc = DiagLoc::span(value_loc);
+        let loc = value_loc;
         let name = field.name();
 
         // The `MDUnsignedField` base every keyword family but
@@ -6580,7 +6580,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::InvalidMetadataFieldValue {
                 what: "debug info flag",
                 value: spelling,
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             });
         }
         self.bump()?;
@@ -6619,7 +6619,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::InvalidMetadataFieldValue {
                 what: "subprogram debug info flag",
                 value: spelling,
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             });
         }
         self.bump()?;
@@ -6826,7 +6826,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .last()
                 .ok_or_else(|| ParseError::Expected {
                     expected: "instruction after debug record".into(),
-                    loc: DiagLoc::span(self.loc()),
+                    loc: self.loc(),
                 })?;
             for record in pending_debug_records.drain(..) {
                 own_metadata(inst.push_debug_record(self.module, record));
@@ -6994,7 +6994,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let handle: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = StructType::try_from(ty)
             .map_err(|_| ParseError::Message {
                 message: "redefinition of type".into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
         self.module
             .set_struct_body_dyn(handle, elements, packed)
@@ -7003,11 +7003,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // straight to `tokError`, so it is printed verbatim.
                 IrError::RecursiveStructBody { .. } => ParseError::Message {
                     message: e.to_string().into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 },
                 other => ParseError::Expected {
                     expected: format!("valid struct body: {other}").into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 },
             })?;
         self.record_type_definition(name, slot, ty);
@@ -7150,7 +7150,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 _ => {
                     return Err(ParseError::Expected {
                         expected: "type".into(),
-                        loc: DiagLoc::span(type_loc),
+                        loc: type_loc,
                     });
                 }
             }
@@ -7187,7 +7187,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         // `parseType`'s `AllowVoid` guard, verbatim.
                         return Err(ParseError::Message {
                             message: "void type only allowed for function results".into(),
-                            loc: DiagLoc::span(type_loc),
+                            loc: type_loc,
                         });
                     }
                     return Ok(result);
@@ -7252,7 +7252,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ty.check_params().map_err(|e| match e {
             IrError::InvalidOperation { message } => ParseError::Message {
                 message: message.into(),
-                loc: DiagLoc::span(loc),
+                loc,
             },
             other => self.builder_err("target extension type", other),
         })?;
@@ -7375,7 +7375,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let ty = self.parse_type(false)?;
                 let slot = u32::try_from(args.len()).map_err(|_| ParseError::Expected {
                     expected: "parameter slot fits in u32".into(),
-                    loc: DiagLoc::span(type_loc),
+                    loc: type_loc,
                 })?;
                 let index = AttrIndex::Param(slot);
                 let parsed = self.parse_fn_attribute_value_pairs(
@@ -7500,7 +7500,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     // The bound the check actually applies — not a literal
                     // that can drift away from it, as `(1 << 24) - 1` had.
                     max: llvmkit_ir::MAX_INT_BITS,
-                    loc: DiagLoc::span(loc),
+                    loc,
                 }),
         }
     }
@@ -7807,7 +7807,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let g = builder.build().map_err(|e| ParseError::Expected {
             expected: format!("valid global definition: {e}").into(),
-            loc: DiagLoc::span(decl_loc),
+            loc: decl_loc,
         })?;
         // The parser threads borrowing handles through its deferred-fixup and
         // slot-numbering tables, so resolve the freshly minted id once here.
@@ -7831,7 +7831,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .add(id, GlobalRef::Variable(g))
                 .map_err(|source| ParseError::InvalidSlotId {
                     source,
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
         }
         Ok(())
@@ -7863,7 +7863,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if is_alias && !llvmkit_ir::global_alias::is_valid_alias_linkage(linkage) {
             return Err(ParseError::Message {
                 message: "invalid linkage type for alias".into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             });
         }
         // No ifunc counterpart: `parseAliasOrIFunc` guards `isValidLinkage`
@@ -7982,7 +7982,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             let a = builder.build().map_err(|e| ParseError::Expected {
                 expected: format!("valid alias definition: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
             let a_view = self.module.view(a);
             Self::resolve_alias_forward_ref(
@@ -8005,7 +8005,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .add(id, GlobalRef::Alias(a))
                     .map_err(|source| ParseError::InvalidSlotId {
                         source,
-                        loc: DiagLoc::span(decl_loc),
+                        loc: decl_loc,
                     })?;
             }
         } else {
@@ -8026,7 +8026,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             let i = builder.build().map_err(|e| ParseError::Expected {
                 expected: format!("valid ifunc definition: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
             let i_view = self.module.view(i);
             Self::resolve_alias_forward_ref(
@@ -8052,7 +8052,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .add(id, GlobalRef::Ifunc(i))
                     .map_err(|source| ParseError::InvalidSlotId {
                         source,
-                        loc: DiagLoc::span(decl_loc),
+                        loc: decl_loc,
                     })?;
             }
         }
@@ -8077,7 +8077,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn unsupported_constant_value_form_at(&self, loc: Span) -> ParseError {
         ParseError::Expected {
             expected: "supported constant/value form".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -8116,7 +8116,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         ParseError::Message {
             message: format!("{opcode} constexprs are no longer supported").into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -8153,7 +8153,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let asm = self.parse_inline_asm()?;
                 return Err(ParseError::Message {
                     message: "invalid type for inline asm constraint string".into(),
-                    loc: DiagLoc::span(asm.loc),
+                    loc: asm.loc,
                 });
             }
             Token::Instruction(op) if !is_supported_constant_expr_opcode(*op) => {
@@ -8435,7 +8435,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if value.semantics() != float_ty.semantics() {
             return Err(ParseError::Message {
                 message: format!("floating point constant does not have type '{ty}'").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         Ok(float_ty
@@ -8494,7 +8494,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         "element {index} of struct initializer doesn't match struct element type"
                     )
                     .into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 });
             }
         }
@@ -8523,12 +8523,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     "constant expression type mismatch: got type '{scalar_ty}' but expected '{element_ty}'"
                 )
                 .into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         let len = usize::try_from(vec_ty.min_len()).map_err(|_| ParseError::Expected {
             expected: "vector type for splat constant".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         })?;
         let elements = vec![scalar; len];
         vec_ty
@@ -8556,7 +8556,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AnyTypeEnum::Array(t) => {
                 let len = usize::try_from(t.len()).map_err(|_| ParseError::Expected {
                     expected: "array zeroinitializer length fits in usize".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })?;
                 let element = t.element();
                 let mut elements = Vec::with_capacity(len);
@@ -8570,7 +8570,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AnyTypeEnum::Vector(t) => {
                 let len = usize::try_from(t.min_len()).map_err(|_| ParseError::Expected {
                     expected: "vector zeroinitializer length fits in usize".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })?;
                 let element = t.element();
                 let mut elements = Vec::with_capacity(len);
@@ -8585,7 +8585,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if t.is_opaque() {
                     return Err(ParseError::Message {
                         message: "invalid type for null constant".into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     });
                 }
                 let mut elements = Vec::with_capacity(t.field_count());
@@ -8615,7 +8615,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
                 IrError::InvalidOperation { message } => ParseError::Message {
                     message: message.into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 },
                 other => self.builder_err_at(loc, "target extension none", other),
             }),
@@ -8657,14 +8657,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if what == "array" && !element_ty.is_first_class() {
             return Err(ParseError::Message {
                 message: format!("invalid array element type: {element_ty}").into(),
-                loc: DiagLoc::span(first_elt_loc),
+                loc: first_elt_loc,
             });
         }
         for (index, value) in values.iter().enumerate() {
             if value.ty() != element_ty {
                 return Err(ParseError::Message {
                     message: format!("{what} element #{index} is not of type '{element_ty}").into(),
-                    loc: DiagLoc::span(first_elt_loc),
+                    loc: first_elt_loc,
                 });
             }
         }
@@ -8694,7 +8694,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !ty.is_first_class() || ty.is_label() {
             return Err(ParseError::Message {
                 message: format!("invalid type for {what} constant").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         Ok(())
@@ -8720,7 +8720,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     "constant expression type mismatch: got type '{got}' but expected '{ty}'"
                 )
                 .into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         Ok(constant)
@@ -8837,7 +8837,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .const_ap_int(&bits)
                     .map_err(|e| ParseError::Expected {
                         expected: format!("valid integer constant: {e}").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     })?;
                 Ok(c.as_constant())
             }
@@ -8959,7 +8959,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         Err(ParseError::Message {
             message: "global variable reference must have pointer type".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         })
     }
 
@@ -9122,7 +9122,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .ok_or_else(|| ParseError::UndefinedSymbol {
                 kind: SymbolKind::Global,
                 id: SymbolId::Named(name),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })
     }
 
@@ -9361,7 +9361,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::Message {
                 message: "expected a function, alias to function, or ifunc in dso_local_equivalent"
                     .into(),
-                loc: DiagLoc::span(operand_loc),
+                loc: operand_loc,
             });
         }
         self.module
@@ -9586,7 +9586,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             "invalid cast opcode for cast from '{src_ty}' to '{dst_ty}'"
                         )
                         .into(),
-                        loc: DiagLoc::span(id_loc),
+                        loc: id_loc,
                     });
                 }
                 // `ConstantExpr::getCast(Opc, SrcVal, DestTy)` — upstream's own
@@ -9890,12 +9890,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 {
                     ParseError::Message {
                         message: "invalid operands to shufflevector".into(),
-                        loc: DiagLoc::span(self.loc()),
+                        loc: self.loc(),
                     }
                 }
                 IrError::InvalidOperation { message } => ParseError::Expected {
                     expected: message.into(),
-                    loc: DiagLoc::span(self.loc()),
+                    loc: self.loc(),
                 },
                 other => self.builder_err("constant expression", other),
             })
@@ -10161,11 +10161,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         match linkage {
             Linkage::Appending | Linkage::Common => Err(ParseError::Message {
                 message: "invalid function linkage type".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             }),
             Linkage::ExternalWeak if is_define => Err(ParseError::Message {
                 message: "invalid linkage for function definition".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             }),
             Linkage::Private
             | Linkage::Internal
@@ -10178,7 +10178,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             {
                 Err(ParseError::Message {
                     message: "invalid linkage for function declaration".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })
             }
             _ => Ok(()),
@@ -10284,15 +10284,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if storage.is_empty() {
             return Err(ParseError::Message {
                 message: "attribute group has no attributes".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         self.numbered_attr_groups
             .add(id, storage.clone())
-            .map_err(|source| ParseError::InvalidSlotId {
-                source,
-                loc: DiagLoc::span(loc),
-            })?;
+            .map_err(|source| ParseError::InvalidSlotId { source, loc })?;
         self.module.set_attribute_group(id, storage);
         Ok(())
     }
@@ -11149,7 +11146,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let Some(one) = llvmkit_ir::AllocFnKind::from_keyword(word) else {
                 return Err(ParseError::Message {
                     message: format!("unknown allockind {word}").into(),
-                    loc: DiagLoc::span(kind_loc),
+                    loc: kind_loc,
                 });
             };
             kind |= one;
@@ -11535,7 +11532,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             IntrinsicNameResolution::UnknownIntrinsic => {
                 return Err(ParseError::Expected {
                     expected: "unknown intrinsic".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 });
             }
             IntrinsicNameResolution::Known(_) => {
@@ -11622,11 +11619,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     if let Some(name) = name {
                         let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
                             expected: "parameter slot fits in u32".into(),
-                            loc: DiagLoc::span(decl_loc),
+                            loc: decl_loc,
                         })?;
                         let arg = f.param(slot).map_err(|e| ParseError::Expected {
                             expected: format!("function parameter slot {slot}: {e}").into(),
-                            loc: DiagLoc::span(decl_loc),
+                            loc: decl_loc,
                         })?;
                         arg.set_name(self.module, &name);
                     }
@@ -11645,7 +11642,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .add_function_dyn(&name, fn_ty, linkage)
             .map_err(|e| ParseError::Expected {
                 expected: format!("valid function declaration: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
         let f = self.module.view(f);
         f.set_visibility(self.module, visibility);
@@ -11659,11 +11656,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if let Some(name) = name {
                 let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
                     expected: "parameter slot fits in u32".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
                 let arg = f.param(slot).map_err(|e| ParseError::Expected {
                     expected: format!("function parameter slot {slot}: {e}").into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
                 arg.set_name(self.module, &name);
             }
@@ -11743,7 +11740,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .add(*id, GlobalRef::Function(f))
                 .map_err(|source| ParseError::InvalidSlotId {
                     source,
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
         }
         // `parseFunctionHeader`'s `if (IsDefine) return false;` tail: only a
@@ -11813,13 +11810,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             IntrinsicNameResolution::UnknownIntrinsic => {
                 return Err(ParseError::Expected {
                     expected: "unknown intrinsic".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 });
             }
             IntrinsicNameResolution::Known(_) => {
                 return Err(ParseError::Expected {
                     expected: "intrinsic functions should never be defined".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 });
             }
         }
@@ -11851,7 +11848,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .add_function_dyn(&name, fn_ty, linkage)
             .map_err(|e| ParseError::Expected {
                 expected: format!("valid function definition: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
         let f = self.module.view(f);
         f.set_visibility(self.module, visibility);
@@ -11865,11 +11862,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if let Some(n) = p {
                 let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
                     expected: "parameter slot fits in u32".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
                 let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
                     expected: format!("function parameter slot {slot}: {e}").into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
                 arg.set_name(self.module, n);
             }
@@ -11946,7 +11943,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .add(id, GlobalRef::Function(f))
                 .map_err(|source| ParseError::InvalidSlotId {
                     source,
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
         }
 
@@ -11962,11 +11959,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         for (slot, name) in param_names.into_iter().enumerate() {
             let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
                 expected: "parameter slot fits in u32".into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
             let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
                 expected: format!("function parameter slot {slot}: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
             let v = arg.as_erased();
             match name {
@@ -12562,7 +12559,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             let _ = b.ret_void().map_err(|e| ParseError::Expected {
                 expected: format!("valid ret void: {e}").into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })?;
             return Ok(());
         }
@@ -12576,7 +12573,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let _ = b.ret(v).map_err(|e| ParseError::Expected {
             expected: format!("valid ret: {e}").into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: self.loc(),
         })?;
         Ok(())
     }
@@ -12600,7 +12597,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(target) = state.block_label_for_value(cond_v) {
             let _ = b.br(target).map_err(|e| ParseError::Expected {
                 expected: format!("valid br: {e}").into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })?;
             return Ok(());
         }
@@ -12627,7 +12624,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .cond_br(cond_i1, then_bb, else_bb)
             .map_err(|e| ParseError::Expected {
                 expected: format!("valid cond_br: {e}").into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })?;
         Ok(())
     }
@@ -14702,7 +14699,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         IntrinsicNameResolution::UnknownIntrinsic => {
                             return Err(ParseError::Expected {
                                 expected: "unknown intrinsic".into(),
-                                loc: DiagLoc::span(loc),
+                                loc,
                             });
                         }
                         IntrinsicNameResolution::Known(_) => {
@@ -14716,7 +14713,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             if f.signature() != parsed_fn_ty {
                                 return Err(ParseError::Expected {
                                     expected: "intrinsic signature mismatch".into(),
-                                    loc: DiagLoc::span(loc),
+                                    loc,
                                 });
                             }
                             let descriptor = self
@@ -14726,7 +14723,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             if f.intrinsic_descriptor() != Some(descriptor) {
                                 return Err(ParseError::Expected {
                                     expected: "intrinsic signature mismatch".into(),
-                                    loc: DiagLoc::span(loc),
+                                    loc,
                                 });
                             }
                         }
@@ -14752,7 +14749,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     IntrinsicNameResolution::UnknownIntrinsic => Err(ParseError::Expected {
                         expected: "unknown intrinsic".into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     }),
                     IntrinsicNameResolution::NonIntrinsic => {
                         // `getGlobalVal`'s miss path, reached through the very
@@ -14818,7 +14815,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 llvmkit_ir::verify_inline_asm(parsed_fn_ty, &data.constraints).map_err(|e| {
                     ParseError::Message {
                         message: e.to_string().into(),
-                        loc: DiagLoc::span(data.loc),
+                        loc: data.loc,
                     }
                 })?;
                 self.module
@@ -14843,7 +14840,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let callee =
                     llvmkit_ir::PointerValue::try_from(v).map_err(|e| ParseError::Expected {
                         expected: format!("pointer callee: {e}").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     })?;
                 Ok(ParsedCallee::Indirect(callee))
             }
@@ -15815,14 +15812,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn builder_err_at(&self, loc: Span, label: &str, e: IrError) -> ParseError {
         ParseError::Expected {
             expected: format!("{label}: {e}").into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
     fn builder_err(&self, label: &str, e: IrError) -> ParseError {
         ParseError::Expected {
             expected: format!("valid {label}: {e}").into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: self.loc(),
         }
     }
 
@@ -16066,14 +16063,14 @@ fn check_valid_variable_type<'ctx, B: ModuleBrand + 'ctx>(
     if ty.is_label() {
         return Err(ParseError::NotABasicBlock {
             name: name.to_owned(),
-            loc: DiagLoc::span(loc),
+            loc,
         });
     }
     Err(ParseError::DefinedWithWrongType {
         name: name.to_owned(),
         defined: value_ty.to_string(),
         expected: ty.to_string(),
-        loc: DiagLoc::span(loc),
+        loc,
     })
 }
 
@@ -16154,7 +16151,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 id,
                 next: self.next_unnamed_value_id,
             },
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -16258,7 +16255,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .move_basic_block_to_end(module, block)
             .map_err(|e| ParseError::Expected {
                 expected: format!("valid basic block definition: {e}").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })?;
 
         // "Remove the block from forward ref sets."
@@ -16325,7 +16322,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .get_val_as_block_numbered(module, id, loc)
             .map_err(|_| ParseError::Message {
                 message: format!("unable to create block numbered '{id}'").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })?;
         self.value_as_block(module, value, loc)
     }
@@ -16351,7 +16348,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .get_val_as_block_named(module, name, loc)
             .map_err(|_| ParseError::Message {
                 message: format!("unable to create block named '{name}'").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })?;
         self.value_as_block(module, value, loc)
     }
@@ -16367,7 +16364,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .basic_block_for_construction(module, value)
             .map_err(|_| ParseError::Expected {
                 expected: "referenced value is not an unterminated basic block".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })
     }
 
@@ -16419,7 +16416,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         self.block_view_for_value(value)
             .ok_or_else(|| ParseError::Message {
                 message: "referenced value is not a basic block".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })
     }
 
@@ -16535,7 +16532,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         if !ty.is_first_class() {
             return Err(ParseError::Message {
                 message: "invalid use of a non-first-class type".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         // `if (Ty->isLabelTy()) FwdVal = BasicBlock::Create(F.getContext(),
@@ -16573,7 +16570,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .forward_ref_value_placeholder(ty)
                 .map_err(|e| ParseError::Message {
                     message: format!("cannot create forward reference: {e}").into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })?;
         let value = placeholder.as_value();
         let entry = ForwardRef { placeholder, loc };
@@ -16603,7 +16600,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         if entry.placeholder.ty() != definition.ty() {
             return Err(ParseError::InstructionForwardReferencedWithType {
                 ty: entry.placeholder.ty().to_string(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         entry
@@ -16611,7 +16608,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .replace_all_uses_with(definition)
             .map_err(|e| ParseError::Message {
                 message: format!("cannot resolve forward reference: {e}").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })
     }
 
@@ -16639,7 +16636,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                     // upstream spells the name **without** a `%`.
                     return Err(ParseError::Message {
                         message: format!("multiple definition of local value named '{n}'").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     });
                 }
             }
@@ -16655,7 +16652,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 if let Some(block) = self.numbered_blocks.borrow().get(&id).copied() {
                     return Err(ParseError::InstructionForwardReferencedWithType {
                         ty: block.ty().to_string(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     });
                 }
                 let forward = self.forward_ref_numbered.borrow_mut().remove(&id);
@@ -16693,7 +16690,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SYMBOL_KIND_LOCAL,
                 id: SymbolId::Named(name),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         let mut undefined_numbered: BTreeMap<u32, Span> = BTreeMap::new();
@@ -16709,7 +16706,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SYMBOL_KIND_LOCAL,
                 id: SymbolId::Numbered(id),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         // All blocks and edges now exist — every predecessor is known (the
@@ -16722,8 +16719,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .phi_locs
                 .iter()
                 .find(|(id, _)| *id == e.phi_id)
-                .map(|(_, span)| DiagLoc::span(*span))
-                .unwrap_or_else(|| DiagLoc::span(Span::default()));
+                .map(|(_, span)| *span)
+                .unwrap_or_else(Span::default);
             return Err(ParseError::Expected {
                 expected: e.message.into(),
                 loc,
@@ -16900,7 +16897,7 @@ type ParsedBlockBuilder<'m, 'ctx, B> = IrBuilder<'m, 'ctx, B, NoFolder, Position
 fn live_builder_error(loc: Span) -> ParseError {
     ParseError::Expected {
         expected: "live insertion builder before terminator".into(),
-        loc: DiagLoc::span(loc),
+        loc,
     }
 }
 

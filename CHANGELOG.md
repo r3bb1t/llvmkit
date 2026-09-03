@@ -19,6 +19,24 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Removed — `DiagLoc` is deleted; a diagnostic's location is a `Span` *(breaking)*
+
+`DiagLoc` is gone; `ParseError::loc` returns a `llvmkit_support::Span`. Its
+second field, `Option<FileLocRange>`, was never populated — `with_file` had
+no caller — so it was an optional state that no code could reach, inside the
+type whose optional state the entry below already removed (Doctrine D1). Line
+and column remain a caller-side projection from the span, which is what
+upstream's split between `SMLoc` and `FileLoc` does too.
+
+```rust
+// was
+let span = err.loc().span;
+// now
+let span = err.loc();
+```
+
+Doctrine D1.
+
 ### Changed — the parser reads no files; `ParseError::loc` returns a value, not an `Option` *(breaking)*
 
 `parse_file_dynamic`, `parse_assembly_file`, `parse_assembly_file_with_config`
@@ -53,18 +71,19 @@ parser::parse_assembly_with_name(module_name, &source, &config, |module, parsed|
 
 `ParseError::Io` — the last variant that was not a diagnostic — is deleted
 with its last producer, along with `impl From<std::io::Error> for
-ParseError`. `ParseError::loc` now returns `DiagLoc` unconditionally instead
-of `Option<DiagLoc>`: the `Option` existed only for the non-diagnostic
-variants (`Io`, and the `BrandInUse` / `BrandRetired` pair a preceding change
-already removed), and none remain. `ParseError` carries 18 variants now,
-down from 19 (`grep -c '#\[error(' crates/llvmkit-asmparser/src/parse_error.rs`
-at the parent commit and at this one).
+ParseError`. `ParseError::loc` now returns its location unconditionally
+instead of `Option<DiagLoc>` (`DiagLoc` itself is narrowed away in the entry
+above): the `Option` existed only for the non-diagnostic variants (`Io`, and
+the `BrandInUse` / `BrandRetired` pair a preceding change already removed),
+and none remain. `ParseError` carries 18 variants now, down from 19
+(`grep -c '#\[error(' crates/llvmkit-asmparser/src/parse_error.rs` at the
+parent commit and at this one).
 
 ```rust
 // was
 let span = err.loc().map(|l| l.span);
 // now
-let span = err.loc().span;
+let span = err.loc();
 ```
 
 Doctrine D1.

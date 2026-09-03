@@ -165,7 +165,7 @@ fn the_nofpclass_paren_diagnostics_are_upstreams_exact_text_and_anchor() {
         let error = parser::parse_dynamic(source).expect_err("upstream runs `not llvm-as` on this");
         assert_eq!(format!("{error}"), message);
 
-        let start = error.loc().span.start;
+        let start = error.loc().start;
         let offset = usize::try_from(start).unwrap_or(usize::MAX);
         let expected = source.find(token).expect("the fixture spells this token");
         assert_eq!(

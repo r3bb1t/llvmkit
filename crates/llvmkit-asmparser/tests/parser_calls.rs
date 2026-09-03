@@ -1264,14 +1264,14 @@ fn indirect_call_ptrauth_operand_bundles_round_trip() {
 /// `parse_file.rs` computes it for its `<path>:LINE:COL:` prefix — the same
 /// coordinates `llvm-as` prints as `<stdin>:LINE:COL:`.
 fn error_line_col(src: &str, err: &ParseError) -> (u32, u32) {
-    let span = err.loc().span;
+    let span = err.loc();
     llvmkit_support::SourceMap::new(src.as_bytes()).line_col(span.start)
 }
 
 /// The source text the diagnostic's span opens on, for asserting *which token*
 /// an anchor landed on rather than only where it landed.
 fn error_token<'a>(src: &'a str, err: &ParseError) -> &'a str {
-    let span = err.loc().span;
+    let span = err.loc();
     let start = usize::try_from(span.start).expect("offset fits usize");
     let end = usize::try_from(span.end).expect("offset fits usize");
     &src[start..end.min(src.len())]

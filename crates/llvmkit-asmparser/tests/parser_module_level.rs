@@ -16,7 +16,7 @@ pub mod support;
 /// `<stdin>:LINE:COL:`. Comparing only `ParseError`'s rendered text leaves a
 /// diagnostic free to carry upstream's exact message from the wrong token.
 fn reported_line_and_column(source: &[u8], err: &ParseError) -> (u32, u32) {
-    let start = err.loc().span.start;
+    let start = err.loc().start;
     support::line_and_column(source, usize::try_from(start).unwrap_or(usize::MAX))
 }
 

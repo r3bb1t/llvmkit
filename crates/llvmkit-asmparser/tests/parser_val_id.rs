@@ -54,7 +54,7 @@ fn fadd_constant_expr_rejected_as_unsupported() {
 fn assert_diagnostic(src: &str, expected: &str, expected_loc: (u32, u32)) {
     let err = parse_err(src);
     assert_eq!(err.to_string(), expected, "message text");
-    let start = err.loc().span.start;
+    let start = err.loc().start;
     let offset = usize::try_from(start).unwrap_or(usize::MAX);
     assert_eq!(
         line_and_column(src.as_bytes(), offset),

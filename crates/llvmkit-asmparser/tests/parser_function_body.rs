@@ -36,7 +36,7 @@ fn parse_expect_error_at(src: &str) -> (String, (u32, u32)) {
         Ok(()) => panic!("expected parse to fail, but it succeeded"),
         Err(e) => e,
     };
-    let start = error.loc().span.start;
+    let start = error.loc().start;
     let offset = usize::try_from(start).unwrap_or(usize::MAX);
     (format!("{error}"), line_and_column(src.as_bytes(), offset))
 }

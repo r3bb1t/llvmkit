@@ -898,7 +898,7 @@ fn zeroinitializer_of_an_unzeroable_type_is_an_invalid_null_constant() {
         // `ID.Loc = Lex.getLoc()` — the `zeroinitializer` token, not the type
         // in front of it and not the lookahead behind it. Derived from those
         // two routines; the fixtures that pin this message pin text only.
-        let start = usize::try_from(err.loc().span.start).expect("span start fits in usize");
+        let start = usize::try_from(err.loc().start).expect("span start fits in usize");
         assert_eq!(
             support::line_and_column(source.as_bytes(), start),
             support::line_and_column(

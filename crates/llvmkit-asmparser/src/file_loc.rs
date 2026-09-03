@@ -1,14 +1,18 @@
-//! Line / column source locations for parser diagnostics.
+//! Line / column source locations for the parser's location registry.
 //!
 //! Direct port of `llvm/include/llvm/AsmParser/FileLoc.h`. [`FileLoc`] is a
 //! `(line, col)` pair with 0-based components; [`FileLocRange`] is the
 //! half-open range `[start, end)` produced by `LLParser` while it consumes
 //! tokens.
 //!
-//! These are the *external* diagnostic surface — the lexer keeps working in
-//! byte offsets via [`llvmkit_support::Span`], and the parser projects to
-//! [`FileLoc`] only when it needs to expose a location to callers. Mirrors
-//! upstream's split between `SMLoc` (byte pointer) and `FileLoc` (line/col).
+//! These are *not* the diagnostic surface — no [`ParseError`](crate::parse_error::ParseError)
+//! has ever carried a [`FileLoc`], because a diagnostic's location is a byte
+//! [`llvmkit_support::Span`], full stop. `FileLoc` / `FileLocRange` instead
+//! serve [`AsmParserContext`](crate::asm_parser_context::AsmParserContext),
+//! the line/column lookup registry built when the parser is configured to
+//! track one; the parser projects to [`FileLoc`] only when it needs to feed
+//! that registry — `file_loc()` has exactly one caller. Mirrors upstream's
+//! split between `SMLoc` (byte pointer) and `FileLoc` (line/col).
 
 use core::cmp::Ordering;
 

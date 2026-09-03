@@ -69,7 +69,7 @@ pub use parser::{
 pub use ll_parser::ParsedModule;
 #[doc(inline)]
 pub use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
-pub use parse_error::{DiagLoc, ParseError, ParseResult, SymbolId, SymbolKind};
+pub use parse_error::{ParseError, ParseResult, SymbolId, SymbolKind};
 pub use slot_mapping::{GlobalRef, SlotMapping};
 
 /// Drain `r` into a fresh `Vec<u8>`. Convenience helper for the common case

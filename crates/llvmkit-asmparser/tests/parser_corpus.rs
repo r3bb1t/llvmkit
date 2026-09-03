@@ -210,7 +210,7 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
                     );
                 }
                 if let Some((line, column)) = entry.loc {
-                    let start = error.loc().span.start;
+                    let start = error.loc().start;
                     let offset = usize::try_from(start).unwrap_or(usize::MAX);
                     assert_eq!(
                         line_and_column(&source, offset),

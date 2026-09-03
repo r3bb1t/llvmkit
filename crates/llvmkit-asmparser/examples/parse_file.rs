@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 
 fn report_error(path: &Path, src: &[u8], err: &ParseError) {
     let sm = SourceMap::new(src);
-    let span = err.loc().span;
+    let span = err.loc();
     let (line, col) = sm.line_col(span.start);
     eprintln!("{path}:{line}:{col}: {err}", path = path.display());
     if let Some(line_bytes) = sm.line_text(line) {
