@@ -220,6 +220,21 @@ scaffolding for `parseSummaryIndexAssembly`, which upstream runs against a
 null `Module*` — there is no upstream module identifier to match because
 upstream builds no module at all.
 
+All five changed entry points are asserted, and the identifier is now named
+once (`DEFAULT_MODULE_NAME`) rather than spelled at each site — which is how
+the five drifted onto the same wrong value in the first place. The claim that
+every path is covered was checked by mutation rather than assumed: reverting
+each site in turn must fail
+`parser_facade.rs::a_string_parsed_module_is_named_like_upstreams`. Before that
+test was widened, reverting four of the five left the whole workspace green,
+so a green suite was not evidence that this divergence had closed.
+
+`parse_assembly_with_index_and_config`'s `"<string>"` is an inference from
+upstream's convention rather than a port, and is recorded as such in
+`docs/divergences.md`; the deliberate `"summary"` exception is pinned by
+`parser_facade.rs::the_summary_index_scaffold_module_keeps_its_own_name`,
+which reads the source because that module's name reaches no caller.
+
 ### Fixed — four decisions moved to the point in the parse upstream makes them *(breaking)*
 
 Four `docs/divergences.md` entries from the *Different diagnostic text* band

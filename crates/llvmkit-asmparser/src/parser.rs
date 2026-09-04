@@ -18,6 +18,25 @@ use super::slot_mapping::SlotMapping;
 // Parser configuration
 // --------------------------------------------------------------------------
 
+/// The module identifier given to a module parsed from a string.
+///
+/// Mirrors `Parser.cpp::parseAssemblyString`, which builds
+/// `MemoryBufferRef F(AsmString, "<string>")` — there is no filename to take
+/// an identifier from, so upstream supplies this one, and
+/// `AssemblyWriter::printModule` prints it verbatim as the `; ModuleID`
+/// comment.
+///
+/// Named once rather than spelled at each entry point. Five entry points
+/// carried this default independently, all reading `"asm"`, and they were
+/// found and corrected together only because someone counted them; a sixth
+/// added later would otherwise pick its own.
+///
+/// Two nearby sites deliberately do **not** use it, for different reasons:
+/// [`parse_assembly_with_name`] takes the identifier from its caller, and
+/// [`parse_summary_index_assembly`] keeps `"summary"` because upstream builds
+/// no `Module` there at all.
+const DEFAULT_MODULE_NAME: &str = "<string>";
+
 /// Override for a module's data layout string.
 ///
 /// Mirrors `DataLayoutCallbackTy`
@@ -260,7 +279,7 @@ pub fn parse_dynamic_with_config<S>(
 where
     S: AsRef<[u8]>,
 {
-    parse_into_with_config(Module::dynamic("<string>"), src, config)
+    parse_into_with_config(Module::dynamic(DEFAULT_MODULE_NAME), src, config)
 }
 
 // --------------------------------------------------------------------------
@@ -291,7 +310,7 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    parse_assembly_with_name("<string>", src, &ParserConfig::DEFAULT, f)
+    parse_assembly_with_name(DEFAULT_MODULE_NAME, src, &ParserConfig::DEFAULT, f)
 }
 
 /// [`parse_assembly`] under an explicit [`ParserConfig`].
@@ -304,7 +323,7 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    parse_assembly_with_name("<string>", src, config, f)
+    parse_assembly_with_name(DEFAULT_MODULE_NAME, src, config, f)
 }
 
 /// Parse a complete textual IR module under a caller-supplied module name, and
@@ -376,7 +395,7 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    let module = Module::dynamic("<string>");
+    let module = Module::dynamic(DEFAULT_MODULE_NAME);
     let parsed =
         Parser::with_summary_index(src.as_ref(), &module)?.parse_module_with_config(config)?;
     Ok(f(&module, parsed))
@@ -431,7 +450,7 @@ where
         AsmParserContext<'ctx, DynBrand>,
     ) -> R,
 {
-    let module = Module::dynamic("<string>");
+    let module = Module::dynamic(DEFAULT_MODULE_NAME);
     let mut parsed =
         Parser::with_context(src.as_ref(), &module)?.parse_module_with_config(config)?;
     // `Parser::with_context` installs the registry, so `parse_module` always

@@ -440,13 +440,86 @@ fn data_layout_callback_declining_keeps_the_files_layout() {
     assert!(format!("{module}").contains("target datalayout = \"e-p:64:64\""));
 }
 
+/// Assert a module carries upstream's string-parse identifier, in both places
+/// it is observable: the stored name, and the `; ModuleID` comment
+/// `AssemblyWriter::printModule` prints from it. The second is what actually
+/// locks the divergence — the name reaches output only through that line.
+fn assert_named_like_upstream(module: &Module<llvmkit_ir::DynBrand, llvmkit_ir::Unverified>) {
+    assert_eq!(module.name(), "<string>");
+    assert!(
+        format!("{module}").starts_with("; ModuleID = '<string>'\n"),
+        "printed module did not open with upstream's ModuleID line:\n{module}"
+    );
+}
+
 /// Ports `llvm/lib/AsmParser/Parser.cpp::parseAssemblyString`, which builds
 /// `MemoryBufferRef F(AsmString, "<string>")` — so a module parsed from a
 /// string, with no filename to take an identifier from, is named `<string>`
 /// and prints that in its `; ModuleID` comment.
+///
+/// Covers **every** entry point that supplies the default, not just one. Five
+/// entry points carry it, and a mutation run proved the suite blind to four of
+/// them: reverting those four to `"asm"` left the whole workspace green. Each
+/// arm below fails independently if its own site regresses.
 #[test]
 fn a_string_parsed_module_is_named_like_upstreams() {
+    // Owned form.
     let module = parse_dynamic(MINIMAL).expect("parse succeeds");
-    assert_eq!(module.name(), "<string>");
-    assert!(format!("{module}").starts_with("; ModuleID = '<string>'\n"));
+    assert_named_like_upstream(&module);
+    let module = module.verify().expect("parsed module verifies");
+    assert!(format!("{module}").contains("define i32 @main()"));
+
+    let module = parse_dynamic_with_config(MINIMAL, &ParserConfig::DEFAULT)
+        .expect("configured parse succeeds");
+    assert_named_like_upstream(&module);
+
+    // Closure forms. Each reaches the default by its own path.
+    parser::parse_assembly(MINIMAL, |module, _parsed| {
+        assert_named_like_upstream(module)
+    })
+    .expect("closure parse succeeds");
+
+    parser::parse_assembly_with_config(MINIMAL, &ParserConfig::DEFAULT, |module, _parsed| {
+        assert_named_like_upstream(module)
+    })
+    .expect("configured closure parse succeeds");
+
+    parser::parse_assembly_with_index(MINIMAL, |module, _parsed| {
+        assert_named_like_upstream(module)
+    })
+    .expect("index parse succeeds");
+
+    parser::parse_assembly_with_context(MINIMAL, |module, _parsed, _context| {
+        assert_named_like_upstream(module)
+    })
+    .expect("context parse succeeds");
+}
+
+/// llvmkit-specific (**no upstream counterpart**): upstream's
+/// `Parser.cpp::parseSummaryIndexAssembly` builds no `Module` at all — it
+/// passes a null `Module *` — so there is no identifier of upstream's to port
+/// and nothing to compare against.
+///
+/// Pins a deliberate exception rather than a behaviour. When the string-parse
+/// default moved to `<string>`, this site kept `"summary"` on the reasoning
+/// that its module is scaffolding: dropped, never printed, and not read by the
+/// GUID computation, which uses `source_filename()`. Without this test a lone
+/// `"summary"` among four `<string>`s reads as a straggler someone missed, and
+/// "fixing" it would pass the suite.
+/// Read at the source level, not through the API, and deliberately so: the
+/// scaffold module is dropped inside the call and its name reaches no caller,
+/// so no runtime assertion can observe it. That unobservability is exactly why
+/// the site needs a guard — nothing else in the suite would notice it change.
+/// Same idiom as this crate's other source-reading guards.
+#[test]
+fn the_summary_index_scaffold_module_keeps_its_own_name() {
+    const PARSER_RS: &str = include_str!("../src/parser.rs");
+
+    assert!(
+        PARSER_RS.contains(r#"let module = Module::dynamic("summary");"#),
+        "parse_summary_index_assembly's scaffold module must keep its own name: \
+         upstream's parseSummaryIndexAssembly builds no Module at all, so there \
+         is no identifier to match and routing this site through the \
+         string-parse default would invent a behaviour rather than port one"
+    );
 }

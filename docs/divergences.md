@@ -1787,6 +1787,26 @@ Upstream: orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp, 
 - **Residual, and it is the whole backlog:** the listed tests still have no provenance. Clearing a line means naming a real upstream source, or saying in the row itself that the test is llvmkit-specific and why — the ratchet stops the debt growing, it does not pay it.
 - **Still unchecked:** the upstream citation in the second column. A row may name a source that does not cover what the test asserts; that is `docs/fixture-coverage.md`'s phantom-citation finding, and it is a review judgement rather than a mechanical one.
 
+### 133. The index-carrying parser names its module `<string>` by inference, not by port
+
+*parser (entry points)* — `crates/llvmkit-asmparser/src/parser.rs`, `parse_assembly_with_index_and_config`
+
+- **LLVM:** there is no string-taking index entry point to copy an identifier from. `parseAssemblyWithIndex` takes a `MemoryBufferRef` and uses whatever identifier the caller put on the buffer; the file-taking wrappers use the filename. The only two hardcoded identifiers in `Parser.cpp` are `parseAssemblyString`'s `MemoryBufferRef F(AsmString, "<string>")` and the matching one in `parseSummaryIndexAssemblyString`.
+- **llvmkit:** `parse_assembly_with_index_and_config` takes bytes rather than a buffer-plus-identifier, so it must supply a name, and it supplies `"<string>"` — upstream's convention for a buffer with no name of its own, applied to an entry point upstream never gives that convention to.
+- **Why:** the alternative is a `parse_assembly_with_index_and_name` twin so the caller supplies the identifier the way `MemoryBufferRef` does. That is the shape Task 5 of the `ParseError` surface-narrowing program chose for the plain closure family (`parse_assembly_with_name`), and it would make this a port rather than an inference. It was not done here because the index family has no such twin today and adding one is a wider API change than the divergence it closes.
+- **Fix:** either add the `_with_name` twin and let this default fall out of it, or leave the inference and keep this row. Not urgent: the identifier is observable only through the `; ModuleID` comment, and choosing `"<string>"` makes that line agree with upstream's for the analogous string-parse path even though upstream has no such path here.
+
+<details><summary>Verification evidence</summary>
+
+Derived at `8d764d0`.
+
+- Upstream's hardcoded identifiers: `grep -n '"<string>"' orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/Parser.cpp` — two hits, in `parseAssemblyString` and `parseSummaryIndexAssemblyString`; neither is on an index-with-buffer path.
+- `parseAssemblyWithIndex`'s identifier source: it constructs from `F.getBufferIdentifier()`, so the name is the caller's, not a constant.
+- llvmkit's site and its own rustdoc, which already records the inference in-place: `grep -n 'inference rather than' crates/llvmkit-asmparser/src/parser.rs`.
+- This row exists because that rustdoc is the *only* record. An audit of behavioural differences reads this file, not the source comments.
+
+</details>
+
 ## Checked and found already closed
 
 The entries below did not survive verification. They are kept so nobody
