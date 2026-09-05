@@ -36,12 +36,10 @@ fn main() -> ExitCode {
     loop {
         match lexer.next_token() {
             Ok(spanned) => {
-                let (l, c) = source_map.line_col(spanned.span.start);
+                let at = source_map.line_col(spanned.span.start);
                 println!(
-                    "{path}:{l}:{c}  ({s_start}..{s_end})  {tok:?}",
+                    "{path}:{at}  ({s_start}..{s_end})  {tok:?}",
                     path = path.display(),
-                    l = l,
-                    c = c,
                     s_start = spanned.span.start,
                     s_end = spanned.span.end,
                     tok = spanned.value,
@@ -64,14 +62,16 @@ fn main() -> ExitCode {
 
 fn report_error(path: &std::path::Path, sm: &SourceMap<'_>, err: &LexError) {
     let span = err.span();
-    let (l, c) = sm.line_col(span.start);
-    eprintln!("{path}:{l}:{c}: {err}", path = path.display());
-    if let Some(line) = sm.line_text(l) {
+    let at = sm.line_col(span.start);
+    eprintln!("{path}:{at}: {err}", path = path.display());
+    if let Some(line) = sm.line_text(at.line) {
         eprintln!("  | {}", String::from_utf8_lossy(line));
-        let underline_len = (span.end.saturating_sub(span.start) as usize).max(1);
+        let underline_len = usize::try_from(span.end.saturating_sub(span.start))
+            .unwrap_or(1)
+            .max(1);
         eprintln!(
             "  | {pad}{caret}",
-            pad = " ".repeat((c - 1) as usize),
+            pad = " ".repeat(usize::try_from(at.column.saturating_sub(1)).unwrap_or(0)),
             caret = "^".repeat(underline_len)
         );
     }

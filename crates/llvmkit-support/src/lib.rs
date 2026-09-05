@@ -12,5 +12,5 @@
 pub mod source_map;
 pub mod span;
 
-pub use source_map::SourceMap;
+pub use source_map::{LineCol, SourceMap};
 pub use span::{Span, Spanned};

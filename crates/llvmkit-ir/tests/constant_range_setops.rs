@@ -295,7 +295,8 @@ fn width_changes_reject_the_wrong_direction() {
 fn split_pos_neg_partitions_by_sign() {
     for bits in [1_u32, 4] {
         enumerate(bits, |range| {
-            let (positive, negative) = range.split_pos_neg();
+            let halves = range.split_pos_neg();
+            let (positive, negative) = (halves.positive, halves.negative);
             let sign_bit = 1_u64 << (bits - 1);
             for v in members(range) {
                 let is_negative = v & sign_bit != 0;

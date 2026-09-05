@@ -737,7 +737,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
     let known = match &inst.kind {
         InstructionKindData::Add(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::add_with_flags(
                 &lhs,
                 &rhs,
@@ -748,7 +749,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Sub(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::sub_with_flags(
                 &lhs,
                 &rhs,
@@ -760,7 +762,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
         InstructionKindData::Mul(data) => mul_known(value, data, query, depth, stack),
         InstructionKindData::Udiv(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::udiv_with_exact(
                 &lhs,
                 &rhs,
@@ -768,7 +771,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Sdiv(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::sdiv_with_exact(
                 &lhs,
                 &rhs,
@@ -782,7 +786,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             binary_known(value, data, query, depth, stack, KnownBits::srem)
         }
         InstructionKindData::Shl(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::shl_with_flags(
                 &lhs,
                 &rhs,
@@ -794,7 +799,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Lshr(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::lshr_with_flags(
                 &lhs,
                 &rhs,
@@ -803,7 +809,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Ashr(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::ashr_with_flags(
                 &lhs,
                 &rhs,
@@ -1446,13 +1453,24 @@ pub fn analyze_known_bits_from_and_xor_or<'a, 'ctx, B: ModuleBrand + 'ctx>(
     .map(Some)
 }
 
+/// Known bits of a binary operator's two operands.
+///
+/// A named pair rather than `(KnownBits, KnownBits)`: both halves are the same
+/// type, and it is returned to nine call sites that each destructure it, so a
+/// transposition would compile and silently produce a wrong analysis result
+/// rather than a type error.
+struct BinaryOperands {
+    lhs: KnownBits,
+    rhs: KnownBits,
+}
+
 fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     data: &BinaryOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
-) -> IrResult<(KnownBits, KnownBits)> {
+) -> IrResult<BinaryOperands> {
     let lhs = compute_known_bits_inner(
         value_from_slot(anchor, data.lhs.get()),
         query,
@@ -1465,7 +1483,7 @@ fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         depth + 1,
         stack,
     )?;
-    Ok((lhs, rhs))
+    Ok(BinaryOperands { lhs, rhs })
 }
 
 fn binary_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
@@ -1476,7 +1494,7 @@ fn binary_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
     f: fn(&KnownBits, &KnownBits) -> KnownBits,
 ) -> IrResult<KnownBits> {
-    let (lhs, rhs) = binary_operand_known_bits(anchor, data, query, depth, stack)?;
+    let BinaryOperands { lhs, rhs } = binary_operand_known_bits(anchor, data, query, depth, stack)?;
     Ok(f(&lhs, &rhs))
 }
 
@@ -1526,7 +1544,7 @@ fn bitwise_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let (lhs, rhs) = binary_operand_known_bits(anchor, data, query, depth, stack)?;
+    let BinaryOperands { lhs, rhs } = binary_operand_known_bits(anchor, data, query, depth, stack)?;
     and_xor_or_known(
         anchor,
         data,
@@ -2634,18 +2652,45 @@ fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Opti
     }
 }
 
+/// Whether the negating `sub` must carry `nsw`.
+///
+/// Spells upstream's `bool NeedNSW` (`isKnownNegation`). It sits adjacent to a
+/// second, unrelated `bool` in that signature, so the sole llvmkit call site
+/// read `is_known_negation(true_value, false_value, false, true)` — four
+/// positional arguments, two of them indistinguishable to the compiler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NswRequirement {
+    /// Upstream's `NeedNSW == true`.
+    Required,
+    /// Upstream's default.
+    NotRequired,
+}
+
+/// Whether a subtrahend whose zero is a poison lane still counts.
+///
+/// Spells upstream's `bool AllowPoison`, which defaults to `true`: `m_Neg`
+/// accepts such a zero and the `Zero->isNullValue()` check then filters it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoisonPolicy {
+    /// Upstream's default, `AllowPoison == true`.
+    Allow,
+    /// Require a literal zero.
+    Disallow,
+}
+
 /// Return true when `x` and `y` are provably negations of one another.
 ///
-/// Ports `llvm::isKnownNegation` (`ValueTracking.cpp`). `need_nsw` requires
-/// the negating `sub` to carry `nsw`; `allow_poison` admits a subtrahend whose
-/// zero is a poison lane rather than a literal zero, which is exactly what
-/// upstream's `m_Neg` accepts and its `Zero->isNullValue()` check then filters.
+/// Ports `llvm::isKnownNegation(X, Y, bool NeedNSW, bool AllowPoison)`
+/// (`ValueTracking.cpp`). The two `bool`s become [`NswRequirement`] and
+/// [`PoisonPolicy`] — same logic, same branches, only the spelling differs.
 pub fn is_known_negation<'ctx, B: ModuleBrand + 'ctx>(
     x: Value<'ctx, B>,
     y: Value<'ctx, B>,
-    need_nsw: bool,
-    allow_poison: bool,
+    nsw: NswRequirement,
+    poison: PoisonPolicy,
 ) -> bool {
+    let need_nsw = matches!(nsw, NswRequirement::Required);
+    let allow_poison = matches!(poison, PoisonPolicy::Allow);
     let is_negation_of = |x: Value<'ctx, B>, y: Value<'ctx, B>| -> bool {
         // `m_Neg(m_Specific(Y))` is `m_Sub(m_ZeroInt(), Y)`.
         let Some(InstructionKindData::Sub(data)) = instruction_kind(x) else {
@@ -5676,13 +5721,13 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let (_, false) = vector_shape(rhs)? else {
         return None;
     };
-    let (lhs_demand, rhs_demand) = crate::vector_utils::shuffle_demanded_elements(
+    let demand = crate::vector_utils::shuffle_demanded_elements(
         source_width,
         &data.mask,
         &demanded,
         allow_undefined_elements,
     )?;
-    Some((lhs, lhs_demand, rhs, rhs_demand))
+    Some((lhs, demand.lhs, rhs, demand.rhs))
 }
 
 /// Ports `case Instruction::ShuffleVector:` of `computeKnownBits`.

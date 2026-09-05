@@ -140,6 +140,22 @@ pub enum OverflowResult {
 
 /// The no-wrap promises an overflowing binary operator can carry.
 ///
+/// A range split into its strictly-positive and negative halves, as
+/// [`ConstantRange::split_pos_neg`] returns it.
+///
+/// Upstream returns `std::pair<ConstantRange, ConstantRange>`. Named here for
+/// the same reason as [`NoWrapKind`] below: both halves are the same type, so
+/// a transposed destructuring type-checks and silently swaps the sign of every
+/// conclusion drawn from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PosNegHalves {
+    /// The strictly-positive half. Empty at width 1, where the lone `1` reads
+    /// as `-1` — exactly as upstream notes.
+    pub positive: ConstantRange,
+    /// The negative half.
+    pub negative: ConstantRange,
+}
+
 /// Mirrors the `NoWrapKind` bitmask upstream passes as an `unsigned` built
 /// from `OverflowingBinaryOperator::NoSignedWrap` / `NoUnsignedWrap`. Spelled
 /// as two named flags so neither can be confused for the other at a call site.
@@ -690,7 +706,7 @@ impl ConstantRange {
     ///
     /// There are no positive 1-bit values — the lone 1 reads as -1 — so the
     /// positive half is empty at that width, exactly as upstream notes.
-    pub fn split_pos_neg(&self) -> (Self, Self) {
+    pub fn split_pos_neg(&self) -> PosNegHalves {
         let bit_width = self.bit_width();
         let zero = ApInt::zero(bit_width);
         let signed_min = ApInt::signed_min_value(bit_width);
@@ -700,10 +716,10 @@ impl ConstantRange {
             Self::new(one(bit_width), signed_min.clone()).unwrap_or_else(|_| Self::full(bit_width))
         };
         let negative_filter = Self::new(signed_min, zero).unwrap_or_else(|_| Self::full(bit_width));
-        (
-            self.intersect_with(&positive_filter, PreferredRangeType::Smallest),
-            self.intersect_with(&negative_filter, PreferredRangeType::Smallest),
-        )
+        PosNegHalves {
+            positive: self.intersect_with(&positive_filter, PreferredRangeType::Smallest),
+            negative: self.intersect_with(&negative_filter, PreferredRangeType::Smallest),
+        }
     }
 
     /// The intersection of two ranges.
@@ -1771,58 +1787,64 @@ impl ConstantRange {
                 .unwrap_or_else(|| ApInt::zero(bit_width))
         };
 
-        let (positive_lhs, negative_lhs) = self.split_pos_neg();
-        let (positive_rhs, negative_rhs) = rhs.split_pos_neg();
+        let lhs_halves = self.split_pos_neg();
+        let rhs_halves = rhs.split_pos_neg();
 
         let mut positive_result = Self::empty(bit_width);
-        if !positive_lhs.is_empty_set() && !positive_rhs.is_empty_set() {
+        if !lhs_halves.positive.is_empty_set() && !rhs_halves.positive.is_empty_set() {
             // pos / pos = pos.
             positive_result = range(
                 sdiv(
-                    &positive_lhs.lower,
-                    &positive_rhs.upper.wrapping_sub(&one_v),
+                    &lhs_halves.positive.lower,
+                    &rhs_halves.positive.upper.wrapping_sub(&one_v),
                 ),
                 sdiv(
-                    &positive_lhs.upper.wrapping_sub(&one_v),
-                    &positive_rhs.lower,
+                    &lhs_halves.positive.upper.wrapping_sub(&one_v),
+                    &rhs_halves.positive.lower,
                 )
                 .wrapping_add(&one_v),
             );
         }
 
-        if !negative_lhs.is_empty_set() && !negative_rhs.is_empty_set() {
+        if !lhs_halves.negative.is_empty_set() && !rhs_halves.negative.is_empty_set() {
             // neg / neg = pos, with one trap: `SignedMin / -1` is UB at the IR
             // level even though `ApInt` defines it (yielding SignedMin). When
             // both are attainable, upstream computes the bound twice — once
             // with -1 dropped from the divisor, once with SignedMin dropped
             // from the dividend — and unions the two.
             let lo = sdiv(
-                &negative_lhs.upper.wrapping_sub(&one_v),
-                &negative_rhs.lower,
+                &lhs_halves.negative.upper.wrapping_sub(&one_v),
+                &rhs_halves.negative.lower,
             );
-            if negative_lhs.lower.is_min_signed_value() && negative_rhs.upper.is_zero() {
+            if lhs_halves.negative.lower.is_min_signed_value()
+                && rhs_halves.negative.upper.is_zero()
+            {
                 // Drop -1 from the divisor, unless that would empty it.
-                if !negative_rhs.lower.is_all_ones() {
+                if !rhs_halves.negative.lower.is_all_ones() {
                     let adjusted_upper = if rhs.lower.is_all_ones() {
                         // The negative part of `[-1, X]` without -1 is
                         // `[SignedMin, X]`.
                         rhs.upper.clone()
                     } else {
                         // `[X, -1]` without -1 is `[X, -2]`.
-                        negative_rhs.upper.wrapping_sub(&one_v)
+                        rhs_halves.negative.upper.wrapping_sub(&one_v)
                     };
                     positive_result = positive_result.union_with(
                         &range(
                             lo.clone(),
-                            sdiv(&negative_lhs.lower, &adjusted_upper.wrapping_sub(&one_v))
-                                .wrapping_add(&one_v),
+                            sdiv(
+                                &lhs_halves.negative.lower,
+                                &adjusted_upper.wrapping_sub(&one_v),
+                            )
+                            .wrapping_add(&one_v),
                         ),
                         PreferredRangeType::Smallest,
                     );
                 }
 
                 // Drop SignedMin from the dividend, unless that would empty it.
-                if !negative_lhs
+                if !lhs_halves
+                    .negative
                     .upper
                     .eq_ap_int(&signed_min_value.wrapping_add(&one_v))
                 {
@@ -1834,13 +1856,16 @@ impl ConstantRange {
                         } else {
                             // `[SignedMin, X]` without SignedMin is
                             // `[SignedMin + 1, X]`.
-                            negative_lhs.lower.wrapping_add(&one_v)
+                            lhs_halves.negative.lower.wrapping_add(&one_v)
                         };
                     positive_result = positive_result.union_with(
                         &range(
                             lo,
-                            sdiv(&adjusted_lower, &negative_rhs.upper.wrapping_sub(&one_v))
-                                .wrapping_add(&one_v),
+                            sdiv(
+                                &adjusted_lower,
+                                &rhs_halves.negative.upper.wrapping_sub(&one_v),
+                            )
+                            .wrapping_add(&one_v),
                         ),
                         PreferredRangeType::Smallest,
                     );
@@ -1850,8 +1875,8 @@ impl ConstantRange {
                     &range(
                         lo,
                         sdiv(
-                            &negative_lhs.lower,
-                            &negative_rhs.upper.wrapping_sub(&one_v),
+                            &lhs_halves.negative.lower,
+                            &rhs_halves.negative.upper.wrapping_sub(&one_v),
                         )
                         .wrapping_add(&one_v),
                     ),
@@ -1861,24 +1886,24 @@ impl ConstantRange {
         }
 
         let mut negative_result = Self::empty(bit_width);
-        if !positive_lhs.is_empty_set() && !negative_rhs.is_empty_set() {
+        if !lhs_halves.positive.is_empty_set() && !rhs_halves.negative.is_empty_set() {
             // pos / neg = neg.
             negative_result = range(
                 sdiv(
-                    &positive_lhs.upper.wrapping_sub(&one_v),
-                    &negative_rhs.upper.wrapping_sub(&one_v),
+                    &lhs_halves.positive.upper.wrapping_sub(&one_v),
+                    &rhs_halves.negative.upper.wrapping_sub(&one_v),
                 ),
-                sdiv(&positive_lhs.lower, &negative_rhs.lower).wrapping_add(&one_v),
+                sdiv(&lhs_halves.positive.lower, &rhs_halves.negative.lower).wrapping_add(&one_v),
             );
         }
-        if !negative_lhs.is_empty_set() && !positive_rhs.is_empty_set() {
+        if !lhs_halves.negative.is_empty_set() && !rhs_halves.positive.is_empty_set() {
             // neg / pos = neg.
             negative_result = negative_result.union_with(
                 &range(
-                    sdiv(&negative_lhs.lower, &positive_rhs.lower),
+                    sdiv(&lhs_halves.negative.lower, &rhs_halves.positive.lower),
                     sdiv(
-                        &negative_lhs.upper.wrapping_sub(&one_v),
-                        &positive_rhs.upper.wrapping_sub(&one_v),
+                        &lhs_halves.negative.upper.wrapping_sub(&one_v),
+                        &rhs_halves.positive.upper.wrapping_sub(&one_v),
                     )
                     .wrapping_add(&one_v),
                 ),
@@ -1892,7 +1917,9 @@ impl ConstantRange {
 
         // Splitting the dividend by sign dropped zero; put it back if it was
         // there and any divisor remains.
-        if self.contains(&zero) && (!positive_rhs.is_empty_set() || !negative_rhs.is_empty_set()) {
+        if self.contains(&zero)
+            && (!rhs_halves.positive.is_empty_set() || !rhs_halves.negative.is_empty_set())
+        {
             result = result.union_with(&Self::single(zero), PreferredRangeType::Smallest);
         }
         result

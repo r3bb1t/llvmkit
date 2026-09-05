@@ -216,7 +216,8 @@ pub use constant_folding::{
     lossless_unsigned_trunc,
 };
 pub use constant_range::{
-    ConstantRange, EquivalentIcmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
+    ConstantRange, EquivalentIcmp, NoWrapKind, OverflowResult, PosNegHalves, PreferredRangeType,
+    RangeIntrinsic,
 };
 pub use constant_range_list::ConstantRangeList;
 pub use constants::{
@@ -388,7 +389,7 @@ pub use float_kind::{
     PpcFp128, StaticFloatKind, X86Fp80,
 };
 // `f32`/`f64` are std types — no re-export needed.
-pub use fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
+pub use fp_class::{FloatUnitKind, FpClassTest, KnownFpClass, MinMaxKind, RoundingIntrinsic};
 pub use fp_predicate::{
     ImpliedFpClasses, fcmp_implies_class, fcmp_implies_class_of_class,
     fcmp_implies_class_of_constant, fcmp_to_class_test, fcmp_to_class_test_of_constant,
@@ -440,8 +441,8 @@ pub use speculation::{
 };
 pub use value_tracking::{
     CondContext, KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH,
-    ValueTrackingQuery, adjust_known_bits_for_select_arm, can_create_poison,
-    can_create_undef_or_poison, collect_possible_values, compute_constant_range,
+    NswRequirement, PoisonPolicy, ValueTrackingQuery, adjust_known_bits_for_select_arm,
+    can_create_poison, can_create_undef_or_poison, collect_possible_values, compute_constant_range,
     compute_constant_range_including_known_bits, compute_known_bits,
     compute_known_bits_from_context, compute_max_significant_bits, compute_num_sign_bits,
     compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
@@ -456,16 +457,16 @@ pub use value_tracking::{
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 pub use vector_utils::{
-    MaskedSlide, ShuffleSource, create_interleave_mask, create_replicated_mask,
-    create_sequential_mask, create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor,
-    find_scalar_element, horizontal_demanded_elements_for_first_operand,
-    interleave_intrinsic_factor, is_splat_value, is_trivially_scalarizable,
-    is_trivially_vectorizable, is_vector_intrinsic_with_struct_return_overload_at_field,
-    mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
-    mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
-    possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,
-    shuffle_mask_with_widest_elements, splat_index, splat_value, widen_shuffle_mask_elements,
-    widen_shuffle_mask_elements_in_pairs,
+    DemandedOperandElements, MaskedSlide, ShuffleSource, create_interleave_mask,
+    create_replicated_mask, create_sequential_mask, create_stride_mask, create_unary_mask,
+    deinterleave_intrinsic_factor, find_scalar_element,
+    horizontal_demanded_elements_for_first_operand, interleave_intrinsic_factor, is_splat_value,
+    is_trivially_scalarizable, is_trivially_vectorizable,
+    is_vector_intrinsic_with_struct_return_overload_at_field, mask_contains_all_one_or_undefined,
+    mask_is_all_one_or_undefined, mask_is_all_zero_or_undefined, masked_slide_pair,
+    narrow_shuffle_mask_elements, possibly_demanded_elements_in_mask, scale_shuffle_mask_elements,
+    shuffle_demanded_elements, shuffle_mask_with_widest_elements, splat_index, splat_value,
+    widen_shuffle_mask_elements, widen_shuffle_mask_elements_in_pairs,
 };
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 

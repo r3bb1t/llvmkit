@@ -22,6 +22,26 @@ pub struct SourceMap<'src> {
     line_starts: Vec<u32>,
 }
 
+/// A 1-indexed position in a source buffer, as [`SourceMap::line_col`] reports
+/// it.
+///
+/// Fields are public because this is a plain coordinate pair that callers
+/// destructure, not a type with an invariant to protect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LineCol {
+    /// 1-indexed line number.
+    pub line: u32,
+    /// 1-indexed byte column within the line.
+    pub column: u32,
+}
+
+impl core::fmt::Display for LineCol {
+    /// `line:column`, the form diagnostics print.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
+    }
+}
+
 /// Prints the *shape* of the map — source length and line count — never the
 /// buffer. A `#[derive(Debug)]` would splice a whole `.ll` file into every
 /// `dbg!` and every `Debug`-formatted struct that holds one.
@@ -40,9 +60,15 @@ impl<'src> SourceMap<'src> {
         line_starts.push(0u32);
         for (i, &b) in src.iter().enumerate() {
             if b == b'\n' {
-                let next = (i + 1) as u32;
+                // A source longer than `u32::MAX` cannot be addressed by this
+                // map -- `Span` and `line_col` are both `u32` -- so stop
+                // recording rather than let a truncating cast fold a high
+                // offset back onto a wrong line.
+                let Ok(next) = u32::try_from(i + 1) else {
+                    break;
+                };
                 // Don't push past EOF — keeps line_text bookkeeping simple.
-                if (next as usize) <= src.len() {
+                if usize::try_from(next).is_ok_and(|n| n <= src.len()) {
                     line_starts.push(next);
                 }
             }
@@ -55,18 +81,34 @@ impl<'src> SourceMap<'src> {
         self.src
     }
 
-    /// Translate an absolute byte offset to a `(line, column)` pair, both
-    /// 1-indexed. An offset `>= src.len()` is reported as if it sat at EOF.
-    pub fn line_col(&self, offset: u32) -> (u32, u32) {
-        let off = (offset as usize).min(self.src.len());
+    /// Translate an absolute byte offset to a [`LineCol`], both 1-indexed. An
+    /// offset `>= src.len()` is reported as if it sat at EOF.
+    ///
+    /// Returns a named pair rather than `(u32, u32)`: the two halves are the
+    /// same type and transposable, and every call site in the workspace
+    /// immediately destructured the tuple into differently-named variables
+    /// (`let (l, c) = …` in two examples, `let (line, col) = …` in a third),
+    /// which is the tell.
+    pub fn line_col(&self, offset: u32) -> LineCol {
+        // Work in the `u32` domain throughout: `line_starts` is `Vec<u32>` and
+        // the parameter is a `u32`, so widening to `usize` and back was what
+        // forced the casts. A source longer than `u32::MAX` cannot be addressed
+        // by this map at all, so saturating is the honest clamp -- a `u32`
+        // offset can never exceed it anyway.
+        let len = u32::try_from(self.src.len()).unwrap_or(u32::MAX);
+        let off = offset.min(len);
         // Find the largest start <= off via binary search.
-        let line_idx = match self.line_starts.binary_search(&(off as u32)) {
+        let line_idx = match self.line_starts.binary_search(&off) {
             Ok(i) => i,
             Err(i) => i.saturating_sub(1),
         };
-        let line_start = self.line_starts[line_idx] as usize;
-        let column = (off - line_start) as u32 + 1;
-        (line_idx as u32 + 1, column)
+        let line_start = self.line_starts[line_idx];
+        LineCol {
+            line: u32::try_from(line_idx)
+                .unwrap_or(u32::MAX)
+                .saturating_add(1),
+            column: off.saturating_sub(line_start).saturating_add(1),
+        }
     }
 
     /// Borrow the slice covering a single line by 1-indexed `line` number.
@@ -76,12 +118,12 @@ impl<'src> SourceMap<'src> {
         if line == 0 {
             return None;
         }
-        let i = (line - 1) as usize;
-        let start = *self.line_starts.get(i)? as usize;
+        let i = usize::try_from(line - 1).ok()?;
+        let start = usize::try_from(*self.line_starts.get(i)?).ok()?;
         let end = self
             .line_starts
             .get(i + 1)
-            .map(|&e| e as usize)
+            .and_then(|&e| usize::try_from(e).ok())
             .unwrap_or(self.src.len());
         // end currently sits *after* the newline. Trim it.
         let mut e = end;
@@ -120,13 +162,13 @@ mod tests {
     #[test]
     fn line_col_basic() {
         let sm = SourceMap::from("abc\ndef\nghi");
-        assert_eq!(sm.line_col(0), (1, 1));
-        assert_eq!(sm.line_col(2), (1, 3));
-        assert_eq!(sm.line_col(3), (1, 4)); // the '\n' is on line 1
-        assert_eq!(sm.line_col(4), (2, 1));
-        assert_eq!(sm.line_col(7), (2, 4));
-        assert_eq!(sm.line_col(8), (3, 1));
-        assert_eq!(sm.line_col(10), (3, 3));
+        assert_eq!(sm.line_col(0), LineCol { line: 1, column: 1 });
+        assert_eq!(sm.line_col(2), LineCol { line: 1, column: 3 });
+        assert_eq!(sm.line_col(3), LineCol { line: 1, column: 4 }); // the '\n' is on line 1
+        assert_eq!(sm.line_col(4), LineCol { line: 2, column: 1 });
+        assert_eq!(sm.line_col(7), LineCol { line: 2, column: 4 });
+        assert_eq!(sm.line_col(8), LineCol { line: 3, column: 1 });
+        assert_eq!(sm.line_col(10), LineCol { line: 3, column: 3 });
     }
 
     /// llvmkit-specific: out-of-range clamp. Closest upstream:
@@ -134,7 +176,7 @@ mod tests {
     #[test]
     fn line_col_eof_clamps() {
         let sm = SourceMap::from("ab");
-        assert_eq!(sm.line_col(99), (1, 3));
+        assert_eq!(sm.line_col(99), LineCol { line: 1, column: 3 });
     }
 
     /// llvmkit-specific: line-text accessor. Closest upstream:
@@ -153,7 +195,7 @@ mod tests {
     #[test]
     fn empty_source() {
         let sm = SourceMap::from("");
-        assert_eq!(sm.line_col(0), (1, 1));
+        assert_eq!(sm.line_col(0), LineCol { line: 1, column: 1 });
         assert_eq!(sm.line_text(1), Some(&b""[..]));
     }
 

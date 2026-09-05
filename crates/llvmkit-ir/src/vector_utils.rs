@@ -476,6 +476,22 @@ pub fn masked_slide_pair(
     slides[0].map(|first| (first, slides[1]))
 }
 
+/// Demanded-element masks for the two operands of a vector operation.
+///
+/// Names upstream's `APInt &DemandedLHS` / `APInt &DemandedRHS`
+/// out-parameters (`getShuffleDemandedElts`,
+/// `getHorizDemandedEltsForFirstOperand`). Returned as a struct rather than an
+/// `(ApInt, ApInt)` tuple: both halves are the same type, so a transposed
+/// destructuring type-checks and silently swaps which operand each mask
+/// describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemandedOperandElements {
+    /// Upstream's `DemandedLHS` — mask for the left/first operand.
+    pub lhs: ApInt,
+    /// Upstream's `DemandedRHS` — mask for the right/second operand.
+    pub rhs: ApInt,
+}
+
 /// The lanes a horizontal binary operation's first operand demands, split
 /// across the two vectors it reads.
 ///
@@ -490,7 +506,7 @@ pub fn masked_slide_pair(
 pub fn horizontal_demanded_elements_for_first_operand(
     vector_bit_width: u32,
     demanded: &ApInt,
-) -> Option<(ApInt, ApInt)> {
+) -> Option<DemandedOperandElements> {
     // "Vectors smaller than 128 bit not supported".
     if vector_bit_width < 128 {
         return None;
@@ -522,7 +538,10 @@ pub fn horizontal_demanded_elements_for_first_operand(
             right.set_bit(group_base + 2 * (local - half_per_group));
         }
     }
-    Some((left, right))
+    Some(DemandedOperandElements {
+        lhs: left,
+        rhs: right,
+    })
 }
 
 /// Whether `mask` is a constant `<N x i1>` whose every lane is zero or
@@ -1029,13 +1048,16 @@ pub fn shuffle_demanded_elements(
     mask: &[ShuffleMaskElem],
     demanded: &ApInt,
     allow_undefined_elements: bool,
-) -> Option<(ApInt, ApInt)> {
+) -> Option<DemandedOperandElements> {
     let mut left = ApInt::zero(source_width);
     let mut right = ApInt::zero(source_width);
 
     // Nothing demanded, nothing to trace back.
     if demanded.is_zero() {
-        return Some((left, right));
+        return Some(DemandedOperandElements {
+            lhs: left,
+            rhs: right,
+        });
     }
 
     // A shuffle with `zeroinitializer` reads lane 0 of the left source and
@@ -1045,7 +1067,10 @@ pub fn shuffle_demanded_elements(
         .all(|element| *element == ShuffleMaskElem::Lane(0))
     {
         left.set_bit(0);
-        return Some((left, right));
+        return Some(DemandedOperandElements {
+            lhs: left,
+            rhs: right,
+        });
     }
 
     for (lane, element) in mask.iter().enumerate() {
@@ -1071,7 +1096,10 @@ pub fn shuffle_demanded_elements(
             right.set_bit(right_lane);
         }
     }
-    Some((left, right))
+    Some(DemandedOperandElements {
+        lhs: left,
+        rhs: right,
+    })
 }
 
 // --------------------------------------------------------------------------

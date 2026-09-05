@@ -66,14 +66,16 @@ fn main() -> ExitCode {
 fn report_error(path: &Path, src: &[u8], err: &ParseError) {
     let sm = SourceMap::new(src);
     let span = err.loc();
-    let (line, col) = sm.line_col(span.start);
-    eprintln!("{path}:{line}:{col}: {err}", path = path.display());
-    if let Some(line_bytes) = sm.line_text(line) {
+    let at = sm.line_col(span.start);
+    eprintln!("{path}:{at}: {err}", path = path.display());
+    if let Some(line_bytes) = sm.line_text(at.line) {
         eprintln!("  | {}", String::from_utf8_lossy(line_bytes));
-        let underline_len = (span.end.saturating_sub(span.start) as usize).max(1);
+        let underline_len = usize::try_from(span.end.saturating_sub(span.start))
+            .unwrap_or(1)
+            .max(1);
         eprintln!(
             "  | {pad}{caret}",
-            pad = " ".repeat((col - 1) as usize),
+            pad = " ".repeat(usize::try_from(at.column.saturating_sub(1)).unwrap_or(0)),
             caret = "^".repeat(underline_len)
         );
     }

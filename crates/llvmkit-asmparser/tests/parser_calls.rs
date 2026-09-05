@@ -1263,7 +1263,7 @@ fn indirect_call_ptrauth_operand_bundles_round_trip() {
 /// The `(line, column)` a diagnostic points at, computed the way
 /// `parse_file.rs` computes it for its `<path>:LINE:COL:` prefix — the same
 /// coordinates `llvm-as` prints as `<stdin>:LINE:COL:`.
-fn error_line_col(src: &str, err: &ParseError) -> (u32, u32) {
+fn error_line_col(src: &str, err: &ParseError) -> llvmkit_support::LineCol {
     let span = err.loc();
     llvmkit_support::SourceMap::new(src.as_bytes()).line_col(span.start)
 }
@@ -1307,7 +1307,10 @@ fn fast_math_flags_on_a_non_fp_call_report_at_call_loc() {
         err.to_string(),
         "fast-math-flags specified for call without floating-point scalar or vector return type"
     );
-    assert_eq!(error_line_col(SRC, &err), (3, 8));
+    assert_eq!(
+        error_line_col(SRC, &err),
+        llvmkit_support::LineCol { line: 3, column: 8 }
+    );
     assert_eq!(error_token(SRC, &err), "nnan");
 }
 
@@ -1343,7 +1346,10 @@ fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
         plain.to_string(),
         "not enough parameters specified for call"
     );
-    assert_eq!(error_line_col(PLAIN, &plain), (3, 8));
+    assert_eq!(
+        error_line_col(PLAIN, &plain),
+        llvmkit_support::LineCol { line: 3, column: 8 }
+    );
     assert_eq!(error_token(PLAIN, &plain), "void");
 
     let musttail = parse_fixture_err("call_loc_musttail", MUSTTAIL.as_bytes());
@@ -1351,7 +1357,13 @@ fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
         musttail.to_string(),
         "not enough parameters specified for call"
     );
-    assert_eq!(error_line_col(MUSTTAIL, &musttail), (3, 12));
+    assert_eq!(
+        error_line_col(MUSTTAIL, &musttail),
+        llvmkit_support::LineCol {
+            line: 3,
+            column: 12
+        }
+    );
     assert_eq!(error_token(MUSTTAIL, &musttail), "call");
 }
 
@@ -1982,7 +1994,13 @@ fn call_in_zero_program_addrspace_rejects_a_nonzero_callee() {
     );
     // `; CHECK: …:[[@LINE-1]]:25:` on the line after `%call_no_as = call i8
     // %fnptr42(i32 0)` — upstream's `ID.Loc`, the `%fnptr42` token.
-    assert_eq!(error_line_col(src, &err), (10, 25));
+    assert_eq!(
+        error_line_col(src, &err),
+        llvmkit_support::LineCol {
+            line: 10,
+            column: 25
+        }
+    );
     assert_eq!(error_token(src, &err), "%fnptr42");
 }
 
