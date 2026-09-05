@@ -409,7 +409,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Debug for ConstantFloatValu
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConstantFloatValue")
             .field("id", &self.id)
-            .field("kind", &K::ieee_label())
+            .field("kind", &K::ieee_kind())
             .finish()
     }
 }

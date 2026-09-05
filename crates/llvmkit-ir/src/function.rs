@@ -1146,16 +1146,11 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
         ExpectedRetKind::Ptr => matches!(ret, TypeData::Pointer { .. }),
         ExpectedRetKind::IntStatic(b) => matches!(ret, TypeData::Integer { bits } if *bits == b),
         ExpectedRetKind::IntDyn => matches!(ret, TypeData::Integer { .. }),
-        ExpectedRetKind::FloatStatic(label) => match label {
-            "half" => matches!(ret, TypeData::Half),
-            "bfloat" => matches!(ret, TypeData::Bfloat),
-            "float" => matches!(ret, TypeData::Float),
-            "double" => matches!(ret, TypeData::Double),
-            "fp128" => matches!(ret, TypeData::Fp128),
-            "x86_fp80" => matches!(ret, TypeData::X86Fp80),
-            "ppc_fp128" => matches!(ret, TypeData::PpcFp128),
-            _ => unreachable!("FloatKind::ieee_label() returned unrecognised tag"),
-        },
+        // One equality against the crate's single `TypeData` -> label map.
+        // This was a seven-arm match on a `&'static str` closed by an
+        // `unreachable!`, which is to say a hand-written inverse of a map that
+        // already existed — and the panic guarded only the two copies agreeing.
+        ExpectedRetKind::FloatStatic(kind) => ret.kind_label() == kind,
         ExpectedRetKind::FloatDyn => matches!(
             ret,
             TypeData::Half

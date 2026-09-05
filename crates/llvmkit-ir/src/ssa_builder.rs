@@ -2332,7 +2332,7 @@ mod tests {
 
     /// Float twin of [`def_int_var_rejects_forged_static_width_handle`],
     /// locking [`SsaBuilder::def_float_var`] at a *static* `K` -- the half its
-    /// old `K::ieee_label().is_none() &&` short-circuit let through.
+    /// old `K::ieee_kind().is_none() &&` short-circuit let through.
     /// `FloatValue::from_value_unchecked` forges a static `K` just as freely as
     /// `IntValue`'s does a static `W`, and `IntoFloatValue<K>` is likewise the
     /// identity on `FloatValue<K>`. llvmkit-specific for the same reason as its

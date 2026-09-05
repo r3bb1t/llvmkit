@@ -132,6 +132,41 @@ pub(crate) enum TypeData {
 }
 
 impl TypeData {
+    /// The diagnostic label for this type's kind.
+    ///
+    /// The single `TypeData` → [`TypeKindLabel`] map in the crate.
+    /// [`Type::kind_label`] delegates here, and so does
+    /// `function::signature_matches_marker`, which used to carry a
+    /// seven-arm copy keyed on a `&'static str` and closed with an
+    /// `unreachable!`. One map, exhaustively matched, so a new `TypeData`
+    /// variant is a compile error in exactly one place.
+    pub(crate) fn kind_label(&self) -> TypeKindLabel {
+        match self {
+            TypeData::Void => TypeKindLabel::Void,
+            TypeData::Half => TypeKindLabel::Half,
+            TypeData::Bfloat => TypeKindLabel::Bfloat,
+            TypeData::Float => TypeKindLabel::Float,
+            TypeData::Double => TypeKindLabel::Double,
+            TypeData::X86Fp80 => TypeKindLabel::X86Fp80,
+            TypeData::Fp128 => TypeKindLabel::Fp128,
+            TypeData::PpcFp128 => TypeKindLabel::PpcFp128,
+            TypeData::X86Amx => TypeKindLabel::X86Amx,
+            TypeData::WasmExnRef => TypeKindLabel::WasmExnRef,
+            TypeData::Label => TypeKindLabel::Label,
+            TypeData::Metadata => TypeKindLabel::Metadata,
+            TypeData::Token => TypeKindLabel::Token,
+            TypeData::Integer { .. } => TypeKindLabel::Integer,
+            TypeData::Pointer { .. } => TypeKindLabel::Pointer,
+            TypeData::Function { .. } => TypeKindLabel::Function,
+            TypeData::Array { .. } => TypeKindLabel::Array,
+            TypeData::FixedVector { .. } => TypeKindLabel::FixedVector,
+            TypeData::ScalableVector { .. } => TypeKindLabel::ScalableVector,
+            TypeData::Struct(_) => TypeKindLabel::Struct,
+            TypeData::TypedPointer { .. } => TypeKindLabel::TypedPointer,
+            TypeData::TargetExt(_) => TypeKindLabel::TargetExt,
+        }
+    }
+
     // ---- Per-variant projection helpers ----
     //
     // Every typed handle (IntType, ArrayType, ...) wraps a `TypeSlot` whose
@@ -453,30 +488,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 
     /// `TypeKindLabel` for diagnostics.
     pub fn kind_label(self) -> TypeKindLabel {
-        match self.data() {
-            TypeData::Void => TypeKindLabel::Void,
-            TypeData::Half => TypeKindLabel::Half,
-            TypeData::Bfloat => TypeKindLabel::Bfloat,
-            TypeData::Float => TypeKindLabel::Float,
-            TypeData::Double => TypeKindLabel::Double,
-            TypeData::X86Fp80 => TypeKindLabel::X86Fp80,
-            TypeData::Fp128 => TypeKindLabel::Fp128,
-            TypeData::PpcFp128 => TypeKindLabel::PpcFp128,
-            TypeData::X86Amx => TypeKindLabel::X86Amx,
-            TypeData::WasmExnRef => TypeKindLabel::WasmExnRef,
-            TypeData::Label => TypeKindLabel::Label,
-            TypeData::Metadata => TypeKindLabel::Metadata,
-            TypeData::Token => TypeKindLabel::Token,
-            TypeData::Integer { .. } => TypeKindLabel::Integer,
-            TypeData::Pointer { .. } => TypeKindLabel::Pointer,
-            TypeData::Function { .. } => TypeKindLabel::Function,
-            TypeData::Array { .. } => TypeKindLabel::Array,
-            TypeData::FixedVector { .. } => TypeKindLabel::FixedVector,
-            TypeData::ScalableVector { .. } => TypeKindLabel::ScalableVector,
-            TypeData::Struct(_) => TypeKindLabel::Struct,
-            TypeData::TypedPointer { .. } => TypeKindLabel::TypedPointer,
-            TypeData::TargetExt(_) => TypeKindLabel::TargetExt,
-        }
+        self.data().kind_label()
     }
 
     // ---- LLVM-style predicates (`Type.h`) ----

@@ -2389,7 +2389,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Debug for FloatValue<'ctx, 
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FloatValue")
             .field("id", &self.id)
-            .field("kind", &K::ieee_label())
+            .field("kind", &K::ieee_kind())
             .finish()
     }
 }

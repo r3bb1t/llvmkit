@@ -21,12 +21,17 @@
 
 use core::fmt;
 
+use super::error::TypeKindLabel;
 use super::r#type::sealed;
 
 /// Sealed marker trait implemented by every IEEE-like float kind tag.
 pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
-    /// LangRef keyword for this kind. `None` for [`FloatDyn`].
-    fn ieee_label() -> Option<&'static str>;
+    /// Diagnostic label for this kind. `None` for [`FloatDyn`], which matches
+    /// every float. Yields the label itself rather than its keyword: the
+    /// keyword is `TypeKindLabel`'s `Display`, and a second spelling of the
+    /// same map is what `ExpectedRetKind` used to decode back with two
+    /// hand-written seven-arm matches.
+    fn ieee_kind() -> Option<TypeKindLabel>;
 
     /// Narrow an erased [`Value`] to this kind, **proving** the marker.
     ///
@@ -59,8 +64,8 @@ pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
 impl sealed::Sealed for f32 {}
 impl FloatKind for f32 {
     #[inline]
-    fn ieee_label() -> Option<&'static str> {
-        Some("float")
+    fn ieee_kind() -> Option<TypeKindLabel> {
+        Some(TypeKindLabel::Float)
     }
     #[inline]
     fn narrow<'ctx, B: ModuleBrand + 'ctx>(
@@ -73,8 +78,8 @@ impl FloatKind for f32 {
 impl sealed::Sealed for f64 {}
 impl FloatKind for f64 {
     #[inline]
-    fn ieee_label() -> Option<&'static str> {
-        Some("double")
+    fn ieee_kind() -> Option<TypeKindLabel> {
+        Some(TypeKindLabel::Double)
     }
     #[inline]
     fn narrow<'ctx, B: ModuleBrand + 'ctx>(
@@ -92,7 +97,7 @@ macro_rules! decl_struct_kind {
         impl sealed::Sealed for $name {}
         impl FloatKind for $name {
             #[inline]
-            fn ieee_label() -> Option<&'static str> {
+            fn ieee_kind() -> Option<TypeKindLabel> {
                 Some($label)
             }
             #[inline]
@@ -108,27 +113,27 @@ macro_rules! decl_struct_kind {
 decl_struct_kind!(
     /// IEEE 754 binary16. Mirrors `Type::HalfTyID`.
     Half,
-    "half"
+    TypeKindLabel::Half
 );
 decl_struct_kind!(
     /// Brain-float (1 sign / 8 exp / 7 frac). Mirrors `Type::BFloatTyID`.
     Bfloat,
-    "bfloat"
+    TypeKindLabel::Bfloat
 );
 decl_struct_kind!(
     /// IEEE 754 binary128. Mirrors `Type::FP128TyID`.
     Fp128,
-    "fp128"
+    TypeKindLabel::Fp128
 );
 decl_struct_kind!(
     /// X87 80-bit extended precision. Mirrors `Type::X86_FP80TyID`.
     X86Fp80,
-    "x86_fp80"
+    TypeKindLabel::X86Fp80
 );
 decl_struct_kind!(
     /// PowerPC double-double. Mirrors `Type::PPC_FP128TyID`.
     PpcFp128,
-    "ppc_fp128"
+    TypeKindLabel::PpcFp128
 );
 
 /// Kind-erased marker. The handle still tracks its kind as runtime
@@ -145,7 +150,7 @@ pub struct FloatDyn;
 impl sealed::Sealed for FloatDyn {}
 impl FloatKind for FloatDyn {
     #[inline]
-    fn ieee_label() -> Option<&'static str> {
+    fn ieee_kind() -> Option<TypeKindLabel> {
         None
     }
     #[inline]
