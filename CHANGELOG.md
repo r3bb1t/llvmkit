@@ -47,6 +47,59 @@ flagged here inline. `Custom`-style open remainders (as on
 `MetadataAttachmentKind`) remain the way to model a genuinely unbounded
 namespace — an open *variant*, not an open *enum*.
 
+### Fixed — `known_bits` refuses a non-integer operand instead of answering that a float is zero
+
+`is_known_zero` returned `Ok(true)` for `float 3.5`. So did every sibling that
+reads the same `KnownBits`, because the wrong value was produced once and shared:
+
+```rust
+// before
+is_known_zero(three_five, &query)  // => Ok(true)
+compute_known_bits(three_five, &query)
+// => Ok(KnownBits { zero: ApInt { bit_width: 0, words: [] }, .. })
+```
+
+Three ordinary steps composed into it. `value_bit_width` answers `None` for a
+type with no bit pattern; the callers substituted `0`; and `ApInt::is_all_ones`
+opens with `self.bit_width == 0 ||`, which makes `KnownBits::is_zero` — spelled
+`self.zero.is_all_ones()` — vacuously true at width zero. Each step is
+defensible alone, and together they turned "no answer" into a confident wrong
+one.
+
+Upstream refuses the query outright, asserting `(Ty->isIntOrIntVectorTy(BitWidth)
+|| Ty->isPtrOrPtrVectorTy()) && "Not integer or pointer type!"` at the head of
+`computeKnownBits`. That assert appears exactly once in `ValueTracking.cpp`, so
+the port is one guard in the recursive core rather than a change at each call
+site. llvmkit takes no runtime panics in production paths, so it is an error —
+the same trade the sibling `assert(Depth <= MaxAnalysisRecursionDepth)` in that
+routine already gets:
+
+```rust
+// now
+is_known_zero(three_five, &query)
+// => Err(IrError::NotIntOrPointerType { kind: TypeKindLabel::Float })
+```
+
+**Callers passing float, aggregate or token operands now see an `Err` where they
+saw an `Ok`.** The `Ok` was wrong, so no correct caller depended on it, but the
+control flow is visible. The new `NotIntOrPointerType` variant is a breaking
+addition to `IrError`, which is exhaustive — see the entry below.
+
+Fixing this exposed a second defect in the same family. `matchSelectPattern`'s
+float min/max arms guard on `isKnownNonZero(CmpLHS)`, and upstream has **two**
+functions of that name in `ValueTracking.cpp`, told apart by arity: the
+one-argument `static` beside `matchSelectPattern` reads float constants only,
+while `llvm::isKnownNonZero` is the known-bits walk. llvmkit called the
+known-bits one, so a non-zero float constant like `1.0` answered `false` where
+upstream answers `true`, and the signed-zero guard declined matches upstream
+accepts. `select_pattern.rs` now carries `is_known_non_zero_float`, ported from
+the static, beside the existing `is_known_non_nan` that ports its sibling.
+
+The guard is placed above the constant fast path and above the memo-cache
+lookup, matching where upstream asserts. Below the fast path a float *constant*
+would return before being checked; below the cache lookup a value memoized
+earlier could still be handed back.
+
 ### Removed — `read_to_owned`; the parser crate performs no I/O at all *(breaking)*
 
 `llvmkit_asmparser::read_to_owned` is gone. It wrapped `Read::read_to_end` in

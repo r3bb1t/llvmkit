@@ -353,9 +353,7 @@ use crate::int_width::IntDyn;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::operator::is_supported_floating_point_type;
 use crate::value::{Value, ValueKindData, ValueSlot};
-use crate::value_tracking::{
-    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, is_known_negation, is_known_non_zero,
-};
+use crate::value_tracking::{MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, is_known_negation};
 use crate::{ApFloat, IrResult};
 
 /// A matched `select`: which idiom, and the two values it chooses between.
@@ -593,8 +591,8 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
         );
         if ((strict && has_mismatched_zeros) || non_strict)
             && !fast_math_flags.contains(FastMathFlags::NO_SIGNED_ZEROS)
-            && !is_known_non_zero(compare_lhs, query)?
-            && !is_known_non_zero(compare_rhs, query)?
+            && !is_known_non_zero_float(compare_lhs)
+            && !is_known_non_zero_float(compare_rhs)
         {
             return Ok(None);
         }
@@ -679,8 +677,8 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // than `minnum`. Be conservative.
     if nan_behavior != SelectPatternNanBehavior::ReturnsAny
         || (!fast_math_flags.contains(FastMathFlags::NO_SIGNED_ZEROS)
-            && !is_known_non_zero(compare_lhs, query)?
-            && !is_known_non_zero(compare_rhs, query)?)
+            && !is_known_non_zero_float(compare_lhs)
+            && !is_known_non_zero_float(compare_rhs))
     {
         return Ok(None);
     }
@@ -1210,6 +1208,43 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx>(
                     &element.data().kind,
                     ValueKindData::Constant(ConstantData::Float(_))
                 ) && float_constant(element).is_some_and(|constant| !constant.is_nan())
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Ports the file-local `static bool isKnownNonZero(const Value *V)`
+/// (`ValueTracking.cpp`) — the **one-argument** overload that sits beside
+/// `matchSelectPattern`, *not* `llvm::isKnownNonZero`, which is the known-bits
+/// walk.
+///
+/// Upstream carries both names in one file and tells them apart by arity: the
+/// float min/max arms write `isKnownNonZero(CmpLHS)` and reach this one, which
+/// reads float constants only and answers `false` for everything else — it
+/// never consults known bits. llvmkit called the known-bits routine here, which
+/// answered `false` for a non-zero float constant like `1.0` where upstream
+/// answers `true`, so a signed-zero guard declined matches upstream accepts.
+fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    match &value.data().kind {
+        ValueKindData::Constant(ConstantData::Float(_)) => {
+            float_constant(value).is_some_and(|constant| !constant.is_zero())
+        }
+        // Upstream's `ConstantDataVector` arm. llvmkit stores one as an
+        // aggregate of element constants, so upstream's
+        // `getElementType()->isFloatingPointTy()` guard becomes the per-element
+        // `Float` check, and its early `return false` on a zero element is the
+        // `all` below.
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            if !value.ty().is_vector() {
+                return false;
+            }
+            elements.iter().all(|element| {
+                let element = value_from_slot(value, *element);
+                matches!(
+                    &element.data().kind,
+                    ValueKindData::Constant(ConstantData::Float(_))
+                ) && float_constant(element).is_some_and(|constant| !constant.is_zero())
             })
         }
         _ => false,

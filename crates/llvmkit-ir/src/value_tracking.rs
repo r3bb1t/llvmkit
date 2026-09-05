@@ -40,7 +40,7 @@ use crate::speculation::program_undefined_for_value;
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, scalar_type_slot};
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::vector_utils::splat_value;
-use crate::{ApInt, IrResult, KnownBits, ShiftAmountKnowledge};
+use crate::{ApInt, IrError, IrResult, KnownBits, ShiftAmountKnowledge};
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::ops::Not;
@@ -500,7 +500,10 @@ pub fn known_bits_from_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<KnownBits> {
     let mut stack = HashSet::new();
-    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    // This is the second entry point that reaches a width without going through
+    // `compute_known_bits_inner` — its non-instruction arm answers directly —
+    // so it carries the same guard rather than inheriting one.
+    let width = require_int_or_pointer_width(value, query.data_layout())?;
     match &value.data().kind {
         ValueKindData::Instruction(inst) => {
             compute_instruction_known_bits(value, inst, query, 0, &mut stack)
@@ -515,7 +518,12 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    // Upstream asserts the operand is integer-or-pointer at the head of
+    // `computeKnownBits`, above its `m_APInt` fast path and above the depth
+    // cutoff. Keep that order: below the fast path a float constant would
+    // return before ever being checked, and below the cache lookup a value
+    // memoized before this guard existed could still be handed back.
+    let width = require_int_or_pointer_width(value, query.data_layout())?;
     // Upstream's constant fast path runs *before* the recursion cutoff.
     // `computeKnownBits` answers `m_APInt` with `KnownBits::makeConstant`,
     // `ConstantPointerNull` / `ConstantAggregateZero` with `setAllZero` and
@@ -5804,6 +5812,29 @@ fn value_bit_width<'ctx, B: ModuleBrand + 'ctx>(
     dl: &DataLayout,
 ) -> Option<u32> {
     type_bit_width(value.ty(), dl)
+}
+
+/// The precondition `computeKnownBits` asserts, as a fallible width query.
+///
+/// Mirrors `assert((Ty->isIntOrIntVectorTy(BitWidth) ||
+/// Ty->isPtrOrPtrVectorTy()) && "Not integer or pointer type!")`
+/// (`ValueTracking.cpp`), spelled as an error because llvmkit takes no runtime
+/// panics in production paths — the same trade the sibling `assert(Depth <=
+/// MaxAnalysisRecursionDepth)` already gets in this routine.
+///
+/// [`type_bit_width`] answers `Some` for exactly integers, pointers and vectors
+/// of either, so its `None` **is** upstream's condition. Deriving the guard
+/// from the width query rather than writing a second predicate is deliberate:
+/// two spellings of one condition drift, and the wrong answer this replaced
+/// came from precisely that gap — the width was `None`, the caller substituted
+/// `0`, and a zero-width `ApInt` made `KnownBits::is_zero` vacuously true.
+fn require_int_or_pointer_width<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    dl: &DataLayout,
+) -> IrResult<u32> {
+    value_bit_width(value, dl).ok_or_else(|| IrError::NotIntOrPointerType {
+        kind: value.ty().kind_label(),
+    })
 }
 
 /// Ports the static `isGuaranteedNotToBeUndefOrPoison(V, AC, CtxI, DT, Depth,

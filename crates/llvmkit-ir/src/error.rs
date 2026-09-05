@@ -1055,6 +1055,22 @@ pub enum IrError {
         kind: TypeKindLabel,
     },
 
+    /// A known-bits query was given a value whose type is neither an integer
+    /// nor a pointer, nor a vector of either — so it has no bit pattern to
+    /// reason about.
+    ///
+    /// Mirrors the `assert((Ty->isIntOrIntVectorTy(BitWidth) ||
+    /// Ty->isPtrOrPtrVectorTy()) && "Not integer or pointer type!")` at the
+    /// head of `computeKnownBits` (`ValueTracking.cpp`). llvmkit takes no
+    /// runtime panics in production paths, so upstream's assert is an error
+    /// here — the same spelling the sibling `assert(Depth <=
+    /// MaxAnalysisRecursionDepth)` already gets in that routine.
+    #[error("not integer or pointer type: {kind}")]
+    NotIntOrPointerType {
+        /// Kind of the type that was rejected.
+        kind: TypeKindLabel,
+    },
+
     /// A value with the wrong category was passed where a specific kind was
     /// expected (e.g. an instruction handed to an API that needs a constant).
     #[error("value category mismatch: expected {expected}, got {got}")]
