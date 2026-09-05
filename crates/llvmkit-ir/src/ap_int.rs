@@ -538,9 +538,23 @@ impl ApInt {
         self.is_all_ones()
     }
 
+    /// Whether this is the largest signed value for its width.
+    ///
+    /// Mirrors `APInt::isMaxSignedValue`. **Upstream asserts a non-zero width
+    /// here and llvmkit answers instead** — not because the question is
+    /// meaningless, but because upstream's `U.VAL == ((WordType(1) <<
+    /// (BitWidth - 1)) - 1)` would shift by `-1`. llvmkit computes no such
+    /// shift.
+    ///
+    /// A 0-bit domain holds exactly one value, so that value is both the
+    /// maximum and the minimum — which is also what upstream's own *unsigned*
+    /// pair does there: `isMaxValue`/`isMinValue` are unasserted and both
+    /// answer `true` at width 0. Stated explicitly rather than inherited from
+    /// `signed_max_value`'s own width-0 guard, so a change there cannot move
+    /// this answer silently. Recorded in `docs/divergences.md`.
     #[inline]
     pub fn is_max_signed_value(&self) -> bool {
-        self.eq_ap_int(&Self::signed_max_value(self.bit_width))
+        self.bit_width == 0 || self.eq_ap_int(&Self::signed_max_value(self.bit_width))
     }
 
     #[inline]
@@ -548,16 +562,31 @@ impl ApInt {
         self.is_zero()
     }
 
+    /// Whether this is the smallest signed value for its width.
+    ///
+    /// Mirrors `APInt::isMinSignedValue`. Upstream asserts a non-zero width
+    /// here, guarding its `U.VAL == (WordType(1) << (BitWidth - 1))` against a
+    /// shift by `-1`; llvmkit computes no such shift and answers. See
+    /// [`ApInt::is_max_signed_value`] for why both extremes are `true` at
+    /// width 0, and `docs/divergences.md` for the ledger entry.
     #[inline]
     pub fn is_min_signed_value(&self) -> bool {
-        self.eq_ap_int(&Self::signed_min_value(self.bit_width))
+        self.bit_width == 0 || self.eq_ap_int(&Self::signed_min_value(self.bit_width))
     }
 
+    /// Upstream asserts a non-zero width here (its `isPowerOf2` guards the
+    /// same `BitWidth - 1` shift as the signed extremes); llvmkit answers
+    /// `false`, which its own arithmetic already states — no bits are set, so
+    /// the value is not a power of two. Recorded in `docs/divergences.md`.
     #[inline]
     pub fn is_power_of_2(&self) -> bool {
         self.popcount() == 1
     }
 
+    /// Upstream asserts a non-zero width here (its `isPowerOf2` guards the
+    /// same `BitWidth - 1` shift as the signed extremes); llvmkit answers
+    /// `false`, which `is_negative`'s existing `bit_width != 0 &&` guard
+    /// already states. Recorded in `docs/divergences.md`.
     #[inline]
     pub fn is_negated_power_of_2(&self) -> bool {
         self.is_negative() && self.count_trailing_zeros() + 1 == self.bit_width
