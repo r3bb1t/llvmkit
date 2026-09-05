@@ -197,6 +197,36 @@ Err(BrandError::InUse { brand }) => ...
 
 Doctrine D7.
 
+### Fixed — an intrinsic signature mismatch no longer prints two different ways
+
+`crates/llvmkit-ir/src/intrinsics.rs` spelled one concept — "this call site's
+intrinsic id/name doesn't match its generated signature" — as two `IrError`
+variants: `InvalidOperation { message: "intrinsic signature mismatch" }` from
+the internal decode/parse helpers that have no id in scope, and
+`IntrinsicSignatureMismatch { name }` from the handful of callers that do.
+Three consumers existed solely to paper over the difference:
+`Verifier::verify_intrinsic_function`'s two `map_err` blocks matched the
+reachable `IntrinsicSignatureMismatch` arm one way and a catch-all `_` arm
+another, both landing on the same text only because the catch-all rebuilt it
+by hand.
+
+`descriptor_for_name`, `IntrinsicDescriptor::function_type_ref` and
+`IntrinsicDescriptor::declaration_attributes` now normalise every internal
+failure to `IntrinsicSignatureMismatch` at their own id/name-bearing boundary,
+the way `IntrinsicDescriptor::new` already did for its own overload-validation
+arm. Both `verifier.rs` catch-alls are provably dead as a result and are
+deleted; the two failure paths they used to paper over now report through the
+`?` operator like every other internal error. No rendered diagnostic text
+changes: the two consumers' catch-alls already produced the exact same
+`IntrinsicSignatureMismatch` text the producer now emits directly, and
+`ll_parser.rs`'s `intrinsic_parse_error` (a third adapter this task's survey
+also flagged) renders the same literal `"intrinsic signature mismatch"` for
+both the named `IntrinsicSignatureMismatch` arm and its `_` fallback, so it is
+unaffected either way and was left unchanged — see `docs/future-work.md` for
+why.
+
+The fallibility-honesty rule in `CLAUDE.md`, not one of the numbered D1-D11.
+
 ### Fixed — a string-parsed module is named `<string>`, as upstream names it
 
 `parse_dynamic`, `parse_assembly`, `parse_assembly_with_config`,

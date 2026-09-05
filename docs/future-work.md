@@ -2801,3 +2801,149 @@ grep '^| `' UPSTREAM.md | grep -v verify-uselistorder | grep -cF -f ul.txt   # 2
 grep '^| `' UPSTREAM.md | grep -v verify-uselistorder |
   grep -oF -f ul.txt | sort -u | wc -l                                      # 47
 ```
+
+## `IrResult` over-declaration — the sites left after the intrinsic-mismatch fix (found 2026-09-04, `ParseError` surface narrowing task 7)
+
+Task 7 asked, of every `IrResult`-returning function the parser consumes: does its
+declared error type claim more outcomes than its body can produce, and — the
+decisive question — has any consumer already written a catch-all arm that
+renormalises the excess into a lie? One duplication met that bar and was fixed
+in the same commit as this entry: `crates/llvmkit-ir/src/intrinsics.rs` spelled
+"this call site's intrinsic id/name doesn't match its signature" two ways —
+`IrError::InvalidOperation { message: "intrinsic signature mismatch" }` from
+callers with no id in scope, and `IrError::IntrinsicSignatureMismatch { name }`
+from callers that had one — and three consumers
+(`Verifier::verify_intrinsic_function`'s two `map_err` blocks in
+`verifier.rs`, and `intrinsic_parse_error` in `ll_parser.rs`) existed to
+renormalise the first back into the second. `descriptor_for_name`,
+`IntrinsicDescriptor::function_type_ref` and `IntrinsicDescriptor::declaration_attributes`
+now normalise every internal failure to `IntrinsicSignatureMismatch` at their
+own id/name-bearing boundary (mirroring the pattern `IntrinsicDescriptor::new`
+already used for its own overload-validation arm), so both `verifier.rs`
+catch-alls are provably dead and were deleted. `ll_parser.rs`'s
+`intrinsic_parse_error` was **not** touched — see below.
+
+The brief's own Step 1 recipe (`grep "IrResult<" | grep "pub fn"`, both on one
+line) was re-run and confirmed to be the wrong denominator the supplement said
+it was: it requires `pub fn` and `IrResult<` on the *same* source line, so it
+misses every multi-line signature. Measured at this commit:
+
+```bash
+grep -rn "IrResult<" crates/llvmkit-ir/src/ --include=*.rs | grep "pub fn" | wc -l   # 139
+# functions whose `pub`/`pub(crate) fn` and `-> IrResult<` are on different
+# lines, i.e. invisible to the recipe above, per source file:
+for f in $(grep -rl "IrResult<" crates/llvmkit-ir/src/ --include=*.rs); do
+  perl -0777 -ne 'my @m = /pub(?:\(crate\))? fn \w+[^{;]*?\n[^{;]*?->\s*IrResult</gs;
+    print scalar(@m), " $ARGV\n" if @m' "$f"
+done | grep -v "^0 "
+# ir_builder.rs alone has 220 such signatures; module.rs 31; several other
+# files 1-35 each. The true count is several hundred, not 139, which is why
+# this entry does not attempt a full enumeration — see the supplement's own
+# framing, reproduced in the task-7 report.
+```
+
+Everything below is a **judgement, not a fix**: each was surfaced by the
+task's survey supplement, checked against its own dividing line (does a live
+consumer write a catch-all today, or does it propagate with `?`), and left
+alone because no consumer lies about it yet.
+
+- **`primitive_to_type` (`ll_parser.rs`) discarding `custom_width_int_type`'s
+  `IrError`.** Checked against `module.rs::Module::custom_width_int_type`: its
+  body has exactly one `Err` path, `IrError::InvalidIntegerWidth { bits }`,
+  guarded by `!(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits)`
+  (`crates/llvmkit-ir/src/module.rs`). `primitive_to_type`'s
+  `.map_err(|_| ParseError::IntegerWidthOutOfRange { .. })` therefore discards
+  *the only reachable variant*, not an invented one, and the target text
+  ("bitwidth for integer type out of range") is upstream's own
+  (`LLParser::parseType`'s integer-width diagnostic). Every other consumer of
+  `custom_width_int_type` propagates with `?` (`grep -rn
+  "custom_width_int_type(" crates/llvmkit-ir/src crates/llvmkit-asmparser/src`
+  — one discard site, the rest `?` or test `.expect`/`.is_err()`). Not a
+  defect; left as is. (The supplement suggested this exact site "was already
+  resolved in the DiagLoc task by proving the branch dead" — `git log --oneline
+  --all | grep -i diagloc` finds no such commit, and neither task-4 nor
+  task-5's reports mention `primitive_to_type` or `custom_width_int_type`, so
+  that provenance claim in the supplement could not be verified. The
+  conclusion — not a defect — was re-derived independently above, not taken on
+  the supplement's word.)
+
+- **`ll_parser.rs`'s `intrinsic_parse_error` fallback arm.** The supplement
+  named this a third "catch-all that becomes deletable" alongside the two in
+  `verifier.rs`. That overstates it: `intrinsic_parse_error` also adapts
+  `get_or_insert_intrinsic_declaration`'s failures, which can still legitimately
+  produce `IrError::InvalidOperation { message: "unnamed intrinsic overload
+  type requires unique module naming" }` (from `IntrinsicDescriptor::mangled_name`
+  / `append_mangled_type`, `crates/llvmkit-ir/src/intrinsics.rs`) or whatever
+  `Module::push_function` raises — reasons unrelated to the
+  `intrinsic_mismatch`/`intrinsic_mismatch_for_id` duplication this task fixed.
+  Its three named arms and its `_` fallback already render *identical* text
+  for the fixed duplication specifically (`IntrinsicSignatureMismatch` and `_`
+  both map to `"intrinsic signature mismatch"`, `crates/llvmkit-asmparser/src/ll_parser.rs`),
+  and `ParseError::Expected`'s `Display` is `"expected {expected}"` with no
+  name interpolation, so no observable text was ever at stake here regardless
+  of which `IrError` variant arrived. Left unchanged.
+
+- **`constraint_info` vs `verify_inline_asm` (`crates/llvmkit-ir/src/inline_asm.rs`).**
+  Not an `IrResult`/`IrError` case at all — `parse_constraints` returns a
+  dedicated `Result<Vec<ConstraintInfo>, ConstraintParseError>`, already the
+  narrow, purpose-built type this whole program is pushing every other site
+  toward. `constraint_info()`'s doc comment already states the rationale for
+  its `unwrap_or_default()` (mirrors `InlineAsm::ParseConstraints`'s own
+  empty-list failure signal), and `verify_inline_asm` explicitly checks
+  `parsed.is_empty() && !constraints.is_empty()` to catch the same condition
+  its own discarded `Err` arm would have. Two different questions ("what
+  parsed" vs "is this valid"), not two disagreeing answers to one question.
+  No fix needed.
+
+- **`pow2_ceil_align` / `const_align` (`crates/llvmkit-ir/src/data_layout.rs`).**
+  Not `IrResult` — `Align::new(v).unwrap_or(Align::ONE)` on an `Option`.
+  `pow2_ceil_align` computes `v` as the smallest power of two `>= bytes.max(1)`
+  by construction, so `Align::new(v)` cannot see a non-power-of-two input;
+  `const_align`'s `debug_assert!(is_power_of_two(n))` documents the same
+  precondition for its own (small, fixed) call sites. No consumer treats the
+  `unwrap_or` fallback as anything but dead code. Recorded, not fixed, because
+  fixing it would mean threading a `Result` through call sites that cannot
+  currently produce the error either.
+
+- **`append_decimal_zeros` (`crates/llvmkit-ir/src/ap_float.rs`).** Folds a
+  `TryReserveError` (genuine allocation failure) into the same `None` its
+  caller already uses for "this value doesn't decimal-format this way" —
+  observable only under real OOM, where "fall back to a different formatting
+  path" is a defensible degradation, not a silent lie about a *reachable*
+  condition. No live consumer treats the two causes differently. Left as is.
+
+- **`bits_used_in_words` — two definitions, two idioms
+  (`crates/llvmkit-ir/src/ap_int.rs` and `crates/llvmkit-ir/src/constants.rs`).**
+  Both compute the same quantity from a `&[u64]` word slice, and both guard
+  the same "value has more limbs than fit in a `u32` index" situation, which
+  is unreachable for any realistically-sized constant — but they resolve it
+  differently: `constants.rs` uses the sanctioned
+  `.unwrap_or_else(|_| unreachable!("limb count fits in u32 for any realistic
+  constant"))`, while `ap_int.rs` instead returns the sentinel `u32::MAX`, a
+  plausible-looking bit count rather than a proof the branch is dead. This is
+  the "prefer ADTs/named invariants over sentinels" pattern this program has
+  flagged before, and `ap_int.rs`'s copy should adopt `constants.rs`'s idiom —
+  but neither function is `IrResult`-returning or has a consumer catch-all (both
+  are private, `u32`-returning helpers), so it sits outside this task's
+  decisive test and is recorded rather than changed here.
+
+- **`into_slot_mapping` (`crates/llvmkit-asmparser/src/ll_parser.rs`).** Two
+  `let _ = numbered.add(slot, value);` calls discard a `Result<(),
+  numbered_values::AddError>`. `AddError::StaleId` fires only on a
+  non-ascending or duplicate slot; both call sites insert from a
+  `sort_by_key`-sorted, already-deduplicated (map-derived) sequence, so the
+  discard is safe by construction — but that construction is not written down
+  at either call site the way `constants.rs`'s `unreachable!` above states its
+  own. Recorded as a missing justifying comment, not a defect: no `AddError`
+  is ever observed by anyone today, so there is no consumer to lie to.
+
+- **`global_pointer_alignment` (`crates/llvmkit-ir/src/constant_fold.rs`).**
+  `Align::new(4).ok()` on a hardcoded literal — ceremony around an
+  infallible call, not a defect. No change.
+
+None of the above has a live consumer that renormalises its error into
+something else, so per this task's own test ("a function whose consumers all
+propagate with `?` has cost nothing yet") none is narrowed here. Re-derive
+before acting on any of these — several of the counts and dead-branch claims
+above superseded ones the supplement made without being able to verify them
+(see the `primitive_to_type` entry).

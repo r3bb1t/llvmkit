@@ -637,8 +637,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         &self,
         module: ModuleRef<'ctx, B>,
     ) -> IrResult<FunctionType<'ctx, B>> {
-        let descriptors = iit_descriptors(self.id.record())?;
+        let descriptors =
+            iit_descriptors(self.id.record()).map_err(|_| intrinsic_mismatch_for_id(self.id))?;
         generated_function_type_from_descriptors(module, &descriptors, &self.overloads)
+            .map_err(|_| intrinsic_mismatch_for_id(self.id))
     }
 
     pub(crate) fn to_function_data(&self) -> IntrinsicFunctionData {
@@ -656,7 +658,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         let mut storage = AttributeStorage::new();
         add_function_attrs::<B>(&mut storage, record);
         for indexed in record.arg_attrs {
-            add_indexed_attr::<B>(&mut storage, *indexed, fn_ty)?;
+            add_indexed_attr::<B>(&mut storage, *indexed, fn_ty)
+                .map_err(|_| intrinsic_mismatch_for_id(self.id))?;
         }
         Ok(storage)
     }
@@ -1285,6 +1288,15 @@ fn intrinsic_mismatch_for_id(id: IntrinsicId) -> IrError {
     }
 }
 
+/// Same concept as [`intrinsic_mismatch_for_id`], for the call sites that
+/// have the caller's full spelling of the name (which may carry an overload
+/// suffix `id.base_name()` does not) rather than only the resolved id.
+fn intrinsic_mismatch_for_name(name: &str) -> IrError {
+    IrError::IntrinsicSignatureMismatch {
+        name: name.to_owned(),
+    }
+}
+
 fn target_set_for_name(name: &str) -> Option<&'static IntrinsicTargetSet> {
     let rest = name.strip_prefix("llvm.")?;
     let first_component = rest.split('.').next()?;
@@ -1391,7 +1403,7 @@ where
         return Err(intrinsic_mismatch_for_id(id));
     }
     let record = id.record();
-    let descriptors = iit_descriptors(record)?;
+    let descriptors = iit_descriptors(record).map_err(|_| intrinsic_mismatch_for_name(name))?;
     if !record.is_overloaded {
         if name != record.base_name {
             return Err(intrinsic_mismatch_for_id(id));
@@ -1404,7 +1416,8 @@ where
         .and_then(|rest| rest.strip_prefix('.'))
         .filter(|rest| !rest.is_empty())
         .ok_or_else(|| intrinsic_mismatch_for_id(id))?;
-    let overloads = parse_mangled_overload_types(module, suffix)?;
+    let overloads = parse_mangled_overload_types(module, suffix)
+        .map_err(|_| intrinsic_mismatch_for_name(name))?;
     if overloads.len() != overload_slot_count(&descriptors) {
         return Err(intrinsic_mismatch_for_id(id));
     }

@@ -1034,16 +1034,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             IntrinsicNameResolution::Known(_) => {}
         }
-        let descriptor =
-            self.module
-                .intrinsic_descriptor_from_signature::<B>(name, f.signature())
-                .map_err(|err| match err {
-                    IrError::UnknownIntrinsic { .. }
-                    | IrError::IntrinsicSignatureMismatch { .. } => err,
-                    _ => IrError::IntrinsicSignatureMismatch {
-                        name: name.to_owned(),
-                    },
-                })?;
+        // `resolve_intrinsic_name` above already proved `name` is `Known`, and
+        // it is a pure lookup into the same generated table
+        // `intrinsic_descriptor_from_signature` re-derives its id from — so
+        // that call cannot take the `NonIntrinsic`/`UnknownIntrinsic` arms a
+        // second time. Every remaining internal failure inside
+        // `descriptor_for_name`/`function_type_ref` is normalised to
+        // `IntrinsicSignatureMismatch` at its own id-bearing boundary now, so
+        // there is no other variant left to renormalise here.
+        let descriptor = self
+            .module
+            .intrinsic_descriptor_from_signature::<B>(name, f.signature())?;
         if f.is_intrinsic() && f.intrinsic_descriptor().as_ref() != Some(&descriptor) {
             return Err(IrError::IntrinsicSignatureMismatch {
                 name: name.to_owned(),
@@ -1057,16 +1058,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // defined!", IF)`, raised per *call site* and carrying the capital and
         // the `!`. `check_intrinsic_call` carries it now, and this site — which
         // upstream's `visitFunction` has no counterpart for — is gone.
-        let expected_attrs = descriptor
-            .declaration_attributes(f.signature())
-            .map_err(|err| match err {
-                IrError::UnknownIntrinsic { .. } | IrError::IntrinsicSignatureMismatch { .. } => {
-                    err
-                }
-                _ => IrError::IntrinsicSignatureMismatch {
-                    name: name.to_owned(),
-                },
-            })?;
+        // `declaration_attributes` normalises every internal failure to
+        // `IntrinsicSignatureMismatch` at its own `self.id` boundary now, so
+        // there is nothing left here to renormalise either.
+        let expected_attrs = descriptor.declaration_attributes(f.signature())?;
         let Some(actual_attrs) = self.function_attrs_with_groups(f) else {
             return Err(IrError::InvalidOperation {
                 message: "intrinsic declaration modifier",
