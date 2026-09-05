@@ -141,6 +141,20 @@ saw an `Ok`.** The `Ok` was wrong, so no correct caller depended on it, but the
 control flow is visible. The new `NotIntOrPointerType` variant is a breaking
 addition to `IrError`, which is exhaustive — see the entry below.
 
+> **Correction to this change's commit message.** Its final paragraph claims
+> `ApInt` permitting width 0 is a defect llvmkit invented and that "upstream
+> forbids it outright." **That is wrong.** Upstream supports zero-width `APInt`
+> deliberately: `isAllOnes()` opens with `if (BitWidth == 0) return true;`,
+> there is an `APInt::getZeroWidth()` factory and a `TEST(APIntTest, ZeroWidth)`,
+> and a zero-width `APInt` is used as a `DenseMap` key. llvmkit's
+> `self.bit_width == 0 ||` is a faithful port of that line, and llvmkit already
+> ports those tests. The `assert(BitWidth && "zero width values not allowed")`
+> the message cites is real but sits on four *predicates* —
+> `isMaxSignedValue`, `isMinSignedValue`, `isPowerOf2`, `isNegatedPowerOf2` —
+> not on any constructor. The type guard above was the entire fix; there is no
+> deeper `ApInt` change owed. What upstream's four asserts *do* mark is a
+> separate, narrower parity gap, tracked on its own.
+
 Fixing this exposed a second defect in the same family. `matchSelectPattern`'s
 float min/max arms guard on `isKnownNonZero(CmpLHS)`, and upstream has **two**
 functions of that name in `ValueTracking.cpp`, told apart by arity: the
