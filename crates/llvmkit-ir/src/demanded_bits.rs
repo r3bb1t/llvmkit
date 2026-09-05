@@ -122,6 +122,26 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     })
 }
 
+/// Known bits of a binary operator's two operands.
+///
+/// A named pair rather than `(KnownBits, KnownBits)`, for the same reason as
+/// `value_tracking`'s `BinaryOperands`: both halves are the same type, so a
+/// transposed destructuring type-checks and feeds the left operand's bits in
+/// as the right's, silently producing a wrong liveness mask.
+struct OperandKnownBits {
+    lhs: KnownBits,
+    rhs: KnownBits,
+}
+
+/// The proven range of a shift amount, in bits.
+///
+/// `(u32, u32)` was transposable at all three call sites; swapping the two
+/// compiles and inverts the range.
+struct ShiftRange {
+    min: u32,
+    max: u32,
+}
+
 /// Cached demanded-bits result for one function.
 #[derive(Debug)]
 pub struct DemandedBits {
@@ -343,7 +363,18 @@ impl DemandedBits {
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<ApInt> {
-        let width = int_scalar_bit_width(operand.ty()).unwrap_or(0);
+        // A non-integer operand has no bits to demand, and the caller
+        // (`operand_demanded_bits`) already answers those from
+        // `value_scalar_size_in_bits` before reaching here. Substituting a
+        // width of `0` built an `ApInt` on which `is_all_ones` and `is_zero`
+        // are both vacuously true -- the same shape that made `is_known_zero`
+        // report a float as known-zero -- so refuse instead of inventing a
+        // mask that every predicate agrees with.
+        let Some(width) = int_scalar_bit_width(operand.ty()) else {
+            return Err(IrError::NotIntOrPointerType {
+                kind: operand.ty().kind_label(),
+            });
+        };
         let all = ApInt::low_bits_set(width, u32::MAX);
         let ValueKindData::Instruction(data) = &user.data().kind else {
             return Ok(all);
@@ -353,7 +384,7 @@ impl DemandedBits {
                 if alive_out.is_mask() {
                     alive_out.clone()
                 } else {
-                    let (lhs, rhs) = self.known_binary_operands(user, bin)?;
+                    let OperandKnownBits { lhs, rhs } = self.known_binary_operands(user, bin)?;
                     Self::determine_live_operand_bits_add(operand_index, alive_out, &lhs, &rhs)
                 }
             }
@@ -361,7 +392,7 @@ impl DemandedBits {
                 if alive_out.is_mask() {
                     alive_out.clone()
                 } else {
-                    let (lhs, rhs) = self.known_binary_operands(user, bin)?;
+                    let OperandKnownBits { lhs, rhs } = self.known_binary_operands(user, bin)?;
                     Self::determine_live_operand_bits_sub(operand_index, alive_out, &lhs, &rhs)
                 }
             }
@@ -454,11 +485,11 @@ impl DemandedBits {
         &self,
         user: Value<'ctx, B>,
         bin: &BinaryOpData,
-    ) -> IrResult<(KnownBits, KnownBits)> {
+    ) -> IrResult<OperandKnownBits> {
         let query = ValueTrackingQuery::new(&self.data_layout);
         let lhs = compute_known_bits(value_from_slot(user, bin.lhs.get()), &query)?;
         let rhs = compute_known_bits(value_from_slot(user, bin.rhs.get()), &query)?;
-        Ok((lhs, rhs))
+        Ok(OperandKnownBits { lhs, rhs })
     }
 
     fn known_shift_range<'ctx, B: ModuleBrand + 'ctx>(
@@ -466,14 +497,14 @@ impl DemandedBits {
         user: Value<'ctx, B>,
         bin: &BinaryOpData,
         width: u32,
-    ) -> IrResult<(u32, u32)> {
+    ) -> IrResult<ShiftRange> {
         let rhs = value_from_slot(user, bin.rhs.get());
         let query = ValueTrackingQuery::new(&self.data_layout);
         let known = compute_known_bits(rhs, &query)?;
         let limit = u64::from(width.saturating_sub(1));
         let min = u32::try_from(known.min_value().limited_value(limit)).unwrap_or(width);
         let max = u32::try_from(known.max_value().limited_value(limit)).unwrap_or(width);
-        Ok((min, max))
+        Ok(ShiftRange { min, max })
     }
 
     fn shift_left_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
@@ -501,7 +532,7 @@ impl DemandedBits {
             }
             Ok(bits)
         } else {
-            let (min, max) = self.known_shift_range(user, bin, width)?;
+            let ShiftRange { min, max } = self.known_shift_range(user, bin, width)?;
             let mut bits = shifted_range_bits(alive_out, min, max, false);
             if bin.no_signed_wrap {
                 bits = bits.bitor(&ApInt::high_bits_set(width, max.saturating_add(1)));
@@ -535,7 +566,7 @@ impl DemandedBits {
             }
             Ok(bits)
         } else {
-            let (min, max) = self.known_shift_range(user, bin, width)?;
+            let ShiftRange { min, max } = self.known_shift_range(user, bin, width)?;
             let mut bits = shifted_range_bits(alive_out, min, max, true);
             if bin.is_exact {
                 bits = bits.bitor(&ApInt::low_bits_set(width, max));
@@ -570,7 +601,7 @@ impl DemandedBits {
             }
             Ok(bits)
         } else {
-            let (min, max) = self.known_shift_range(user, bin, width)?;
+            let ShiftRange { min, max } = self.known_shift_range(user, bin, width)?;
             let mut bits = shifted_range_bits(alive_out, min, max, true);
             if max != 0 && alive_out.intersects(&ApInt::high_bits_set(width, max)) {
                 bits = bits.bitor(&ApInt::sign_mask(width));
@@ -697,7 +728,7 @@ impl DemandedBits {
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<ApInt> {
-        let (lhs, rhs) = self.known_binary_operands(user, bin)?;
+        let OperandKnownBits { lhs, rhs } = self.known_binary_operands(user, bin)?;
         let bits = if operand_index == 0 {
             alive_out.bitand(&rhs.zero_mask().not())
         } else {
@@ -714,7 +745,7 @@ impl DemandedBits {
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<ApInt> {
-        let (lhs, rhs) = self.known_binary_operands(user, bin)?;
+        let OperandKnownBits { lhs, rhs } = self.known_binary_operands(user, bin)?;
         let bits = if operand_index == 0 {
             alive_out.bitand(&rhs.one_mask().not())
         } else {

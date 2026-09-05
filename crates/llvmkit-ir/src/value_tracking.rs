@@ -734,7 +734,13 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    // Both callers -- `known_bits_from_operator` and `compute_known_bits_inner`
+    // -- run `require_int_or_pointer_width` first, so `None` cannot arrive
+    // here. Propagating rather than substituting `0` keeps that a fact of the
+    // control flow instead of a claim in a comment: a third caller added
+    // without the guard gets an error, not a zero-width `KnownBits` whose
+    // predicates are all vacuously true.
+    let width = require_int_or_pointer_width(value, query.data_layout())?;
     let known = match &inst.kind {
         InstructionKindData::Add(data) => {
             let BinaryOperands { lhs, rhs } =

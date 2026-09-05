@@ -103,10 +103,18 @@ impl<'src> SourceMap<'src> {
             Err(i) => i.saturating_sub(1),
         };
         let line_start = self.line_starts[line_idx];
+        // `line_idx` indexes `line_starts`, and `SourceMap::new` stops
+        // recording once an offset would exceed `u32::MAX`, so the vector can
+        // never hold more entries than a `u32` can name and this conversion is
+        // exact. `unwrap_or(u32::MAX)` would name a line `line_text` then
+        // refuses to resolve, so the two ends would disagree about the same
+        // overflow; deriving the bound from the same invariant keeps them in
+        // step.
+        let line = u32::try_from(line_idx).unwrap_or_else(|_| {
+            unreachable!("line_starts is bounded by u32::MAX in SourceMap::new")
+        });
         LineCol {
-            line: u32::try_from(line_idx)
-                .unwrap_or(u32::MAX)
-                .saturating_add(1),
+            line: line.saturating_add(1),
             column: off.saturating_sub(line_start).saturating_add(1),
         }
     }
