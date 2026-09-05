@@ -353,7 +353,10 @@ use crate::int_width::IntDyn;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::operator::is_supported_floating_point_type;
 use crate::value::{Value, ValueKindData, ValueSlot};
-use crate::value_tracking::{MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, is_known_negation};
+use crate::value_tracking::{
+    MAX_ANALYSIS_RECURSION_DEPTH, NswRequirement, PoisonPolicy, ValueTrackingQuery,
+    is_known_negation,
+};
 use crate::{ApFloat, IrResult};
 
 /// A matched `select`: which idiom, and the two values it chooses between.
@@ -654,8 +657,13 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     // Upstream's call is `isKnownNegation(TrueVal, FalseVal)`, both defaults:
     // no `nsw` required, poison lanes allowed.
-    if is_known_negation(true_value, false_value, false, true)
-        && let Some(found) = match_abs(predicate, compare_lhs, compare_rhs, true_value, false_value)
+    if is_known_negation(
+        true_value,
+        false_value,
+        NswRequirement::NotRequired,
+        PoisonPolicy::Allow,
+    ) && let Some(found) =
+        match_abs(predicate, compare_lhs, compare_rhs, true_value, false_value)
     {
         return Ok(Some(found));
     }

@@ -19,6 +19,62 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — loose scalars become the types that carry their invariant *(breaking)*
+
+Five kinds of raw type where a bespoke one belonged, each found by asking the
+same question of a signature: *can a caller get this wrong and still compile?*
+
+**Diagnostic payloads carry the value, not its rendering.** Eight metadata
+variants on `ParseError` stored a string for something the parser was already
+holding typed:
+
+```rust
+// before                                    // now
+InvalidMetadataFieldValue { what: &str }     { what: MetadataKeywordFamily }  // 16 families
+DuplicateMetadataField    { field: String }  { field: SpecializedMetadataField }
+MetadataFieldValueTooLarge{ field: String }  { field: SpecializedMetadataField }
+InvalidMetadataField      { kind:  &str }    { kind:  SpecializedMetadataKind }
+```
+
+The rule that sorts them: **the payload is user text exactly when the diagnostic
+says "I do not recognise this."** `InvalidMetadataField.field` and
+`InvalidMetadataFieldValue.value` stay `String` for that reason, and now say so.
+`DuplicateMetadataField` does not — it is reached only after the name matched,
+and upstream renders the macro literal `#NAME` there, never `Lex.getStrVal()`.
+
+**Same-typed pairs get names**, because a transposed destructuring type-checks:
+
+```rust
+SourceMap::line_col          -> LineCol { line, column }
+shuffle_demanded_elements    -> DemandedOperandElements { lhs, rhs }
+ConstantRange::split_pos_neg -> PosNegHalves { positive, negative }
+binary_operand_known_bits    -> BinaryOperands { lhs, rhs }
+```
+
+`DemandedOperandElements`' field names are upstream's own `DemandedLHS` /
+`DemandedRHS` out-parameters.
+
+**Adjacent `bool` parameters get named flags** where the call site read as an
+unlabelled literal run — `round_to_integral(finite, false, true)` and
+`is_known_negation(x, y, false, true)`. Sixteen further functions mirror an
+upstream signature parameter-for-parameter and are deliberately left;
+`docs/future-work.md` records each one's reason and the trigger to revisit.
+
+**`ExpectedRetKind::FloatStatic` carries `TypeKindLabel`, not its keyword.** Two
+hand-written seven-arm matches decoded that string back into the enum, each
+closed by an `unreachable!` that guarded only the two copies agreeing. Both are
+gone, and the `TypeData` → `TypeKindLabel` map they duplicated now exists once,
+on `TypeData`, with `Type::kind_label` delegating to it.
+
+**One `unreachable!` dissolved rather than deleted.** The metadata field-dispatch
+loop asked `accepts_field`, checked for a duplicate, then asked `field()` again
+and panicked if the answers disagreed. One lookup now drives both arms — which
+is also upstream's order, since `PARSE_MD_FIELD` matches the name and *then*
+`parseMDField` runs its `Seen` guard.
+
+`SourceMap` also loses ten `as` casts, which `CLAUDE.md` forbids outright and
+which sat in the exact lines this change rewrote.
+
 ### Changed — every public enum is exhaustive; `#[non_exhaustive]` is gone *(breaking)*
 
 Twenty-one enums carried `#[non_exhaustive]`, including `IrError`,

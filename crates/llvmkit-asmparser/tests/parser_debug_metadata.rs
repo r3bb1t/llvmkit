@@ -243,7 +243,7 @@ fn dilocation_rejects_a_field_its_class_does_not_declare() {
         matches!(
             &err,
             ParseError::InvalidMetadataField { kind, field, .. }
-                if *kind == "DILocation" && field == "bad"
+                if kind.name() == "DILocation" && field == "bad"
         ),
         "expected invalid-field error, got: {err:?}"
     );
@@ -272,7 +272,7 @@ fn dilocation_rejects_a_field_specified_twice() {
         matches!(
             &err,
             ParseError::DuplicateMetadataField { kind, field, .. }
-                if *kind == "DILocation" && field == "line"
+                if kind.name() == "DILocation" && field.name() == "line"
         ),
         "expected duplicate-field error, got: {err:?}"
     );
@@ -349,7 +349,7 @@ fn required_specialized_metadata_fields_are_enforced() {
             matches!(
                 &err,
                 ParseError::MissingRequiredMetadataField { kind: k, field: f, .. }
-                    if *k == kind && *f == field
+                    if k.name() == kind && f.name() == field
             ),
             "expected missing required field '{field}' for !{kind}, got: {err:?}"
         );
@@ -874,7 +874,7 @@ fn keyword_families_reject_a_spelling_upstream_does_not_know() {
             matches!(
                 &err,
                 ParseError::InvalidMetadataFieldValue { what: w, value: v, .. }
-                    if *w == what && v == value
+                    if w.to_string() == what && v == value
             ),
             "expected invalid {what} '{value}', got: {err:?}"
         );
@@ -920,7 +920,7 @@ fn unsigned_metadata_fields_are_range_checked() {
         matches!(
             &err,
             ParseError::MetadataFieldValueTooLarge { field, limit, .. }
-                if field == "column" && *limit == u64::from(u16::MAX)
+                if field.name() == "column" && *limit == u64::from(u16::MAX)
         ),
         "expected column out of range, got: {err:?}"
     );
@@ -942,7 +942,7 @@ fn a_non_nullable_metadata_field_rejects_null() {
     assert!(
         matches!(
             &err,
-            ParseError::MetadataFieldCannotBeNull { field, .. } if field == "scope"
+            ParseError::MetadataFieldCannotBeNull { field, .. } if field.name() == "scope"
         ),
         "expected scope-cannot-be-null, got: {err:?}"
     );
@@ -957,7 +957,7 @@ fn a_non_empty_string_field_rejects_the_empty_string() {
     assert!(
         matches!(
             &err,
-            ParseError::MetadataFieldCannotBeEmpty { field, .. } if field == "name"
+            ParseError::MetadataFieldCannotBeEmpty { field, .. } if field.name() == "name"
         ),
         "expected name-cannot-be-empty, got: {err:?}"
     );

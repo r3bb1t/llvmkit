@@ -77,8 +77,8 @@ use llvmkit_ir::module_summary_index::{
 
 use super::numbered_values::AddError;
 use super::numbered_values::NumberedValues;
+use super::parse_error::{MetadataKeywordFamily, SymbolId, SymbolKind};
 use super::parse_error::{ParseError, ParseResult};
-use super::parse_error::{SymbolId, SymbolKind};
 use super::slot_mapping::{GlobalRef, SlotMapping};
 
 /// Unwrap an `IrResult` from a metadata API the parser drives against **its own**
@@ -5941,23 +5941,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .to_owned(),
                     _ => return Err(self.expected("field label here")),
                 };
-                if !kind.accepts_field(&field_name) {
+                // One lookup drives both arms. Upstream asks once too:
+                // `PARSE_MD_FIELD` matches the name and *then* `parseMDField`
+                // runs its `Result.Seen` guard, so the duplicate diagnostic
+                // renders the macro literal `#NAME` — never `Lex.getStrVal()`.
+                // Asking `accepts_field` and then `field` was the same question
+                // twice, and the `unreachable!` between them existed only to
+                // paper over the two answers agreeing.
+                let Some(declared) = kind.field(&field_name) else {
                     return Err(ParseError::InvalidMetadataField {
-                        kind: kind.name(),
+                        kind,
                         field: field_name,
                         loc: field_loc,
                     });
-                }
+                };
                 if fields.iter().any(|f| f.name() == field_name) {
                     return Err(ParseError::DuplicateMetadataField {
-                        kind: kind.name(),
-                        field: field_name,
+                        kind,
+                        field: declared,
                         loc: field_loc,
                     });
                 }
-                let declared = kind
-                    .field(&field_name)
-                    .unwrap_or_else(|| unreachable!("accepts_field just matched {field_name}"));
                 self.bump()?;
                 let value_loc = self.loc();
                 let value = self.parse_metadata_field_value(declared.kind())?;
@@ -5973,8 +5977,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         for required in kind.required_fields() {
             if !fields.iter().any(|f| f.name() == required.name()) {
                 return Err(ParseError::MissingRequiredMetadataField {
-                    kind: kind.name(),
-                    field: required.name(),
+                    kind,
+                    field: required,
                     loc: closing_loc,
                 });
             }
@@ -6031,7 +6035,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         let name = (*s).to_owned();
                         if llvmkit_ir::dwarf::operation_encoding(&name).is_none() {
                             return Err(ParseError::InvalidMetadataFieldValue {
-                                what: "DWARF op",
+                                what: MetadataKeywordFamily::DwarfOp,
                                 value: name,
                                 loc: self.loc(),
                             });
@@ -6043,7 +6047,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         let name = (*s).to_owned();
                         if llvmkit_ir::dwarf::attribute_encoding(&name).is_none() {
                             return Err(ParseError::InvalidMetadataFieldValue {
-                                what: "DWARF attribute encoding",
+                                what: MetadataKeywordFamily::DwarfAttributeEncoding,
                                 value: name,
                                 loc: self.loc(),
                             });
@@ -6220,7 +6224,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // pin: `test/Assembler/invalid-dilocalvariable-arg-negative.ll` puts
         // `expected unsigned integer` on the `-`, not on the `)` behind it.
         let loc = value_loc;
-        let name = field.name();
 
         // The `MDUnsignedField` base every keyword family but
         // `ChecksumKindField` inherits: `if (Lex.getKind() != lltok::APSInt ||
@@ -6235,7 +6238,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             if u128::try_from(*parsed).is_ok_and(|v| v > u128::from(max)) {
                 return Err(ParseError::MetadataFieldValueTooLarge {
-                    field: name.to_owned(),
+                    field,
                     limit: max,
                     loc,
                 });
@@ -6245,40 +6248,38 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
         // A keyword family: reject a spelling its table does not contain, and
         // range-check a raw encoding against the family's own `Max`.
-        let keyword = |what: &'static str, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
-            match value {
-                MetadataFieldValue::Enum(spelling) => {
-                    if lookup(spelling).is_none() {
-                        return Err(ParseError::InvalidMetadataFieldValue {
-                            what,
-                            value: spelling.clone(),
-                            loc,
-                        });
+        let keyword =
+            |what: MetadataKeywordFamily, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
+                match value {
+                    MetadataFieldValue::Enum(spelling) => {
+                        if lookup(spelling).is_none() {
+                            return Err(ParseError::InvalidMetadataFieldValue {
+                                what,
+                                value: spelling.clone(),
+                                loc,
+                            });
+                        }
+                        Ok(())
                     }
-                    Ok(())
-                }
-                MetadataFieldValue::Integer(parsed) => {
-                    match metadata_keyword_field_max(field.kind()) {
-                        Some(max) => unsigned_in_range(parsed, max),
-                        // `ChecksumKindField` is not an `MDUnsignedField`, so it
-                        // has no integer spelling at all — and none reaches here,
-                        // since `parse_metadata_field_value` refuses the token.
-                        None => Ok(()),
+                    MetadataFieldValue::Integer(parsed) => {
+                        match metadata_keyword_field_max(field.kind()) {
+                            Some(max) => unsigned_in_range(parsed, max),
+                            // `ChecksumKindField` is not an `MDUnsignedField`, so it
+                            // has no integer spelling at all — and none reaches here,
+                            // since `parse_metadata_field_value` refuses the token.
+                            None => Ok(()),
+                        }
                     }
+                    // `parse_metadata_field_value` admits nothing else for these
+                    // families.
+                    _ => Ok(()),
                 }
-                // `parse_metadata_field_value` admits nothing else for these
-                // families.
-                _ => Ok(()),
-            }
-        };
+            };
 
         match field.kind() {
             MetadataFieldKind::Metadata { allow_null } => {
                 if !allow_null && matches!(value, MetadataFieldValue::Null) {
-                    return Err(ParseError::MetadataFieldCannotBeNull {
-                        field: name.to_owned(),
-                        loc,
-                    });
+                    return Err(ParseError::MetadataFieldCannotBeNull { field, loc });
                 }
                 Ok(())
             }
@@ -6286,10 +6287,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if empty_is_error
                     && matches!(value, MetadataFieldValue::String(text) if text.is_empty())
                 {
-                    return Err(ParseError::MetadataFieldCannotBeEmpty {
-                        field: name.to_owned(),
-                        loc,
-                    });
+                    return Err(ParseError::MetadataFieldCannotBeEmpty { field, loc });
                 }
                 Ok(())
             }
@@ -6302,7 +6300,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 if u128::try_from(*parsed).is_ok_and(|v| v > u128::from(max)) {
                     return Err(ParseError::MetadataFieldValueTooLarge {
-                        field: name.to_owned(),
+                        field,
                         limit: max,
                         loc,
                     });
@@ -6317,14 +6315,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 };
                 if *parsed < i128::from(min) {
                     return Err(ParseError::MetadataFieldValueTooSmall {
-                        field: name.to_owned(),
+                        field,
                         limit: min,
                         loc,
                     });
                 }
                 if *parsed > i128::from(max) {
                     return Err(ParseError::MetadataFieldValueTooLarge {
-                        field: name.to_owned(),
+                        field,
                         limit: max.unsigned_abs(),
                         loc,
                     });
@@ -6338,29 +6336,45 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     Err(self.expected_at(value_loc, "'true' or 'false'"))
                 }
             }
-            MetadataFieldKind::DwarfTag => keyword("DWARF tag", dwarf::tag),
-            MetadataFieldKind::DwarfAttEncoding => {
-                keyword("DWARF type attribute encoding", dwarf::attribute_encoding)
+            MetadataFieldKind::DwarfTag => keyword(MetadataKeywordFamily::DwarfTag, dwarf::tag),
+            MetadataFieldKind::DwarfAttEncoding => keyword(
+                MetadataKeywordFamily::DwarfTypeAttributeEncoding,
+                dwarf::attribute_encoding,
+            ),
+            MetadataFieldKind::DwarfVirtuality => keyword(
+                MetadataKeywordFamily::DwarfVirtualityCode,
+                dwarf::virtuality,
+            ),
+            MetadataFieldKind::DwarfLang => {
+                keyword(MetadataKeywordFamily::DwarfLanguage, dwarf::language)
             }
-            MetadataFieldKind::DwarfVirtuality => {
-                keyword("DWARF virtuality code", dwarf::virtuality)
+            MetadataFieldKind::DwarfSourceLangName => keyword(
+                MetadataKeywordFamily::DwarfSourceLanguageName,
+                dwarf::source_language_name,
+            ),
+            MetadataFieldKind::DwarfCc => keyword(
+                MetadataKeywordFamily::DwarfCallingConvention,
+                dwarf::calling_convention,
+            ),
+            MetadataFieldKind::DwarfMacinfoType => {
+                keyword(MetadataKeywordFamily::DwarfMacinfoType, dwarf::macinfo)
             }
-            MetadataFieldKind::DwarfLang => keyword("DWARF language", dwarf::language),
-            MetadataFieldKind::DwarfSourceLangName => {
-                keyword("DWARF source language name", dwarf::source_language_name)
-            }
-            MetadataFieldKind::DwarfCc => {
-                keyword("DWARF calling convention", dwarf::calling_convention)
-            }
-            MetadataFieldKind::DwarfMacinfoType => keyword("DWARF macinfo type", dwarf::macinfo),
             // Both flag families are validated term by term as they are
             // parsed, where `parseMDField`'s `parseFlag` validates them, so
             // there is nothing left to check once the bitfield exists.
             MetadataFieldKind::DiFlags | MetadataFieldKind::DispFlags => Ok(()),
-            MetadataFieldKind::EmissionKind => keyword("emission kind", emission_kind),
-            MetadataFieldKind::NameTableKind => keyword("nameTable kind", name_table_kind),
-            MetadataFieldKind::ChecksumKind => keyword("checksum kind", checksum_kind),
-            MetadataFieldKind::FixedPointKind => keyword("fixed-point kind", fixed_point_kind),
+            MetadataFieldKind::EmissionKind => {
+                keyword(MetadataKeywordFamily::EmissionKind, emission_kind)
+            }
+            MetadataFieldKind::NameTableKind => {
+                keyword(MetadataKeywordFamily::NameTableKind, name_table_kind)
+            }
+            MetadataFieldKind::ChecksumKind => {
+                keyword(MetadataKeywordFamily::ChecksumKind, checksum_kind)
+            }
+            MetadataFieldKind::FixedPointKind => {
+                keyword(MetadataKeywordFamily::FixedPointKind, fixed_point_kind)
+            }
             // `parseMDField(DwarfEnumKindField&)` splits its rejection in two:
             // a token that is neither an integer nor a `DW_APPLE_ENUM_KIND_*`
             // keyword is `expected DWARF enum kind code`, while a keyword the
@@ -6376,7 +6390,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         Ok(())
                     } else {
                         Err(ParseError::InvalidMetadataFieldValue {
-                            what: "DWARF enum kind code",
+                            what: MetadataKeywordFamily::DwarfEnumKindCode,
                             value: spelling.clone(),
                             loc,
                         })
@@ -6578,7 +6592,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let value = DiFlags::get_flag(&spelling);
         if value == DiFlags::ZERO {
             return Err(ParseError::InvalidMetadataFieldValue {
-                what: "debug info flag",
+                what: MetadataKeywordFamily::DebugInfoFlag,
                 value: spelling,
                 loc: self.loc(),
             });
@@ -6617,7 +6631,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let value = DispFlags::get_flag(&spelling);
         if value == DispFlags::ZERO {
             return Err(ParseError::InvalidMetadataFieldValue {
-                what: "subprogram debug info flag",
+                what: MetadataKeywordFamily::SubprogramDebugInfoFlag,
                 value: spelling,
                 loc: self.loc(),
             });

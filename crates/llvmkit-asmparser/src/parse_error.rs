@@ -13,12 +13,95 @@
 //! they add real `parse*` arms; the variants ship now so the parser does
 //! not have to relitigate the public error shape later.
 
+use core::fmt;
 use std::borrow::Cow;
 
 use llvmkit_support::Span;
 
+use llvmkit_ir::metadata::{SpecializedMetadataField, SpecializedMetadataKind};
+
 use crate::ll_lexer::LexError;
 use crate::numbered_values::AddError as SlotAddError;
+
+/// Which keyword family a rejected specialized-metadata value belonged to.
+///
+/// `LLParser::parseMDField` has one overload per family, each reporting
+/// `invalid <family> '<spelling>'` with its own wording. The set is closed —
+/// it is exactly the families the parser has a lookup table for — so it is an
+/// enum rather than the `&'static str` it used to be, and `Display` carries
+/// upstream's wording verbatim so the rendered text does not move.
+///
+/// Derive the set with:
+///
+/// ```bash
+/// { grep -rho 'what: "[^"]*"' ll_parser.rs | sed 's/what: //'
+///   grep -rho 'keyword("[^"]*"' ll_parser.rs | sed 's/keyword(//'; } | sort -u
+/// ```
+///
+/// The two paths are disjoint: 5 direct construction sites and 11 through the
+/// `keyword(what, lookup)` closure.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum MetadataKeywordFamily {
+    /// `DW_ATE_*` on a `DIBasicType`.
+    DwarfAttributeEncoding,
+    /// `DW_CC_*`.
+    DwarfCallingConvention,
+    /// `DW_APPLE_ENUM_KIND_*`.
+    DwarfEnumKindCode,
+    /// `DW_LANG_*`.
+    DwarfLanguage,
+    /// `DW_MACINFO_*`.
+    DwarfMacinfoType,
+    /// `DW_OP_*` inside a `DIExpression`.
+    DwarfOp,
+    /// `DW_LNAME_*`.
+    DwarfSourceLanguageName,
+    /// `DW_TAG_*`.
+    DwarfTag,
+    /// `DW_ATE_*` where upstream words it "type attribute encoding".
+    DwarfTypeAttributeEncoding,
+    /// `DW_VIRTUALITY_*`.
+    DwarfVirtualityCode,
+    /// `CSK_*` on a `DIFile`.
+    ChecksumKind,
+    /// `DIFlag*`.
+    DebugInfoFlag,
+    /// `DICompileUnit`'s `emissionKind:`.
+    EmissionKind,
+    /// `DIBasicType`'s fixed-point `kind:`.
+    FixedPointKind,
+    /// `DICompileUnit`'s `nameTableKind:`.
+    NameTableKind,
+    /// `DISPFlag*`.
+    SubprogramDebugInfoFlag,
+}
+
+impl fmt::Display for MetadataKeywordFamily {
+    /// Upstream's own wording for each family, so
+    /// `ParseError::InvalidMetadataFieldValue` renders byte-for-byte as
+    /// `LLParser::parseMDField` does.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::DwarfAttributeEncoding => "DWARF attribute encoding",
+            Self::DwarfCallingConvention => "DWARF calling convention",
+            Self::DwarfEnumKindCode => "DWARF enum kind code",
+            Self::DwarfLanguage => "DWARF language",
+            Self::DwarfMacinfoType => "DWARF macinfo type",
+            Self::DwarfOp => "DWARF op",
+            Self::DwarfSourceLanguageName => "DWARF source language name",
+            Self::DwarfTag => "DWARF tag",
+            Self::DwarfTypeAttributeEncoding => "DWARF type attribute encoding",
+            Self::DwarfVirtualityCode => "DWARF virtuality code",
+            Self::ChecksumKind => "checksum kind",
+            Self::DebugInfoFlag => "debug info flag",
+            Self::EmissionKind => "emission kind",
+            Self::FixedPointKind => "fixed-point kind",
+            Self::NameTableKind => "nameTable kind",
+            Self::SubprogramDebugInfoFlag => "subprogram debug info flag",
+        };
+        f.write_str(s)
+    }
+}
 
 /// Top-level entity kind — distinguishes the namespaces tracked by the
 /// parser when it reports symbol errors. Mirrors the four
@@ -234,19 +317,26 @@ pub enum ParseError {
     /// `PARSE_MD_FIELD` in the class's `VISIT_MD_FIELDS` block has failed to
     /// match. The accepted set is
     /// [`llvmkit_ir::metadata::SpecializedMetadataKind::declared_fields`].
+    ///
+    /// `field` stays a `String`, deliberately: it is reached only when
+    /// `accepts_field` returned false, so it is text the user typed and is by
+    /// definition outside the closed set. Its sibling
+    /// `DuplicateMetadataField` is the opposite case and carries the typed
+    /// value -- upstream renders the macro literal `#NAME` there, never
+    /// `Lex.getStrVal()`.
     #[error("invalid field '{field}'")]
     InvalidMetadataField {
-        kind: &'static str,
+        kind: SpecializedMetadataKind,
         field: String,
         loc: Span,
     },
 
     /// A specialized `DI*` node repeated a field. Mirrors
     /// `LLParser::parseMDField`'s `Result.Seen` guard (`LLParser.cpp`).
-    #[error("field '{field}' cannot be specified more than once")]
+    #[error("field '{}' cannot be specified more than once", .field.name())]
     DuplicateMetadataField {
-        kind: &'static str,
-        field: String,
+        kind: SpecializedMetadataKind,
+        field: SpecializedMetadataField,
         loc: Span,
     },
 
@@ -255,21 +345,24 @@ pub enum ParseError {
     /// macro (`LLParser.cpp`), which — like this — reports against the closing
     /// `)` rather than the node's opening token. The required set is
     /// [`llvmkit_ir::metadata::SpecializedMetadataKind::required_fields`].
-    #[error("missing required field '{field}'")]
+    #[error("missing required field '{}'", .field.name())]
     MissingRequiredMetadataField {
-        kind: &'static str,
-        field: &'static str,
+        kind: SpecializedMetadataKind,
+        field: SpecializedMetadataField,
         loc: Span,
     },
 
     /// A `DW_*` / `DIFlag*` / kind keyword that its family's table does not
-    /// contain. `what` is upstream's own wording for the family, so the
-    /// rendered message matches `LLParser::parseMDField`'s byte for byte —
-    /// `invalid DWARF tag 'x'`, `invalid debug info flag 'x'`,
-    /// `invalid checksum kind 'x'`, and the eleven siblings.
+    /// contain — `invalid DWARF tag 'x'`, `invalid debug info flag 'x'`,
+    /// `invalid checksum kind 'x'`, and the thirteen siblings.
+    ///
+    /// [`MetadataKeywordFamily`]'s `Display` is upstream's own wording, so the
+    /// rendered message still matches `LLParser::parseMDField`'s byte for byte.
+    /// `value` stays a `String`: it is the spelling the *user* typed, and this
+    /// diagnostic exists precisely to say it was not recognised.
     #[error("invalid {what} '{value}'")]
     InvalidMetadataFieldValue {
-        what: &'static str,
+        what: MetadataKeywordFamily,
         value: String,
         loc: Span,
     },
@@ -278,31 +371,37 @@ pub enum ParseError {
     /// `LLParser::parseMDField(MDUnsignedField&)`; the limit is the one the
     /// field's type carries (`LineField` is `UINT32_MAX`, `ColumnField`
     /// `UINT16_MAX`, and a bare `MDUnsignedField` may narrow further).
-    #[error("value for '{field}' too large, limit is {limit}")]
+    #[error("value for '{}' too large, limit is {limit}", .field.name())]
     MetadataFieldValueTooLarge {
-        field: String,
+        field: SpecializedMetadataField,
         limit: u64,
         loc: Span,
     },
 
     /// A signed metadata field under its declared minimum. Mirrors
     /// `LLParser::parseMDField(MDSignedField&)`.
-    #[error("value for '{field}' too small, limit is {limit}")]
+    #[error("value for '{}' too small, limit is {limit}", .field.name())]
     MetadataFieldValueTooSmall {
-        field: String,
+        field: SpecializedMetadataField,
         limit: i64,
         loc: Span,
     },
 
     /// `null` given for an `MDField` upstream declares `(/* AllowNull */
     /// false)`.
-    #[error("'{field}' cannot be null")]
-    MetadataFieldCannotBeNull { field: String, loc: Span },
+    #[error("'{}' cannot be null", .field.name())]
+    MetadataFieldCannotBeNull {
+        field: SpecializedMetadataField,
+        loc: Span,
+    },
 
     /// `""` given for an `MDStringField` upstream declares
     /// `EmptyIs::Error`.
-    #[error("'{field}' cannot be empty")]
-    MetadataFieldCannotBeEmpty { field: String, loc: Span },
+    #[error("'{}' cannot be empty", .field.name())]
+    MetadataFieldCannotBeEmpty {
+        field: SpecializedMetadataField,
+        loc: Span,
+    },
 }
 
 impl ParseError {
