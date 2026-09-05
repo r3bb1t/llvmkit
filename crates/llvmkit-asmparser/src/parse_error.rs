@@ -25,7 +25,6 @@ use crate::numbered_values::AddError as SlotAddError;
 /// `ForwardRefVals` / `ForwardRefBlocks` / `ForwardRefMDNodes` /
 /// `NumberedTypes` tables in `LLParser`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
 pub enum SymbolKind {
     /// `@name` — function or global variable, as a *definition*.
     Global,
@@ -125,7 +124,6 @@ impl core::fmt::Display for SymbolId {
 /// carries the `LocTy` beside the `Twine`, and `SMDiagnostic` decides how
 /// to print it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum ParseError {
     /// The lexer rejected the next token.
     #[error(transparent)]

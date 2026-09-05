@@ -9,8 +9,9 @@
 //! Type-state shape:
 //!
 //! - [`AttrKind`] - closed enum of every well-known LLVM attribute kind
-//!   (drawn from `Attributes.td`). Marked `#[non_exhaustive]` so future
-//!   additions are non-breaking.
+//!   (drawn from `Attributes.td`). Exhaustive, like every public enum here:
+//!   an LLVM bump that adds a kind is a breaking change that fails to compile
+//!   in every un-updated `match` rather than slipping through a wildcard.
 //! - [`Attribute`] - sum type where each variant carries the payload its
 //!   kind requires. `Attribute::Int` only ever carries an integer kind,
 //!   `Attribute::Type` only ever carries a type kind, etc. Wrong-shape
@@ -277,8 +278,9 @@ impl fmt::Display for MemoryEffects {
 /// Discriminator for attribute kinds. Mirrors the `def Foo : ...Attr<...>`
 /// declarations in `Attributes.td`.
 ///
-/// Marked `#[non_exhaustive]` so we can add LLVM additions without a
-/// breaking change.
+/// Exhaustive: adding an LLVM attribute kind is a breaking change, and should
+/// be. A downstream `match` that dispatches on attribute kind wants to be told
+/// when the vocabulary grows, not to route the newcomer into a wildcard.
 ///
 /// **Variant order is load-bearing, and `Ord` exposes it.** It is
 /// `Attribute::AttrKind`'s enum order — what `AttributeImpl::cmp` compares
@@ -301,7 +303,6 @@ impl fmt::Display for MemoryEffects {
 /// reads the order back out of the vendored `.td`, so a hand-placed variant
 /// cannot drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[non_exhaustive]
 pub enum AttrKind {
     // ---- `EnumAttr` (flag) attributes ----
     AllocAlign,
@@ -489,10 +490,14 @@ impl AttrKind {
             | Self::Writable
             | Self::WriteOnly => at(false, true, false),
 
-            // `[FnAttr]` — everything else. `AttrKind` is `#[non_exhaustive]`,
-            // so a catch-all is unavoidable; what keeps it from silently
-            // guessing wrong for a future variant is `attribute_td_drift.rs`,
-            // which checks every position in this table against the `.td`.
+            // `[FnAttr]` — everything else. This catch-all is a *default*, not
+            // a forced arm: `AttrKind` is exhaustive, so every remaining
+            // variant could be named. It stays because `[FnAttr]` genuinely is
+            // the default position in `Attributes.td` and naming ~200 variants
+            // to say so would obscure the three lists above it. What keeps it
+            // from silently guessing wrong for a future variant is
+            // `attribute_td_drift.rs`, which checks every position in this
+            // table against the `.td`.
             _ => at(true, false, false),
         }
     }
@@ -715,9 +720,9 @@ impl fmt::Display for AttrKind {
 /// here — they are already typed via [`DenormalMode`](crate::DenormalMode)
 /// readers.
 ///
-/// Marked `#[non_exhaustive]` so future upstream additions are non-breaking.
+/// Exhaustive: a future upstream addition is a breaking change that every
+/// un-updated `match` reports at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum StrBoolAttrKind {
     /// `"marked_for_windows_hot_patching"` (`MarkedForWindowsSecureHotPatching`).
     MarkedForWindowsHotPatching,

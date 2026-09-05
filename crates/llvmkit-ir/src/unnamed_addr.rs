@@ -17,7 +17,6 @@ use crate::error::IrError;
 
 /// Unnamed-address marker. Mirrors `GlobalValue::UnnamedAddr`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum UnnamedAddr {
     /// Has a unique address (default).
     #[default]

@@ -164,7 +164,6 @@ impl<B: ModuleBrand> core::fmt::Debug for NamedMetadataId<B> {
 /// `llvm.global_dtors` are deliberately absent: upstream models those as
 /// global **variables** with appending linkage, not named metadata, so they
 /// are not members of this namespace.
-#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NamedMetadataName {
     /// `llvm.module.flags`

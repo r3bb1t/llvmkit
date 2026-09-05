@@ -181,8 +181,16 @@ the attribute would hand every downstream caller a `_ =>` arm to fill, which is 
 document spends its Phase 1 removing from our own code. A new variant is then a breaking change,
 flagged inline in `CHANGELOG.md` under the pre-1.0 policy. `SymbolKind` loses it on the same
 grounds (`grep -rln "SymbolKind::" crates/ llvmkit/ --include=*.rs | grep -v asmparser/src`
-returns nothing, so nothing outside the crate matches on it yet). `IrError` and `VerifierRule`
-keep theirs; that is a separate question this document does not open.
+returns nothing, so nothing outside the crate matches on it yet).
+
+> **Superseded 2026-09-05 — the scope widened past this document.** This
+> paragraph used to end "`IrError` and `VerifierRule` keep theirs; that is a
+> separate question this document does not open." The user opened it and ruled
+> the other way: **no `#[non_exhaustive]` anywhere in the workspace.** All 21
+> attributes are gone, `IrError` and `VerifierRule` among them, and the rule
+> now lives in `CLAUDE.md` under *Rules that fail CI or review* so it binds new
+> enums as well. Nothing above changes — `ParseErrorKind` is simply born
+> exhaustive under a project-wide rule rather than a parser-local one.
 
 **The fields are public, and that is a deliberate exception** to `AGENTS.md`'s *"public
 config/result structs keep fields private and expose accessors"*. An error is matched and
@@ -637,7 +645,8 @@ The change is bounded: `grep -rn "BrandInUse\|BrandRetired" crates/ --include=*.
 finds exactly **one** producer (`module.rs`, the two `Err(IrError::Brand*)` arms in the registry
 claim), 4 doctests, and ~11 test assertions — plus the parser sites Phase 1 is already deleting.
 The two variants then leave `IrError` entirely, since nothing constructs them any more; that is a
-breaking change to a `#[non_exhaustive]` public enum and gets its own `CHANGELOG.md` line.
+breaking change to a public enum and gets its own `CHANGELOG.md` line. (`IrError` carried
+`#[non_exhaustive]` when this was written; it no longer does — see the 2026-09-05 note above.)
 
 **`DataLayout::parse` has the same disease, and Phase 1 fixes it too.** `set_data_layout`
 (`LLParser::set_data_layout`) matches on the returned `IrError` with a two-arm `match` whose second arm

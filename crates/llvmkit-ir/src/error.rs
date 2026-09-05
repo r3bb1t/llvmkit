@@ -21,7 +21,6 @@ use core::fmt;
 /// Human-readable label for a [`Type`](crate::Type) kind, embedded in
 /// diagnostics that don't want to carry a borrowed type handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum TypeKindLabel {
     /// The `void` type.
     Void,
@@ -103,7 +102,6 @@ impl fmt::Display for TypeKindLabel {
 /// Human-readable label for a [`Value`](crate::Value)'s category, embedded
 /// in diagnostics that don't want to carry a borrowed value handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum ValueCategoryLabel {
     /// A constant value.
     Constant,
@@ -149,8 +147,8 @@ impl fmt::Display for ValueCategoryLabel {
 ///
 /// One variant per rule the verifier can enforce. Tests pattern-match
 /// on this enum to assert which invariant fired without coupling to the
-/// human-readable diagnostic message. New rules are added
-/// non-breakingly via `#[non_exhaustive]`.
+/// human-readable diagnostic message. The enum is exhaustive, so a new rule
+/// is a breaking change every un-updated `match` reports.
 ///
 /// Each variant cites its `Verifier::visit*` C++ method in
 /// `llvm/lib/IR/Verifier.cpp`.
@@ -167,7 +165,6 @@ impl fmt::Display for ValueCategoryLabel {
 /// the `cmpxchg` orderings, …) says so in a comment at the check site in
 /// `verifier.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum VerifierRule {
     /// Binary operator: LHS and RHS operand types differ.
     /// Mirrors `Verifier::visitBinaryOperator`.
@@ -846,9 +843,9 @@ impl fmt::Display for VerifierRule {
 /// not want to distinguish. The narrowing that matters is at the declaration,
 /// not the absence of a conversion.
 ///
-/// Deliberately **not** `#[non_exhaustive]`, unlike [`IrError`]: the point is
-/// that a caller can match both arms and be finished. Adding a third outcome
-/// would be a breaking change, which is the correct signal.
+/// Exhaustive, as every public enum in this crate now is: the point is that a
+/// caller can match both arms and be finished. Adding a third outcome would be
+/// a breaking change, which is the correct signal.
 ///
 /// `Copy`, which [`IrError`] cannot be — both payloads are `&'static str` from
 /// [`core::any::type_name`].
@@ -903,8 +900,19 @@ pub struct DataLayoutError {
 
 /// Crate-wide error.
 ///
-/// Variants are added incrementally as new subsystems land. Marked
-/// `#[non_exhaustive]` so future additions are non-breaking.
+/// Variants are added incrementally as new subsystems land, and the enum is
+/// **exhaustive**: a new variant is a breaking change, flagged in
+/// `CHANGELOG.md` under the pre-1.0 policy.
+///
+/// That is the deliberate trade. `#[non_exhaustive]` would make each addition
+/// non-breaking, but it does so by handing every downstream `match` a `_ =>`
+/// arm — and a catch-all on an error type is where a caller is forced to
+/// invent an outcome it cannot describe. This crate has already paid that
+/// bill: a 56-variant return type obliged the parser's brand mapper to write
+/// an arm for 54 unreachable variants, and it filled that arm by stuffing a
+/// stringified error into an I/O error with `ErrorKind::Other`. Narrower
+/// errors ([`BrandError`], [`DataLayoutError`]) and an exhaustive `IrError`
+/// are two halves of removing that pressure.
 ///
 /// `Hash` alongside `Eq` so an error can be de-duplicated: a verifier or a
 /// pass driver that collects failures across a whole module wants a
@@ -912,7 +920,6 @@ pub struct DataLayoutError {
 /// `String`, `&'static str`, or integer, so the derive is total. The sibling
 /// `llvmkit_asmparser::ParseError` already carried `Hash` for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
-#[non_exhaustive]
 pub enum IrError {
     /// Integer width outside `[`[`MIN_INT_BITS`]`, `[`MAX_INT_BITS`]`]`.
     ///

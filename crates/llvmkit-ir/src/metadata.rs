@@ -196,11 +196,11 @@ impl<B: ModuleBrand> core::fmt::Debug for MetadataId<B> {
 /// The fixed variants mirror the `LLVM_FIXED_MD_KIND` entries of
 /// `llvm/include/llvm/IR/FixedMetadataKinds.def` (which
 /// `LLVMContext::LLVMContext` includes to register the fixed kinds), listed
-/// here in the `.def`'s own order. Marked `#[non_exhaustive]` so future
-/// upstream additions are non-breaking; [`Custom`](Self::Custom) carries the
-/// open remainder of the namespace.
+/// here in the `.def`'s own order. The enum is exhaustive, so a future
+/// upstream addition is a breaking change every un-updated `match` reports;
+/// [`Custom`](Self::Custom) carries the open remainder of the namespace, which
+/// is where genuinely unbounded kinds belong.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum MetadataAttachmentKind {
     Dbg,
     Tbaa,
@@ -427,7 +427,7 @@ impl MetadataAttachmentKind {
 /// `LineField` is `MDUnsignedField(0, UINT32_MAX)`, `ColumnField` is
 /// `(0, UINT16_MAX)`, and a bare `MDUnsignedField` may narrow further.
 ///
-/// Deliberately **not** `#[non_exhaustive]`, unlike most enums here. The parser
+/// Exhaustive, and this type is why the rule is worth having. The parser
 /// matches on this to pick a validation, and a catch-all arm would mean a field
 /// kind added by a future LLVM bump silently parsed *unchecked* — which is the
 /// exact divergence class this type exists to close. Exhaustiveness makes that

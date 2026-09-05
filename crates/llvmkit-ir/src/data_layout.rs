@@ -208,7 +208,6 @@ impl PointerSpec {
 /// Function-pointer alignment kind. Mirrors
 /// `DataLayout::FunctionPtrAlignType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum FunctionPtrAlignType {
     /// `Fi<abi>` -- pointer alignment is independent of function
     /// alignment.
@@ -222,7 +221,6 @@ pub enum FunctionPtrAlignType {
 /// Symbol-name mangling mode. Mirrors
 /// `DataLayout::ManglingModeT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum ManglingMode {
     /// No mangling (default).
     #[default]

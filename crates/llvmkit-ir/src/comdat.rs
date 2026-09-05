@@ -43,7 +43,6 @@ impl ComdatId {
 
 /// COMDAT selection kind. Mirrors `Comdat::SelectionKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum SelectionKind {
     /// `any` -- the linker may choose any COMDAT.
     #[default]

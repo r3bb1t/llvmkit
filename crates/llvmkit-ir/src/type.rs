@@ -772,7 +772,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 
 /// Public discriminator for analysis-mode pattern matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum TypeKind {
     Void,
     Half,

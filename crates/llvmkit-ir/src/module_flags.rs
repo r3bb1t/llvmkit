@@ -103,7 +103,6 @@ impl ModuleFlagBehavior {
 /// verifier special-cases (`Verifier::visitModuleFlag`,
 /// `lib/IR/Verifier.cpp`: `wchar_size`, `CG Profile`). The namespace is open —
 /// any other spelling is valid IR and stays [`Custom`](Self::Custom).
-#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ModuleFlagKey {
     /// `"Dwarf Version"` — read by `Module::getDwarfVersion`.

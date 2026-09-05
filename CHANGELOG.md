@@ -19,6 +19,34 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — every public enum is exhaustive; `#[non_exhaustive]` is gone *(breaking)*
+
+Twenty-one enums carried `#[non_exhaustive]`, including `IrError`,
+`ParseError`, `AttrKind`, `TypeKind`, `Linkage` and `VerifierRule`. All of them
+are now exhaustive, so a downstream `match` can name every variant and be
+finished.
+
+The attribute buys one thing — adding a variant stops being a breaking change —
+and it pays for it by handing every downstream `match` a `_ =>` arm. On an
+error type that arm is where a caller is forced to describe an outcome it has
+no vocabulary for, and this repo has the receipt: a 56-variant return type
+obliged the parser's brand mapper to write an arm for 54 unreachable variants,
+and it filled that arm by stuffing a stringified `IrError` into an I/O error
+with `ErrorKind::Other`. Narrowing errors and opening them to exhaustive
+matching are two halves of the same fix.
+
+Several enums already argued for this in their own docs — `CfgUpdate`,
+`InstructionKind`, `TerminatorKind`, `ValueKindData` and `MetadataFieldKind`
+each carried a paragraph explaining why *they* were exhaustive "unlike the
+others". That is now the rule rather than the exception, and those paragraphs
+say so.
+
+**What this costs:** adding a variant is now a breaking change. That is the
+intended signal, and the project is pre-1.0, so such changes are expected and
+flagged here inline. `Custom`-style open remainders (as on
+`MetadataAttachmentKind`) remain the way to model a genuinely unbounded
+namespace — an open *variant*, not an open *enum*.
+
 ### Removed — `read_to_owned`; the parser crate performs no I/O at all *(breaking)*
 
 `llvmkit_asmparser::read_to_owned` is gone. It wrapped `Read::read_to_end` in
