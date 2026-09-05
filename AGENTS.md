@@ -63,9 +63,12 @@ wins. (`CLAUDE.md` carries the same section under the same name, condensed.)
 - Three ways to make a module, all returning an owned value:
   `module_new!("name")` (emits the struct above under an unnameable name, one
   fresh brand per expansion site), `Module::branded::<B, _>(name) ->
-  IrResult<Module<B, Unverified>>` (named brand; a process-global registry
-  admits at most one live module per brand — `IrError::BrandInUse`, and
-  `branded_once::<B>` retires it permanently — `IrError::BrandRetired`), and
+  Result<Module<B, Unverified>, BrandError>` (named brand; a process-global
+  registry admits at most one live module per brand — `BrandError::InUse`, and
+  `branded_once::<B>` retires it permanently — `BrandError::Retired`. The claim
+  returns `BrandError`, not `IrError`: it produces exactly those two outcomes,
+  and declaring 56 forced its one consumer to write a catch-all it filled with
+  an invented I/O error), and
   `Module::dynamic(name) -> Module<DynBrand, Unverified>` (infallible,
   registry-exempt, many live modules legal). There is **no** closure-scoped
   construction anywhere.
@@ -564,7 +567,14 @@ C++ takes `const char *Filename` or `MemoryBufferRef`. Rust takes:
 
 Prefer the closure-free entry points: `parse_dynamic` / `parse_into` return the **owned** `Module<B, Unverified>`. The `parse_assembly*` family still takes a closure, and the reason is not the brand — `ParsedModule` holds borrowing handles into the module, so handing both back would be a self-reference.
 
-This mirrors `serde_json::from_reader` / `from_slice` / `from_str`. **Default to streaming**; load into a `Vec<u8>` only when the parser genuinely requires random access.
+**There is no streaming form to default to, in either tree.** The lexer needs the
+whole buffer: it does pointer arithmetic over it, keeps `PrevTokEnd` to bound the
+previous token, and every `Span` is a byte offset into it — so a `Read`-shaped
+parser cannot exist without buffering the input anyway. Upstream draws the same
+line: `lib/AsmParser` takes a `MemoryBufferRef` and the file read lives in
+Support's `MemoryBuffer::getFileOrSTDIN`. The caller reads (`std::fs::read`), the
+parser takes `&[u8]`; `parse_into` is the primitive and `parse_assembly_with_name`
+the closure form.
 
 ### Conversions via `From` / `TryFrom`
 
@@ -676,7 +686,7 @@ And by `Module::int_type_n::<N>()` for the range check (`MIN_INT_BITS..=MAX_INT_
 - **Comments**: explain *why*, not *what*.
 - **Cite upstream by symbol, never by line number.** This holds *everywhere* an upstream reference appears — code comments, rustdoc, test doc comments, `UPSTREAM.md`, `CHANGELOG.md`, and the files under `docs/`. Name the file and the symbol: `// Mirrors LLParser::parseTopLevelEntities (LLParser.cpp)`. A line number is correct only against one LLVM release; the vendored tree will move, and every `Foo.cpp:1234` in the repo silently becomes a lie the moment it does. A symbol name survives the bump and is what a reader greps for anyway.
 - **Public API**: re-export from `lib.rs`. Keep internal modules non-public until an external use case appears. Prefer the narrowest visibility that compiles: private first, then `pub(in super::some_module)` for a specific parent scope, then `pub(super)`, then `pub(crate)`, and plain `pub` only for real public API. Do not use `pub(crate)` as the default for intra-module sharing.
-- **Public API shape**: user-facing alternate operations are separate methods, not `Option<T>` inputs (`set_*`/`clear_*`, `*_within_none`, `*_to_caller`). Public config/result structs keep fields private and expose constructors plus Rust API Guidelines C-GETTER accessors (`field()`, never `get_field()`). Internal ids and fields may stay direct when they are not user-facing; user-facing ids and other public data use idiomatic getters such as `id()`. Public signatures use imported type names instead of `crate::...` / `super::...`.
+- **Public API shape**: user-facing alternate operations are separate methods, not `Option<T>` inputs (`set_*`/`clear_*`, `*_within_none`, `*_to_caller`). Public config/result structs keep fields private and expose constructors plus Rust API Guidelines C-GETTER accessors (`field()`, never `get_field()`). **Error types are the exception: their fields are public**, because an error is destructured in a `match` rather than encapsulated — `ParseError`, `DataLayoutError` and `BrandError` all rely on this, and hiding the payload behind accessors would defeat the exhaustive matching those types exist to allow. Internal ids and fields may stay direct when they are not user-facing; user-facing ids and other public data use idiomatic getters such as `id()`. Public signatures use imported type names instead of `crate::...` / `super::...`.
 - **Prefer imports over fully qualified paths, and prefer precise parent-relative imports.** Import types, traits, and helper functions at the top of the module (`use super::metadata::MetadataKind;` from same-crate modules) instead of spelling `crate::metadata::MetadataKind` inline. For same-crate code, prefer direct `super::<sibling>` imports over `crate::...`, especially in `use` items; avoid broad `super::super::...` hops unless the file is genuinely nested two module levels below the target and there is no clearer local re-export/import path. Reserve `crate::...` for crate-root re-exports, doctest/user-facing examples, or paths that would become unclear or invalid parent-relative imports. Fully qualified paths are reserved for one-off disambiguation, macro hygiene, macro-generated code where imports would be misleading, or cases where an import would create a real name conflict. When editing code, do not introduce new fully qualified `crate::...` / `super::...` paths in signatures or ordinary expressions; add or extend a `use` item and use the imported name instead.
 - **No `as` casts.** Use `From`/`Into` for infallible widening, `TryFrom`/`TryInto` for fallible narrowing, and method-style conversions (e.g. `u32::from(x)`, `usize::try_from(x)`) elsewhere. The `as` keyword silently truncates, changes signedness, and loses precision — every site is a footgun. If a conversion has no idiomatic counterpart (rare, e.g. deliberate truncation), wrap it in a small named helper with a one-line invariant comment.
 - **No pointer-based identity in our code.** Identity flows through typed integer indices (`TypeSlot`, `ValueSlot`, `ModuleId`, and the public `*Id` family). No `core::ptr::eq`, no `&T as *const T`, no address hashing in user-written code. Library internals like `boxcar` may use raw pointers safely behind their `unsafe` boundaries — we do not. Identity comparisons derive from `PartialEq`/`Hash` on the index types.

@@ -213,7 +213,7 @@ takes the typed route, which is why its call reads
 |Inkwell|llvmkit|Notes|
 |---|---|---|
 |`Context::create()`|`module_new!(name)?`|owned, branded module token; no separate context|
-|`context.create_module(n)`|`module_new!(n)?` / `Module::branded::<B, _>(n)?` / `Module::dynamic(n)`|same, three brand policies. Only `dynamic` is infallible — the other two claim a brand in the process-global registry (`IrError::BrandInUse` / `BrandRetired`)|
+|`context.create_module(n)`|`module_new!(n)?` / `Module::branded::<B, _>(n)?` / `Module::dynamic(n)`|same, three brand policies. Only `dynamic` is infallible — the other two claim a brand in the process-global registry (`BrandError::InUse` / `Retired`)|
 |storing an `IntValue<'ctx>` in a struct or `HashMap`|store the id (`IntValueId<W, B>`, `FunctionId<R, B>`, `BlockId<R, B, Params>`, …); read through `m.view(id)` / `m.try_view(id)`|ids are `Copy + Send + 'static` and borrow nothing. `handle.id()` mints one from a handle. A stale or foreign id is `IrError::ForeignValueId`, `None`, or a panic — never a dangling read (`#![forbid(unsafe_code)]` workspace-wide)|
 |`context.i32_type()`|`m.i32_type()`|on the module (or its `ModuleView`), not on a context|
 |`context.custom_width_int_type(n)`|`m.custom_width_int_type(n)?`|fallible (returns `IrResult<IntType<'ctx, IntDyn, B>>`)|
@@ -294,7 +294,7 @@ module. `module_new!` mints one per expansion site (unnameable outside it),
 `Module::branded::<B>` takes one you name, `Module::branded_once::<B>` retires it
 permanently on drop, and `DynBrand` (via `Module::dynamic`) opts out in favour of
 the runtime module tag alone. A process-global registry admits at most one live
-module per named brand (`IrError::BrandInUse` / `BrandRetired`); `DynBrand` is
+module per named brand (`BrandError::InUse` / `Retired`); `DynBrand` is
 exempt from it, which is precisely why it buys no compile-time separation.
 Handles from two distinct brands cannot be mixed in normal code.
 
