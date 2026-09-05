@@ -307,10 +307,32 @@ The reason parameterised variants cannot adopt the literal-at-head shape stands:
 those mid-string (`"invalid symbolic addrspace '" + AddrSpaceStr + "'"`), so pinning a
 head-literal would change the text, which is contractual.
 
-**The drift test therefore covers the nullary variants exactly, and not the parameterised ones.**
-That split is deliberate and, importantly, **structural rather than an exemption list**: a new
-nullary variant is checked automatically, and you cannot opt out without adding a field — a
+**The drift test checks nullary variants on their whole text, and parameterised ones on their
+literal prefix.** Both are structural rather than an exemption list: a new variant of either
+shape is checked automatically, and you cannot opt out without changing the variant's form — a
 visible act in review. An enumerated exemption list would rot; this cannot.
+
+An earlier revision excluded parameterised variants outright, calling them uncheckable because
+upstream builds those messages mid-string. That is a reason they cannot be compared *whole*, not
+a reason they cannot be compared at all — and Phase 0's census already demonstrates the
+technique it claimed did not exist:
+
+```rust
+// the census, already running
+let head = ours.split('{').next().unwrap_or(ours).trim_end();
+if head.len() >= 8 && upstream.iter().any(|u| u.starts_with(head)) {
+    return "parameterised";   // upstream extends our literal prefix
+}
+```
+
+`invalid symbolic addrspace '` either appears as a prefix in the vendored sources or it does
+not, and an invented parameterised message is caught by exactly that. The minimum-length guard
+is what keeps a short prefix from matching half of upstream by accident; carry it over.
+
+**What remains genuinely uncheckable, and must be said rather than glossed:** the
+builder-rejected family. Upstream asserts inside its IR constructors where llvmkit raises a
+diagnostic, so there is no upstream text to compare those against at any granularity. That is
+roughly forty variants of llvmkit-authored wording that no oracle in this plan validates.
 
 ### Field typing — store the thing, not its rendering
 
@@ -338,7 +360,7 @@ What the interpolating sites should become, by what they carry:
 | a nested `IrError` | `source: IrError` — the whole point of the refactor |
 | a slot, id, index or limit | `u32` / `u64` |
 | an `AtomicRmwBinOp` | the enum itself |
-| a rendered type | owned text — see below, this is settled, not open |
+| a rendered type | `TypeKindLabel` **plus** the spelling as owned text — see below |
 | a symbol or field name | owned text — genuinely arbitrary input |
 | a fixed set spelled as `&'static str` | a new enum, or `SymbolKind`, which already exists |
 
@@ -439,13 +461,45 @@ MetadataFieldValueTooLarge { value: u64, max: u64 },  // not text — they are n
 UndefinedTypeNamed { name: Box<str> },                // owned text: arbitrary input
 ```
 
-**Rendered types are owned text, and that is settled here rather than deferred.** An earlier
-revision listed the type renderings as the design's one genuinely open question and told Phase 5
-to decide whether they could hold a type handle. They cannot, and the reason is structural
-rather than a measurement: a `TypeId` renders only against the module that owns it, `ParseError`
-carries no brand and no module, and an error routinely outlives the borrow that produced it.
-There is nothing for Phase 5 to weigh. They are owned text, they are the largest single group of
-owned-text fields, and an earlier revision put their number at half the tree's.
+**A rendered type carries its kind beside its spelling. It is not text alone.** Two earlier
+revisions got this wrong in opposite directions — one deferred it to Phase 5 as the design's
+open question, the next declared it settled as plain owned text. The second reasoned that a
+`TypeId` renders only against the module that owns it, that `ParseError` carries no brand and no
+module, and that an error outlives the borrow that produced it. All true, and none of it implies
+the field must be a bare string: it rules out a *handle*, not a *description*.
+
+The middle option already exists and already crosses this exact boundary. `llvmkit_ir` exports
+`TypeKindLabel` — brand-free, `Copy`, with its own `Display` — and `IrError` uses it today:
+
+```rust
+// IrError, shipped
+#[error("type mismatch: expected {expected}, got {got}")]
+TypeMismatch { expected: TypeKindLabel, got: TypeKindLabel },
+```
+
+So the sibling error type in the same workspace does the typed thing this document was about to
+decline. A `ParseError` variant carrying a rendered type takes both halves:
+
+```rust
+#[error("'{name}' defined with type '{defined_spelling}' but expected '{expected_spelling}'")]
+DefinedWithWrongType {
+    name: Box<str>,
+    defined: TypeKindLabel,            // matchable
+    defined_spelling: Box<str>,        // contractual text: `<4 x i32>` prints byte-for-byte
+    expected: TypeKindLabel,
+    expected_spelling: Box<str>,
+    loc: Span,
+},
+```
+
+The spelling stays because the rendered text is upstream's and must not move. The label is what
+makes the error answerable: `matches!(err, DefinedWithWrongType { defined: TypeKindLabel::Vector, .. })`
+instead of sniffing the string for a leading `<`, which is precisely the weak runtime predicate
+D6 forbids. This is the largest single group of owned-text fields, so getting it wrong would
+have set the tone for the rest.
+
+**Where a spelling has no kind to pair with, it stays text alone** — that is not a defect, just
+the absence of a label worth carrying.
 
 Owned text is spelled `Box<str>` rather than `String`: 16 bytes against 24, immutable, and it
 says the payload is fixed. `Cow<'static, str>` cannot help:
@@ -665,10 +719,12 @@ before any fixture runs. What Phase 6 actually delivers:
 - manifest rows *may* additionally pin a variant name, additively and optionally, for rows where
   the text alone is ambiguous.
 
-**State the residual honestly rather than claiming closure.** Parameterised variants are outside
-the drift test by construction, and the whole `*Rejected` family is llvmkit-authored text with no
-upstream counterpart at all — upstream asserts where we diagnose. Those two sets are exactly
-where an invented message can still hide, and no oracle in this plan catches them.
+**State the residual honestly rather than claiming closure.** Parameterised variants are checked
+on their literal prefix, not their whole text, so an invention that keeps a genuine upstream
+prefix and diverges after the first `{` still passes. And the whole `*Rejected` family is
+llvmkit-authored text with no upstream counterpart at any granularity — upstream asserts where we
+diagnose — so no oracle in this plan validates it. Those are the two places an invented message
+can still hide, and the second is the larger of them.
 
 ### The prose is part of the API, and Phase 1 owns it
 
@@ -716,9 +772,11 @@ was wrong, and it gets reported as a defect rather than absorbed.
 `Attributes.td` rather than from a Rust list:
 
 - **ours → upstream** — every nullary variant's text appears verbatim in the vendored
-  `LLParser.cpp` **or `LLLexer.cpp`**. Catches invented messages. Both files, because the lexer
-  owns eight of the texts, `bitwidth for integer type out of range` among them; a test reading
-  only `LLParser.cpp` would report all eight as inventions.
+  `LLParser.cpp` **or `LLLexer.cpp`**, and every parameterised variant's literal prefix — the
+  text before its first `{` — appears as the prefix of some upstream literal. Catches invented
+  messages of both shapes. Both files, because the lexer owns eight of the texts, `bitwidth for
+  integer type out of range` among them; a test reading only `LLParser.cpp` would report all
+  eight as inventions.
 - **upstream → ours** — every `error`/`tokError` literal upstream is some variant's text, or is
   named in an explicit `NOT_YET_PORTED` list. Catches missing ones.
 - **the list itself** — `NOT_YET_PORTED` is checked for stale entries, exactly as
