@@ -28,3 +28,17 @@ llvmkit-ir        = { version = "0.0.4", path = "crates/llvmkit-ir", default-fea
 llvmkit-macros    = { version = "0.0.4", path = "crates/llvmkit-macros" }
 llvmkit-tablegen  = { version = "0.0.4", path = "crates/llvmkit-tablegen" }
 thiserror         = "2"
+
+# The gate runs `--release` on ~280 test binaries, and their *execution* is not
+# what costs: at `opt-level = 3` the workspace spends far longer optimising and
+# linking those binaries than running them. `opt-level = 1` keeps the loops in
+# the exhaustive ports (`known_bits`, the `constant_range_*` family) fast enough
+# to stay in seconds while cutting codegen work sharply — and it applies to the
+# `trybuild` fixtures too, which compile under this profile.
+#
+# Measured at the commit that added this; re-derive with
+# `cargo +1.96.0 test --workspace --all-targets --all-features --release`
+# rather than trusting this comment, and note that other projects building on
+# the same machine contend for cores and make any single timing unreliable.
+[profile.release]
+opt-level = 1
