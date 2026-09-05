@@ -2434,6 +2434,44 @@ than pending:
   Until then the rule stays a `Module::verify()` check — see the "br
   target is not a basic block of the parent function" family in `verifier.rs`.
   Revisit only as its own opt-in cycle if a concrete authoring need appears.
+
+  **The id-first revival shape, sketched 2026-09-04.** Asked for again in a
+  later session; recorded here so the next one starts from a concrete proposal
+  rather than re-deriving it. The generative-lifetime form is dead — it needs a
+  closure scope, and 0.0.4 deleted the closure-scoped module constructor. The
+  id-first form is a **brand type**, exactly like `ModuleBrand`, defaulted so
+  every existing site is unchanged:
+
+  ```rust
+  pub trait FnBrand: 'static {}
+  pub struct FnErased;                         // the default
+  pub struct FunctionValue<'ctx, R, B, F: FnBrand = FnErased> { … }
+  pub struct BlockId<R, B, Params = BlockParamsDyn, F: FnBrand = FnErased> { … }
+
+  pub fn br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+  where T: IntoBasicBlockLabel<'ctx, R, B, F>;   // pinned to the builder's function
+  ```
+
+  Opting in declares a bare unit struct per function, and a label minted in one
+  function's body then stops being the right *type* to branch to from another's
+  — LLVM's "Referring to a basic block in another function!" becomes a compile
+  error rather than a verifier finding.
+
+  **Costs, measured at `d0f24b7`.** `grep -rn 'BlockId<' --include=*.rs crates/
+  llvmkit/` gives 157 sites, 111 of them in `src/`. The default absorbs most,
+  but `Params` is *already* defaulted, so any signature spelling `Params`
+  explicitly must now also spell `F` — those are the ones that break. `BlockId`
+  would carry four type parameters; note the `Branded` derive exists precisely
+  because a std `derive` on a brand-generic type reintroduces bounds and blames
+  the use site, and a fourth marker is where that gets uncomfortable.
+
+  **What has and has not expired.** Two of the three original deferral reasons
+  have: the closure-scoped constructor it would have reintroduced is gone, and
+  block targets became storable ids. The load-bearing one has **not** — the
+  primary consumer recovers control flow at runtime rather than authoring it
+  statically, so a compile-time function identity fights its model. Opt-in by
+  default softens that, since such a consumer simply never names a brand, but it
+  does not remove it. **Do not revive this without a consumer that wants it.**
 - **Whole-graph verifier territory** — phi-incoming completeness against the
   final predecessor set for builder-constructed IR, and dominance, are permanent
   residents of `Module::verify()` (defense in depth). These are whole-graph facts
