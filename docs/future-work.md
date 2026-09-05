@@ -2985,3 +2985,66 @@ propagate with `?` has cost nothing yet") none is narrowed here. Re-derive
 before acting on any of these — several of the counts and dead-branch claims
 above superseded ones the supplement made without being able to verify them
 (see the `primitive_to_type` entry).
+
+## Two-or-more adjacent `bool` parameters: the sixteen left, and why
+
+The C-CUSTOM-TYPE sweep of 2026-09-05 converted three functions whose adjacent
+`bool`s were llvmkit's own shape. Sixteen were left, and this records why so the
+next sweep does not re-litigate them. Re-derive the full list with:
+
+```bash
+for f in crates/llvmkit-ir/src/*.rs crates/llvmkit-support/src/*.rs crates/llvmkit-asmparser/src/*.rs; do
+  awk -v F="$f" '
+    /(^|[^a-z_])fn [a-z_]+/ {buf=$0; cap=1; if (/\{[ ]*$/ || /;[ ]*$/) emit(); next}
+    cap {buf=buf" "$0; if (/\{[ ]*$/ || /;[ ]*$/) emit()}
+    function emit(  n,s) { cap=0; gsub(/[ \t]+/," ",buf)
+      s=substr(buf, index(buf,"(")); n=gsub(/: *bool/,"&",s)
+      if (n>=2) printf "%s:  %s\n", F, substr(buf,1,160) }' "$f"
+done
+```
+
+**A line-oriented pattern cannot find these.** An earlier draft of the task used
+`grep -rnE "bool,[[:space:]]*$" … -A1`, which returns **0** — these signatures
+wrap, so the two `bool`s never share a line. A command returning zero here reads
+as "there are none", which is how the count came to be recorded as two.
+
+**Converted** (llvmkit's own shape, unrelated axes or one concept):
+
+| function | became |
+|---|---|
+| `KnownFpClass::round_to_integral` | `RoundingIntrinsic` + `FloatUnitKind` |
+| `is_known_negation` | `NswRequirement` + `PoisonPolicy` |
+| `only_used_by_markers` | `AllowedMarkers { lifetime, droppable }` |
+
+**Left, and why.** Each mirrors an upstream signature parameter-for-parameter,
+and this repo ports the routine rather than only its outcome. A named type here
+is still only a *spelling* change and remains permissible — but these carry no
+call site that reads as an unlabelled literal run, which is the defect the rule
+exists to prevent:
+
+- `KnownBits::compute_for_add_carry_raw(lhs, rhs, carry_zero, carry_one)` and
+  `determine_live_operand_bits_add_carry(...)` — mirror
+  `KnownBits::computeForAddCarry(LHS, RHS, CarryZero, CarryOne)`. Both flags are
+  derived expressions at every call site, never literals.
+- `KnownBits::compute_for_add_sub_impl(add, nsw, nuw, lhs, rhs)` — mirrors
+  `computeForAddSub(bool Add, bool NSW, bool NUW, …)`. Three `bool`s, and the
+  upstream order is load-bearing for the port's readability against the C++.
+- `KnownBits::compute_for_sat_add_sub(add, signed, lhs, rhs)` — mirrors
+  `computeForSatAddSub`.
+- `KnownBits::compute_for_shl` / `compute_for_lshr` / `compute_for_ashr` —
+  `(nuw, nsw, shift_amount_non_zero)` and `(shift_amount_non_zero, exact)`
+  mirror the upstream shift transfer functions exactly.
+- The six `(nuw, nsw)` constructors — `constant.rs::new` / `::overflowing`, four
+  `instr_types.rs::from_parts` — **are** the no-wrap flag type's own
+  constructors. Wrapping a flags type's constructor in another flags type is
+  circular.
+- `attributes.rs::at(function, parameter, return_value)` — a private table
+  helper whose three `bool`s are the table's columns; the table reads as a
+  matrix and named arguments would obscure it.
+- `ll_parser.rs::int_binop_flags(nuw, nsw, exact, disjoint)` — builds
+  `IntBinOpFlags` from four parsed keyword presences, same circularity as above.
+
+**The trigger to revisit**: a call site appearing that passes two or more of
+these as bare literals. That is what made `round_to_integral(finite, false,
+true)` and `is_known_negation(x, y, false, true)` worth changing, and none of
+the sixteen has one today.

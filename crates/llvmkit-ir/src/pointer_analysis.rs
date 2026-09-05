@@ -388,7 +388,13 @@ pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `llvm::onlyUsedByLifetimeMarkers`.
 pub fn only_used_by_lifetime_markers<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
-    only_used_by_markers(value, true, false)
+    only_used_by_markers(
+        value,
+        AllowedMarkers {
+            lifetime: true,
+            droppable: false,
+        },
+    )
 }
 
 /// Whether every user of `value` is a lifetime marker or a droppable
@@ -401,15 +407,42 @@ pub fn only_used_by_lifetime_markers<'ctx, B: ModuleBrand + 'ctx>(value: Value<'
 pub fn only_used_by_lifetime_markers_or_droppable_instructions<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> bool {
-    only_used_by_markers(value, true, true)
+    only_used_by_markers(
+        value,
+        AllowedMarkers {
+            lifetime: true,
+            droppable: true,
+        },
+    )
+}
+
+/// Which kinds of user [`only_used_by_markers`] tolerates.
+///
+/// Spells the two adjacent `bool`s of upstream's
+/// `onlyUsedByLifetimeMarkersOrDroppableInstsHelper(V, bool AllowLifetime,
+/// bool AllowDroppable)`. Unlike the pairs in `round_to_integral` and
+/// `is_known_negation`, these two *are* one concept — both answer "may a user
+/// of this kind appear" — so they group into one value with named fields
+/// rather than becoming two independent enums. Same shape as
+/// `ConstantRange`'s `NoWrapKind`, and the same reason: neither flag can be
+/// mistaken for the other at a call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AllowedMarkers {
+    /// `llvm.lifetime.start` / `llvm.lifetime.end`.
+    lifetime: bool,
+    /// `User::isDroppable` intrinsics.
+    droppable: bool,
 }
 
 /// Ports the static `onlyUsedByLifetimeMarkersOrDroppableInstsHelper`.
 fn only_used_by_markers<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-    allow_lifetime: bool,
-    allow_droppable: bool,
+    allowed: AllowedMarkers,
 ) -> bool {
+    let AllowedMarkers {
+        lifetime: allow_lifetime,
+        droppable: allow_droppable,
+    } = allowed;
     value.users().all(|user| {
         let Some(name) = called_intrinsic_name(user.to_erased()) else {
             return false;

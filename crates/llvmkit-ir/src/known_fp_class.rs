@@ -46,7 +46,7 @@ use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::constant::ConstantData;
 use crate::denormal_mode::{DenormalMode, DenormalModeKind};
 use crate::fmf::FastMathFlags;
-use crate::fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
+use crate::fp_class::{FloatUnitKind, FpClassTest, KnownFpClass, MinMaxKind, RoundingIntrinsic};
 use crate::fp_predicate::{denormal_mode_of, enclosing_function_of, fcmp_implies_class};
 use crate::instr_types::{
     BranchKind, CastOpcode, ExtractElementInstData, InsertElementInstData, PhiData,
@@ -1252,8 +1252,16 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let known_source = known_fp_class(source, interested_classes, query, depth + 1);
             KnownFpClass::round_to_integral(
                 known_source,
-                name == "llvm.trunc",
-                is_multi_unit_float_type(value.ty()),
+                if name == "llvm.trunc" {
+                    RoundingIntrinsic::Trunc
+                } else {
+                    RoundingIntrinsic::Other
+                },
+                if is_multi_unit_float_type(value.ty()) {
+                    FloatUnitKind::MultiUnit
+                } else {
+                    FloatUnitKind::SingleUnit
+                },
             )
         }
         "llvm.exp" | "llvm.exp2" | "llvm.exp10" => {
