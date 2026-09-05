@@ -19,6 +19,37 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Removed — `read_to_owned`; the parser crate performs no I/O at all *(breaking)*
+
+`llvmkit_asmparser::read_to_owned` is gone. It wrapped `Read::read_to_end` in
+four lines, and with the file-reading entry points already removed it was the
+last thing tying this crate to `std::io`. Draining a reader is the caller's job,
+which is the split upstream draws too: `lib/AsmParser`'s primitive takes a
+`MemoryBufferRef`, and the file read lives in Support's
+`MemoryBuffer::getFileOrSTDIN`.
+
+```rust
+// was
+let bytes = read_to_owned(File::open("foo.ll")?)?;
+
+// now, from a path
+let bytes = std::fs::read("foo.ll")?;
+
+// now, from any `Read` source
+let mut bytes = Vec::new();
+some_reader.read_to_end(&mut bytes)?;
+```
+
+After this the crate's `src/` names no `std::io`, `std::fs` or `std::path`.
+
+**A compile-fail fixture holds that, not a grep.** With `ParseError::Io` and its
+`From<std::io::Error>` both gone, `?` on an `io::Result` inside a `ParseResult`
+function has no conversion to reach for, so
+`tests/compile_fail/parse_error_is_not_an_io_error.rs` proves the property
+rather than describing it. A grep for `std::io` would pass again the moment
+someone added the impl back; this cannot. `trybuild` joins this crate's
+dev-dependencies to carry it.
+
 ### Removed — `DiagLoc` is deleted; a diagnostic's location is a `Span` *(breaking)*
 
 `DiagLoc` is gone; `ParseError::loc` returns a `llvmkit_support::Span`. Its

@@ -3,7 +3,7 @@
 //! ## Upstream provenance
 //!
 //! Exercises the public lexer entry points (`Lexer::new`, `Lexer::from`,
-//! `read_to_owned`) against `tests/fixtures/demo.ll`. Closest upstream
+//! a caller-drained `Read` source) against `tests/fixtures/demo.ll`. Closest upstream
 //! reference: `lib/AsmParser/LLLexer.cpp` (`LLLexer::Lex`,
 //! `LLLexer::LexToken`, `LLLexer::LexIdentifier`, `LLLexer::LexQuote`).
 //! Upstream has no isolated lexer unit test; the lexer is exercised via
@@ -11,11 +11,10 @@
 //! Per-test citations below.
 
 use std::borrow::Cow;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use llvmkit_asmparser::ll_lexer::{LexError, Lexer};
 use llvmkit_asmparser::ll_token::{Keyword, PrimitiveTy, Token};
-use llvmkit_asmparser::read_to_owned;
 use llvmkit_support::Spanned;
 
 const SRC: &str = include_str!("fixtures/demo.ll");
@@ -44,8 +43,14 @@ fn three_input_paths_yield_identical_streams() {
     // Path 2: From<&[u8]> / Lexer::new (canonical constructor).
     let b = collect(Lexer::new(SRC.as_bytes()));
 
-    // Path 3: from any `Read` source via the documented helper.
-    let bytes = read_to_owned(Cursor::new(SRC.as_bytes())).expect("read");
+    // Path 3: from any `Read` source. The crate offers no helper for this —
+    // reading is the caller's job, the same split upstream draws between
+    // `lib/AsmParser` and Support's `MemoryBuffer::getFileOrSTDIN` — so the
+    // caller drains the reader itself and hands the lexer the borrowed slice.
+    let mut bytes = Vec::new();
+    Cursor::new(SRC.as_bytes())
+        .read_to_end(&mut bytes)
+        .expect("read");
     let c = collect(Lexer::new(&bytes));
 
     assert_eq!(a, b);

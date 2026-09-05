@@ -481,7 +481,6 @@ Rust filename.
 ```rust
 use llvmkit_asmparser::ll_lexer::{Lexer, LexError};
 use llvmkit_asmparser::ll_token::Token;
-use llvmkit_asmparser::read_to_owned;
 
 // In-memory string — the most ergonomic shape:
 let mut lex = Lexer::from("@x = i32 42");
@@ -491,8 +490,9 @@ while let Some(tok) = lex.next() { /* Result<Spanned<Token>, LexError> */ }
 let bytes: Vec<u8> = std::fs::read("foo.ll")?;
 let lex = Lexer::new(&bytes);
 
-// Any `Read` source via the documented helper:
-let bytes = read_to_owned(some_reader)?;
+// Any `Read` source — the caller drains it; the crate offers no helper:
+let mut bytes = Vec::new();
+some_reader.read_to_end(&mut bytes)?;
 let lex = Lexer::new(&bytes);
 ```
 
@@ -559,7 +559,7 @@ A single crate-level `enum Error` with variants per failure mode is preferred. W
 C++ takes `const char *Filename` or `MemoryBufferRef`. Rust takes:
 
 - `impl AsRef<[u8]>` for the parser itself (`parse_dynamic` / `parse_into` / `parse_assembly`, and the fragment parsers `parse_type` / `parse_type_at_beginning` / `parse_constant_value`). A `&str` satisfies `AsRef<[u8]>` directly, so there is no separate `_string` twin. The fragment parsers no longer thread an `Option<&SlotMapping>` parameter — the slot-consuming variants are the explicit `*_with_slots` twins (`parse_type_with_slots` / `parse_type_at_beginning_with_slots` / `parse_constant_value_with_slots`). There is no `impl AsRef<Path>` entry point anywhere in the parser facade: reading a file is the caller's job (`std::fs::read` before parsing), the same split upstream draws between `lib/AsmParser` (`MemoryBufferRef`-only) and Support's `MemoryBuffer::getFileOrSTDIN`.
-- `impl Read` helpers should read once into owned bytes before handing a borrowed slice to the lexer / parser (`llvmkit_asmparser::read_to_owned`).
+- A `Read` source is drained by the **caller** into owned bytes before the borrowed slice reaches the lexer or parser. The crate ships no helper for this and deliberately names no `std::io` at all: `std::io::Read::read_to_end` is the whole operation, and a wrapper around it would put I/O back in a crate whose upstream counterpart has none. Locked by `tests/compile_fail/parse_error_is_not_an_io_error.rs`, which proves `?` on an `io::Result` cannot reach a `ParseResult`.
 - `fmt::Display` (`format!("{module}")`) for printers until a dedicated `Write` facade exists.
 
 Prefer the closure-free entry points: `parse_dynamic` / `parse_into` return the **owned** `Module<B, Unverified>`. The `parse_assembly*` family still takes a closure, and the reason is not the brand — `ParsedModule` holds borrowing handles into the module, so handing both back would be a self-reference.

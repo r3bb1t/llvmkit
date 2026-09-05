@@ -8,12 +8,10 @@
 //! On a lex error, the example prints a one-line diagnostic with `(line:col)`
 //! pulled from a [`SourceMap`] and exits with status 1.
 
-use std::fs::File;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use llvmkit_asmparser::ll_lexer::{LexError, Lexer};
-use llvmkit_asmparser::read_to_owned;
 use llvmkit_support::SourceMap;
 
 fn main() -> ExitCode {
@@ -23,7 +21,7 @@ fn main() -> ExitCode {
     };
 
     // Single I/O round-trip — every later operation works on the borrowed slice.
-    let bytes = match File::open(&path).and_then(read_to_owned) {
+    let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: cannot read {}: {e}", path.display());

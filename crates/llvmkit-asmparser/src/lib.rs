@@ -33,8 +33,6 @@ pub mod parse_error;
 pub mod parser;
 pub mod slot_mapping;
 
-use std::io::{self, Read};
-
 /// Every parsing entry point, at the crate root.
 ///
 /// [`parse_dynamic`] is the ordinary way in: it returns the owned
@@ -71,16 +69,3 @@ pub use ll_parser::ParsedModule;
 pub use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
 pub use parse_error::{ParseError, ParseResult, SymbolId, SymbolKind};
 pub use slot_mapping::{GlobalRef, SlotMapping};
-
-/// Drain `r` into a fresh `Vec<u8>`. Convenience helper for the common case
-/// where a caller has any `Read` source and wants to feed it to
-/// [`ll_lexer::Lexer::new`].
-///
-/// The lexer itself takes a borrowed slice — no I/O traits in its signature
-/// — so this is the recommended boundary between `Read` sources and the
-/// lexer.
-pub fn read_to_owned<R: Read>(mut r: R) -> io::Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    r.read_to_end(&mut buf)?;
-    Ok(buf)
-}

@@ -92,13 +92,20 @@ while let Some(tok) = lex.next() {
 }
 ```
 
-For a `Read`-based entry point, use the `read_to_owned` helper:
+From a `Read` source, drain it yourself — this crate performs no I/O and ships
+no helper for it, matching upstream, where the parser takes a `MemoryBufferRef`
+and the file read lives in Support:
 
 ```rust
-use llvmkit_asmparser::{ll_lexer::Lexer, read_to_owned};
-use std::fs::File;
+use llvmkit_asmparser::ll_lexer::Lexer;
+use std::io::Read;
 
-let bytes = read_to_owned(File::open("foo.ll")?)?;
+let mut bytes = Vec::new();
+std::fs::File::open("foo.ll")?.read_to_end(&mut bytes)?;
+let lex = Lexer::new(&bytes);
+
+// From a path, that whole dance is one call:
+let bytes = std::fs::read("foo.ll")?;
 let lex   = Lexer::new(&bytes);
 ```
 
