@@ -114,9 +114,6 @@ pub trait FunctionParam: Sized + 'static {
     where
         B: ModuleBrand + 'ctx;
 
-    /// Diagnostic kind label expected by this schema.
-    fn expected_kind_label() -> TypeKindLabel;
-
     /// Validate that a raw argument can be represented by [`Self::Value`].
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
     where
@@ -742,11 +739,6 @@ impl FunctionParam for Ptr {
     }
 
     #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Pointer
-    }
-
-    #[inline]
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
@@ -834,11 +826,6 @@ macro_rules! impl_int_signature_marker {
                 B: ModuleBrand + 'ctx,
             {
                 matches!(ty.kind(), TypeKind::Integer { bits } if bits == $bits)
-            }
-
-            #[inline]
-            fn expected_kind_label() -> TypeKindLabel {
-                TypeKindLabel::Integer
             }
 
             #[inline]
@@ -939,11 +926,6 @@ impl<const N: u32> FunctionParam for Width<N> {
     }
 
     #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Integer
-    }
-
-    #[inline]
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
@@ -1031,11 +1013,6 @@ macro_rules! impl_float_signature_marker {
                 B: ModuleBrand + 'ctx,
             {
                 matches!(ty.kind(), $kind)
-            }
-
-            #[inline]
-            fn expected_kind_label() -> TypeKindLabel {
-                TypeKindLabel::$label
             }
 
             #[inline]

@@ -19,6 +19,19 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Removed — the two `expected_kind_label` methods nothing calls *(breaking)*
+
+- **Breaking (llvmkit-ir):** `IrField::expected_kind_label` and
+  `FunctionParam::expected_kind_label` are removed. Their last consumer was
+  `IrBuilder::extract_field`, which now reports the schema's own type via
+  `IrField::ir_type(..).rendered()` -- a struct schema compares the struct
+  *name* and an integer marker the *width*, so the kind was never the fact the
+  guard tested. A required method on a public trait is invisible to
+  `dead_code`, so nothing in the gate reported the orphan; the census that
+  found it is `rg -n "expected_kind_label" crates/ | rg -v "fn expected_kind_label"`,
+  which returned only the two `Ret::` call sites.
+  `FunctionReturn::expected_kind_label` is unaffected and remains live.
+
 ### Fixed — `IrError`'s derive rationale names a bound, not a payload list
 
 - **(llvmkit-ir)** `IrError`'s rustdoc claimed "Every payload is a plain

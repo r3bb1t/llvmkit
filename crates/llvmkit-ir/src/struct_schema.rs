@@ -60,9 +60,6 @@ pub trait IrField: Sized + 'static {
     where
         B: ModuleBrand + 'ctx;
 
-    /// Diagnostic kind label expected by this schema.
-    fn expected_kind_label() -> TypeKindLabel;
-
     /// Convert a raw field value after [`matches_ir_type`](Self::matches_ir_type)
     /// has accepted its type.
     fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
@@ -220,11 +217,6 @@ where
         S::matches_fields(&fields)
     }
 
-    #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Struct
-    }
-
     fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
@@ -253,11 +245,6 @@ macro_rules! impl_int_field {
                 B: ModuleBrand + 'ctx,
             {
                 matches!(ty.kind(), crate::TypeKind::Integer { bits } if bits == $bits)
-            }
-
-            #[inline]
-            fn expected_kind_label() -> TypeKindLabel {
-                TypeKindLabel::Integer
             }
 
             #[inline]
@@ -313,11 +300,6 @@ impl IrField for IntDyn {
     }
 
     #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Integer
-    }
-
-    #[inline]
     fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
@@ -354,11 +336,6 @@ impl<const N: u32> IrField for Width<N> {
         B: ModuleBrand + 'ctx,
     {
         matches!(ty.kind(), crate::TypeKind::Integer { bits } if bits == N)
-    }
-
-    #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Integer
     }
 
     #[inline]
@@ -400,11 +377,6 @@ macro_rules! impl_float_field {
                 B: ModuleBrand + 'ctx,
             {
                 matches!(ty.kind(), $kind)
-            }
-
-            #[inline]
-            fn expected_kind_label() -> TypeKindLabel {
-                TypeKindLabel::Float
             }
 
             #[inline]
@@ -456,11 +428,6 @@ impl IrField for Ptr {
         B: ModuleBrand + 'ctx,
     {
         ty.is_pointer()
-    }
-
-    #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Pointer
     }
 
     #[inline]
@@ -705,11 +672,6 @@ where
         B: ModuleBrand + 'ctx,
     {
         <S as IrField>::matches_ir_type(ty)
-    }
-
-    #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Struct
     }
 
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
