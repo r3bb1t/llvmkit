@@ -552,10 +552,38 @@ When LLVM uses `getOpcode()` + downcasting, prefer a single `enum Instruction { 
 C++ patterns like `bool parseFoo(Foo &out, SMDiagnostic &err)` become:
 
 ```rust
-fn parse_foo(input: &mut impl BufRead) -> Result<Foo, ParseError>;
+fn parse_foo(input: impl AsRef<[u8]>) -> Result<Foo, ParseError>;
 ```
 
-A single crate-level `enum Error` with variants per failure mode is preferred. Wrap third-party errors with `#[from]` so `?` works.
+(`impl AsRef<[u8]>`, not `impl BufRead` — see §*Generic I/O via traits, not file
+paths* below: the lexer needs the whole buffer, so no streaming form exists in
+either tree.)
+
+**Each crate has one root error enum; a failure mode with its own vocabulary
+gets its own type and is nested into that root with `#[from]`.** The root is the
+type a caller of the crate's main surface matches on (`IrError`, `ParseError`);
+it is *not* a flat list of every failure mode the crate can have. When a family
+of failures shares payload, invariants, or a `Display` register that the root
+does not — a brand claim, a `target datalayout` string, an inline-`asm`
+constraint — it becomes a named enum, and the root carries it as a single
+transparent variant. Both halves are load-bearing: the narrow type is what code
+that *handles* that family matches on and what a narrow API returns directly,
+and the `#[from]` variant is what makes `?` work through the root. The tree does
+this today with `IrError::Brand(#[from] BrandError)`,
+`IrError::DataLayout(#[from] DataLayoutError)` and
+`ParseError::Lex(#[from] LexError)`; `ConstraintParseError`,
+`InlineAsmVerifyError`, `PhiCoherenceError`, `UseListOrderError`, `AddError`
+and `LocationError` are returned directly by the narrow APIs that produce them
+and are not flattened into any root. Wrap third-party errors with
+`#[from]` too, but only errors the operation genuinely produces — a variant that
+no code path can construct is the over-declaration §*Fallibility honesty*
+forbids, wearing an error type's clothes.
+
+Derive the enumeration above rather than copying it:
+`grep -rnE "^pub (enum|struct) [A-Za-z]*Error\b" --include=*.rs crates/ llvmkit/`
+lists the error types (12 at `256dcb6`), and
+`grep -rn "#\[from\] [A-Za-z]*Error" --include=*.rs crates/` lists the nested
+ones (3 at `256dcb6`).
 
 ### Generic I/O via traits, not file paths
 
@@ -682,7 +710,7 @@ And by `Module::int_type_n::<N>()` for the range check (`MIN_INT_BITS..=MAX_INT_
 - **Be honest about fallibility.** A signature's return type is a claim. Do not return `IrResult<T>` from an operation that cannot fail (`Module::dynamic` is infallible and says so), and never make a real failure disappear — no silent no-op, no swallowed error, no `Option` standing in for a diagnosable one. Cycle E fixed two of these: `Module::metadata_set` used to no-op on a bad slot and `named_metadata_add_operand` used to panic; both now return `IrError::UnknownMetadataSlot { index, len }`. The 0.0.4 freeze applied the same rule to the tag: every metadata API that *accepts* a `MetadataId` became fallible rather than silently resolving a foreign id (`IrError::ForeignMetadataId`). When a function's contract genuinely permits a panic, it is documented under a `# Panics` heading and paired with a fallible twin.
 - **No silent erasure.** A typed handle or id never widens to an erased one implicitly, at an operand position or a return position. Erasure is spelled: `as_dyn()` / `as_erased()`, or a call to the `_dyn` or `_erased` method. If a generic narrow is involved, re-check the runtime type at the point of construction rather than trusting a caller-supplied marker.
 - **Modules**: one concept per file; let modules grow before splitting them. `Instructions.h` is 5k lines because it pays for itself; do not pre-split into 40 stub files.
-- **Errors**: one crate-level `enum Error` (or a small per-subsystem enum that flattens into it). Avoid `Box<dyn std::error::Error>` in public signatures.
+- **Errors**: one root enum per crate, with a failure family that has its own vocabulary nested into it as a `#[from]` variant — the full rule, its two halves and the tree's examples are in §*`Result` instead of `bool` + out-params* above. Avoid `Box<dyn std::error::Error>` in public signatures.
 - **Comments**: explain *why*, not *what*.
 - **Cite upstream by symbol, never by line number.** This holds *everywhere* an upstream reference appears — code comments, rustdoc, test doc comments, `UPSTREAM.md`, `CHANGELOG.md`, and the files under `docs/`. Name the file and the symbol: `// Mirrors LLParser::parseTopLevelEntities (LLParser.cpp)`. A line number is correct only against one LLVM release; the vendored tree will move, and every `Foo.cpp:1234` in the repo silently becomes a lie the moment it does. A symbol name survives the bump and is what a reader greps for anyway.
 - **Public API**: re-export from `lib.rs`. Keep internal modules non-public until an external use case appears. Prefer the narrowest visibility that compiles: private first, then `pub(in super::some_module)` for a specific parent scope, then `pub(super)`, then `pub(crate)`, and plain `pub` only for real public API. Do not use `pub(crate)` as the default for intra-module sharing.
