@@ -10,8 +10,9 @@
 
 use llvmkit_ir::{
     Analyses, BlockId, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass,
-    FunctionView, InsertPoint, IntPredicate, IntValue, IntValueId, IrBuilder, IrError, IrResult,
-    Linkage, Module, ModuleBrand, ReshapeCfg, ValueId, module_new, run_function_pass,
+    FunctionView, GlobalId, InsertPoint, IntPredicate, IntValue, IntValueId, IrBuilder, IrError,
+    IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, ValueCategoryLabel, ValueId, module_new,
+    run_function_pass,
 };
 
 /// A `ReshapeCfg` pass that requires the dominator tree and splits the entry
@@ -422,6 +423,80 @@ fn insert_phi_typed_rejects_empty_incomings() -> Result<(), IrError> {
     assert!(
         matches!(err, IrError::InvalidOperation { .. }),
         "expected InvalidOperation for empty incomings, got: {err:?}"
+    );
+    Ok(())
+}
+
+/// A `ReshapeCfg` pass that feeds the typed `insert_phi` a `GlobalId` -- an id
+/// whose view is determined by value *category*, not by type. Every bound on
+/// `insert_phi` is satisfied, so the call compiles; the phi it builds is an
+/// instruction, so the narrow back to `GlobalVariable` cannot succeed.
+struct InsertMergePhiGlobal<B: ModuleBrand> {
+    merge_name: &'static str,
+    incomings: Vec<(GlobalId<B>, BlockId<Dyn, B>)>,
+}
+
+impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhiGlobal<B> {
+    type Access = ReshapeCfg;
+    type Requires = (DominatorTreeAnalysis,);
+    const NAME: &'static str = "insert-merge-phi-global";
+
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
+        let mut reshape = cx.mutate();
+        let merge = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.merge_name))
+            .expect("merge block is present");
+        let _phi: GlobalId<B> = reshape.insert_phi(merge.id(), &self.incomings)?;
+        Ok(reshape.done())
+    }
+}
+
+/// NEGATIVE (category-determined id). **llvmkit-specific**: LLVM's phi API is
+/// untyped C++ -- `PHINode::addIncoming` (`llvm/include/llvm/IR/Instructions.h`)
+/// is `void` and forwards to `PHINode::setIncomingValue`, which states the type
+/// obligation as `assert(getType() == V->getType() && "All operands to PHI node
+/// must be the same type as the PHI node!")`. Upstream has no typed-id narrow at
+/// all, so there is nothing to port and this test claims no port.
+///
+/// `insert_phi` derives the phi's type from the first incoming and then narrows
+/// the freshly built phi back to the incoming id's view. That narrow is total
+/// only for ids whose view is determined by *type*; for a `GlobalId`, whose view
+/// is determined by *category*, it can never succeed. The refusal must name what
+/// actually went wrong -- a value-category mismatch the caller supplied -- and
+/// must not be dressed as an llvmkit internal invariant.
+#[test]
+fn insert_phi_typed_rejects_a_category_determined_id() -> Result<(), IrError> {
+    let m = module_new!("insert-phi-category-id")?;
+    let (f, _lv, left_label, _rv, right_label) = build_diamond(&m)?;
+    let g = m.add_external_global("g", m.i32_type())?;
+
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = InsertMergePhiGlobal {
+        merge_name: "merge",
+        incomings: vec![(g, left_label), (g, right_label)],
+    };
+    let err = run_function_pass(pass, verified, f, &mut analyses)
+        .expect_err("a phi cannot narrow back to a GlobalVariable");
+
+    assert!(
+        matches!(
+            err,
+            IrError::ValueCategoryMismatch {
+                expected: ValueCategoryLabel::GlobalVariable,
+                ..
+            }
+        ),
+        "expected ValueCategoryMismatch naming GlobalVariable, got: {err:?}"
     );
     Ok(())
 }

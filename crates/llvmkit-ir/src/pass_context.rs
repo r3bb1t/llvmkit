@@ -2179,6 +2179,18 @@ where
     /// [`IrError::ForeignValueId`] if an incoming id is not from this module;
     /// otherwise the same errors as [`Self::insert_phi_dyn`] (dominance /
     /// coherence).
+    ///
+    /// `Id` must be an id whose view narrows from a [`Value`] by **type**
+    /// alone. An id whose view is determined by value category --
+    /// [`GlobalId`](crate::GlobalId), [`GlobalAliasId`](crate::GlobalAliasId),
+    /// [`GlobalIfuncId`](crate::GlobalIfuncId), `FunctionId<Dyn>` -- type-checks
+    /// here but can never succeed, because the value this method builds is a
+    /// phi instruction. Such a call is rejected with the narrow's own
+    /// [`IrError::ValueCategoryMismatch`] **after** the phi has been created and
+    /// the mutator marked dirty: unlike [`Self::insert_phi_dyn`], whose
+    /// obligations are all witnessed before any mutation, this one obligation
+    /// cannot be witnessed until the phi exists. Prefer
+    /// [`Self::insert_phi_dyn`] when the result id is not type-marked.
     #[inline]
     pub fn insert_phi<Id, I>(
         &mut self,
@@ -2207,13 +2219,17 @@ where
             .ok_or(IrError::ForeignValueId)?
             .ty();
         let phi = self.insert_phi_value::<I>(block, ty, &erased)?;
-        // Total by construction: the phi was created with `ty` == `Id`'s type, so
-        // narrowing back to `Id::View` cannot fail. The narrow guards the
-        // invariant rather than trusting it, and only then is the id minted.
-        Id::View::try_from(phi).map_err(|_| IrError::InvalidOperation {
-            message: "insert_phi: constructed phi type disagreed with the incoming \
-                      handle type (internal invariant)",
-        })?;
+        // NOT total: `ty` matches `Id`'s type, but a narrow to `Id::View` is
+        // type-driven only for the type-marker views (`IntValue<W>`,
+        // `FloatValue<K>`, `PointerValue`, `VectorValue`, `ArrayValue`,
+        // `StructValue`). An `Id` whose view is determined by value *category*
+        // -- `GlobalId`, `GlobalAliasId`, `GlobalIfuncId`, `FunctionId<Dyn>` --
+        // satisfies every bound above and can never narrow back from a phi,
+        // because a phi is an instruction. That is the caller's choice of `Id`,
+        // so the narrow's own error is propagated unchanged: it already names
+        // the category (or the type) required and the one supplied. Rewriting
+        // it here replaced a matchable finding with prose.
+        Id::View::try_from(phi)?;
         Ok(Id::id_from_raw(module_ref.id(), phi.slot()))
     }
 

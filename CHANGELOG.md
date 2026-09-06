@@ -19,6 +19,23 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `insert_phi` reports the narrow's finding, not its own blame *(breaking)*
+
+- **Breaking (llvmkit-ir):** `FnReshape::insert_phi` blamed itself for a
+  caller's choice of id. It derives a phi's type from the first incoming and
+  then narrows the built phi back to the incoming id's view; the narrow's
+  failure was rewritten into
+  `IrError::InvalidOperation { message: "... (internal invariant)" }`, a
+  `&'static str` naming llvmkit as the culprit and discarding a structured
+  error that already said what was wrong. `GlobalId<B>` satisfies all four
+  bounds, so `insert_phi` over globals compiles and the narrow returns
+  `IrError::ValueCategoryMismatch { expected: GlobalVariable, got: Instruction }`
+  -- which now reaches the caller unchanged. The `// Total by construction`
+  comment that asserted otherwise is gone, and the rustdoc states what it hid:
+  this is the one obligation `insert_phi` cannot witness before mutating, so
+  the refusal arrives with the phi already created. `insert_phi_dyn` is
+  unaffected.
+
 ### Removed — the two `expected_kind_label` methods nothing calls *(breaking)*
 
 - **Breaking (llvmkit-ir):** `IrField::expected_kind_label` and
