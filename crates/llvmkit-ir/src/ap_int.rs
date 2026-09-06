@@ -574,19 +574,33 @@ impl ApInt {
         self.bit_width == 0 || self.eq_ap_int(&Self::signed_min_value(self.bit_width))
     }
 
-    /// Upstream asserts a non-zero width here (its `isPowerOf2` guards the
-    /// same `BitWidth - 1` shift as the signed extremes); llvmkit answers
-    /// `false`, which its own arithmetic already states — no bits are set, so
-    /// the value is not a power of two. Recorded in `docs/divergences.md`.
+    /// Whether this value is a power of two greater than zero.
+    ///
+    /// Mirrors `APInt::isPowerOf2`. **Upstream asserts a non-zero width here
+    /// and llvmkit answers instead** — but unlike the signed extremes, that
+    /// assert guards nothing mechanical: upstream's `isPowerOf2_64(U.VAL)` is
+    /// `has_single_bit` over the raw word and never reads `BitWidth`. The
+    /// assert is semantic; upstream simply declines the question for a 0-bit
+    /// value. llvmkit answers `false`, which `popcount() == 1` already states
+    /// on its own — no bits are set, so the value is not a power of two.
+    /// Recorded in `docs/divergences.md`.
     #[inline]
     pub fn is_power_of_2(&self) -> bool {
         self.popcount() == 1
     }
 
-    /// Upstream asserts a non-zero width here (its `isPowerOf2` guards the
-    /// same `BitWidth - 1` shift as the signed extremes); llvmkit answers
-    /// `false`, which `is_negative`'s existing `bit_width != 0 &&` guard
-    /// already states. Recorded in `docs/divergences.md`.
+    /// Whether this value's negation is a power of two greater than zero.
+    ///
+    /// Mirrors `APInt::isNegatedPowerOf2`. **Upstream asserts a non-zero width
+    /// here and llvmkit answers instead.** That assert guards an *index*
+    /// rather than a shift, and reaches it indirectly: `isNonNegative()` calls
+    /// `isNegative()`, which is `(*this)[BitWidth - 1]`, and `operator[]`
+    /// asserts `bitPosition < getBitWidth()` — so at width 0 the subtraction
+    /// underflows and the index is out of bounds. llvmkit answers `false`,
+    /// which [`ApInt::is_negative`]'s existing `bit_width != 0 &&` guard
+    /// already states: llvmkit's guard sits exactly where upstream's assert
+    /// does, one level down from this predicate. Recorded in
+    /// `docs/divergences.md`.
     #[inline]
     pub fn is_negated_power_of_2(&self) -> bool {
         self.is_negative() && self.count_trailing_zeros() + 1 == self.bit_width
