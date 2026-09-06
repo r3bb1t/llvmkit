@@ -44,15 +44,34 @@ is the fix, and the split is by **question asked**, not by call site:
   can agree and the types still differ. Twenty sites move to it and now render
   `expected '%Point', got '%Rect'` and `expected 'i64', got 'i32'`.
 
-Both counts, at this commit:
+Both counts, at `a8d710d`, from a scan that walks each construction site and
+reads its `expected:` / `got:` lines rather than matching a multi-line regex:
 
 ```
-rg -n "IrError::TypeIdentityMismatch \{" crates/llvmkit-ir/src crates/llvmkit-asmparser/src | wc -l
-# 20
-rg -nU -o "IrError::TypeMismatch \{\n\s*expected: (.*),\n\s*got: (.*),\n" \
-   crates/llvmkit-ir/src crates/llvmkit-asmparser/src | wc -l
-# 102 = 34 matches x 3 lines; two are ir_builder.rs's own #[cfg(test)] oracles
+25 IrError::TypeIdentityMismatch sites in crates/*/src
+     - 20 production
+     -  5 #[cfg(test)] oracles inside src/ (ir_builder.rs x2, ssa_builder.rs x2,
+          phi_raw_tests/fmf.rs x1)
+44 IrError::TypeMismatch sites remaining
+     - 38 with a literal `TypeKindLabel::…` expected — genuine kind questions
+     -  6 with a runtime `expected`, of which one (constants.rs, const_ap_float)
+          is a kind question whose diagonal is provably unreachable, and five
+          are the same identity shape and are NOT yet converted:
+          instructions.rs x4 (one of them SwitchInst::validate_case, whose
+          diagonal is blessed by a passing oracle in
+          builder_var_arity_terminators.rs) and pass_context.rs x1.
 ```
+
+**Correction to `a8d710d`'s own commit message, which is pushed and immutable.**
+It gave `rg -n "IrError::TypeIdentityMismatch \{" … | wc -l` as the derivation
+of "20". That command returns **25** — it cannot separate the five in-`src`
+test oracles from the production sites. The figure 20 is right for production
+and the command beside it was not, which is the failure `CLAUDE.md` describes:
+a reader who re-runs it concludes the number is wrong. The same message's
+`rg -nU -o …` multi-line derivation is worse than imprecise — it is
+unreliable, returning 34 matches on one run and 10 on another with no edits in
+between, and it is what made the first pass report twelve sites instead of
+twenty. Neither regex is used above; the scan is.
 
 `RenderedType` carries a type's kind **and** its printed form. Its fields are
 **private** — the one error payload in the crate that is — because the two are
