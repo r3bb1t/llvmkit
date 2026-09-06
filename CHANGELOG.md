@@ -22,15 +22,19 @@ cut, entries accumulate under **Unreleased**.
 ### Removed — the two `expected_kind_label` methods nothing calls *(breaking)*
 
 - **Breaking (llvmkit-ir):** `IrField::expected_kind_label` and
-  `FunctionParam::expected_kind_label` are removed. Their last consumer was
-  `IrBuilder::extract_field`, which now reports the schema's own type via
-  `IrField::ir_type(..).rendered()` -- a struct schema compares the struct
-  *name* and an integer marker the *width*, so the kind was never the fact the
-  guard tested. A required method on a public trait is invisible to
-  `dead_code`, so nothing in the gate reported the orphan; the census that
-  found it is `rg -n "expected_kind_label" crates/ | rg -v "fn expected_kind_label"`,
-  which returned only the two `Ret::` call sites.
-  `FunctionReturn::expected_kind_label` is unaffected and remains live.
+  `FunctionParam::expected_kind_label` are removed. Their histories differ:
+  `IrField::expected_kind_label`'s last consumer was `IrBuilder::extract_field`,
+  which now reports the schema's own type via `IrField::ir_type(..).rendered()`
+  -- a struct schema compares the struct *name* and an integer marker the
+  *width*, so the kind was never the fact the guard tested.
+  `FunctionParam::expected_kind_label` never had a call site, even before that
+  change. A required method on a public trait is invisible to `dead_code`, so
+  nothing in the gate reported either orphan; the census that found them is
+  `rg -n "expected_kind_label" crates/ | rg -v "fn expected_kind_label"`, which
+  returns three lines: the two `Ret::expected_kind_label()` call sites in
+  `function_signature.rs`, plus one comment mentioning the name in
+  `ir_builder.rs`. `FunctionReturn::expected_kind_label` is unaffected and
+  remains live.
 
 ### Fixed — `IrError`'s derive rationale names a bound, not a payload list
 
