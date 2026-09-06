@@ -1062,8 +1062,13 @@ pub struct DataLayoutError {
 ///
 /// `Hash` alongside `Eq` so an error can be de-duplicated: a verifier or a
 /// pass driver that collects failures across a whole module wants a
-/// `HashSet<IrError>`, not a `Vec` it has to scan. Every payload is a plain
-/// `String`, `&'static str`, or integer, so the derive is total. The sibling
+/// `HashSet<IrError>`, not a `Vec` it has to scan.
+/// Every payload is `Hash + Eq + Clone` -- scalars, owned strings, and the
+/// crate's own label and nested-error types (`TypeKindLabel`, `RenderedType`,
+/// `VerifierRule`, `VerifierSubject`, `BrandError`, `DataLayoutError`) -- so
+/// the derive is total. That bound, not a list of types, is what a new
+/// payload has to satisfy; `crates/llvmkit-ir/tests/ir_error_bounds.rs`
+/// checks it. The sibling
 /// `llvmkit_asmparser::ParseError` already carried `Hash` for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum IrError {

@@ -19,6 +19,15 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `IrError`'s derive rationale names a bound, not a payload list
+
+- **(llvmkit-ir)** `IrError`'s rustdoc claimed "Every payload is a plain
+  `String`, `&'static str`, or integer, so the derive is total". That has been
+  false since `TypeKindLabel` became a payload; `VerifierFailure` carries a
+  `VerifierRule` and a `VerifierSubject`, and `Brand` a `BrandError`. It now
+  states the bound a new payload must satisfy -- `Hash + Eq + Clone` -- and
+  `crates/llvmkit-ir/tests/ir_error_bounds.rs` checks both halves.
+
 ### Fixed — "type mismatch: expected struct, got struct" *(breaking)*
 
 Twenty production sites compared two **runtime** types and reported two
