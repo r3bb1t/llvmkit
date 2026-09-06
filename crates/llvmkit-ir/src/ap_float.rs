@@ -7,7 +7,7 @@
 //! incrementally.
 
 use crate::ap_int::{ApInt, Signedness};
-use crate::{IrError, IrResult};
+use crate::{IrError, IrResult, TypeKindLabel};
 use core::cmp::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -134,6 +134,31 @@ enum ApFloatRepr {
 pub struct ApFloat {
     semantics: ApFloatSemantics,
     repr: ApFloatRepr,
+}
+
+/// The IR type kind a value with these semantics has.
+///
+/// The seven modeled semantics and the seven floating-point
+/// [`TypeKindLabel`]s are in bijection — `FloatType::semantics` is this
+/// mapping's inverse, and `ap_float_semantics_and_type_kind_labels_are_inverse`
+/// (`crates/llvmkit-ir/tests/ap_float.rs`) pins that. It exists so a
+/// semantics mismatch can name the semantics it *received*: `ConstantFP::get`
+/// asserts `&V.getSemantics() == &Ty->getFltSemantics()`
+/// (`llvm/lib/IR/Constants.cpp`), and llvmkit hardens that assert into an
+/// [`IrError::TypeMismatch`] whose `got` has to come from the value rather
+/// than from a literal.
+impl From<ApFloatSemantics> for TypeKindLabel {
+    fn from(semantics: ApFloatSemantics) -> Self {
+        match semantics {
+            ApFloatSemantics::IeeeHalf => Self::Half,
+            ApFloatSemantics::Bfloat => Self::Bfloat,
+            ApFloatSemantics::IeeeSingle => Self::Float,
+            ApFloatSemantics::IeeeDouble => Self::Double,
+            ApFloatSemantics::IeeeQuad => Self::Fp128,
+            ApFloatSemantics::X87DoubleExtended => Self::X86Fp80,
+            ApFloatSemantics::PpcDoubleDouble => Self::PpcFp128,
+        }
+    }
 }
 
 impl ApFloatSemantics {

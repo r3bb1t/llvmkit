@@ -19,6 +19,38 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `const_ap_float`'s type mismatch stated a fact it never read
+
+`FloatType::const_ap_float` rejects a value whose `ApFloat` semantics differ
+from the type's. Its diagnostic filled `IrError::TypeMismatch`'s `got` with the
+literal `TypeKindLabel::Double`, unrelated to the value:
+
+```rust
+// before                              // now
+got: TypeKindLabel::Double,            got: value.semantics().into(),
+```
+
+So an `fp128` value handed to a `float` rendered *"expected float, got double"*
+— a stated fact that was false — and any wrong-semantics value handed to a
+`double` rendered *"expected double, got double"*, which says nothing at all.
+
+The `got` now comes from the value, through a new
+`From<ApFloatSemantics> for TypeKindLabel`. That impl is `FloatType::semantics`'s
+inverse over the seven modeled float kinds, which is what makes the two rendered
+sides provably distinct here rather than distinct by inspection.
+
+Nothing exercised the guard before this
+(`rg -n "const_ap_float" crates/llvmkit-ir/tests` at `ffc5895` found success-path
+callers only), so `crates/llvmkit-ir/tests/const_float_semantics.rs` lands with
+the fix: the inverse law, the two rejections that regressed, and a sweep over
+all seven types asserting no rejection renders the same word on both sides. Two
+of the three fail when the literal is restored (verified by mutation, not by
+reading).
+
+Not user-visible but worth naming: this is the shape `IrError::TypeMismatch`
+invites wherever `expected` and `got` are filled from different sources. The
+remaining producers of a same-word `TypeMismatch` are tracked separately.
+
 ### Changed — loose scalars become the types that carry their invariant *(breaking)*
 
 Five kinds of raw type where a bespoke one belonged, each found by asking the

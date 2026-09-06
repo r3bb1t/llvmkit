@@ -817,9 +817,17 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatType<'ctx, K, B> {
 
     pub fn const_ap_float(self, value: &ApFloat) -> IrResult<ConstantFloatValue<'ctx, K, B>> {
         if value.semantics() != self.semantics() {
+            // `got` names the semantics the *value* carries. It used to be the
+            // literal `TypeKindLabel::Double`, which made the diagnostic state
+            // a fact about the argument that was not read from the argument:
+            // an `IeeeQuad` handed to an `f32` rendered "expected float, got
+            // double", and any wrong-semantics value handed to a `double`
+            // rendered "expected double, got double". `From<ApFloatSemantics>`
+            // is `Self::semantics`'s inverse, so with both sides routed
+            // through it a rendered diagonal is unreachable here.
             return Err(IrError::TypeMismatch {
                 expected: self.as_type().kind_label(),
-                got: TypeKindLabel::Double,
+                got: value.semantics().into(),
             });
         }
         let Some(bits) = value.to_bits().try_zext_u128() else {
