@@ -522,10 +522,13 @@ its `expected '(' here` negative case.
 `isNegatedPowerOf2`'s assert is its first statement, unconditional, guarding
 the `BitWidth - 1` bit index its body reaches through `isNonNegative()`.
 `isPowerOf2`'s assert sits inside the `isSingleWord()` branch and guards
-nothing mechanical — `isPowerOf2_64(U.VAL)` never reads `BitWidth`; that
-assert is purely semantic, declining the question at width 0. In a release
-build (`NDEBUG`), all four are undefined behaviour at width 0, not merely
-unspecified.
+nothing mechanical — `isPowerOf2_64(U.VAL)` is `has_single_bit` over the
+stored word (`llvm/include/llvm/Support/MathExtras.h`) and never reads
+`BitWidth`; that assert is purely semantic, declining the question at width 0.
+In a release build (`NDEBUG`), three of the four are undefined behaviour at
+width 0 — the signed extremes shift by an out-of-range amount, and
+`isNegatedPowerOf2` indexes an out-of-range bit. `isPowerOf2` is not: at
+width 0 it computes `has_single_bit(0) == false`, a fully defined answer.
 
 **llvmkit:** computes no such shift and answers instead — `true`, `true`,
 `false`, `false`. `is_max_signed_value` and `is_min_signed_value` fall through
