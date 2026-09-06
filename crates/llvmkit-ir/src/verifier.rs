@@ -505,7 +505,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     fn fail_module_flags(&self, rule: VerifierRule, message: String) -> IrError {
         IrError::VerifierFailure {
             rule,
-            subject: VerifierSubject::Module,
+            subject: VerifierSubject::WholeModule,
             message,
         }
     }

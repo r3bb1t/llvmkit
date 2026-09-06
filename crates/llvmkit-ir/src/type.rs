@@ -30,6 +30,7 @@ use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
 
 use crate::TypeKindLabel;
+use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
 use crate::module::{ModuleBrand, ModuleCore, ModuleRef, ModuleView};
 
@@ -447,9 +448,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             (Some(lhs), Some(rhs)) => IrError::OperandWidthMismatch { lhs, rhs },
             _ => match (expected_data.as_pointer(), got_data.as_pointer()) {
                 (Some(expected), Some(got)) => IrError::AddressSpaceMismatch { expected, got },
-                _ => IrError::TypeMismatch {
-                    expected: self.kind_label(),
-                    got: got.kind_label(),
+                // Every failure here is an *identity* mismatch — the guard
+                // above is `self.id == got.id` — so the kinds can agree while
+                // the types differ. Reporting labels alone rendered
+                // "expected struct, got struct" for two distinct structs, and
+                // the two arms above are the special cases that were added to
+                // dodge that for integers and pointers rather than to fix it.
+                _ => IrError::TypeIdentityMismatch {
+                    expected: self.rendered(),
+                    got: got.rendered(),
                 },
             },
         })
@@ -489,6 +496,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// `TypeKindLabel` for diagnostics.
     pub fn kind_label(self) -> TypeKindLabel {
         self.data().kind_label()
+    }
+
+    /// This type's kind *and* printed form, for a diagnostic that compares two
+    /// runtime types.
+    ///
+    /// [`kind_label`](Self::kind_label) is enough when the expectation is
+    /// fixed at the call site ("must be an integer"). It is not enough when
+    /// both sides are runtime types: two structs both label `struct`, so a
+    /// diagnostic built from labels alone renders "expected struct, got
+    /// struct". [`RenderedType`] carries the spelling too, and this is its
+    /// only constructor — which is what keeps its two halves from disagreeing.
+    ///
+    /// Allocates, so it belongs on an error path.
+    pub fn rendered(self) -> RenderedType {
+        RenderedType::new(self.kind_label(), self.to_string().into_boxed_str())
     }
 
     // ---- LLVM-style predicates (`Type.h`) ----

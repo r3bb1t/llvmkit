@@ -910,9 +910,9 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
         for elem in elements {
             let value = elem.into_constant(self.module).as_erased();
             if value.ty != elem_ty {
-                return Err(IrError::TypeMismatch {
-                    expected: self.element().kind_label(),
-                    got: value.ty().kind_label(),
+                return Err(IrError::TypeIdentityMismatch {
+                    expected: self.element().rendered(),
+                    got: value.ty().rendered(),
                 });
             }
             ids.push(value.id);
@@ -948,9 +948,9 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
                 rhs: u32::try_from(i + 1).unwrap_or(u32::MAX),
             })?;
             if value.ty != field.id() {
-                return Err(IrError::TypeMismatch {
-                    expected: field.kind_label(),
-                    got: value.ty().kind_label(),
+                return Err(IrError::TypeIdentityMismatch {
+                    expected: field.rendered(),
+                    got: value.ty().rendered(),
                 });
             }
             ids.push(value.id);
@@ -992,9 +992,9 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
         for elem in elements {
             let value = elem.into_constant(self.module).as_erased();
             if value.ty != elem_ty {
-                return Err(IrError::TypeMismatch {
-                    expected: self.element().kind_label(),
-                    got: value.ty().kind_label(),
+                return Err(IrError::TypeIdentityMismatch {
+                    expected: self.element().rendered(),
+                    got: value.ty().rendered(),
                 });
             }
             ids.push(value.id);
@@ -1698,9 +1698,9 @@ pub(super) fn replace_placeholder_uses_with<'ctx, B: ModuleBrand + 'ctx>(
     replacement: Value<'ctx, B>,
 ) -> IrResult<()> {
     if replacement.ty != from.ty {
-        return Err(IrError::TypeMismatch {
-            expected: from.ty().kind_label(),
-            got: replacement.ty().kind_label(),
+        return Err(IrError::TypeIdentityMismatch {
+            expected: from.ty().rendered(),
+            got: replacement.ty().rendered(),
         });
     }
     if replacement.id == from.id {

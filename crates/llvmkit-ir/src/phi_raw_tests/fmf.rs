@@ -31,9 +31,14 @@ fn phi_add_incoming_from_value_rejects_type_mismatch() -> Result<(), IrError> {
     let err = raw
         .phi_add_incoming_from_value(phi_val, f64_val, block)
         .unwrap_err();
-    assert!(
-        matches!(err, IrError::TypeMismatch { .. }),
-        "expected TypeMismatch, got {err:?}"
+    // Two runtime types (the phi's and the incoming value's), so the report
+    // names both spellings rather than two kind labels.
+    assert_eq!(
+        err,
+        IrError::TypeIdentityMismatch {
+            expected: i32_ty.as_type().rendered(),
+            got: f64_ty.as_type().rendered(),
+        }
     );
     Ok(())
 }

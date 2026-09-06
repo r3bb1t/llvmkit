@@ -2916,9 +2916,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
         let expected = Type::new(self.ty, self.module);
         let got = value.ty();
         if got != expected {
-            return Err(crate::IrError::TypeMismatch {
-                expected: expected.kind_label(),
-                got: got.kind_label(),
+            return Err(crate::IrError::TypeIdentityMismatch {
+                expected: expected.rendered(),
+                got: got.rendered(),
             });
         }
         let payload = self.payload();

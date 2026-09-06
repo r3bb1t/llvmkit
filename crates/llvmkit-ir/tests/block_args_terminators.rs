@@ -527,8 +527,14 @@ fn switch_with_args_type_mismatch_errors() -> Result<(), IrError> {
         [(0_i32, param_label, &wrong[..])],
         "",
     );
+    // As in `block_args.rs::block_args_br_type_mismatch_errors`: the case
+    // argument is compared against the parameter phi's own type, so both
+    // spellings are reported rather than two kind labels.
     assert!(
-        matches!(res.map(|(_, _)| ()), Err(IrError::TypeMismatch { .. })),
+        matches!(
+            res.map(|(_, _)| ()),
+            Err(IrError::TypeIdentityMismatch { .. })
+        ),
         "a mistyped case argument must be rejected"
     );
     Ok(())

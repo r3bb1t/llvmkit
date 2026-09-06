@@ -1282,9 +1282,9 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     }
     let old = value_from_slot(user, old_id);
     if old.ty().id() != replacement.ty().id() {
-        return Err(IrError::TypeMismatch {
-            expected: old.ty().kind_label(),
-            got: replacement.ty().kind_label(),
+        return Err(IrError::TypeIdentityMismatch {
+            expected: old.ty().rendered(),
+            got: replacement.ty().rendered(),
         });
     }
     drop_zext_nneg_for_replaced_operand(user, old_id);

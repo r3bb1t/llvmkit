@@ -19,6 +19,79 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — "type mismatch: expected struct, got struct" *(breaking)*
+
+Twenty production sites compared two **runtime** types and reported two
+`TypeKindLabel`s. Two types of one kind share a label, so those sites rendered
+sentences with no content in them:
+
+```
+type mismatch: expected struct, got struct      # %Point given where %Rect was required
+type mismatch: expected integer, got integer    # extract_field::<Point, i64> on an i32 field
+```
+
+`Type::require_match` already carried *two patches* around this — integers
+routed to `OperandWidthMismatch`, pointers to `AddressSpaceMismatch` — which
+left vectors, arrays, structs and functions falling in.
+
+`IrError::TypeIdentityMismatch { expected: RenderedType, got: RenderedType }`
+is the fix, and the split is by **question asked**, not by call site:
+
+- `TypeMismatch` answers *"is this the right kind?"*. Its `expected` is fixed
+  at the call site, the guard **is** the kind, and a same-word rendering is
+  unreachable. Thirty-two production sites keep it, unchanged.
+- `TypeIdentityMismatch` answers *"are these the same type?"*, where the kinds
+  can agree and the types still differ. Twenty sites move to it and now render
+  `expected '%Point', got '%Rect'` and `expected 'i64', got 'i32'`.
+
+Both counts, at this commit:
+
+```
+rg -n "IrError::TypeIdentityMismatch \{" crates/llvmkit-ir/src crates/llvmkit-asmparser/src | wc -l
+# 20
+rg -nU -o "IrError::TypeMismatch \{\n\s*expected: (.*),\n\s*got: (.*),\n" \
+   crates/llvmkit-ir/src crates/llvmkit-asmparser/src | wc -l
+# 102 = 34 matches x 3 lines; two are ir_builder.rs's own #[cfg(test)] oracles
+```
+
+`RenderedType` carries a type's kind **and** its printed form. Its fields are
+**private** — the one error payload in the crate that is — because the two are
+a projection of one `Type`, not two independent facts: a public pair would make
+`RenderedType { kind: Integer, spelling: "float" }` writable, which is the same
+representable-but-impossible shape these variants exist to close.
+`Type::rendered()` is the only constructor; `kind()` and `spelling()` read it
+back.
+
+Four of the twenty were not reachable by grepping for two `kind_label()` calls,
+and are worth naming because they are the shape that hides: the guard was finer
+than the kind while `expected` was a *constant*. `StructSchema` compares the
+struct's **name**, and integer field markers compare the **width**, so
+`expected: TypeKindLabel::Struct` was a true statement about a failing
+comparison it did not describe.
+
+**Four of these were pinned by passing tests**, which is how the class survived:
+an oracle that asserts the contentless answer is satisfied by any wrong answer of
+the same shape, so each of these would have stayed green had the guard compared
+the wrong pair. Two are in `struct_schema.rs` ("expected struct, got struct" and
+"expected integer, got integer"); `array_type_typed.rs::wrong_element_type_is_rejected`
+asserted `TypeMismatch { .. }` for `[4 x i64]` into `ArrayValue<i32, ArrLen<4>>`,
+its doc comment saying "is rejected with a `TypeMismatch`" — accurate and empty;
+and `globals_basic.rs::set_initializer_type_mismatch_rejected` did the same for
+an `i32` global given an `i64` initializer. All four are rewritten, and
+`crates/llvmkit-ir/tests/type_identity_mismatch.rs` adds the sweep that was
+missing — over three distinct production sites, each pairing two types that
+share a kind, asserting the two rendered sides differ. Duplicating one side into
+the other fails it (verified by mutation).
+
+Also from the same audit, and not a type mismatch at all:
+`Module::set_struct_body_dyn` refused a *literal* struct with
+`TypeMismatch { expected: Struct, got: Struct }` — **both sides literals**, so
+it rendered "expected struct, got struct" unconditionally. Both operands really
+are structs; the fault is that a literal struct's body is its identity and there
+is nothing to set. It is now `IrError::LiteralStructBodyNotSettable`, mirroring
+the `assert(isOpaque() && ...)` in `StructType::setBodyOrError`
+(`llvm/lib/IR/Type.cpp`).
+
 ### Fixed — a verifier failure says what it is about *(breaking)*
 
 `IrError::VerifierFailure` carried two independent optionals:
@@ -37,9 +110,18 @@ two of the five construction sites filled it with something else: a
 (`Verifier::visit_global_ifunc`). A consumer reading the field to name the
 offending function was handed a global.
 
-`VerifierSubject` is the partition instead — `Module`, `GlobalVariable`,
+`VerifierSubject` is the partition instead — `WholeModule`, `GlobalVariable`,
 `GlobalIfunc`, `Function`, `Block { function, block }` — so the impossible pair
 has no spelling and a global cannot arrive labelled as a function.
+
+The module arm is `WholeModule`, not `Module`, for a mechanical reason worth
+knowing: rustc trims a type's path in a diagnostic only while its short name is
+unique in the crate. Naming the variant `Module` collided with `Module` itself
+and moved 12 spellings to `llvmkit_ir::Module<B, S>` across 8 blessed
+`tests/compile_fail/*.stderr` fixtures, none of them about verification — a diff
+that looks exactly like the trybuild "environmental drift" `AGENTS.md` says does
+not exist, because it is not drift. Renaming restored all 87 with no
+re-blessing. The rule and the way to check for it are now in `AGENTS.md`.
 
 Names are now stored **bare**. Three sites had baked `@` into the string and one
 had not, so one field held two spellings of one concept; the sigil moved to

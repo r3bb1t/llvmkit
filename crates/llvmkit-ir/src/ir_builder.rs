@@ -885,9 +885,9 @@ where
         // `Module::verify`.
         let phi_ty = self.module.context().value_data(phi_val.id).ty;
         if val.ty != phi_ty {
-            return Err(IrError::TypeMismatch {
-                expected: Type::new(phi_ty, ModuleRef::<B>::new(self.module)).kind_label(),
-                got: Type::new(val.ty, ModuleRef::<B>::new(self.module)).kind_label(),
+            return Err(IrError::TypeIdentityMismatch {
+                expected: Type::new(phi_ty, ModuleRef::<B>::new(self.module)).rendered(),
+                got: Type::new(val.ty, ModuleRef::<B>::new(self.module)).rendered(),
             });
         }
         // Differing-duplicate check: a second entry for the same predecessor
@@ -2219,9 +2219,9 @@ where
 
         // "both values to select must have same type"
         if true_v.ty().id() != false_v.ty().id() {
-            return Err(IrError::TypeMismatch {
-                expected: true_v.ty().kind_label(),
-                got: false_v.ty().kind_label(),
+            return Err(IrError::TypeIdentityMismatch {
+                expected: true_v.ty().rendered(),
+                got: false_v.ty().rendered(),
             });
         }
         // "select values cannot have token type"
@@ -3491,9 +3491,9 @@ where
         }
         let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, indices)?;
         if val.ty != leaf_ty {
-            return Err(IrError::TypeMismatch {
-                expected: Type::<B>::new(leaf_ty, self.module).kind_label(),
-                got: val.ty().kind_label(),
+            return Err(IrError::TypeIdentityMismatch {
+                expected: Type::<B>::new(leaf_ty, self.module).rendered(),
+                got: val.ty().rendered(),
             });
         }
         if let Some(folded) = self.folder.fold_insert_value_dyn(agg, val, indices)? {
@@ -3522,9 +3522,15 @@ where
         let leaf_ty = walk_aggregate_for_builder(self.module, aggregate.ty, &[index])?;
         let leaf = Type::<B>::new(leaf_ty, self.module);
         if !Field::matches_ir_type(leaf) {
-            return Err(IrError::TypeMismatch {
-                expected: Field::expected_kind_label(),
-                got: leaf.kind_label(),
+            // `matches_ir_type` is finer than the kind for every schema marker
+            // that has structure — an integer marker compares the width, a
+            // struct schema compares the name — so a rejection whose kind
+            // agrees is reachable, and `expected_kind_label` alone rendered
+            // "expected integer, got integer". `ir_type` is the schema's own
+            // type, which is what the check actually compares against.
+            return Err(IrError::TypeIdentityMismatch {
+                expected: Field::ir_type(ModuleView::<B>::new(self.module))?.rendered(),
+                got: leaf.rendered(),
             });
         }
         let raw = self.view(self.extract_value(aggregate, [index], name)?);
@@ -4049,9 +4055,9 @@ where
         let c = cmp.into_erased_value(ModuleRef::new(self.module))?;
         let n = new_val.into_erased_value(ModuleRef::new(self.module))?;
         if c.ty != n.ty {
-            return Err(IrError::TypeMismatch {
-                expected: c.ty().kind_label(),
-                got: n.ty().kind_label(),
+            return Err(IrError::TypeIdentityMismatch {
+                expected: c.ty().rendered(),
+                got: n.ty().rendered(),
             });
         }
         let module_view = ModuleView::<B>::new(self.module);
@@ -7663,9 +7669,9 @@ where
         for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
             let phi_ty = self.module.context().value_data(*phi_id).ty;
             if arg.ty != phi_ty {
-                return Err(IrError::TypeMismatch {
-                    expected: Type::<B>::new(phi_ty, self.module).kind_label(),
-                    got: Type::<B>::new(arg.ty, self.module).kind_label(),
+                return Err(IrError::TypeIdentityMismatch {
+                    expected: Type::<B>::new(phi_ty, self.module).rendered(),
+                    got: Type::<B>::new(arg.ty, self.module).rendered(),
                 });
             }
         }
@@ -10733,9 +10739,9 @@ where
         let false_v = false_arm.arm_value(ModuleRef::new(self.module))?;
         let false_ty = false_v.ty().id();
         if true_ty != false_ty {
-            return Err(IrError::TypeMismatch {
-                expected: true_v.ty().kind_label(),
-                got: false_v.ty().kind_label(),
+            return Err(IrError::TypeIdentityMismatch {
+                expected: true_v.ty().rendered(),
+                got: false_v.ty().rendered(),
             });
         }
         if let Some(folded) = self
@@ -11185,11 +11191,14 @@ mod tests {
             .fp_add::<f32, _, _, _>(lhs, rhs, "sum")
             .expect_err("wrong-kind fold result must be rejected at a static kind");
 
+        // The acceptor compares two runtime types, so it reports their
+        // spellings: `TypeKindLabel` alone would be contentless whenever both
+        // sides landed on one kind.
         assert_eq!(
             err,
-            IrError::TypeMismatch {
-                expected: TypeKindLabel::Float,
-                got: TypeKindLabel::Double,
+            IrError::TypeIdentityMismatch {
+                expected: f32_ty.as_type().rendered(),
+                got: f64_ty.as_type().rendered(),
             }
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -11224,11 +11233,14 @@ mod tests {
             .fp_trunc::<f64, f32, _, _>(src, f32_ty, "narrowed")
             .expect_err("wrong-kind cast fold result must be rejected at a static kind");
 
+        // The acceptor compares two runtime types, so it reports their
+        // spellings: `TypeKindLabel` alone would be contentless whenever both
+        // sides landed on one kind.
         assert_eq!(
             err,
-            IrError::TypeMismatch {
-                expected: TypeKindLabel::Float,
-                got: TypeKindLabel::Double,
+            IrError::TypeIdentityMismatch {
+                expected: f32_ty.as_type().rendered(),
+                got: f64_ty.as_type().rendered(),
             }
         );
         assert_eq!(b.insert_block().instructions().len(), 0);

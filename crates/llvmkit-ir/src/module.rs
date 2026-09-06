@@ -68,7 +68,7 @@ use super::derived_types::{
     TargetExtType, TokenType, VectorType, VoidType,
 };
 use super::element::{ElemDyn, StaticVecElem};
-use super::error::{BrandError, IrError, IrResult, TypeKindLabel};
+use super::error::{BrandError, IrError, IrResult};
 use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
@@ -3902,10 +3902,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .as_struct()
             .unwrap_or_else(|| unreachable!("StructType wraps struct data"));
         if s.identity.is_literal() {
-            return Err(IrError::TypeMismatch {
-                expected: TypeKindLabel::Struct,
-                got: TypeKindLabel::Struct,
-            });
+            // This used to report `TypeMismatch { expected: Struct, got:
+            // Struct }` — two literals, so it rendered "type mismatch:
+            // expected struct, got struct" unconditionally, for a refusal
+            // that is not a type mismatch at all. Both operands *are*
+            // structs; the fault is that a literal one has no body to set.
+            return Err(IrError::LiteralStructBodyNotSettable);
         }
         self.core().ctx.set_named_struct_body(st.id, body)
     }

@@ -865,7 +865,17 @@ fn set_initializer_type_mismatch_rejected() {
         .view(g)
         .set_initializer(&m, zero64)
         .expect_err("expected mismatch");
-    assert!(matches!(err, IrError::TypeMismatch { .. }), "got: {err:?}");
+    // Both sides are integers, so this assertion used to hold against "type
+    // mismatch: expected integer, got integer" — and would have held just as
+    // well had the check compared the global against itself.
+    assert_eq!(
+        err,
+        IrError::TypeIdentityMismatch {
+            expected: i32_ty.as_type().rendered(),
+            got: i64_ty.as_type().rendered(),
+        },
+        "got: {err:?}"
+    );
 }
 
 /// Mirrors `Verifier::visitGlobalVariable` -- the `hasCommonLinkage`

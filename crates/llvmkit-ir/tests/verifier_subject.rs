@@ -167,7 +167,7 @@ fn a_module_flag_finding_has_no_named_subject() -> Result<(), IrError> {
     let error = m
         .verify_borrowed()
         .expect_err("a one-operand module flag is invalid");
-    assert_eq!(subject_of(&error), &VerifierSubject::Module);
+    assert_eq!(subject_of(&error), &VerifierSubject::WholeModule);
     Ok(())
 }
 
@@ -179,7 +179,7 @@ fn a_module_flag_finding_has_no_named_subject() -> Result<(), IrError> {
 #[test]
 fn subjects_store_bare_names_and_render_sigils() {
     let subjects = [
-        VerifierSubject::Module,
+        VerifierSubject::WholeModule,
         VerifierSubject::GlobalVariable {
             name: "g".to_owned(),
         },
@@ -222,7 +222,7 @@ fn subjects_store_bare_names_and_render_sigils() {
 fn no_verifier_failure_stores_a_sigil() -> Result<(), IrError> {
     fn stored_names(subject: &VerifierSubject) -> Vec<&str> {
         match subject {
-            VerifierSubject::Module => Vec::new(),
+            VerifierSubject::WholeModule => Vec::new(),
             VerifierSubject::GlobalVariable { name }
             | VerifierSubject::GlobalIfunc { name }
             | VerifierSubject::Function { name } => vec![name.as_str()],

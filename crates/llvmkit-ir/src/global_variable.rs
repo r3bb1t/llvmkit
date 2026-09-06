@@ -391,9 +391,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         let constant = init.as_constant();
         if constant.ty != self.data().value_type {
             let value_ty = self.value_type();
-            return Err(IrError::TypeMismatch {
-                expected: value_ty.kind_label(),
-                got: constant.ty().kind_label(),
+            return Err(IrError::TypeIdentityMismatch {
+                expected: value_ty.rendered(),
+                got: constant.ty().rendered(),
             });
         }
         self.retarget_initializer_use(Some(constant.id));

@@ -99,6 +99,62 @@ impl fmt::Display for TypeKindLabel {
     }
 }
 
+/// A type's kind together with its printed form, captured where a diagnostic
+/// is raised.
+///
+/// [`TypeKindLabel`] alone cannot separate two types of the same kind: every
+/// struct labels `struct`, every array `array`. A diagnostic comparing two
+/// *runtime* types and reporting only their labels can therefore render
+/// "expected struct, got struct", which names no fact about either operand.
+/// This carries the spelling as well, so the two sides differ in the rendered
+/// text exactly when the types differ.
+///
+/// Both halves earn their place: `spelling` is what a reader needs,
+/// `kind` is what a consumer branches on without parsing text.
+///
+/// **The fields are private**, unlike every other error payload in this crate.
+/// They are a projection of one [`Type`](crate::Type), not two independent
+/// facts, so a public pair would make `RenderedType { kind: Integer, spelling:
+/// "float" }` writable — a representable state that no `Type` can produce, and
+/// the same disease the variants using this type exist to cure.
+/// [`Type::rendered`](crate::Type::rendered) is the only constructor;
+/// [`kind`](Self::kind) and [`spelling`](Self::spelling) read it back.
+///
+/// llvmkit-specific: upstream passes a `Type *` into its `Twine` and prints it
+/// at render time, which needs the context llvmkit's errors deliberately do
+/// not borrow, so there is nothing to port — only the same information,
+/// captured eagerly.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RenderedType {
+    kind: TypeKindLabel,
+    spelling: Box<str>,
+}
+
+impl RenderedType {
+    /// Captures a type's kind and spelling. Crate-internal so that
+    /// [`Type::rendered`](crate::Type::rendered), which cannot produce a
+    /// disagreeing pair, stays the only way to build one.
+    pub(crate) fn new(kind: TypeKindLabel, spelling: Box<str>) -> Self {
+        Self { kind, spelling }
+    }
+
+    /// The type's kind — branch on this rather than on the spelling.
+    pub fn kind(&self) -> TypeKindLabel {
+        self.kind
+    }
+
+    /// The type's printed form, as `Display for Type` renders it.
+    pub fn spelling(&self) -> &str {
+        &self.spelling
+    }
+}
+
+impl fmt::Display for RenderedType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.spelling)
+    }
+}
+
 /// Human-readable label for a [`Value`](crate::Value)'s category, embedded
 /// in diagnostics that don't want to carry a borrowed value handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -856,7 +912,17 @@ impl fmt::Display for VerifierRule {
 pub enum VerifierSubject {
     /// A module-wide check with no named subject — the shape of
     /// `Verifier::visitModuleFlags`.
-    Module,
+    ///
+    /// Spelled `WholeModule` rather than `Module`, and the reason is
+    /// mechanical rather than stylistic: rustc trims a type's path in a
+    /// diagnostic only while its short name is unique across the crate. A
+    /// variant named `Module` collides with [`Module`](crate::Module), and
+    /// every diagnostic in every downstream crate that mentions the struct
+    /// then prints `llvmkit_ir::Module<B, S>` instead of `Module<B, S>`.
+    /// Measured: naming it `Module` moved 12 such spellings across 8 blessed
+    /// `tests/compile_fail/*.stderr` fixtures, none of which is about
+    /// verification.
+    WholeModule,
     /// A `GlobalVariable`, checked by `Verifier::visitGlobalVariable`.
     GlobalVariable {
         /// The global's name, without its `@` sigil.
@@ -889,7 +955,7 @@ impl fmt::Display for VerifierSubject {
         // site — which is how the same field came to hold both `@name` and
         // `name` for a function.
         match self {
-            Self::Module => f.write_str("module"),
+            Self::WholeModule => f.write_str("module"),
             Self::GlobalVariable { name } => write!(f, "global @{name}"),
             Self::GlobalIfunc { name } => write!(f, "ifunc @{name}"),
             Self::Function { name } => write!(f, "function @{name}"),
@@ -1014,13 +1080,37 @@ pub enum IrError {
         bits: u32,
     },
 
-    /// A type was passed where a different kind was expected.
+    /// A type was passed where a different *kind* was expected — the shape
+    /// where the expectation is fixed at the call site ("this operand must be
+    /// an integer") and only `got` varies.
+    ///
+    /// When both sides come from runtime types, use
+    /// [`IrError::TypeIdentityMismatch`] instead: two types of one kind render
+    /// the same label, and a diagnostic that says "expected struct, got
+    /// struct" names no fact about either operand.
     #[error("type mismatch: expected {expected}, got {got}")]
     TypeMismatch {
         /// The type kind the API required.
         expected: TypeKindLabel,
         /// The type kind actually supplied.
         got: TypeKindLabel,
+    },
+
+    /// Two types that were required to be *identical* differ.
+    ///
+    /// The distinction from [`IrError::TypeMismatch`] is which question was
+    /// asked. That variant answers "is this the right kind?", so a
+    /// [`TypeKindLabel`] is the whole answer. This one answers "are these the
+    /// same type?", where the kinds can agree and the types still differ —
+    /// `%Point` against `%Rect`, `[4 x i32]` against `[8 x i32]`. Both sides
+    /// are therefore [`RenderedType`], and the rendered text differs whenever
+    /// the types do.
+    #[error("type mismatch: expected '{expected}', got '{got}'")]
+    TypeIdentityMismatch {
+        /// The type the operation required, as captured at the call site.
+        expected: RenderedType,
+        /// The type actually supplied.
+        got: RenderedType,
     },
 
     /// Two integer or vector types that were required to agree have
@@ -1108,6 +1198,20 @@ pub enum IrError {
         /// Name of the named struct that already has a body.
         name: String,
     },
+
+    /// `set_struct_body_dyn` was handed a *literal* struct type.
+    ///
+    /// A literal struct's body is its identity — `{ i32, i8 }` is interned by
+    /// structure — so there is nothing to set, and no name to report.
+    /// `StructType::setBodyOrError` (`llvm/lib/IR/Type.cpp`) states the same
+    /// contract as `assert(isOpaque() && "Struct body already set!")`; a
+    /// literal struct is never opaque, so that assert is what upstream fires.
+    ///
+    /// Only the `_dyn` setter can reach this. `Module::set_struct_body` takes
+    /// a `StructType<'ctx, Opaque, B>`, whose typestate has already answered
+    /// the question; `set_struct_body_dyn`'s `StructBodyDyn` marker erases it.
+    #[error("a literal struct type has no settable body")]
+    LiteralStructBodyNotSettable,
 
     /// An identified struct's body reaches the struct being defined. Port of
     /// `StructType::checkBody` (`lib/IR/Type.cpp`), whose message this

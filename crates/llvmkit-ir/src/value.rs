@@ -1415,9 +1415,9 @@ where
             TypeData::Array { elem, n } => {
                 let expected_elem = E::element_ir_type(v.module);
                 if *elem != expected_elem.id() {
-                    return Err(IrError::TypeMismatch {
-                        expected: expected_elem.kind_label(),
-                        got: Type::new(*elem, v.module).kind_label(),
+                    return Err(IrError::TypeIdentityMismatch {
+                        expected: expected_elem.rendered(),
+                        got: Type::new(*elem, v.module).rendered(),
                     });
                 }
                 if *n != N {
@@ -1898,9 +1898,9 @@ where
             TypeData::FixedVector { elem, n } => {
                 let expected_elem = E::element_ir_type(v.module);
                 if *elem != expected_elem.id() {
-                    return Err(IrError::TypeMismatch {
-                        expected: expected_elem.kind_label(),
-                        got: Type::new(*elem, v.module).kind_label(),
+                    return Err(IrError::TypeIdentityMismatch {
+                        expected: expected_elem.rendered(),
+                        got: Type::new(*elem, v.module).rendered(),
                     });
                 }
                 if *n != N {

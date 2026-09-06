@@ -1162,9 +1162,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
             return Ok(());
         }
         if new_value.ty != self.ty {
-            return Err(IrError::TypeMismatch {
-                expected: self.ty().kind_label(),
-                got: new_value.ty().kind_label(),
+            return Err(IrError::TypeIdentityMismatch {
+                expected: self.ty().rendered(),
+                got: new_value.ty().rendered(),
             });
         }
         let module = module_token.core_ref();

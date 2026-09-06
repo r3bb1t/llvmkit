@@ -2361,11 +2361,14 @@ mod tests {
             .def_float_var(x, forged)
             .expect_err("a forged static-kind handle must be rejected");
 
+        // `Type::require_match` is an identity check, so it reports the two
+        // spellings — which is what makes it able to separate two types of
+        // one kind, the case the kind labels alone rendered as a diagonal.
         assert_eq!(
             err,
-            IrError::TypeMismatch {
-                expected: crate::TypeKindLabel::Float,
-                got: crate::TypeKindLabel::Double,
+            IrError::TypeIdentityMismatch {
+                expected: m.f32_type().as_type().rendered(),
+                got: m.f64_type().as_type().rendered(),
             }
         );
         Ok(())
@@ -2406,11 +2409,12 @@ mod tests {
             .def_pointer_var(p, forged)
             .expect_err("a forged non-pointer handle must be rejected");
 
+        // Identity check again — see the float twin above.
         assert_eq!(
             err,
-            IrError::TypeMismatch {
-                expected: crate::TypeKindLabel::Pointer,
-                got: crate::TypeKindLabel::Integer,
+            IrError::TypeIdentityMismatch {
+                expected: m.ptr_type(0).as_type().rendered(),
+                got: m.i32_type().as_type().rendered(),
             }
         );
         Ok(())

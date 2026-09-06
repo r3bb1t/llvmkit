@@ -118,10 +118,16 @@ pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand>: Sized + Copy
     /// Validate a raw struct-typed value against schema `S` before wrapping it.
     #[inline]
     fn try_from_struct_value(raw: StructValue<'ctx, B>) -> IrResult<Self> {
-        if !<S as IrField>::matches_ir_type(raw.ty().as_type()) {
-            return Err(IrError::TypeMismatch {
-                expected: TypeKindLabel::Struct,
-                got: raw.ty().as_type().kind_label(),
+        let got = raw.ty().as_type();
+        if !<S as IrField>::matches_ir_type(got) {
+            // `matches_ir_type` compares the struct's *name*, not just its
+            // kind, so the common failure is one identified struct given
+            // where another was required — and `expected:
+            // TypeKindLabel::Struct` rendered that as "expected struct, got
+            // struct".
+            return Err(IrError::TypeIdentityMismatch {
+                expected: <S as IrField>::ir_type(got.module())?.rendered(),
+                got: got.rendered(),
             });
         }
         let validated = ValidatedStructValue::new();
@@ -713,9 +719,11 @@ where
         if <S as IrField>::matches_ir_type(arg.ty()) {
             Ok(())
         } else {
-            Err(IrError::TypeMismatch {
-                expected: TypeKindLabel::Struct,
-                got: arg.ty().kind_label(),
+            // Same reasoning as `try_from_struct_value` above: the guard is
+            // finer than the kind, so both sides must carry their spelling.
+            Err(IrError::TypeIdentityMismatch {
+                expected: <S as IrField>::ir_type(arg.ty().module())?.rendered(),
+                got: arg.ty().rendered(),
             })
         }
     }
