@@ -825,6 +825,86 @@ impl fmt::Display for VerifierRule {
     }
 }
 
+/// What a verifier finding was raised about.
+///
+/// Replaces the independent `function: Option<String>` / `block:
+/// Option<String>` pair [`IrError::VerifierFailure`] used to carry. That pair
+/// had two problems, and both were live:
+///
+/// - `function: None, block: Some(_)` was representable and cannot happen — a
+///   basic block has no existence outside its function.
+/// - `function`'s own rustdoc said "name of the function under verification",
+///   and two of the five construction sites filled it with something else: a
+///   `GlobalVariable`'s name (`Verifier::fail_global`) and a `GlobalIfunc`'s
+///   (`Verifier::visit_global_ifunc`). A consumer reading the field to name
+///   the offending function was told about a global.
+///
+/// Names are stored **bare**, without the `@` or `%` sigil. Upstream's
+/// `Verifier::CheckFailed` renders its context through `Value::print`, which
+/// supplies the sigil; three of llvmkit's sites had baked `@` into the stored
+/// string and one had not, so the same field held two spellings of one
+/// concept. The sigil is now the renderer's business, not the payload's.
+///
+/// This carries *context*, not text: [`IrError::VerifierFailure`]'s `Display`
+/// renders `rule` and `message` only, exactly as before, so the byte-exact
+/// `CHECK`-line contract with `llvm/test/Verifier/*.ll` is untouched.
+///
+/// llvmkit-specific shape: upstream threads a `Value *` into `CheckFailed` and
+/// prints it, so it has no enum to port — the partition is llvmkit's way of
+/// spelling which `Value` kind that pointer held.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum VerifierSubject {
+    /// A module-wide check with no named subject — the shape of
+    /// `Verifier::visitModuleFlags`.
+    Module,
+    /// A `GlobalVariable`, checked by `Verifier::visitGlobalVariable`.
+    GlobalVariable {
+        /// The global's name, without its `@` sigil.
+        name: String,
+    },
+    /// A `GlobalIfunc`, checked by `Verifier::visitGlobalIFunc`.
+    GlobalIfunc {
+        /// The ifunc's name, without its `@` sigil.
+        name: String,
+    },
+    /// A whole function, checked outside any of its basic blocks.
+    Function {
+        /// The function's name, without its `@` sigil.
+        name: String,
+    },
+    /// A basic block, and the function that contains it.
+    Block {
+        /// The enclosing function's name, without its `@` sigil.
+        function: String,
+        /// The block's name without its `%` sigil, or `None` when the block is
+        /// unnamed — llvmkit has no slot number to substitute at this point,
+        /// and inventing one would make the field disagree with the printer.
+        block: Option<String>,
+    },
+}
+
+impl fmt::Display for VerifierSubject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Sigils are applied here, once, rather than stored per construction
+        // site — which is how the same field came to hold both `@name` and
+        // `name` for a function.
+        match self {
+            Self::Module => f.write_str("module"),
+            Self::GlobalVariable { name } => write!(f, "global @{name}"),
+            Self::GlobalIfunc { name } => write!(f, "ifunc @{name}"),
+            Self::Function { name } => write!(f, "function @{name}"),
+            Self::Block {
+                function,
+                block: Some(block),
+            } => write!(f, "function @{function}, block %{block}"),
+            Self::Block {
+                function,
+                block: None,
+            } => write!(f, "function @{function}, unnamed block"),
+        }
+    }
+}
+
 /// Why a brand claim was refused.
 ///
 /// The brand registry reports exactly these two outcomes, so this is the whole
@@ -1307,10 +1387,10 @@ pub enum IrError {
     VerifierFailure {
         /// The LangRef invariant that was violated.
         rule: VerifierRule,
-        /// Name of the function under verification, if known.
-        function: Option<String>,
-        /// Name of the offending basic block, if known.
-        block: Option<String>,
+        /// What the finding was raised about. A partition, not two
+        /// independent `Option`s — see [`VerifierSubject`] for the two states
+        /// the old pair could spell and should not have.
+        subject: VerifierSubject,
         /// `Verifier::CheckFailed`'s own literal for the failing `Check`,
         /// followed by llvmkit's detail in parentheses where it has any.
         message: String,

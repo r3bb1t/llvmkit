@@ -19,6 +19,53 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — a verifier failure says what it is about *(breaking)*
+
+`IrError::VerifierFailure` carried two independent optionals:
+
+```rust
+// before                              // now
+function: Option<String>,              subject: VerifierSubject,
+block:    Option<String>,
+```
+
+Two things were wrong with the pair, and both were live. It could spell
+`function: None, block: Some(_)` — a basic block outside any function. And
+`function`'s own rustdoc said *"name of the function under verification"* while
+two of the five construction sites filled it with something else: a
+`GlobalVariable`'s name (`Verifier::fail_global`) and a `GlobalIfunc`'s
+(`Verifier::visit_global_ifunc`). A consumer reading the field to name the
+offending function was handed a global.
+
+`VerifierSubject` is the partition instead — `Module`, `GlobalVariable`,
+`GlobalIfunc`, `Function`, `Block { function, block }` — so the impossible pair
+has no spelling and a global cannot arrive labelled as a function.
+
+Names are now stored **bare**. Three sites had baked `@` into the string and one
+had not, so one field held two spellings of one concept; the sigil moved to
+`VerifierSubject`'s `Display`, which applies it in one place.
+
+`VerifierFailure`'s own `Display` is unchanged — it renders `rule` and
+`message` only, as before — so the byte-exact `CHECK`-line contract with
+`llvm/test/Verifier/*.ll` fixtures is untouched, and no test oracle moved.
+
+That last fact is why this shipped: **no consumer in the workspace read either
+field.** Thirteen files outside `verifier.rs` and `error.rs` name the variant
+(`git grep -ln "VerifierFailure" 7ba7d1b -- 'crates/*' 'llvmkit/*'`, minus those
+two), and every one matched with `..`:
+
+```
+git grep -n -A6 "IrError::VerifierFailure {" 7ba7d1b -- 'crates/*/tests/*' \
+    'crates/*/src/*' ':!crates/llvmkit-ir/src/verifier.rs' \
+  | rg "^\S+[-:][0-9]+[-:]\s*(function|block):"      # returns nothing
+```
+
+So the mislabelling was unobservable to the suite.
+`crates/llvmkit-ir/tests/verifier_subject.rs` lands with the fix and reads the
+subject at each of the five construction sites, plus a sweep asserting no stored
+name carries a sigil. Restoring the old `fail_global` shape fails two of them
+(verified by mutation).
+
 ### Fixed — `const_ap_float`'s type mismatch stated a fact it never read
 
 `FloatType::const_ap_float` rejects a value whose `ApFloat` semantics differ

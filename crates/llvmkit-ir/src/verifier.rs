@@ -69,7 +69,7 @@ use crate::block_state::Unterminated;
 use crate::constant_range::{ConstantRange, metadata_constant_int};
 use crate::derived_types::SizedType;
 use crate::dominator_tree::DominatorTree;
-use crate::error::{IrError, IrResult, VerifierRule};
+use crate::error::{IrError, IrResult, VerifierRule, VerifierSubject};
 use crate::function::FunctionValue;
 use crate::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, FcmpInstData,
@@ -216,8 +216,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         if !crate::global_ifunc::is_valid_ifunc_linkage(i.linkage()) {
             return Err(IrError::VerifierFailure {
                 rule: VerifierRule::IfuncInvalidLinkage,
-                function: Some(format!("@{}", i.name())),
-                block: None,
+                subject: VerifierSubject::GlobalIfunc {
+                    name: i.name().to_owned(),
+                },
                 message: "IFunc should have private, internal, linkonce, weak, linkonce_odr, \
                           weak_odr, or external linkage!"
                     .to_owned(),
@@ -492,8 +493,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrError {
         IrError::VerifierFailure {
             rule,
-            function: Some(format!("@{}", g.name())),
-            block: None,
+            subject: VerifierSubject::GlobalVariable {
+                name: g.name().to_owned(),
+            },
             message,
         }
     }
@@ -503,8 +505,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     fn fail_module_flags(&self, rule: VerifierRule, message: String) -> IrError {
         IrError::VerifierFailure {
             rule,
-            function: None,
-            block: None,
+            subject: VerifierSubject::Module,
             message,
         }
     }
@@ -1105,8 +1106,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         }
         Err(IrError::VerifierFailure {
             rule: VerifierRule::IntrinsicAddressTaken,
-            function: Some(format!("@{}", f.name())),
-            block: None,
+            subject: VerifierSubject::Function {
+                name: f.name().to_owned(),
+            },
             message: "Invalid user of intrinsic instruction!".to_owned(),
         })
     }
@@ -6775,8 +6777,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrError {
         IrError::VerifierFailure {
             rule,
-            function: Some(f.name().to_owned()),
-            block: bb.name(),
+            subject: VerifierSubject::Block {
+                function: f.name().to_owned(),
+                block: bb.name(),
+            },
             message,
         }
     }
