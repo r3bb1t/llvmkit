@@ -2031,6 +2031,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::insert_and_extract_bits` | `TEST(APIntTest, insertBits)` and `extractBits`, at the widths llvmkit models | port |
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::signbit_zero_checks` | `TEST(APIntTest, SignbitZeroChecks)` | port |
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::zero_width` | `TEST(APIntTest, ZeroWidth)`, restricted to the operations llvmkit models | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::zero_width_answers_the_four_predicates_upstream_asserts_on` | `llvm/include/llvm/ADT/APInt.h::isMaxSignedValue` / `isMinSignedValue` / `isPowerOf2` / `isNegatedPowerOf2`, each of which asserts a non-zero width, so `TEST(APIntTest, ZeroWidth)` cannot exercise them; llvmkit computes no `1 << (BitWidth - 1)` and answers instead | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::splat` | `TEST(APIntTest, Splat)` | port |
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::to_string` | `TEST(APIntTest, toString)`, the rows without the C-literal prefix or separators, which `to_string_radix` does not model | port |
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::from_string_round_trips_to_string` | closest upstream family `TEST(APIntTest, fromString)`; llvmkit-specific because `ApInt::from_string` does not model upstream signed spellings, so the two directions are checked for agreement instead | llvmkit-specific subset |

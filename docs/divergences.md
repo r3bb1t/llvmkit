@@ -508,6 +508,48 @@ its `expected '(' here` negative case.
 
 ---
 
+## Numeric predicates
+
+### D17 — Four zero-width predicates answer where upstream asserts
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-ir/src/ap_int.rs` — `ApInt::is_max_signed_value`,
+`is_min_signed_value`, `is_power_of_2`, `is_negated_power_of_2`
+
+**LLVM:** `llvm/include/llvm/ADT/APInt.h::isMaxSignedValue` and
+`isMinSignedValue` each assert a non-zero width, guarding a real
+`1 << (BitWidth - 1)` shift that would otherwise shift by `-1`.
+`isNegatedPowerOf2`'s assert is its first statement, unconditional, guarding
+the `BitWidth - 1` bit index its body reaches through `isNonNegative()`.
+`isPowerOf2`'s assert sits inside the `isSingleWord()` branch and guards
+nothing mechanical — `isPowerOf2_64(U.VAL)` never reads `BitWidth`; that
+assert is purely semantic, declining the question at width 0. In a release
+build (`NDEBUG`), all four are undefined behaviour at width 0, not merely
+unspecified.
+
+**llvmkit:** computes no such shift and answers instead — `true`, `true`,
+`false`, `false`. `is_max_signed_value` and `is_min_signed_value` fall through
+their `bit_width == 0 ||` short-circuit; `is_power_of_2` is
+`popcount() == 1`, which is `false` when no bits are set; `is_negated_power_of_2`
+is `is_negative() && ...`, and `is_negative` itself already guards
+`bit_width != 0` at the exact point where upstream's index would go out of
+range.
+
+**Why:** llvmkit takes no runtime panics in production paths, so it must
+define what upstream leaves undefined. The two signed-extreme answers match
+upstream's own unasserted *unsigned* pair — `isMaxValue`/`isMinValue` are
+`isAllOnes`/`isZero`, both `true` at width 0 — because a 0-bit domain holds
+exactly one value, which is both its maximum and its minimum. The two
+power-of-two answers are `false` because a 0-bit value has no bits set, and
+`popcount() == 1` already states that on its own.
+
+**Fix:** none owed. llvmkit is strictly more total than upstream here — it
+answers every input upstream's assert would instead reject or leave
+undefined — and no input makes any of the four answers wrong. This entry
+records the difference; it does not schedule work.
+
+---
+
 ---
 
 # Inventory

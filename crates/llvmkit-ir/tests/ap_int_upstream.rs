@@ -342,6 +342,41 @@ fn zero_width() {
     assert!(zero_width.sext(8).expect("widening succeeds").is_zero());
 }
 
+/// llvmkit-specific (**no upstream counterpart**, by construction): upstream's
+/// `TEST(APIntTest, ZeroWidth)` cannot call these four, because
+/// `isMaxSignedValue`, `isMinSignedValue`, `isPowerOf2` and
+/// `isNegatedPowerOf2` each assert a non-zero width and the assert fires in a
+/// debug build.
+///
+/// Upstream asserts to guard its own `1 << (BitWidth - 1)`, which would shift
+/// by `-1`. llvmkit computes no such shift, so it answers where upstream
+/// declines — recorded in `docs/divergences.md`.
+///
+/// Both signed extremes are `true` because a 0-bit domain holds exactly one
+/// value, which is both its maximum and its minimum. That is upstream's own
+/// behaviour for the *unsigned* pair, which is unasserted:
+/// `isMaxValue`/`isMinValue` are `isAllOnes`/`isZero`, and both are `true` at
+/// width 0.
+///
+/// This is a characterisation test — the behaviour predates it. It exists so
+/// that an edit to `signed_max_value` or `signed_min_value` cannot move the
+/// answer silently, which it could before those predicates stated it.
+#[test]
+fn zero_width_answers_the_four_predicates_upstream_asserts_on() {
+    let zero_width = ApInt::zero_width();
+
+    // A singleton domain: its one value is both extremes.
+    assert!(zero_width.is_max_signed_value());
+    assert!(zero_width.is_min_signed_value());
+    // And the unsigned pair agrees, which is upstream's unasserted behaviour.
+    assert!(zero_width.is_max_value());
+    assert!(zero_width.is_min_value());
+
+    // No bits are set, so it is not a power of two, negated or otherwise.
+    assert!(!zero_width.is_power_of_2());
+    assert!(!zero_width.is_negated_power_of_2());
+}
+
 /// Port of `TEST(APIntTest, Splat)`.
 #[test]
 fn splat() {

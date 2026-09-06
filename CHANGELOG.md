@@ -170,6 +170,31 @@ lookup, matching where upstream asserts. Below the fast path a float *constant*
 would return before being checked; below the cache lookup a value memoized
 earlier could still be handed back.
 
+### Changed — the two signed extremes state their width-0 answer
+
+This closes the "separate, narrower parity gap, tracked on its own" the
+correction above left open. `ApInt::is_max_signed_value` and
+`is_min_signed_value` answered `true` at width 0 only because
+`signed_max_value(0)` / `signed_min_value(0)` return `zero(0)` and the
+equality comparison happened to match — the answer lived in a different
+function, where an unrelated edit there could have moved it silently. Each now
+states `self.bit_width == 0 || ...` explicitly. Observable behaviour is
+unchanged.
+
+Upstream's `isMaxSignedValue`/`isMinSignedValue` assert a non-zero width to
+guard a real `1 << (BitWidth - 1)` shift by `-1`. `isPowerOf2` and
+`isNegatedPowerOf2` assert too, but for different reasons: `isPowerOf2`'s
+guards nothing mechanical (`isPowerOf2_64(U.VAL)` never reads `BitWidth`; the
+assert is purely semantic), while `isNegatedPowerOf2`'s guards a real
+`BitWidth - 1` bit index its body would reach through `isNonNegative()`.
+llvmkit takes no runtime panics in production paths, so it answers all four
+instead — `true`, `true`, `false`, `false` — matching upstream's own
+unasserted *unsigned* pair (`isMaxValue`/`isMinValue`, both `true` at width
+0), which is what a singleton domain means. A new characterisation test,
+`ap_int_upstream.rs::zero_width_answers_the_four_predicates_upstream_asserts_on`,
+pins all four so a future edit cannot move any of them silently. Recorded as
+`docs/divergences.md` D17.
+
 ### Removed — `read_to_owned`; the parser crate performs no I/O at all *(breaking)*
 
 `llvmkit_asmparser::read_to_owned` is gone. It wrapped `Read::read_to_end` in
