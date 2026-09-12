@@ -76,10 +76,10 @@ use super::function_signature::TypedVarArgsFunctionValue;
 use super::function_signature::{
     FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
 };
-use super::global_alias::{GlobalAlias, GlobalAliasBuilder};
-use super::global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
+use super::global_alias::{GlobalAlias, GlobalAliasBuilder, GlobalAliasData};
+use super::global_ifunc::{GlobalIfunc, GlobalIfuncBuilder, GlobalIfuncData};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
-use super::global_variable::{GlobalBuilder, GlobalVariable};
+use super::global_variable::{GlobalBuilder, GlobalVariable, GlobalVariableData};
 use super::inline_asm::{InlineAsm, InlineAsmData, InlineAsmOptions};
 use super::int_width::{IntDyn, Width};
 use super::intrinsics::IntrinsicFunctionData;
@@ -107,7 +107,9 @@ use super::struct_schema::StructSchema;
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueUse};
+use super::value::{
+    GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse,
+};
 use super::value_id::{
     FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
     ValueId, ViewIn,
@@ -2173,19 +2175,19 @@ impl<'ctx> ModuleCore {
     /// Crate-internal: install a built [`GlobalBuilder`] into the
     /// module. Performs the duplicate-name check and the comdat
     /// existence check, then pushes to the value arena.
+    ///
+    /// `data` carries only slots `GlobalBuilder::build` admitted through the
+    /// checked doors, so every slot in it names this module's arena.
     pub(super) fn install_global_variable<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: GlobalBuilder<'ctx, B>,
+        name: String,
+        data: GlobalVariableData,
+        address_space: u32,
     ) -> IrResult<GlobalVariable<'ctx, B>> {
-        let (name, data, _initializer, address_space, value_type) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
-        // Sanity: value_type must already be in the same context. Use
-        // the cached id directly. (Construction APIs only hand out
-        // typed ids belonging to this module.)
-        let _ = value_type;
         let seeded_initializer = data.initializer.get();
         let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
@@ -2213,11 +2215,14 @@ impl<'ctx> ModuleCore {
         ))
     }
 
+    /// `data` carries only slots `GlobalAliasBuilder::build` admitted through
+    /// the checked doors, so every slot in it names this module's arena.
     pub(super) fn install_global_alias<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: GlobalAliasBuilder<'ctx, B>,
+        name: String,
+        data: GlobalAliasData,
+        address_space: u32,
     ) -> IrResult<GlobalAlias<'ctx, B>> {
-        let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateGlobalName { name });
         }
@@ -2247,11 +2252,14 @@ impl<'ctx> ModuleCore {
         ))
     }
 
+    /// `data` carries only slots `GlobalIfuncBuilder::build` admitted through
+    /// the checked doors, so every slot in it names this module's arena.
     pub(super) fn install_global_ifunc<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: GlobalIfuncBuilder<'ctx, B>,
+        name: String,
+        data: GlobalIfuncData,
+        address_space: u32,
     ) -> IrResult<GlobalIfunc<'ctx, B>> {
-        let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateGlobalName { name });
         }
@@ -4487,11 +4495,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         C: IsConstant<'ctx, B>,
     {
-        let constant = c.as_constant();
-        if constant.module.id() != self.core().id() {
-            return Err(IrError::ForeignValueId);
-        }
-        Ok(self.core().metadata_constant_value(constant.id))
+        let slot = c.as_constant().slot_in(self.core().id())?;
+        Ok(self.core().metadata_constant_value(slot))
     }
 
     /// Create a specialized `DI*` metadata node.

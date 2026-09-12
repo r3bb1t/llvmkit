@@ -10,11 +10,12 @@ use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
-use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeKind, TypeSlot};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::r#type::{Type, TypeKind, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot,
+    ValueSlotAccess, sealed,
 };
 use super::value_id::GlobalAliasId;
 
@@ -135,9 +136,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         let constant = aliasee.as_constant();
         // Only the slot is stored, so a constant from another module sharing
         // this brand would silently name a different value here.
-        if constant.module.id() != self.module.id() {
-            return Err(IrError::ForeignValueId);
-        }
+        let aliasee = constant.slot_in(self.module.id())?;
         let Some(addr_space) = pointer_address_space(constant.ty()) else {
             return Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Pointer,
@@ -154,9 +153,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
             self.id,
             GlobalFieldKind::Aliasee,
             Some(self.data().aliasee.get()),
-            Some(constant.id),
+            Some(aliasee),
         );
-        self.data().aliasee.set(constant.id);
+        self.data().aliasee.set(aliasee);
         Ok(())
     }
 
@@ -338,10 +337,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, 
 pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    value_type: TypeSlot,
-    aliasee: ValueSlot,
-    aliasee_module: ModuleId,
-    aliasee_type: TypeSlot,
+    /// Kept as the caller's handle, not its slot: `build` admits it through
+    /// the checked door, and only then does its slot enter this module.
+    value_type: Type<'ctx, B>,
+    /// Kept as the caller's handle for the same reason.
+    aliasee: Constant<'ctx, B>,
     address_space: u32,
     linkage: Linkage,
     dso_locality: DsoLocality,
@@ -365,10 +365,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         Self {
             module,
             name: name.into(),
-            value_type: value_type.id(),
-            aliasee: aliasee.id,
-            aliasee_module: aliasee.module.id(),
-            aliasee_type: aliasee.ty,
+            value_type,
+            aliasee,
             address_space,
             linkage: Linkage::External,
             dso_locality: DsoLocality::Default,
@@ -430,46 +428,51 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
     /// Resolve the id back into a borrowing [`GlobalAlias`] with
     /// [`Module::view`](crate::Module::view).
     ///
-    /// Errors with [`IrError::ForeignValueId`] when the aliasee handle was
-    /// minted by another module sharing this brand.
+    /// Errors with [`IrError::ForeignType`] when the value type, and with
+    /// [`IrError::ForeignValueId`] when the aliasee, was minted by another
+    /// module sharing this brand.
     pub fn build(self) -> IrResult<GlobalAliasId<B>> {
         if !is_valid_alias_linkage(self.linkage) {
             return Err(IrError::InvalidOperation {
                 message: "invalid linkage type for alias",
             });
         }
-        // The builder keeps only the handle's slot, which names a different
-        // value — or nothing — in another module's arena, so the tag is checked
-        // before this arena is read.
-        if self.aliasee_module != self.module.id() {
-            return Err(IrError::ForeignValueId);
-        }
-        if self.module.module().context().value_data(self.aliasee).ty != self.aliasee_type {
+        // Each handle's slot names a different type or value — or nothing — in
+        // another module's arena, so both are admitted before this arena is
+        // read at either.
+        let owner = self.module.id();
+        let value_type = self.value_type.slot_in(owner)?;
+        let aliasee = self.aliasee.slot_in(owner)?;
+        // The aliasee was admitted just above, so its type handle is this
+        // module's too.
+        let aliasee_type = self.aliasee.ty();
+        if self.module.module().context().value_data(aliasee).ty
+            != aliasee_type.slot_trusting_same_module()
+        {
             return Err(IrError::AliaseeTypeChangedBeforeBuild);
         }
-        if !matches!(
-            Type::new(self.aliasee_type, self.module).kind(),
-            TypeKind::Pointer { .. }
-        ) {
+        if !matches!(aliasee_type.kind(), TypeKind::Pointer { .. }) {
             return Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Pointer,
-                got: Type::new(self.aliasee_type, self.module).kind_label(),
+                got: aliasee_type.kind_label(),
             });
         }
-        self.module
+        let module = self.module;
+        let (name, data, address_space) = self.into_data(value_type, aliasee);
+        module
             .module()
-            .install_global_alias::<B>(self)
+            .install_global_alias::<B>(name, data, address_space)
             .map(|a| a.id())
     }
 
-    pub(super) fn into_data(self) -> (String, GlobalAliasData, u32) {
+    /// Lower the builder to its storage payload, holding the slots `build`
+    /// admitted rather than anything read off the handles again.
+    fn into_data(self, value_type: TypeSlot, aliasee: ValueSlot) -> (String, GlobalAliasData, u32) {
         let GlobalAliasBuilder {
             module: _,
             name,
-            value_type,
-            aliasee,
-            aliasee_module: _,
-            aliasee_type: _,
+            value_type: _,
+            aliasee: _,
             address_space,
             linkage,
             dso_locality,

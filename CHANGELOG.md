@@ -19,6 +19,40 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — a handle from another module is refused where it becomes a slot *(breaking)*
+
+- **Breaking (llvmkit-ir):** new `IrError::ForeignType`, answering
+  `Blame::UsageError`: a type handle minted by one module reached an API of
+  another that would store its slot. Each module interns types in its own
+  arena, so the slot named a different type there, or nothing. An exhaustive
+  `match` over `IrError` needs a new arm. `ForeignValueId`'s message now
+  reads "value belongs to a different Module" rather than "value id …",
+  because it is raised for handles as well as ids.
+- **Fixed (llvmkit-ir):** `GlobalBuilder::build` stored the initializer's
+  slot and the value type's slot without comparing either handle's module,
+  and `GlobalVariable::set_initializer` stored a constant's slot the same way.
+  Under a shared brand (every `Module::dynamic` is `DynBrand`) a handle from
+  another module was stored at its slot in this module's arena and the call
+  returned `Ok`. `alias_builder` and `ifunc_builder` did the same with their
+  value type. Each now returns `ForeignValueId` for a constant or
+  `ForeignType` for a type before anything is installed or stored
+  (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
+- The comparison is written once per currency. Two crate-private doors lead
+  from a handle to its slot: `slot_in(owner)`, the checked door, which
+  compares the handle's module with the receiving one
+  (`ValueSlotAccess` in `value.rs`, `TypeSlotAccess` in `type.rs`), and
+  `slot_trusting_same_module()`, the unchecked door, for reads that stay
+  inside one module. The hand-rolled comparisons in
+  `Module::metadata_constant` and in the alias and ifunc builders and setters
+  now go through `slot_in`, and the three global-object builders keep the
+  caller's handles until `build` and store only what the checked door
+  returns — the separate `aliasee_module` / `resolver_module` fields that had
+  to be kept in step with the slot are gone.
+- `GlobalVariable::set_initializer`'s documentation said "module provenance
+  is enforced by `B`", which is false for two modules sharing a brand; it now
+  says which check does it. It also named the wrong error for a type
+  mismatch (`TypeMismatch`; the method returns `TypeIdentityMismatch`).
+
 ### Changed — four llvmkit-bug sites get their own variants; alias and ifunc refuse a foreign constant *(breaking)*
 
 - **Breaking (llvmkit-ir):** three new `IrError` variants, each answering
@@ -55,8 +89,16 @@ cut, entries accumulate under **Unreleased**.
   `*_from_another_module` tests). With a foreign handle refused, nothing else
   can change a value's type:
   `rg -n "\.ty = |fn mutate_type|fn set_type|fn replace_type" crates/llvmkit-ir/src`
-  returns nothing, and value handles' `ty` fields and constructors are
-  crate-private.
+  returns nothing, and a caller cannot choose the type a handle carries:
+  `TypeSlot` has a private field, and its only constructor is the
+  crate-private `TypeSlot::from_index`
+  (`rg -n "TypeSlot\(|fn from_index" crates/llvmkit-ir/src/type.rs` at
+  `ded59bb`: the declaration and that one function). llvmkit does not
+  otherwise prove that every handle carries its value's own type — crate code
+  builds handles with computed types — which is why `build` compares the two
+  rather than trusting them. *(Corrected in the entry above: this sentence
+  first rested on "value handles' `ty` fields and constructors are
+  crate-private", stated without a command.)*
 
 ### Added — `Blame`: whether an error is llvmkit's bug, as a value
 

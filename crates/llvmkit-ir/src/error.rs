@@ -1425,15 +1425,19 @@ pub enum IrError {
     },
 
     /// [`GlobalAliasBuilder::build`](crate::GlobalAliasBuilder::build) found
-    /// the aliasee's type different from the type its handle carried when the
-    /// builder was created.
+    /// the type this module's arena records for the aliasee different from the
+    /// type the aliasee's handle carried.
     ///
-    /// No caller input reaches this. `build` first rejects an aliasee from
+    /// No caller input reaches this. `build` first refuses an aliasee from
     /// another module with [`ForeignValueId`](Self::ForeignValueId), so the
-    /// slot it reads names the value the handle named, and a value's type is
-    /// fixed when the value is created. The check stays because this crate
-    /// takes no runtime panics in production paths; [`IrError::blame`] answers
-    /// [`Blame::LlvmkitInvariant`].
+    /// slot it reads names the value the handle named. What is left is a handle
+    /// whose cached type disagrees with its value's, and a caller cannot choose
+    /// the type a handle carries: `TypeSlot` has a private field and its only
+    /// constructor, `TypeSlot::from_index`, is crate-private. llvmkit does not
+    /// otherwise prove that every handle it builds carries its value's own
+    /// type, which is why this comparison is made rather than trusted. It
+    /// stays an error because this crate takes no runtime panics in production
+    /// paths; [`IrError::blame`] answers [`Blame::LlvmkitInvariant`].
     #[error("alias aliasee type changed before build")]
     AliaseeTypeChangedBeforeBuild,
 
@@ -1665,12 +1669,27 @@ pub enum IrError {
     /// [`IntoFloatValue`](crate::IntoFloatValue) /
     /// [`IntoPointerValue`](crate::IntoPointerValue)) when handed a foreign id.
     ///
-    /// The global alias and ifunc builders, and the `set_aliasee` /
-    /// `set_resolver` setters, raise it for a constant *handle* from another
-    /// module too: they keep only the handle's slot, which names a different
-    /// value — or nothing — in this module's arena.
-    #[error("value id belongs to a different Module")]
+    /// Raised for a value or constant *handle* from another module too, by the
+    /// APIs that keep only the handle's slot, which names a different value —
+    /// or nothing — in this module's arena: the global, alias and ifunc
+    /// builders, [`GlobalVariable::set_initializer`](crate::GlobalVariable::set_initializer),
+    /// [`GlobalAlias::set_aliasee`](crate::GlobalAlias::set_aliasee),
+    /// [`GlobalIfunc::set_resolver`](crate::GlobalIfunc::set_resolver) and
+    /// [`Module::metadata_constant`](crate::Module::metadata_constant).
+    #[error("value belongs to a different Module")]
     ForeignValueId,
+
+    /// A type handle minted by one [`Module`](crate::Module) reached an API of
+    /// another that would store its slot. Each module interns types in its own
+    /// arena, so the slot would name a different type there, or nothing.
+    ///
+    /// The type twin of [`ForeignValueId`](Self::ForeignValueId): two modules
+    /// sharing a brand (`DynBrand`, or a re-issued named brand) accept each
+    /// other's [`Type`](crate::Type) handles without a type error, and the
+    /// module tag is what refuses them. Raised by the global, alias and ifunc
+    /// builders for a value type from another module.
+    #[error("type belongs to a different Module")]
+    ForeignType,
 
     /// A [`MetadataId`](crate::MetadataId) named nothing in the target
     /// [`Module`](crate::Module) — the id's tag matched, but its slot is past
@@ -1970,10 +1989,12 @@ impl IrError {
             | Self::SsaForeignFunction
             | Self::SsaUnpositioned => Blame::UsageError,
 
-            // An id the caller minted in one module and handed to another.
-            Self::ForeignValueId | Self::ForeignMetadataId | Self::ForeignNamedMetadataId => {
-                Blame::UsageError
-            }
+            // A handle or id the caller minted in one module and handed to
+            // another.
+            Self::ForeignValueId
+            | Self::ForeignType
+            | Self::ForeignMetadataId
+            | Self::ForeignNamedMetadataId => Blame::UsageError,
 
             Self::Brand(error) => error.blame(),
             Self::DataLayout(error) => error.blame(),

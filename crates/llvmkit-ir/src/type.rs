@@ -32,7 +32,7 @@ use core::num::NonZeroU32;
 use crate::TypeKindLabel;
 use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
-use crate::module::{ModuleBrand, ModuleCore, ModuleRef, ModuleView};
+use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef, ModuleView};
 
 /// Minimum legal integer width. Mirrors `IntegerType::MIN_INT_BITS`
 /// (`DerivedTypes.h`).
@@ -1166,3 +1166,44 @@ impl<'ctx, B: ModuleBrand> IrType<'ctx, B> for Type<'ctx, B> {
         self
     }
 }
+
+/// A type handle's route to the arena [`TypeSlot`] it names: one checked door
+/// and one unchecked door — the type twin of `ValueSlotAccess` in `value.rs`.
+///
+/// Each module interns types in its own arena, so a type handle's slot means
+/// something only in the module that minted it, exactly as a value handle's
+/// does, and two modules sharing a brand accept each other's type handles
+/// without a type error.
+///
+/// - [`slot_in`](Self::slot_in) is the **checked door**. It refuses a handle
+///   minted by a module other than `owner` with [`IrError::ForeignType`]; a
+///   boundary — a site where a caller's type meets a second module — takes it
+///   before the slot is stored or looked up.
+/// - [`slot_trusting_same_module`](Self::slot_trusting_same_module) is the
+///   **unchecked door**: the slot, trusting that it is used only with the
+///   handle's own module.
+///
+/// Crate-private and blanket-implemented over [`IrType`], so every type handle
+/// has both doors under the same two names and nothing outside the crate has
+/// either.
+pub(crate) trait TypeSlotAccess<'ctx, B: ModuleBrand>: IrType<'ctx, B> {
+    /// The checked door: this handle's slot, if `owner` minted the handle;
+    /// [`IrError::ForeignType`] otherwise.
+    #[inline]
+    fn slot_in(self, owner: ModuleId) -> IrResult<TypeSlot> {
+        let ty = self.as_type();
+        if ty.module.id() != owner {
+            return Err(IrError::ForeignType);
+        }
+        Ok(ty.id)
+    }
+
+    /// The unchecked door: this handle's slot, trusting that the caller uses
+    /// it only with the handle's own module.
+    #[inline]
+    fn slot_trusting_same_module(self) -> TypeSlot {
+        self.as_type().id
+    }
+}
+
+impl<'ctx, B: ModuleBrand, T: IrType<'ctx, B>> TypeSlotAccess<'ctx, B> for T {}

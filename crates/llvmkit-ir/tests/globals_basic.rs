@@ -1072,6 +1072,10 @@ fn alias_builder_rejects_an_aliasee_from_another_module() {
         .build()
         .expect_err("an aliasee from another module must be refused");
     assert!(matches!(error, IrError::ForeignValueId), "got {error:?}");
+    assert!(
+        b.alias("alias").is_none(),
+        "a refused build must not install"
+    );
 }
 
 /// `ifunc_builder(..).build()` refuses a resolver from another module, here
@@ -1088,6 +1092,10 @@ fn ifunc_builder_rejects_a_resolver_from_another_module() {
         .build()
         .expect_err("a resolver from another module must be refused");
     assert!(matches!(error, IrError::ForeignValueId), "got {error:?}");
+    assert!(
+        b.ifunc("ifunc").is_none(),
+        "a refused build must not install"
+    );
 }
 
 /// `set_aliasee` refuses a constant from another module rather than storing
@@ -1105,11 +1113,22 @@ fn set_aliasee_rejects_a_constant_from_another_module() {
         .alias_builder("alias", b_i32.as_type(), b.view(own))
         .build()
         .expect("alias");
+    let before = format!("{b}");
     let error = b
         .view(alias)
         .set_aliasee(&b, a.view(foreign))
         .expect_err("an aliasee from another module must be refused");
     assert!(matches!(error, IrError::ForeignValueId), "got {error:?}");
+    assert_eq!(
+        b.view(alias).aliasee().as_erased().id(),
+        b.view(own).as_erased().id(),
+        "a refused set_aliasee must leave the original aliasee in place"
+    );
+    assert_eq!(
+        format!("{b}"),
+        before,
+        "a refused set_aliasee must not mutate"
+    );
 }
 
 /// `set_resolver` refuses a constant from another module rather than storing
@@ -1127,9 +1146,20 @@ fn set_resolver_rejects_a_constant_from_another_module() {
         .ifunc_builder("ifunc", b_i32.as_type(), b.view(own))
         .build()
         .expect("ifunc");
+    let before = format!("{b}");
     let error = b
         .view(ifunc)
         .set_resolver(&b, a.view(foreign))
         .expect_err("a resolver from another module must be refused");
     assert!(matches!(error, IrError::ForeignValueId), "got {error:?}");
+    assert_eq!(
+        b.view(ifunc).resolver().as_erased().id(),
+        b.view(own).as_erased().id(),
+        "a refused set_resolver must leave the original resolver in place"
+    );
+    assert_eq!(
+        format!("{b}"),
+        before,
+        "a refused set_resolver must not mutate"
+    );
 }

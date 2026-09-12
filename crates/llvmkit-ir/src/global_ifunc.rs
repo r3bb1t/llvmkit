@@ -10,11 +10,12 @@ use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
-use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeKind, TypeSlot};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::r#type::{Type, TypeKind, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot,
+    ValueSlotAccess, sealed,
 };
 use super::value_id::GlobalIfuncId;
 
@@ -138,9 +139,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
         let constant = resolver.as_constant();
         // Only the slot is stored, so a constant from another module sharing
         // this brand would silently name a different value here.
-        if constant.module.id() != self.module.id() {
-            return Err(IrError::ForeignValueId);
-        }
+        let resolver = constant.slot_in(self.module.id())?;
         let Some(addr_space) = pointer_address_space(constant.ty()) else {
             return Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Pointer,
@@ -157,9 +156,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
             self.id,
             GlobalFieldKind::IfuncResolver,
             Some(self.data().resolver.get()),
-            Some(constant.id),
+            Some(resolver),
         );
-        self.data().resolver.set(constant.id);
+        self.data().resolver.set(resolver);
         Ok(())
     }
 
@@ -341,10 +340,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalIfunc<'ctx, 
 pub struct GlobalIfuncBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    value_type: TypeSlot,
-    resolver: ValueSlot,
-    resolver_module: ModuleId,
-    resolver_type: TypeSlot,
+    /// Kept as the caller's handle, not its slot: `build` admits it through
+    /// the checked door, and only then does its slot enter this module.
+    value_type: Type<'ctx, B>,
+    /// Kept as the caller's handle for the same reason.
+    resolver: Constant<'ctx, B>,
     address_space: u32,
     linkage: Linkage,
     dso_locality: DsoLocality,
@@ -368,10 +368,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
         Self {
             module,
             name: name.into(),
-            value_type: value_type.id(),
-            resolver: resolver.id,
-            resolver_module: resolver.module.id(),
-            resolver_type: resolver.ty,
+            value_type,
+            resolver,
             address_space,
             linkage: Linkage::External,
             dso_locality: DsoLocality::Default,
@@ -435,8 +433,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
     /// Resolve the id back into a borrowing [`GlobalIfunc`] with
     /// [`Module::view`](crate::Module::view).
     ///
-    /// Errors with [`IrError::ForeignValueId`] when the resolver handle was
-    /// minted by another module sharing this brand.
+    /// Errors with [`IrError::ForeignType`] when the value type, and with
+    /// [`IrError::ForeignValueId`] when the resolver, was minted by another
+    /// module sharing this brand.
     pub fn build(self) -> IrResult<GlobalIfuncId<B>> {
         // The linkage is deliberately *not* checked here. Upstream rejects a
         // bad ifunc linkage in `Verifier::visitGlobalIFunc`, not at
@@ -444,38 +443,46 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
         // guard is `if (IsAlias && ...)`. Checking it here made that
         // diagnostic unreachable; it now lives in
         // `VerifierRule::IfuncInvalidLinkage`.
-        // The builder keeps only the handle's slot, which names a different
-        // value — or nothing — in another module's arena, so the tag is checked
-        // before this arena is read.
-        if self.resolver_module != self.module.id() {
-            return Err(IrError::ForeignValueId);
-        }
-        if self.module.module().context().value_data(self.resolver).ty != self.resolver_type {
+        // Each handle's slot names a different type or value — or nothing — in
+        // another module's arena, so both are admitted before this arena is
+        // read at either.
+        let owner = self.module.id();
+        let value_type = self.value_type.slot_in(owner)?;
+        let resolver = self.resolver.slot_in(owner)?;
+        // The resolver was admitted just above, so its type handle is this
+        // module's too.
+        let resolver_type = self.resolver.ty();
+        if self.module.module().context().value_data(resolver).ty
+            != resolver_type.slot_trusting_same_module()
+        {
             return Err(IrError::IfuncResolverTypeChangedBeforeBuild);
         }
-        if !matches!(
-            Type::new(self.resolver_type, self.module).kind(),
-            TypeKind::Pointer { .. }
-        ) {
+        if !matches!(resolver_type.kind(), TypeKind::Pointer { .. }) {
             return Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Pointer,
-                got: Type::new(self.resolver_type, self.module).kind_label(),
+                got: resolver_type.kind_label(),
             });
         }
-        self.module
+        let module = self.module;
+        let (name, data, address_space) = self.into_data(value_type, resolver);
+        module
             .module()
-            .install_global_ifunc::<B>(self)
+            .install_global_ifunc::<B>(name, data, address_space)
             .map(|f| f.id())
     }
 
-    pub(super) fn into_data(self) -> (String, GlobalIfuncData, u32) {
+    /// Lower the builder to its storage payload, holding the slots `build`
+    /// admitted rather than anything read off the handles again.
+    fn into_data(
+        self,
+        value_type: TypeSlot,
+        resolver: ValueSlot,
+    ) -> (String, GlobalIfuncData, u32) {
         let GlobalIfuncBuilder {
             module: _,
             name,
-            value_type,
-            resolver,
-            resolver_module: _,
-            resolver_type: _,
+            value_type: _,
+            resolver: _,
             address_space,
             linkage,
             dso_locality,
