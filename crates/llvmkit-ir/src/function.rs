@@ -62,7 +62,7 @@ use super::r#type::{Type, TypeData, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData,
-    ValueSlot, sealed,
+    ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::ViewIn;
 use super::value_id::{FunctionId, TypedFunctionId};
@@ -1265,7 +1265,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B>
     for FunctionValue<'ctx, R, B>
 {
     #[inline]
-    fn into_callee(self, _module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+    fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(self)
     }
 }

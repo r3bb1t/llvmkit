@@ -4265,7 +4265,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         N: Into<String>,
         C: IntoConstantValue<'ctx, B>,
     {
-        let constant = initializer.into_constant(self.module_ref());
+        let constant = initializer.into_constant(self.module_ref())?;
         GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
             .initializer(constant)
             .build()
@@ -4280,7 +4280,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         N: Into<String>,
         C: IntoConstantValue<'ctx, B>,
     {
-        let constant = initializer.into_constant(self.module_ref());
+        let constant = initializer.into_constant(self.module_ref())?;
         GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
             .constant()
             .initializer(constant)

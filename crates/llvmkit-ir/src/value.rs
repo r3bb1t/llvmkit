@@ -915,8 +915,9 @@ impl<B: ModuleBrand> HasDebugLoc for Value<'_, B> {
 /// those three *narrow* to a pinned IR type, this one only widens, so it
 /// accepts strictly more:
 ///
-/// - every value **handle** — the whole [`IsValue`] family — for which the
-///   `module` argument is unused and the lift is infallible; and
+/// - every value **handle** — the whole [`IsValue`] family — which is refused
+///   with [`IrError::ForeignValueId`] when minted by a module other than
+///   `module`, exactly as an id is; and
 /// - the storable **ids** ([`ValueId`], [`IntValueId`], [`FloatValueId`],
 ///   [`PointerValueId`], [`FunctionId`](crate::FunctionId) and
 ///   [`GlobalId`](crate::GlobalId)), which resolve against `module` and report
@@ -950,8 +951,9 @@ pub(crate) mod into_erased_value_sealed {
 }
 
 /// Implement [`IntoErasedValue`] for one or more value **handles**, whose lift
-/// is the infallible [`IsValue::as_erased`] widen (the `module` argument is
-/// unused). Optional square-bracketed marker parameters are emitted ahead of
+/// is the [`IsValue::as_erased`] widen after the handle's module is checked
+/// against `module` through [`ValueSlotAccess::slot_in`]. Optional
+/// square-bracketed marker parameters are emitted ahead of
 /// the brand `B`, matching how every handle orders its generics
 /// (`IntValue<'ctx, W, B>`, `ArrayValue<'ctx, E, L, B>`, ...).
 ///
@@ -971,8 +973,12 @@ macro_rules! impl_into_erased_value_for_handle {
             #[inline]
             fn into_erased_value(
                 self,
-                _module: $crate::module::ModuleRef<'ctx, B>,
+                module: $crate::module::ModuleRef<'ctx, B>,
             ) -> $crate::error::IrResult<$crate::value::Value<'ctx, B>> {
+                // Boundary: the caller's handle meets `module`. The checked
+                // door refuses one minted elsewhere; the slot it returns is
+                // read again, once admitted, where the operand is stored.
+                $crate::value::ValueSlotAccess::slot_in(self, module.id())?;
                 Ok($crate::value::IsValue::as_erased(self))
             }
         }
@@ -2730,14 +2736,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> into_pointer_value_sealed::Sealed
 
 impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValue<'ctx, B> {
     #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(self)
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerNull<'ctx, B> {
     #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(PointerValue::from_value_unchecked(
             crate::value::IsValue::as_erased(self),
         ))

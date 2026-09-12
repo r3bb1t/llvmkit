@@ -40,7 +40,9 @@ use crate::ap_int::ApInt;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeKind, TypeSlot};
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, sealed};
+use crate::value::{
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, ValueSlotAccess, sealed,
+};
 use crate::{DebugLoc, IrError, IrResult};
 
 /// Opcode carried by a parser-needed LLVM `ConstantExpr`.
@@ -1026,8 +1028,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
 /// constant handle, or a Rust scalar literal materialized through the
 /// module's context.
 ///
-/// The blanket impl accepts any [`IsConstant`] handle unchanged (its
-/// `module` argument is ignored). The scalar impls — one per exact Rust
+/// The blanket impl accepts any [`IsConstant`] handle unchanged, refusing
+/// one minted by a module other than `module` with
+/// [`IrError::ForeignValueId`]. The scalar impls — one per exact Rust
 /// width (`bool`, `i8`..=`i128`, `u8`..=`u128`, `f32`, `f64`) — build the
 /// matching IR constant through the module and erase it to [`Constant`].
 /// One literal maps to exactly one IR width, with no widening: `0i32` is
@@ -1036,13 +1039,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
 /// [`IntoConstantFloat`].
 pub trait IntoConstantValue<'ctx, B: ModuleBrand> {
     /// Materialize `self` as an erased [`Constant`] owned by `module`.
-    fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B>;
+    ///
+    /// [`IrError::ForeignValueId`] when `self` is a constant handle another
+    /// module minted.
+    fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>>;
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B> for C {
     #[inline]
-    fn into_constant(self, _module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
-        self.as_constant()
+    fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
+        let constant = self.as_constant();
+        // Boundary: refuse a handle minted by another module.
+        constant.slot_in(module.id())?;
+        Ok(constant)
     }
 }
 
@@ -1050,16 +1059,16 @@ macro_rules! impl_into_constant_value_int {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
-            fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
+            fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
                 let ty = IntType::<$marker, B>::new(
                     module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
-                IntoConstantInt::into_constant_int(self, ty)
+                Ok(IntoConstantInt::into_constant_int(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
                     })
-                    .as_constant()
+                    .as_constant())
             }
         }
     };
@@ -1082,16 +1091,16 @@ macro_rules! impl_into_constant_value_float {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
-            fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
+            fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
                 let ty = FloatType::<$marker, B>::new(
                     module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
-                IntoConstantFloat::into_constant_float(self, ty)
+                Ok(IntoConstantFloat::into_constant_float(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
                     })
-                    .as_constant()
+                    .as_constant())
             }
         }
     };

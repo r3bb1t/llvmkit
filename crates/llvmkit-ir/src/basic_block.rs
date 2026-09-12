@@ -30,7 +30,9 @@ use super::ir_builder::{IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value::{
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess, sealed,
+};
 use super::value_id::BlockId;
 use super::value_id::ViewIn;
 use super::{DebugLoc, IrError, IrResult, Type};
@@ -330,8 +332,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
     #[inline]
     fn into_basic_block_label(
         self,
-        _module: ModuleRef<'ctx, B>,
+        module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        // Boundary: refuse a block another module minted.
+        self.to_erased().slot_in(module.id())?;
         Ok(self)
     }
 }
@@ -356,8 +360,10 @@ where
     #[inline]
     fn into_basic_block_label(
         self,
-        _module: ModuleRef<'ctx, B>,
+        module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        // Boundary: refuse a block another module minted.
+        self.to_erased().slot_in(module.id())?;
         Ok(BasicBlockLabel {
             id: self.id,
             module: self.module,
@@ -388,8 +394,10 @@ where
     #[inline]
     fn into_basic_block_label(
         self,
-        _module: ModuleRef<'ctx, B>,
+        module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        // Boundary: refuse a block another module minted.
+        self.to_erased().slot_in(module.id())?;
         // `IntoBasicBlockLabel` yields the parameter-erased label (its return
         // type pins `BlockParamsDyn`), so construct it directly rather than
         // through `label()`, which threads this block's `Params`.

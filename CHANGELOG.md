@@ -48,6 +48,22 @@ cut, entries accumulate under **Unreleased**.
   caller's handles until `build` and store only what the checked door
   returns — the separate `aliasee_module` / `resolver_module` fields that had
   to be kept in step with the slot are gone.
+- **Fixed (llvmkit-ir):** every operand lift took a caller's value *handle*
+  on trust. The handle impls of `IntoIntValue`, `IntoFloatValue`,
+  `IntoPointerValue` and `IntoErasedValue`, of `SelectArm`, `IntoCallee`,
+  `IntoTypedCallee` / `IntoVarArgsCallee` and `IntoBasicBlockLabel`, and the
+  struct-schema `IntoIrField` / `IntoCallArg` impls ignored their `module`
+  argument, while the id impls of the same traits checked it. A handle from
+  another module sharing the brand was stored as an operand: `int_add`
+  panicked in the value arena's `unreachable!`, and `freeze` returned `Ok`
+  holding the foreign slot. Each handle impl now checks through `slot_in` and
+  returns `ForeignValueId`.
+- **Breaking (llvmkit-ir):** `IntoConstantValue::into_constant` returns
+  `IrResult<Constant>`. Its blanket impl for constant handles refuses one from
+  another module, so `ArrayType::const_array`, `StructType::const_struct`,
+  `VectorType::const_vector`, `Module::add_global` and
+  `Module::add_global_constant` no longer intern a foreign element's slot. The
+  Rust-literal impls always return `Ok`.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type

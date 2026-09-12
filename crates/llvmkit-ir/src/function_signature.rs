@@ -23,7 +23,9 @@ use crate::ir_builder::{IrBuilder, Unpositioned, constant_folder::ConstantFolder
 use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeKind};
-use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot};
+use crate::value::{
+    FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot, ValueSlotAccess,
+};
 use crate::value_id::{TypedFunctionId, TypedVarArgsFunctionId};
 
 #[doc(hidden)]
@@ -605,8 +607,11 @@ macro_rules! impl_into_typed_callee {
             #[inline]
             fn $method(
                 self,
-                _module: ModuleRef<'ctx, B>,
+                module: ModuleRef<'ctx, B>,
             ) -> IrResult<$facade<'ctx, Ret, Params, B>> {
+                // Boundary: refuse a facade whose function another module
+                // minted.
+                ValueSlotAccess::slot_in(self.as_function(), module.id())?;
                 Ok(self)
             }
         }

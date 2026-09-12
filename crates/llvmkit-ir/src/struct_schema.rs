@@ -20,6 +20,7 @@ use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::{Type, TypeData};
 use crate::value::{
     FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlot,
+    ValueSlotAccess,
 };
 
 #[doc(hidden)]
@@ -457,8 +458,12 @@ macro_rules! impl_struct_into_field {
             S: StructSchema,
             B: ModuleBrand + 'ctx,
         {
-            fn into_ir_field(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().as_erased())
+            fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                let value = S::try_value_from_ir(self)?.as_struct_value();
+                // Boundary: refuse a value another module minted. The schema
+                // narrow above reads it only through its own module.
+                value.slot_in(module.id())?;
+                Ok(value.as_erased())
             }
         }
     };
@@ -476,8 +481,12 @@ macro_rules! impl_struct_into_call_arg {
             S: StructSchema,
             B: ModuleBrand + 'ctx,
         {
-            fn into_call_arg(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().as_erased())
+            fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                let value = S::try_value_from_ir(self)?.as_struct_value();
+                // Boundary: refuse a value another module minted. The schema
+                // narrow above reads it only through its own module.
+                value.slot_in(module.id())?;
+                Ok(value.as_erased())
             }
         }
     };

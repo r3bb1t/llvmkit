@@ -113,7 +113,7 @@ use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
     ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue,
-    Value, ValueKindData, ValueSlot, ValueUse, VectorValue,
+    Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse, VectorValue,
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
@@ -9724,8 +9724,8 @@ where
     /// First error raised by an [`arg`](CallBuilder::arg) operand, replayed by
     /// [`build`](CallBuilder::build). `arg` returns `Self` to keep the chain
     /// spellable, so a failed operand lift has nowhere to surface until the
-    /// terminal call. Only an id from a *foreign* module can set this — every
-    /// value handle lifts infallibly — so no pre-existing input can reach it.
+    /// terminal call. Only an id or handle from a *foreign* module can set
+    /// this: the operand lift refuses it with [`IrError::ForeignValueId`].
     arg_error: Option<IrError>,
     _rp: PhantomData<RP>,
     _rc: PhantomData<RC>,
@@ -9765,9 +9765,9 @@ where
     /// mixed-type argument lists work without homogeneity, and a storable id
     /// is accepted alongside a borrowing handle.
     ///
-    /// Infallible for every value handle. An id from a foreign module is the
-    /// one input that can fail; because the chain returns `Self`, that error
-    /// is parked in `arg_error` and reported by [`build`](Self::build).
+    /// An id or handle from a foreign module is the one input that can fail;
+    /// because the chain returns `Self`, that error is parked in `arg_error`
+    /// and reported by [`build`](Self::build).
     #[must_use]
     pub fn arg<V: IntoErasedValue<'ctx, B>>(mut self, value: V) -> Self {
         match value.into_erased_value(ModuleRef::<B>::new(self.parent.module)) {
@@ -9928,8 +9928,9 @@ where
     /// returns `Self` rather than `IrResult<Self>` to keep the chain
     /// spellable, so a failed callee lift has nowhere to surface until
     /// [`build`](TypedCallBuilder::build), which reads it before emitting
-    /// anything. Only a [`TypedFunctionId`](crate::TypedFunctionId) from a
-    /// *foreign* module can set it — the borrowing facade lifts infallibly.
+    /// anything. Only a [`TypedFunctionId`](crate::TypedFunctionId) or a
+    /// borrowing facade from a *foreign* module can set it: both lifts refuse
+    /// one with [`IrError::ForeignValueId`].
     callee: IrResult<TypedFunctionValue<'ctx, Ret, Params, B>>,
     args: A,
     tail_kind: TailCallKind,
@@ -10181,8 +10182,8 @@ where
     /// Lifted pointer operand, or the error its lift produced — replayed by
     /// the terminal. [`crate::IrBuilder::load_from`] returns `Self` to keep
     /// the chain spellable, so a failed lift has nowhere to surface until
-    /// then. Only an id from a *foreign* module can set it: every pointer
-    /// handle lifts infallibly.
+    /// then. Only an id or handle from a *foreign* module can set it: the
+    /// pointer lift refuses one with [`IrError::ForeignValueId`].
     ptr: IrResult<ValueSlot>,
     align: MaybeAlign,
     volatile: bool,
@@ -10644,7 +10645,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'
         IntValue::<W, B>::from_value_unchecked(v).id()
     }
     #[inline]
-    fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+    fn arm_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(IsValue::as_erased(self))
     }
 }
@@ -10656,7 +10659,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
         FloatValue::<K, B>::from_value_unchecked(v).id()
     }
     #[inline]
-    fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+    fn arm_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(IsValue::as_erased(self))
     }
 }
@@ -10668,7 +10673,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
         PointerValue::from_value_unchecked(v).id()
     }
     #[inline]
-    fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+    fn arm_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(IsValue::as_erased(self))
     }
 }

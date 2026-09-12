@@ -285,7 +285,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f64 {
 // --------------------------------------------------------------------------
 
 use super::module::{ModuleBrand, ModuleRef};
-use super::value::{FloatValue, Value};
+use super::value::{FloatValue, Value, ValueSlotAccess};
 
 /// Inputs that can be lifted into a [`FloatValue<'ctx, K>`] operand
 /// for the IR builder. Mirrors the int-side [`crate::IntoIntValue`]
@@ -327,7 +327,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
     for FloatValue<'ctx, K, B>
 {
     #[inline]
-    fn into_float_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+    fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(self)
     }
 }
@@ -337,7 +339,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
     for ConstantFloatValue<'ctx, K, B>
 {
     #[inline]
-    fn into_float_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+    fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(FloatValue::<K, B>::from_value_unchecked(
             crate::value::IsValue::as_erased(self),
         ))

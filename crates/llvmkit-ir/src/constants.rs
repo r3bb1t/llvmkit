@@ -908,7 +908,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
         let expected_len = self.len();
         let mut ids = Vec::new();
         for elem in elements {
-            let value = elem.into_constant(self.module).as_erased();
+            let value = elem.into_constant(self.module)?.as_erased();
             if value.ty != elem_ty {
                 return Err(IrError::TypeIdentityMismatch {
                     expected: self.element().rendered(),
@@ -942,7 +942,7 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
         let count = self.field_count();
         let mut ids = Vec::new();
         for (i, elem) in elements.into_iter().enumerate() {
-            let value = elem.into_constant(self.module).as_erased();
+            let value = elem.into_constant(self.module)?.as_erased();
             let field = self.field_type(i).ok_or(IrError::OperandWidthMismatch {
                 lhs: u32::try_from(count).unwrap_or(u32::MAX),
                 rhs: u32::try_from(i + 1).unwrap_or(u32::MAX),
@@ -990,7 +990,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
         let elem_ty = self.element().id();
         let mut ids = Vec::new();
         for elem in elements {
-            let value = elem.into_constant(self.module).as_erased();
+            let value = elem.into_constant(self.module)?.as_erased();
             if value.ty != elem_ty {
                 return Err(IrError::TypeIdentityMismatch {
                     expected: self.element().rendered(),

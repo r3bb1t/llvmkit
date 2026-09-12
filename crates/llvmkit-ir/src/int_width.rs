@@ -37,7 +37,7 @@ use super::ap_int::Signedness;
 use super::constants::ConstantIntValue;
 use super::module::{ModuleBrand, ModuleRef};
 use super::r#type::sealed;
-use super::value::{IntValue, IsValue, Value};
+use super::value::{IntValue, IsValue, Value, ValueSlotAccess};
 
 /// Sealed marker trait implemented by every integer width tag.
 pub trait IntWidth: sealed::Sealed + Copy + 'static + fmt::Debug {
@@ -618,8 +618,9 @@ decl_wider_than!(i128: bool, i8, i16, i32, i64);
 /// `Instruction` no longer lifts silently: narrow it explicitly with
 /// [`IntValue::try_from`] (or [`IsValue`]-erased `_dyn` builders). The
 /// `module` argument exists so Rust-scalar inputs can route through the
-/// right [`IntType<'ctx, W>`] constructor; impls for value handles
-/// ignore it.
+/// right [`IntType<'ctx, W>`] constructor, and so a handle impl can refuse a
+/// handle another module minted with
+/// [`IrError::ForeignValueId`].
 pub trait IntoIntValue<'ctx, W: IntWidth, B: ModuleBrand>:
     Sized + into_int_value_sealed::Sealed
 {
@@ -656,7 +657,9 @@ impl_into_int_value_sealed_scalar!(bool, i8, i16, i32, i64, i128, u8, u16, u32, 
 // ---- Identity ---------------------------------------------------------
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValue<'ctx, W, B> {
     #[inline]
-    fn into_int_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(self)
     }
 }
@@ -666,7 +669,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
     for ConstantIntValue<'ctx, W, B>
 {
     #[inline]
-    fn into_int_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(IntValue::<W, B>::from_value_unchecked(IsValue::as_erased(
             self,
         )))

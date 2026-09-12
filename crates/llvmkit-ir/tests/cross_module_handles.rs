@@ -19,7 +19,383 @@
 //! per `LLVMContext`, so every module of one context shares them, while
 //! llvmkit gives each module its own type arena.
 
-use llvmkit_ir::{IrError, Module};
+use llvmkit_ir::{
+    BasicBlock, Dyn, DynBrand, FloatValue, IntValue, IrBuilder, IrError, IrStruct, Linkage, Module,
+    PointerValue, Positioned, Unterminated, Value,
+};
+
+/// A two-field schema, so a struct-typed value exists to hand across modules.
+#[derive(IrStruct)]
+struct Pair {
+    first: i32,
+    second: i32,
+}
+
+/// `i32 f()` in `module`, with an empty block named `name` to build into.
+fn open_block<'m>(
+    module: &'m Module<DynBrand>,
+    name: &str,
+) -> BasicBlock<'m, Dyn, Unterminated, DynBrand> {
+    let fn_ty = module.function_type_no_parameters(module.i32_type());
+    let f = module
+        .add_function_dyn(name, fn_ty, Linkage::External)
+        .expect("function");
+    module.view(f).append_basic_block(module, "entry")
+}
+
+/// A builder positioned at the end of a fresh block of `module`.
+fn builder<'m>(
+    module: &'m Module<DynBrand>,
+    name: &str,
+) -> IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, Positioned, Dyn> {
+    IrBuilder::new_for::<Dyn>(module).position_at_end(open_block(module, name))
+}
+
+/// A typed value view from another `DynBrand` module is rejected at a typed
+/// builder operand (`IntoIntValue`), exactly as an id from another module
+/// already is. The operand here is a `ConstantIntValue`.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateAdd` (`IR/IRBuilder.h`)
+/// takes `Value *` operands.
+#[test]
+fn a_builder_rejects_a_value_view_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_constant = foreign.i32_type().const_int(7i32);
+    let b = builder(&home, "f");
+
+    let before = format!("{home}");
+    let result = b.int_add(foreign_constant, home.i32_type().const_int(1i32), "sum");
+    assert!(
+        matches!(result, Err(IrError::ForeignValueId)),
+        "a foreign view reached the builder: {result:?}"
+    );
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected operand must not mutate"
+    );
+}
+
+/// A value view from another module is rejected at an erased-by-design
+/// builder operand (`IntoErasedValue`), the sibling path of the typed one.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateFreeze` (`IR/IRBuilder.h`)
+/// takes a `Value *`.
+#[test]
+fn a_builder_rejects_an_erased_value_view_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_constant = foreign.i32_type().const_int(7i32);
+    let b = builder(&home, "f");
+
+    let before = format!("{home}");
+    let result = b.freeze(foreign_constant, "frozen");
+    assert!(
+        matches!(result, Err(IrError::ForeignValueId)),
+        "a foreign view reached the builder: {result:?}"
+    );
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected operand must not mutate"
+    );
+}
+
+/// The identity arm of `IntoIntValue`: an `IntValue` view from another module
+/// is refused, not only a `ConstantIntValue`.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateAdd` takes `Value *`
+/// operands.
+#[test]
+fn an_int_operand_rejects_an_int_value_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_value: IntValue<'_, i32, DynBrand> = foreign
+        .i32_type()
+        .const_int(7i32)
+        .as_erased()
+        .try_into()
+        .expect("an i32 value");
+    let b = builder(&home, "f");
+
+    let before = format!("{home}");
+    let result = b.int_add(foreign_value, 1i32, "sum");
+    assert!(matches!(result, Err(IrError::ForeignValueId)), "{result:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected operand must not mutate"
+    );
+}
+
+/// Both handle arms of `IntoFloatValue` — a `ConstantFloatValue` and a
+/// `FloatValue` view — refuse a value from another module.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateFAdd` (`IR/IRBuilder.h`)
+/// takes `Value *` operands.
+#[test]
+fn a_float_operand_rejects_a_value_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_constant = foreign.f32_type().const_float(1.0);
+    let foreign_value: FloatValue<'_, f32, DynBrand> = foreign_constant
+        .as_erased()
+        .try_into()
+        .expect("an f32 value");
+    let b = builder(&home, "f");
+
+    let before = format!("{home}");
+    let from_constant = b.fp_add(foreign_constant, 2.0f32, "sum");
+    assert!(
+        matches!(from_constant, Err(IrError::ForeignValueId)),
+        "{from_constant:?}"
+    );
+    let from_value = b.fp_add(foreign_value, 2.0f32, "sum");
+    assert!(
+        matches!(from_value, Err(IrError::ForeignValueId)),
+        "{from_value:?}"
+    );
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected operand must not mutate"
+    );
+}
+
+/// Both handle arms of `IntoPointerValue` — a `ConstantPointerNull` and a
+/// `PointerValue` view — refuse a value from another module.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateIsNull` (`IR/IRBuilder.h`)
+/// takes a `Value *`.
+#[test]
+fn a_pointer_operand_rejects_a_value_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_null = foreign.ptr_type(0).const_null();
+    let foreign_pointer: PointerValue<'_, DynBrand> = foreign_null
+        .as_erased()
+        .try_into()
+        .expect("a pointer value");
+    let b = builder(&home, "f");
+
+    let before = format!("{home}");
+    let from_null = b.is_null(foreign_null, "isnull");
+    assert!(
+        matches!(from_null, Err(IrError::ForeignValueId)),
+        "{from_null:?}"
+    );
+    let from_pointer = b.is_null(foreign_pointer, "isnull");
+    assert!(
+        matches!(from_pointer, Err(IrError::ForeignValueId)),
+        "{from_pointer:?}"
+    );
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected operand must not mutate"
+    );
+}
+
+/// Each handle arm of `SelectArm` — int, float and pointer — refuses a value
+/// from another module.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateSelect` (`IR/IRBuilder.h`)
+/// takes `Value *` arms.
+#[test]
+fn a_select_arm_rejects_a_value_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let int_arm: IntValue<'_, i32, DynBrand> = foreign
+        .i32_type()
+        .const_int(1i32)
+        .as_erased()
+        .try_into()
+        .expect("an i32 value");
+    let float_arm: FloatValue<'_, f32, DynBrand> = foreign
+        .f32_type()
+        .const_float(1.0)
+        .as_erased()
+        .try_into()
+        .expect("an f32 value");
+    let pointer_arm: PointerValue<'_, DynBrand> = foreign
+        .ptr_type(0)
+        .const_null()
+        .as_erased()
+        .try_into()
+        .expect("a pointer value");
+    let b = builder(&home, "f");
+    let condition = home.bool_type().const_int(true);
+
+    let before = format!("{home}");
+    let int_result = b.select(condition, int_arm, int_arm, "s");
+    assert!(
+        matches!(int_result, Err(IrError::ForeignValueId)),
+        "{int_result:?}"
+    );
+    let float_result = b.select(condition, float_arm, float_arm, "s");
+    assert!(
+        matches!(float_result, Err(IrError::ForeignValueId)),
+        "{float_result:?}"
+    );
+    let pointer_result = b.select(condition, pointer_arm, pointer_arm, "s");
+    assert!(
+        matches!(pointer_result, Err(IrError::ForeignValueId)),
+        "{pointer_result:?}"
+    );
+    assert_eq!(format!("{home}"), before, "a rejected arm must not mutate");
+}
+
+/// `IntoCallee` refuses a `FunctionValue` from another module.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateCall` (`IR/IRBuilder.h`)
+/// takes a `FunctionCallee`, a `Value *` pair; the verifier's
+/// `Verifier::visitInstruction` "Referencing function in another module!"
+/// is the nearest check, after the fact.
+#[test]
+fn a_callee_rejects_a_function_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let g = foreign
+        .add_function_dyn("g", foreign_ty, Linkage::External)
+        .expect("g");
+    let b = builder(&home, "f");
+
+    let before = format!("{home}");
+    let result = b.call_dyn(foreign.view(g), Vec::<Value<'_, DynBrand>>::new(), "r");
+    assert!(matches!(result, Err(IrError::ForeignValueId)), "{result:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected callee must not mutate"
+    );
+}
+
+/// `IntoTypedCallee` refuses a typed function facade from another module.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateCall` takes a
+/// `FunctionCallee`.
+#[test]
+fn a_typed_callee_rejects_a_function_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let g = foreign
+        .add_typed_function::<i32, (), _>("g", Linkage::External)
+        .expect("g");
+    let b = builder(&home, "f");
+
+    let before = format!("{home}");
+    let result = b.call(foreign.view(g), (), "r");
+    assert!(matches!(result, Err(IrError::ForeignValueId)), "{result:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected callee must not mutate"
+    );
+}
+
+/// Each arm of `IntoBasicBlockLabel` — a `BasicBlockLabel`, a borrowed
+/// `BasicBlock` and an owned one — refuses a block from another module.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateBr` (`IR/IRBuilder.h`)
+/// takes a `BasicBlock *`; `Verifier::visitTerminator` checks successors only
+/// after the fact.
+#[test]
+fn a_branch_target_rejects_a_block_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_block = open_block(&foreign, "g");
+
+    let label_builder = builder(&home, "f1");
+    let borrowed_builder = builder(&home, "f2");
+    let owned_builder = builder(&home, "f3");
+    let before = format!("{home}");
+
+    let from_label = label_builder.br(foreign.view(foreign_block.id()));
+    assert!(
+        matches!(from_label, Err(IrError::ForeignValueId)),
+        "{from_label:?}"
+    );
+    let from_borrowed = borrowed_builder.br(&foreign_block);
+    assert!(
+        matches!(from_borrowed, Err(IrError::ForeignValueId)),
+        "{from_borrowed:?}"
+    );
+    let from_owned = owned_builder.br(foreign_block);
+    assert!(
+        matches!(from_owned, Err(IrError::ForeignValueId)),
+        "{from_owned:?}"
+    );
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected target must not mutate"
+    );
+}
+
+/// `IntoConstantValue` refuses a constant from another module, so an
+/// aggregate constant cannot intern a foreign element's slot.
+///
+/// No upstream counterpart: `ConstantArray::get` (`lib/IR/Constants.cpp`)
+/// takes `ArrayRef<Constant *>`.
+#[test]
+fn a_constant_operand_rejects_a_constant_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let array = home.array_type(home.i32_type(), 1);
+
+    let before = format!("{home}");
+    let result = array.const_array([foreign.i32_type().const_int(1i32)]);
+    assert!(matches!(result, Err(IrError::ForeignValueId)), "{result:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected element must not mutate"
+    );
+}
+
+/// The struct-schema arms of `IntoIrField` and `IntoCallArg` refuse a value
+/// from another module.
+///
+/// No upstream counterpart: llvmkit's struct schemas have none, and
+/// `IRBuilderBase::CreateExtractValue` / `CreateCall` take `Value *`s.
+#[test]
+fn a_struct_schema_operand_rejects_a_value_from_another_module() {
+    // `#[derive(IrStruct)]` is dual-purpose (Rust data + IR schema); read the
+    // Rust side once, as `derived_struct_schema.rs` does, so it is not dead.
+    let rust_pair = Pair {
+        first: 1,
+        second: 2,
+    };
+    let _ = rust_pair.first + rust_pair.second;
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let g = foreign
+        .add_typed_function::<i32, (Pair,), _>("g", Linkage::External)
+        .expect("g");
+    let foreign_pair = foreign
+        .view(g)
+        .as_function()
+        .param(0)
+        .expect("parameter")
+        .as_erased();
+    let h = home
+        .add_typed_function::<i32, (Pair,), _>("h", Linkage::External)
+        .expect("h");
+    let b = builder(&home, "f");
+
+    let before = format!("{home}");
+    let field = b.extract_field::<Pair, i32, _, _>(foreign_pair, 0, "first");
+    assert!(matches!(field, Err(IrError::ForeignValueId)), "{field:?}");
+    let call = b.call(home.view(h), (foreign_pair,), "r");
+    assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected operand must not mutate"
+    );
+}
 
 /// `GlobalBuilder::initializer` then `build()` rejects a foreign constant and
 /// installs nothing.

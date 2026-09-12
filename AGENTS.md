@@ -635,7 +635,7 @@ For every operand slot in the IR builder, the lift trait accepts every source th
 
 **What the trait deliberately does *not* accept** (the "no silent erasure" cut): an erased `Value`, an `Argument`, or an `Instruction` cannot fill a typed operand slot on its own — narrow it first (`let p: PointerValue = v.try_into()?;`, `IntValue::<W>::try_from`) or use the erased `_dyn` builder family. There is likewise no `IntValue<IntDyn> -> IntValue<W>` lift, and no implicit literal widening: `2i32` is `i32`, `2i64` is `i64`. These three traits are **sealed** — the accepted set is closed and cannot be extended downstream. `IntoCallArg` stays *open* (derive-emitted impls for struct-schema slots need it), but inherits the cut transitively: its int / float / pointer impls are blanket impls bounded by the sealed lift traits.
 
-Each impl is a *concrete-type* impl - no overlap with the identity blanket, no `dyn` dispatch. Cross-module rejection lives inside the lift trait's `into_*_value(module)` method, not at every IrBuilder call site - one check, reused everywhere; a foreign id is `IrError::ForeignValueId`.
+Each impl is a *concrete-type* impl - no overlap with the identity blanket, no `dyn` dispatch. Cross-module rejection lives inside the lift trait's `into_*_value(module)` method, not at every IrBuilder call site - one check, reused everywhere; a foreign id or handle is `IrError::ForeignValueId`. A handle impl makes that check through the crate-private checked door `ValueSlotAccess::slot_in` (`value.rs`), the one place the comparison is written for values.
 
 ### Typed forms paired with `_dyn` fallbacks
 
@@ -681,7 +681,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
 impl<'ctx,               B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValueId<B>      { type Output = PointerValueId<B>;    ... }
 ```
 
-Each impl is concrete; the method monomorphises per arm category. Beats N per-category overload methods. `arm_value` takes a `ModuleRef` and returns `IrResult` for the same reason `IntoBasicBlockLabel::into_basic_block_label` does: an *id* arm has to be module-checked, and a foreign id is `IrError::ForeignValueId` rather than a silently same-numbered slot.
+Each impl is concrete; the method monomorphises per arm category. Beats N per-category overload methods. `arm_value` takes a `ModuleRef` and returns `IrResult` for the same reason `IntoBasicBlockLabel::into_basic_block_label` does: every arm has to be module-checked, and a foreign id or handle is `IrError::ForeignValueId` rather than a silently same-numbered slot.
 
 ### Compile-time invariants via `const { assert!(...) }`
 
