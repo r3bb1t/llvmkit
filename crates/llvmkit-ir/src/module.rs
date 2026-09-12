@@ -2504,7 +2504,9 @@ impl<'ctx> ModuleCore {
     /// with [`metadata_reserve`](Self::metadata_reserve).
     ///
     /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
-    /// module, `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    /// module. `Err(IrError::UnknownMetadataSlot)` is not a caller outcome:
+    /// every id this module mints names a node here, so that error means
+    /// llvmkit's own bookkeeping failed — see [`IrError::blame`].
     pub fn metadata_set<B>(&self, id: MetadataId<B>, kind: MetadataKind<B>) -> IrResult<()>
     where
         B: ModuleBrand,
@@ -4515,7 +4517,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Mirrors LLVM's uniqued `MetadataAsValue::get`.
     ///
     /// `Err(IrError::ForeignMetadataId)` when `md` was minted by another
-    /// module, `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    /// module. `Err(IrError::UnknownMetadataSlot)` is not a caller outcome:
+    /// every id this module mints names a node here, so that error means
+    /// llvmkit's own bookkeeping failed — see [`IrError::blame`].
     pub fn metadata_as_value(&'ctx self, md: MetadataId<B>) -> IrResult<Value<'ctx, B>> {
         let slot = self.core().metadata_slot_of(md)?;
         let ty = self.core().ctx.metadata();
@@ -4547,8 +4551,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Overwrite a reserved metadata node, pairing with `metadata_reserve`.
     ///
     /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
-    /// module; `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
-    /// It used to no-op silently, which the 2.0 contract forbids.
+    /// module. `Err(IrError::UnknownMetadataSlot)` is not a caller outcome:
+    /// every id this module mints names a node here, so that error means
+    /// llvmkit's own bookkeeping failed — see [`IrError::blame`]. It used to
+    /// no-op silently, which the 2.0 contract forbids.
     pub fn metadata_set(&'ctx self, id: MetadataId<B>, kind: MetadataKind<B>) -> IrResult<()> {
         self.core().metadata_set(id, kind)
     }
@@ -4635,8 +4641,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// `llvm.module.flags` named metadata node, creating the node if absent.
     ///
     /// `Err(IrError::ForeignMetadataId)` when `value` was minted by another
-    /// module (checked before anything is interned);
-    /// `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    /// module (checked before anything is interned).
+    /// `Err(IrError::UnknownMetadataSlot)` is not a caller outcome: every id
+    /// this module mints names a node here, so that error means llvmkit's own
+    /// bookkeeping failed — see [`IrError::blame`].
     pub fn add_module_flag<Key>(
         &'ctx self,
         behavior: ModuleFlagBehavior,
@@ -4657,8 +4665,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// (`lib/IR/Module.cpp`).
     ///
     /// `Err(IrError::ForeignMetadataId)` when `value` was minted by another
-    /// module; `Err(IrError::UnknownMetadataSlot)` when it names nothing
-    /// here.
+    /// module. `Err(IrError::UnknownMetadataSlot)` is not a caller outcome:
+    /// every id this module mints names a node here, so that error means
+    /// llvmkit's own bookkeeping failed — see [`IrError::blame`].
     pub fn set_module_flag<Key>(
         &'ctx self,
         behavior: ModuleFlagBehavior,

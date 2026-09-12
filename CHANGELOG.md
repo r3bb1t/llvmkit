@@ -19,6 +19,45 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — four llvmkit-bug sites get their own variants; alias and ifunc refuse a foreign constant *(breaking)*
+
+- **Breaking (llvmkit-ir):** three new `IrError` variants, each answering
+  `Blame::LlvmkitInvariant`. They name all four sites that were split out:
+  - `AnalysisResultMissingAfterCaching { name }` replaces `AnalysisNotCached`
+    at the two read-backs straight after caching, in
+    `FunctionAnalysisManager::result` and in `ModuleAnalysisManager::result`
+    (through its `result_view`). `AnalysisNotCached` stays for the sites a
+    caller can reach: an invalidator asking about a dependency it never
+    cached, and a `Requires` list's `collect` run without its `prefetch`.
+  - `AliaseeTypeChangedBeforeBuild` replaces
+    `InvalidOperation { message: "alias aliasee type changed before build" }`
+    in `GlobalAliasBuilder::build`.
+  - `IfuncResolverTypeChangedBeforeBuild` replaces
+    `InvalidOperation { message: "ifunc resolver type changed before build" }`
+    in `GlobalIfuncBuilder::build`.
+
+  `blame()` sees only the variant, so while these sites shared a variant with
+  caller-reachable sites, they had to answer `UsageError` and under-reported
+  llvmkit bugs as caller mistakes. An exhaustive `match` over `IrError` needs
+  three new arms.
+- **Fixed (llvmkit-ir):** the two builder re-checks were not beyond caller
+  input until now. `alias_builder`, `ifunc_builder`, `GlobalAlias::set_aliasee`
+  and `GlobalIfunc::set_resolver` kept only a constant handle's arena slot and
+  never compared its module. Two `Module::dynamic` modules share `DynBrand`, so
+  a constant from one was read at its slot in the other's arena:
+  - `ifunc_builder(..).build()` panicked in the value arena's `unreachable!`;
+  - `alias_builder(..).build()` returned the "type changed" error;
+  - `set_aliasee` and `set_resolver` returned `Ok(())` after storing the
+    foreign slot.
+
+  All four now return `IrError::ForeignValueId` before reading the arena
+  (`crates/llvmkit-ir/tests/globals_basic.rs`, the four
+  `*_from_another_module` tests). With a foreign handle refused, nothing else
+  can change a value's type:
+  `rg -n "\.ty = |fn mutate_type|fn set_type|fn replace_type" crates/llvmkit-ir/src`
+  returns nothing, and value handles' `ty` fields and constructors are
+  crate-private.
+
 ### Added — `Blame`: whether an error is llvmkit's bug, as a value
 
 - **(llvmkit-ir)** New `Blame { LlvmkitInvariant, UsageError }`, answered by
@@ -38,13 +77,15 @@ cut, entries accumulate under **Unreleased**.
   `InvalidIntegerWidth` is a bound, `TypeIdentityMismatch` is a mistake.
 - `IrError::blame()` is one exhaustive `match` beside the enum, with no
   wildcard arm, so a new variant does not compile until someone classifies it
-  (D5). Exactly one variant answers `LlvmkitInvariant`: `UnknownMetadataSlot`,
-  which no caller input can produce once the module-tag check has passed
-  (`awk '/^impl IrError \{/{f=1} f&&/^}/{exit} f' crates/llvmkit-ir/src/error.rs | rg -c "=> Blame::LlvmkitInvariant"`
-  returns `1`). Every other variant has a construction site reachable from a
-  caller's argument, so it answers `UsageError`. That includes variants where
-  another site raises the same variant on an internal failure, since
-  `blame()` sees only the variant.
+  (D5). `LlvmkitInvariant` is reserved for variants that no caller input can
+  produce; `UnknownMetadataSlot` is one, because once the module-tag check has
+  passed no caller holds an out-of-range slot. The classification's derivation
+  is the code itself: each group of arms in `IrError::blame()` carries a
+  comment saying why its variants answer as they do, and each
+  `LlvmkitInvariant` variant's rustdoc says why no caller input reaches it.
+  `blame()` sees only the variant, so a site no caller can reach raises a
+  variant of its own rather than sharing one — the entry above lists the four
+  sites split out for that reason.
 - `ParseError::blame()` is owed, not skipped. `ParseError` is the parser
   crate's root error and gets `blame()` in that crate's own error programme,
   importing `llvmkit_ir::Blame` over the existing

@@ -1424,6 +1424,28 @@ pub enum IrError {
         name: String,
     },
 
+    /// [`GlobalAliasBuilder::build`](crate::GlobalAliasBuilder::build) found
+    /// the aliasee's type different from the type its handle carried when the
+    /// builder was created.
+    ///
+    /// No caller input reaches this. `build` first rejects an aliasee from
+    /// another module with [`ForeignValueId`](Self::ForeignValueId), so the
+    /// slot it reads names the value the handle named, and a value's type is
+    /// fixed when the value is created. The check stays because this crate
+    /// takes no runtime panics in production paths; [`IrError::blame`] answers
+    /// [`Blame::LlvmkitInvariant`].
+    #[error("alias aliasee type changed before build")]
+    AliaseeTypeChangedBeforeBuild,
+
+    /// The ifunc twin of
+    /// [`AliaseeTypeChangedBeforeBuild`](Self::AliaseeTypeChangedBeforeBuild):
+    /// [`GlobalIfuncBuilder::build`](crate::GlobalIfuncBuilder::build) found
+    /// the resolver's type different from the type its handle carried when the
+    /// builder was created. Beyond caller input for the same reasons, and
+    /// blamed on llvmkit the same way.
+    #[error("ifunc resolver type changed before build")]
+    IfuncResolverTypeChangedBeforeBuild,
+
     /// A reserved `llvm.*` name is absent from the generated LLVM intrinsic table.
     #[error("unknown intrinsic `{name}`")]
     UnknownIntrinsic {
@@ -1528,10 +1550,28 @@ pub enum IrError {
         /// Type name of the analysis that was never registered.
         name: &'static str,
     },
-    /// An invalidator asked for a cached analysis result that is absent.
+    /// An invalidator asked for a cached analysis result that is absent, or a
+    /// `Requires` list's `collect` ran without its `prefetch`.
     #[error("analysis {name} is not cached")]
     AnalysisNotCached {
         /// Type name of the analysis whose cached result is absent.
+        name: &'static str,
+    },
+    /// An analysis manager ran analysis `name`, inserted the result into its
+    /// cache, and could not read that result straight back.
+    ///
+    /// No caller input reaches this. The read uses the key the insert just
+    /// used; nothing runs between the two but instrumentation callbacks, which
+    /// receive only the analysis name; and the result was boxed by the
+    /// operations registered under that analysis's own `TypeId`, so the
+    /// downcast names the type they produced. [`IrError::blame`] therefore
+    /// answers [`Blame::LlvmkitInvariant`]. Distinct from
+    /// [`AnalysisNotCached`](Self::AnalysisNotCached), which a caller can
+    /// provoke.
+    #[error("analysis {name} was cached, but its result could not be read back")]
+    AnalysisResultMissingAfterCaching {
+        /// Type name of the analysis whose freshly cached result could not be
+        /// read.
         name: &'static str,
     },
     /// IR validation failure detected by [`Module::verify`](crate::Module::verify) /
@@ -1624,6 +1664,11 @@ pub enum IrError {
     /// ([`IntoIntValue`](crate::IntoIntValue) /
     /// [`IntoFloatValue`](crate::IntoFloatValue) /
     /// [`IntoPointerValue`](crate::IntoPointerValue)) when handed a foreign id.
+    ///
+    /// The global alias and ifunc builders, and the `set_aliasee` /
+    /// `set_resolver` setters, raise it for a constant *handle* from another
+    /// module too: they keep only the handle's slot, which names a different
+    /// value — or nothing — in this module's arena.
     #[error("value id belongs to a different Module")]
     ForeignValueId,
 
@@ -1636,6 +1681,10 @@ pub enum IrError {
     /// *foreign* id is [`ForeignMetadataId`](Self::ForeignMetadataId) instead:
     /// the tag separates the two cases, so an in-range slot from another module
     /// is rejected rather than silently mis-resolved.
+    ///
+    /// Not a caller outcome: an id whose tag matches was minted by this module
+    /// from a slot its append-only arena had just handed out, so
+    /// [`IrError::blame`] answers [`Blame::LlvmkitInvariant`].
     #[error("metadata slot {index} names nothing in this Module (holds {len})")]
     UnknownMetadataSlot {
         /// The index that was out of range.
@@ -1815,10 +1864,11 @@ impl IrError {
     /// [`Blame::LlvmkitInvariant`] only where no caller input could have
     /// produced the variant — llvmkit reached a state it had promised was
     /// impossible. Blame is a property of the *variant*, since that is all this
-    /// method sees: a variant that any construction site raises from a caller's
-    /// argument is [`Blame::UsageError`], even where another site raises it on
-    /// an internal failure. Over-claiming an llvmkit bug sends users to report
-    /// their own mistakes against it.
+    /// method sees, so a site no caller can reach raises a variant of its own
+    /// rather than sharing one with caller-reachable sites: a shared variant
+    /// would have to answer [`Blame::UsageError`] and under-report the bug.
+    /// Over-claiming an llvmkit bug sends users to report their own mistakes
+    /// against it.
     pub fn blame(&self) -> Blame {
         match self {
             // llvmkit failing its own promise. A `MetadataId` is minted only
@@ -1828,6 +1878,14 @@ impl IrError {
             // `metadata_slot_of`'s tag check has passed, a slot past the end
             // of the arena is not something a caller can hand in.
             Self::UnknownMetadataSlot { .. } => Blame::LlvmkitInvariant,
+
+            // The same, for the sites split out of `AnalysisNotCached` and
+            // `InvalidOperation` so that neither shares a variant with a
+            // caller-reachable site. Each variant's rustdoc states why no
+            // caller input reaches it.
+            Self::AnalysisResultMissingAfterCaching { .. }
+            | Self::AliaseeTypeChangedBeforeBuild
+            | Self::IfuncResolverTypeChangedBeforeBuild => Blame::LlvmkitInvariant,
 
             // The caller's operand has the wrong type, width, length, address
             // space or value category. `InvalidIntegerWidth` is a bound LLVM
@@ -1877,15 +1935,17 @@ impl IrError {
             | Self::InvalidPassPipelineName { .. }
             | Self::InvalidPassPipeline { .. } => Blame::UsageError,
 
-            // The broad LangRef-rule family. Most sites reject a caller's
-            // argument, and a few report a host bound; the variant cannot tell
-            // them apart, so it takes the class every site can reach.
+            // The broad LangRef-rule family, classified as one class: its sites
+            // reject a caller's argument or report a host bound. The two
+            // traced as beyond any caller's reach — an alias's and an ifunc's
+            // type re-check at `build` — raise their own variants, above.
             Self::InvalidOperation { .. } => Blame::UsageError,
 
-            // Analysis-manager contracts the caller broke. `AnalysisNotCached`
-            // is also raised on cache-miss branches the manager's own
-            // bookkeeping makes unreachable, but the invalidator raises it for
-            // a dependency the caller's result never cached.
+            // Analysis-manager contracts the caller broke: an unregistered
+            // analysis, an invalidator asking about a dependency it never
+            // cached, or a `Requires` list's `collect` run without its
+            // `prefetch`. The manager's own read-back straight after caching
+            // is `AnalysisResultMissingAfterCaching`, above.
             Self::AnalysisNotRegistered { .. } | Self::AnalysisNotCached { .. } => {
                 Blame::UsageError
             }

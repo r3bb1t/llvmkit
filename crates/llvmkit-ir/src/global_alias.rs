@@ -10,7 +10,7 @@ use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
-use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
@@ -133,6 +133,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         aliasee: C,
     ) -> IrResult<()> {
         let constant = aliasee.as_constant();
+        // Only the slot is stored, so a constant from another module sharing
+        // this brand would silently name a different value here.
+        if constant.module.id() != self.module.id() {
+            return Err(IrError::ForeignValueId);
+        }
         let Some(addr_space) = pointer_address_space(constant.ty()) else {
             return Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Pointer,
@@ -335,6 +340,7 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     name: String,
     value_type: TypeSlot,
     aliasee: ValueSlot,
+    aliasee_module: ModuleId,
     aliasee_type: TypeSlot,
     address_space: u32,
     linkage: Linkage,
@@ -361,6 +367,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
             name: name.into(),
             value_type: value_type.id(),
             aliasee: aliasee.id,
+            aliasee_module: aliasee.module.id(),
             aliasee_type: aliasee.ty,
             address_space,
             linkage: Linkage::External,
@@ -422,16 +429,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
     /// Materialise the alias, returning its storable [`GlobalAliasId`].
     /// Resolve the id back into a borrowing [`GlobalAlias`] with
     /// [`Module::view`](crate::Module::view).
+    ///
+    /// Errors with [`IrError::ForeignValueId`] when the aliasee handle was
+    /// minted by another module sharing this brand.
     pub fn build(self) -> IrResult<GlobalAliasId<B>> {
         if !is_valid_alias_linkage(self.linkage) {
             return Err(IrError::InvalidOperation {
                 message: "invalid linkage type for alias",
             });
         }
+        // The builder keeps only the handle's slot, which names a different
+        // value — or nothing — in another module's arena, so the tag is checked
+        // before this arena is read.
+        if self.aliasee_module != self.module.id() {
+            return Err(IrError::ForeignValueId);
+        }
         if self.module.module().context().value_data(self.aliasee).ty != self.aliasee_type {
-            return Err(IrError::InvalidOperation {
-                message: "alias aliasee type changed before build",
-            });
+            return Err(IrError::AliaseeTypeChangedBeforeBuild);
         }
         if !matches!(
             Type::new(self.aliasee_type, self.module).kind(),
@@ -454,6 +468,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
             name,
             value_type,
             aliasee,
+            aliasee_module: _,
             aliasee_type: _,
             address_space,
             linkage,

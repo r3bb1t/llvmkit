@@ -892,7 +892,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             }
         }
         self.cached_result::<A, _>(function)
-            .ok_or(IrError::AnalysisNotCached {
+            .ok_or(IrError::AnalysisResultMissingAfterCaching {
                 name: type_name::<A>(),
             })
     }
@@ -1114,7 +1114,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
             }
         }
         self.cached_result::<A, _>(module)
-            .ok_or(IrError::AnalysisNotCached {
+            .ok_or(IrError::AnalysisResultMissingAfterCaching {
                 name: type_name::<A>(),
             })
     }
