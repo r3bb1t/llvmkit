@@ -263,11 +263,17 @@ impl BuilderPositionState for Positioned {}
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand> {
-    pub(super) block_id: Option<ValueSlot>,
+    /// The insertion block's storable id. Its module tag is what
+    /// [`IrBuilder::restore_insert_point`] checks, so a snapshot taken from
+    /// another module's builder is refused rather than reopening whatever
+    /// block sits at the same slot here.
+    pub(super) block: Option<BlockId<R, B>>,
+    /// The instruction the builder inserted before, if any. Captured from the
+    /// same builder as `block`, so the block's tag vouches for it.
     pub(super) before: Option<ValueSlot>,
     /// Variance matches every other handle in the crate (see [`FunctionValue`]):
     /// covariant in `'ctx` and `R`, **invariant** in the brand `B` (next field).
-    /// The snapshot stores arena slots only, so shortening the `'ctx` tag is
+    /// The snapshot stores an id and a slot only, so shortening the `'ctx` tag is
     /// always sound — and a pass that stashes an insert point across a
     /// higher-ranked `FunctionPass::run` needs exactly that covariance.
     /// [`IrBuilder::save_insert_point`] therefore mints the tag at `'static`:
@@ -712,7 +718,11 @@ where
         self,
         anchor: &InstructionView<'ctx, B>,
     ) -> IrBuilder<'m, 'ctx, B, F, Positioned, R> {
-        let anchor_id = anchor.slot();
+        // `anchor` may belong to another module; this infallible entry cannot
+        // refuse it.
+        // boundary (F1): refused by Task 26
+        let anchor_id = anchor.slot_trusting_same_module();
+        // boundary (F1): refused by Task 26
         let parent_block_id = anchor.parent().slot();
         let label_ty = self.module.label_type::<B>().as_type().id();
         let bb = BasicBlock::<R, Unterminated, B>::from_parts(
@@ -749,6 +759,9 @@ where
             match inst.kind() {
                 Some(InstructionKind::Alloca(_)) => continue,
                 _ => {
+                    // `f` may belong to another module; this infallible entry
+                    // cannot refuse it.
+                    // boundary (F1): refused by Task 26
                     anchor = Some(inst.to_erased().slot_trusting_same_module());
                     break;
                 }
@@ -768,18 +781,19 @@ where
     /// Snapshot the current insertion location. Mirrors
     /// `IrBuilder::saveIP` (returns `InsertPoint(BB, InsertPt)`).
     ///
-    /// The snapshot **borrows nothing** — it is a pair of arena slots plus the
-    /// brand — so it is minted at `'static` and shrinks to whatever region the
+    /// The snapshot **borrows nothing** — it is a block id and an arena slot
+    /// plus the brand — so it is minted at `'static` and shrinks to whatever region the
     /// consumer names. That matters now that a [`Module`] owns its storage: a
     /// pass that stashes an insert point and is then handed to a driver which
     /// *moves* the module token (every typestate transition is a move) would
     /// otherwise be holding a borrow of a token that no longer exists. The
-    /// brand `B` remains the cross-module guard, and
-    /// [`restore_insert_point`](Self::restore_insert_point) still re-validates
-    /// the block against the live module.
+    /// brand `B` guards against a module of another brand, and
+    /// [`restore_insert_point`](Self::restore_insert_point) compares the block
+    /// id's module tag, which guards two modules sharing one brand, before it
+    /// re-validates the block against the live module.
     pub fn save_insert_point(&self) -> InsertPoint<'static, R, B> {
         InsertPoint {
-            block_id: self.insert_block.as_ref().map(|bb| bb.slot()),
+            block: self.insert_block.as_ref().map(|bb| bb.id()),
             before: self.insert_before,
             _marker: PhantomData,
             _brand: PhantomData,
@@ -788,22 +802,24 @@ where
 
     /// Restore a previously-saved insertion point. Mirrors
     /// `IrBuilder::restoreIP(InsertPoint)`, but returns an error instead of
-    /// reopening a block that has since grown a terminator.
+    /// reopening a block that has since grown a terminator, and
+    /// [`IrError::ForeignValueId`] for a snapshot taken from another module's
+    /// builder.
     pub fn restore_insert_point(
         self,
         ip: InsertPoint<'ctx, R, B>,
     ) -> IrResult<IrBuilder<'m, 'ctx, B, F, Positioned, R>> {
-        let Some(block_id) = ip.block_id else {
+        let Some(block) = ip.block else {
             return Err(IrError::InvalidOperation {
                 message: "cannot restore an empty insert point",
             });
         };
-        let label_ty = self.module.label_type::<B>().as_type().id();
-        let insert_block = BasicBlock::<R, Unterminated, B>::from_parts(
-            block_id,
-            ModuleRef::<B>::new(self.module),
-            label_ty,
-        );
+        let module_ref = ModuleRef::<B>::new(self.module);
+        // Boundary: a snapshot from another module's builder carries that
+        // module's tag, compared here before the arena is read.
+        let label = block.into_basic_block_label(module_ref)?;
+        let insert_block =
+            BasicBlock::<R, Unterminated, B>::from_parts(label.slot(), module_ref, label.ty);
         if ip.before.is_none()
             && insert_block
                 .terminator()
@@ -1011,13 +1027,20 @@ where
     where
         Name: Into<String>,
     {
+        // Boundary: the caller's function and parameter types, admitted
+        // before the block is appended.
+        function.slot_in(self.module.id())?;
+        let param_slots = param_types
+            .iter()
+            .map(|ty| ty.slot_in(self.module.id()))
+            .collect::<IrResult<Vec<TypeSlot>>>()?;
         let bb = function.append_basic_block_unchecked(name);
         let bb_id = bb.slot();
-        let mut params = Vec::with_capacity(param_types.len());
-        for ty in param_types {
-            params.push(self.make_phi_in_block(bb_id, ty.id(), ""));
+        let mut params = Vec::with_capacity(param_slots.len());
+        for ty in param_slots {
+            params.push(self.make_phi_in_block(bb_id, ty, ""));
         }
-        bb.set_parameter_count(param_types.len());
+        bb.set_parameter_count(params.len());
         Ok((bb, params))
     }
 
@@ -1046,12 +1069,18 @@ where
         ParamName: Into<String>,
         Name: Into<String>,
     {
+        // Boundary: the caller's function and parameter types, admitted
+        // before the block is appended.
+        function.slot_in(self.module.id())?;
+        let params = params
+            .into_iter()
+            .map(|(ty, param_name)| Ok((ty.slot_in(self.module.id())?, param_name.into())))
+            .collect::<IrResult<Vec<(TypeSlot, String)>>>()?;
         let bb = function.append_basic_block_unchecked(name);
         let bb_id = bb.slot();
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(params.len());
         for (ty, param_name) in params {
-            let param_name = param_name.into();
-            out.push(self.make_phi_in_block(bb_id, ty.id(), &param_name));
+            out.push(self.make_phi_in_block(bb_id, ty, &param_name));
         }
         bb.set_parameter_count(out.len());
         Ok((bb, out))
@@ -1094,15 +1123,19 @@ where
         Params: FunctionParamList + BlockParams,
         Name: Into<String>,
     {
+        // Boundary: the caller's function, admitted before the block is
+        // appended.
+        function.slot_in(self.module.id())?;
         // Build the parameter IR types first, so a failure here appends no
-        // block (the erased sibling receives its `&[Type]` pre-built and so
-        // cannot fail at this step).
+        // block (the erased sibling admits its `&[Type]` up front for the
+        // same reason).
         let param_types = Params::ir_types(self.schema_view())?;
         let bb = function.append_basic_block_unchecked(name);
         let bb_id = bb.slot();
         let mut phi_values = Vec::with_capacity(param_types.len());
         for ty in &param_types {
-            phi_values.push(self.make_phi_in_block(bb_id, ty.id(), ""));
+            // Internal: minted in this module by `Params::ir_types`.
+            phi_values.push(self.make_phi_in_block(bb_id, ty.slot_trusting_same_module(), ""));
         }
         bb.set_parameter_count(param_types.len());
         // One head-phi per `ir_types` entry was built in order, so the
@@ -7821,7 +7854,6 @@ where
         args: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         let module_ref = ModuleRef::<B>::new(self.module);
-        let label_ty = self.module.label_type::<B>().as_type().id();
         let target = target.into_basic_block_label(module_ref)?;
 
         // The target block's parameters are its leading head-phis, in order —
@@ -7847,12 +7879,18 @@ where
         // differing-value-duplicate check is not pre-scanned — it runs per-edge
         // in the record loop below, so it can fire after earlier incomings in
         // this call are already written.)
+        let module_id = self.module.id();
         for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
+            // Boundary: the caller's argument handle, admitted with the type
+            // check so an argument from another module leaves every parameter
+            // untouched.
+            arg.slot_in(module_id)?;
             let phi_ty = self.module.context().value_data(*phi_id).ty;
-            if arg.ty != phi_ty {
+            let arg_ty = arg.ty().slot_trusting_same_module();
+            if arg_ty != phi_ty {
                 return Err(IrError::TypeIdentityMismatch {
                     expected: Type::<B>::new(phi_ty, self.module).rendered(),
-                    got: Type::<B>::new(arg.ty, self.module).rendered(),
+                    got: Type::<B>::new(arg_ty, self.module).rendered(),
                 });
             }
         }
@@ -7860,12 +7898,13 @@ where
         // Record each argument as an incoming edge from `pred` into the
         // matching parameter-phi (types already validated above; the erased
         // path re-checks and registers the phi in each value's use-list).
-        let pred_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.slot(), module_ref, label_ty);
+        // `pred` is the insert block's id, tagged with that block's own module:
+        // the checked label conversion inside the record refuses one from
+        // another module before the first incoming is written.
         for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
             let phi_ty = self.module.context().value_data(*phi_id).ty;
             let phi_val = Value::from_parts(*phi_id, module_ref, phi_ty);
-            self.phi_add_incoming_from_value(phi_val, *arg, pred_block.copy_handle())?;
+            self.phi_add_incoming_from_value(phi_val, *arg, pred)?;
         }
         Ok(())
     }
@@ -9400,7 +9439,10 @@ where
     ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
-        let bb_id = bb.slot();
+        // The insert block came from an infallible positioning call, which
+        // cannot refuse a block of another module.
+        // boundary (F1): refused by Task 26
+        let bb_id = bb.to_erased().slot_trusting_same_module();
         let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena;
         // we need them to register the new instruction in each operand's
@@ -9603,7 +9645,10 @@ where
     ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
-        let bb_id = bb.slot();
+        // The insert block came from an infallible positioning call, which
+        // cannot refuse a block of another module.
+        // boundary (F1): refused by Task 26
+        let bb_id = bb.to_erased().slot_trusting_same_module();
         let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena so
         // we can register the new instruction in each operand's reverse

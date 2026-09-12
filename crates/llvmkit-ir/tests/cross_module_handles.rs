@@ -1478,3 +1478,157 @@ fn invoke_and_callbr_reject_a_callee_or_function_type_from_another_module() {
         "a rejected terminator must not mutate"
     );
 }
+
+/// `restore_insert_point` refuses an `InsertPoint` saved from another
+/// module's builder: the snapshot's block id carries that module's tag.
+///
+/// No upstream counterpart: `IRBuilderBase::restoreIP` (`IR/IRBuilder.h`)
+/// takes an `InsertPoint` holding a `BasicBlock *`, whose identity is its
+/// address.
+#[test]
+fn restore_insert_point_rejects_an_insert_point_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    // A block of `home` too, so a slot the foreign snapshot names can resolve
+    // to something here if the tag goes unchecked.
+    let _home_builder = builder(&home, "f");
+    let saved = builder(&foreign, "g").save_insert_point();
+
+    let before = format!("{home}");
+    let restored = IrBuilder::new_for::<Dyn>(&home).restore_insert_point(saved);
+    assert!(
+        matches!(restored, Err(IrError::ForeignValueId)),
+        "{restored:?}"
+    );
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected restore must not mutate"
+    );
+}
+
+/// A block-argument edge refuses an argument, and a predecessor, from another
+/// module before any incoming is recorded. The target has two parameters, so
+/// an argument admitted only while recording would already have seeded the
+/// first; the predecessor comes from a builder positioned at another module's
+/// block, which `position_at_end` cannot refuse.
+///
+/// No upstream counterpart: llvmkit's block-argument edges have none;
+/// `PHINode::addIncoming` (`IR/Instructions.h`) takes a `Value *` and a
+/// `BasicBlock *`.
+#[test]
+fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let fn_ty = home.function_type_no_parameters(home.i32_type());
+    let f = home
+        .add_function_dyn("f", fn_ty, Linkage::External)
+        .expect("f");
+    let entry = home.view(f).append_basic_block(&home, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&home).position_at_end(entry);
+    let i32_ty = home.i32_type().as_type();
+    let (target, _) = b
+        .append_block_with_params(home.view(f), &[i32_ty, i32_ty], "target")
+        .expect("target");
+    let target = target.id();
+    let home_one = home.i32_type().const_int(1i32).as_erased();
+    let home_two = home.i32_type().const_int(2i32).as_erased();
+    let foreign_two = foreign.i32_type().const_int(2i32).as_erased();
+    let positioned_elsewhere =
+        IrBuilder::new_for::<Dyn>(&home).position_at_end(open_block(&foreign, "g"));
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "argument",
+            IrError::ForeignValueId,
+            b.br_with_args(target, &[home_one, foreign_two]).map(|_| ()),
+        ),
+        (
+            "predecessor",
+            IrError::ForeignValueId,
+            positioned_elsewhere
+                .br_with_args(target, &[home_one, home_two])
+                .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected edge must not record an incoming"
+    );
+}
+
+/// The block-parameter appenders refuse a function, and a parameter type,
+/// from another module before the block is appended:
+/// `append_block_with_params`, `append_block_with_named_params` and
+/// `append_block_typed` (whose types it mints itself).
+///
+/// No upstream counterpart: llvmkit's block parameters have none;
+/// `BasicBlock::Create` (`IR/BasicBlock.h`) takes a `Function *` and
+/// `PHINode::Create` a `Type *` uniqued per `LLVMContext`.
+#[test]
+fn append_block_with_params_rejects_a_function_or_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let home_fn_ty = home.function_type_no_parameters(home.i32_type());
+    let foreign_fn_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let h = home
+        .add_function_dyn("h", home_fn_ty, Linkage::External)
+        .expect("h");
+    let g = foreign
+        .add_function_dyn("g", foreign_fn_ty, Linkage::External)
+        .expect("g");
+    let home_i32 = home.i32_type().as_type();
+    let foreign_i32 = foreign.i32_type().as_type();
+    let b = IrBuilder::new_for::<Dyn>(&home);
+    let before = format!("{home}");
+    let foreign_before = format!("{foreign}");
+
+    let outcomes = vec![
+        (
+            "append_block_with_params function",
+            IrError::ForeignValueId,
+            b.append_block_with_params(foreign.view(g), &[home_i32], "p")
+                .map(|_| ()),
+        ),
+        (
+            "append_block_with_params type",
+            IrError::ForeignType,
+            b.append_block_with_params(home.view(h), &[foreign_i32], "p")
+                .map(|_| ()),
+        ),
+        (
+            "append_block_with_named_params function",
+            IrError::ForeignValueId,
+            b.append_block_with_named_params(foreign.view(g), [(home_i32, "x")], "p")
+                .map(|_| ()),
+        ),
+        (
+            "append_block_with_named_params type",
+            IrError::ForeignType,
+            b.append_block_with_named_params(home.view(h), [(foreign_i32, "x")], "p")
+                .map(|_| ()),
+        ),
+        (
+            "append_block_typed function",
+            IrError::ForeignValueId,
+            b.append_block_typed::<(i32,), _>(foreign.view(g), "p")
+                .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected block must not mutate"
+    );
+    assert_eq!(
+        format!("{foreign}"),
+        foreign_before,
+        "a rejected block must not be appended to the other module either"
+    );
+}

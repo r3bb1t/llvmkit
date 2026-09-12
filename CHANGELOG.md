@@ -108,6 +108,31 @@ cut, entries accumulate under **Unreleased**.
   checked door; it used to store the type's slot, which the builder then
   re-bound to its own module unchecked. `CallSiteConfig::new(..)` call
   sites infer both parameters; a spelled type annotation needs them.
+- **Fixed (llvmkit-ir):** `IrBuilder::restore_insert_point` accepted an
+  `InsertPoint` saved from another module's builder: the snapshot held bare
+  arena slots, so it reopened whatever block sat at that slot here.
+  `InsertPoint` now holds the block's `BlockId`, whose module tag the restore
+  compares, returning `ForeignValueId`.
+- **Fixed (llvmkit-ir):** the block-argument edges (`br_with_args`,
+  `cond_br_with_args`, `switch_with_args`, `switch_dyn_with_args`,
+  `invoke_with_args`, `invoke_dyn_with_args`) type-checked each argument
+  against raw type slots and admitted it only while recording, so an
+  argument from another module was refused after earlier arguments had
+  already seeded their parameters — breaking the documented all-or-nothing.
+  Each argument is now admitted with the up-front type check. The
+  predecessor of every edge, `br_call` and `cond_br_call` included, is now
+  resolved through its `BlockId`'s module-tag check instead of being rebuilt
+  from a bare slot, so a builder positioned at another module's block is
+  refused with `ForeignValueId` before any incoming is recorded.
+- **Fixed (llvmkit-ir):** `append_block_with_params`,
+  `append_block_with_named_params` and `append_block_typed` appended a
+  block to a function of another module and seeded its parameter phis in
+  this one. Each now refuses the function with `ForeignValueId`, and a
+  parameter type with `ForeignType`, before the block is appended. The
+  infallible positioning calls (`position_at_end`, `position_before`,
+  `position_past_allocas`) still cannot refuse a block or instruction of
+  another module; the reads they lead to are marked for the task that makes
+  them fallible.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type
