@@ -195,6 +195,91 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
     Ok(())
 }
 
+/// `FnReshape::split_block` forwards to `BasicBlock::split_at`, so a pass gets
+/// the same guarantee: a split point from another block is refused, and the
+/// function is left exactly as it was — no empty `entry.split` block.
+///
+/// No upstream counterpart: `BasicBlock::splitBasicBlock`
+/// (`lib/IR/BasicBlock.cpp`) takes the split point as an iterator into the
+/// block's own instruction list, so it has no error path for a split point
+/// from another block. `split_at` used to append the new block before
+/// looking for the split point, so a pass received the error and the module
+/// it handed back kept a stray empty block.
+#[test]
+fn split_block_refuses_an_instruction_of_another_block_without_mutating() -> Result<(), IrError> {
+    /// Splits `entry` at `next`'s terminator — an instruction of another
+    /// block — and records the error `split_block` returned, if any.
+    struct SplitAtForeignInstruction<'s> {
+        refusal: &'s mut Option<IrError>,
+    }
+
+    impl<'s, B: ModuleBrand> FunctionPass<B> for SplitAtForeignInstruction<'s> {
+        type Access = ReshapeCfg;
+        type Requires = ();
+        const NAME: &'static str = "split-at-foreign-instruction";
+
+        fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+        where
+            'ctx: 'm,
+            Self: 'ctx,
+        {
+            let reshape = cx.mutate();
+            let mut blocks = reshape.function().basic_blocks();
+            let entry = blocks.next().expect("entry was appended first");
+            let next = blocks.next().expect("next was appended second");
+            let foreign = next
+                .instructions()
+                .last()
+                .expect("next is terminated by the ret");
+            *self.refusal = reshape
+                .split_block(entry.id(), &foreign, "entry.split")
+                .err();
+            Ok(reshape.done())
+        }
+    }
+
+    let m = module_new!("split-block-foreign-block")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let next = m.view(f).append_basic_block(&m, "next");
+
+    // entry: br next    next: ret 0
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.br(next.id())?;
+    let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
+    b2.ret(i32_ty.const_int(0_u32))?;
+
+    let verified = m.verify()?;
+    let printed_before = format!("{verified}");
+    let mut refusal = None;
+    let mut analyses = Analyses::new();
+    let pass = SplitAtForeignInstruction {
+        refusal: &mut refusal,
+    };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    // The analysis manager keeps the pass's region alive until it is
+    // dropped; drop it so `refusal` can be read.
+    drop(analyses);
+
+    assert!(
+        matches!(
+            refusal,
+            Some(IrError::InvalidOperation {
+                message: "split instruction is not in this block"
+            })
+        ),
+        "split_block must refuse a split point outside the block"
+    );
+    assert_eq!(
+        format!("{out}"),
+        printed_before,
+        "a refused split must not mutate the module"
+    );
+    Ok(())
+}
+
 /// A `ReshapeCfg` pass that inserts a single phi into the merge block named
 /// `merge_name`, with the pre-computed `incomings` of type `ty`. It requires the
 /// dominator tree, because `FnReshape::insert_phi` witnesses every incoming

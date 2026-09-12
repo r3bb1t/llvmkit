@@ -19,6 +19,21 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — a refused `split_at` no longer leaves an empty block behind
+
+- **Fixed (llvmkit-ir):** `BasicBlock::split_at` appended the new block to
+  the parent function before looking for `before` in the block's instruction
+  list. A split point that was not in the block returned
+  `IrError::InvalidOperation` ("split instruction is not in this block") and
+  still left an empty block in the function. It now finds the split point
+  first, so all three of its refusals — a split point from another module,
+  an orphan block, and a split point outside the block — come before
+  anything is appended or moved.
+  `FnReshape::split_block` forwards to it, so a pass got the same stray block.
+  The variant and message are unchanged
+  (`crates/llvmkit-ir/tests/mutation_basic.rs`,
+  `crates/llvmkit-ir/tests/analysis_preservation.rs`).
+
 ### Fixed — a handle from another module is refused where it becomes a slot *(breaking)*
 
 - **Breaking (llvmkit-ir):** new `IrError::ForeignType`, answering

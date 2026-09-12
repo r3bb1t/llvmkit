@@ -1057,7 +1057,11 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
     ///
     /// Errors with [`IrError::ForeignValueId`] if `before` belongs to another
-    /// module, before anything is read or appended.
+    /// module, and with [`IrError::InvalidOperation`] if this block has no
+    /// parent function or `before` is not one of its instructions. Upstream
+    /// has no error path for any of them: it takes the split point as an
+    /// iterator into the block's own instruction list. Every refusal happens
+    /// before anything is read, appended or moved.
     pub fn split_at<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,
@@ -1081,17 +1085,20 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         };
         let parent_fn =
             FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
+        // Every refusal precedes the first mutation: find the split point
+        // before the new block is appended, so a split point outside this
+        // block leaves the function untouched.
+        let pos = self
+            .data()
+            .instructions
+            .borrow()
+            .iter()
+            .position(|id| *id == split_id)
+            .ok_or(IrError::InvalidOperation {
+                message: "split instruction is not in this block",
+            })?;
         let new_block = parent_fn.append_basic_block(module_token, name);
-        let suffix: Vec<ValueSlot> = {
-            let mut src = self.data().instructions.borrow_mut();
-            let pos =
-                src.iter()
-                    .position(|id| *id == split_id)
-                    .ok_or(IrError::InvalidOperation {
-                        message: "split instruction is not in this block",
-                    })?;
-            src.split_off(pos)
-        };
+        let suffix: Vec<ValueSlot> = self.data().instructions.borrow_mut().split_off(pos);
         let new_id = new_block.slot();
         {
             let mut dst = new_block.data().instructions.borrow_mut();
