@@ -518,3 +518,174 @@ fn ifunc_builder_rejects_a_value_type_from_another_module() {
         "a rejected build must not install"
     );
 }
+
+/// `constant_expr` refuses a result type and an operand from another module
+/// before anything is canonicalized, folded or interned.
+///
+/// No upstream counterpart: `ConstantExpr::get` (`lib/IR/Constants.cpp`)
+/// takes `Constant *` operands and a `Type *` uniqued per `LLVMContext`.
+#[test]
+fn constant_expr_rejects_a_type_or_operand_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let own = home.i32_type().const_int(1i32).as_erased();
+    let before = format!("{home}");
+
+    let from_type = home.constant_expr(
+        foreign.i32_type().as_type(),
+        llvmkit_ir::ConstantExprOpcode::Add,
+        [own, own],
+        [],
+        [],
+        llvmkit_ir::ConstantExprFlags::none(),
+    );
+    assert!(
+        matches!(from_type, Err(IrError::ForeignType)),
+        "{from_type:?}"
+    );
+    let from_operand = home.constant_expr(
+        home.i32_type().as_type(),
+        llvmkit_ir::ConstantExprOpcode::Add,
+        [foreign.i32_type().const_int(1i32).as_erased(), own],
+        [],
+        [],
+        llvmkit_ir::ConstantExprFlags::none(),
+    );
+    assert!(
+        matches!(from_operand, Err(IrError::ForeignValueId)),
+        "{from_operand:?}"
+    );
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected expression must not mutate"
+    );
+}
+
+/// `block_address` refuses a function and block from another module.
+///
+/// No upstream counterpart: `BlockAddress::get` (`lib/IR/Constants.cpp`) takes
+/// a `BasicBlock *`, whose parent is its own function.
+#[test]
+fn block_address_rejects_a_block_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let g = foreign
+        .add_function_dyn("g", foreign_ty, Linkage::External)
+        .expect("g");
+    let foreign_block = foreign.view(g).append_basic_block(&foreign, "bb");
+
+    let before = format!("{home}");
+    let result = home.block_address(foreign.view(g), &foreign_block);
+    assert!(matches!(result, Err(IrError::ForeignValueId)), "{result:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected constant must not mutate"
+    );
+}
+
+/// The forward-reference placeholder refuses a type from another module, and
+/// retiring one refuses a replacement from another module.
+///
+/// No upstream counterpart: `LLParser`'s sentinels are ordinary `Value`s of a
+/// `Type *` uniqued per `LLVMContext`, retired by `Value::replaceAllUsesWith`
+/// (`lib/IR/Value.cpp`), which takes a `Value *`.
+#[test]
+fn forward_ref_placeholder_rejects_a_type_or_replacement_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+
+    let foreign_type = home.forward_ref_value_placeholder(foreign.i32_type().as_type());
+    assert!(
+        matches!(foreign_type, Err(IrError::ForeignType)),
+        "{foreign_type:?}"
+    );
+
+    let placeholder = home
+        .forward_ref_value_placeholder(home.i32_type().as_type())
+        .expect("placeholder");
+    let result = placeholder.replace_all_uses_with(foreign.i32_type().const_int(1i32).as_erased());
+    assert!(matches!(result, Err(IrError::ForeignValueId)), "{result:?}");
+}
+
+/// `dso_local_equivalent_global` and `no_cfi_global` refuse a global from
+/// another module before reading this module's arena at its slot.
+///
+/// No upstream counterpart: `DSOLocalEquivalent::get` and `NoCFIValue::get`
+/// (`lib/IR/Constants.cpp`) take a `GlobalValue *`.
+#[test]
+fn global_wrapping_constants_reject_a_global_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let g = foreign
+        .add_function_dyn("g", foreign_ty, Linkage::External)
+        .expect("g");
+    let foreign_global = foreign.view(g).as_global_constant_ptr();
+
+    let before = format!("{home}");
+    let dso = home.dso_local_equivalent_global(foreign_global);
+    assert!(matches!(dso, Err(IrError::ForeignValueId)), "{dso:?}");
+    let no_cfi = home.no_cfi_global(foreign_global);
+    assert!(matches!(no_cfi, Err(IrError::ForeignValueId)), "{no_cfi:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected constant must not mutate"
+    );
+}
+
+/// `ptr_auth` refuses a pointer from another module before any operand is
+/// read through this module.
+///
+/// No upstream counterpart: `ConstantPtrAuth::get` (`lib/IR/Constants.cpp`)
+/// takes `Constant *` operands.
+#[test]
+fn ptr_auth_rejects_a_pointer_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let own_null = home.ptr_type(0).const_null();
+
+    let before = format!("{home}");
+    let result = home.ptr_auth(
+        foreign.ptr_type(0).const_null(),
+        home.i32_type().const_int(0i32),
+        home.i64_type().const_int(0i64),
+        own_null,
+        own_null,
+    );
+    assert!(matches!(result, Err(IrError::ForeignValueId)), "{result:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected constant must not mutate"
+    );
+}
+
+/// `target_ext_none` refuses a target extension type from another module.
+///
+/// No upstream counterpart: `ConstantTargetNone::get` (`lib/IR/Constants.cpp`)
+/// takes a `TargetExtType *` uniqued per `LLVMContext`.
+#[test]
+fn target_ext_none_rejects_a_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_ty = foreign
+        .target_ext_type(
+            "spirv.Event",
+            Vec::<llvmkit_ir::Type<'_, DynBrand>>::new(),
+            Vec::<u32>::new(),
+        )
+        .as_type();
+
+    let before = format!("{home}");
+    let result = home.target_ext_none(foreign_ty);
+    assert!(matches!(result, Err(IrError::ForeignType)), "{result:?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected constant must not mutate"
+    );
+}

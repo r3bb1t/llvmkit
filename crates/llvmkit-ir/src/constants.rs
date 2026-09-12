@@ -50,10 +50,12 @@ use super::module::{DynBrand, Module, ModuleBrand, ModuleCore, ModuleRef, Unveri
 // ported once, at the slot layer, in `type.rs`; these three names are imports,
 // not local definitions.
 use super::r#type::{
-    Type, TypeData, TypeSlot, is_int_or_int_vector, is_ptr_or_ptr_vector, scalar_type_slot,
+    Type, TypeData, TypeSlot, TypeSlotAccess, is_int_or_int_vector, is_ptr_or_ptr_vector,
+    scalar_type_slot,
 };
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueUse, sealed,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess,
+    ValueUse, sealed,
 };
 use super::vec_len::VecLen;
 use crate::Branded;
@@ -89,7 +91,11 @@ macro_rules! decl_constant_handle {
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             #[inline]
             pub(super) fn from_parts(c: Constant<'ctx, B>) -> Self {
-                Self { id: c.id, module: c.module, ty: c.ty }
+                Self {
+                    id: c.slot_trusting_same_module(),
+                    module: c.module,
+                    ty: c.ty().slot_trusting_same_module(),
+                }
             }
 
             /// Widen to the erased [`Constant`] handle.
@@ -225,9 +231,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ConstantIntValue<'ctx, W, B> {
     #[inline]
     pub(super) fn from_parts_typed(c: Constant<'ctx, B>) -> Self {
         Self {
-            id: c.id,
+            id: c.slot_trusting_same_module(),
             module: c.module,
-            ty: c.ty,
+            ty: c.ty().slot_trusting_same_module(),
             _w: PhantomData,
         }
     }
@@ -418,9 +424,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ConstantFloatValue<'ctx, K, B> {
     #[inline]
     pub(super) fn from_parts_typed(c: Constant<'ctx, B>) -> Self {
         Self {
-            id: c.id,
+            id: c.slot_trusting_same_module(),
             module: c.module,
-            ty: c.ty,
+            ty: c.ty().slot_trusting_same_module(),
             _k: PhantomData,
         }
     }
@@ -904,18 +910,18 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
         I: IntoIterator<Item = C>,
         C: IntoConstantValue<'ctx, B>,
     {
-        let elem_ty = self.element().id();
+        let elem_ty = self.element().slot_trusting_same_module();
         let expected_len = self.len();
         let mut ids = Vec::new();
         for elem in elements {
             let value = elem.into_constant(self.module)?.as_erased();
-            if value.ty != elem_ty {
+            if value.ty().slot_trusting_same_module() != elem_ty {
                 return Err(IrError::TypeIdentityMismatch {
                     expected: self.element().rendered(),
                     got: value.ty().rendered(),
                 });
             }
-            ids.push(value.id);
+            ids.push(value.slot_trusting_same_module());
         }
         if u64::try_from(ids.len()).unwrap_or_else(|_| unreachable!("element count fits in u64"))
             != expected_len
@@ -947,13 +953,13 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
                 lhs: u32::try_from(count).unwrap_or(u32::MAX),
                 rhs: u32::try_from(i + 1).unwrap_or(u32::MAX),
             })?;
-            if value.ty != field.id() {
+            if value.ty().slot_trusting_same_module() != field.slot_trusting_same_module() {
                 return Err(IrError::TypeIdentityMismatch {
                     expected: field.rendered(),
                     got: value.ty().rendered(),
                 });
             }
-            ids.push(value.id);
+            ids.push(value.slot_trusting_same_module());
         }
         if ids.len() != count {
             return Err(IrError::OperandWidthMismatch {
@@ -987,17 +993,17 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
         I: IntoIterator<Item = C>,
         C: IntoConstantValue<'ctx, B>,
     {
-        let elem_ty = self.element().id();
+        let elem_ty = self.element().slot_trusting_same_module();
         let mut ids = Vec::new();
         for elem in elements {
             let value = elem.into_constant(self.module)?.as_erased();
-            if value.ty != elem_ty {
+            if value.ty().slot_trusting_same_module() != elem_ty {
                 return Err(IrError::TypeIdentityMismatch {
                     expected: self.element().rendered(),
                     got: value.ty().rendered(),
                 });
             }
-            ids.push(value.id);
+            ids.push(value.slot_trusting_same_module());
         }
         let n = ids.len();
         let expected = usize::try_from(self.min_len())
@@ -1113,14 +1119,21 @@ impl<'ctx> ModuleCore {
         Indices: IntoIterator<Item = u32>,
         Mask: IntoIterator<Item = i32>,
     {
-        let source_ty_id = options.source_type().map(|ty| ty.id());
+        // Every caller handle is admitted before anything is canonicalized,
+        // folded or interned in this module.
+        let owner = self.id();
+        let result_ty_slot = result_ty.slot_in(owner)?;
+        let source_ty_id = options
+            .source_type()
+            .map(|ty| ty.slot_in(owner))
+            .transpose()?;
         let mut ids = Vec::new();
         for operand in operands {
-            ids.push(operand.id);
+            ids.push(operand.slot_in(owner)?);
         }
         let mut data = ConstantExprData {
             opcode,
-            result_ty: result_ty.id(),
+            result_ty: result_ty_slot,
             source_ty: source_ty_id,
             operands: ids.into_boxed_slice(),
             indices: indices.into_iter().collect::<Vec<_>>().into_boxed_slice(),
@@ -1136,7 +1149,7 @@ impl<'ctx> ModuleCore {
         Ok(constant_handle::<B, _>(
             id,
             ModuleRef::<B>::new(self),
-            result_ty.id(),
+            result_ty_slot,
         ))
     }
 
@@ -1150,17 +1163,27 @@ impl<'ctx> ModuleCore {
         R: ReturnMarker,
         S: BlockTerminationState,
     {
-        if block.parent_function().map(|f| f.slot()) != Some(function.as_dyn().slot()) {
+        // Both handles are admitted before the parent check reads the block's
+        // parent through this module.
+        let owner = self.id();
+        let function_slot = function.slot_in(owner)?;
+        let block_slot = block.to_erased().slot_in(owner)?;
+        if block
+            .parent_function()
+            .map(|f| f.slot_trusting_same_module())
+            != Some(function_slot)
+        {
             return Err(IrError::InvalidOperation {
                 message: "blockaddress block must belong to function",
             });
         }
-        let ty = self.ptr_type::<B>(function.address_space()).as_type().id();
-        let id = self.context().intern_constant_block_address(
-            ty,
-            function.as_dyn().slot(),
-            block.as_dyn().slot(),
-        );
+        let ty = self
+            .ptr_type::<B>(function.address_space())
+            .as_type()
+            .slot_trusting_same_module();
+        let id = self
+            .context()
+            .intern_constant_block_address(ty, function_slot, block_slot);
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
 
@@ -1179,6 +1202,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         ty: Type<'ctx, B>,
     ) -> IrResult<ForwardRefValue<'ctx, B>> {
+        let ty_slot = ty.slot_in(self.id())?;
         if !ty.is_first_class() {
             return Err(IrError::InvalidOperation {
                 message: "forward-reference placeholder must have first-class type",
@@ -1186,11 +1210,11 @@ impl<'ctx> ModuleCore {
         }
         let id = self
             .context()
-            .push_constant_forward_ref_placeholder(ty.id());
+            .push_constant_forward_ref_placeholder(ty_slot);
         Ok(ForwardRefValue::from_constant(constant_handle::<B, _>(
             id,
             ModuleRef::<B>::new(self),
-            ty.id(),
+            ty_slot,
         )))
     }
 
@@ -1199,10 +1223,16 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         function: FunctionValue<'ctx, Dyn, B>,
     ) -> Constant<'ctx, B> {
-        let ty = self.ptr_type::<DynBrand>(0).as_type().id();
+        let ty = self
+            .ptr_type::<DynBrand>(0)
+            .as_type()
+            .slot_trusting_same_module();
+        // boundary (F1): refused by Task 26
+        // Infallible, so a function from another module is interned by its slot.
+        let function = function.slot_trusting_same_module();
         let id = self
             .context()
-            .intern_constant_dso_local_equivalent(ty, function.slot());
+            .intern_constant_dso_local_equivalent(ty, function);
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
     /// `dso_local_equivalent` over a function, alias-to-function, or ifunc.
@@ -1210,7 +1240,9 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.slot()).kind {
+        // Admitted before this module's arena is read at its slot.
+        let global_slot = global.slot_in(self.id())?;
+        let value = match &self.context().value_data(global_slot).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
@@ -1218,7 +1250,8 @@ impl<'ctx> ModuleCore {
             ),
             _ => global.as_erased(),
         };
-        let is_function_like = match &self.context().value_data(value.id).kind {
+        let value_slot = value.slot_trusting_same_module();
+        let is_function_like = match &self.context().value_data(value_slot).kind {
             ValueKindData::Function(_) => true,
             ValueKindData::GlobalAlias(_) => crate::GlobalAlias::try_from(value)?
                 .value_type()
@@ -1233,10 +1266,13 @@ impl<'ctx> ModuleCore {
                 message: "dso_local_equivalent expects a function, alias to function, or ifunc",
             });
         }
-        let ty = self.ptr_type::<DynBrand>(0).as_type().id();
+        let ty = self
+            .ptr_type::<DynBrand>(0)
+            .as_type()
+            .slot_trusting_same_module();
         let id = self
             .context()
-            .intern_constant_dso_local_equivalent(ty, value.id);
+            .intern_constant_dso_local_equivalent(ty, value_slot);
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
 
@@ -1245,8 +1281,14 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         function: FunctionValue<'ctx, Dyn, B>,
     ) -> Constant<'ctx, B> {
-        let ty = self.ptr_type::<DynBrand>(0).as_type().id();
-        let id = self.context().intern_constant_no_cfi(ty, function.slot());
+        let ty = self
+            .ptr_type::<DynBrand>(0)
+            .as_type()
+            .slot_trusting_same_module();
+        // boundary (F1): refused by Task 26
+        // Infallible, so a function from another module is interned by its slot.
+        let function = function.slot_trusting_same_module();
+        let id = self.context().intern_constant_no_cfi(ty, function);
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
 
@@ -1255,7 +1297,9 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.slot()).kind {
+        // Admitted before this module's arena is read at its slot.
+        let global_slot = global.slot_in(self.id())?;
+        let value = match &self.context().value_data(global_slot).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
@@ -1263,7 +1307,8 @@ impl<'ctx> ModuleCore {
             ),
             _ => global.as_erased(),
         };
-        match &self.context().value_data(value.id).kind {
+        let value_slot = value.slot_trusting_same_module();
+        match &self.context().value_data(value_slot).kind {
             ValueKindData::Function(_)
             | ValueKindData::GlobalVariable(_)
             | ValueKindData::GlobalAlias(_)
@@ -1274,8 +1319,11 @@ impl<'ctx> ModuleCore {
                 });
             }
         }
-        let ty = self.ptr_type::<DynBrand>(0).as_type().id();
-        let id = self.context().intern_constant_no_cfi(ty, value.id);
+        let ty = self
+            .ptr_type::<DynBrand>(0)
+            .as_type()
+            .slot_trusting_same_module();
+        let id = self.context().intern_constant_no_cfi(ty, value_slot);
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
 
@@ -1301,20 +1349,35 @@ impl<'ctx> ModuleCore {
         let discriminator = discriminator.as_constant().as_erased();
         let addr_discriminator = addr_discriminator.as_constant().as_erased();
         let deactivation_symbol = deactivation_symbol.as_constant().as_erased();
+        // All five are admitted before any of them is read through this module.
+        let owner = self.id();
+        let pointer_slot = pointer.slot_in(owner)?;
+        let key_slot = key.slot_in(owner)?;
+        let discriminator_slot = discriminator.slot_in(owner)?;
+        let addr_discriminator_slot = addr_discriminator.slot_in(owner)?;
+        let deactivation_symbol_slot = deactivation_symbol.slot_in(owner)?;
         if !pointer.ty().is_pointer() {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth base pointer must be a pointer",
             });
         }
-        if !is_int_constant_with_type(self, key.id, self.i32_type::<DynBrand>().as_type().id()) {
+        if !is_int_constant_with_type(
+            self,
+            key_slot,
+            self.i32_type::<DynBrand>()
+                .as_type()
+                .slot_trusting_same_module(),
+        ) {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth key must be i32 constant",
             });
         }
         if !is_int_constant_with_type(
             self,
-            discriminator.id,
-            self.i64_type::<DynBrand>().as_type().id(),
+            discriminator_slot,
+            self.i64_type::<DynBrand>()
+                .as_type()
+                .slot_trusting_same_module(),
         ) {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth integer discriminator must be i64 constant",
@@ -1330,26 +1393,29 @@ impl<'ctx> ModuleCore {
                 message: "constant ptrauth deactivation symbol must be a pointer",
             });
         }
-        if !is_global_value_or_null_constant(self, deactivation_symbol.id) {
+        if !is_global_value_or_null_constant(self, deactivation_symbol_slot) {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth deactivation symbol must be a global value or null",
             });
         }
-        let ty = pointer.ty().id();
+        let ty = pointer.ty().slot_trusting_same_module();
         let id = self.context().intern_constant_ptrauth(
             ty,
-            pointer.id,
-            key.id,
-            discriminator.id,
-            addr_discriminator.id,
-            deactivation_symbol.id,
+            pointer_slot,
+            key_slot,
+            discriminator_slot,
+            addr_discriminator_slot,
+            deactivation_symbol_slot,
         );
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
 
     /// `token none`.
     pub fn token_none<B: ModuleBrand + 'ctx>(&'ctx self) -> Constant<'ctx, B> {
-        let ty = self.token_type::<DynBrand>().as_type().id();
+        let ty = self
+            .token_type::<DynBrand>()
+            .as_type()
+            .slot_trusting_same_module();
         let id = self.context().intern_constant_token_none(ty);
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
@@ -1359,6 +1425,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         ty: Type<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
+        let ty_slot = ty.slot_in(self.id())?;
         let target_ty = TargetExtType::try_from(ty).map_err(|_| IrError::TypeMismatch {
             expected: TypeKindLabel::TargetExt,
             got: ty.kind_label(),
@@ -1368,11 +1435,11 @@ impl<'ctx> ModuleCore {
                 message: "invalid type for null constant",
             });
         }
-        let id = self.context().intern_constant_target_ext_none(ty.id());
+        let id = self.context().intern_constant_target_ext_none(ty_slot);
         Ok(constant_handle::<B, _>(
             id,
             ModuleRef::<B>::new(self),
-            ty.id(),
+            ty_slot,
         ))
     }
 }
@@ -1697,16 +1764,20 @@ pub(super) fn replace_placeholder_uses_with<'ctx, B: ModuleBrand + 'ctx>(
     from: Constant<'ctx, B>,
     replacement: Value<'ctx, B>,
 ) -> IrResult<()> {
-    if replacement.ty != from.ty {
+    // Boundary: the replacement is the caller's. It is admitted before its type
+    // slot is compared with the placeholder's and before any use moves.
+    let from_slot = from.slot_trusting_same_module();
+    let replacement_slot = replacement.slot_in(from.module.id())?;
+    if replacement.ty().slot_trusting_same_module() != from.ty().slot_trusting_same_module() {
         return Err(IrError::TypeIdentityMismatch {
             expected: from.ty().rendered(),
             got: replacement.ty().rendered(),
         });
     }
-    if replacement.id == from.id {
+    if replacement_slot == from_slot {
         return Ok(());
     }
-    replace_value_uses_with(from.module.module(), from.id, replacement.id)
+    replace_value_uses_with(from.module.module(), from_slot, replacement_slot)
 }
 
 /// `isa<Constant>(To)` — the question `Constant::handleOperandChange` asks
@@ -1843,7 +1914,7 @@ fn constant_with_replaced_operand(
             validate_constant_expr_data(module, &expr)?;
             let result_ty = Type::<DynBrand>::new(expr.result_ty, module);
             if let Some(folded) = fold_constant_expr_data(module, result_ty, &expr)? {
-                return Ok(Some(folded.slot()));
+                return Ok(Some(folded.slot_trusting_same_module()));
             }
             Ok(Some(module.context().intern_constant_expr(expr)))
         }
@@ -1894,7 +1965,7 @@ fn constant_with_replaced_operand(
                     module.context().value_data(deactivation_symbol).ty,
                 ),
             )?;
-            Ok(Some(rebuilt.id))
+            Ok(Some(rebuilt.slot_trusting_same_module()))
         }
         ConstantData::Int(_)
         | ConstantData::Float(_)
@@ -2073,17 +2144,23 @@ pub(super) fn validate_constant_expr_data(
                     message: "trunc constant expression expects one operand",
                 });
             };
-            let Some(src_bits) = scalar_int_bits(module, src_ty.id()) else {
+            let Some(src_bits) = scalar_int_bits(module, src_ty.slot_trusting_same_module()) else {
                 return Err(IrError::InvalidOperation {
                     message: "invalid trunc constant expression",
                 });
             };
-            let Some(dst_bits) = scalar_int_bits(module, result_ty.id()) else {
+            let Some(dst_bits) = scalar_int_bits(module, result_ty.slot_trusting_same_module())
+            else {
                 return Err(IrError::InvalidOperation {
                     message: "invalid trunc constant expression",
                 });
             };
-            if !lane_shape_matches(module, src_ty.id(), result_ty.id()) || dst_bits >= src_bits {
+            if !lane_shape_matches(
+                module,
+                src_ty.slot_trusting_same_module(),
+                result_ty.slot_trusting_same_module(),
+            ) || dst_bits >= src_bits
+            {
                 return Err(IrError::InvalidOperation {
                     message: "invalid trunc constant expression",
                 });
@@ -2095,9 +2172,13 @@ pub(super) fn validate_constant_expr_data(
                     message: "ptrtoaddr/ptrtoint constant expression expects one operand",
                 });
             };
-            if !is_ptr_or_ptr_vector(module, src_ty.id())
-                || !is_int_or_int_vector(module, result_ty.id())
-                || !lane_shape_matches(module, src_ty.id(), result_ty.id())
+            if !is_ptr_or_ptr_vector(module, src_ty.slot_trusting_same_module())
+                || !is_int_or_int_vector(module, result_ty.slot_trusting_same_module())
+                || !lane_shape_matches(
+                    module,
+                    src_ty.slot_trusting_same_module(),
+                    result_ty.slot_trusting_same_module(),
+                )
             {
                 return Err(IrError::InvalidOperation {
                     message: "invalid ptrtoaddr/ptrtoint constant expression",
@@ -2110,9 +2191,13 @@ pub(super) fn validate_constant_expr_data(
                     message: "inttoptr constant expression expects one operand",
                 });
             };
-            if !is_int_or_int_vector(module, src_ty.id())
-                || !is_ptr_or_ptr_vector(module, result_ty.id())
-                || !lane_shape_matches(module, src_ty.id(), result_ty.id())
+            if !is_int_or_int_vector(module, src_ty.slot_trusting_same_module())
+                || !is_ptr_or_ptr_vector(module, result_ty.slot_trusting_same_module())
+                || !lane_shape_matches(
+                    module,
+                    src_ty.slot_trusting_same_module(),
+                    result_ty.slot_trusting_same_module(),
+                )
             {
                 return Err(IrError::InvalidOperation {
                     message: "invalid inttoptr constant expression",
@@ -2125,7 +2210,11 @@ pub(super) fn validate_constant_expr_data(
                     message: "bitcast constant expression expects one operand",
                 });
             };
-            if !valid_bitcast_constant(module, src_ty.id(), result_ty.id()) {
+            if !valid_bitcast_constant(
+                module,
+                src_ty.slot_trusting_same_module(),
+                result_ty.slot_trusting_same_module(),
+            ) {
                 return Err(IrError::InvalidOperation {
                     message: "invalid bitcast constant expression",
                 });
@@ -2137,11 +2226,20 @@ pub(super) fn validate_constant_expr_data(
                     message: "addrspacecast constant expression expects one operand",
                 });
             };
-            if !is_ptr_or_ptr_vector(module, src_ty.id())
-                || !is_ptr_or_ptr_vector(module, result_ty.id())
-                || !lane_shape_matches(module, src_ty.id(), result_ty.id())
-                || pointer_address_space(module, scalar_type_slot(module, src_ty.id()))
-                    == pointer_address_space(module, scalar_type_slot(module, result_ty.id()))
+            if !is_ptr_or_ptr_vector(module, src_ty.slot_trusting_same_module())
+                || !is_ptr_or_ptr_vector(module, result_ty.slot_trusting_same_module())
+                || !lane_shape_matches(
+                    module,
+                    src_ty.slot_trusting_same_module(),
+                    result_ty.slot_trusting_same_module(),
+                )
+                || pointer_address_space(
+                    module,
+                    scalar_type_slot(module, src_ty.slot_trusting_same_module()),
+                ) == pointer_address_space(
+                    module,
+                    scalar_type_slot(module, result_ty.slot_trusting_same_module()),
+                )
             {
                 return Err(IrError::InvalidOperation {
                     message: "invalid addrspacecast constant expression",
@@ -2157,7 +2255,11 @@ pub(super) fn validate_constant_expr_data(
                     message: "extractelement constant expression expects two operands",
                 });
             };
-            let Some((elem, _, _)) = module.context().type_data(vector_ty.id()).as_vector() else {
+            let Some((elem, _, _)) = module
+                .context()
+                .type_data(vector_ty.slot_trusting_same_module())
+                .as_vector()
+            else {
                 return Err(IrError::InvalidOperation {
                     message: "invalid extractelement constant expression",
                 });
@@ -2174,7 +2276,11 @@ pub(super) fn validate_constant_expr_data(
                     message: "insertelement constant expression expects three operands",
                 });
             };
-            let Some((elem, _, _)) = module.context().type_data(vector_ty.id()).as_vector() else {
+            let Some((elem, _, _)) = module
+                .context()
+                .type_data(vector_ty.slot_trusting_same_module())
+                .as_vector()
+            else {
                 return Err(IrError::InvalidOperation {
                     message: "invalid insertelement constant expression",
                 });
@@ -2194,29 +2300,37 @@ pub(super) fn validate_constant_expr_data(
                     message: "shufflevector constant expression expects three operands",
                 });
             };
-            let Some((lhs_elem, lhs_lanes, lhs_scalable)) =
-                module.context().type_data(lhs_ty.id()).as_vector()
+            let Some((lhs_elem, lhs_lanes, lhs_scalable)) = module
+                .context()
+                .type_data(lhs_ty.slot_trusting_same_module())
+                .as_vector()
             else {
                 return Err(IrError::InvalidOperation {
                     message: "invalid shufflevector constant expression",
                 });
             };
-            let Some((rhs_elem, rhs_lanes, rhs_scalable)) =
-                module.context().type_data(rhs_ty.id()).as_vector()
+            let Some((rhs_elem, rhs_lanes, rhs_scalable)) = module
+                .context()
+                .type_data(rhs_ty.slot_trusting_same_module())
+                .as_vector()
             else {
                 return Err(IrError::InvalidOperation {
                     message: "invalid shufflevector constant expression",
                 });
             };
-            let Some((mask_elem, mask_lanes, mask_scalable)) =
-                module.context().type_data(mask_ty.id()).as_vector()
+            let Some((mask_elem, mask_lanes, mask_scalable)) = module
+                .context()
+                .type_data(mask_ty.slot_trusting_same_module())
+                .as_vector()
             else {
                 return Err(IrError::InvalidOperation {
                     message: "invalid shufflevector constant expression",
                 });
             };
-            let Some((result_elem, result_lanes, result_scalable)) =
-                module.context().type_data(result_ty.id()).as_vector()
+            let Some((result_elem, result_lanes, result_scalable)) = module
+                .context()
+                .type_data(result_ty.slot_trusting_same_module())
+                .as_vector()
             else {
                 return Err(IrError::InvalidOperation {
                     message: "invalid shufflevector constant expression",
@@ -2227,7 +2341,11 @@ pub(super) fn validate_constant_expr_data(
                 || lhs_elem != rhs_elem
                 || lhs_lanes != rhs_lanes
                 || lhs_scalable != rhs_scalable
-                || mask_elem != module.i32_type::<DynBrand>().as_type().id()
+                || mask_elem
+                    != module
+                        .i32_type::<DynBrand>()
+                        .as_type()
+                        .slot_trusting_same_module()
                 || mask_scalable != lhs_scalable
                 || !valid_shufflevector_mask_constant(module, mask_id, lhs_lanes, lhs_scalable)
                 || result_elem != lhs_elem
@@ -2247,7 +2365,7 @@ pub(super) fn validate_constant_expr_data(
             };
             if lhs_ty != rhs_ty
                 || *lhs_ty != result_ty
-                || !is_int_or_int_vector(module, lhs_ty.id())
+                || !is_int_or_int_vector(module, lhs_ty.slot_trusting_same_module())
             {
                 return Err(IrError::InvalidOperation {
                     message: "invalid binary constant expression",
@@ -2271,9 +2389,12 @@ pub(super) fn verify_constant_expr_data(
             });
         };
         let src_ty = Type::<DynBrand>::new(module.context().value_data(*src).ty, module);
-        let addr_bits = pointer_address_space(module, scalar_type_slot(module, src_ty.id()))
-            .map(|as_id| module.data_layout().index_size_in_bits(as_id));
-        if addr_bits != scalar_int_bits(module, result_ty.id()) {
+        let addr_bits = pointer_address_space(
+            module,
+            scalar_type_slot(module, src_ty.slot_trusting_same_module()),
+        )
+        .map(|as_id| module.data_layout().index_size_in_bits(as_id));
+        if addr_bits != scalar_int_bits(module, result_ty.slot_trusting_same_module()) {
             return Err(IrError::InvalidOperation {
                 message: "PtrToAddr result must be address width",
             });
@@ -2305,26 +2426,29 @@ fn validate_gep_constant_expr(
             message: "invalid base element for constant getelementptr",
         });
     }
-    if !is_ptr_or_ptr_vector(module, base_ty.id())
-        || !is_ptr_or_ptr_vector(module, result_ty.id())
+    if !is_ptr_or_ptr_vector(module, base_ty.slot_trusting_same_module())
+        || !is_ptr_or_ptr_vector(module, result_ty.slot_trusting_same_module())
         || (!index_tys.is_empty() && !source_ty.is_sized())
         || index_tys
             .iter()
-            .any(|ty| !is_int_or_int_vector(module, ty.id()))
+            .any(|ty| !is_int_or_int_vector(module, ty.slot_trusting_same_module()))
     {
         return Err(IrError::InvalidOperation {
             message: "invalid getelementptr constant expression",
         });
     }
-    let Some(base_addr_space) =
-        pointer_address_space(module, scalar_type_slot(module, base_ty.id()))
-    else {
+    let Some(base_addr_space) = pointer_address_space(
+        module,
+        scalar_type_slot(module, base_ty.slot_trusting_same_module()),
+    ) else {
         return Err(IrError::InvalidOperation {
             message: "invalid getelementptr constant expression",
         });
     };
-    if pointer_address_space(module, scalar_type_slot(module, result_ty.id()))
-        != Some(base_addr_space)
+    if pointer_address_space(
+        module,
+        scalar_type_slot(module, result_ty.slot_trusting_same_module()),
+    ) != Some(base_addr_space)
     {
         return Err(IrError::InvalidOperation {
             message: "invalid getelementptr constant expression",
@@ -2340,9 +2464,9 @@ fn validate_gep_constant_expr(
             });
         }
     }
-    let mut gep_width = vector_shape(module, base_ty.id());
+    let mut gep_width = vector_shape(module, base_ty.slot_trusting_same_module());
     for index_ty in index_tys {
-        if let Some(index_shape) = vector_shape(module, index_ty.id()) {
+        if let Some(index_shape) = vector_shape(module, index_ty.slot_trusting_same_module()) {
             match gep_width {
                 Some(pointer_shape) if index_shape != pointer_shape => {
                     return Err(IrError::InvalidOperation {
@@ -2353,12 +2477,16 @@ fn validate_gep_constant_expr(
             }
         }
     }
-    if vector_shape(module, result_ty.id()) != gep_width {
+    if vector_shape(module, result_ty.slot_trusting_same_module()) != gep_width {
         return Err(IrError::InvalidOperation {
             message: "invalid getelementptr constant expression",
         });
     }
-    validate_gep_indices(module, source_ty.id(), &data.operands[1..])
+    validate_gep_indices(
+        module,
+        source_ty.slot_trusting_same_module(),
+        &data.operands[1..],
+    )
 }
 
 fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
@@ -2558,20 +2686,23 @@ fn intern_pointer_null<'ctx, B: ModuleBrand + 'ctx>(
     ty: PointerType<'ctx, B>,
 ) -> ConstantPointerNull<'ctx, B> {
     let module = ty.module;
-    let id = module.module().context().intern_constant_null(ty.id);
-    ConstantPointerNull::from_parts(constant_handle(id, module, ty.id))
+    let slot = ty.slot_trusting_same_module();
+    let id = module.module().context().intern_constant_null(slot);
+    ConstantPointerNull::from_parts(constant_handle(id, module, slot))
 }
 
 fn intern_undef<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> UndefValue<'ctx, B> {
     let module = ty.module();
-    let id = module.core_ref().context().intern_constant_undef(ty.id());
-    UndefValue::from_parts(constant_handle(id, module, ty.id()))
+    let slot = ty.slot_trusting_same_module();
+    let id = module.core_ref().context().intern_constant_undef(slot);
+    UndefValue::from_parts(constant_handle(id, module, slot))
 }
 
 fn intern_poison<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> PoisonValue<'ctx, B> {
     let module = ty.module();
-    let id = module.core_ref().context().intern_constant_poison(ty.id());
-    PoisonValue::from_parts(constant_handle(id, module, ty.id()))
+    let slot = ty.slot_trusting_same_module();
+    let id = module.core_ref().context().intern_constant_poison(slot);
+    PoisonValue::from_parts(constant_handle(id, module, slot))
 }
 
 pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx>(
@@ -2579,8 +2710,9 @@ pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx>(
     ids: Box<[ValueSlot]>,
 ) -> ConstantAggregate<'ctx, B> {
     let module = ty.module();
-    let id = module.context().intern_constant_aggregate(ty.id(), ids);
-    ConstantAggregate::from_parts(constant_handle(id, module, ty.id()))
+    let slot = ty.slot_trusting_same_module();
+    let id = module.context().intern_constant_aggregate(slot, ids);
+    ConstantAggregate::from_parts(constant_handle(id, module, slot))
 }
 
 #[inline]

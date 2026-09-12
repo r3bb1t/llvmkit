@@ -64,6 +64,16 @@ cut, entries accumulate under **Unreleased**.
   `VectorType::const_vector`, `Module::add_global` and
   `Module::add_global_constant` no longer intern a foreign element's slot. The
   Rust-literal impls always return `Ok`.
+- **Fixed (llvmkit-ir):** the module-level constant constructors stored a
+  caller's handles by slot without comparing modules: `constant_expr` /
+  `constant_expr_with_options` (the result type, the source element type and
+  every operand), `block_address`, `dso_local_equivalent_global`,
+  `no_cfi_global`, `ptr_auth` (all five operands), `target_ext_none`, and the
+  parser's `forward_ref_value_placeholder` together with retiring one through
+  `ForwardRefValue::replace_all_uses_with`. Each now returns `ForeignValueId`
+  or `ForeignType` before anything is interned or any use moves. The two
+  infallible siblings, `dso_local_equivalent` and `no_cfi`, still cannot report
+  a foreign function; they are marked for the task that makes them fallible.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type
