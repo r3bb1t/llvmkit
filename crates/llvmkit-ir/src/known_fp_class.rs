@@ -58,7 +58,7 @@ use crate::known_bits::KnownBits;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeKind};
 use crate::r#use::Use;
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{
     MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, compute_known_bits_at_depth,
     is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
@@ -577,7 +577,7 @@ fn phi_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let mut result: Option<KnownFpClass> = None;
     for slot in incoming {
         // Skip direct self references.
-        if slot == value.slot() {
+        if slot == value.slot_trusting_same_module() {
             continue;
         }
         // Upstream recurses *at* the limit rather than at `depth + 1`, which

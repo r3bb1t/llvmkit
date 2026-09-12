@@ -62,7 +62,7 @@ use super::instr_types::{
 use super::instructions::ShuffleVectorInst;
 use super::intrinsics::{IntrinsicId, IntrinsicNameResolution};
 use super::module::ModuleRef;
-use super::value::{Value, ValueUse};
+use super::value::{Value, ValueSlotAccess, ValueUse};
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
@@ -88,8 +88,8 @@ use crate::phi_check::{PhiViolation, check_phi_incoming};
 // once, at the slot layer, in `type.rs`; these four names are imports, not
 // local definitions.
 use crate::r#type::{
-    Type, TypeData, TypeSlot, is_float_or_float_vector, is_int_or_int_vector, is_ptr_or_ptr_vector,
-    scalar_type_slot,
+    Type, TypeData, TypeSlot, TypeSlotAccess, is_float_or_float_vector, is_int_or_int_vector,
+    is_ptr_or_ptr_vector, scalar_type_slot,
 };
 use crate::value::{IsValue, ValueKindData, ValueSlot};
 
@@ -230,7 +230,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     fn visit_global_variable(&self, g: GlobalVariable<'ctx, B>) -> IrResult<()> {
         let value_ty = g.value_type();
 
-        if type_contains_scalable(self.module, value_ty.id()) {
+        if type_contains_scalable(self.module, value_ty.slot_trusting_same_module()) {
             return Err(self.fail_global(
                 g,
                 VerifierRule::GlobalScalableType,
@@ -267,7 +267,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 // true of a zero *aggregate* too — `common global [10 x T]
                 // zeroinitializer` is the shape clang emits. Recognising only
                 // scalar zeros rejected it.
-                if !crate::constants::constant_id_is_null_value(self.module, init.slot()) {
+                if !crate::constants::constant_id_is_null_value(
+                    self.module,
+                    init.slot_trusting_same_module(),
+                ) {
                     return Err(self.fail_global(
                         g,
                         VerifierRule::CommonLinkageInvariantViolated,
@@ -318,7 +321,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     }
 
     fn verify_constant_tree(&self, constant: Constant<'ctx, B>) -> IrResult<()> {
-        let value_data = self.module.context().value_data(constant.slot());
+        let value_data = self
+            .module
+            .context()
+            .value_data(constant.slot_trusting_same_module());
         let ValueKindData::Constant(data) = &value_data.kind else {
             return Ok(());
         };
@@ -340,9 +346,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 let block = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
                     *block,
                     self.module,
-                    self.module.label_type::<B>().as_type().id(),
+                    self.module
+                        .label_type::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
                 );
-                if block.parent_function().map(|f| f.slot()) != Some(*function) {
+                if block
+                    .parent_function()
+                    .map(|f| f.slot_trusting_same_module())
+                    != Some(*function)
+                {
                     return Err(IrError::InvalidOperation {
                         message: "blockaddress block must belong to referenced function",
                     });
@@ -443,7 +456,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         &self
                             .module
                             .context()
-                            .value_data(deactivation_symbol.id)
+                            .value_data(deactivation_symbol.slot_trusting_same_module())
                             .kind,
                         ValueKindData::Constant(
                             ConstantData::GlobalValueRef { .. } | ConstantData::PointerNull
@@ -966,7 +979,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // Collect block ids in declaration order so use-before-def
         // can check forward references between blocks (cross-block
         // checks are conservative -- see deferred-coverage note).
-        let block_ids: Vec<ValueSlot> = f.basic_blocks().map(|bb| bb.slot()).collect();
+        let block_ids: Vec<ValueSlot> = f
+            .basic_blocks()
+            .map(|bb| bb.to_erased().slot_trusting_same_module())
+            .collect();
         let block_index: HashMap<ValueSlot, usize> = block_ids
             .iter()
             .copied()
@@ -1010,7 +1026,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 let Some(entry) = entry.as_ref() else {
                     continue;
                 };
-                self.verify_swift_error_value(f, entry, argument.as_erased().slot())?;
+                self.verify_swift_error_value(f, entry, argument.slot_trusting_same_module())?;
             }
         }
         for bb in f.basic_blocks() {
@@ -1175,7 +1191,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             // `if (!Call->isCallee(&U) || (!IgnoreCastedDirectCall &&
             //      Call->getFunctionType() != getFunctionType()))`
-            if call.callee == value.slot() && call.fn_ty == signature.id {
+            if call.callee == value.slot_trusting_same_module()
+                && call.fn_ty == signature.slot_trusting_same_module()
+            {
                 continue;
             }
             // `if (IgnoreARCAttachedCall &&
@@ -1183,7 +1201,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             //                                  U.getOperandNo())) continue;`
             if call.attrs.operand_bundles_slice().iter().any(|bundle| {
                 bundle.tag() == &OperandBundleTag::ClangArcAttachedCall
-                    && bundle.inputs().any(|input| input == value.slot())
+                    && bundle
+                        .inputs()
+                        .any(|input| input == value.slot_trusting_same_module())
             }) {
                 continue;
             }
@@ -1518,7 +1538,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             bb,
             inst,
             range_id.slot(),
-            scalar_type_slot(self.module, inst.ty().id),
+            scalar_type_slot(self.module, inst.ty().slot_trusting_same_module()),
             RangeLikeMetadataKind::Range,
         )
     }
@@ -1721,14 +1741,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if inst.ty().id != lhs_ty {
+        if inst.ty().slot_trusting_same_module() != lhs_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::BinaryResultTypeMismatch,
                 format!(
                     "{same_type_message} (result {} != operand {})",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(lhs_ty)
                 ),
             ));
@@ -1770,14 +1790,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if inst.ty().id != lhs_ty {
+        if inst.ty().slot_trusting_same_module() != lhs_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::BinaryResultTypeMismatch,
                 format!(
                     "Floating-point arithmetic operators must have same type for operands and result! (result {} != operand {})",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(lhs_ty)
                 ),
             ));
@@ -1799,14 +1819,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         u: &FnegInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
-        if inst.ty().id != src_ty {
+        if inst.ty().slot_trusting_same_module() != src_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::FnegTypeMismatch,
                 format!(
                     "Unary operators must have same type foroperands and result! (result {} != operand {})",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(src_ty)
                 ),
             ));
@@ -1840,14 +1860,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         u: &FreezeInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
-        if inst.ty().id != src_ty {
+        if inst.ty().slot_trusting_same_module() != src_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::FreezeTypeMismatch,
                 format!(
                     "result {} != operand {}",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(src_ty)
                 ),
             ));
@@ -1908,14 +1928,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     format!("Invalid ExtractValueInst operands! (index {idx} >= {count})"),
                 ),
             })?;
-        if inst.ty().id != leaf_ty {
+        if inst.ty().slot_trusting_same_module() != leaf_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::AggregateOpNonAggregate,
                 format!(
                     "Invalid ExtractValueInst operands! (result {} != leaf {})",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(leaf_ty)
                 ),
             ));
@@ -1963,14 +1983,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if inst.ty().id != agg_ty {
+        if inst.ty().slot_trusting_same_module() != agg_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::InsertValueLeafTypeMismatch,
                 format!(
                     "Invalid InsertValueInst operands! (result {} != aggregate {})",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(agg_ty)
                 ),
             ));
@@ -2020,14 +2040,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if inst.ty().id != elem {
+        if inst.ty().slot_trusting_same_module() != elem {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::VectorElementOpTypeMismatch,
                 format!(
                     "Invalid extractelement operands! (result {} != element {})",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(elem)
                 ),
             ));
@@ -2089,14 +2109,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if inst.ty().id != vec_ty {
+        if inst.ty().slot_trusting_same_module() != vec_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::VectorElementOpTypeMismatch,
                 format!(
                     "Invalid insertelement operands! (result {} != vector {})",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(vec_ty)
                 ),
             ));
@@ -2177,7 +2197,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         }
         // Result type element should equal the operand element; result
         // length should equal mask length. We compare via vector data.
-        match self.module.context().type_data(inst.ty().id).as_vector() {
+        match self
+            .module
+            .context()
+            .type_data(inst.ty().slot_trusting_same_module())
+            .as_vector()
+        {
             Some((re, n, _)) => {
                 let Ok(result_len) = usize::try_from(n) else {
                     return Err(self.fail(
@@ -2207,7 +2232,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     VerifierRule::ShuffleVectorTypeMismatch,
                     format!(
                         "Invalid shufflevector operands! (result {} is not a vector)",
-                        self.type_label(inst.ty().id)
+                        self.type_label(inst.ty().slot_trusting_same_module())
                     ),
                 ));
             }
@@ -2405,14 +2430,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        if inst.ty().id != val_ty {
+        if inst.ty().slot_trusting_same_module() != val_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::AtomicRmwOperandTypeMismatch,
                 format!(
                     "atomicrmw result {} != value {}",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(val_ty)
                 ),
             ));
@@ -2463,13 +2488,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // guard keeps its own wording. The same holds in `check_fcmp`.
         let _ = c.predicate;
         let res = inst.ty();
-        let res_ok = is_i1(self.module, res.id) || is_i1_vector(self.module, res.id);
+        let res_slot = res.slot_trusting_same_module();
+        let res_ok = is_i1(self.module, res_slot) || is_i1_vector(self.module, res_slot);
         if !res_ok {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::IcmpOperandTypeMismatch,
-                format!("icmp result type {} is not i1", self.type_label(res.id)),
+                format!("icmp result type {} is not i1", self.type_label(res_slot)),
             ));
         }
         Ok(())
@@ -2508,7 +2534,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        let res_ok = is_i1(self.module, inst.ty().id) || is_i1_vector(self.module, inst.ty().id);
+        let res_ok = is_i1(self.module, inst.ty().slot_trusting_same_module())
+            || is_i1_vector(self.module, inst.ty().slot_trusting_same_module());
         if !res_ok {
             return Err(self.fail(
                 f,
@@ -2516,7 +2543,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 VerifierRule::FcmpOperandTypeMismatch,
                 format!(
                     "fcmp result type {} is not i1",
-                    self.type_label(inst.ty().id)
+                    self.type_label(inst.ty().slot_trusting_same_module())
                 ),
             ));
         }
@@ -2533,7 +2560,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         c: &CastOpData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(c.src.get());
-        let dst_ty = inst.ty().id;
+        let dst_ty = inst.ty().slot_trusting_same_module();
         match c.kind {
             CastOpcode::Trunc | CastOpcode::Zext | CastOpcode::Sext => {
                 // `CastInst::castIsValid` compares `getScalarSizeInBits`, so a
@@ -2930,7 +2957,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
             // `verifySwiftErrorValue(&AI);`
-            self.verify_swift_error_value(f, bb, inst.slot())?;
+            self.verify_swift_error_value(f, bb, inst.slot_trusting_same_module())?;
         }
         // Result type must be a pointer; the IrBuilder construction
         // path always emits one, but assert it for parsed/foreign IR.
@@ -2941,7 +2968,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         if !self
             .module
             .context()
-            .type_data(inst.ty().id)
+            .type_data(inst.ty().slot_trusting_same_module())
             .is_pointer_data()
         {
             return Err(self.fail(
@@ -2950,7 +2977,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 VerifierRule::AllocaUnsizedType,
                 format!(
                     "alloca result type {} is not a pointer",
-                    self.type_label(inst.ty().id)
+                    self.type_label(inst.ty().slot_trusting_same_module())
                 ),
             ));
         }
@@ -2992,14 +3019,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // Result type must equal pointee type. No upstream `Check` literal:
         // `LoadInst`'s result type *is* the pointee upstream, so there is
         // nothing to compare; this guard is llvmkit's own.
-        if inst.ty().id != l.pointee_ty {
+        if inst.ty().slot_trusting_same_module() != l.pointee_ty {
             return Err(self.fail(
                 f,
                 bb,
                 VerifierRule::LoadUnsizedType,
                 format!(
                     "load result type {} != pointee {}",
-                    self.type_label(inst.ty().id),
+                    self.type_label(inst.ty().slot_trusting_same_module()),
                     self.type_label(l.pointee_ty)
                 ),
             ));
@@ -3256,7 +3283,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // has no counterpart: `GepInstData` stores no result element type, so
         // there is nothing to disagree with `ElTy` (`docs/divergences.md`
         // entry 120).
-        let result_ty = inst.ty().id;
+        let result_ty = inst.ty().slot_trusting_same_module();
         if !self
             .module
             .context()
@@ -3475,7 +3502,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         );
         // `for (const User *U : SwiftErrorVal->users())`
         for user in value.users() {
-            let user_slot = user.slot();
+            let user_slot = user.slot_trusting_same_module();
             let user_block = self.block_of(f, user_slot);
             let at = user_block.as_ref().unwrap_or(report_bb);
             let ValueKindData::Instruction(instruction) =
@@ -3641,7 +3668,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         };
         let parent = data.parent.get();
         f.basic_blocks()
-            .find(|bb| bb.slot() == parent)
+            .find(|bb| bb.to_erased().slot_trusting_same_module() == parent)
             .map(BasicBlock::retag_termination::<Unterminated>)
     }
 
@@ -4309,7 +4336,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         //  produced by the call or void."
         //
         // `Value *RetVal = &CI; Instruction *Next = CI.getNextNode();`
-        let mut ret_val = inst.as_erased().slot();
+        let mut ret_val = inst.slot_trusting_same_module();
         let mut next = block_instructions.get(index_in_block + 1);
 
         // "Handle the optional bitcast."
@@ -4501,7 +4528,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         };
         match &i.kind {
             InstructionKindData::Cast(cast) if cast.kind == CastOpcode::BitCast => {
-                Some((inst.as_erased().slot(), cast.src.get()))
+                Some((inst.slot_trusting_same_module(), cast.src.get()))
             }
             _ => None,
         }
@@ -4577,7 +4604,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     "Intrinsic called with incompatible signature".to_string(),
                 )
             })?;
-        if expected.as_type().id() != fn_ty {
+        if expected.as_type().slot_trusting_same_module() != fn_ty {
             return Err(self.fail(
                 f,
                 bb,
@@ -4687,7 +4714,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // not "exactly one incoming edge" — a block one predecessor reaches
         // twice still has a unique predecessor. `cx.predecessors` is the
         // multiset, so the distinct count is what is taken here.
-        let landing_pad_bb = bb.slot();
+        let landing_pad_bb = bb.to_erased().slot_trusting_same_module();
         let predecessors = cx
             .predecessors
             .get(&landing_pad_bb)
@@ -4829,7 +4856,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         //      if (isa_and_nonnull<FuncletPadInst>(&*It)) InEHFunclet = true;`
         let mut in_eh_funclet = false;
         let anchor = f.as_erased();
-        for color_first_bb in colors.get(&bb.slot()).map_or(&[][..], Vec::as_slice) {
+        for color_first_bb in colors
+            .get(&bb.to_erased().slot_trusting_same_module())
+            .map_or(&[][..], Vec::as_slice)
+        {
             if first_non_phi_kind(anchor, *color_first_bb).is_some_and(is_funclet_pad_kind) {
                 in_eh_funclet = true;
             }
@@ -4867,7 +4897,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         s: &SelectInstData,
     ) -> IrResult<()> {
         let cond_ty = self.value_type(s.cond.get());
-        let result_ty = inst.ty().id;
+        let result_ty = inst.ty().slot_trusting_same_module();
         let true_ty = self.value_type(s.true_val.get());
         let false_ty = self.value_type(s.false_val.get());
         // Condition must be i1 or <N x i1>; if vector, its element
@@ -4923,7 +4953,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         p: &PhiData,
         predecessors: &HashMap<ValueSlot, Vec<ValueSlot>>,
     ) -> IrResult<()> {
-        let result_ty = inst.ty().id;
+        let result_ty = inst.ty().slot_trusting_same_module();
 
         // The phi result type must be a first-class *data* type. `is_first_class`
         // is not a sufficient gate — it admits `label`/`metadata`/`token` — so
@@ -4960,7 +4990,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         }
 
         let preds = predecessors
-            .get(&bb.slot())
+            .get(&bb.to_erased().slot_trusting_same_module())
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
@@ -5074,7 +5104,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             )),
             (Some(v), false) => {
                 let actual = self.value_type(v);
-                if actual == expected.id {
+                if actual == expected.slot_trusting_same_module() {
                     Ok(())
                 } else {
                     Err(self.fail(
@@ -5651,7 +5681,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         pad: ValueSlot,
         cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
-        let block = bb.slot();
+        let block = bb.to_erased().slot_trusting_same_module();
         let no_predecessors: Vec<ValueSlot> = Vec::new();
         let predecessors = cx.predecessors.get(&block).unwrap_or(&no_predecessors);
 
@@ -5660,7 +5690,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let is_entry_block = f
             .basic_blocks()
             .next()
-            .is_some_and(|entry| entry.slot() == block);
+            .is_some_and(|entry| entry.to_erased().slot_trusting_same_module() == block);
         self.verifier_check(
             f,
             bb,
@@ -5800,7 +5830,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     let intrinsic_id = crate::intrinsics::descriptor_for_callee(stripped)
                         .map(|descriptor| descriptor.id());
                     if let Some(id) = intrinsic_id
-                        && self.call_does_not_throw(stripped.slot(), &invoke.attrs)
+                        && self.call_does_not_throw(
+                            stripped.slot_trusting_same_module(),
+                            &invoke.attrs,
+                        )
                         && !crate::intrinsic_inst::may_lower_to_function_call(id)
                     {
                         continue;
@@ -5927,13 +5960,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         )?;
 
         // `visitEHPadPredecessors(LPI);`
-        self.visit_eh_pad_predecessors(f, bb, inst.slot(), cx)?;
+        self.visit_eh_pad_predecessors(f, bb, inst.slot_trusting_same_module(), cx)?;
 
         // `if (!LandingPadResultTy) LandingPadResultTy = LPI.getType();
         //  else Check(LandingPadResultTy == LPI.getType(), "The landingpad
         //  instruction should have a consistent result type inside a
         //  function.", &LPI);`
-        let result_ty = self.value_type(inst.slot());
+        let result_ty = self.value_type(inst.slot_trusting_same_module());
         match cx.landing_pad_result_ty.get() {
             None => cx.landing_pad_result_ty.set(Some(result_ty)),
             Some(established) => self.verifier_check(
@@ -5963,7 +5996,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         self.verifier_check(
             f,
             bb,
-            self.first_non_phi_in_block(f, bb.slot()) == Some(inst.slot()),
+            self.first_non_phi_in_block(f, bb.to_erased().slot_trusting_same_module())
+                == Some(inst.slot_trusting_same_module()),
             VerifierRule::EhPadInvalidStructure,
             "LandingPadInst not the first non-PHI instruction in the block.",
         )?;
@@ -6090,13 +6124,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         self.verifier_check(
             f,
             bb,
-            self.first_non_phi_in_block(f, bb.slot()) == Some(inst.slot()),
+            self.first_non_phi_in_block(f, bb.to_erased().slot_trusting_same_module())
+                == Some(inst.slot_trusting_same_module()),
             VerifierRule::EhPadInvalidStructure,
             "CatchPadInst not the first non-PHI instruction in the block.",
         )?;
         // `visitEHPadPredecessors(CPI); visitFuncletPadInst(CPI);`
-        self.visit_eh_pad_predecessors(f, bb, inst.slot(), cx)?;
-        self.visit_funclet_pad(f, bb, inst.slot(), cx)
+        self.visit_eh_pad_predecessors(f, bb, inst.slot_trusting_same_module(), cx)?;
+        self.visit_funclet_pad(f, bb, inst.slot_trusting_same_module(), cx)
     }
 
     /// `Verifier::visitCatchReturnInst`.
@@ -6146,7 +6181,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         self.verifier_check(
             f,
             bb,
-            self.first_non_phi_in_block(f, bb.slot()) == Some(inst.slot()),
+            self.first_non_phi_in_block(f, bb.to_erased().slot_trusting_same_module())
+                == Some(inst.slot_trusting_same_module()),
             VerifierRule::EhPadInvalidStructure,
             "CleanupPadInst not the first non-PHI instruction in the block.",
         )?;
@@ -6171,8 +6207,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             "CleanupPadInst has an invalid parent.",
         )?;
         // `visitEHPadPredecessors(CPI); visitFuncletPadInst(CPI);`
-        self.visit_eh_pad_predecessors(f, bb, inst.slot(), cx)?;
-        self.visit_funclet_pad(f, bb, inst.slot(), cx)
+        self.visit_eh_pad_predecessors(f, bb, inst.slot_trusting_same_module(), cx)?;
+        self.visit_funclet_pad(f, bb, inst.slot_trusting_same_module(), cx)
     }
 
     /// `Verifier::visitCatchSwitchInst`.
@@ -6198,7 +6234,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         self.verifier_check(
             f,
             bb,
-            self.first_non_phi_in_block(f, bb.slot()) == Some(inst.slot()),
+            self.first_non_phi_in_block(f, bb.to_erased().slot_trusting_same_module())
+                == Some(inst.slot_trusting_same_module()),
             VerifierRule::EhPadInvalidStructure,
             "CatchSwitchInst not the first non-PHI instruction in the block.",
         )?;
@@ -6245,7 +6282,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             if let Some(unwind_pad) = first_non_phi
                 && self.parent_pad(unwind_pad) == parent_pad
             {
-                self.record_sibling_funclet(cx, inst.slot(), inst.slot());
+                let catch_switch = inst.slot_trusting_same_module();
+                self.record_sibling_funclet(cx, catch_switch, catch_switch);
             }
         }
 
@@ -6283,7 +6321,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         drop(handlers);
 
         // `visitEHPadPredecessors(CatchSwitch); visitTerminator(CatchSwitch);`
-        self.visit_eh_pad_predecessors(f, bb, inst.slot(), cx)
+        self.visit_eh_pad_predecessors(f, bb, inst.slot_trusting_same_module(), cx)
     }
 
     /// `Verifier::visitCleanupReturnInst`.
@@ -6381,7 +6419,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 Value::<B>::from_parts(current_pad, self.module, self.value_type(current_pad));
             // `for (User *U : CurrentPad->users())`
             for user in current_pad_value.users() {
-                let u = user.slot();
+                let u = user.slot_trusting_same_module();
                 let ValueKindData::Instruction(user_instruction) =
                     &self.module.context().value_data(u).kind
                 else {
@@ -6698,7 +6736,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     format!(
                         "Instruction does not dominate all uses! (operand %{} does not dominate its use in block %{})",
                         slot_label(f, op_id),
-                        slot_label(f, bb.slot())
+                        slot_label(f, bb.to_erased().slot_trusting_same_module())
                     ),
                 ));
             }
@@ -6731,7 +6769,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         };
         for op_id in kind.operand_ids() {
             // Self-reference (`Verifier/SelfReferential.ll`).
-            if op_id == inst.slot() {
+            if op_id == inst.slot_trusting_same_module() {
                 return Err(self.fail(
                     f,
                     bb,
@@ -6744,10 +6782,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             // must be strictly less than `index_in_block`.
             if let ValueKindData::Instruction(op_inst) =
                 &self.module.context().value_data(op_id).kind
-                && op_inst.parent.get() == bb.slot()
+                && op_inst.parent.get() == bb.to_erased().slot_trusting_same_module()
             {
                 // Find op_id's index in block.
-                if let Some(op_idx) = block_instructions.iter().position(|i| i.slot() == op_id)
+                if let Some(op_idx) = block_instructions
+                    .iter()
+                    .position(|i| i.slot_trusting_same_module() == op_id)
                     && op_idx >= index_in_block
                 {
                     return Err(self.fail(
@@ -6916,7 +6956,7 @@ fn build_predecessors<B: ModuleBrand>(
     f.basic_blocks()
         .map(|bb| {
             (
-                bb.slot(),
+                bb.to_erased().slot_trusting_same_module(),
                 cfg.predecessors(&bb.as_dyn())
                     .map(|pred| pred.slot())
                     .collect(),

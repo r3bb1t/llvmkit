@@ -107,7 +107,7 @@ use crate::instruction::InstructionKindData;
 use crate::intrinsics::IntrinsicId;
 use crate::module::ModuleBrand;
 use crate::r#type::Type;
-use crate::value::{Value, ValueKindData};
+use crate::value::{Value, ValueKindData, ValueSlotAccess};
 use crate::value_tracking::{
     MAX_ANALYSIS_RECURSION_DEPTH, binary_operator_parts, instruction_kind, value_from_slot,
 };
@@ -348,7 +348,7 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
         }
 
         // Guard against infinite loop on malformed, unreachable IR.
-        if insert.vector.get() == value.slot() {
+        if insert.vector.get() == value.slot_trusting_same_module() {
             return None;
         }
 

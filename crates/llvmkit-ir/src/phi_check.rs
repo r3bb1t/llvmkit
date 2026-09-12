@@ -22,8 +22,8 @@ use crate::function::FunctionValue;
 use crate::instruction::InstructionKindData;
 use crate::marker::Dyn;
 use crate::module::{Module, ModuleBrand, Unverified};
-use crate::r#type::{Type, TypeSlot};
-use crate::value::{IsValue, ValueKindData, ValueSlot};
+use crate::r#type::{Type, TypeSlot, TypeSlotAccess};
+use crate::value::{IsValue, ValueKindData, ValueSlot, ValueSlotAccess};
 
 /// A single coherence violation for one phi, identified by the raw
 /// `ValueSlot`/`TypeSlot` at fault. The verifier maps each variant back to
@@ -178,7 +178,7 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
     // multiplicity matches the verifier's map).
     let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for block in function.basic_blocks() {
-        let block_id = block.slot();
+        let block_id = block.to_erased().slot_trusting_same_module();
         for succ in crate::cfg::block_successors(&block) {
             predecessors.entry(succ.slot()).or_default().push(block_id);
         }
@@ -187,7 +187,7 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
     let value_ty_of = |id: ValueSlot| ctx.value_data(id).ty;
 
     for block in function.basic_blocks() {
-        let block_id = block.slot();
+        let block_id = block.to_erased().slot_trusting_same_module();
         let preds: &[ValueSlot] = predecessors
             .get(&block_id)
             .map(|v| v.as_slice())
@@ -202,7 +202,10 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 },
                 _ => break,
             };
-            let result_ty = inst.ty().id;
+            // boundary (F2): Task 27
+            // `function`'s type slot is read against `module`'s arena below
+            // (`value_ty_of`, the renderer); nothing proves the two agree.
+            let result_ty = inst.ty().slot_trusting_same_module();
             let incoming: Vec<(ValueSlot, ValueSlot)> = phi
                 .incoming
                 .borrow()
@@ -211,7 +214,10 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 .collect();
             if let Err(violation) = check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
                 return Err(PhiCoherenceError {
-                    phi_id: inst.slot(),
+                    // boundary (F2): Task 27
+                    // A slot of `function`'s arena, matched by the caller against
+                    // slots of `module`'s.
+                    phi_id: inst.slot_trusting_same_module(),
                     message: render_phi_violation(&violation, result_ty, module),
                 });
             }

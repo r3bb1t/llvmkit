@@ -32,7 +32,7 @@ use core::str::FromStr;
 use crate::align::{Align, MaybeAlign};
 use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore};
-use crate::r#type::{Type, TypeData, TypeSlot};
+use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 
 // --------------------------------------------------------------------------
 // Sub-records
@@ -598,7 +598,7 @@ impl DataLayout {
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
     pub fn type_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
-        self.type_size_in_bits_inner(ty.module().core_ref(), ty.id())
+        self.type_size_in_bits_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
@@ -621,7 +621,7 @@ impl DataLayout {
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
     pub fn type_alloc_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
-        self.type_alloc_size_inner(ty.module().core_ref(), ty.id())
+        self.type_alloc_size_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
@@ -631,12 +631,16 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getABITypeAlign`.
     pub fn abi_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
-        self.alignment(ty.module().core_ref(), ty.id(), true)
+        self.alignment(ty.module().core_ref(), ty.slot_trusting_same_module(), true)
     }
 
     /// Mirrors `DataLayout::getPrefTypeAlign`.
     pub fn pref_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
-        self.alignment(ty.module().core_ref(), ty.id(), false)
+        self.alignment(
+            ty.module().core_ref(),
+            ty.slot_trusting_same_module(),
+            false,
+        )
     }
 
     /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If
@@ -881,7 +885,7 @@ impl DataLayout {
     /// Compute (without caching) the layout of an aggregate struct.
     /// Mirrors `StructLayout::StructLayout` in `DataLayout.cpp`.
     pub fn struct_layout<B: ModuleBrand>(&self, ty: Type<'_, B>) -> StructLayoutInfo {
-        self.struct_layout_inner(ty.module().core_ref(), ty.id())
+        self.struct_layout_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     fn struct_layout_inner(&self, module: &ModuleCore, id: TypeSlot) -> StructLayoutInfo {

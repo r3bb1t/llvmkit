@@ -16,7 +16,7 @@ use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{ModuleBrand, ModuleId, ModuleView};
 use crate::pass_context::FunctionView;
 use crate::pass_instrumentation::PassInstrumentationCallbacks;
-use crate::value::{IsValue, ValueSlot};
+use crate::value::{ValueSlot, ValueSlotAccess};
 use crate::{IrError, IrResult};
 
 /// Explicit analysis identity used when no Rust type exists for a ported
@@ -850,7 +850,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     {
         let handle = function.as_function();
         let module_id = handle.module().id();
-        let function_id = handle.slot();
+        // Paired with its own module's id in every key it is compared with.
+        let function_id = handle.slot_trusting_same_module();
         for (key, cached) in &mut self.results {
             if key.0 != module_id || key.2 != function_id {
                 continue;
@@ -936,7 +937,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         let function = function.into();
         let function_handle = function.as_function();
         let module_id = function_handle.module().id();
-        let function_id = function_handle.slot();
+        // Paired with its own module's id in every key it is compared with.
+        let function_id = function_handle.slot_trusting_same_module();
         let snapshot = FunctionAnalysisSnapshot {
             cached: self.results.keys().copied().collect(),
         };
@@ -1273,7 +1275,11 @@ where
     B: ModuleBrand + 'ctx,
 {
     let function = function.as_function();
-    (function.module().id(), TypeId::of::<A>(), function.slot())
+    (
+        function.module().id(),
+        TypeId::of::<A>(),
+        function.slot_trusting_same_module(),
+    )
 }
 
 fn module_key<'ctx, A, B>(module: ModuleView<'ctx, B>) -> (TypeId, ModuleId)
@@ -1301,7 +1307,7 @@ where
     let handle = function.as_function();
     let mut invalidator = FunctionAnalysisInvalidator::<'_, 'ctx, B> {
         module_id: handle.module().id(),
-        function_slot: handle.slot(),
+        function_slot: handle.slot_trusting_same_module(),
         pa,
         snapshot,
         _brand: PhantomData,

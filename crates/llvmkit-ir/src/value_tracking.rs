@@ -37,8 +37,8 @@ use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
 // `Type::getScalarType` is ported once, at the slot layer, in `type.rs`;
 // `scalar_type_slot` is an import, not a local definition.
-use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, scalar_type_slot};
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess, scalar_type_slot};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::vector_utils::splat_value;
 use crate::{ApInt, IrError, IrResult, KnownBits, ShiftAmountKnowledge};
 use core::cell::{Cell, RefCell};
@@ -76,7 +76,10 @@ impl KnownBitsCacheKey {
             value,
             context_instruction: query
                 .context_instruction
-                .map(|instruction| instruction.slot()),
+                // boundary (F2): Task 27
+                // The query's context instruction, keyed beside a caller's
+                // value in a cache the query may share across calls.
+                .map(|instruction| instruction.slot_trusting_same_module()),
             demanded_elements: query.demanded_elements.cloned(),
             uses_instruction_info: query.uses_instruction_info(),
         }
@@ -548,15 +551,18 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if depth >= query.max_depth() {
         return Ok(KnownBits::unknown(width));
     }
-    if stack.contains(&value.slot()) {
+    if stack.contains(&value.slot_trusting_same_module()) {
         return Ok(KnownBits::unknown(width));
     }
-    let cache_key = KnownBitsCacheKey::new(value.slot(), query);
+    // boundary (F2): Task 27
+    // A caller's value keyed into the query's cache, which a
+    // `KnownBitsAnalysisResult` scopes to one function.
+    let cache_key = KnownBitsCacheKey::new(value.slot_trusting_same_module(), query);
     if let Some(cached) = query.cache().borrow().get(&cache_key).cloned() {
         return Ok(cached);
     }
 
-    stack.insert(value.slot());
+    stack.insert(value.slot_trusting_same_module());
     let known = match &value.data().kind {
         ValueKindData::Constant(c) => compute_constant_known_bits(value, c, query, depth, stack)?,
         ValueKindData::Instruction(inst) => {
@@ -571,7 +577,7 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | ValueKindData::MetadataAsValue(_)
         | ValueKindData::InlineAsm(_) => KnownBits::unknown(width),
     };
-    stack.remove(&value.slot());
+    stack.remove(&value.slot_trusting_same_module());
 
     // `computeKnownBitsFromContext` strictly refines what the operator walk
     // found, so upstream runs it after; the same order is kept here.
@@ -956,7 +962,7 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = value.module();
     let module = module_view.core_ref();
     let store = module_view.metadata_store();
-    let expected_ty = scalar_type_slot(module, value.ty().id);
+    let expected_ty = scalar_type_slot(module, value.ty().slot_trusting_same_module());
     let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id.slot(), expected_ty)
     else {
         return KnownBits::unknown(bit_width);
@@ -973,7 +979,10 @@ fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx>(
         return KnownBits::unknown(bit_width);
     };
     let module_view = value.module();
-    let expected_ty = scalar_type_slot(module_view.core_ref(), value.ty().id);
+    let expected_ty = scalar_type_slot(
+        module_view.core_ref(),
+        value.ty().slot_trusting_same_module(),
+    );
     let ranges = stored.iter().filter_map(|attr| match attr {
         AttributeStored::Range { ty, lower, upper } if *ty == expected_ty => {
             let range = ConstantRange::new(lower.clone(), upper.clone()).ok()?;
@@ -1932,7 +1941,7 @@ fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
         };
         let lhs = operands.lhs.get();
         let rhs = operands.rhs.get();
-        let phi_slot = phi.slot();
+        let phi_slot = phi.slot_trusting_same_module();
         if lhs != phi_slot && rhs != phi_slot {
             continue;
         }
@@ -2016,7 +2025,7 @@ fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let mut result: Option<KnownBits> = None;
     for (incoming_value, _) in incoming.iter() {
         // Skip direct self references.
-        if incoming_value.get() == value.slot() {
+        if incoming_value.get() == value.slot_trusting_same_module() {
             continue;
         }
         let next = compute_known_bits_inner(
@@ -2221,12 +2230,12 @@ fn compute_num_sign_bits_impl<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if depth >= query.max_depth() {
         return Ok(1);
     }
-    if stack.contains(&value.slot()) {
+    if stack.contains(&value.slot_trusting_same_module()) {
         return Ok(1);
     }
-    stack.insert(value.slot());
+    stack.insert(value.slot_trusting_same_module());
     let answer = compute_num_sign_bits_operator(value, query, depth, stack, ty_bits);
-    stack.remove(&value.slot());
+    stack.remove(&value.slot_trusting_same_module());
     let first_answer = answer?;
 
     // `FirstAnswer` is what the operator switch established before falling
@@ -2702,7 +2711,10 @@ pub fn is_known_negation<'ctx, B: ModuleBrand + 'ctx>(
         let Some(InstructionKindData::Sub(data)) = instruction_kind(x) else {
             return false;
         };
-        if data.rhs.get() != y.slot() {
+        // boundary (F2): Task 27
+        // `x` and `y` are the caller's two values; `x`'s operand is compared
+        // with `y`'s slot as if they shared an arena.
+        if data.rhs.get() != y.slot_trusting_same_module() {
             return false;
         }
         let Some(zero_is_null) = zero_int_constant(value_from_slot(x, data.lhs.get())) else {
@@ -2980,7 +2992,7 @@ fn is_negation_of_operand<'ctx, B: ModuleBrand + 'ctx>(
     let Some(InstructionKindData::Sub(data)) = instruction_kind(candidate) else {
         return false;
     };
-    data.rhs.get() == other.slot()
+    data.rhs.get() == other.slot_trusting_same_module()
         && zero_int_constant(value_from_slot(candidate, data.lhs.get())).is_some()
 }
 
@@ -3051,7 +3063,8 @@ fn is_and_with_operand<'ctx, B: ModuleBrand + 'ctx>(
     other: Value<'ctx, B>,
 ) -> bool {
     matches!(instruction_kind(candidate), Some(InstructionKindData::And(data))
-        if data.lhs.get() == other.slot() || data.rhs.get() == other.slot())
+        if data.lhs.get() == other.slot_trusting_same_module()
+            || data.rhs.get() == other.slot_trusting_same_module())
 }
 
 /// The `Instruction::PHI` arm of `isKnownToBeAPowerOfTwo`.
@@ -3077,7 +3090,7 @@ fn power_of_two_phi<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let incoming = data.incoming.borrow();
     for (operand, _) in incoming.iter() {
         // A value coming from the phi itself is a power of two by induction.
-        if operand.get() == value.slot() {
+        if operand.get() == value.slot_trusting_same_module() {
             continue;
         }
         if !is_known_to_be_a_power_of_two_inner(
@@ -3188,7 +3201,7 @@ fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let (Some(first), Some(second)) = (argument(0), argument(1)) else {
                 return Ok(false);
             };
-            if first.slot() != second.slot() {
+            if first.slot_trusting_same_module() != second.slot_trusting_same_module() {
                 return Ok(false);
             }
             is_known_to_be_a_power_of_two_inner(first, or_zero, query, depth)
@@ -3351,7 +3364,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PossibleValues<'ctx, B> {
             return Ok(true);
         }
         if matches!(value.data().kind, ValueKindData::Instruction(_)) {
-            if self.visited.insert(value.slot()) {
+            if self.visited.insert(value.slot_trusting_same_module()) {
                 self.worklist.push(value);
             }
             return Ok(true);
@@ -3555,7 +3568,10 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let Some((right_a, right_b)) = and_pair(rhs) else {
                 continue;
             };
-            if (right_a.slot() == mask.slot() || right_b.slot() == mask.slot())
+            // boundary (F2): Task 27
+            // One side of the caller's `lhs` / `rhs` pair against the other.
+            if (right_a.slot_trusting_same_module() == mask.slot_trusting_same_module()
+                || right_b.slot_trusting_same_module() == mask.slot_trusting_same_module())
                 && is_known_not_undef(mask, query)?
             {
                 return Ok(true);
@@ -3566,8 +3582,10 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // X op (Y & ~X).
     if let Some((right_a, right_b)) = and_pair(rhs) {
         for side in [right_a, right_b] {
-            if not_operand(side).is_some_and(|inner| inner.slot() == lhs.slot())
-                && is_known_not_undef(lhs, query)?
+            // boundary (F2): Task 27
+            if not_operand(side).is_some_and(|inner| {
+                inner.slot_trusting_same_module() == lhs.slot_trusting_same_module()
+            }) && is_known_not_undef(lhs, query)?
             {
                 return Ok(true);
             }
@@ -3581,8 +3599,12 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let Some((and_a, and_b)) = and_pair(anded) else {
                 continue;
             };
-            let matches_shape = (and_a.slot() == lhs.slot() && and_b.slot() == deferred.slot())
-                || (and_b.slot() == lhs.slot() && and_a.slot() == deferred.slot());
+            // boundary (F2): Task 27
+            let matches_shape = (and_a.slot_trusting_same_module()
+                == lhs.slot_trusting_same_module()
+                && and_b.slot_trusting_same_module() == deferred.slot_trusting_same_module())
+                || (and_b.slot_trusting_same_module() == lhs.slot_trusting_same_module()
+                    && and_a.slot_trusting_same_module() == deferred.slot_trusting_same_module());
             if matches_shape
                 && is_known_not_undef(lhs, query)?
                 && is_known_not_undef(deferred, query)?
@@ -3595,7 +3617,10 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // Peek through extends to find a `not` of the other side: (ext Y) op ext(~Y).
     if let Some(extended) = zext_or_sext_source(lhs)
         && let Some(right_source) = zext_or_sext_source(rhs)
-        && not_operand(right_source).is_some_and(|inner| inner.slot() == extended.slot())
+        // boundary (F2): Task 27
+            && not_operand(right_source).is_some_and(|inner| {
+                inner.slot_trusting_same_module() == extended.slot_trusting_same_module()
+            })
         && is_known_not_undef(extended, query)?
     {
         return Ok(true);
@@ -3605,8 +3630,11 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if let Some((a, b)) = and_pair(lhs)
         && let Some(negated) = not_operand(rhs)
         && let Some((or_a, or_b)) = binary_operands_of(negated, BinaryOpcode::Or)
-        && ((or_a.slot() == a.slot() && or_b.slot() == b.slot())
-            || (or_b.slot() == a.slot() && or_a.slot() == b.slot()))
+        // boundary (F2): Task 27
+            && ((or_a.slot_trusting_same_module() == a.slot_trusting_same_module()
+                && or_b.slot_trusting_same_module() == b.slot_trusting_same_module())
+            || (or_b.slot_trusting_same_module() == a.slot_trusting_same_module()
+                    && or_a.slot_trusting_same_module() == b.slot_trusting_same_module()))
         && is_known_not_undef(a, query)?
         && is_known_not_undef(b, query)?
     {
@@ -3643,7 +3671,8 @@ fn complementary_shift_pair<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let Some((_, lhs_amount)) = binary_operands_of(lhs, lhs_opcode) else {
         return false;
     };
-    if lhs_amount.slot() != shift.slot() {
+    // boundary (F2): Task 27
+    if lhs_amount.slot_trusting_same_module() != shift.slot_trusting_same_module() {
         return false;
     }
     let Some(width) = value_bit_width(lhs, query.data_layout()) else {
@@ -3675,11 +3704,15 @@ fn is_known_non_equal_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> IrResult<bool> {
-    if v1.slot() == v2.slot() {
+    // boundary (F2): Task 27
+    // The caller's two values: a same-numbered slot from another module reads
+    // as the same value.
+    if v1.slot_trusting_same_module() == v2.slot_trusting_same_module() {
         return Ok(false);
     }
     // Casts are not looked through.
-    if v1.ty().id() != v2.ty().id() {
+    // boundary (F2): Task 27
+    if v1.ty().slot_trusting_same_module() != v2.ty().slot_trusting_same_module() {
         return Ok(false);
     }
     if depth >= query.max_depth() {
@@ -3808,7 +3841,9 @@ fn invertible_operands<'ctx, B: ModuleBrand + 'ctx>(
         {
             let source1 = operand(v1, a.src.get());
             let source2 = operand(v2, b.src.get());
-            (source1.ty().id() == source2.ty().id()).then_some((source1, source2))
+            // boundary (F2): Task 27
+            (source1.ty().slot_trusting_same_module() == source2.ty().slot_trusting_same_module())
+                .then_some((source1, source2))
         }
         (InstructionKindData::Phi(p1), InstructionKindData::Phi(p2)) => {
             invertible_recurrences(v1, p1, v2, p2)
@@ -3862,7 +3897,10 @@ fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx>(
 
     // Mutually defined recurrences are not reasoned about: the pair the
     // increments reduce to has to be the two phis themselves.
-    if first.slot() != v1.slot() || second.slot() != v2.slot() {
+    // boundary (F2): Task 27
+    if first.slot_trusting_same_module() != v1.slot_trusting_same_module()
+        || second.slot_trusting_same_module() != v2.slot_trusting_same_module()
+    {
         return None;
     }
     Some((
@@ -3947,9 +3985,11 @@ fn modifying_binop_of_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Xor(data) | InstructionKindData::Add(data) => data,
         _ => return Ok(false),
     };
-    let other = if v2.slot() == data.lhs.get() {
+    // boundary (F2): Task 27
+    let v2_slot = v2.slot_trusting_same_module();
+    let other = if v2_slot == data.lhs.get() {
         data.rhs.get()
-    } else if v2.slot() == data.rhs.get() {
+    } else if v2_slot == data.rhs.get() {
         data.lhs.get()
     } else {
         return Ok(false);
@@ -3971,7 +4011,8 @@ fn non_equal_scaled<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let Some((found, data)) = instruction_kind(v2).and_then(binary_operator_parts) else {
         return Ok(false);
     };
-    if found != opcode || data.lhs.get() != v1.slot() {
+    // boundary (F2): Task 27
+    if found != opcode || data.lhs.get() != v1.slot_trusting_same_module() {
         return Ok(false);
     }
     if !(data.no_unsigned_wrap || data.no_signed_wrap) {
@@ -4061,7 +4102,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
     pub fn new(condition: Value<'ctx, B>) -> Self {
         let mut affected_values = HashSet::new();
         find_values_affected_by_condition(condition, false, |affected| {
-            affected_values.insert(affected.slot());
+            affected_values.insert(affected.slot_trusting_same_module());
         });
         Self {
             condition,
@@ -4090,7 +4131,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
 
     /// Whether `value` is one of the values the condition constrains.
     pub fn affects(&self, value: Value<'ctx, B>) -> bool {
-        self.affected_values.contains(&value.slot())
+        // boundary (F2): Task 27
+        // A caller's value against the set this condition's own module filled.
+        self.affected_values
+            .contains(&value.slot_trusting_same_module())
     }
 }
 
@@ -4678,7 +4722,8 @@ pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Select(data) => {
             let condition = value_from_slot(value, data.cond.get());
             // Don't match a scalar select of bool vectors.
-            if condition.ty().id() != value.ty().id() {
+            if condition.ty().slot_trusting_same_module() != value.ty().slot_trusting_same_module()
+            {
                 return None;
             }
             let true_value = value_from_slot(value, data.true_val.get());
@@ -5066,7 +5111,8 @@ fn directly_implies_poison<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     depth: u32,
 ) -> bool {
-    if value_assumed_poison.slot() == value.slot() {
+    // boundary (F2): Task 27
+    if value_assumed_poison.slot_trusting_same_module() == value.slot_trusting_same_module() {
         return true;
     }
     const MAX_DEPTH: u32 = 2;
@@ -5969,7 +6015,7 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let incoming = data.incoming.borrow();
             let mut well_defined = true;
             for (operand, _) in incoming.iter() {
-                if operand.get() == value.slot() {
+                if operand.get() == value.slot_trusting_same_module() {
                     continue;
                 }
                 if !is_guaranteed_not_to_be_undef_or_poison(
@@ -6092,7 +6138,10 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx>(
         let Some(condition) = branch_or_switch_condition(terminator) else {
             continue;
         };
-        if condition == value.slot() {
+        // boundary (F2): Task 27
+        // Conditions read from the query's dominator tree and context,
+        // compared with the caller's value.
+        if condition == value.slot_trusting_same_module() {
             return true;
         }
         // For poison — but not undef, which does not propagate eagerly — a
@@ -6110,7 +6159,8 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx>(
             .iter()
             .enumerate()
             .any(|(index, operand)| {
-                *operand == value.slot() && propagates_poison(condition, index)
+                // boundary (F2): Task 27
+                *operand == value.slot_trusting_same_module() && propagates_poison(condition, index)
             });
         if propagates {
             return true;
@@ -6284,7 +6334,10 @@ fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Modul
 }
 
 fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
-    Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
+    Type::new(
+        ty.slot_trusting_same_module(),
+        ModuleRef::new(ty.module().core_ref()),
+    )
 }
 
 #[cfg(test)]

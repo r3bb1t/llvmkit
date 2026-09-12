@@ -13,7 +13,8 @@ use super::instr_types::{BranchInstData, BranchKind};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{ModuleBrand, ModuleRef};
-use super::value::{Value, ValueKindData, ValueSlot, ValueUse};
+use super::r#type::TypeSlotAccess;
+use super::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse};
 use super::value_id::{BlockId, FunctionId};
 
 /// A directed edge in a function CFG. Mirrors LLVM's `BasicBlockEdge`
@@ -63,7 +64,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
     pub fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
         let module = function.module();
         let module_ref: ModuleRef<'ctx, B> = module.into();
-        let label_ty = module.label_type().as_type().id();
+        let label_ty = module.label_type().as_type().slot_trusting_same_module();
         let mut successors = HashMap::new();
         let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
         let mut edges = Vec::new();
@@ -71,7 +72,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         for block in function.basic_blocks() {
             let block = block.as_dyn();
             let succ_ids = successor_ids(&block);
-            let block_id = block.slot();
+            let block_id = block.to_erased().slot_trusting_same_module();
             for succ_id in &succ_ids {
                 edges.push(BasicBlockEdge::new(
                     block.id(),
@@ -164,7 +165,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         let slots: &'cfg [ValueSlot] = block
             .into_basic_block_label(module)
             .ok()
-            .and_then(|block| table.get(&block.slot()))
+            .and_then(|block| table.get(&block.to_erased().slot_trusting_same_module()))
             .map_or(&[], Vec::as_slice);
         slots
             .iter()

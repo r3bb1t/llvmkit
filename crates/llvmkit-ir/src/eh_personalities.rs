@@ -18,7 +18,7 @@ use crate::marker::Dyn;
 use crate::module::ModuleBrand;
 use crate::pointer_analysis::strip_pointer_casts;
 use crate::r#type::TypeSlot;
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 
 /// Mirrors `enum class EHPersonality`
 /// (`llvm/include/llvm/IR/EHPersonalities.h`), in its own order.
@@ -278,7 +278,7 @@ pub fn color_eh_funclets<'ctx, B: ModuleBrand + 'ctx>(
     let Some(entry_block) = function.basic_blocks().next() else {
         return block_colors;
     };
-    let entry_block = entry_block.slot();
+    let entry_block = entry_block.to_erased().slot_trusting_same_module();
 
     let mut worklist: Vec<(ValueSlot, ValueSlot)> = vec![(entry_block, entry_block)];
     while let Some((visiting, color)) = worklist.pop() {

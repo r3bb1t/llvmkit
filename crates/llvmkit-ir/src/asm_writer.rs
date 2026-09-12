@@ -66,8 +66,8 @@ use super::module_summary_index::{
     WholeProgramDevirtResolution,
 };
 use super::sync_scope::SyncScope;
-use super::r#type::{StructBody, Type, TypeData, TypeSlot};
-use super::value::{IsValue, Value, ValueKindData, ValueSlot};
+use super::r#type::{StructBody, Type, TypeData, TypeSlot, TypeSlotAccess};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::{ApInt, AttrIndex, Signedness};
 
 /// What `AsmWriter.cpp` prints where a value has no slot: `Out << "<badref>"`.
@@ -114,19 +114,19 @@ impl SlotTracker {
 
         for arg in f.params() {
             if arg.name().is_none() {
-                local.insert(IsValue::slot(arg), next);
+                local.insert(arg.slot_trusting_same_module(), next);
                 next += 1;
             }
         }
 
         for bb in f.basic_blocks() {
             if bb.name().is_none() {
-                blocks.insert(bb.slot(), next);
+                blocks.insert(bb.to_erased().slot_trusting_same_module(), next);
                 next += 1;
             }
             for inst in bb.instructions() {
                 if produces_named_result(&inst) && inst.name().is_none() {
-                    local.insert(inst.slot(), next);
+                    local.insert(inst.to_erased().slot_trusting_same_module(), next);
                     next += 1;
                 }
             }
@@ -284,14 +284,14 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
         // the failure spelling carries **no** sigil, in either arm.
         ValueKindData::BasicBlock(_) => match v.name() {
             Some(n) => fmt_llvm_name(f, "%", &n),
-            None => match slots.and_then(|s| s.block(v.id)) {
+            None => match slots.and_then(|s| s.block(v.slot_trusting_same_module())) {
                 Some(slot) => write!(f, "%{slot}"),
                 None => f.write_str(BAD_REF),
             },
         },
         ValueKindData::Argument { .. } | ValueKindData::Instruction(_) => match v.name() {
             Some(n) => fmt_llvm_name(f, "%", &n),
-            None => match slots.and_then(|s| s.local(v.id)) {
+            None => match slots.and_then(|s| s.local(v.slot_trusting_same_module())) {
                 Some(slot) => write!(f, "%{slot}"),
                 None => f.write_str(BAD_REF),
             },
@@ -455,25 +455,33 @@ fn order_module(m: &ModuleCore) -> OrderMap {
 
     for global in m.iter_globals::<DynBrand>() {
         if let Some(initializer) = global.initializer()
-            && !is_global_value(&m.context().value_data(initializer.as_erased().slot()).kind)
+            && !is_global_value(
+                &m.context()
+                    .value_data(initializer.as_erased().slot_trusting_same_module())
+                    .kind,
+            )
         {
-            order_value(m, initializer.as_erased().slot(), &mut om);
+            order_value(
+                m,
+                initializer.as_erased().slot_trusting_same_module(),
+                &mut om,
+            );
         }
-        order_value(m, global.as_erased().slot(), &mut om);
+        order_value(m, global.as_erased().slot_trusting_same_module(), &mut om);
     }
     for alias in m.iter_aliases::<DynBrand>() {
-        let aliasee = alias.aliasee().as_erased().slot();
+        let aliasee = alias.aliasee().as_erased().slot_trusting_same_module();
         if !is_global_value(&m.context().value_data(aliasee).kind) {
             order_value(m, aliasee, &mut om);
         }
-        order_value(m, alias.as_erased().slot(), &mut om);
+        order_value(m, alias.as_erased().slot_trusting_same_module(), &mut om);
     }
     for ifunc in m.iter_ifuncs::<DynBrand>() {
-        let resolver = ifunc.resolver().as_erased().slot();
+        let resolver = ifunc.resolver().as_erased().slot_trusting_same_module();
         if !is_global_value(&m.context().value_data(resolver).kind) {
             order_value(m, resolver, &mut om);
         }
-        order_value(m, ifunc.as_erased().slot(), &mut om);
+        order_value(m, ifunc.as_erased().slot_trusting_same_module(), &mut om);
     }
 
     for function in m.iter_functions::<DynBrand>() {
@@ -481,26 +489,32 @@ fn order_module(m: &ModuleCore) -> OrderMap {
         // operands are personality, prefix and prologue, in that order
         // (`Function::setHungOffOperand<0..2>`).
         let operands = [
-            function.personality_fn().map(|v| v.as_erased().slot()),
-            function.prefix_data().map(|v| v.as_erased().slot()),
-            function.prologue_data().map(|v| v.as_erased().slot()),
+            function
+                .personality_fn()
+                .map(|v| v.as_erased().slot_trusting_same_module()),
+            function
+                .prefix_data()
+                .map(|v| v.as_erased().slot_trusting_same_module()),
+            function
+                .prologue_data()
+                .map(|v| v.as_erased().slot_trusting_same_module()),
         ];
         for operand in operands.into_iter().flatten() {
             if !is_global_value(&m.context().value_data(operand).kind) {
                 order_value(m, operand, &mut om);
             }
         }
-        order_value(m, function.as_erased().slot(), &mut om);
+        order_value(m, function.as_erased().slot_trusting_same_module(), &mut om);
         // `F.isDeclaration()` — llvmkit spells it as an empty block list, the
         // same test `printFunction` uses to choose `declare` over `define`.
         if function.basic_blocks().count() == 0 {
             continue;
         }
         for argument in function.params() {
-            order_value(m, IsValue::slot(argument), &mut om);
+            order_value(m, argument.slot_trusting_same_module(), &mut om);
         }
         for block in function.basic_blocks() {
-            order_value(m, block.slot(), &mut om);
+            order_value(m, block.to_erased().slot_trusting_same_module(), &mut om);
             for instruction in block.instructions() {
                 // Debug records sit outside the `Value` hierarchy, so any
                 // constant they name is reachable only through them —
@@ -519,7 +533,11 @@ fn order_module(m: &ModuleCore) -> OrderMap {
                         order_value(m, operand, &mut om);
                     }
                 }
-                order_value(m, instruction.slot(), &mut om);
+                order_value(
+                    m,
+                    instruction.to_erased().slot_trusting_same_module(),
+                    &mut om,
+                );
             }
         }
     }
@@ -1336,7 +1354,7 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
 ) -> fmt::Result {
     match v.name() {
         Some(name) => fmt_llvm_name(f, "@", &name),
-        None => match module_global_slot(v.module().core_ref(), v.id) {
+        None => match module_global_slot(v.module().core_ref(), v.slot_trusting_same_module()) {
             Some(slot) => write!(f, "@{slot}"),
             // `writeAsOperandInternal`'s `Prefix = '@'` branch reaches the
             // same unsigilled `<badref>`.
@@ -1349,7 +1367,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<DynBrand>() {
         if global.as_erased().name().is_none() {
-            if global.slot() == id {
+            if global.slot_trusting_same_module() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -1357,7 +1375,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for alias in module.iter_aliases::<DynBrand>() {
         if alias.as_erased().name().is_none() {
-            if alias.slot() == id {
+            if alias.slot_trusting_same_module() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -1365,7 +1383,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for ifunc in module.iter_ifuncs::<DynBrand>() {
         if ifunc.as_erased().name().is_none() {
-            if ifunc.slot() == id {
+            if ifunc.slot_trusting_same_module() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -1373,7 +1391,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for function in module.iter_functions::<DynBrand>() {
         if function.as_erased().name().is_none() {
-            if function.slot() == id {
+            if function.slot_trusting_same_module() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -1550,7 +1568,7 @@ pub(super) fn fmt_instruction(
             }
             // `if (SlotNum == -1) Out << "<badref> = "; else Out << '%' <<
             //  SlotNum << " = ";`
-            None => match slots.local(inst.slot()) {
+            None => match slots.local(inst.to_erased().slot_trusting_same_module()) {
                 Some(slot) => write!(f, "%{slot} = ")?,
                 None => write!(f, "{BAD_REF} = ")?,
             },
@@ -3232,7 +3250,7 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
         fmt_llvm_name_without_prefix(&mut label, name)?;
         label.push(':');
     } else if !is_entry_block {
-        match slots.block(bb.slot()) {
+        match slots.block(bb.to_erased().slot_trusting_same_module()) {
             Some(slot) => write!(label, "{slot}:")?,
             None => {
                 label.push_str(BAD_REF);
@@ -3265,7 +3283,11 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
                 }
                 // Every basic block carries the module's label type, so the
                 // erased block's own type slot is the predecessor's too.
-                let predecessor_value = Value::from_parts(predecessor, erased.module, erased.ty);
+                let predecessor_value = Value::from_parts(
+                    predecessor,
+                    erased.module,
+                    erased.ty().slot_trusting_same_module(),
+                );
                 fmt_operand_ref(f, predecessor_value, Some(slots))?;
             }
         }
@@ -3383,7 +3405,7 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
         f.write_str(" ")?;
         match arg.name() {
             Some(n) => fmt_llvm_name(f, "%", &n)?,
-            None => match slots.local(IsValue::slot(arg)) {
+            None => match slots.local(arg.slot_trusting_same_module()) {
                 Some(slot) => write!(f, "%{slot}")?,
                 None => f.write_str("%<unnumbered>")?,
             },
@@ -3700,7 +3722,7 @@ pub(super) fn fmt_module_with_options(
             func,
             use_lists
                 .as_ref()
-                .and_then(|lists| lists.get(&Some(func.as_erased().slot()))),
+                .and_then(|lists| lists.get(&Some(func.as_erased().slot_trusting_same_module()))),
         )?;
     }
     // Module-level use-lists sit between the functions and the attribute
