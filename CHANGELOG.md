@@ -87,6 +87,27 @@ cut, entries accumulate under **Unreleased**.
   type of `landingpad` and `va_arg`. Each now returns `ForeignType` at its
   entry, before the folder or the module reads the type
   (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
+- **Fixed (llvmkit-ir):** the call-site entries stored a caller's callee or
+  function type by slot without comparing modules: `call_builder`'s callee
+  and `CallBuilder::call_site_type`; `call_erased`'s function type, callee and
+  `CallSiteConfig::call_site_type` override, and so `indirect_call_dyn` and
+  `inline_asm_call`, which forward to it; the callee of
+  `invoke_with_config`, `invoke_with_args`, `invoke_dyn_with_config`,
+  `invoke_dyn_with_args` and `callbr_with_config`, and a `CallSiteConfig`
+  override on the last two; the inline-asm callee of
+  `inline_asm_invoke_with_config` and `inline_asm_callbr_with_config`; and the
+  spelled function type of `indirect_invoke_dyn_with_config` and
+  `indirect_callbr_with_config`. The wrappers that forward to these
+  (`invoke`, `invoke_dyn`, `callbr`, `inline_asm_invoke`,
+  `inline_asm_callbr`) inherit the check. Each returns `ForeignValueId` for a
+  value or `ForeignType` for a type before anything is read, stored or
+  seeded.
+- **Breaking (llvmkit-ir):** `CallSiteConfig` is now
+  `CallSiteConfig<'ctx, B>`. `call_site_type` keeps the caller's
+  `FunctionType` handle, which the consuming builder admits through the
+  checked door; it used to store the type's slot, which the builder then
+  re-bound to its own module unchecked. `CallSiteConfig::new(..)` call
+  sites infer both parameters; a spelled type annotation needs them.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type

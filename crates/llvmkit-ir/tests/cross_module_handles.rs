@@ -20,9 +20,10 @@
 //! llvmkit gives each module its own type arena.
 
 use llvmkit_ir::{
-    Align, BasicBlock, CastOpcode, Dyn, DynBrand, FloatDyn, FloatValue, GepNoWrapFlags,
-    IntCastFlags, IntDyn, IntValue, IrBuilder, IrError, IrStruct, Linkage, Module, PointerValue,
-    Positioned, TruncFlags, UiToFpFlags, Unterminated, Value, ZextFlags,
+    Align, BasicBlock, CallSiteConfig, CastOpcode, Dyn, DynBrand, FloatDyn, FloatValue,
+    GepNoWrapFlags, InlineAsmOptions, IntCastFlags, IntDyn, IntValue, IrBuilder, IrError, IrStruct,
+    Linkage, Module, PointerValue, Positioned, TailCallKind, TruncFlags, UiToFpFlags, Unterminated,
+    Value, ZextFlags,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -32,11 +33,15 @@ struct Pair {
     second: i32,
 }
 
+/// A positioned erased-return builder over a `DynBrand` module.
+type PositionedBuilder<'m> =
+    IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, Positioned, Dyn>;
+
+/// An unterminated block of an erased-return function in a `DynBrand` module.
+type OpenBlock<'m> = BasicBlock<'m, Dyn, Unterminated, DynBrand>;
+
 /// `i32 f()` in `module`, with an empty block named `name` to build into.
-fn open_block<'m>(
-    module: &'m Module<DynBrand>,
-    name: &str,
-) -> BasicBlock<'m, Dyn, Unterminated, DynBrand> {
+fn open_block<'m>(module: &'m Module<DynBrand>, name: &str) -> OpenBlock<'m> {
     let fn_ty = module.function_type_no_parameters(module.i32_type());
     let f = module
         .add_function_dyn(name, fn_ty, Linkage::External)
@@ -45,10 +50,7 @@ fn open_block<'m>(
 }
 
 /// A builder positioned at the end of a fresh block of `module`.
-fn builder<'m>(
-    module: &'m Module<DynBrand>,
-    name: &str,
-) -> IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, Positioned, Dyn> {
+fn builder<'m>(module: &'m Module<DynBrand>, name: &str) -> PositionedBuilder<'m> {
     IrBuilder::new_for::<Dyn>(module).position_at_end(open_block(module, name))
 }
 
@@ -61,10 +63,7 @@ fn builder<'m>(
 fn builder_with_parameters<'m>(
     module: &'m Module<DynBrand>,
     name: &str,
-) -> (
-    IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, Positioned, Dyn>,
-    [Value<'m, DynBrand>; 5],
-) {
+) -> (PositionedBuilder<'m>, [Value<'m, DynBrand>; 5]) {
     let fn_ty = module.function_type(
         module.i32_type(),
         [
@@ -92,6 +91,45 @@ fn builder_with_parameters<'m>(
         IrBuilder::new_for::<Dyn>(module).position_at_end(block),
         parameters,
     )
+}
+
+/// A builder positioned in the entry block of a fresh `i32 f()` in `module`,
+/// plus two more empty blocks of that function for a terminator to target.
+fn builder_with_targets<'m>(
+    module: &'m Module<DynBrand>,
+    name: &str,
+) -> (PositionedBuilder<'m>, OpenBlock<'m>, OpenBlock<'m>) {
+    let fn_ty = module.function_type_no_parameters(module.i32_type());
+    let f = module
+        .add_function_dyn(name, fn_ty, Linkage::External)
+        .expect("function");
+    let function = module.view(f);
+    let entry = function.append_basic_block(module, "entry");
+    let first = function.append_basic_block(module, "first");
+    let second = function.append_basic_block(module, "second");
+    (
+        IrBuilder::new_for::<Dyn>(module).position_at_end(entry),
+        first,
+        second,
+    )
+}
+
+/// The labels of the outcomes that are not the refusal each expects, so one
+/// assertion names every entry that let a foreign handle through. The
+/// comparison is by variant: every refusal here is a payload-free variant.
+fn not_refused_as_expected(
+    outcomes: Vec<(&'static str, IrError, Result<(), IrError>)>,
+) -> Vec<String> {
+    outcomes
+        .into_iter()
+        .filter(|(_, expected, outcome)| {
+            outcome.as_ref().err().map(core::mem::discriminant)
+                != Some(core::mem::discriminant(expected))
+        })
+        .map(|(label, expected, outcome)| {
+            format!("{label}: expected {expected:?}, got {outcome:?}")
+        })
+        .collect()
 }
 
 /// The labels of the outcomes that are not a `ForeignType` refusal, so one
@@ -1160,5 +1198,283 @@ fn a_phi_pad_or_va_arg_rejects_a_type_from_another_module() {
         format!("{home}"),
         before,
         "a rejected entry must not mutate"
+    );
+}
+
+/// A `call` site refuses a callee or a function type from another module
+/// before either is read: `call_builder`'s callee and a
+/// `CallBuilder::call_site_type` override (both admitted by `build`),
+/// `call_erased`'s spelled function type, callee and `CallSiteConfig`
+/// override, and the two forwarding entries `indirect_call_dyn` (spelled
+/// type) and `inline_asm_call` (the asm's own type).
+///
+/// No upstream counterpart: `IRBuilderBase::CreateCall` (`IR/IRBuilder.h`)
+/// takes a `FunctionType *` uniqued per `LLVMContext` and a `Value *` callee.
+#[test]
+fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let home_fn_ty = home.function_type_no_parameters(home.i32_type());
+    let foreign_fn_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let h = home
+        .add_function_dyn("h", home_fn_ty, Linkage::External)
+        .expect("h");
+    let g = foreign
+        .add_function_dyn("g", foreign_fn_ty, Linkage::External)
+        .expect("g");
+    let foreign_asm = foreign.inline_asm(foreign_fn_ty, "nop", "=r", InlineAsmOptions::new());
+    let own_callee = home.view(h).as_erased();
+    let no_args = Vec::<Value<'_, DynBrand>>::new;
+    let b = builder(&home, "f");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "call_builder callee",
+            IrError::ForeignValueId,
+            b.call_builder(foreign.view(g)).build().map(|_| ()),
+        ),
+        (
+            "CallBuilder::call_site_type",
+            IrError::ForeignType,
+            b.call_builder(home.view(h))
+                .call_site_type(foreign_fn_ty)
+                .build()
+                .map(|_| ()),
+        ),
+        (
+            "call_erased function type",
+            IrError::ForeignType,
+            b.call_erased::<Dyn, _, _>(
+                foreign_fn_ty,
+                own_callee,
+                no_args(),
+                TailCallKind::None,
+                CallSiteConfig::new("r"),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "call_erased callee",
+            IrError::ForeignValueId,
+            b.call_erased::<Dyn, _, _>(
+                home_fn_ty,
+                foreign.view(g).as_erased(),
+                no_args(),
+                TailCallKind::None,
+                CallSiteConfig::new("r"),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "CallSiteConfig::call_site_type on call_erased",
+            IrError::ForeignType,
+            b.call_erased::<Dyn, _, _>(
+                home_fn_ty,
+                own_callee,
+                no_args(),
+                TailCallKind::None,
+                CallSiteConfig::new("r").call_site_type(foreign_fn_ty),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "indirect_call_dyn",
+            IrError::ForeignType,
+            b.indirect_call_dyn::<Dyn, _, _, _, _>(
+                foreign_fn_ty,
+                home.ptr_type(0).const_null(),
+                no_args(),
+                "r",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "inline_asm_call",
+            IrError::ForeignType,
+            b.inline_asm_call::<Dyn, _, _, _>(foreign_asm, no_args(), "r")
+                .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(format!("{home}"), before, "a rejected call must not mutate");
+}
+
+/// `invoke` and `callbr` refuse a callee or a function type from another
+/// module before anything is read, stored or seeded: the function callee of
+/// `invoke_with_config`, `invoke_with_args`, `invoke_dyn_with_config`,
+/// `invoke_dyn_with_args` and `callbr_with_config`, a `CallSiteConfig`
+/// override on the last two families, the inline-asm callee of
+/// `inline_asm_invoke_with_config` and `inline_asm_callbr_with_config`, and
+/// the spelled type of `indirect_invoke_dyn_with_config` and
+/// `indirect_callbr_with_config`.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateInvoke` and `CreateCallBr`
+/// (`IR/IRBuilder.h`) take a `FunctionType *` uniqued per `LLVMContext` and a
+/// `Value *` callee.
+#[test]
+fn invoke_and_callbr_reject_a_callee_or_function_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let home_fn_ty = home.function_type_no_parameters(home.i32_type());
+    let foreign_fn_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let h = home
+        .add_function_dyn("h", home_fn_ty, Linkage::External)
+        .expect("h");
+    let g = foreign
+        .add_function_dyn("g", foreign_fn_ty, Linkage::External)
+        .expect("g");
+    let typed_g = foreign
+        .add_typed_function::<i32, (), _>("typed_g", Linkage::External)
+        .expect("typed_g");
+    let foreign_asm = foreign.inline_asm(foreign_fn_ty, "nop", "=r", InlineAsmOptions::new());
+    let home_null = home.ptr_type(0).const_null();
+    let no_values: Vec<Value<'_, DynBrand>> = Vec::new();
+    let no_args = Vec::<Value<'_, DynBrand>>::new;
+    let no_indirects = Vec::<BasicBlock<'_, Dyn, Unterminated, DynBrand>>::new;
+    let (b1, n1, u1) = builder_with_targets(&home, "f1");
+    let (b2, n2, u2) = builder_with_targets(&home, "f2");
+    let (b3, n3, u3) = builder_with_targets(&home, "f3");
+    let (b4, n4, u4) = builder_with_targets(&home, "f4");
+    let (b5, n5, u5) = builder_with_targets(&home, "f5");
+    let (b6, n6, u6) = builder_with_targets(&home, "f6");
+    let (b7, n7, u7) = builder_with_targets(&home, "f7");
+    let (b8, d8, _) = builder_with_targets(&home, "f8");
+    let (b9, d9, _) = builder_with_targets(&home, "f9");
+    let (b10, d10, _) = builder_with_targets(&home, "f10");
+    let (b11, d11, _) = builder_with_targets(&home, "f11");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "invoke_dyn_with_config callee",
+            IrError::ForeignValueId,
+            b1.invoke_dyn_with_config(foreign.view(g), no_args(), n1, u1, CallSiteConfig::new("r"))
+                .map(|_| ()),
+        ),
+        (
+            "invoke_dyn_with_args callee",
+            IrError::ForeignValueId,
+            b2.invoke_dyn_with_args(
+                foreign.view(g),
+                no_args(),
+                (n2, no_values.as_slice()),
+                (u2, no_values.as_slice()),
+                "r",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "CallSiteConfig::call_site_type on invoke_dyn_with_config",
+            IrError::ForeignType,
+            b3.invoke_dyn_with_config(
+                home.view(h),
+                no_args(),
+                n3,
+                u3,
+                CallSiteConfig::new("r").call_site_type(foreign_fn_ty),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "invoke_with_config callee",
+            IrError::ForeignValueId,
+            b4.invoke_with_config(foreign.view(typed_g), (), n4, u4, CallSiteConfig::new("r"))
+                .map(|_| ()),
+        ),
+        (
+            "invoke_with_args callee",
+            IrError::ForeignValueId,
+            b5.invoke_with_args(
+                foreign.view(typed_g),
+                (),
+                (n5, no_values.as_slice()),
+                (u5, no_values.as_slice()),
+                "r",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "indirect_invoke_dyn_with_config function type",
+            IrError::ForeignType,
+            b6.indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
+                home_null,
+                foreign_fn_ty,
+                no_args(),
+                n6,
+                u6,
+                CallSiteConfig::new("r"),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "inline_asm_invoke_with_config callee",
+            IrError::ForeignValueId,
+            b7.inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
+                foreign_asm,
+                no_args(),
+                n7,
+                u7,
+                CallSiteConfig::new("r"),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "callbr_with_config callee",
+            IrError::ForeignValueId,
+            b8.callbr_with_config(
+                foreign.view(g),
+                no_args(),
+                d8,
+                no_indirects(),
+                CallSiteConfig::new("r"),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "CallSiteConfig::call_site_type on callbr_with_config",
+            IrError::ForeignType,
+            b9.callbr_with_config(
+                home.view(h),
+                no_args(),
+                d9,
+                no_indirects(),
+                CallSiteConfig::new("r").call_site_type(foreign_fn_ty),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "indirect_callbr_with_config function type",
+            IrError::ForeignType,
+            b10.indirect_callbr_with_config(
+                home_null,
+                foreign_fn_ty,
+                no_args(),
+                d10,
+                no_indirects(),
+                CallSiteConfig::new("r"),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "inline_asm_callbr_with_config callee",
+            IrError::ForeignValueId,
+            b11.inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
+                foreign_asm,
+                no_args(),
+                d11,
+                no_indirects(),
+                CallSiteConfig::new("r"),
+            )
+            .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected terminator must not mutate"
     );
 }

@@ -276,15 +276,24 @@ pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand> {
     pub(super) _brand: Invariant<B>,
 }
 
-#[derive(Debug, Clone)]
-pub struct CallSiteConfig {
+/// Per-call-site settings for the `_with_config` call, `invoke` and `callbr`
+/// builders and [`IrBuilder::call_erased`].
+///
+/// Brand-generic because [`call_site_type`](Self::call_site_type) keeps the
+/// caller's [`FunctionType`] handle rather than its slot: the builder that
+/// consumes the config admits it through the checked door, so a type from
+/// another module sharing the brand is refused with [`IrError::ForeignType`]
+/// instead of being stored at its slot.
+#[derive(Branded)]
+#[branded(Debug, Clone)]
+pub struct CallSiteConfig<'ctx, B: ModuleBrand> {
     name: String,
     calling_conv: CallingConv,
     attrs: CallAttributeData,
-    call_site_fn_ty: Option<TypeSlot>,
+    call_site_fn_ty: Option<FunctionType<'ctx, B>>,
 }
 
-impl CallSiteConfig {
+impl<'ctx, B: ModuleBrand + 'ctx> CallSiteConfig<'ctx, B> {
     pub fn new<Name>(name: Name) -> Self
     where
         Name: Into<String>,
@@ -315,16 +324,15 @@ impl CallSiteConfig {
     /// `invoke`/`callbr` may be spelled through a function type that differs
     /// from the declared callee (opaque-pointer IR, checked by the verifier
     /// against the call's own type, not the declaration). Left unset, the
-    /// call site keeps deriving its type from the callee.
-    pub fn call_site_type<'ctx, B: ModuleBrand + 'ctx>(
-        mut self,
-        fn_ty: FunctionType<'ctx, B>,
-    ) -> Self {
-        self.call_site_fn_ty = Some(fn_ty.as_type().id());
+    /// call site keeps deriving its type from the callee. A type from another
+    /// module is refused by the builder that consumes this config, with
+    /// [`IrError::ForeignType`].
+    pub fn call_site_type(mut self, fn_ty: FunctionType<'ctx, B>) -> Self {
+        self.call_site_fn_ty = Some(fn_ty);
         self
     }
 
-    pub(super) fn call_site_fn_ty(&self) -> Option<TypeSlot> {
+    pub(super) fn call_site_fn_ty(&self) -> Option<FunctionType<'ctx, B>> {
         self.call_site_fn_ty
     }
 
@@ -5222,7 +5230,8 @@ where
         }
         for (i, (&arg, param_ty)) in args.iter().zip(params.iter()).enumerate() {
             let arg_ty_id = self.module.context().value_data(arg).ty;
-            if arg_ty_id != param_ty.id() {
+            // Internal: every caller admits `fn_ty` before validating.
+            if arg_ty_id != param_ty.slot_trusting_same_module() {
                 let arg_ty = Type::<'ctx, B>::new(arg_ty_id, ModuleRef::<B>::new(self.module));
                 return Err(IrError::CallArgumentTypeMismatch {
                     index: u32::try_from(i)
@@ -5271,14 +5280,14 @@ where
             .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = CallInstData::new(
-            f.slot(),
-            f.signature().as_type().id(),
+            f.slot_trusting_same_module(),
+            f.signature().slot_trusting_same_module(),
             arg_ids,
             f.calling_conv(),
             TailCallKind::None,
         );
         let inst = self.append_instruction(
-            f.return_type().id(),
+            f.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             name,
         );
@@ -5295,7 +5304,7 @@ where
         &self,
         callee: Callee,
         args: A,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<TypedCallInstId<Ret, B>>
     where
         Ret: FunctionReturn,
@@ -5309,15 +5318,15 @@ where
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = CallInstData::new_with_attrs(
-            f.slot(),
-            f.signature().as_type().id(),
+            f.slot_trusting_same_module(),
+            f.signature().slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             TailCallKind::None,
             attrs,
         );
         let inst = self.append_instruction(
-            f.return_type().id(),
+            f.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             name,
         );
@@ -5380,17 +5389,20 @@ where
             .as_function();
         let mut arg_ids: Vec<ValueSlot> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
         for v in varargs {
-            arg_ids.push(v.into_erased_value(ModuleRef::new(self.module))?.slot());
+            arg_ids.push(
+                v.into_erased_value(ModuleRef::new(self.module))?
+                    .slot_trusting_same_module(),
+            );
         }
         let payload = CallInstData::new(
-            f.slot(),
-            f.signature().as_type().id(),
+            f.slot_trusting_same_module(),
+            f.signature().slot_trusting_same_module(),
             arg_ids,
             f.calling_conv(),
             TailCallKind::None,
         );
         let inst = self.append_instruction(
-            f.return_type().id(),
+            f.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             name,
         );
@@ -5531,9 +5543,9 @@ where
     ) -> CallBuilder<'_, 'm, 'ctx, B, F, R, R2> {
         CallBuilder {
             parent: self,
-            callee_id: callee.slot(),
-            fn_ty: callee.signature().as_type().id(),
-            return_ty: callee.return_type().id(),
+            callee: callee.as_erased(),
+            fn_ty: callee.signature(),
+            return_ty: callee.return_type(),
             args: Vec::new(),
             calling_conv: callee.calling_conv(),
             tail_kind: TailCallKind::None,
@@ -5590,14 +5602,18 @@ where
         callee: Value<'ctx, B>,
         args: I,
         tail_call_kind: TailCallKind,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<CallInstId<R2, B>>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
     {
-        let (fn_ty, return_ty) = self.resolve_call_site_type_for_erased_callee(fn_ty, &config);
+        // Boundary: the caller's spelled function type and callee, admitted
+        // before either is read.
+        fn_ty.slot_in(self.module.id())?;
+        let callee = callee.slot_in(self.module.id())?;
+        let (fn_ty, return_ty) = self.resolve_call_site_type_for_erased_callee(fn_ty, &config)?;
         let ret_data = self.module.context().type_data(return_ty);
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -5609,7 +5625,7 @@ where
         let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
             let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.id);
+            arg_ids.push(v.slot_trusting_same_module());
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         // `CallInst::Create` then `setTailCallKind` / `setCallingConv` /
@@ -5617,8 +5633,8 @@ where
         // once, so the four upstream statements land as one.
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = CallInstData::new_with_attrs(
-            callee.id,
-            fn_ty.as_type().id(),
+            callee,
+            fn_ty.slot_trusting_same_module(),
             arg_ids.into_boxed_slice(),
             calling_conv,
             tail_call_kind,
@@ -5668,14 +5684,14 @@ where
         let callee_v = IsValue::as_erased(callee);
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = CallInstData::new(
-            callee_v.id,
-            fn_ty.as_type().id(),
+            callee_v.slot_trusting_same_module(),
+            fn_ty.slot_trusting_same_module(),
             arg_ids,
             crate::CallingConv::C,
             TailCallKind::None,
         );
         let inst = self.append_instruction(
-            fn_ty.return_type().id(),
+            fn_ty.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             name,
         );
@@ -8307,7 +8323,7 @@ where
         args: A,
         normal_dest: Normal,
         unwind_dest: Unwind,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<TerminatedBlockTypedInvoke<'ctx, R, Ret, B>>
     where
         Ret: FunctionReturn,
@@ -8316,6 +8332,8 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        // Boundary: the caller's callee handle, admitted before anything reads it.
+        callee.as_function().slot_in(self.module.id())?;
         let normal_dest = self.plain_edge_target(normal_dest)?;
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
         self.invoke_seeded(callee, args, normal_dest, unwind_dest, config)
@@ -8369,6 +8387,9 @@ where
         let (unwind_dest, unwind_args) = unwind;
         let normal_dest = normal_dest.into_basic_block_label(module_ref)?;
         let unwind_dest = unwind_dest.into_basic_block_label(module_ref)?;
+        // Boundary: the caller's callee handle, admitted before any edge is
+        // seeded.
+        callee.as_function().slot_in(self.module.id())?;
         // Capture the predecessor id before the terminator builder consumes
         // `self` — the incoming edges name *this* block as their predecessor.
         let pred = self.insert_block().id();
@@ -8394,7 +8415,7 @@ where
         args: A,
         normal_dest: Normal,
         unwind_dest: Unwind,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<TerminatedBlockTypedInvoke<'ctx, R, Ret, B>>
     where
         Ret: FunctionReturn,
@@ -8409,15 +8430,15 @@ where
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = InvokeInstData::new_with_attrs(
-            f.slot(),
-            f.signature().as_type().id(),
+            f.slot_trusting_same_module(),
+            f.signature().slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             normal_dest.slot(),
             unwind_dest.slot(),
             attrs,
         );
-        let ret_ty = f.return_type().id();
+        let ret_ty = f.return_type().slot_trusting_same_module();
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
         let bb = self.into_insert_block();
@@ -8463,18 +8484,25 @@ where
     /// caller-spelled override from [`CallSiteConfig::call_site_type`] when
     /// present (mirroring `CallBase`'s own `FunctionType`), else the callee's
     /// declared signature.
+    ///
+    /// The override is the caller's handle, admitted here through the checked
+    /// door: one from another module is [`IrError::ForeignType`]. The callee
+    /// must already be admitted by the entry that received it.
     fn resolve_call_site_type<R2: ReturnMarker>(
         &self,
         callee: &FunctionValue<'ctx, R2, B>,
-        config: &CallSiteConfig,
-    ) -> (FunctionType<'ctx, B>, TypeSlot) {
+        config: &CallSiteConfig<'ctx, B>,
+    ) -> IrResult<(FunctionType<'ctx, B>, TypeSlot)> {
         match config.call_site_fn_ty() {
-            Some(id) => {
-                let ft = FunctionType::<'ctx, B>::new(id, ModuleRef::<B>::new(self.module));
-                let ret = ft.return_type().id();
-                (ft, ret)
+            Some(fn_ty) => {
+                // Boundary: the caller's `call_site_type` override.
+                fn_ty.slot_in(self.module.id())?;
+                Ok((fn_ty, fn_ty.return_type().slot_trusting_same_module()))
             }
-            None => (callee.signature(), callee.return_type().id()),
+            None => Ok((
+                callee.signature(),
+                callee.return_type().slot_trusting_same_module(),
+            )),
         }
     }
 
@@ -8489,16 +8517,18 @@ where
     fn resolve_call_site_type_for_erased_callee(
         &self,
         spelled_fn_ty: FunctionType<'ctx, B>,
-        config: &CallSiteConfig,
-    ) -> (FunctionType<'ctx, B>, TypeSlot) {
-        match config.call_site_fn_ty() {
-            Some(id) => {
-                let ft = FunctionType::<'ctx, B>::new(id, ModuleRef::<B>::new(self.module));
-                let ret = ft.return_type().id();
-                (ft, ret)
+        config: &CallSiteConfig<'ctx, B>,
+    ) -> IrResult<(FunctionType<'ctx, B>, TypeSlot)> {
+        let fn_ty = match config.call_site_fn_ty() {
+            Some(fn_ty) => {
+                // Boundary: the caller's `call_site_type` override.
+                fn_ty.slot_in(self.module.id())?;
+                fn_ty
             }
-            None => (spelled_fn_ty, spelled_fn_ty.return_type().id()),
-        }
+            // Internal: `call_erased` admitted the spelled type at its entry.
+            None => spelled_fn_ty,
+        };
+        Ok((fn_ty, fn_ty.return_type().slot_trusting_same_module()))
     }
 
     /// Produce `invoke` with explicit call-site configuration.
@@ -8513,7 +8543,7 @@ where
         args: I,
         normal_dest: Normal,
         unwind_dest: Unwind,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
     where
         R2: ReturnMarker,
@@ -8522,6 +8552,8 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        // Boundary: the caller's callee handle, admitted before anything reads it.
+        callee.slot_in(self.module.id())?;
         let normal_dest = self.plain_edge_target(normal_dest)?;
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
         self.invoke_dyn_seeded(callee, args, normal_dest, unwind_dest, config)
@@ -8555,6 +8587,9 @@ where
         let (unwind_dest, unwind_args) = unwind;
         let normal_dest = normal_dest.into_basic_block_label(module_ref)?;
         let unwind_dest = unwind_dest.into_basic_block_label(module_ref)?;
+        // Boundary: the caller's callee handle, admitted before any edge is
+        // seeded.
+        callee.slot_in(self.module.id())?;
         let pred = self.insert_block().id();
         self.add_block_args(normal_dest.id(), pred, normal_args)?;
         self.add_block_args(unwind_dest.id(), pred, unwind_args)?;
@@ -8576,7 +8611,7 @@ where
         args: I,
         normal_dest: Normal,
         unwind_dest: Unwind,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
     where
         R2: ReturnMarker,
@@ -8588,19 +8623,19 @@ where
         let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let callee_v = callee.as_erased();
-        let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
+        let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config)?;
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
                 a.into_erased_value(ModuleRef::new(self.module))
-                    .map(|v| v.slot())
+                    .map(|v| v.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = InvokeInstData::new_with_attrs(
-            callee_v.id,
-            fn_ty.as_type().id(),
+            callee_v.slot_trusting_same_module(),
+            fn_ty.slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             normal_dest.slot(),
@@ -8640,7 +8675,7 @@ where
         args: I,
         normal_dest: Normal,
         unwind_dest: Unwind,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
     where
         R2: ReturnMarker,
@@ -8651,22 +8686,24 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
+        // Boundary: the caller's spelled function type.
+        fn_ty.slot_in(self.module.id())?;
         let normal_dest = self.plain_edge_target(normal_dest)?;
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
         let callee_v = IsValue::as_erased(callee);
-        let ret_ty = fn_ty.return_type().id();
+        let ret_ty = fn_ty.return_type().slot_trusting_same_module();
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
                 a.into_erased_value(ModuleRef::new(self.module))
-                    .map(|v| v.slot())
+                    .map(|v| v.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = InvokeInstData::new_with_attrs(
-            callee_v.id,
-            fn_ty.as_type().id(),
+            callee_v.slot_trusting_same_module(),
+            fn_ty.slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             normal_dest.slot(),
@@ -8724,7 +8761,7 @@ where
         args: I,
         normal_dest: Normal,
         unwind_dest: Unwind,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
     where
         R2: ReturnMarker,
@@ -8733,11 +8770,14 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        // Boundary: the caller's inline-asm handle, admitted before its
+        // function type is read.
+        asm.as_erased().slot_in(self.module.id())?;
         let normal_dest = self.plain_edge_target(normal_dest)?;
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
         let asm_v = asm.as_erased();
         let fn_ty = asm.function_type();
-        let ret_ty = fn_ty.return_type().id();
+        let ret_ty = fn_ty.return_type().slot_trusting_same_module();
         let ret_data = self.module.context().type_data(ret_ty);
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -8749,13 +8789,13 @@ where
         let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
             let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.id);
+            arg_ids.push(v.slot_trusting_same_module());
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = InvokeInstData::new_with_attrs(
-            asm_v.id,
-            fn_ty.as_type().id(),
+            asm_v.slot_trusting_same_module(),
+            fn_ty.slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             normal_dest.slot(),
@@ -8821,7 +8861,7 @@ where
         args: I,
         default_dest: Default,
         indirect_dests: Indirects,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<(BasicBlock<'ctx, R, Terminated, B>, CallBrInst<'ctx, B>)>
     where
         R2: ReturnMarker,
@@ -8831,15 +8871,17 @@ where
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        // Boundary: the caller's callee handle, admitted before anything reads it.
+        callee.slot_in(self.module.id())?;
         let default_dest = self.plain_edge_target(default_dest)?;
         let callee_v = callee.as_erased();
-        let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
+        let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config)?;
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
                 a.into_erased_value(ModuleRef::new(self.module))
-                    .map(|v| v.slot())
+                    .map(|v| v.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -8848,8 +8890,8 @@ where
             .map(|d| self.plain_edge_target(d).map(|l| l.slot()))
             .collect::<IrResult<_>>()?;
         let payload = CallBrInstData::new_with_attrs(
-            callee_v.id,
-            fn_ty.as_type().id(),
+            callee_v.slot_trusting_same_module(),
+            fn_ty.slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             default_dest.slot(),
@@ -8891,7 +8933,7 @@ where
         args: I,
         default_dest: Default,
         indirect_dests: Indirects,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<(BasicBlock<'ctx, R, Terminated, B>, CallBrInst<'ctx, B>)>
     where
         I: IntoIterator<Item = V>,
@@ -8902,15 +8944,17 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
+        // Boundary: the caller's spelled function type.
+        fn_ty.slot_in(self.module.id())?;
         let default_dest = self.plain_edge_target(default_dest)?;
         let callee_v = IsValue::as_erased(callee);
-        let ret_ty = fn_ty.return_type().id();
+        let ret_ty = fn_ty.return_type().slot_trusting_same_module();
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
                 a.into_erased_value(ModuleRef::new(self.module))
-                    .map(|v| v.slot())
+                    .map(|v| v.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -8919,8 +8963,8 @@ where
             .map(|d| self.plain_edge_target(d).map(|l| l.slot()))
             .collect::<IrResult<_>>()?;
         let payload = CallBrInstData::new_with_attrs(
-            callee_v.id,
-            fn_ty.as_type().id(),
+            callee_v.slot_trusting_same_module(),
+            fn_ty.slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             default_dest.slot(),
@@ -8977,7 +9021,7 @@ where
         args: I,
         default_dest: Default,
         indirect_dests: Indirects,
-        config: CallSiteConfig,
+        config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<(BasicBlock<'ctx, R, Terminated, B>, CallBrInst<'ctx, B>)>
     where
         R2: ReturnMarker,
@@ -8987,10 +9031,13 @@ where
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        // Boundary: the caller's inline-asm handle, admitted before its
+        // function type is read.
+        asm.as_erased().slot_in(self.module.id())?;
         let default_dest = self.plain_edge_target(default_dest)?;
         let asm_v = asm.as_erased();
         let fn_ty = asm.function_type();
-        let ret_ty = fn_ty.return_type().id();
+        let ret_ty = fn_ty.return_type().slot_trusting_same_module();
         let ret_data = self.module.context().type_data(ret_ty);
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -9002,7 +9049,7 @@ where
         let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
             let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.id);
+            arg_ids.push(v.slot_trusting_same_module());
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
@@ -9011,8 +9058,8 @@ where
             .collect::<IrResult<_>>()?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = CallBrInstData::new_with_attrs(
-            asm_v.id,
-            fn_ty.as_type().id(),
+            asm_v.slot_trusting_same_module(),
+            fn_ty.slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             default_dest.slot(),
@@ -9123,7 +9170,7 @@ where
             .into_iter()
             .map(|a| {
                 a.into_erased_value(ModuleRef::new(self.module))
-                    .map(|v| v.slot())
+                    .map(|v| v.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
         let payload = CleanupPadInstData::new(parent_id, arg_ids);
@@ -9156,7 +9203,7 @@ where
             .into_iter()
             .map(|a| {
                 a.into_erased_value(ModuleRef::new(self.module))
-                    .map(|v| v.slot())
+                    .map(|v| v.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
         let payload = CatchPadInstData::new(Some(catch_switch.id), arg_ids);
@@ -9933,9 +9980,15 @@ where
     RC: ReturnMarker,
 {
     parent: &'a IrBuilder<'m, 'ctx, B, F, Positioned, RP>,
-    callee_id: ValueSlot,
-    fn_ty: TypeSlot,
-    return_ty: TypeSlot,
+    /// The callee handed to [`IrBuilder::call_builder`], kept as a handle and
+    /// admitted by [`build`](CallBuilder::build) through the checked door.
+    callee: Value<'ctx, B>,
+    /// The call site's function type — the callee's signature, or the
+    /// [`call_site_type`](CallBuilder::call_site_type) override — admitted by
+    /// `build` the same way.
+    fn_ty: FunctionType<'ctx, B>,
+    /// The return type read from whichever of the two set `fn_ty`.
+    return_ty: Type<'ctx, B>,
     args: Vec<ValueSlot>,
     calling_conv: crate::CallingConv,
     tail_kind: TailCallKind,
@@ -9964,7 +10017,7 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CallBuilder")
-            .field("callee", &self.callee_id)
+            .field("callee", &self.callee)
             .field("arguments", &self.args.len())
             .field("calling_conv", &self.calling_conv)
             .field("tail_kind", &self.tail_kind)
@@ -9992,7 +10045,7 @@ where
     #[must_use]
     pub fn arg<V: IntoErasedValue<'ctx, B>>(mut self, value: V) -> Self {
         match value.into_erased_value(ModuleRef::<B>::new(self.parent.module)) {
-            Ok(v) => self.args.push(v.id),
+            Ok(v) => self.args.push(v.slot_trusting_same_module()),
             Err(e) => {
                 self.arg_error.get_or_insert(e);
             }
@@ -10056,7 +10109,8 @@ where
         }
         for (arg, expected) in self.args.iter().zip(params) {
             let actual_ty = self.parent.module.context().value_data(*arg).ty;
-            if actual_ty != expected.id() {
+            // Internal: the descriptor's type is built in the parent module.
+            if actual_ty != expected.slot_trusting_same_module() {
                 return Err(IrError::IntrinsicSignatureMismatch {
                     name: intrinsic_descriptor_error_name(descriptor),
                 });
@@ -10084,20 +10138,26 @@ where
         if let Some(e) = self.arg_error.take() {
             return Err(e);
         }
+        // Boundary: the callee handed to `call_builder` and the call site's
+        // function type (the callee's signature or a `call_site_type`
+        // override), admitted before either is read.
+        let module_id = self.parent.module.id();
+        let callee = self.callee.slot_in(module_id)?;
+        let fn_ty = self.fn_ty.slot_in(module_id)?;
         self.validate_intrinsic_descriptor_args()?;
-        let fn_ty =
-            FunctionType::<'ctx, B>::new(self.fn_ty, ModuleRef::<B>::new(self.parent.module));
-        self.parent.validate_call_site_args(fn_ty, &self.args)?;
+        self.parent
+            .validate_call_site_args(self.fn_ty, &self.args)?;
         let payload = CallInstData::new_with_attrs(
-            self.callee_id,
-            self.fn_ty,
+            callee,
+            fn_ty,
             self.args.into_boxed_slice(),
             self.calling_conv,
             self.tail_kind,
             self.attrs,
         );
         Ok(self.parent.append_instruction(
-            self.return_ty,
+            // Internal: read from the callee or the override, both admitted above.
+            self.return_ty.slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             self.name,
         ))
@@ -10118,11 +10178,12 @@ where
     /// against its own type, not the declaration; `LLParser::parseCall`
     /// resolves the callee as a bare pointer). Offered only on the erased
     /// (`Dyn`) builder, where overriding the result type cannot desync a
-    /// static return marker.
+    /// static return marker. A type from another module is refused by
+    /// [`build`](CallBuilder::build) with [`IrError::ForeignType`].
     #[must_use]
     pub fn call_site_type(mut self, fn_ty: FunctionType<'ctx, B>) -> Self {
-        self.return_ty = fn_ty.return_type().id();
-        self.fn_ty = fn_ty.as_type().id();
+        self.return_ty = fn_ty.return_type();
+        self.fn_ty = fn_ty;
         self
     }
 }
@@ -10246,15 +10307,15 @@ where
         let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
         let payload = CallInstData::new_with_attrs(
-            f.slot(),
-            f.signature().as_type().id(),
+            f.slot_trusting_same_module(),
+            f.signature().slot_trusting_same_module(),
             arg_ids,
             calling_conv,
             self.tail_kind,
             self.attrs,
         );
         let inst = self.parent.append_instruction(
-            f.return_type().id(),
+            f.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             self.name,
         );
