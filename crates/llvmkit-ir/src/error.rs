@@ -18,6 +18,34 @@
 
 use core::fmt;
 
+/// Whether a failure indicates a bug in llvmkit.
+///
+/// The distinction is upstream's. `llvm/include/llvm/Support/ErrorHandling.h`
+/// deprecated `report_fatal_error`'s `gen_crash_diag` boolean in favour of two
+/// named entry points, and their contracts define these two answers:
+/// `reportFatalInternalError` "will produce a crash trace and *will* ask users
+/// to report an LLVM bug"; `reportFatalUsageError` "will *not*".
+///
+/// Two variants, not three, deliberately. Upstream's usage-error class folds
+/// invalid inputs, environment conditions outside its control, and
+/// unimplemented functionality into one; splitting them here would invent a
+/// taxonomy upstream does not have (D11), and the finer distinction is already
+/// carried by the variant's own identity — [`IrError::InvalidIntegerWidth`] is
+/// a bound, [`IrError::TypeIdentityMismatch`] is a mistake, and a caller reads
+/// which one it got. Cranelift, D10's model, carries no blame axis at all and
+/// documents the distinction per variant instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Blame {
+    /// llvmkit failed to maintain something it promised. The caller cannot fix
+    /// it; it is a bug report. Ports `reportFatalInternalError`'s contract.
+    LlvmkitInvariant,
+    /// Not a bug in llvmkit: an invalid argument, a bound imposed by LLVM or
+    /// the host, or functionality llvmkit does not implement. Ports
+    /// `reportFatalUsageError`'s contract, including its explicit folding of
+    /// those three into one class.
+    UsageError,
+}
+
 /// Human-readable label for a [`Type`](crate::Type) kind, embedded in
 /// diagnostics that don't want to carry a borrowed type handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1029,6 +1057,18 @@ pub enum BrandError {
     },
 }
 
+impl BrandError {
+    /// Whether this failure indicates a bug in llvmkit — see [`Blame`].
+    ///
+    /// Neither outcome does: both are a caller claiming a brand the registry
+    /// has already promised to someone else, live or retired.
+    pub fn blame(&self) -> Blame {
+        match self {
+            Self::InUse { .. } | Self::Retired { .. } => Blame::UsageError,
+        }
+    }
+}
+
 /// A `target datalayout = "..."` string could not be parsed.
 ///
 /// Mirrors the `Error` returns of
@@ -1042,6 +1082,17 @@ pub enum BrandError {
 pub struct DataLayoutError {
     /// Why the `target datalayout` string could not be parsed.
     pub reason: String,
+}
+
+impl DataLayoutError {
+    /// Whether this failure indicates a bug in llvmkit — see [`Blame`].
+    ///
+    /// It does not: the one outcome is a layout string the caller supplied,
+    /// which `DataLayout::parseLayoutString` likewise returns as an `Error`
+    /// rather than reporting as a fatal internal error.
+    pub fn blame(&self) -> Blame {
+        Blame::UsageError
+    }
 }
 
 /// Crate-wide error.
@@ -1752,6 +1803,122 @@ pub enum IrError {
     /// an operation with one.
     #[error(transparent)]
     DataLayout(#[from] DataLayoutError),
+}
+
+impl IrError {
+    /// Whether this failure indicates a bug in llvmkit.
+    ///
+    /// One exhaustive match, deliberately: a new variant is a compile error
+    /// here, which is the only thing that keeps the classification honest. The
+    /// nested errors answer for themselves.
+    ///
+    /// [`Blame::LlvmkitInvariant`] only where no caller input could have
+    /// produced the variant — llvmkit reached a state it had promised was
+    /// impossible. Blame is a property of the *variant*, since that is all this
+    /// method sees: a variant that any construction site raises from a caller's
+    /// argument is [`Blame::UsageError`], even where another site raises it on
+    /// an internal failure. Over-claiming an llvmkit bug sends users to report
+    /// their own mistakes against it.
+    pub fn blame(&self) -> Blame {
+        match self {
+            // llvmkit failing its own promise. A `MetadataId` is minted only
+            // by the module whose tag it carries (`MetadataId::from_raw` is
+            // crate-private), from a slot `MetadataStore` had just appended,
+            // and `ModuleId::fresh` never re-issues a tag. So once
+            // `metadata_slot_of`'s tag check has passed, a slot past the end
+            // of the arena is not something a caller can hand in.
+            Self::UnknownMetadataSlot { .. } => Blame::LlvmkitInvariant,
+
+            // The caller's operand has the wrong type, width, length, address
+            // space or value category. `InvalidIntegerWidth` is a bound LLVM
+            // itself imposes — upstream's usage class folds bounds in.
+            Self::InvalidIntegerWidth { .. }
+            | Self::TypeMismatch { .. }
+            | Self::TypeIdentityMismatch { .. }
+            | Self::OperandWidthMismatch { .. }
+            | Self::ArrayLengthMismatch { .. }
+            | Self::AddressSpaceMismatch { .. }
+            | Self::UnsizedType { .. }
+            | Self::NotIntOrPointerType { .. }
+            | Self::ValueCategoryMismatch { .. }
+            | Self::ReturnTypeMismatch { .. }
+            | Self::ImmediateOverflow { .. }
+            | Self::DegenerateConstantRange { .. } => Blame::UsageError,
+
+            // Struct bodies the caller set, reset, or described inconsistently.
+            Self::StructBodyAlreadySet { .. }
+            | Self::LiteralStructBodyNotSettable
+            | Self::RecursiveStructBody { .. }
+            | Self::StructBodyMismatch { .. } => Blame::UsageError,
+
+            // An index or an arity the caller supplied does not fit.
+            Self::ArgumentIndexOutOfRange { .. }
+            | Self::AggregateIndexOutOfRange { .. }
+            | Self::GepInvalidIndices
+            | Self::FunctionParameterCountMismatch { .. }
+            | Self::CallArgumentCountMismatch { .. }
+            | Self::CallArgumentTypeMismatch { .. }
+            | Self::UnexpectedVarArgsSignature
+            | Self::MissingVarArgsSignature
+            | Self::PhiArgArityMismatch { .. } => Blame::UsageError,
+
+            // A name the caller chose is taken, reserved, or unknown, or its
+            // signature does not match the intrinsic it names.
+            Self::DuplicateFunctionName { .. }
+            | Self::DuplicateGlobalName { .. }
+            | Self::UnknownIntrinsic { .. }
+            | Self::ReservedIntrinsicName { .. }
+            | Self::IntrinsicSignatureMismatch { .. } => Blame::UsageError,
+
+            // Text or a raw number the caller supplied names nothing.
+            Self::InvalidKeyword { .. }
+            | Self::InvalidDiscriminant { .. }
+            | Self::InvalidOptimizationLevel { .. }
+            | Self::InvalidPassPipelineName { .. }
+            | Self::InvalidPassPipeline { .. } => Blame::UsageError,
+
+            // The broad LangRef-rule family. Most sites reject a caller's
+            // argument, and a few report a host bound; the variant cannot tell
+            // them apart, so it takes the class every site can reach.
+            Self::InvalidOperation { .. } => Blame::UsageError,
+
+            // Analysis-manager contracts the caller broke. `AnalysisNotCached`
+            // is also raised on cache-miss branches the manager's own
+            // bookkeeping makes unreachable, but the invalidator raises it for
+            // a dependency the caller's result never cached.
+            Self::AnalysisNotRegistered { .. } | Self::AnalysisNotCached { .. } => {
+                Blame::UsageError
+            }
+
+            // IR the caller built, parsed, or asked a pass to insert breaks a
+            // LangRef rule.
+            Self::VerifierFailure { .. }
+            | Self::AmbiguousPhiIncoming { .. }
+            | Self::PhiIncomingNotDominating { .. }
+            | Self::PhiCoherence { .. } => Blame::UsageError,
+
+            // The on-the-fly SSA layer's runtime laws, broken by the caller's
+            // sequencing or by mixing handles between builders.
+            Self::SsaUseOfUndefinedVariable { .. }
+            | Self::SsaBranchToSealedBlock { .. }
+            | Self::SsaBlockAlreadySealed { .. }
+            | Self::SsaBlockAlreadyFilled { .. }
+            | Self::SsaUnfilledBlock { .. }
+            | Self::SsaForeignVariable
+            | Self::SsaForeignBlock
+            | Self::SsaFunctionHasBlocks
+            | Self::SsaForeignFunction
+            | Self::SsaUnpositioned => Blame::UsageError,
+
+            // An id the caller minted in one module and handed to another.
+            Self::ForeignValueId | Self::ForeignMetadataId | Self::ForeignNamedMetadataId => {
+                Blame::UsageError
+            }
+
+            Self::Brand(error) => error.blame(),
+            Self::DataLayout(error) => error.blame(),
+        }
+    }
 }
 
 /// Crate-wide `Result` alias.

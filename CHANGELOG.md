@@ -19,6 +19,38 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — `Blame`: whether an error is llvmkit's bug, as a value
+
+- **(llvmkit-ir)** New `Blame { LlvmkitInvariant, UsageError }`, answered by
+  `IrError::blame()`, `BrandError::blame()` and `DataLayoutError::blame()`.
+  Until now blame lived only as English inside message text, which nothing
+  could branch on and nothing checked. `FnReshape::insert_phi` called a
+  caller's `GlobalId` an "internal invariant" for the whole life of that
+  message (fixed in the entry below).
+- The two answers port upstream's own split. `llvm/include/llvm/Support/ErrorHandling.h`
+  deprecates `report_fatal_error`'s `gen_crash_diag` flag in favour of
+  `reportFatalInternalError`, which marks an LLVM bug and asks for a report,
+  and `reportFatalUsageError`, which is not a bug and explicitly folds invalid
+  inputs, environment conditions and unimplemented functionality into one
+  class. A third class, splitting caller error from host limit, was considered
+  and rejected. It would invent a taxonomy upstream does not have (D11), and
+  the finer distinction is already carried by the variant's identity:
+  `InvalidIntegerWidth` is a bound, `TypeIdentityMismatch` is a mistake.
+- `IrError::blame()` is one exhaustive `match` beside the enum, with no
+  wildcard arm, so a new variant does not compile until someone classifies it
+  (D5). Exactly one variant answers `LlvmkitInvariant`: `UnknownMetadataSlot`,
+  which no caller input can produce once the module-tag check has passed
+  (`awk '/^impl IrError \{/{f=1} f&&/^}/{exit} f' crates/llvmkit-ir/src/error.rs | rg -c "=> Blame::LlvmkitInvariant"`
+  returns `1`). Every other variant has a construction site reachable from a
+  caller's argument, so it answers `UsageError`. That includes variants where
+  another site raises the same variant on an internal failure, since
+  `blame()` sees only the variant.
+- `ParseError::blame()` is owed, not skipped. `ParseError` is the parser
+  crate's root error and gets `blame()` in that crate's own error programme,
+  importing `llvmkit_ir::Blame` over the existing
+  `llvmkit-asmparser -> llvmkit-ir` dependency.
+- Not breaking: this adds API and removes none.
+
 ### Fixed — `insert_phi` reports the narrow's finding, not its own blame *(breaking)*
 
 - **Breaking (llvmkit-ir):** `FnReshape::insert_phi` blamed itself for a
