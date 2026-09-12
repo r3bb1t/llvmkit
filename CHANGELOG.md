@@ -145,6 +145,15 @@ cut, entries accumulate under **Unreleased**.
   `declare_pointer_var_in_addrspace` and their poison twins are infallible
   and cannot yet refuse a type of another module; they are marked for the
   task that makes them fallible.
+- **Fixed (llvmkit-ir):** `BasicBlock::split_at` (and so
+  `FnReshape::split_block`), `FnPatch::replace_all_uses` and
+  `FnReshape::insert_phi_dyn` read a caller's instruction view or phi type
+  by slot without comparing modules, so a handle from another module
+  sharing the brand split, rewired or typed whatever sat at that slot here.
+  Each now refuses it — `ForeignValueId` for the view, `ForeignType` for the
+  type — before anything is read or appended. `FnPatch::erase` is
+  infallible and cannot yet refuse an instruction of another module; it is
+  marked for the task that makes it fallible.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type

@@ -20,10 +20,12 @@
 //! llvmkit gives each module its own type arena.
 
 use llvmkit_ir::{
-    Align, BasicBlock, CallSiteConfig, CastOpcode, Dyn, DynBrand, FloatDyn, FloatValue,
-    GepNoWrapFlags, InlineAsmOptions, IntCastFlags, IntDyn, IntValue, IrBuilder, IrError, IrStruct,
-    Linkage, Module, PointerValue, Positioned, SsaBuilder, SsaState, TailCallKind, TruncFlags,
-    UiToFpFlags, Unterminated, Value, ZextFlags,
+    Align, Analyses, BasicBlock, CallSiteConfig, CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand,
+    FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
+    InlineAsmOptions, InstructionView, IntCastFlags, IntDyn, IntValue, IrBuilder, IrError,
+    IrResult, IrStruct, Linkage, Module, PatchBody, PointerValue, Positioned, ReshapeCfg,
+    SsaBuilder, SsaState, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value,
+    ValueId, ZextFlags, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -1691,4 +1693,180 @@ fn ssa_construction_rejects_a_function_or_state_from_another_module() {
         before,
         "a rejected session must not mutate"
     );
+}
+
+/// `i32 name(i32 %a) { %x = add i32 %a, 1; ret i32 %x }` in `module`: a body
+/// whose first instruction a pass or a split can name. Built identically in
+/// two modules, the two `add`s sit at the same slot. Returns the function and
+/// a storable id of its parameter.
+fn function_with_an_add(
+    module: &Module<DynBrand>,
+    name: &str,
+) -> (FunctionId<Dyn, DynBrand>, ValueId<DynBrand>) {
+    let fn_ty = module.function_type(module.i32_type(), [module.i32_type().as_type()]);
+    let f = module
+        .add_function_dyn(name, fn_ty, Linkage::External)
+        .expect("function");
+    let entry = module.view(f).append_basic_block(module, "entry");
+    let b = IrBuilder::new_for::<Dyn>(module).position_at_end(entry);
+    let parameter = module.view(f).param(0).expect("parameter").as_erased();
+    let a: IntValue<'_, i32, DynBrand> = parameter.try_into().expect("an i32");
+    let x = b.int_add(a, 1i32, "x").expect("add");
+    b.ret(x).expect("ret");
+    (f, parameter.id())
+}
+
+/// `BasicBlock::split_at` refuses a split point from another module before
+/// the block is read or a new block appended. The two functions are built
+/// alike, so the foreign instruction's slot names an instruction of this
+/// block too.
+///
+/// No upstream counterpart: `BasicBlock::splitBasicBlock`
+/// (`lib/IR/BasicBlock.cpp`) takes an iterator into its own instruction list.
+#[test]
+fn split_at_rejects_an_instruction_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (f, _) = function_with_an_add(&home, "f");
+    let (g, _) = function_with_an_add(&foreign, "g");
+    let foreign_add = foreign
+        .view(g)
+        .entry_block()
+        .expect("entry")
+        .instructions()
+        .next()
+        .expect("add");
+
+    let before = format!("{home}");
+    let result = home
+        .view(f)
+        .entry_block()
+        .expect("entry")
+        .split_at(&home, &foreign_add, "tail");
+    assert!(
+        matches!(result, Err(IrError::ForeignValueId)),
+        "{:?}",
+        result.as_ref().map(|_| ())
+    );
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected split must not mutate"
+    );
+}
+
+/// A `PatchBody` pass that replaces every use of an instruction another
+/// module minted — the foreign handle a pass could smuggle in from its own
+/// fields.
+struct ReplaceUsesOfForeignView<'s> {
+    view: InstructionView<'s, DynBrand>,
+    replacement: ValueId<DynBrand>,
+}
+
+impl<'s> FunctionPass<DynBrand> for ReplaceUsesOfForeignView<'s> {
+    type Access = PatchBody;
+    type Requires = ();
+    const NAME: &'static str = "replace-uses-of-foreign-view";
+
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: FnCx<'m, '_, 'ctx, DynBrand, PatchBody, ()>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
+        let patch = cx.mutate();
+        patch.replace_all_uses(&self.view, self.replacement)?;
+        Ok(patch.done())
+    }
+}
+
+/// A `ReshapeCfg` pass that inserts an operandless phi of a type another
+/// module minted at the entry block's head.
+struct InsertPhiOfForeignType<'s> {
+    ty: Type<'s, DynBrand>,
+}
+
+impl<'s> FunctionPass<DynBrand> for InsertPhiOfForeignType<'s> {
+    type Access = ReshapeCfg;
+    type Requires = (DominatorTreeAnalysis,);
+    const NAME: &'static str = "insert-phi-of-foreign-type";
+
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: FnCx<'m, '_, 'ctx, DynBrand, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
+        let mut reshape = cx.mutate();
+        let entry = reshape
+            .function()
+            .entry_block()
+            .expect("definition has an entry block")
+            .id();
+        reshape.insert_phi_dyn(entry, self.ty, &[])?;
+        Ok(reshape.done())
+    }
+}
+
+/// A pass cannot turn a handle from another module into a slot of the module
+/// it runs over: `FnPatch::replace_all_uses` refuses an instruction view, and
+/// `FnReshape::insert_phi_dyn` a phi type, from another module, before any
+/// use is rewired or phi created. The two modules are built alike, so each
+/// foreign handle's slot names something in the module under the pass.
+///
+/// No upstream counterpart: `Value::replaceAllUsesWith` (`lib/IR/Value.cpp`)
+/// and `PHINode::Create` (`IR/Instructions.h`) take a `Value *` and a
+/// `Type *` uniqued per `LLVMContext`.
+#[test]
+fn a_pass_rejects_an_instruction_or_type_from_another_module() {
+    let foreign = Module::dynamic("foreign");
+    let (g, _) = function_with_an_add(&foreign, "g");
+    let foreign_add = foreign
+        .view(g)
+        .entry_block()
+        .expect("entry")
+        .instructions()
+        .next()
+        .expect("add");
+    let foreign_i32 = foreign.i32_type().as_type();
+
+    let patched = Module::dynamic("patched");
+    let (patched_f, replacement) = function_with_an_add(&patched, "f");
+    let reshaped = Module::dynamic("reshaped");
+    let (reshaped_f, _) = function_with_an_add(&reshaped, "f");
+    let mut analyses = Analyses::new();
+
+    let outcomes = vec![
+        (
+            "FnPatch::replace_all_uses",
+            IrError::ForeignValueId,
+            run_function_pass(
+                ReplaceUsesOfForeignView {
+                    view: foreign_add,
+                    replacement,
+                },
+                patched.verify().expect("verifies"),
+                patched_f,
+                &mut analyses,
+            )
+            .map(|_| ()),
+        ),
+        (
+            "FnReshape::insert_phi_dyn",
+            IrError::ForeignType,
+            run_function_pass(
+                InsertPhiOfForeignType { ty: foreign_i32 },
+                reshaped.verify().expect("verifies"),
+                reshaped_f,
+                &mut analyses,
+            )
+            .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
 }

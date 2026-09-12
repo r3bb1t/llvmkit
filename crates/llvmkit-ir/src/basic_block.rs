@@ -31,7 +31,7 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess, sealed,
+    HasDebugLoc, HasName, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::BlockId;
 use super::value_id::ViewIn;
@@ -1055,6 +1055,9 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// parent function. The original block keeps the prefix; the caller
     /// is responsible for adding a terminator that flows to the new
     /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `before` belongs to another
+    /// module, before anything is read or appended.
     pub fn split_at<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,
@@ -1064,6 +1067,9 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     where
         Name: Into<String>,
     {
+        // Boundary: the caller's split point, admitted before the block is
+        // read or a new block appended.
+        let split_id = before.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let parent_fn_id = match self.parent_id() {
             Some(id) => id,
@@ -1076,7 +1082,6 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let parent_fn =
             FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
         let new_block = parent_fn.append_basic_block(module_token, name);
-        let split_id = before.slot();
         let suffix: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
             let pos =
