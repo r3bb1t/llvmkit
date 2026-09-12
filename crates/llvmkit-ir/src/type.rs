@@ -317,7 +317,7 @@ pub(crate) struct TargetExtTypeData {
 ///
 /// Two-field record: an arena index plus a brand-carrying module
 /// reference. Equality and hashing compare the branded module reference by
-/// [`ModuleId`](crate::ModuleId), so the handle remains cheap to copy and
+/// [`ModuleId`], so the handle remains cheap to copy and
 /// store in maps.
 pub struct Type<'ctx, B: ModuleBrand> {
     pub(crate) id: TypeSlot,

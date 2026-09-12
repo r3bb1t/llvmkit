@@ -308,7 +308,7 @@ pub(super) enum ValueKindData {
 /// Three-field record:
 /// - `id: ValueSlot` — arena index.
 /// - `module: ModuleRef<'ctx>` — brand carrier; equality routes through
-///   the process-global [`ModuleId`](crate::ModuleId).
+///   the process-global [`ModuleId`].
 /// - `ty: TypeSlot` — cached type. Values do not change type, so caching
 ///   here saves an arena lookup on every `value.ty()` access.
 ///
@@ -394,7 +394,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     ///
     /// Unlike [`slot`](Self::slot) — which returns the bare, untagged arena
     /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
-    /// [`ModuleId`](crate::ModuleId) and can be resolved back into a handle
+    /// [`ModuleId`] and can be resolved back into a handle
     /// with [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
