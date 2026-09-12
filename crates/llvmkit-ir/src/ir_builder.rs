@@ -109,6 +109,7 @@ use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed, Open};
+use super::r#type::TypeSlotAccess;
 use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot};
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
@@ -740,7 +741,7 @@ where
             match inst.kind() {
                 Some(InstructionKind::Alloca(_)) => continue,
                 _ => {
-                    anchor = Some(inst.slot());
+                    anchor = Some(inst.to_erased().slot_trusting_same_module());
                     break;
                 }
             }
@@ -2078,6 +2079,9 @@ where
             });
         }
         let src = src.into_erased_value(ModuleRef::new(self.module))?;
+        // Boundary: the caller's destination type, admitted before the folder
+        // or this module reads it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let src_ty = src.ty();
 
         let (Some(src_bits), Some(dst_bits)) = (
@@ -2104,14 +2108,14 @@ where
         }
 
         if let Some(folded) = self.folder.fold_cast_dyn(opcode, src, dst_ty)? {
-            let folded = self.checked_folded_value(folded, dst_ty.id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(folded.id());
         }
-        let payload = CastOpData::new(opcode, src.slot());
+        let payload = CastOpData::new(opcode, src.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
-        let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
+        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -3346,7 +3350,10 @@ where
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
-        Ok(FreezeInstId::from_raw(self.module.id(), inst.slot()))
+        Ok(FreezeInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Produce `va_arg <list>, <ty>`. Mirrors `IRBuilder::CreateVAArg`.
@@ -3364,10 +3371,14 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let list_ptr = list_ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let v = IsValue::as_erased(list_ptr);
-        let payload = VaArgInstData::new(v.id);
-        let inst = self.append_instruction(result_ty.id, InstructionKindData::VaArg(payload), name);
-        Ok(VaArgInstId::from_raw(self.module.id(), inst.slot()))
+        // Boundary: the caller's result type, admitted before the append.
+        let result_slot = result_ty.slot_in(self.module.id())?;
+        let payload = VaArgInstData::new(list_ptr.slot_trusting_same_module());
+        let inst = self.append_instruction(result_slot, InstructionKindData::VaArg(payload), name);
+        Ok(VaArgInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     // ---- Aggregate ops: extractvalue / insertvalue ----
@@ -4028,7 +4039,11 @@ where
         let payload = FenceInstData::new(ordering, sync_scope);
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
-        Ok(FenceInst::from_raw(inst.slot(), self.module, void_ty))
+        Ok(FenceInst::from_raw(
+            inst.to_erased().slot_trusting_same_module(),
+            self.module,
+            void_ty,
+        ))
     }
 
     /// Produce `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>,
@@ -4066,7 +4081,10 @@ where
         let result_id = result_ty.as_type().id();
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
-        Ok(AtomicCmpXchgInstId::from_raw(self.module.id(), inst.slot()))
+        Ok(AtomicCmpXchgInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Produce `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
@@ -4092,7 +4110,10 @@ where
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = AtomicRmwInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRmw(payload), name);
-        Ok(AtomicRmwInstId::from_raw(self.module.id(), inst.slot()))
+        Ok(AtomicRmwInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     // ---- Casts: trunc / zext / sext ----
@@ -4129,13 +4150,15 @@ where
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         if let Some(folded) =
             self.folder
                 .fold_cast_to_int(CastOpcode::Trunc, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot_trusting_same_module());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -4167,13 +4190,15 @@ where
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         if let Some(folded) =
             self.folder
                 .fold_cast_to_int(CastOpcode::Trunc, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot_trusting_same_module());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self
@@ -4200,13 +4225,15 @@ where
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         if let Some(folded) =
             self.folder
                 .fold_cast_to_int(CastOpcode::Zext, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::Zext, value.slot());
+        let payload = CastOpData::new(CastOpcode::Zext, value.slot_trusting_same_module());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -4232,13 +4259,15 @@ where
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         if let Some(folded) =
             self.folder
                 .fold_cast_to_int(CastOpcode::Zext, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::Zext, value.slot());
+        let payload = CastOpData::new(CastOpcode::Zext, value.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -4264,13 +4293,15 @@ where
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         if let Some(folded) =
             self.folder
                 .fold_cast_to_int(CastOpcode::Sext, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::Sext, value.slot());
+        let payload = CastOpData::new(CastOpcode::Sext, value.slot_trusting_same_module());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -4292,6 +4323,8 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before anything reads it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w >= src_w {
@@ -4304,10 +4337,10 @@ where
             self.folder
                 .fold_cast_dyn(CastOpcode::Trunc, value.as_erased(), dst_ty.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot_trusting_same_module());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -4328,6 +4361,8 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before anything reads it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w >= src_w {
@@ -4340,10 +4375,10 @@ where
             self.folder
                 .fold_cast_dyn(CastOpcode::Trunc, value.as_erased(), dst_ty.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot_trusting_same_module());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self
@@ -4384,6 +4419,8 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let src = src.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before anything reads it.
+        let dst_slot = dst.slot_in(self.module.id())?;
         let src_w = src.ty().bit_width();
         let dst_w = dst.bit_width();
         if dst_w <= src_w {
@@ -4396,10 +4433,10 @@ where
             self.folder
                 .fold_cast_dyn(CastOpcode::Zext, src.as_erased(), dst.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::Zext, src.slot());
+        let payload = CastOpData::new(CastOpcode::Zext, src.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_int_at(dst, InstructionKindData::Cast(payload), name)
@@ -4435,6 +4472,8 @@ where
     where
         N: AsRef<str>,
     {
+        // Boundary: admit the caller's destination type before anything reads it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w <= src_w {
@@ -4447,10 +4486,10 @@ where
             self.folder
                 .fold_cast_dyn(opcode, value.as_erased(), dst_ty.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(opcode, value.slot());
+        let payload = CastOpData::new(opcode, value.slot_trusting_same_module());
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -4488,7 +4527,8 @@ where
         T: IrType<'ctx, B>,
     {
         self.alloca_inner(
-            ty.as_type().id(),
+            // Boundary: the caller's allocated type.
+            ty.slot_in(self.module.id())?,
             None,
             MaybeAlign::NONE,
             self.alloca_addr_space(),
@@ -4512,8 +4552,9 @@ where
     {
         let n = num_elements.into_int_value(ModuleRef::new(self.module))?;
         self.alloca_inner(
-            ty.as_type().id(),
-            Some(n.slot()),
+            // Boundary: the caller's allocated type.
+            ty.slot_in(self.module.id())?,
+            Some(n.slot_trusting_same_module()),
             MaybeAlign::NONE,
             self.alloca_addr_space(),
             AllocaFlags::none(),
@@ -4537,8 +4578,9 @@ where
     {
         let n = num_elements.into_int_value(ModuleRef::new(self.module))?;
         self.alloca_inner(
-            ty.as_type().id(),
-            Some(n.slot()),
+            // Boundary: the caller's allocated type.
+            ty.slot_in(self.module.id())?,
+            Some(n.slot_trusting_same_module()),
             MaybeAlign::new(align),
             self.alloca_addr_space(),
             AllocaFlags::none(),
@@ -4559,7 +4601,8 @@ where
         T: IrType<'ctx, B>,
     {
         self.alloca_inner(
-            ty.as_type().id(),
+            // Boundary: the caller's allocated type.
+            ty.slot_in(self.module.id())?,
             None,
             MaybeAlign::new(align),
             self.alloca_addr_space(),
@@ -4635,7 +4678,8 @@ where
     {
         AllocaBuilder {
             parent: self,
-            allocated_ty: ty.as_type().id(),
+            // Boundary: parked like an operand error, replayed by `build`.
+            allocated_ty: ty.slot_in(self.module.id()),
             num_elements: Ok(None),
             align: MaybeAlign::NONE,
             addr_space: self.alloca_addr_space(),
@@ -4670,11 +4714,12 @@ where
         T: IrType<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let ty_id = ty.as_type().id();
+        // Boundary: the caller's load type, admitted before the pointer lift.
+        let ty_id = ty.slot_in(self.module.id())?;
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            p.slot(),
+            p.slot_trusting_same_module(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -4698,11 +4743,12 @@ where
         T: IrType<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let ty_id = ty.as_type().id();
+        // Boundary: the caller's load type, admitted before the pointer lift.
+        let ty_id = ty.slot_in(self.module.id())?;
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            p.slot(),
+            p.slot_trusting_same_module(),
             MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
@@ -4724,8 +4770,8 @@ where
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
-            ty.as_type().id(),
-            p.slot(),
+            ty.as_type().slot_trusting_same_module(),
+            p.slot_trusting_same_module(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -4746,10 +4792,12 @@ where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
     {
+        // Boundary: the caller's load type, admitted before the pointer lift.
+        let pointee_ty = ty.slot_in(self.module.id())?;
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
-            ty.as_type().id(),
-            p.slot(),
+            pointee_ty,
+            p.slot_trusting_same_module(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -4768,8 +4816,8 @@ where
         let ty = K::ir_type(ModuleRef::<B>::new(self.module));
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
-            ty.as_type().id(),
-            p.slot(),
+            ty.as_type().slot_trusting_same_module(),
+            p.slot_trusting_same_module(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -4790,10 +4838,12 @@ where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
     {
+        // Boundary: the caller's load type, admitted before the pointer lift.
+        let pointee_ty = ty.slot_in(self.module.id())?;
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
-            ty.as_type().id(),
-            p.slot(),
+            pointee_ty,
+            p.slot_trusting_same_module(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -4814,8 +4864,8 @@ where
         let ty = ModuleView::<B>::new(self.module).ptr_type(0);
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
-            ty.as_type().id(),
-            p.slot(),
+            ty.as_type().slot_trusting_same_module(),
+            p.slot_trusting_same_module(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -4839,8 +4889,8 @@ where
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
-            ty.as_type().id(),
-            p.slot(),
+            ty.as_type().slot_trusting_same_module(),
+            p.slot_trusting_same_module(),
             MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
@@ -4954,7 +5004,7 @@ where
             parent: self,
             ptr: ptr
                 .into_pointer_value(ModuleRef::new(self.module))
-                .map(|p| p.slot()),
+                .map(|p| p.slot_trusting_same_module()),
             align: MaybeAlign::NONE,
             volatile: false,
             ordering: AtomicOrdering::NotAtomic,
@@ -5096,9 +5146,9 @@ where
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
         Ok(StoreInst::from_raw(
-            inst.slot(),
+            inst.to_erased().slot_trusting_same_module(),
             ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
+            inst.ty().slot_trusting_same_module(),
         ))
     }
 
@@ -5232,7 +5282,10 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInstId::from_raw(self.module.id(), inst.slot()))
+        Ok(TypedCallInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Typed flat call with explicit call-site configuration
@@ -5268,7 +5321,10 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInstId::from_raw(self.module.id(), inst.slot()))
+        Ok(TypedCallInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Typed chainable call builder: same schema guarantees as
@@ -5338,7 +5394,10 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInstId::from_raw(self.module.id(), inst.slot()))
+        Ok(TypedCallInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Flat call form: pass a [`FunctionValue`] callee, an iterable of
@@ -5566,7 +5625,10 @@ where
             attrs,
         );
         let inst = self.append_instruction(return_ty, InstructionKindData::Call(payload), name);
-        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
+        Ok(CallInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// TYPED indirect call through a function-pointer value: the
@@ -5617,7 +5679,10 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInstId::from_raw(self.module.id(), inst.slot()))
+        Ok(TypedCallInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Produce an indirect `call` through a function-pointer **value** (not a
@@ -5890,10 +5955,11 @@ where
                 // `ElementCount EltCount = IndexVTy->getElementCount();`
                 // `return VectorType::get(Ty, EltCount);` -- `ElementCount` is
                 // the (minimum lane count, scalable) pair destructured above.
-                let id =
-                    self.module
-                        .context()
-                        .vector_type_with_scalability(ty.id(), lanes, scalable);
+                let id = self.module.context().vector_type_with_scalability(
+                    ty.slot_trusting_same_module(),
+                    lanes,
+                    scalable,
+                );
                 return Type::new(id, ModuleRef::<B>::new(self.module));
             }
         }
@@ -5949,7 +6015,8 @@ where
     {
         // `SourceElementType(PointeeType)`.
         let source_ty = source_ty.as_type();
-        let source_ty_id = source_ty.id();
+        // Boundary: the caller's source element type.
+        let source_ty_id = source_ty.slot_in(self.module.id())?;
         // `init(Ptr, IdxList, NameStr)`'s operand lifting.
         let ptr_value = ptr.into_erased_value(ModuleRef::new(self.module))?;
         let mut index_ids = Vec::new();
@@ -5957,7 +6024,7 @@ where
         for index in indices {
             let index = index.into_erased_value(ModuleRef::new(self.module))?;
             index_values.push(index);
-            index_ids.push(index.slot());
+            index_ids.push(index.slot_trusting_same_module());
         }
         // `ResultElementType(getIndexedType(PointeeType, IdxList))`. Upstream
         // stores the null and lets `Verifier::visitGetElementPtrInst`'s
@@ -5974,15 +6041,21 @@ where
             self.folder
                 .fold_gep_dyn(source_ty, ptr_value, &index_values, flags)?
         {
-            return Ok(self.checked_folded_value(folded, result_ty.id())?.id());
+            return Ok(self
+                .checked_folded_value(folded, result_ty.slot_trusting_same_module())?
+                .id());
         }
         let payload = GepInstData::new(
             source_ty_id,
-            ptr_value.id,
+            ptr_value.slot_trusting_same_module(),
             index_ids.into_boxed_slice(),
             flags,
         );
-        let inst = self.append_instruction(result_ty.id(), InstructionKindData::Gep(payload), name);
+        let inst = self.append_instruction(
+            result_ty.slot_trusting_same_module(),
+            InstructionKindData::Gep(payload),
+            name,
+        );
         Ok(inst.to_erased().id())
     }
 
@@ -6002,7 +6075,8 @@ where
         N: AsRef<str>,
     {
         let source_ty = source_ty.as_type();
-        let source_ty_id = source_ty.id();
+        // Boundary: the caller's source element type.
+        let source_ty_id = source_ty.slot_in(self.module.id())?;
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let ptr_value = IsValue::as_erased(p);
         let mut idx_ids = Vec::new();
@@ -6010,7 +6084,7 @@ where
         for index in indices {
             let iv = index.into_int_value(ModuleRef::new(self.module))?;
             idx_values.push(iv.as_erased());
-            idx_ids.push(iv.slot());
+            idx_ids.push(iv.slot_trusting_same_module());
         }
         // Reject index sequences that do not index into the source element
         // type (`GetElementPtrInst::getIndexedType`) — the parser's
@@ -6026,7 +6100,7 @@ where
         // `IntoIntValue<IntDyn>` no `<N x iM>` index. All three branches are
         // ported in `Self::gep_return_type`, which `Self::gep_erased` uses.
         let result_ptr_ty = p.ty();
-        let result_ty = result_ptr_ty.as_type().id();
+        let result_ty = result_ptr_ty.as_type().slot_trusting_same_module();
         if let Some(folded) = self
             .folder
             .fold_gep_dyn(source_ty, ptr_value, &idx_values, flags)?
@@ -6036,7 +6110,7 @@ where
         }
         let payload = GepInstData::new(
             source_ty_id,
-            ptr_value.id,
+            ptr_value.slot_trusting_same_module(),
             idx_ids.into_boxed_slice(),
             flags,
         );
@@ -6126,15 +6200,17 @@ where
         V: IntoFloatValue<'ctx, FloatDyn, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let v = IsValue::as_erased(value);
         if let Some(folded) = self
             .folder
             .fold_cast_dyn(CastOpcode::FpTrunc, v, dst_ty.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::FpTrunc, v.id);
+        let payload = CastOpData::new(CastOpcode::FpTrunc, v.slot_trusting_same_module());
         payload.fmf.set(fmf);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -6182,15 +6258,17 @@ where
         V: IntoFloatValue<'ctx, FloatDyn, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let v = IsValue::as_erased(value);
         if let Some(folded) = self
             .folder
             .fold_cast_dyn(CastOpcode::FpExt, v, dst_ty.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::FpExt, v.id);
+        let payload = CastOpData::new(CastOpcode::FpExt, v.slot_trusting_same_module());
         payload.fmf.set(fmf);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -6210,11 +6288,13 @@ where
         Dst: FloatKind,
         N: AsRef<str>,
     {
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v = IsValue::as_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
-        let payload = CastOpData::new(opcode, v.id);
+        let payload = CastOpData::new(opcode, v.slot_trusting_same_module());
         Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -6268,11 +6348,13 @@ where
         W: IntWidth,
         N: AsRef<str>,
     {
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v = IsValue::as_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_int(opcode, v, dst_ty)? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(opcode, v.id);
+        let payload = CastOpData::new(opcode, v.slot_trusting_same_module());
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -6312,11 +6394,13 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v = value.as_erased();
         if let Some(folded) = self.folder.fold_cast_to_fp(CastOpcode::UiToFp, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::UiToFp, v.id);
+        let payload = CastOpData::new(CastOpcode::UiToFp, v.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -6357,14 +6441,16 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let src = src.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        let dst_slot = dst.slot_in(self.module.id())?;
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(CastOpcode::UiToFp, src.as_erased(), dst.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::UiToFp, src.slot());
+        let payload = CastOpData::new(CastOpcode::UiToFp, src.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_fp_at(dst, InstructionKindData::Cast(payload), name)
@@ -6383,11 +6469,13 @@ where
         K: FloatKind,
         N: AsRef<str>,
     {
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v = value.as_erased();
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
-        let payload = CastOpData::new(opcode, v.id);
+        let payload = CastOpData::new(opcode, v.slot_trusting_same_module());
         Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -6424,8 +6512,11 @@ where
         V: IntoErasedValue<'ctx, B>,
     {
         let value = value.into_erased_value(ModuleRef::new(self.module))?;
+        // Boundary: the caller's destination type, admitted before it is
+        // compared with a type of this module or reaches the folder.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let expected_ty = self.ptr_to_addr_result_type(value.ty())?;
-        if expected_ty.id() != dst_ty.id() {
+        if expected_ty.slot_trusting_same_module() != dst_slot {
             return Err(IrError::InvalidOperation {
                 message: "PtrToAddr result must be address width",
             });
@@ -6434,12 +6525,10 @@ where
             .folder
             .fold_cast_dyn(CastOpcode::PtrToAddr, value, dst_ty)?
         {
-            return self
-                .checked_folded_value(folded, dst_ty.id())
-                .map(|v| v.id());
+            return self.checked_folded_value(folded, dst_slot).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::PtrToAddr, value.id);
-        let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
+        let payload = CastOpData::new(CastOpcode::PtrToAddr, value.slot_trusting_same_module());
+        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -6457,6 +6546,8 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v = IsValue::as_erased(value);
         if let Some(folded) = self
             .folder
@@ -6464,7 +6555,7 @@ where
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::PtrToInt, v.id);
+        let payload = CastOpData::new(CastOpcode::PtrToInt, v.slot_trusting_same_module());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6484,15 +6575,17 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let v = value.as_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(CastOpcode::IntToPtr, v, dst_ty.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::IntToPtr, v.id);
+        let payload = CastOpData::new(CastOpcode::IntToPtr, v.slot_trusting_same_module());
         Ok(self
             .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6526,6 +6619,8 @@ where
                 "bitcast int->int requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v_value = value.as_erased();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
@@ -6534,7 +6629,10 @@ where
         )? {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
+        let payload = CastOpData::new(
+            super::instr_types::CastOpcode::BitCast,
+            v_value.slot_trusting_same_module(),
+        );
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6564,6 +6662,8 @@ where
                 "bitcast int->fp requires W::STATIC_BITS == K::STATIC_BITS",
             );
         }
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v_value = value.as_erased();
         if let Some(folded) =
             self.folder
@@ -6571,7 +6671,10 @@ where
         {
             return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
+        let payload = CastOpData::new(
+            super::instr_types::CastOpcode::BitCast,
+            v_value.slot_trusting_same_module(),
+        );
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6601,6 +6704,8 @@ where
                 "bitcast fp->int requires K::STATIC_BITS == W::STATIC_BITS",
             );
         }
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v_value = value.as_erased();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
@@ -6609,7 +6714,10 @@ where
         )? {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
+        let payload = CastOpData::new(
+            super::instr_types::CastOpcode::BitCast,
+            v_value.slot_trusting_same_module(),
+        );
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6639,6 +6747,8 @@ where
                 "bitcast fp->fp requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
+        // Boundary: admit the caller's destination type before the folder sees it.
+        dst_ty.slot_in(self.module.id())?;
         let v_value = value.as_erased();
         if let Some(folded) =
             self.folder
@@ -6646,7 +6756,10 @@ where
         {
             return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
+        let payload = CastOpData::new(
+            super::instr_types::CastOpcode::BitCast,
+            v_value.slot_trusting_same_module(),
+        );
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6669,16 +6782,20 @@ where
         V: IntoErasedValue<'ctx, B>,
     {
         let value = value.into_erased_value(ModuleRef::new(self.module))?;
+        // Boundary: the caller's destination type, admitted before the folder
+        // or this module reads it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(super::instr_types::CastOpcode::BitCast, value, dst_ty)?
         {
-            return self
-                .checked_folded_value(folded, dst_ty.id())
-                .map(|v| v.id());
+            return self.checked_folded_value(folded, dst_slot).map(|v| v.id());
         }
-        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, value.id);
-        let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
+        let payload = CastOpData::new(
+            super::instr_types::CastOpcode::BitCast,
+            value.slot_trusting_same_module(),
+        );
+        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -6695,15 +6812,17 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before the folder sees it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let v = IsValue::as_erased(value);
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(CastOpcode::AddrSpaceCast, v, dst_ty.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::AddrSpaceCast, v.id);
+        let payload = CastOpData::new(CastOpcode::AddrSpaceCast, v.slot_trusting_same_module());
         Ok(self
             .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6725,6 +6844,8 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
+        // Boundary: admit the caller's destination type before anything reads it.
+        let dst_slot = dst_ty.slot_in(self.module.id())?;
         let v = IsValue::as_erased(value);
         let opcode = if value.ty().address_space() == dst_ty.address_space() {
             super::instr_types::CastOpcode::BitCast
@@ -6736,14 +6857,14 @@ where
                 .folder
                 .create_pointer_bitcast_or_addrspace_cast(constant, dst_ty.as_type())?
         {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
         if let Some(folded) = self.folder.fold_cast_dyn(opcode, v, dst_ty.as_type())? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
+            let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(opcode, v.id);
+        let payload = CastOpData::new(opcode, v.slot_trusting_same_module());
         Ok(self
             .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -7238,9 +7359,15 @@ where
     {
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let payload = PhiData::new();
-        let inst =
-            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(PhiInstId::from_raw(self.module.id(), inst.slot()))
+        let inst = self.append_phi_instruction(
+            ty.slot_trusting_same_module(),
+            InstructionKindData::Phi(payload),
+            name,
+        );
+        Ok(PhiInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Runtime-width phi for the [`crate::IntDyn`] case. Takes the
@@ -7260,9 +7387,15 @@ where
         Name: AsRef<str>,
     {
         let payload = PhiData::new();
-        let inst =
-            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(PhiInstId::from_raw(self.module.id(), inst.slot()))
+        let inst = self.append_phi_instruction(
+            ty.slot_in(self.module.id())?,
+            InstructionKindData::Phi(payload),
+            name,
+        );
+        Ok(PhiInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Float-typed phi: `phi <fpty>`. Marker-only form keyed on
@@ -7284,9 +7417,15 @@ where
     {
         let ty = K::ir_type(ModuleRef::<B>::new(self.module));
         let payload = super::instr_types::PhiData::new();
-        let inst =
-            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(FpPhiInstId::from_raw(self.module.id(), inst.slot()))
+        let inst = self.append_phi_instruction(
+            ty.slot_trusting_same_module(),
+            InstructionKindData::Phi(payload),
+            name,
+        );
+        Ok(FpPhiInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Runtime-kind float phi: takes the type explicitly because
@@ -7306,9 +7445,15 @@ where
         Name: AsRef<str>,
     {
         let payload = super::instr_types::PhiData::new();
-        let inst =
-            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(FpPhiInstId::from_raw(self.module.id(), inst.slot()))
+        let inst = self.append_phi_instruction(
+            ty.slot_in(self.module.id())?,
+            InstructionKindData::Phi(payload),
+            name,
+        );
+        Ok(FpPhiInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Pointer-typed phi in the default address space (addrspace 0).
@@ -7328,9 +7473,15 @@ where
     {
         let ty = self.module.ptr_type::<B>(0);
         let payload = super::instr_types::PhiData::new();
-        let inst =
-            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(PointerPhiInstId::from_raw(self.module.id(), inst.slot()))
+        let inst = self.append_phi_instruction(
+            ty.slot_trusting_same_module(),
+            InstructionKindData::Phi(payload),
+            name,
+        );
+        Ok(PointerPhiInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Pointer-typed phi in a caller-specified address space. Mirrors
@@ -7350,9 +7501,15 @@ where
         Name: AsRef<str>,
     {
         let payload = super::instr_types::PhiData::new();
-        let inst =
-            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(PointerPhiInstId::from_raw(self.module.id(), inst.slot()))
+        let inst = self.append_phi_instruction(
+            ty.slot_in(self.module.id())?,
+            InstructionKindData::Phi(payload),
+            name,
+        );
+        Ok(PointerPhiInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Runtime-typed phi for an *arbitrary* first-class result type — the
@@ -7390,8 +7547,16 @@ where
         Name: AsRef<str>,
     {
         let payload = PhiData::new();
-        let inst = self.append_phi_instruction(ty.id(), InstructionKindData::Phi(payload), name);
-        Ok(OtherPhiInstId::from_raw(self.module.id(), inst.slot()))
+        // Boundary: the caller's phi type, admitted before the append.
+        let inst = self.append_phi_instruction(
+            ty.slot_in(self.module.id())?,
+            InstructionKindData::Phi(payload),
+            name,
+        );
+        Ok(OtherPhiInstId::from_raw(
+            self.module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     // ---- Branch / Unreachable ----
@@ -7858,7 +8023,11 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B, W>::from_raw(inst.slot(), module_ref, void_ty),
+            SwitchInst::<Open, B, W>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                void_ty,
+            ),
         ))
     }
 
@@ -8085,7 +8254,11 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            IndirectBrInst::<Open, B>::from_raw(inst.slot(), module_ref, void_ty),
+            IndirectBrInst::<Open, B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                void_ty,
+            ),
         ))
     }
 
@@ -8250,7 +8423,12 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.slot(), module_ref, ret_ty).retag::<Ret::Marker>(),
+            InvokeInst::<Dyn, B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                ret_ty,
+            )
+            .retag::<Ret::Marker>(),
         ))
     }
 
@@ -8434,7 +8612,12 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.slot(), module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                ret_ty,
+            )
+            .retag::<R2>(),
         ))
     }
 
@@ -8495,7 +8678,12 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.slot(), module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                ret_ty,
+            )
+            .retag::<R2>(),
         ))
     }
 
@@ -8579,7 +8767,12 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.slot(), module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                ret_ty,
+            )
+            .retag::<R2>(),
         ))
     }
 
@@ -8668,7 +8861,11 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.slot(), module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                ret_ty,
+            ),
         ))
     }
 
@@ -8735,7 +8932,11 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.slot(), module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                ret_ty,
+            ),
         ))
     }
 
@@ -8823,7 +9024,11 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.slot(), module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                ret_ty,
+            ),
         ))
     }
 
@@ -8843,13 +9048,15 @@ where
     where
         Name: AsRef<str>,
     {
+        // Boundary: the caller's result type, admitted before the append.
+        let result_slot = result_ty.slot_in(self.module.id())?;
         let payload = LandingPadInstData::new(cleanup);
         let inst =
-            self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
+            self.append_instruction(result_slot, InstructionKindData::LandingPad(payload), name);
         Ok(LandingPadInst::<Open, B>::from_raw(
-            inst.slot(),
+            inst.to_erased().slot_trusting_same_module(),
             ModuleRef::<B>::new(self.module),
-            result_ty.id,
+            result_slot,
         ))
     }
 
@@ -8924,7 +9131,7 @@ where
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
         Ok(CleanupPadInst::<B>::from_raw(
-            inst.slot(),
+            inst.to_erased().slot_trusting_same_module(),
             ModuleRef::<B>::new(self.module),
             token_ty,
         ))
@@ -8956,7 +9163,7 @@ where
         let token_ty = self.module.token_type::<B>().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
         Ok(CatchPadInst::<B>::from_raw(
-            inst.slot(),
+            inst.to_erased().slot_trusting_same_module(),
             ModuleRef::<B>::new(self.module),
             token_ty,
         ))
@@ -9112,7 +9319,11 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CatchSwitchInst::<Open, B>::from_raw(inst.slot(), module_ref, token_ty),
+            CatchSwitchInst::<Open, B>::from_raw(
+                inst.to_erased().slot_trusting_same_module(),
+                module_ref,
+                token_ty,
+            ),
         ))
     }
 
@@ -9208,7 +9419,8 @@ where
         kind: InstructionKindData,
         name: N,
     ) -> IntValue<'ctx, W, B> {
-        let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
+        // Internal: `like` is an operand its caller has already admitted.
+        let inst = self.append_instruction(like.ty().slot_trusting_same_module(), kind, name);
         IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -9220,7 +9432,8 @@ where
         kind: InstructionKindData,
         name: N,
     ) -> FloatValue<'ctx, K, B> {
-        let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
+        // Internal: `like` is an operand its caller has already admitted.
+        let inst = self.append_instruction(like.ty().slot_trusting_same_module(), kind, name);
         FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -9238,7 +9451,9 @@ where
         kind: InstructionKindData,
         name: N,
     ) -> IntValue<'ctx, W, B> {
-        let inst = self.append_instruction(ty.as_type().id(), kind, name);
+        // Internal: every caller mints `ty`, or admits a caller's type at its
+        // own entry before any folder or append sees it.
+        let inst = self.append_instruction(ty.slot_trusting_same_module(), kind, name);
         IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -9250,7 +9465,9 @@ where
         kind: InstructionKindData,
         name: N,
     ) -> FloatValue<'ctx, K, B> {
-        let inst = self.append_instruction(ty.as_type().id(), kind, name);
+        // Internal: every caller mints `ty`, or admits a caller's type at its
+        // own entry before any folder or append sees it.
+        let inst = self.append_instruction(ty.slot_trusting_same_module(), kind, name);
         FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -9270,7 +9487,8 @@ where
         mut payload: LoadInstData,
         name: N,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        payload.pointee_ty = ty.as_type().id();
+        // Internal: every caller mints `ty` or admits it at its own entry.
+        payload.pointee_ty = ty.slot_trusting_same_module();
         let inst = self.load_inner(payload, name)?;
         Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
     }
@@ -9284,7 +9502,8 @@ where
         mut payload: LoadInstData,
         name: N,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        payload.pointee_ty = ty.as_type().id();
+        // Internal: every caller mints `ty` or admits it at its own entry.
+        payload.pointee_ty = ty.slot_trusting_same_module();
         let inst = self.load_inner(payload, name)?;
         Ok(FloatValue::<K, B>::from_value_unchecked(inst.to_erased()))
     }
@@ -9302,7 +9521,9 @@ where
         kind: InstructionKindData,
         name: N,
     ) -> PointerValue<'ctx, B> {
-        let inst = self.append_instruction(ptr_ty.as_type().id(), kind, name);
+        // Internal: every caller mints `ptr_ty`, derives it from an admitted
+        // operand, or admits a caller's type at its own entry.
+        let inst = self.append_instruction(ptr_ty.slot_trusting_same_module(), kind, name);
         PointerValue::from_value_unchecked(inst.to_erased())
     }
 
@@ -9315,7 +9536,7 @@ where
         mut payload: LoadInstData,
         name: N,
     ) -> IrResult<PointerValue<'ctx, B>> {
-        payload.pointee_ty = ptr_ty.as_type().id();
+        payload.pointee_ty = ptr_ty.slot_trusting_same_module();
         let inst = self.load_inner(payload, name)?;
         Ok(PointerValue::from_value_unchecked(inst.to_erased()))
     }
@@ -9849,7 +10070,10 @@ where
     pub fn build(self) -> IrResult<CallInstId<RC, B>> {
         let module_id = self.parent.module.id();
         let inst = self.emit()?;
-        Ok(CallInstId::from_raw(module_id, inst.slot()))
+        Ok(CallInstId::from_raw(
+            module_id,
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 
     /// Validate and append the call, handing back the freshly attached
@@ -10036,7 +10260,7 @@ where
         );
         Ok(TypedCallInstId::from_raw(
             self.parent.module.id(),
-            inst.slot(),
+            inst.to_erased().slot_trusting_same_module(),
         ))
     }
 }
@@ -10128,7 +10352,11 @@ where
         let descriptor = self.inner.intrinsic_descriptor.clone();
         let module = ModuleRef::<B>::new(self.inner.parent.module);
         let inst = self.inner.emit()?;
-        let call = CallInst::<Dyn, B>::from_raw(inst.slot(), module, inst.ty().id());
+        let call = CallInst::<Dyn, B>::from_raw(
+            inst.to_erased().slot_trusting_same_module(),
+            module,
+            inst.ty().slot_trusting_same_module(),
+        );
         // Reject an ordinary call, exactly as `IntrinsicInst::from_call` does
         // — the id is only minted once the callee is a generated intrinsic
         // declaration, so viewing it can never fail that check afterwards.
@@ -10140,7 +10368,10 @@ where
                     .unwrap_or_else(|| "intrinsic call".to_owned()),
             });
         }
-        Ok(IntrinsicInstId::from_raw(module.id(), inst.slot()))
+        Ok(IntrinsicInstId::from_raw(
+            module.id(),
+            inst.to_erased().slot_trusting_same_module(),
+        ))
     }
 }
 
@@ -10264,7 +10495,7 @@ where
     {
         let parent = self.parent;
         let ty = W::ir_type(ModuleRef::<B>::new(parent.module));
-        let payload = self.payload(ty.as_type().id())?;
+        let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
         parent.append_int_load(ty, payload, name).map(|v| v.id())
     }
 
@@ -10275,7 +10506,7 @@ where
     {
         let parent = self.parent;
         let ty = K::ir_type(ModuleRef::<B>::new(parent.module));
-        let payload = self.payload(ty.as_type().id())?;
+        let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
         parent.append_fp_load(ty, payload, name).map(|v| v.id())
     }
 
@@ -10286,7 +10517,7 @@ where
     pub fn pointer(self, name: &str) -> IrResult<PointerValueId<B>> {
         let parent = self.parent;
         let ty = ModuleView::<B>::new(parent.module).ptr_type(0);
-        let payload = self.payload(ty.as_type().id())?;
+        let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
         parent.append_ptr_load(ty, payload, name).map(|v| v.id())
     }
 
@@ -10299,7 +10530,7 @@ where
     {
         let parent = self.parent;
         let ty = parent.schema_ir_type::<T>()?;
-        let payload = self.payload(ty.id())?;
+        let payload = self.payload(ty.slot_trusting_same_module())?;
         let inst = parent.load_inner(payload, name)?;
         T::value_from_ir_value(inst.to_erased())
     }
@@ -10311,7 +10542,11 @@ where
         T: IrType<'ctx, B>,
     {
         let parent = self.parent;
-        let payload = self.payload(ty.as_type().id())?;
+        // Boundary: the caller's pointee type. Admitted before the parked
+        // pointer error replays; both are usage errors with no upstream
+        // ordering to follow.
+        let pointee_ty = ty.slot_in(parent.module.id())?;
+        let payload = self.payload(pointee_ty)?;
         let inst = parent.load_inner(payload, name)?;
         Ok(inst.to_erased().id())
     }
@@ -10450,7 +10685,10 @@ where
     R: ReturnMarker,
 {
     parent: &'a IrBuilder<'m, 'ctx, B, F, Positioned, R>,
-    allocated_ty: TypeSlot,
+    /// The allocated type's slot, or the checked door's refusal of a type
+    /// another module minted — replayed by [`build`](Self::build), on the same
+    /// grounds as [`num_elements`](Self::array).
+    allocated_ty: IrResult<TypeSlot>,
     /// Lifted array-size operand, or the first error a
     /// [`array`](Self::array) lift produced — replayed by
     /// [`build`](Self::build), on the same grounds as
@@ -10499,7 +10737,7 @@ where
         // Keep the FIRST failure, like `CallBuilder::arg`: the chain returns
         // `Self`, so an error has nowhere to surface until `build`.
         if self.num_elements.is_ok() {
-            self.num_elements = lifted.map(|n| Some(n.slot()));
+            self.num_elements = lifted.map(|n| Some(n.slot_trusting_same_module()));
         }
         self
     }
@@ -10547,9 +10785,10 @@ where
     /// Emit the alloca, named by the storable
     /// [`PointerValueId<B>`](crate::PointerValueId).
     pub fn build(self) -> IrResult<PointerValueId<B>> {
+        let allocated_ty = self.allocated_ty?;
         let num_elements = self.num_elements?;
         self.parent.alloca_inner(
-            self.allocated_ty,
+            allocated_ty,
             num_elements,
             self.align,
             self.addr_space,

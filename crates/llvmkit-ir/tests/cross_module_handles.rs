@@ -20,8 +20,9 @@
 //! llvmkit gives each module its own type arena.
 
 use llvmkit_ir::{
-    BasicBlock, Dyn, DynBrand, FloatValue, IntValue, IrBuilder, IrError, IrStruct, Linkage, Module,
-    PointerValue, Positioned, Unterminated, Value,
+    Align, BasicBlock, CastOpcode, Dyn, DynBrand, FloatDyn, FloatValue, GepNoWrapFlags,
+    IntCastFlags, IntDyn, IntValue, IrBuilder, IrError, IrStruct, Linkage, Module, PointerValue,
+    Positioned, TruncFlags, UiToFpFlags, Unterminated, Value, ZextFlags,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -49,6 +50,58 @@ fn builder<'m>(
     name: &str,
 ) -> IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, Positioned, Dyn> {
     IrBuilder::new_for::<Dyn>(module).position_at_end(open_block(module, name))
+}
+
+/// A builder positioned in a fresh block of `i32 f(i32, i64, float, double,
+/// ptr)` in `module`, with those five parameters as erased values.
+///
+/// No folder can fold a parameter, so an entry that fails to refuse a foreign
+/// type reaches its append and returns `Ok` — the refusal under test is the
+/// entry's own, never a fold's.
+fn builder_with_parameters<'m>(
+    module: &'m Module<DynBrand>,
+    name: &str,
+) -> (
+    IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, Positioned, Dyn>,
+    [Value<'m, DynBrand>; 5],
+) {
+    let fn_ty = module.function_type(
+        module.i32_type(),
+        [
+            module.i32_type().as_type(),
+            module.i64_type().as_type(),
+            module.f32_type().as_type(),
+            module.f64_type().as_type(),
+            module.ptr_type(0).as_type(),
+        ],
+    );
+    let f = module
+        .add_function_dyn(name, fn_ty, Linkage::External)
+        .expect("function");
+    let function = module.view(f);
+    let parameter = |index: u32| function.param(index).expect("parameter").as_erased();
+    let parameters = [
+        parameter(0),
+        parameter(1),
+        parameter(2),
+        parameter(3),
+        parameter(4),
+    ];
+    let block = function.append_basic_block(module, "entry");
+    (
+        IrBuilder::new_for::<Dyn>(module).position_at_end(block),
+        parameters,
+    )
+}
+
+/// The labels of the outcomes that are not a `ForeignType` refusal, so one
+/// assertion names every entry that let a foreign type through.
+fn not_refused(outcomes: Vec<(&'static str, Result<(), IrError>)>) -> Vec<String> {
+    outcomes
+        .into_iter()
+        .filter(|(_, outcome)| !matches!(outcome, Err(IrError::ForeignType)))
+        .map(|(label, outcome)| format!("{label}: {outcome:?}"))
+        .collect()
 }
 
 /// A typed value view from another `DynBrand` module is rejected at a typed
@@ -687,5 +740,425 @@ fn target_ext_none_rejects_a_type_from_another_module() {
         format!("{home}"),
         before,
         "a rejected constant must not mutate"
+    );
+}
+
+/// Every integer-cast entry refuses a destination type from another module
+/// before its folder or this module reads it: the typed `trunc`, `zext`,
+/// `sext`, their flag-carrying twins and `bitcast_int_to_int`, the
+/// runtime-width `trunc_dyn`, `trunc_with_flags_dyn`, `zext_dyn` / `sext_dyn`
+/// (one shared helper) and `zext_with_flags_dyn`, and `int_cast_erased`.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateTrunc`, `CreateZExt`,
+/// `CreateSExt` and `CreateCast` (`IR/IRBuilder.h`) take a destination
+/// `Type *` uniqued per `LLVMContext`.
+#[test]
+fn an_integer_cast_rejects_a_destination_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (b, [narrow, wide, ..]) = builder_with_parameters(&home, "f");
+    let narrow_typed: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
+    let wide_typed: IntValue<'_, i64, DynBrand> = wide.try_into().expect("an i64");
+    let narrow_dyn: IntValue<'_, IntDyn, DynBrand> = narrow.try_into().expect("an integer");
+    let wide_dyn: IntValue<'_, IntDyn, DynBrand> = wide.try_into().expect("an integer");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "trunc",
+            b.trunc::<i64, i32, _, _>(wide_typed, foreign.i32_type(), "t")
+                .map(|_| ()),
+        ),
+        (
+            "trunc_with_flags",
+            b.trunc_with_flags::<i64, i32, _, _>(
+                wide_typed,
+                foreign.i32_type(),
+                TruncFlags::new(),
+                "t",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "zext",
+            b.zext::<i32, i64, _, _>(narrow_typed, foreign.i64_type(), "z")
+                .map(|_| ()),
+        ),
+        (
+            "zext_with_flags",
+            b.zext_with_flags::<i32, i64, _, _>(
+                narrow_typed,
+                foreign.i64_type(),
+                ZextFlags::new(),
+                "z",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "sext",
+            b.sext::<i32, i64, _, _>(narrow_typed, foreign.i64_type(), "s")
+                .map(|_| ()),
+        ),
+        (
+            "bitcast_int_to_int",
+            b.bitcast_int_to_int::<i32, i32, _, _>(narrow_typed, foreign.i32_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "trunc_dyn",
+            b.trunc_dyn(wide_dyn, foreign.i32_type().as_dyn(), "t")
+                .map(|_| ()),
+        ),
+        (
+            "trunc_with_flags_dyn",
+            b.trunc_with_flags_dyn(
+                wide_dyn,
+                foreign.i32_type().as_dyn(),
+                TruncFlags::new(),
+                "t",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "zext_dyn",
+            b.zext_dyn(narrow_dyn, foreign.i64_type().as_dyn(), "z")
+                .map(|_| ()),
+        ),
+        (
+            "sext_dyn",
+            b.sext_dyn(narrow_dyn, foreign.i64_type().as_dyn(), "s")
+                .map(|_| ()),
+        ),
+        (
+            "zext_with_flags_dyn",
+            b.zext_with_flags_dyn(
+                narrow_dyn,
+                foreign.i64_type().as_dyn(),
+                ZextFlags::new(),
+                "z",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "int_cast_erased",
+            b.int_cast_erased(
+                CastOpcode::Zext,
+                narrow,
+                foreign.i64_type().as_type(),
+                IntCastFlags::new(),
+                "z",
+            )
+            .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(format!("{home}"), before, "a rejected cast must not mutate");
+}
+
+/// Every floating-point cast entry refuses a destination type from another
+/// module before its folder or this module reads it: the typed `fp_ext` /
+/// `fp_trunc` (one shared helper), `fp_to_ui` / `fp_to_si` (one helper),
+/// `ui_to_fp` / `si_to_fp` (one helper), `ui_to_fp_with_flags`, the three
+/// float-side static bitcasts, and the runtime-kind `fp_ext_dyn`,
+/// `fp_trunc_dyn` and `ui_to_fp_with_flags_dyn`.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateFPExt`, `CreateFPTrunc`,
+/// `CreateFPToUI`, `CreateUIToFP` and `CreateBitCast` (`IR/IRBuilder.h`) take
+/// a destination `Type *` uniqued per `LLVMContext`.
+#[test]
+fn a_float_cast_rejects_a_destination_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (b, [narrow, _, single, double, _]) = builder_with_parameters(&home, "f");
+    let narrow_typed: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
+    let narrow_dyn: IntValue<'_, IntDyn, DynBrand> = narrow.try_into().expect("an integer");
+    let single_typed: FloatValue<'_, f32, DynBrand> = single.try_into().expect("a float");
+    let double_typed: FloatValue<'_, f64, DynBrand> = double.try_into().expect("a double");
+    let single_dyn: FloatValue<'_, FloatDyn, DynBrand> = single.try_into().expect("a float");
+    let double_dyn: FloatValue<'_, FloatDyn, DynBrand> = double.try_into().expect("a double");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "fp_ext",
+            b.fp_ext::<f32, f64, _, _>(single_typed, foreign.f64_type(), "e")
+                .map(|_| ()),
+        ),
+        (
+            "fp_trunc",
+            b.fp_trunc::<f64, f32, _, _>(double_typed, foreign.f32_type(), "t")
+                .map(|_| ()),
+        ),
+        (
+            "fp_to_ui",
+            b.fp_to_ui::<f32, i32, _, _>(single_typed, foreign.i32_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "fp_to_si",
+            b.fp_to_si::<f32, i32, _, _>(single_typed, foreign.i32_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "ui_to_fp",
+            b.ui_to_fp::<i32, f32, _, _>(narrow_typed, foreign.f32_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "si_to_fp",
+            b.si_to_fp::<i32, f32, _, _>(narrow_typed, foreign.f32_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "ui_to_fp_with_flags",
+            b.ui_to_fp_with_flags::<i32, f32, _, _>(
+                narrow_typed,
+                foreign.f32_type(),
+                UiToFpFlags::new(),
+                "c",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "bitcast_int_to_fp",
+            b.bitcast_int_to_fp::<i32, f32, _, _>(narrow_typed, foreign.f32_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "bitcast_fp_to_int",
+            b.bitcast_fp_to_int::<f32, i32, _, _>(single_typed, foreign.i32_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "bitcast_fp_to_fp",
+            b.bitcast_fp_to_fp::<f32, f32, _, _>(single_typed, foreign.f32_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "fp_ext_dyn",
+            b.fp_ext_dyn(single_dyn, foreign.f64_type().as_dyn(), "e")
+                .map(|_| ()),
+        ),
+        (
+            "fp_trunc_dyn",
+            b.fp_trunc_dyn(double_dyn, foreign.f32_type().as_dyn(), "t")
+                .map(|_| ()),
+        ),
+        (
+            "ui_to_fp_with_flags_dyn",
+            b.ui_to_fp_with_flags_dyn(
+                narrow_dyn,
+                foreign.f32_type().as_dyn(),
+                UiToFpFlags::new(),
+                "c",
+            )
+            .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(format!("{home}"), before, "a rejected cast must not mutate");
+}
+
+/// Every pointer-cast entry refuses a destination type from another module
+/// before its folder or this module reads it: `ptr_to_int`, `int_to_ptr`,
+/// `addrspace_cast`, `pointer_cast`, `ptr_to_addr_dyn` and `bitcast_dyn`.
+///
+/// No upstream counterpart: `IRBuilderBase::CreatePtrToInt`,
+/// `CreateIntToPtr`, `CreateAddrSpaceCast`, `CreatePtrToAddr` and
+/// `CreateBitCast` (`IR/IRBuilder.h`) take a destination `Type *` uniqued per
+/// `LLVMContext`.
+#[test]
+fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&home, "f");
+    let wide_typed: IntValue<'_, i64, DynBrand> = wide.try_into().expect("an i64");
+    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "ptr_to_int",
+            b.ptr_to_int::<i64, _, _>(pointer_typed, foreign.i64_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "int_to_ptr",
+            b.int_to_ptr::<i64, _, _>(wide_typed, foreign.ptr_type(0), "c")
+                .map(|_| ()),
+        ),
+        (
+            "addrspace_cast",
+            b.addrspace_cast(pointer_typed, foreign.ptr_type(1), "c")
+                .map(|_| ()),
+        ),
+        (
+            "pointer_cast",
+            b.pointer_cast(pointer_typed, foreign.ptr_type(0), "c")
+                .map(|_| ()),
+        ),
+        (
+            "ptr_to_addr_dyn",
+            b.ptr_to_addr_dyn(pointer, foreign.i64_type().as_type(), "c")
+                .map(|_| ()),
+        ),
+        (
+            "bitcast_dyn",
+            b.bitcast_dyn(pointer, foreign.ptr_type(0).as_type(), "c")
+                .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(format!("{home}"), before, "a rejected cast must not mutate");
+}
+
+/// Every memory entry refuses a type from another module before this module
+/// reads it: the allocated type of `alloca`, `alloca_with_align`,
+/// `array_alloca`, `array_alloca_with_align` and `alloca_builder`, the load
+/// type of `load`, `load_with_align`, `int_load_dyn`, `fp_load_dyn` and
+/// `LoadBuilder::erased`, and the source element type of `gep` and
+/// `gep_erased`.
+///
+/// No upstream counterpart: `IRBuilderBase::CreateAlloca`, `CreateLoad` and
+/// `CreateGEP` (`IR/IRBuilder.h`) take a `Type *` uniqued per `LLVMContext`.
+#[test]
+fn a_memory_entry_rejects_a_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&home, "f");
+    let wide_dyn: IntValue<'_, IntDyn, DynBrand> = wide.try_into().expect("an integer");
+    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let align = Align::new(4).expect("a power of two");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        ("alloca", b.alloca(foreign.i32_type(), "a").map(|_| ())),
+        (
+            "alloca_with_align",
+            b.alloca_with_align(foreign.i32_type(), align, "a")
+                .map(|_| ()),
+        ),
+        (
+            "array_alloca",
+            b.array_alloca(foreign.i32_type(), wide_dyn, "a")
+                .map(|_| ()),
+        ),
+        (
+            "array_alloca_with_align",
+            b.array_alloca_with_align(foreign.i32_type(), wide_dyn, align, "a")
+                .map(|_| ()),
+        ),
+        (
+            "alloca_builder",
+            b.alloca_builder(foreign.i32_type()).build().map(|_| ()),
+        ),
+        (
+            "load",
+            b.load(foreign.i32_type(), pointer_typed, "l").map(|_| ()),
+        ),
+        (
+            "load_with_align",
+            b.load_with_align(foreign.i32_type(), pointer_typed, align, "l")
+                .map(|_| ()),
+        ),
+        (
+            "int_load_dyn",
+            b.int_load_dyn(foreign.i32_type().as_dyn(), pointer_typed, "l")
+                .map(|_| ()),
+        ),
+        (
+            "fp_load_dyn",
+            b.fp_load_dyn(foreign.f32_type().as_dyn(), pointer_typed, "l")
+                .map(|_| ()),
+        ),
+        (
+            "LoadBuilder::erased",
+            b.load_from(pointer_typed)
+                .erased(foreign.i32_type(), "l")
+                .map(|_| ()),
+        ),
+        (
+            "gep",
+            b.gep(
+                foreign.i32_type(),
+                pointer_typed,
+                Vec::<IntValue<'_, IntDyn, DynBrand>>::new(),
+                "g",
+            )
+            .map(|_| ()),
+        ),
+        (
+            "gep_erased",
+            b.gep_erased(
+                foreign.i32_type(),
+                pointer,
+                Vec::<Value<'_, DynBrand>>::new(),
+                GepNoWrapFlags::inbounds(),
+                "g",
+            )
+            .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected memory entry must not mutate"
+    );
+}
+
+/// Every phi entry that takes its type, `landingpad` and `va_arg` refuse a
+/// type from another module before this module reads it.
+///
+/// No upstream counterpart: `IRBuilderBase::CreatePHI`, `CreateLandingPad`
+/// and `CreateVAArg` (`IR/IRBuilder.h`) take a `Type *` uniqued per
+/// `LLVMContext`.
+#[test]
+fn a_phi_pad_or_va_arg_rejects_a_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (b, [.., pointer]) = builder_with_parameters(&home, "f");
+    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "int_phi_dyn",
+            b.int_phi_dyn(foreign.i32_type().as_dyn(), "p").map(|_| ()),
+        ),
+        (
+            "fp_phi_dyn",
+            b.fp_phi_dyn(foreign.f32_type().as_dyn(), "p").map(|_| ()),
+        ),
+        (
+            "pointer_phi_in_addrspace",
+            b.pointer_phi_in_addrspace(foreign.ptr_type(0), "p")
+                .map(|_| ()),
+        ),
+        (
+            "phi_dyn",
+            b.phi_dyn(foreign.i32_type().as_type(), "p").map(|_| ()),
+        ),
+        (
+            "landingpad",
+            b.landingpad(foreign.i32_type().as_type(), true, "pad")
+                .map(|_| ()),
+        ),
+        (
+            "va_arg",
+            b.va_arg(pointer_typed, foreign.i32_type().as_type(), "v")
+                .map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected entry must not mutate"
     );
 }

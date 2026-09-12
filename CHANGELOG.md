@@ -74,6 +74,19 @@ cut, entries accumulate under **Unreleased**.
   or `ForeignType` before anything is interned or any use moves. The two
   infallible siblings, `dso_local_equivalent` and `no_cfi`, still cannot report
   a foreign function; they are marked for the task that makes them fallible.
+- **Fixed (llvmkit-ir):** the `IrBuilder` entries that take a *type* stored
+  its slot without comparing modules: every cast entry's destination type
+  (the typed and `_dyn` integer, float and pointer casts, the four static
+  bitcasts, `bitcast_dyn`, `ptr_to_addr_dyn` and `int_cast_erased`), the
+  allocated type of `alloca`, `alloca_with_align`, `array_alloca`,
+  `array_alloca_with_align` and `alloca_builder`, the load type of `load`,
+  `load_with_align`, `int_load_dyn`, `fp_load_dyn` and
+  `LoadBuilder::erased`, the source element type of `gep`, `inbounds_gep`,
+  `gep_with_flags` and `gep_erased`, the phi type of `int_phi_dyn`,
+  `fp_phi_dyn`, `pointer_phi_in_addrspace` and `phi_dyn`, and the result
+  type of `landingpad` and `va_arg`. Each now returns `ForeignType` at its
+  entry, before the folder or the module reads the type
+  (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type
