@@ -31,8 +31,8 @@ use crate::instr_types::{BinaryOpData, BranchKind, CastOpcode};
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::select_pattern::{SelectPatternFlavor, int_min_max_over};
-use crate::r#type::TypeKind;
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::r#type::{TypeKind, TypeSlotAccess};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{
     MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, compute_constant_range,
 };
@@ -969,7 +969,8 @@ fn logical_operands<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Select(data) => {
             let condition = value_from_slot(value, data.cond.get());
             // Don't match a scalar select of bool vectors.
-            if condition.ty().id() != value.ty().id() {
+            if condition.ty().slot_trusting_same_module() != value.ty().slot_trusting_same_module()
+            {
                 return None;
             }
             let true_value = value_from_slot(value, data.true_val.get());
@@ -1001,7 +1002,11 @@ fn nsw_sub_of<'ctx, B: ModuleBrand + 'ctx>(
     let Some(InstructionKindData::Sub(data)) = instruction_kind(value) else {
         return false;
     };
-    data.no_signed_wrap && data.lhs.get() == lhs.slot() && data.rhs.get() == rhs.slot()
+    // boundary (F2): Task 27
+    // One implied condition's operands against the other condition's values.
+    data.no_signed_wrap
+        && data.lhs.get() == lhs.slot_trusting_same_module()
+        && data.rhs.get() == rhs.slot_trusting_same_module()
 }
 
 /// The operands of a `sub`. Ports `m_Sub(m_Value(A), m_Value(B))`.
@@ -1028,7 +1033,9 @@ fn is_commutative_add_of<'ctx, B: ModuleBrand + 'ctx>(
         return false;
     };
     let (lhs, rhs) = (data.lhs.get(), data.rhs.get());
-    (lhs == a.slot() && rhs == b.slot()) || (lhs == b.slot() && rhs == a.slot())
+    // boundary (F2): Task 27
+    let (a, b) = (a.slot_trusting_same_module(), b.slot_trusting_same_module());
+    (lhs == a && rhs == b) || (lhs == b && rhs == a)
 }
 
 /// The constant `C` when `value` is `expected +nsw C` or `expected | C`. Ports
@@ -1043,7 +1050,8 @@ fn nsw_add_or_or_constant<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Or(data) => data,
         _ => return None,
     };
-    (data.lhs.get() == expected.slot())
+    // boundary (F2): Task 27
+    (data.lhs.get() == expected.slot_trusting_same_module())
         .then(|| constant_int(value_from_slot(value, data.rhs.get())))?
 }
 
@@ -1089,7 +1097,9 @@ fn and_over<'ctx, B: ModuleBrand + 'ctx>(
 fn lshr_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>, expected: Value<'ctx, B>) -> bool {
     matches!(
         instruction_kind(value),
-        Some(InstructionKindData::Lshr(data)) if data.lhs.get() == expected.slot()
+        // boundary (F2): Task 27
+        Some(InstructionKindData::Lshr(data))
+            if data.lhs.get() == expected.slot_trusting_same_module()
     )
 }
 
@@ -1102,7 +1112,8 @@ fn udiv_of_by_constant<'ctx, B: ModuleBrand + 'ctx>(
     let InstructionKindData::Udiv(data) = instruction_kind(value)? else {
         return None;
     };
-    (data.lhs.get() == expected.slot())
+    // boundary (F2): Task 27
+    (data.lhs.get() == expected.slot_trusting_same_module())
         .then(|| constant_int(value_from_slot(value, data.rhs.get())))?
 }
 
@@ -1147,10 +1158,12 @@ fn commutative_other_operand<'ctx, B: ModuleBrand + 'ctx>(
     data: &BinaryOpData,
     expected: Value<'ctx, B>,
 ) -> Option<Value<'ctx, B>> {
-    if data.lhs.get() == expected.slot() {
+    // boundary (F2): Task 27
+    let expected = expected.slot_trusting_same_module();
+    if data.lhs.get() == expected {
         return Some(value_from_slot(anchor, data.rhs.get()));
     }
-    (data.rhs.get() == expected.slot()).then(|| value_from_slot(anchor, data.lhs.get()))
+    (data.rhs.get() == expected).then(|| value_from_slot(anchor, data.lhs.get()))
 }
 
 /// Both operands of a binary operator, as values.

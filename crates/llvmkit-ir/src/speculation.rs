@@ -30,6 +30,7 @@
 //!   value but not its *classification*, so that arm takes upstream's
 //!   conservative `default`: a `catchpad` is assumed not to transfer.
 
+use crate::ApInt;
 use crate::atomic_ordering::AtomicOrdering;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored, MemoryEffects};
 use crate::cfg::kind_successor_ids;
@@ -44,9 +45,8 @@ use crate::intrinsics::{IntrinsicId, descriptor_for_callee};
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::pass_context::BasicBlockView;
 use crate::r#type::TypeKind;
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::propagates_poison;
-use crate::{ApInt, IsValue};
 use core::cell::Cell;
 use std::collections::{HashSet, VecDeque};
 
@@ -423,7 +423,9 @@ pub fn is_guaranteed_to_execute_for_every_iteration<'ctx, B: ModuleBrand + 'ctx>
         return false;
     }
     for candidate in loop_header.instructions() {
-        if candidate.slot() == instruction.slot() {
+        // boundary (F2): Task 27
+        // The loop header's instructions against the caller's instruction.
+        if candidate.slot_trusting_same_module() == instruction.slot_trusting_same_module() {
             return true;
         }
         if !is_guaranteed_to_transfer_execution_to_successor(&candidate) {
@@ -496,7 +498,9 @@ pub(crate) fn program_undefined_for_value<'ctx, B: ModuleBrand + 'ctx>(
             if scan_limit == 0 {
                 break;
             }
-            if guaranteed_well_defined_operands(instruction, |operand| operand == value.slot()) {
+            if guaranteed_well_defined_operands(instruction, |operand| {
+                operand == value.slot_trusting_same_module()
+            }) {
                 return true;
             }
             if !transfers_execution(instruction) {
@@ -509,7 +513,7 @@ pub(crate) fn program_undefined_for_value<'ctx, B: ModuleBrand + 'ctx>(
     // The set of instructions proven to yield poison if `value` does.
     let mut yields_poison: HashSet<ValueSlot> = HashSet::new();
     let mut visited: HashSet<ValueSlot> = HashSet::new();
-    yields_poison.insert(value.slot());
+    yields_poison.insert(value.slot_trusting_same_module());
     visited.insert(block);
 
     let mut block = block;
@@ -543,7 +547,7 @@ pub(crate) fn program_undefined_for_value<'ctx, B: ModuleBrand + 'ctx>(
                     yields_poison.contains(operand) && propagates_poison(instruction, index)
                 });
             if propagates {
-                yields_poison.insert(instruction.slot());
+                yields_poison.insert(instruction.slot_trusting_same_module());
                 continue;
             }
 
@@ -554,7 +558,7 @@ pub(crate) fn program_undefined_for_value<'ctx, B: ModuleBrand + 'ctx>(
                 && yields_poison.contains(&data.true_val.get())
                 && yields_poison.contains(&data.false_val.get())
             {
-                yields_poison.insert(instruction.slot());
+                yields_poison.insert(instruction.slot_trusting_same_module());
             }
         }
 
@@ -586,7 +590,7 @@ pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx>(
     // Assume `root` is poison, propagate that forward through every user whose
     // propagation is tractable, then ask whether any of them is provable UB
     // that must run before `on_path_to`.
-    let root_slot = root.slot();
+    let root_slot = root.slot_trusting_same_module();
     let mut known_poison: HashSet<ValueSlot> = HashSet::new();
     let mut worklist: VecDeque<InstructionView<'ctx, B>> = VecDeque::new();
     worklist.push_back(*root);
@@ -601,7 +605,7 @@ pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx>(
         // Where propagation cannot be tracked, skip the instruction and its
         // transitive users. Safe, because `false` is the conservative answer.
         let instruction = view.to_erased();
-        if view.slot() != root_slot {
+        if view.slot_trusting_same_module() != root_slot {
             let kind = view_kind(&view);
             let carries_poison = kind
                 .operand_ids()
@@ -615,7 +619,7 @@ pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx>(
             }
         }
 
-        if known_poison.insert(view.slot()) {
+        if known_poison.insert(view.slot_trusting_same_module()) {
             worklist.extend(instruction.users());
         }
     }
@@ -1128,7 +1132,7 @@ fn scan_origin<'ctx, B: ModuleBrand + 'ctx>(
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => Some((
             instruction.parent.get(),
-            ScanStart::AfterInstruction(value.slot()),
+            ScanStart::AfterInstruction(value.slot_trusting_same_module()),
         )),
         ValueKindData::Argument { parent_fn, .. } => {
             let function = value_from_slot(value, *parent_fn);

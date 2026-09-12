@@ -42,7 +42,7 @@ use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{returned_arg_operand, value_from_slot};
 use std::collections::HashSet;
 
@@ -157,7 +157,7 @@ pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
             underlying_object(candidate, MAX_LOOKUP_SEARCH_DEPTH)
         };
 
-        if !visited.insert(candidate.slot()) {
+        if !visited.insert(candidate.slot_trusting_same_module()) {
             continue;
         }
         if visited.len() == MAX_VISITED_AGGRESSIVE {
@@ -184,7 +184,11 @@ pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
 
         match object {
             None => object = Some(candidate),
-            Some(known) if known.slot() != candidate.slot() => return first_object,
+            Some(known)
+                if known.slot_trusting_same_module() != candidate.slot_trusting_same_module() =>
+            {
+                return first_object;
+            }
             Some(_) => {}
         }
     }
@@ -207,7 +211,7 @@ pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
 
     while let Some(candidate) = worklist.pop() {
         let candidate = underlying_object(candidate, max_lookup);
-        if !visited.insert(candidate.slot()) {
+        if !visited.insert(candidate.slot_trusting_same_module()) {
             continue;
         }
         match instruction_kind(candidate) {
@@ -246,7 +250,7 @@ pub fn underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
 
     while let Some(current) = working.pop() {
         for object in underlying_objects(current, MAX_LOOKUP_SEARCH_DEPTH) {
-            if !visited.insert(object.slot()) {
+            if !visited.insert(object.slot_trusting_same_module()) {
                 continue;
             }
             if operator_opcode(object) == Some(Opcode::IntToPtr)
@@ -330,14 +334,18 @@ pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
     let mut result: Option<Value<'ctx, B>> = None;
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     let mut worklist = Vec::new();
-    visited.insert(value.slot());
+    visited.insert(value.slot_trusting_same_module());
     worklist.push(value);
 
     while let Some(current) = worklist.pop() {
         let mut pending: Vec<Value<'ctx, B>> = Vec::new();
         match instruction_kind(current)? {
             InstructionKindData::Alloca(_) => match result {
-                Some(known) if known.slot() != current.slot() => return None,
+                Some(known)
+                    if known.slot_trusting_same_module() != current.slot_trusting_same_module() =>
+                {
+                    return None;
+                }
                 _ => result = Some(current),
             },
             InstructionKindData::Cast(data) => {
@@ -371,7 +379,7 @@ pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
             _ => return None,
         }
         for candidate in pending {
-            if visited.insert(candidate.slot()) {
+            if visited.insert(candidate.slot_trusting_same_module()) {
                 worklist.push(candidate);
             }
         }
@@ -659,7 +667,7 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
     // on the global itself.
     let index_bits = index_type_size_in_bits(value.ty(), data_layout);
     let (base, byte_offset) = strip_and_accumulate_offset(value, index_bits, true, data_layout);
-    if base.slot() != global.slot() {
+    if base.slot_trusting_same_module() != global.slot_trusting_same_module() {
         return None;
     }
     let start_index = byte_offset.limited_value(u64::MAX);
@@ -797,7 +805,7 @@ fn string_length_recursive<'ctx, B: ModuleBrand + 'ctx>(
     let value = strip_pointer_casts(value);
 
     if let Some(InstructionKindData::Phi(data)) = instruction_kind(value) {
-        if !phis.insert(value.slot()) {
+        if !phis.insert(value.slot_trusting_same_module()) {
             return StringLength::Cyclic;
         }
         // See whether every incoming string has the same length.
@@ -975,7 +983,9 @@ fn merge_bytewise<'ctx, B: ModuleBrand + 'ctx>(
     match (lhs, rhs) {
         (BytewiseValue::AnyByte, other) | (other, BytewiseValue::AnyByte) => Some(other),
         (BytewiseValue::Byte(a), BytewiseValue::Byte(b)) if a == b => Some(BytewiseValue::Byte(a)),
-        (BytewiseValue::Value(a), BytewiseValue::Value(b)) if a.slot() == b.slot() => {
+        (BytewiseValue::Value(a), BytewiseValue::Value(b))
+            if a.slot_trusting_same_module() == b.slot_trusting_same_module() =>
+        {
             Some(BytewiseValue::Value(a))
         }
         _ => None,
@@ -1131,7 +1141,7 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
     }
     let mut current = value;
     let mut visited: HashSet<ValueSlot> = HashSet::new();
-    visited.insert(current.slot());
+    visited.insert(current.slot_trusting_same_module());
     loop {
         let next = match operator_opcode(current) {
             // `if (auto *GEP = dyn_cast<GEPOperator>(V)) { case PSK_InBounds:
@@ -1185,7 +1195,7 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
         };
         current = next;
         // `while (Visited.insert(V).second);`
-        if !visited.insert(current.slot()) {
+        if !visited.insert(current.slot_trusting_same_module()) {
             return current;
         }
     }

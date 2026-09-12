@@ -352,7 +352,8 @@ use crate::instruction::{InstructionKindData, InstructionView};
 use crate::int_width::IntDyn;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::operator::is_supported_floating_point_type;
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::r#type::TypeSlotAccess;
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{
     MAX_ANALYSIS_RECURSION_DEPTH, NswRequirement, PoisonPolicy, ValueTrackingQuery,
     is_known_negation,
@@ -473,7 +474,13 @@ pub fn match_decomposed_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // Deal with type mismatches.
-    if look_through_cast && compare_lhs.ty().id() != true_value.ty().id() {
+    // boundary (F2): Task 27
+    // The decomposed form takes the compare operands and the arms as separate
+    // caller values; their types are compared as if they shared an arena.
+    if look_through_cast
+        && compare_lhs.ty().slot_trusting_same_module()
+            != true_value.ty().slot_trusting_same_module()
+    {
         for (cast_side, other_side, cast_is_true_arm) in [
             (true_value, false_value, true),
             (false_value, true_value, false),
@@ -1298,7 +1305,8 @@ fn is_negation_of<'ctx, B: ModuleBrand + 'ctx>(
         return false;
     };
     int_constant(value_from_slot(value, data.lhs.get())).is_some_and(|constant| constant.is_zero())
-        && data.rhs.get() == negated.slot()
+        // boundary (F2): Task 27
+        && data.rhs.get() == negated.slot_trusting_same_module()
 }
 
 /// Upstream's `m_CombineOr(m_Specific(CmpLHS), m_SExt(m_Specific(CmpLHS)))`:
@@ -1313,7 +1321,8 @@ fn is_compare_lhs_or_its_sext<'ctx, B: ModuleBrand + 'ctx>(
     matches!(
         instruction_kind(arm),
         Some(InstructionKindData::Cast(data))
-            if data.kind == CastOpcode::Sext && data.src.get() == compare_lhs.slot()
+            // boundary (F2): Task 27
+        if data.kind == CastOpcode::Sext && data.src.get() == compare_lhs.slot_trusting_same_module()
     )
 }
 
@@ -1523,12 +1532,16 @@ fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx>(
     let Some(InstructionKindData::Cast(cast)) = instruction_kind(first) else {
         return None;
     };
-    let source_ty = value_from_slot(first, cast.src.get()).ty().id();
+    let source_ty = value_from_slot(first, cast.src.get())
+        .ty()
+        .slot_trusting_same_module();
 
     // If both arms are the same cast from the same type, look through both.
     if let Some(InstructionKindData::Cast(other)) = instruction_kind(second) {
         let other_source = value_from_slot(second, other.src.get());
-        if cast.kind == other.kind && other_source.ty().id() == source_ty {
+        // boundary (F2): Task 27
+        // `first` and `second` may be the decomposed form's separate caller arms.
+        if cast.kind == other.kind && other_source.ty().slot_trusting_same_module() == source_ty {
             return Some((cast.kind, other_source));
         }
         return None;
@@ -1547,7 +1560,8 @@ fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx>(
         return None;
     };
     if !matches!(widened.kind, CastOpcode::Sext | CastOpcode::Zext)
-        || widened.src.get() != second.slot()
+        // boundary (F2): Task 27
+            || widened.src.get() != second.slot_trusting_same_module()
     {
         return None;
     }

@@ -39,9 +39,9 @@ use crate::pass_context::FunctionView;
 use crate::speculation::{
     instruction_may_have_side_effects, instructions_transfer_execution_to_successor,
 };
-use crate::r#type::TypeKind;
-use crate::value::{Value, ValueKindData, ValueSlot};
-use crate::{ApInt, IntPredicate, IsValue};
+use crate::r#type::{TypeKind, TypeSlotAccess};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
+use crate::{ApInt, IntPredicate};
 use std::collections::{HashMap, HashSet};
 
 /// How many instructions [`is_valid_assume_for_context`] will scan between a
@@ -89,7 +89,7 @@ pub fn find_values_affected_by_condition<'ctx, B, F>(
     let mut visited: HashSet<ValueSlot> = HashSet::new();
 
     while let Some(value) = worklist.pop() {
-        if !visited.insert(value.slot()) {
+        if !visited.insert(value.slot_trusting_same_module()) {
             continue;
         }
 
@@ -310,28 +310,34 @@ pub fn is_valid_assume_for_context<'ctx, B: ModuleBrand + 'ctx>(
     let assume_block = assume.parent().slot();
     let context_block = context.parent().slot();
     let anchor = assume.to_erased();
+    // boundary (F2): Task 27
+    // `assume` and `context` are both the caller's; their slots are compared
+    // and looked up in `assume`'s blocks as if they shared an arena.
+    let assume_slot = assume.slot_trusting_same_module();
+    // boundary (F2): Task 27
+    let context_slot = context.slot_trusting_same_module();
 
     if assume_block == context_block {
         // The assume runs first: nothing in between can matter.
-        if instruction_comes_before(anchor, assume_block, assume.slot(), context.slot()) {
+        if instruction_comes_before(anchor, assume_block, assume_slot, context_slot) {
             return true;
         }
 
         // Don't let an assume affect itself — that is exactly the circularity
         // the ephemeral-value test exists to prevent, and it would also make
         // the scan below run off the end of the block.
-        if !allow_ephemerals && assume.slot() == context.slot() {
+        if !allow_ephemerals && assume_slot == context_slot {
             return false;
         }
 
         // The context comes first. Everything from it up to (but not
         // including) the assume must transfer execution to its successor, or
         // the assume might not be reached.
-        if !instructions_between_transfer(anchor, assume_block, context.slot(), assume.slot()) {
+        if !instructions_between_transfer(anchor, assume_block, context_slot, assume_slot) {
             return false;
         }
 
-        return allow_ephemerals || !is_ephemeral_value_of(anchor, assume.slot(), context.slot());
+        return allow_ephemerals || !is_ephemeral_value_of(anchor, assume_slot, context_slot);
     }
 
     if let Some(dominator_tree) = dominator_tree {
@@ -360,6 +366,11 @@ pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
     let anchor = assume.to_erased();
     let assume_block = assume.parent().slot();
     let context_block = context.parent().slot();
+    // boundary (F2): Task 27
+    // As in `is_valid_assume_for_context`: two caller instructions.
+    let assume_slot = assume.slot_trusting_same_module();
+    // boundary (F2): Task 27
+    let context_slot = context.slot_trusting_same_module();
 
     if !enclosing_function_has_attribute(anchor, context_block, AttrKind::NoSync) {
         return false;
@@ -371,7 +382,7 @@ pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
         }
         // The context block's leading half: everything before `context`.
         let leading = block_instructions(anchor, context_block);
-        let Some(context_index) = leading.iter().position(|slot| *slot == context.slot()) else {
+        let Some(context_index) = leading.iter().position(|slot| *slot == context_slot) else {
             return false;
         };
         if !has_no_free_calls(anchor, &leading[..context_index]) {
@@ -379,7 +390,7 @@ pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
         }
         // ... and then the assume's block from the assume to its end.
         let assume_range = block_instructions(anchor, assume_block);
-        let Some(assume_index) = assume_range.iter().position(|slot| *slot == assume.slot()) else {
+        let Some(assume_index) = assume_range.iter().position(|slot| *slot == assume_slot) else {
             return false;
         };
         return has_no_free_calls(anchor, &assume_range[assume_index..]);
@@ -387,8 +398,8 @@ pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
 
     let instructions = block_instructions(anchor, assume_block);
     let (Some(assume_index), Some(context_index)) = (
-        instructions.iter().position(|slot| *slot == assume.slot()),
-        instructions.iter().position(|slot| *slot == context.slot()),
+        instructions.iter().position(|slot| *slot == assume_slot),
+        instructions.iter().position(|slot| *slot == context_slot),
     ) else {
         return false;
     };
@@ -454,7 +465,7 @@ fn is_ephemeral_value_of<'ctx, B: ModuleBrand + 'ctx>(
         // Ephemeral only when every user already is.
         if !value
             .users()
-            .all(|user| ephemeral.contains(&user.to_erased().slot()))
+            .all(|user| ephemeral.contains(&user.to_erased().slot_trusting_same_module()))
         {
             continue;
         }
@@ -556,7 +567,7 @@ impl AssumptionCache {
                 if !is_assume_call(value) {
                     continue;
                 }
-                cache.assumes.push(instruction.slot());
+                cache.assumes.push(instruction.slot_trusting_same_module());
                 cache.update_affected_values(value);
             }
         }
@@ -596,7 +607,9 @@ impl AssumptionCache {
         value: Value<'ctx, B>,
     ) -> &[Assumption] {
         self.affected
-            .get(&value.slot())
+            // boundary (F2): Task 27
+            // A caller's value looked up in a cache built for one function.
+            .get(&value.slot_trusting_same_module())
             .map_or(&[], |entries| entries.as_slice())
     }
 
@@ -608,17 +621,23 @@ impl AssumptionCache {
 
         for (index, bundle) in assume_bundle_operands(assume).into_iter().enumerate() {
             for operand in bundle {
-                affected.push((operand.slot(), AssumptionSource::Bundle(index)));
+                affected.push((
+                    operand.slot_trusting_same_module(),
+                    AssumptionSource::Bundle(index),
+                ));
             }
         }
 
         if let Some(condition) = assume_condition(assume) {
             find_values_affected_by_condition(condition, true, |value| {
-                affected.push((value.slot(), AssumptionSource::Condition));
+                affected.push((
+                    value.slot_trusting_same_module(),
+                    AssumptionSource::Condition,
+                ));
             });
         }
 
-        let assume_slot = assume.slot();
+        let assume_slot = assume.slot_trusting_same_module();
         for (slot, source) in affected {
             let entries = self.affected.entry(slot).or_default();
             let record = Assumption {
@@ -663,9 +682,12 @@ impl DomConditionCache {
         let Some(condition) = conditional_branch_condition(branch) else {
             return;
         };
-        let branch_slot = branch.slot();
+        let branch_slot = branch.slot_trusting_same_module();
         find_values_affected_by_condition(condition, false, |value| {
-            let entries = self.affected.entry(value.slot()).or_default();
+            let entries = self
+                .affected
+                .entry(value.slot_trusting_same_module())
+                .or_default();
             if !entries.contains(&branch_slot) {
                 entries.push(branch_slot);
             }
@@ -687,7 +709,9 @@ impl DomConditionCache {
     {
         let slots = self
             .affected
-            .get(&value.slot())
+            // boundary (F2): Task 27
+            // A caller's value looked up in a cache built for one function.
+            .get(&value.slot_trusting_same_module())
             .cloned()
             .unwrap_or_default();
         slots
@@ -932,7 +956,7 @@ fn logical_select_operands<'ctx, B: ModuleBrand + 'ctx>(
     data: &SelectInstData,
 ) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
     let condition = value_from_slot(value, data.cond.get());
-    if condition.ty().id() != value.ty().id() {
+    if condition.ty().slot_trusting_same_module() != value.ty().slot_trusting_same_module() {
         return None;
     }
     let true_value = value_from_slot(value, data.true_val.get());
