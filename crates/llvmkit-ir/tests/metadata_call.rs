@@ -318,6 +318,12 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
 
     let invoke_host_ty = m.function_type(i8_ty, [ptr_ty.as_type()]);
     let invoke_host = m.add_function_dyn("invoke_host", invoke_host_ty, Linkage::External)?;
+    // `Verifier::visitInvokeInst` requires the unwind destination to be an EH
+    // pad, and `visitLandingPadInst` requires the function to carry a
+    // `personality`. Neither is what this test is about; without them the
+    // module is not IR `llvm-as` accepts.
+    m.view(invoke_host)
+        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
     let entry = m.view(invoke_host).append_basic_block(&m, "entry");
     let normal = m.view(invoke_host).append_basic_block(&m, "normal");
     let unwind = m.view(invoke_host).append_basic_block(&m, "unwind");
@@ -340,9 +346,9 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(normal)
         .ret(invoke_value)?;
-    IrBuilder::new_for::<Dyn>(&m)
-        .position_at_end(unwind)
-        .ret(i8_ty.const_zero())?;
+    let unwind_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
+    let _closed = unwind_b.landingpad(i8_ty.as_type(), true, "lp")?.finish();
+    unwind_b.ret(i8_ty.const_zero())?;
 
     m.verify_borrowed()
 }

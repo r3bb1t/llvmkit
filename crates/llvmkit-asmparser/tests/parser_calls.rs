@@ -192,9 +192,14 @@ fn inline_asm_without_a_function_type_is_rejected() {
 ///
 /// Both used to be parse-time rejections with llvmkit wordings, which shadowed
 /// the verifier rule llvmkit already had — the ordinary-call one carries
-/// upstream's text verbatim. The fixtures are llvmkit's, because upstream's
-/// own splits of `inline-asm-constraint-error.ll` all stop at
-/// `InlineAsm::verify` and never reach these two.
+/// upstream's text verbatim.
+///
+/// The fixtures here are llvmkit's minimal shapes; the *upstream* fixture that
+/// pins both messages is `test/Verifier/callbr.ll`, ported whole by
+/// [`upstream_callbr_label_constraint_fixture_messages_match`] below. This test
+/// used to say no upstream fixture reached these two rules, which was a claim
+/// about the splits of `inline-asm-constraint-error.ll` only and read as a
+/// claim about the tree.
 #[test]
 fn inline_asm_label_constraint_rules_are_verifier_rules() {
     const CALL: &[u8] = include_bytes!(
@@ -229,6 +234,248 @@ fn inline_asm_label_constraint_rules_are_verifier_rules() {
             "{name}: unexpected error: {err}"
         );
     }
+}
+
+/// `llvm/test/Verifier/callbr.ll`, vendored verbatim; its six inline-asm
+/// functions cut out and verified one at a time, each against the `CHECK` line
+/// the fixture writes for it.
+///
+/// Upstream's `RUN` line is `not opt -S %s -passes=verify`, so the whole file
+/// runs through `Verifier` and its diagnostics are `Check` literals. It is
+/// per-function here for the reason
+/// [`upstream_musttail_invalid_fixture_messages_match`] is: `verify_borrowed`
+/// reports the first failure where upstream's `Verifier` accumulates.
+///
+/// **Three of the four `llvm.callbr.landingpad` functions are ported by
+/// [`upstream_callbr_landingpad_fixture_messages_match`] below**, which is a
+/// separate test only because they need a `declare` prelude this one does not.
+/// The fourth, `@callbrpad_bad_type`, is still unported: its `CHECK` is
+/// `Intrinsic has incorrect argument type!`, one of the three messages
+/// `Verifier::visitIntrinsicCall`'s preamble splits out of
+/// `Intrinsic::matchIntrinsicSignature`'s result, which llvmkit collapses into
+/// `Intrinsic called with incompatible signature`. See `docs/divergences.md`
+/// entry 132.
+#[test]
+fn upstream_callbr_label_constraint_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/callbr.ll");
+    let cases = [
+        (
+            "define void @too_few_label_constraints(",
+            Some("Number of label constraints does not match number of callbr dests"),
+        ),
+        ("define void @correct_label_constraints(", None),
+        (
+            "define void @too_many_label_constraints(",
+            Some("Number of label constraints does not match number of callbr dests"),
+        ),
+        (
+            "define void @label_constraint_without_callbr(",
+            Some("Label constraints can only be used with callbr"),
+        ),
+        (
+            "define void @callbr_without_label_constraint(",
+            Some("Number of label constraints does not match number of callbr dests"),
+        ),
+        // `;; Ensure you can use the return value of a callbr in indirect
+        // targets. No issue!`
+        ("define i32 @test4(", None),
+    ];
+    for (marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, "", marker, expected);
+    }
+}
+
+/// `llvm/test/Verifier/callbr.ll`'s `llvm.callbr.landingpad` half, vendored
+/// with the rest of the fixture: three of its four functions, each against the
+/// `CHECK-NEXT` the fixture writes for it.
+///
+/// This is `Verifier::visitIntrinsicCall`'s `case Intrinsic::callbr_landingpad:`
+/// arm, the one arm of that routine's per-intrinsic `switch` llvmkit carries.
+/// The three messages are its three reachable rejections; the arm's fourth,
+/// `intrinstic requires callbr operand` (upstream's typo), has no function in
+/// this fixture — every one of them passes a `callbr` result as operand zero.
+///
+/// A separate test from
+/// [`upstream_callbr_label_constraint_fixture_messages_match`] only because
+/// these functions need a `declare` prelude the inline-asm ones do not.
+///
+/// `@callbrpad_bad_type`, the fourth function, is deliberately absent: its
+/// `CHECK` is `Intrinsic has incorrect argument type!`, which belongs to the
+/// preamble's `matchIntrinsicSignature` split rather than to this arm.
+/// `docs/divergences.md` entry 132 names it.
+#[test]
+fn upstream_callbr_landingpad_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/callbr.ll");
+    // `@test_callbr_landingpad_not_first_inst` also calls `@foo`, which the
+    // fixture declares beside the intrinsic.
+    const PRELUDE: &str = "declare i32 @llvm.callbr.landingpad.i32(i32)\ndeclare i32 @foo(i32)\n";
+    let cases = [
+        (
+            "define i32 @callbrpad_multi_preds(",
+            "Intrinsic in block must have 1 unique predecessor",
+        ),
+        (
+            "define void @callbrpad_wrong_callbr(",
+            "Intrinsic's corresponding callbr must have intrinsic's parent basic block in \
+             indirect destination list",
+        ),
+        (
+            "define i32 @test_callbr_landingpad_not_first_inst(",
+            "No other instructions may proceed intrinsic",
+        ),
+    ];
+    for (marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, PRELUDE, marker, Some(expected));
+    }
+}
+
+/// `llvm/test/Verifier/callbr-intrinsic.ll`, vendored verbatim; each of its six
+/// functions cut out with the `declare` it needs and verified on its own.
+///
+/// This is `Verifier::visitCallBrInst`'s whole non-inline-asm arm: the
+/// `getCalledFunction` `Check`, the operand-bundle `Check`, the
+/// `Intrinsic::amdgcn_kill` case's two `Check`s, and the `default:`
+/// `CheckFailed`.
+///
+/// `@test_callbr_intrinsic_wrong_signature` is one of the six now, not an
+/// exception: `IrBuilder::indirect_callbr_with_config` gives the builder the
+/// indirect-callee form it lacked, so `parse_callbr` stores the pointer
+/// operand `parseCallBr` stores and the `Check(CBI.getCalledFunction(), …)`
+/// arm of `check_callbr` is reachable. It used to be rejected by the
+/// **parser** instead. That was `docs/divergences.md`'s indirect-callbr entry,
+/// deleted in the same commit as the forward-referenced-callee model change
+/// that made a non-function callbr callee reachable from ordinary IR.
+#[test]
+fn upstream_callbr_intrinsic_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/callbr-intrinsic.ll");
+    const KILL: &str = "declare void @llvm.amdgcn.kill(i1)\n";
+    const WORKITEM: &str = "declare i32 @llvm.amdgcn.workitem.id.x()\n";
+    let cases = [
+        (
+            KILL,
+            "define void @test_callbr_intrinsic_indirect0(",
+            "Callbr amdgcn_kill only supports one indirect dest",
+        ),
+        (
+            KILL,
+            "define void @test_callbr_intrinsic_indirect2(",
+            "Callbr amdgcn_kill only supports one indirect dest",
+        ),
+        (
+            KILL,
+            "define void @test_callbr_intrinsic_no_unreachable(",
+            "Callbr amdgcn_kill indirect dest needs to be unreachable",
+        ),
+        (
+            WORKITEM,
+            "define void @test_callbr_intrinsic_unsupported(",
+            "Callbr currently only supports asm-goto and selected intrinsics",
+        ),
+        (
+            "",
+            "define void @test_callbr_intrinsic_wrong_signature(",
+            "Callbr: indirect function / invalid signature",
+        ),
+        (
+            KILL,
+            "define void @test_callbr_intrinsic_no_operand_bundles(",
+            "Callbr for intrinsics currently doesn't support operand bundles",
+        ),
+    ];
+    for (prelude, marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, prelude, marker, Some(expected));
+    }
+}
+
+/// `llvm/test/Verifier/swifterror.ll`, vendored verbatim; its four `define`s
+/// cut out and verified one at a time.
+///
+/// The rules are `Verifier::verifySwiftErrorValue` (reached from
+/// `visitFunction`'s argument loop for `@foo` and from `visitAllocaInst` for
+/// the rest), `Verifier::verifySwiftErrorCall`, and the `swifterror` loop of
+/// `Verifier::visitCallBase`.
+///
+/// **The fixture's last two lines are `declare`s and are not ported.**
+/// `Cannot have multiple 'swifterror' parameters!` is a
+/// `Verifier::verifyFunctionAttrs` `Check` and `Attribute 'swifterror'
+/// applied to incompatible type!` is one of `Verifier::verifyParameterAttrs`,
+/// which that routine calls. Neither routine has a counterpart here —
+/// `verifier.rs`'s module header says so ("Per-function attribute coherence
+/// rules … are out of scope"). See `docs/divergences.md`.
+#[test]
+fn upstream_swifterror_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/swifterror.ll");
+    let cases = [
+        (
+            "",
+            "define float @foo(",
+            "swifterror value can only be loaded and stored from, or as a swifterror argument!",
+        ),
+        (
+            "declare float @foo(ptr swifterror)\n",
+            "define float @caller(",
+            "swifterror argument for call has mismatched alloca",
+        ),
+        (
+            "",
+            "define void @swifterror_alloca_invalid_type(",
+            "swifterror alloca must have pointer type",
+        ),
+        (
+            "",
+            "define void @swifterror_alloca_array(",
+            "swifterror alloca must not be array allocation",
+        ),
+    ];
+    for (prelude, marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, prelude, marker, Some(expected));
+    }
+}
+
+/// Parse `prelude` plus the `define` beginning at `marker`, verify it, and
+/// assert either that it verifies clean (`expected` is `None`) or that the
+/// failure carries `expected`.
+fn assert_fixture_case_verifies(
+    fixture: &str,
+    prelude: &str,
+    marker: &str,
+    expected: Option<&str>,
+) {
+    let source = format!("{prelude}{}", fixture_define(fixture, marker));
+    let module = Module::dynamic("fixture_case");
+    Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .unwrap_or_else(|e| panic!("case {marker} parses: {e}"));
+    match expected {
+        None => module
+            .verify_borrowed()
+            .unwrap_or_else(|e| panic!("case {marker} carries no CHECK line, so it verifies: {e}")),
+        Some(expected) => {
+            let err = module
+                .verify_borrowed()
+                .expect_err("upstream's `RUN` line rejects this module");
+            let llvmkit_ir::IrError::VerifierFailure { message, .. } = err else {
+                panic!("case {marker}: expected a verifier failure, got {err:?}");
+            };
+            assert!(
+                message.contains(expected),
+                "case {marker}: {message:?} does not contain {expected:?}"
+            );
+        }
+    }
+}
+
+/// The `define` beginning at `marker`, through its closing brace.
+fn fixture_define(fixture: &str, marker: &str) -> String {
+    let start = fixture
+        .find(marker)
+        .unwrap_or_else(|| panic!("missing define marker {marker}"));
+    let end = fixture[start..]
+        .find("\n}")
+        .map(|idx| start + idx + 3)
+        .unwrap_or_else(|| panic!("missing define end for {marker}"));
+    fixture[start..end].to_owned()
 }
 
 /// Mirrors `test/Assembler/callbr.ll` successor structure with the upstream
@@ -959,13 +1206,11 @@ fn indirect_call_parameter_attribute_round_trips() {
 /// `test/Verifier/kcfi-operand-bundles.ll`, verbatim (the whole file). Every
 /// call in it is indirect and every one carries a `"kcfi"` operand bundle.
 ///
-/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
-/// so only the parse/print half is portable: the fixture's `CHECK:` diagnostic
-/// lines have no llvmkit counterpart, which is `docs/divergences.md` entry 125
-/// and is pinned by [`call_operand_bundle_rules_are_not_diagnosed`]. Each
-/// `CHECK-NEXT` line is the offending instruction as `AsmWriter` prints it,
-/// which is what this asserts — as a `Check::Line`, because the diagnostic the
-/// `-NEXT` counts from is not printed here.
+/// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`.
+/// This is its printed half: each `CHECK-NEXT` line is the offending
+/// instruction as `AsmWriter` prints it, asserted as a `Check::Line` because
+/// the diagnostic the `-NEXT` counts from is not printed here. The verdict half
+/// is [`upstream_kcfi_operand_bundle_fixture_messages_match`].
 #[test]
 fn indirect_call_kcfi_operand_bundles_round_trip() {
     const FIXTURE: &[u8] =
@@ -989,12 +1234,10 @@ fn indirect_call_kcfi_operand_bundles_round_trip() {
 /// is ported alongside the kcfi one rather than instead of it.
 ///
 /// Upstream's `RUN` line is `not opt -passes=verify < %s 2>&1 | FileCheck %s`,
-/// so as with [`indirect_call_kcfi_operand_bundles_round_trip`] only the
-/// parse/print half is ported; the unmatched `CHECK:` diagnostic lines are
-/// `docs/divergences.md` entry 125, pinned by
-/// [`call_operand_bundle_rules_are_not_diagnosed`]. The `CHECK-NEXT` lines are
-/// `AsmWriter` output of the offending instruction, asserted here as
-/// `Check::Line` for the same reason.
+/// so as with [`indirect_call_kcfi_operand_bundles_round_trip`] this is the
+/// parse/print half; the `CHECK-NEXT` lines are `AsmWriter` output of the
+/// offending instruction, asserted here as `Check::Line`. The verdict half is
+/// [`upstream_ptrauth_operand_bundle_fixture_messages_match`].
 #[test]
 fn indirect_call_ptrauth_operand_bundles_round_trip() {
     const FIXTURE: &[u8] =
@@ -1020,15 +1263,15 @@ fn indirect_call_ptrauth_operand_bundles_round_trip() {
 /// The `(line, column)` a diagnostic points at, computed the way
 /// `parse_file.rs` computes it for its `<path>:LINE:COL:` prefix — the same
 /// coordinates `llvm-as` prints as `<stdin>:LINE:COL:`.
-fn error_line_col(src: &str, err: &ParseError) -> (u32, u32) {
-    let span = err.loc().expect("diagnostic carries a location").span;
+fn error_line_col(src: &str, err: &ParseError) -> llvmkit_support::LineCol {
+    let span = err.loc();
     llvmkit_support::SourceMap::new(src.as_bytes()).line_col(span.start)
 }
 
 /// The source text the diagnostic's span opens on, for asserting *which token*
 /// an anchor landed on rather than only where it landed.
 fn error_token<'a>(src: &'a str, err: &ParseError) -> &'a str {
-    let span = err.loc().expect("diagnostic carries a location").span;
+    let span = err.loc();
     let start = usize::try_from(span.start).expect("offset fits usize");
     let end = usize::try_from(span.end).expect("offset fits usize");
     &src[start..end.min(src.len())]
@@ -1064,7 +1307,10 @@ fn fast_math_flags_on_a_non_fp_call_report_at_call_loc() {
         err.to_string(),
         "fast-math-flags specified for call without floating-point scalar or vector return type"
     );
-    assert_eq!(error_line_col(SRC, &err), (3, 8));
+    assert_eq!(
+        error_line_col(SRC, &err),
+        llvmkit_support::LineCol { line: 3, column: 8 }
+    );
     assert_eq!(error_token(SRC, &err), "nnan");
 }
 
@@ -1100,7 +1346,10 @@ fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
         plain.to_string(),
         "not enough parameters specified for call"
     );
-    assert_eq!(error_line_col(PLAIN, &plain), (3, 8));
+    assert_eq!(
+        error_line_col(PLAIN, &plain),
+        llvmkit_support::LineCol { line: 3, column: 8 }
+    );
     assert_eq!(error_token(PLAIN, &plain), "void");
 
     let musttail = parse_fixture_err("call_loc_musttail", MUSTTAIL.as_bytes());
@@ -1108,43 +1357,198 @@ fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
         musttail.to_string(),
         "not enough parameters specified for call"
     );
-    assert_eq!(error_line_col(MUSTTAIL, &musttail), (3, 12));
+    assert_eq!(
+        error_line_col(MUSTTAIL, &musttail),
+        llvmkit_support::LineCol {
+            line: 3,
+            column: 12
+        }
+    );
     assert_eq!(error_token(MUSTTAIL, &musttail), "call");
 }
 
-/// **Divergence lock for `docs/divergences.md` entry 125**, in the shape
-/// `parser_eh_funclet.rs::wineh_missing_funclet_token_is_not_diagnosed` uses
-/// for entry 112: it asserts what llvmkit *does*, so the entry stops being a
-/// quoted probe and starts being a test that fails when the gap closes.
-///
-/// Both fixtures are `RUN: not opt -passes=verify` upstream — every module in
-/// them is invalid IR, and between them their `CHECK:` lines pin six
-/// `Verifier::visitCallBase` operand-bundle diagnostics. llvmkit has no
-/// counterpart to that routine's bundle loop, so it accepts both. **This test
-/// asserts the divergence, not a rule**; when the loop is ported it must fail,
-/// and the two round-trip tests above then gain their verdict halves.
-#[test]
-fn call_operand_bundle_rules_are_not_diagnosed() {
-    const KCFI: &[u8] =
-        include_bytes!("fixtures/upstream/LLParser-parseCall/kcfi-operand-bundles.ll");
-    const PTRAUTH: &[u8] =
-        include_bytes!("fixtures/upstream/LLParser-parseCall/ptrauth-operand-bundles.ll");
+/// One `test/Verifier` operand-bundle fixture cut into the pieces its `RUN`
+/// line pins, all taken from the fixture text rather than retyped.
+struct OperandBundleFixture<'a> {
+    /// Everything above the `define` — the `declare`s the body refers to.
+    preamble: Vec<&'a str>,
+    /// The `define` header line.
+    define: &'a str,
+    /// The terminator and closing brace, kept verbatim so a rebuilt module
+    /// ends the way the fixture does.
+    tail: Vec<&'a str>,
+    /// One `(diagnostic, offending instruction)` per `; CHECK:` directive: the
+    /// text FileCheck matches, and the body line that follows it.
+    cases: Vec<(&'a str, &'a str)>,
+    /// The instructions under `; CHECK-NOT:` — the ones upstream reports
+    /// nothing for.
+    clean: Vec<&'a str>,
+}
 
-    for (name, fixture) in [
-        ("kcfi-operand-bundles", KCFI),
-        ("ptrauth-operand-bundles", PTRAUTH),
-    ] {
-        let module = Module::dynamic(name);
-        Parser::new(fixture, &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect("parser succeeds");
+/// Split an operand-bundle `test/Verifier` fixture the way its own directives
+/// do. Every body line must be claimed by a `; CHECK:` or by the `; CHECK-NOT:`
+/// tail; a line that is neither panics rather than being dropped, so a fixture
+/// growing a case cannot silently go unasserted.
+fn operand_bundle_fixture(fixture: &str) -> OperandBundleFixture<'_> {
+    let mut parsed = OperandBundleFixture {
+        preamble: Vec::new(),
+        define: "",
+        tail: Vec::new(),
+        cases: Vec::new(),
+        clean: Vec::new(),
+    };
+    let mut pending: Option<&str> = None;
+    let mut after_check_not = false;
+    for line in fixture.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("; CHECK-NOT:") {
+            after_check_not = true;
+            continue;
+        }
+        if trimmed.starts_with("; CHECK-NEXT:") {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("; CHECK:") {
+            pending = Some(rest.trim());
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with(';') {
+            continue;
+        }
+        if trimmed.starts_with("define ") {
+            parsed.define = line;
+            continue;
+        }
+        if parsed.define.is_empty() {
+            parsed.preamble.push(line);
+            continue;
+        }
+        if trimmed.starts_with("ret ") || trimmed == "}" {
+            parsed.tail.push(line);
+            continue;
+        }
+        match pending.take() {
+            Some(expected) => parsed.cases.push((expected, line)),
+            None if after_check_not => parsed.clean.push(line),
+            None => panic!("fixture body line is pinned by no directive: {line:?}"),
+        }
+    }
+    assert!(!parsed.define.is_empty(), "fixture has no define");
+    assert!(!parsed.cases.is_empty(), "fixture has no CHECK cases");
+    assert!(!parsed.clean.is_empty(), "fixture has no CHECK-NOT tail");
+    parsed
+}
+
+/// The fixture's preamble and `define` header wrapped around `body`.
+fn operand_bundle_module(fixture: &OperandBundleFixture<'_>, body: &[&str]) -> String {
+    let mut out = String::new();
+    for line in &fixture.preamble {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(fixture.define);
+    out.push('\n');
+    for line in body {
+        out.push_str(line);
+        out.push('\n');
+    }
+    for line in &fixture.tail {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The verifier's answer for one rebuilt module, `Ok` or the failure message.
+fn verify_operand_bundle_module(name: &str, source: &str) -> Result<(), String> {
+    let module = Module::dynamic(name);
+    Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .unwrap_or_else(|e| panic!("{name} parses: {e}\n{source}"));
+    match module.verify_borrowed() {
+        Ok(()) => Ok(()),
+        Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => Err(message),
+        Err(other) => panic!("{name}: expected a verifier failure, got {other:?}"),
+    }
+}
+
+/// Drive one `RUN: not opt -passes=verify` operand-bundle fixture: the whole
+/// file must be rejected, each `; CHECK:` directive must be produced by the
+/// instruction it precedes, and the `; CHECK-NOT:` tail must verify clean.
+///
+/// Per-instruction, for the reason
+/// [`upstream_musttail_invalid_fixture_messages_match`] is per-function:
+/// `Module::verify_borrowed` reports the *first* failure where upstream's
+/// `Verifier` keeps walking, so reproducing N `CHECK` lines takes N modules.
+/// Within one call site the two agree — upstream's `Check` macro `return`s out
+/// of `visitCallBase` on the first failure too.
+///
+/// `contains` is the comparison because a `CHECK` directive is a substring
+/// match, which is FileCheck's own rule.
+fn run_operand_bundle_fixture(name: &str, fixture: &str) {
+    let parsed = operand_bundle_fixture(fixture);
+
+    let module = Module::dynamic(name);
+    Parser::new(fixture.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .unwrap_or_else(|e| panic!("{name} parses: {e}"));
+    assert!(
+        module.verify_borrowed().is_err(),
+        "{name}: upstream's RUN line is `not opt -passes=verify`, so the whole \
+         fixture must be rejected"
+    );
+
+    for (expected, instruction) in &parsed.cases {
+        let source = operand_bundle_module(&parsed, &[instruction]);
+        let message = verify_operand_bundle_module(name, &source)
+            .expect_err(&format!("{name}: {instruction:?} must be rejected"));
         assert!(
-            module.verify_borrowed().is_ok(),
-            "divergence 125 assumes llvmkit accepts {name}; it no longer does: {:?}",
-            module.verify_borrowed().err()
+            message.contains(expected),
+            "{name}: {message:?} does not contain {expected:?} for {instruction:?}"
         );
     }
+
+    let clean = operand_bundle_module(&parsed, &parsed.clean);
+    assert_eq!(
+        verify_operand_bundle_module(name, &clean),
+        Ok(()),
+        "{name}: the `; CHECK-NOT:` tail must verify clean"
+    );
+}
+
+/// `test/Verifier/kcfi-operand-bundles.ll`, verbatim (the whole file) — the
+/// verdict half of the fixture [`indirect_call_kcfi_operand_bundles_round_trip`]
+/// ports the printed half of.
+///
+/// Its two `CHECK:` lines are `Verifier::visitCallBase`'s `"kcfi"` arm:
+/// `Multiple kcfi operand bundles` and `Kcfi bundle operand must be an i32
+/// constant`.
+#[test]
+fn upstream_kcfi_operand_bundle_fixture_messages_match() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/LLParser-parseCall/kcfi-operand-bundles.ll");
+
+    run_operand_bundle_fixture("kcfi-operand-bundles", FIXTURE);
+}
+
+/// `test/Verifier/ptrauth-operand-bundles.ll`, verbatim (the whole file) — the
+/// verdict half of the fixture
+/// [`indirect_call_ptrauth_operand_bundles_round_trip`] ports the printed half
+/// of.
+///
+/// Its four `CHECK:` lines cover `Verifier::visitCallBase`'s `"ptrauth"` arm
+/// (`Multiple ptrauth operand bundles`, `Ptrauth bundle key operand must be an
+/// i32 constant` for both a non-constant `i32` and an `i64` constant, and
+/// `Ptrauth bundle discriminator operand must be an i64`) plus `Direct call
+/// cannot have a ptrauth bundle`, the one bundle `Check` raised after the loop.
+#[test]
+fn upstream_ptrauth_operand_bundle_fixture_messages_match() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/LLParser-parseCall/ptrauth-operand-bundles.ll");
+
+    run_operand_bundle_fixture("ptrauth-operand-bundles", FIXTURE);
 }
 
 /// `test/Verifier/inline-asm-indirect-operand.ll`, verbatim (the whole file).
@@ -1152,13 +1556,12 @@ fn call_operand_bundle_rules_are_not_diagnosed() {
 /// `elementtype(i32)`.
 ///
 /// Upstream's `RUN` line is `not llvm-as < %s -o /dev/null 2>&1 | FileCheck %s`
-/// — `llvm-as` runs the verifier, and the rejection is
-/// `Verifier::verifyInlineAsmCall`'s per-operand half, which llvmkit does not
-/// port (`docs/divergences.md` entry 85). So only the parse/print half is
-/// ported: the `CHECK-NEXT` lines are the offending instruction as `AsmWriter`
-/// prints it, and `@okay`'s call is the positive case with no `CHECK` of its
-/// own. That llvmkit accepts the module is entry 85's divergence, not this
-/// test's claim.
+/// — `llvm-as` runs the verifier, so the fixture has two halves. This test is
+/// the parse/print half: the `CHECK-NEXT` lines are the offending instruction
+/// as `AsmWriter` prints it, and `@okay`'s call is the positive case with no
+/// `CHECK` of its own. The `CHECK` half — the three
+/// `Verifier::verifyInlineAsmCall` messages — is
+/// [`upstream_inline_asm_indirect_operand_fixture_messages_match`].
 #[test]
 fn inline_asm_call_elementtype_argument_attribute_round_trips() {
     const FIXTURE: &[u8] =
@@ -1186,6 +1589,46 @@ fn inline_asm_call_elementtype_argument_attribute_round_trips() {
             Check::Line(r#"callbr void asm "addl $1, $0", "=*rm,r"(i32 %p, i32 %x)"#),
         ],
     );
+}
+
+/// `llvm/test/Verifier/inline-asm-indirect-operand.ll`'s `CHECK` half: each of
+/// its six functions cut out and verified on its own, against the message the
+/// fixture writes above it.
+///
+/// These are the three `Check`s of `Verifier::verifyInlineAsmCall`'s
+/// per-operand loop, and the `call` / `invoke` / `callbr` spread is the
+/// fixture's own point — upstream reaches all three from one routine, and so
+/// does llvmkit now. `@okay` carries no `CHECK` line, so it must verify clean.
+#[test]
+fn upstream_inline_asm_indirect_operand_fixture_messages_match() {
+    const FIXTURE: &str =
+        include_str!("fixtures/upstream/LLParser-parseCall/inline-asm-indirect-operand.ll");
+    let cases = [
+        ("define void @okay(", None),
+        (
+            "define void @not_pointer_arg(",
+            Some("Operand for indirect constraint must have pointer type"),
+        ),
+        (
+            "define void @not_indirect(",
+            Some("Elementtype attribute can only be applied for indirect constraints"),
+        ),
+        (
+            "define void @missing_elementtype(",
+            Some("Operand for indirect constraint must have elementtype attribute"),
+        ),
+        (
+            "define void @not_pointer_arg_invoke(",
+            Some("Operand for indirect constraint must have pointer type"),
+        ),
+        (
+            "define void @not_pointer_arg_callbr(",
+            Some("Operand for indirect constraint must have pointer type"),
+        ),
+    ];
+    for (marker, expected) in cases {
+        assert_fixture_case_verifies(FIXTURE, "", marker, expected);
+    }
 }
 
 /// **No upstream counterpart.** The rule anchor is `LLParser::parseCall`'s
@@ -1288,19 +1731,35 @@ fn invoke_indirect_callee_round_trips() {
     );
 }
 
-/// A non-inline-asm callbr with an indirect callee is invalid IR upstream —
-/// `Verifier::visitCallBrInst` requires a direct callee ("Callbr: indirect
-/// function / invalid signature"). llvmkit rejects it at parse time, which
-/// reaches the same overall verdict (the module is rejected either way).
+/// Crafted against `LLParser::parseCallBr`, which resolves its callee through
+/// the same `convertValIDToValue` path `parseCall` uses and stores whatever
+/// `Value *` comes back — so an indirect callbr **parses**, and
+/// `Verifier::visitCallBrInst`'s `Check(CBI.getCalledFunction(), "Callbr:
+/// indirect function / invalid signature")` is what rejects it.
+///
+/// llvmkit used to reject it in `parse_callbr` instead, because the callbr
+/// builder had no indirect-callee form. The layer matters beyond tidiness:
+/// with the parser owning the verdict, the verifier's own `Check` was
+/// unreachable from any `.ll` text.
 #[test]
-fn callbr_indirect_callee_rejected() {
+fn callbr_indirect_callee_is_rejected_by_the_verifier() {
     const FIXTURE: &[u8] =
         include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_indirect_callee_rejected.ll");
 
-    assert_fixture_rejected(
-        "callbr_indirect_callee_rejected",
-        FIXTURE,
-        "expected direct function callee for callbr",
+    let module = Module::dynamic("callbr_indirect_callee_rejected");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("upstream parses an indirect callbr");
+    let err = module
+        .verify_borrowed()
+        .expect_err("upstream's verifier rejects an indirect callbr");
+    let llvmkit_ir::IrError::VerifierFailure { message, .. } = err else {
+        panic!("expected a verifier failure, got {err:?}");
+    };
+    assert!(
+        message.contains("Callbr: indirect function / invalid signature"),
+        "{message}"
     );
 }
 
@@ -1535,7 +1994,13 @@ fn call_in_zero_program_addrspace_rejects_a_nonzero_callee() {
     );
     // `; CHECK: …:[[@LINE-1]]:25:` on the line after `%call_no_as = call i8
     // %fnptr42(i32 0)` — upstream's `ID.Loc`, the `%fnptr42` token.
-    assert_eq!(error_line_col(src, &err), (10, 25));
+    assert_eq!(
+        error_line_col(src, &err),
+        llvmkit_support::LineCol {
+            line: 10,
+            column: 25
+        }
+    );
     assert_eq!(error_token(src, &err), "%fnptr42");
 }
 
@@ -1810,5 +2275,607 @@ fn fast_math_flags_on_a_non_homogeneous_aggregate_call_are_rejected() {
     for (name, source) in CASES {
         let err = parse_fixture_err(name, source.as_bytes());
         assert_eq!(err.to_string(), MESSAGE, "case {name}");
+    }
+}
+
+/// `llvm/test/Verifier/musttail-invalid.ll`, vendored verbatim; each of its
+/// eleven functions cut out with its `declare` and verified on its own, and
+/// each asserted against the `CHECK` line the fixture writes for it.
+///
+/// Upstream's `RUN` line is `not llvm-as %s -o /dev/null 2>&1 | FileCheck %s`,
+/// so every module in the file is invalid and the diagnostics are
+/// `Verifier::verifyMustTailCall`'s `Check` literals. The fixture is
+/// per-function here for the reason
+/// `parser_metadata.rs::upstream_invalid_range_metadata_fixture_messages_match`
+/// is: `Module::verify_borrowed` reports the *first* failure, where upstream's
+/// `Verifier` accumulates, so eleven separate modules is what reproduces
+/// eleven separate `CHECK` lines.
+///
+/// The `CHECK` lines are substrings of the full literal (`mismatched calling
+/// conv`, not `cannot guarantee tail call due to mismatched calling conv`),
+/// which is FileCheck's own rule, so `contains` is the faithful comparison —
+/// the same one `parser_corpus.rs` applies to an `error=` row.
+#[test]
+fn upstream_musttail_invalid_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/musttail-invalid.ll");
+    let cases = [
+        ("define void @cc_mismatch(", "mismatched calling conv"),
+        ("define void @more_parms(", "mismatched parameter counts"),
+        (
+            "define void @mismatched_intty(",
+            "mismatched parameter types",
+        ),
+        ("define void @mismatched_vararg(", "mismatched varargs"),
+        ("define void @mismatched_retty(", "mismatched return types"),
+        (
+            "define void @mismatched_byval(",
+            "mismatched ABI impacting function attributes",
+        ),
+        (
+            "define void @mismatched_inreg(",
+            "mismatched ABI impacting function attributes",
+        ),
+        (
+            "define void @mismatched_sret(",
+            "mismatched ABI impacting function attributes",
+        ),
+        (
+            "define void @mismatched_alignment(",
+            "mismatched ABI impacting function attributes",
+        ),
+        (
+            "define i32 @not_tail_pos(",
+            "musttail call must precede a ret with an optional bitcast",
+        ),
+        (
+            "define void @inline_asm(",
+            "cannot use musttail call with inline asm",
+        ),
+    ];
+    for (marker, expected) in cases {
+        let source = musttail_fixture_case(FIXTURE, marker);
+        let module = Module::dynamic("upstream_musttail_invalid_fixture_messages_match");
+        Parser::new(source.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .unwrap_or_else(|e| panic!("case {marker} parses: {e}"));
+        let err = module
+            .verify_borrowed()
+            .expect_err("`llvm-as` rejects every module in this fixture");
+        let message = match err {
+            llvmkit_ir::IrError::VerifierFailure { message, .. } => message,
+            other => panic!("case {marker}: expected a verifier failure, got {other:?}"),
+        };
+        assert!(
+            message.contains(expected),
+            "case {marker}: {message:?} does not contain {expected:?}"
+        );
+    }
+}
+
+/// One case of `musttail-invalid.ll`: the `declare` immediately above the
+/// marked `define`, plus the `define` through its closing brace.
+fn musttail_fixture_case(fixture: &str, define_marker: &str) -> String {
+    let define_start = fixture
+        .find(define_marker)
+        .unwrap_or_else(|| panic!("missing define marker {define_marker}"));
+    let define_end = fixture[define_start..]
+        .find("\n}")
+        .map(|idx| define_start + idx + 3)
+        .unwrap_or_else(|| panic!("missing define end for {define_marker}"));
+    // `@inline_asm` has no `declare` of its own; every other case is preceded
+    // immediately by exactly one.
+    let declare = fixture[..define_start]
+        .lines()
+        .rfind(|line| !line.trim().is_empty() && !line.starts_with(';'))
+        .filter(|line| line.starts_with("declare "))
+        .unwrap_or_default();
+    format!("{declare}\n{}\n", &fixture[define_start..define_end])
+}
+
+/// **Regression lock for a closed divergence** (no id: `docs/divergences.md`
+/// deletes an entry when it closes and re-uses its number).
+/// `LLParser::resolveFunctionType` hardcodes the variadic bit off
+/// (`FunctionType::get(RetType, ParamTypes, false)`), so a *short-syntax*
+/// `musttail` forwarding call in a varargs function builds a non-vararg
+/// call-site type — which `Verifier::verifyMustTailCall`'s
+/// `CallerTy->isVarArg() == CalleeTy->isVarArg()` then rejects. llvmkit
+/// threaded its own `...` flag in here instead, so the module verified and
+/// printed `musttail call void (i32, ...) @f(...)`, a form upstream never
+/// produces.
+///
+/// llvmkit-authored source: no vendored fixture reaches the short syntax
+/// (`rg --no-ignore -n -- "musttail call.*\.\.\." orig_cpp/…/llvm/test/`
+/// returns only explicit-function-type forms), which is why the divergence
+/// survived `musttail-invalid.ll` and `test/Assembler/musttail.ll` alike.
+///
+/// Both halves are asserted: the module is rejected, *and* the printed bytes
+/// carry the short form. The second half is the round-trip claim the entry got
+/// wrong — `AsmWriter`'s ellipsis is keyed on the enclosing function's
+/// varargs bit, not on the call-site type, so dropping the bit does not drop
+/// the `...`.
+#[test]
+fn short_syntax_musttail_forwarding_call_is_not_vararg() {
+    const SRC: &[u8] = b"declare void @f(i32, ...)\n\
+                         define void @g(i32 %a, ...) {\n  \
+                         musttail call void @f(i32 %a, ...)\n  \
+                         ret void\n\
+                         }\n";
+
+    let module = Module::dynamic("short_syntax_musttail_forwarding_call_is_not_vararg");
+    Parser::new(SRC, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser accepts the short syntax");
+
+    let text = format!("{module}");
+    assert!(
+        text.contains("musttail call void @f(i32 %a, ...)"),
+        "call-site type must print in the short form: {text}"
+    );
+
+    let err = module
+        .verify_borrowed()
+        .expect_err("upstream's llvm-as rejects this module");
+    match err {
+        llvmkit_ir::IrError::VerifierFailure { rule, message, .. } => {
+            assert_eq!(rule, llvmkit_ir::VerifierRule::MustTailCallVarArgsMismatch);
+            assert_eq!(
+                message,
+                "cannot guarantee tail call due to mismatched varargs"
+            );
+        }
+        other => panic!("expected a verifier failure, got {other:?}"),
+    }
+}
+
+/// `Verifier::verifyMustTailCall`'s returned-value `Check`, all four ways it
+/// can hold and the one way it fails:
+///
+/// ```text
+/// Check(!Ret->getReturnValue() || Ret->getReturnValue() == RetVal ||
+///           isa<UndefValue>(Ret->getReturnValue()),
+///       "musttail call result must be returned", Ret);
+/// ```
+///
+/// `poison` is here because `PoisonValue` derives from `UndefValue`
+/// (`llvm/include/llvm/IR/Constants.h`), so `isa<UndefValue>` accepts it —
+/// a port that matched only the `undef` constant would reject `ret ptr poison`
+/// where upstream accepts it. `test/Verifier/musttail-invalid.ll` reaches this
+/// `Check` only through its `not_tail_pos` case, which fails one `Check`
+/// earlier, so no vendored fixture separates these five.
+///
+/// **llvmkit-authored sources**; `llvm/lib/IR/Verifier.cpp::Verifier::verifyMustTailCall`.
+#[test]
+fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
+    const PROLOGUE: &str = "declare ptr @callee()\ndefine ptr @caller() {\n  \
+                            %v = musttail call ptr @callee()\n  ";
+    for accepted in [
+        "ret ptr %v\n}\n",
+        "ret ptr undef\n}\n",
+        "ret ptr poison\n}\n",
+    ] {
+        let source = format!("{PROLOGUE}{accepted}");
+        let module = Module::dynamic("musttail_result_returned");
+        Parser::new(source.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        module
+            .verify_borrowed()
+            .unwrap_or_else(|e| panic!("upstream accepts `{accepted}`: {e}"));
+    }
+
+    // `!Ret->getReturnValue()` — a void caller, so the `ret` carries nothing.
+    let void_source = "declare void @vcallee()\ndefine void @vcaller() {\n  \
+                       musttail call void @vcallee()\n  ret void\n}\n";
+    let module = Module::dynamic("musttail_result_returned_void");
+    Parser::new(void_source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("upstream accepts `ret void`");
+
+    let rejected = format!("{PROLOGUE}ret ptr null\n}}\n");
+    let module = Module::dynamic("musttail_result_not_returned");
+    Parser::new(rejected.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    match module.verify_borrowed() {
+        Err(llvmkit_ir::IrError::VerifierFailure { rule, message, .. }) => {
+            assert_eq!(
+                rule,
+                llvmkit_ir::VerifierRule::MustTailCallResultNotReturned
+            );
+            assert_eq!(message, "musttail call result must be returned");
+        }
+        other => panic!("upstream rejects `ret ptr null` here, got {other:?}"),
+    }
+}
+
+/// `llvm/test/Verifier/musttail-valid.ll`, vendored verbatim, whole file.
+/// Upstream's `RUN` line is `llvm-as %s -o /dev/null` — "Should assemble
+/// without error" — so the whole module must parse *and* verify.
+///
+/// The positive half of `Verifier::verifyMustTailCall`: congruent pointer
+/// parameter and return types, matching `x86_thiscallcc` / `x86_fastcallcc`
+/// varargs thunks, and a `musttail` whose block has an unreachable successor
+/// block after the `ret`.
+#[test]
+fn upstream_musttail_valid_fixture_verifies() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/Verifier/musttail-valid.ll");
+
+    let module = Module::dynamic("upstream_musttail_valid_fixture_verifies");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("`llvm-as` assembles this fixture without error, so llvmkit must too");
+}
+
+/// `llvm/test/Verifier/swifttailcc-musttail-valid.ll`, vendored verbatim, whole
+/// file. Upstream's `RUN` line is `opt -passes=verify %s`, with no `not`.
+///
+/// `@mismatch_parms` is the interesting half: it calls a four-parameter
+/// function from a zero-parameter one and still verifies, because
+/// `verifyMustTailCall` **returns** out of the `swifttailcc` arm before it
+/// reaches the parameter-count `Check`. A port that fell through would reject
+/// it.
+#[test]
+fn upstream_swifttailcc_musttail_valid_fixture_verifies() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/Verifier/swifttailcc-musttail-valid.ll");
+
+    let module = Module::dynamic("upstream_swifttailcc_musttail_valid_fixture_verifies");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .expect("`opt -passes=verify` accepts this fixture, so llvmkit must too");
+}
+
+/// `llvm/test/Verifier/tailcc-musttail.ll` and
+/// `llvm/test/Verifier/swifttailcc-musttail.ll`, both vendored verbatim; each
+/// of their eleven functions cut out with the shared `declare` and verified on
+/// its own against the `CHECK` line the fixture writes for it.
+///
+/// These pin `Verifier::verifyTailCCMustTailAttrs` — the five forbidden
+/// ABI-impacting parameter attributes, on the caller and on the callee — plus
+/// the `cannot guarantee <cc> tail call for varargs function` `Check` that
+/// closes the `tailcc` / `swifttailcc` arm. The two fixtures are the same
+/// eleven cases with the calling convention swapped, which is what makes the
+/// `CCName` half of the diagnostic worth asserting.
+///
+/// Per-function for the same reason
+/// [`upstream_musttail_invalid_fixture_messages_match`] is: upstream's
+/// `Verifier` accumulates and `Module::verify_borrowed` reports the first
+/// failure.
+#[test]
+fn upstream_tailcc_musttail_fixture_messages_match() {
+    const TAILCC: &str = include_str!("fixtures/upstream/Verifier/tailcc-musttail.ll");
+    const SWIFTTAILCC: &str = include_str!("fixtures/upstream/Verifier/swifttailcc-musttail.ll");
+    let markers = [
+        (
+            "define {CC} void @inreg(",
+            "inreg attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @inalloca(",
+            "inalloca attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @swifterror(",
+            "swifterror attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @preallocated(",
+            "preallocated attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @byref(",
+            "byref attribute not allowed in {CC} musttail caller",
+        ),
+        (
+            "define {CC} void @call_inreg(",
+            "inreg attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_inalloca(",
+            "inalloca attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_swifterror(",
+            "swifterror attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_preallocated(",
+            "preallocated attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_byref(",
+            "byref attribute not allowed in {CC} musttail callee",
+        ),
+        (
+            "define {CC} void @call_varargs(",
+            "cannot guarantee {CC} tail call for varargs function",
+        ),
+    ];
+
+    for (cc, fixture) in [("tailcc", TAILCC), ("swifttailcc", SWIFTTAILCC)] {
+        // Five of the eleven cases call a function these fixtures spell as a
+        // `define` — each of which is itself a failing case, so keeping it
+        // whole would report *its* diagnostic first. Each `define` header is
+        // therefore reduced to the `declare` it already implies: the signature
+        // and its parameter attributes verbatim, without the body. That is all
+        // the callee contributes, since `verifyMustTailCall` reads the
+        // *call site's* attributes and the call-site function type.
+        let declarations: Vec<(String, String)> = fixture
+            .lines()
+            .filter(|line| line.starts_with("declare ") || line.starts_with("define "))
+            .map(|line| {
+                let header = line.trim_end().trim_end_matches('{').trim_end();
+                let name = header
+                    .split('@')
+                    .nth(1)
+                    .unwrap_or_default()
+                    .split('(')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                let body = header
+                    .strip_prefix("define")
+                    .or_else(|| header.strip_prefix("declare"))
+                    .unwrap_or(header);
+                (name, format!("declare{body}\n"))
+            })
+            .collect();
+
+        for (marker, expected) in markers {
+            let marker = marker.replace("{CC}", cc);
+            let expected = expected.replace("{CC}", cc);
+            let start = fixture
+                .find(&marker)
+                .unwrap_or_else(|| panic!("{cc}: missing define marker {marker}"));
+            let end = fixture[start..]
+                .find("\n}")
+                .map(|idx| start + idx + 3)
+                .unwrap_or_else(|| panic!("{cc}: missing define end for {marker}"));
+            let define = &fixture[start..end];
+            let under_test = marker
+                .split('@')
+                .nth(1)
+                .unwrap_or_default()
+                .trim_end_matches('(')
+                .to_owned();
+            let prelude: String = declarations
+                .iter()
+                .filter(|(name, _)| *name != under_test)
+                .map(|(_, text)| text.as_str())
+                .collect();
+            let source = format!("{prelude}\n{define}\n");
+
+            let module = Module::dynamic("upstream_tailcc_musttail_fixture_messages_match");
+            Parser::new(source.as_bytes(), &module)
+                .expect("lexer primes")
+                .parse_module()
+                .unwrap_or_else(|e| panic!("{cc} case {marker} parses: {e}\n{source}"));
+            let message = match module.verify_borrowed() {
+                Ok(()) => panic!("{cc} case {marker}: upstream rejects this module\n{source}"),
+                Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => message,
+                Err(other) => panic!("{cc} case {marker}: expected a verifier failure: {other:?}"),
+            };
+            assert!(
+                message.contains(&expected),
+                "{cc} case {marker}: {message:?} does not contain {expected:?}"
+            );
+        }
+    }
+}
+
+/// The lines of `fixture` that sit outside every `define … { … }` block: the
+/// `%0 = type opaque`, the `declare`s, and the `attributes #0 = { … }` line.
+/// A per-case module keeps them so the body it isolates still resolves.
+fn top_level_lines(fixture: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in fixture.lines() {
+        if inside {
+            if line.trim() == "}" {
+                inside = false;
+            }
+            continue;
+        }
+        if line.trim_start().starts_with("define ") {
+            inside = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// One `define` of `fixture`, header through closing brace, taken verbatim.
+fn function_text<'a>(fixture: &'a str, header_marker: &str) -> &'a str {
+    let start = fixture
+        .find(header_marker)
+        .unwrap_or_else(|| panic!("missing function {header_marker}"));
+    let end = fixture[start..]
+        .find("\n}")
+        .map(|idx| start + idx + 3)
+        .unwrap_or_else(|| panic!("missing end of {header_marker}"));
+    &fixture[start..end]
+}
+
+/// Parse `source` and report the verifier's answer, or the parse diagnostic.
+fn parse_and_verify(name: &str, source: &str) -> Result<Result<(), String>, String> {
+    let module = Module::dynamic(name);
+    match Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+    {
+        Err(e) => Err(e.to_string()),
+        Ok(_) => Ok(match module.verify_borrowed() {
+            Ok(()) => Ok(()),
+            Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => Err(message),
+            Err(other) => panic!("{name}: expected a verifier failure, got {other:?}"),
+        }),
+    }
+}
+
+/// `test/Verifier/operand-bundles.ll`, vendored verbatim and driven per
+/// function — and, for its one multi-diagnostic function, per call — for the
+/// reason [`upstream_musttail_invalid_fixture_messages_match`] is driven per
+/// function: `Module::verify_borrowed` reports the first failure where
+/// upstream's `Verifier` keeps walking.
+///
+/// This is the fixture behind the `Verifier::visitCallBase` bundle arms the
+/// kcfi and ptrauth fixtures do not reach — `"deopt"`, `"gc-transition"`, and
+/// `Verifier::verifyAttachedCallBundle` — plus each function's `CHECK-NOT`
+/// tail, which must verify clean.
+///
+/// **Whole, with nothing trimmed and every line of the fixture asserted.**
+/// Seven of `@f_clang_arc_attachedcall`'s thirteen calls name an intrinsic by
+/// address (`ptr @llvm.objc.…`, `ptr @llvm.assume`), and used to stop at a
+/// *parse* error, which this fixture's seven asserted rather than upstream's
+/// answer. They parse now: the
+/// declarations at the foot of the file retire those forward references
+/// before `validateEndOfModule` runs, so nothing reaches its
+/// `intrinsic can only be used as callee`, and
+/// `Function::hasAddressTaken`'s `IgnoreARCAttachedCall` exempts a
+/// `clang.arc.attachedcall` bundle operand from
+/// `Invalid user of intrinsic instruction!` precisely so
+/// `verifyAttachedCallBundle` gets to judge it.
+///
+/// `@f0` and `@f1` were the second partial place until the verifier carried
+/// upstream's `Check` literals: they pin `Instruction does not dominate all
+/// uses!`, which llvmkit used to word its own way, and now assert that text
+/// like every other function here.
+///
+/// Every whole-function expectation is **read out of the fixture's own first
+/// `; CHECK:` line** rather than repeated in this file, so a re-blessed
+/// verifier message that drifts from upstream's cannot be papered over by
+/// editing a string here — the same discipline `@f_clang_arc_attachedcall`'s
+/// half already used.
+#[test]
+fn upstream_verifier_operand_bundles_fixture_messages_match() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles.ll");
+    let prelude = top_level_lines(FIXTURE);
+
+    // Upstream's `RUN` line is `not opt -passes=verify`. The whole file
+    // parses, and `Module::verify_borrowed` stops at the first failure, which
+    // is the file's first `CHECK` — `@f0`'s.
+    let first_check = FIXTURE
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("; CHECK:"))
+        .map(str::trim)
+        .expect("the fixture carries a `; CHECK:` directive");
+    let whole = parse_and_verify("verifier-operand-bundles", FIXTURE)
+        .unwrap_or_else(|e| panic!("upstream's opt parses the whole fixture: {e}"))
+        .expect_err("upstream runs `not opt -passes=verify` over it");
+    assert!(
+        whole.contains(first_check),
+        "{whole:?} does not contain {first_check:?}"
+    );
+
+    // Whole-function cases. The expectation is the function's first `CHECK`
+    // directive, taken from the vendored text.
+    for marker in [
+        "define void @f0(",
+        "define void @f1(",
+        "define void @f_deopt(",
+        "define void @f_gc_transition(",
+    ] {
+        let text = function_text(FIXTURE, marker);
+        let expected = text
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("; CHECK:"))
+            .map(str::trim)
+            .unwrap_or_else(|| panic!("{marker}: no `; CHECK:` directive in the fixture"));
+        let source = format!("{prelude}\n{text}\n");
+        let message = parse_and_verify("verifier-operand-bundles", &source)
+            .unwrap_or_else(|e| panic!("{marker} parses: {e}\n{source}"))
+            .expect_err(&format!("{marker}: upstream rejects this function"));
+        assert!(
+            message.contains(expected),
+            "{marker}: {message:?} does not contain {expected:?}"
+        );
+    }
+
+    // `@f_clang_arc_attachedcall` carries eight `CHECK` directives over
+    // thirteen calls, so it is driven one call at a time. Each call's
+    // expectation is read out of the fixture's own `CHECK` block, which
+    // alternates diagnostic, offending instruction, diagnostic, …; the
+    // instruction lines are `AsmWriter` output, which for these calls is the
+    // source text. A call the block does not name is one upstream reports
+    // nothing for.
+    let attached = function_text(FIXTURE, "define void @f_clang_arc_attachedcall(");
+    let mut expectations: Vec<(&str, &str)> = Vec::new();
+    let mut pending: Option<&str> = None;
+    let mut body: Vec<&str> = Vec::new();
+    let mut header = "";
+    for line in attached.lines() {
+        let trimmed = line.trim();
+        let directive = trimmed
+            .strip_prefix("; CHECK-NEXT:")
+            .or_else(|| trimmed.strip_prefix("; CHECK:"));
+        if let Some(text) = directive {
+            let text = text.trim();
+            match pending.take() {
+                Some(diagnostic) if text.starts_with("call ") => {
+                    expectations.push((text, diagnostic));
+                }
+                // The block strictly alternates; a second diagnostic in a row
+                // would otherwise be dropped without an assertion.
+                Some(diagnostic) => panic!("unpaired CHECK {diagnostic:?} before {text:?}"),
+                None => pending = Some(text),
+            }
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with(';') {
+            continue;
+        }
+        if trimmed.starts_with("define ") {
+            header = line;
+            continue;
+        }
+        if trimmed.starts_with("ret ") || trimmed == "}" {
+            continue;
+        }
+        body.push(line);
+    }
+    assert!(pending.is_none(), "trailing CHECK with no instruction");
+    assert_eq!(expectations.len(), 8, "fixture CHECK count changed");
+    assert_eq!(body.len(), 13, "fixture call count changed");
+
+    for line in &body {
+        let source = format!("{prelude}\n{header}\n{line}\n  ret void\n}}\n");
+        let answer = parse_and_verify("verifier-operand-bundles", &source)
+            .unwrap_or_else(|e| panic!("{line:?} parses: {e}"));
+        match expectations
+            .iter()
+            .find(|(instruction, _)| *instruction == line.trim())
+        {
+            Some((_, expected)) => {
+                let message =
+                    answer.expect_err(&format!("{line:?} must be rejected by the verifier"));
+                assert!(
+                    message.contains(expected),
+                    "{line:?}: {message:?} does not contain {expected:?}"
+                );
+            }
+            None => assert_eq!(
+                answer,
+                Ok(()),
+                "{line:?} is under CHECK-NOT and must verify"
+            ),
+        }
     }
 }

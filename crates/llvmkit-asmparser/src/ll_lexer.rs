@@ -48,26 +48,29 @@ pub const INT_TY_MAX_BITS: u64 = 1u64 << 23; // 8_388_608
 // one layer up. Every variant here is a structural lexing failure carrying the
 // source [`Span`] of the offending lexeme.
 //
-// **This enum is `LLLexer::LexError`'s call sites, and nothing else.**
-// `LLLexer` produces an `lltok::Error` at twenty-one places, and splits them
-// evenly: ten record a message with `LexError(...)` first, eleven are silent.
-// The ten are this enum; the eleven are `Token::Error`, which reaches the
-// parser so that `LLParser` supplies the wording from the production it was in
-// the middle of. Upstream's `LLLexer::ErrorPriority` is the same split
-// expressed as a rank — a lexer message outranks a parser one, so where a
-// message exists it is what a reader sees.
+// **This enum is `LLLexer::LexError`'s call sites, and nothing else.** Where
+// `LLLexer` records a message with `LexError(...)`, llvmkit has a variant here
+// — one per message, so a wording several call sites share is one variant.
+// Where `LLLexer` forms no token and records nothing, llvmkit has
+// `Token::Error`, which reaches the parser so that `LLParser` supplies the
+// wording from the production it was in the middle of. Upstream's
+// `LLLexer::ErrorPriority` is the same split expressed as a rank — a lexer
+// message outranks a parser one, so where a message exists it is what a reader
+// sees. (`grep -n 'LexError(' orig_cpp/.../lib/AsmParser/LLLexer.cpp` at
+// `llvmorg-22.1.4` enumerates the first group; the repo commit does not pin
+// that tree.)
 //
-// Two caveats, both recorded in `docs/divergences.md` entry 101:
+// One caveat, recorded in `docs/divergences.md` entry 101: six of upstream's
+// `LexError(...)` calls are **non-fatal** — the lexer records the message and
+// returns a real token, so `llvm-as` builds a module from a truncated value
+// when the parse otherwise succeeds. Every variant here is fatal.
 //
-//   * Six of upstream's `LexError(...)` calls are **non-fatal** — the lexer
-//     records the message and returns a real token, so `llvm-as` builds a
-//     module from a truncated value when the parse otherwise succeeds. Every
-//     variant here is fatal.
-//   * `IntegerOverflow64` and `IntegerOverflow128` mirror four of those six
-//     (`atoull`, `HexIntToVal`, `HexToIntPair`, `FP80HexToIntPair`) and are
-//     currently unreachable: llvmkit's lexer stores numeric lexemes and lets
-//     the parser decode them at the destination width, so it never performs
-//     the accumulate-and-detect-wraparound those helpers do.
+// `IntegerOverflow128` used to sit below, mirroring `HexToIntPair` and
+// `FP80HexToIntPair`, and was never constructed: llvmkit's lexer stores the
+// numeric lexeme and lets the parser decode it at the destination width, so it
+// performs neither helper's accumulate-and-detect-wraparound. A public variant
+// nothing produces is a claim the tree does not honour, so it is gone;
+// `IntegerOverflow64` stayed because the numeric-label arm builds it.
 
 /// All lexer-level failures.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, thiserror::Error)]
@@ -90,9 +93,6 @@ pub enum LexError {
     #[error("constant bigger than 64 bits detected")]
     IntegerOverflow64 { span: Span },
 
-    #[error("constant bigger than 128 bits detected")]
-    IntegerOverflow128 { span: Span },
-
     // `width` and `max` stay as structured fields — a caller can still ask
     // what the offending width was — but the rendered text is upstream's,
     // which names neither.
@@ -114,7 +114,6 @@ impl LexError {
             | LexError::NulInName { span }
             | LexError::IdOverflow { span }
             | LexError::IntegerOverflow64 { span }
-            | LexError::IntegerOverflow128 { span }
             | LexError::IntegerWidthOutOfRange { span, .. }
             | LexError::HexFpTooLarge { span, .. } => *span,
         }

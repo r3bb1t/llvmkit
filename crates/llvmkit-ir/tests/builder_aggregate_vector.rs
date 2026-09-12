@@ -639,7 +639,115 @@ fn shuffle_vector_operands_reject_a_mask_from_another_module() -> Result<(), IrE
     Ok(())
 }
 
+/// `VectorType::const_vector`'s scalable arm is llvmkit's spelling of
+/// `ConstantVector::getSplat(ElementCount, V)` (`lib/IR/Constants.cpp`), the
+/// only constructor upstream has for a scalable vector constant:
+/// `ConstantVector::get` hands its list to
+/// `FixedVectorType::get(V.front()->getType(), V.size())`, and
+/// `ConstantVector`'s own constructor asserts
+/// `V.size() == cast<FixedVectorType>(T)->getNumElements()`.
+///
+/// **No upstream `.ll` fixture pins this**, because upstream cannot write the
+/// input: a non-uniform scalable vector constant has no LLVM spelling, so
+/// nothing under `test/` can produce or reject one. Searched at
+/// `llvmorg-22.1.4` with `grep -rn -a --include=*.ll 'vscale x [0-9]* x i32> <'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` — no matches. The
+/// source is therefore the two C++ constructors above, and
+/// the rule is that llvmkit builds no scalable constant they could not.
+///
+/// The second half is the reason it matters: what `const_vector` admits is
+/// what `AsmWriter`'s `splat (…)` arm has to be able to print, and a lane
+/// disagreement used to fall through to an element list that neither LLVM nor
+/// llvmkit's own `.ll` parser reads back.
+#[test]
+fn scalable_const_vector_admits_only_a_splat() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let vec_ty = m.scalable_vector_type(i32_ty.as_type(), 4);
+    let seven = i32_ty.const_int(7_i32).as_constant();
+    let eight = i32_ty.const_int(8_i32).as_constant();
+
+    // Lanes disagree — `getSplat` has one value, so there is nothing to build.
+    assert!(matches!(
+        vec_ty.const_vector::<llvmkit_ir::Constant<'_, _>, _>([seven, eight, seven, seven]),
+        Err(IrError::InvalidOperation { .. })
+    ));
+    // A short list is refused too: it used to be accepted for scalable types
+    // only, which let `<vscale x 4 x i32>` print a two-element list.
+    assert!(matches!(
+        vec_ty.const_vector::<llvmkit_ir::Constant<'_, _>, _>([seven, seven]),
+        Err(IrError::OperandWidthMismatch { .. })
+    ));
+
+    // The splat builds, and prints in the one form LLVM has for it.
+    let splat = vec_ty.const_vector::<llvmkit_ir::Constant<'_, _>, _>([seven; 4])?;
+    m.add_global("g", splat.as_constant())?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@g = global <vscale x 4 x i32> splat (i32 7)\n"),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
 // Suppress unused-import warning if a marker drifts.
 const _: fn() = || {
     let _ = std::any::TypeId::of::<IntValue<'static, i32, DynBrand>>();
 };
+
+// --------------------------------------------------------------------------
+// the aggregate index walk: one upstream routine, three llvmkit copies
+// --------------------------------------------------------------------------
+
+/// **No upstream counterpart.** `ExtractValueInst::getIndexedType`
+/// (`lib/IR/Instructions.cpp`) is one routine that LLVM's parser, builder and
+/// verifier all call; llvmkit has three copies of it —
+/// `llvmkit_ir::indexed_aggregate_type` (the public port the `.ll` parser
+/// calls), `ir_builder.rs::walk_aggregate_for_builder` and
+/// `verifier.rs::walk_aggregate_path`. This test is the law that they agree,
+/// which upstream gets for free and llvmkit does not.
+///
+/// The boundary it drives is where they actually disagreed: upstream's array
+/// arm is `if (Index >= AT->getNumElements())` with an `unsigned` `Index` and
+/// a `uint64_t` count, so the comparison is done at 64 bits and index
+/// `u32::MAX` into a `2^32`-element array is **in range**. `walk_aggregate_path`
+/// used to narrow the count with `u32::try_from(n).unwrap_or(u32::MAX)`
+/// instead, so the public port and the builder accepted this instruction and
+/// the verifier then rejected the module they had just built — a rejects-valid
+/// divergence reachable straight from `.ll` text, since an index-list entry is
+/// a `uint32` and an array length is a `uint64`.
+#[test]
+fn the_three_aggregate_index_walks_agree_at_the_u32_boundary() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let void_ty = m.void_type();
+    // One element past `u32::MAX`, so the largest legal index is `u32::MAX`.
+    let arr_ty = m.array_type(i8_ty, u64::from(u32::MAX) + 1);
+    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
+    let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let arr = m.view(f).param(0)?;
+
+    // Walk 1, the public port the parser calls: in range, leaf is `i8`.
+    assert_eq!(
+        llvmkit_ir::indexed_aggregate_type(arr_ty.as_type(), &[u32::MAX]).map(|t| t.id()),
+        Some(i8_ty.as_type().id()),
+        "indexed_aggregate_type must accept u32::MAX into a 2^32-element array"
+    );
+    // ...and out of range one past it, at the true 64-bit length.
+    assert!(
+        llvmkit_ir::indexed_aggregate_type(m.array_type(i8_ty, 4).as_type(), &[4u32]).is_none()
+    );
+
+    // Walk 2, the builder's: accepts, so the instruction is constructed.
+    let _ = b.extract_value(arr, [u32::MAX], "")?;
+    b.ret_void()?;
+
+    // Walk 3, the verifier's: must reach the same verdict, or llvmkit rejects
+    // a module it just built.
+    m.verify()
+        .map_err(|e| panic!("the verifier disagreed with the builder and the parser: {e:?}"))
+        .ok();
+    Ok(())
+}

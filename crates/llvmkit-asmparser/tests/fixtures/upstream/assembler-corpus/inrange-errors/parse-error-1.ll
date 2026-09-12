@@ -4,3 +4,4 @@
 define ptr @test() {
   ret ptr getelementptr inrange (i8, ptr @g, i64 8)
 }
+

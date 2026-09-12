@@ -45,7 +45,9 @@
 
 
 
+
 ; CHECK-DUPLICATE-RET: <stdin>:[[@LINE+1]]:51: error: duplicate 'ret' location
 define void @test(ptr captures(ret: address, ret: provenance) %p) {
   ret void
 }
+

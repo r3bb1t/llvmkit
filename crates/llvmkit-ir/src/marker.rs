@@ -47,7 +47,7 @@ pub enum ExpectedRetKind {
     Dyn,
     IntStatic(u32),
     IntDyn,
-    FloatStatic(&'static str),
+    FloatStatic(TypeKindLabel),
     FloatDyn,
 }
 
@@ -132,8 +132,8 @@ macro_rules! impl_float_return_marker {
         impl ReturnMarker for $ty {
             #[inline]
             fn expected_kind() -> ExpectedRetKind {
-                match <$ty as FloatKind>::ieee_label() {
-                    Some(label) => ExpectedRetKind::FloatStatic(label),
+                match <$ty as FloatKind>::ieee_kind() {
+                    Some(kind) => ExpectedRetKind::FloatStatic(kind),
                     None => ExpectedRetKind::FloatDyn,
                 }
             }
@@ -153,22 +153,6 @@ impl<const N: u32> ReturnMarker for Width<N> {
     }
 }
 
-/// Map a [`FloatKind::ieee_label`] LangRef keyword to its
-/// [`TypeKindLabel`] diagnostic variant. Crate-internal helper for
-/// [`marker_kind_label`].
-fn float_label_to_kind(label: &'static str) -> TypeKindLabel {
-    match label {
-        "half" => TypeKindLabel::Half,
-        "bfloat" => TypeKindLabel::Bfloat,
-        "float" => TypeKindLabel::Float,
-        "double" => TypeKindLabel::Double,
-        "x86_fp80" => TypeKindLabel::X86Fp80,
-        "fp128" => TypeKindLabel::Fp128,
-        "ppc_fp128" => TypeKindLabel::PpcFp128,
-        _ => unreachable!("FloatKind::ieee_label is a closed set of LangRef keywords"),
-    }
-}
-
 /// Diagnostic label for a return marker's expected type kind. `None`
 /// for [`Dyn`], which matches every signature. Crate-internal — used
 /// to fix the expected/got duplication in `ReturnTypeMismatch` reports
@@ -180,7 +164,7 @@ pub(crate) fn marker_kind_label<R: ReturnMarker>() -> Option<TypeKindLabel> {
         ExpectedRetKind::Void => Some(TypeKindLabel::Void),
         ExpectedRetKind::Ptr => Some(TypeKindLabel::Pointer),
         ExpectedRetKind::IntStatic(_) | ExpectedRetKind::IntDyn => Some(TypeKindLabel::Integer),
-        ExpectedRetKind::FloatStatic(label) => Some(float_label_to_kind(label)),
+        ExpectedRetKind::FloatStatic(kind) => Some(kind),
         ExpectedRetKind::FloatDyn => Some(TypeKindLabel::Float),
         ExpectedRetKind::Dyn => None,
     }

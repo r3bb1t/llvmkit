@@ -18,10 +18,37 @@
 
 use core::fmt;
 
+/// Whether a failure indicates a bug in llvmkit.
+///
+/// The distinction is upstream's. `llvm/include/llvm/Support/ErrorHandling.h`
+/// deprecated `report_fatal_error`'s `gen_crash_diag` boolean in favour of two
+/// named entry points, and their contracts define these two answers:
+/// `reportFatalInternalError` "will produce a crash trace and *will* ask users
+/// to report an LLVM bug"; `reportFatalUsageError` "will *not*".
+///
+/// Two variants, not three, deliberately. Upstream's usage-error class folds
+/// invalid inputs, environment conditions outside its control, and
+/// unimplemented functionality into one; splitting them here would invent a
+/// taxonomy upstream does not have (D11), and the finer distinction is already
+/// carried by the variant's own identity — [`IrError::InvalidIntegerWidth`] is
+/// a bound, [`IrError::TypeIdentityMismatch`] is a mistake, and a caller reads
+/// which one it got. Cranelift, D10's model, carries no blame axis at all and
+/// documents the distinction per variant instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Blame {
+    /// llvmkit failed to maintain something it promised. The caller cannot fix
+    /// it; it is a bug report. Ports `reportFatalInternalError`'s contract.
+    LlvmkitInvariant,
+    /// Not a bug in llvmkit: an invalid argument, a bound imposed by LLVM or
+    /// the host, or functionality llvmkit does not implement. Ports
+    /// `reportFatalUsageError`'s contract, including its explicit folding of
+    /// those three into one class.
+    UsageError,
+}
+
 /// Human-readable label for a [`Type`](crate::Type) kind, embedded in
 /// diagnostics that don't want to carry a borrowed type handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum TypeKindLabel {
     /// The `void` type.
     Void,
@@ -100,10 +127,65 @@ impl fmt::Display for TypeKindLabel {
     }
 }
 
+/// A type's kind together with its printed form, captured where a diagnostic
+/// is raised.
+///
+/// [`TypeKindLabel`] alone cannot separate two types of the same kind: every
+/// struct labels `struct`, every array `array`. A diagnostic comparing two
+/// *runtime* types and reporting only their labels can therefore render
+/// "expected struct, got struct", which names no fact about either operand.
+/// This carries the spelling as well, so the two sides differ in the rendered
+/// text exactly when the types differ.
+///
+/// Both halves earn their place: `spelling` is what a reader needs,
+/// `kind` is what a consumer branches on without parsing text.
+///
+/// **The fields are private**, unlike every other error payload in this crate.
+/// They are a projection of one [`Type`](crate::Type), not two independent
+/// facts, so a public pair would make `RenderedType { kind: Integer, spelling:
+/// "float" }` writable — a representable state that no `Type` can produce, and
+/// the same disease the variants using this type exist to cure.
+/// [`Type::rendered`](crate::Type::rendered) is the only constructor;
+/// [`kind`](Self::kind) and [`spelling`](Self::spelling) read it back.
+///
+/// llvmkit-specific: upstream passes a `Type *` into its `Twine` and prints it
+/// at render time, which needs the context llvmkit's errors deliberately do
+/// not borrow, so there is nothing to port — only the same information,
+/// captured eagerly.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RenderedType {
+    kind: TypeKindLabel,
+    spelling: Box<str>,
+}
+
+impl RenderedType {
+    /// Captures a type's kind and spelling. Crate-internal so that
+    /// [`Type::rendered`](crate::Type::rendered), which cannot produce a
+    /// disagreeing pair, stays the only way to build one.
+    pub(crate) fn new(kind: TypeKindLabel, spelling: Box<str>) -> Self {
+        Self { kind, spelling }
+    }
+
+    /// The type's kind — branch on this rather than on the spelling.
+    pub fn kind(&self) -> TypeKindLabel {
+        self.kind
+    }
+
+    /// The type's printed form, as `Display for Type` renders it.
+    pub fn spelling(&self) -> &str {
+        &self.spelling
+    }
+}
+
+impl fmt::Display for RenderedType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.spelling)
+    }
+}
+
 /// Human-readable label for a [`Value`](crate::Value)'s category, embedded
 /// in diagnostics that don't want to carry a borrowed value handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum ValueCategoryLabel {
     /// A constant value.
     Constant,
@@ -149,13 +231,24 @@ impl fmt::Display for ValueCategoryLabel {
 ///
 /// One variant per rule the verifier can enforce. Tests pattern-match
 /// on this enum to assert which invariant fired without coupling to the
-/// human-readable diagnostic message. New rules are added
-/// non-breakingly via `#[non_exhaustive]`.
+/// human-readable diagnostic message. The enum is exhaustive, so a new rule
+/// is a breaking change every un-updated `match` reports.
 ///
 /// Each variant cites its `Verifier::visit*` C++ method in
 /// `llvm/lib/IR/Verifier.cpp`.
+///
+/// # Where upstream's text lives
+///
+/// This enum's [`Display`](core::fmt::Display) is llvmkit's own label for the
+/// invariant, deliberately: it is the *category*, and several variants stand
+/// for several of upstream's `Check`s. Upstream's `Check` literal — the string
+/// a `llvm/test/Verifier/*.ll` `CHECK` line matches — is carried verbatim in
+/// [`IrError::VerifierFailure`]'s `message`, at the head of the string, with
+/// llvmkit's extra detail appended in parentheses. A rule with no upstream
+/// `Check` to reproduce (`AtomicRmwOperandTypeMismatch`'s result-type arm,
+/// the `cmpxchg` orderings, …) says so in a comment at the check site in
+/// `verifier.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum VerifierRule {
     /// Binary operator: LHS and RHS operand types differ.
     /// Mirrors `Verifier::visitBinaryOperator`.
@@ -218,20 +311,6 @@ pub enum VerifierRule {
     /// gate — hence the explicit enumeration. Defense in depth: the rule holds
     /// regardless of construction path, not just for parsed IR.
     PhiInvalidResultType,
-    /// `phi` in a block reachable from entry carries **zero** incoming values.
-    /// Such a phi prints as `%p = phi i32` with no `[ … ]` pairs — a form that
-    /// has no legal textual round-trip.
-    ///
-    /// **Stricter than upstream.** `Verifier::visitPHINode` shares the same
-    /// `0 == 0` gap: it only checks the incoming count against the predecessor
-    /// count, so a zero-incoming phi in a zero-predecessor block passes. llvmkit
-    /// rejects it because such a phi fails `LLParser::parsePHI` round-trip — a
-    /// phi with no incomings cannot be re-parsed. Restricted to blocks
-    /// **reachable from entry**: an unreachable block may legitimately have no
-    /// predecessors, and llvmkit does not force its phis to carry incomings.
-    /// Defense in depth: the rule holds however the zero-incoming phi arose, not
-    /// just via the public mutation path (which now erases such phis).
-    PhiEmptyInReachableBlock,
     /// `call` callee is not a function-typed value.
     /// Mirrors `Verifier::visitCallBase`.
     CallNonFunction,
@@ -243,6 +322,141 @@ pub enum VerifierRule {
     /// parameter type at the same slot.
     /// Mirrors `Verifier::visitCallBase`.
     CallArgTypeMismatch,
+    /// A call site carries two operand bundles with an at-most-once tag.
+    /// Mirrors the nine `Multiple … operand bundles` `Check`s of
+    /// `Verifier::visitCallBase`'s operand-bundle loop.
+    CallDuplicateOperandBundle,
+    /// An operand bundle whose tag fixes its arity carries the wrong number of
+    /// operands. Mirrors the `Expected exactly one …` / `Expected exactly two
+    /// …` `Check`s of `Verifier::visitCallBase`'s operand-bundle loop.
+    CallOperandBundleOperandCount,
+    /// A `"funclet"` bundle operand is not a `catchpad` / `cleanuppad`.
+    /// Mirrors `Verifier::visitCallBase` ("Funclet bundle operands should
+    /// correspond to a FuncletPadInst").
+    CallFuncletBundleOperand,
+    /// A `"ptrauth"` bundle's key operand is not an `i32` constant, or its
+    /// discriminator operand is not `i64`.
+    /// Mirrors `Verifier::visitCallBase`.
+    CallPtrauthBundleOperand,
+    /// A `"kcfi"` bundle operand is not an `i32` constant.
+    /// Mirrors `Verifier::visitCallBase`.
+    CallKcfiBundleOperand,
+    /// A `"preallocated"` bundle operand is not the token produced by
+    /// `llvm.call.preallocated.setup`.
+    /// Mirrors `Verifier::visitCallBase`.
+    CallPreallocatedBundleOperand,
+    /// A **direct** call carries a `"ptrauth"` operand bundle.
+    /// Mirrors `Verifier::visitCallBase` ("Direct call cannot have a ptrauth
+    /// bundle"), the one bundle rule raised after the loop rather than in it.
+    CallDirectPtrauthBundle,
+    /// A `"clang.arc.attachedcall"` bundle whose call signature, operand
+    /// count, or operand function is not one of the three ARC entry points.
+    /// Mirrors `Verifier::verifyAttachedCallBundle`.
+    CallAttachedCallBundle,
+    /// An inline-asm call argument disagrees with the constraint it answers:
+    /// an indirect constraint whose operand is not a pointer or carries no
+    /// `elementtype` attribute, or a direct constraint whose operand carries
+    /// one. Mirrors `Verifier::verifyInlineAsmCall`.
+    InlineAsmConstraintOperand,
+    /// An inline-asm call's label-constraint count is wrong for the call form
+    /// — non-zero on a `call` / `invoke`, or unequal to the indirect
+    /// destination count on a `callbr`. Mirrors the tail of
+    /// `Verifier::verifyInlineAsmCall`.
+    InlineAsmLabelConstraint,
+    /// A non-inline-asm `callbr` carries operand bundles. Mirrors
+    /// `Verifier::visitCallBrInst` ("Callbr for intrinsics currently doesn't
+    /// support operand bundles").
+    CallBrOperandBundle,
+    /// A non-inline-asm `callbr` names something other than the one intrinsic
+    /// its `switch` supports, or names it with the wrong indirect
+    /// destinations. Mirrors `Verifier::visitCallBrInst`'s `switch` — the
+    /// `Intrinsic::amdgcn_kill` case and its `default:`.
+    CallBrUnsupportedIntrinsic,
+    /// An inline-asm `callbr` whose asm carries the `unwind` keyword. Mirrors
+    /// `Verifier::visitCallBrInst` ("Unwinding from Callbr is not allowed").
+    CallBrInlineAsmUnwinds,
+    /// A `landingpad`, `resume`, `catchpad`, `cleanuppad` or `catchswitch` in a
+    /// function with no `personality`. Mirrors the first `Check` of
+    /// `Verifier::visitLandingPadInst` / `visitResumeInst` /
+    /// `visitCatchPadInst` / `visitCleanupPadInst` / `visitCatchSwitchInst`.
+    EhPadMissingPersonality,
+    /// An EH-pad instruction is malformed in itself: not first in its block,
+    /// nested in the wrong parent, given the wrong operand kind, unwinding to
+    /// a non-EH block, or disagreeing with the function's `landingpad` result
+    /// type. Mirrors the per-opcode `Check`s of `Verifier`'s EH `visit*`
+    /// methods and `visitInvokeInst`'s unwind-destination `Check`.
+    EhPadInvalidStructure,
+    /// An edge into an EH pad is not a legal unwind edge, or passes through the
+    /// wrong pads on its way. Mirrors `Verifier::visitEHPadPredecessors`.
+    EhPadPredecessorEdge,
+    /// Funclet pads are ill-nested, or the unwind edges leaving one disagree
+    /// on where they go. Mirrors `Verifier::visitFuncletPadInst` and
+    /// `Verifier::verifySiblingFuncletUnwinds`.
+    FuncletPadNesting,
+    /// An intrinsic that may lower to a real call, sitting inside an EH funclet
+    /// of a scoped-EH-personality function, carries no `"funclet"` operand
+    /// bundle. Mirrors the tail of `Verifier::visitIntrinsicCall` ("Missing
+    /// funclet token on intrinsic call").
+    MissingFuncletToken,
+    /// An intrinsic declaration has a body. Mirrors the head of
+    /// `Verifier::visitIntrinsicCall` ("Intrinsic functions should never be
+    /// defined!").
+    IntrinsicDefined,
+    /// An `llvm.`-prefixed function is named somewhere other than the callee
+    /// position of a direct call. Mirrors `Verifier::visitFunction`'s
+    /// `Function::hasAddressTaken` guard ("Invalid user of intrinsic
+    /// instruction!").
+    IntrinsicAddressTaken,
+    /// A constant argument to an intrinsic has type `x86_amx`. Mirrors
+    /// `Verifier::visitIntrinsicCall`'s argument walk ("const x86_amx is not
+    /// allowed in argument!").
+    ConstX86AmxArgument,
+    /// `llvm.callbr.landingpad` is not the first instruction of a block whose
+    /// one predecessor ends in the `callbr` it names, with that block among the
+    /// `callbr`'s indirect destinations. Mirrors
+    /// `Verifier::visitIntrinsicCall`'s `case Intrinsic::callbr_landingpad:`.
+    CallbrLandingPadPlacement,
+    /// `musttail call` whose callee is inline assembly.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallInlineAsm,
+    /// `musttail call` whose call-site signature disagrees with the enclosing
+    /// function's on the variadic bit.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallVarArgsMismatch,
+    /// `musttail call` whose return type is not congruent with the enclosing
+    /// function's. Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallReturnTypeMismatch,
+    /// `musttail call` whose calling convention differs from the enclosing
+    /// function's. Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallCallingConvMismatch,
+    /// The `bitcast` following a `musttail call` does not use the call.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallBitcastMustUseCall,
+    /// `musttail call` not immediately followed by a `ret`, with at most an
+    /// intervening `bitcast`. Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallNotInTailPosition,
+    /// The `ret` after a `musttail call` returns something other than the
+    /// call's (possibly bitcast) result.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallResultNotReturned,
+    /// An ABI-impacting parameter attribute that `tailcc` / `swifttailcc`
+    /// forbids on a `musttail` caller or callee.
+    /// Mirrors `Verifier::verifyTailCCMustTailAttrs`.
+    TailCcMustTailForbiddenAttribute,
+    /// A `tailcc` / `swifttailcc` `musttail` call in a varargs function.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    TailCcMustTailVarArgsFunction,
+    /// `musttail call` whose parameter count differs from the enclosing
+    /// function's. Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallParamCountMismatch,
+    /// `musttail call` with a parameter type not congruent with the enclosing
+    /// function's at the same slot.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallParamTypeMismatch,
+    /// `musttail call` whose ABI-impacting parameter attributes differ from
+    /// the enclosing function's at the same slot.
+    /// Mirrors `Verifier::verifyMustTailCall`.
+    MustTailCallAbiAttributeMismatch,
     /// `select` condition operand is not `i1`.
     /// Mirrors `Verifier::visitSelectInst`.
     SelectConditionNotI1,
@@ -288,6 +502,14 @@ pub enum VerifierRule {
     /// `swifterror` alloca is not pointer-typed, or is an array allocation.
     /// Mirrors `Verifier::visitAllocaInst`.
     SwiftErrorAlloca,
+    /// A `swifterror` value is used somewhere other than a `load`, a `store`'s
+    /// pointer operand, or a `swifterror`-attributed call argument. Mirrors
+    /// `Verifier::verifySwiftErrorValue` and `Verifier::verifySwiftErrorCall`.
+    SwiftErrorValueUse,
+    /// A call argument carrying the `swifterror` attribute does not come from
+    /// a `swifterror` alloca or a `swifterror` parameter. Mirrors the
+    /// `swifterror` loop of `Verifier::visitCallBase`.
+    SwiftErrorCallArgument,
     /// `load` pointer operand is not a pointer.
     /// Mirrors `Verifier::visitLoadInst`.
     LoadNonPointer,
@@ -370,6 +592,9 @@ pub enum VerifierRule {
     AtomicInvalidOrdering,
     /// `cmpxchg` / `atomicrmw` pointer operand is not a pointer.
     AtomicNonPointerOperand,
+    /// `cmpxchg` compare operand is neither a scalar integer nor a pointer.
+    /// Mirrors `Verifier::visitAtomicCmpXchgInst`.
+    AtomicCmpXchgInvalidOperandType,
     /// `atomicrmw` operand value type does not match the operation's
     /// expected element type, or the FP-only ops were given a non-FP
     /// operand.
@@ -501,12 +726,75 @@ impl fmt::Display for VerifierRule {
             Self::PhiInvalidResultType => {
                 "PHI node result type is not a valid first-class data type"
             }
-            Self::PhiEmptyInReachableBlock => {
-                "PHI node in a block reachable from entry has no incoming values"
-            }
             Self::CallNonFunction => "call callee is not a function value",
             Self::CallArgCountMismatch => "call argument count does not match callee signature",
             Self::CallArgTypeMismatch => "call argument type does not match callee parameter type",
+            Self::CallDuplicateOperandBundle => {
+                "call site repeats an at-most-once operand bundle tag"
+            }
+            Self::CallOperandBundleOperandCount => {
+                "operand bundle carries the wrong number of operands"
+            }
+            Self::CallFuncletBundleOperand => "funclet bundle operand is not a funclet pad",
+            Self::CallPtrauthBundleOperand => "ptrauth bundle operand has the wrong type",
+            Self::CallKcfiBundleOperand => "kcfi bundle operand is not an i32 constant",
+            Self::CallPreallocatedBundleOperand => {
+                "preallocated bundle operand is not a llvm.call.preallocated.setup token"
+            }
+            Self::CallDirectPtrauthBundle => "direct call carries a ptrauth operand bundle",
+            Self::CallAttachedCallBundle => "invalid clang.arc.attachedcall operand bundle",
+            Self::InlineAsmConstraintOperand => {
+                "inline asm argument does not satisfy its constraint's indirect/elementtype rules"
+            }
+            Self::InlineAsmLabelConstraint => {
+                "inline asm label-constraint count is wrong for this call form"
+            }
+            Self::CallBrOperandBundle => "non-asm callbr carries operand bundles",
+            Self::CallBrUnsupportedIntrinsic => {
+                "callbr callee is not asm-goto or a supported intrinsic used the supported way"
+            }
+            Self::CallBrInlineAsmUnwinds => "callbr inline asm is marked unwind",
+            Self::EhPadMissingPersonality => "EH pad instruction in a function with no personality",
+            Self::EhPadInvalidStructure => "EH pad instruction is malformed",
+            Self::EhPadPredecessorEdge => "an edge into an EH pad is not a legal unwind edge",
+            Self::FuncletPadNesting => {
+                "funclet pads are ill-nested, or unwind edges out of one disagree"
+            }
+            Self::MissingFuncletToken => "intrinsic call in an EH funclet has no funclet token",
+            Self::IntrinsicDefined => "an intrinsic function has a body",
+            Self::IntrinsicAddressTaken => "an intrinsic is used other than as a call target",
+            Self::ConstX86AmxArgument => "a constant argument to an intrinsic has type x86_amx",
+            Self::CallbrLandingPadPlacement => {
+                "llvm.callbr.landingpad is not first in a block reached only by its callbr"
+            }
+            Self::MustTailCallInlineAsm => "musttail call callee is inline assembly",
+            Self::MustTailCallVarArgsMismatch => {
+                "musttail call and caller disagree on the variadic bit"
+            }
+            Self::MustTailCallReturnTypeMismatch => {
+                "musttail call return type is not congruent with the caller's"
+            }
+            Self::MustTailCallCallingConvMismatch => {
+                "musttail call calling convention differs from the caller's"
+            }
+            Self::MustTailCallBitcastMustUseCall => {
+                "bitcast after a musttail call does not use the call"
+            }
+            Self::MustTailCallNotInTailPosition => "musttail call is not in tail position",
+            Self::MustTailCallResultNotReturned => "musttail call result is not returned",
+            Self::TailCcMustTailForbiddenAttribute => {
+                "parameter attribute is forbidden on a tailcc musttail call"
+            }
+            Self::TailCcMustTailVarArgsFunction => "tailcc musttail call in a varargs function",
+            Self::MustTailCallParamCountMismatch => {
+                "musttail call parameter count differs from the caller's"
+            }
+            Self::MustTailCallParamTypeMismatch => {
+                "musttail call parameter type is not congruent with the caller's"
+            }
+            Self::MustTailCallAbiAttributeMismatch => {
+                "musttail call ABI-impacting parameter attributes differ from the caller's"
+            }
             Self::SelectConditionNotI1 => "select condition is not i1",
             Self::SelectArmTypeMismatch => {
                 "select arm types differ from each other or from the result"
@@ -525,6 +813,13 @@ impl fmt::Display for VerifierRule {
             Self::AllocaUnsizedType => "alloca allocated type is unsized",
             Self::AllocaNonIntegerCount => "alloca num-elements operand is not an integer",
             Self::SwiftErrorAlloca => "swifterror alloca must be a non-array pointer allocation",
+            Self::SwiftErrorValueUse => {
+                "swifterror value is used somewhere other than a load, a store's pointer operand, \
+                 or a swifterror call argument"
+            }
+            Self::SwiftErrorCallArgument => {
+                "swifterror call argument does not come from a swifterror alloca or parameter"
+            }
             Self::LoadNonPointer => "load pointer operand is not a pointer",
             Self::LoadUnsizedType => "loading unsized types is not allowed",
             Self::StoreNonPointer => "store pointer operand is not a pointer",
@@ -564,6 +859,9 @@ impl fmt::Display for VerifierRule {
             }
             Self::AtomicInvalidOrdering => "atomic op given an invalid memory ordering",
             Self::AtomicNonPointerOperand => "atomic op pointer operand is not a pointer",
+            Self::AtomicCmpXchgInvalidOperandType => {
+                "cmpxchg operand type is not a scalar integer or pointer"
+            }
             Self::AtomicRmwOperandTypeMismatch => "atomicrmw operand type does not match operation",
             Self::SwitchOperandTypeMismatch => "switch operand types disagree",
             Self::IndirectBrNonPointerAddress => "indirectbr address operand is not a pointer",
@@ -611,18 +909,219 @@ impl fmt::Display for VerifierRule {
     }
 }
 
+/// What a verifier finding was raised about.
+///
+/// Replaces the independent `function: Option<String>` / `block:
+/// Option<String>` pair [`IrError::VerifierFailure`] used to carry. That pair
+/// had two problems, and both were live:
+///
+/// - `function: None, block: Some(_)` was representable and cannot happen — a
+///   basic block has no existence outside its function.
+/// - `function`'s own rustdoc said "name of the function under verification",
+///   and two of the five construction sites filled it with something else: a
+///   `GlobalVariable`'s name (`Verifier::fail_global`) and a `GlobalIfunc`'s
+///   (`Verifier::visit_global_ifunc`). A consumer reading the field to name
+///   the offending function was told about a global.
+///
+/// Names are stored **bare**, without the `@` or `%` sigil. Upstream's
+/// `Verifier::CheckFailed` renders its context through `Value::print`, which
+/// supplies the sigil; three of llvmkit's sites had baked `@` into the stored
+/// string and one had not, so the same field held two spellings of one
+/// concept. The sigil is now the renderer's business, not the payload's.
+///
+/// This carries *context*, not text: [`IrError::VerifierFailure`]'s `Display`
+/// renders `rule` and `message` only, exactly as before, so the byte-exact
+/// `CHECK`-line contract with `llvm/test/Verifier/*.ll` is untouched.
+///
+/// llvmkit-specific shape: upstream threads a `Value *` into `CheckFailed` and
+/// prints it, so it has no enum to port — the partition is llvmkit's way of
+/// spelling which `Value` kind that pointer held.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum VerifierSubject {
+    /// A module-wide check with no named subject — the shape of
+    /// `Verifier::visitModuleFlags`.
+    ///
+    /// Spelled `WholeModule` rather than `Module`, and the reason is
+    /// mechanical rather than stylistic: rustc trims a type's path in a
+    /// diagnostic only while its short name is unique across the crate. A
+    /// variant named `Module` collides with [`Module`](crate::Module), and
+    /// every diagnostic in every downstream crate that mentions the struct
+    /// then prints `llvmkit_ir::Module<B, S>` instead of `Module<B, S>`.
+    /// Measured: naming it `Module` moved 12 such spellings across 8 blessed
+    /// `tests/compile_fail/*.stderr` fixtures, none of which is about
+    /// verification.
+    WholeModule,
+    /// A `GlobalVariable`, checked by `Verifier::visitGlobalVariable`.
+    GlobalVariable {
+        /// The global's name, without its `@` sigil.
+        name: String,
+    },
+    /// A `GlobalIfunc`, checked by `Verifier::visitGlobalIFunc`.
+    GlobalIfunc {
+        /// The ifunc's name, without its `@` sigil.
+        name: String,
+    },
+    /// A whole function, checked outside any of its basic blocks.
+    Function {
+        /// The function's name, without its `@` sigil.
+        name: String,
+    },
+    /// A basic block, and the function that contains it.
+    Block {
+        /// The enclosing function's name, without its `@` sigil.
+        function: String,
+        /// The block's name without its `%` sigil, or `None` when the block is
+        /// unnamed — llvmkit has no slot number to substitute at this point,
+        /// and inventing one would make the field disagree with the printer.
+        block: Option<String>,
+    },
+}
+
+impl fmt::Display for VerifierSubject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Sigils are applied here, once, rather than stored per construction
+        // site — which is how the same field came to hold both `@name` and
+        // `name` for a function.
+        match self {
+            Self::WholeModule => f.write_str("module"),
+            Self::GlobalVariable { name } => write!(f, "global @{name}"),
+            Self::GlobalIfunc { name } => write!(f, "ifunc @{name}"),
+            Self::Function { name } => write!(f, "function @{name}"),
+            Self::Block {
+                function,
+                block: Some(block),
+            } => write!(f, "function @{function}, block %{block}"),
+            Self::Block {
+                function,
+                block: None,
+            } => write!(f, "function @{function}, unnamed block"),
+        }
+    }
+}
+
+/// Why a brand claim was refused.
+///
+/// The brand registry reports exactly these two outcomes, so this is the whole
+/// error, and it is what [`Module::branded`](crate::Module::branded) returns.
+///
+/// These used to be two flat variants of [`IrError`], which meant a claim that
+/// can fail two ways declared 56 outcomes. Every consumer then owed an arm for
+/// the unreachable rest, and that is not hypothetical: `llvmkit-asmparser`'s
+/// brand mapper filled its arm by stringifying the error into an I/O failure
+/// with `ErrorKind::Other`, its own comment conceding that was "the honest
+/// label for 'not an I/O failure at all'". Code that *handles* a refused claim
+/// now matches two arms and is finished.
+///
+/// [`IrError`] keeps a single wrapping [`IrError::Brand`] variant so a caller
+/// whose function already returns [`IrResult`] can widen with `?` when it does
+/// not want to distinguish. The narrowing that matters is at the declaration,
+/// not the absence of a conversion.
+///
+/// Exhaustive, as every public enum in this crate now is: the point is that a
+/// caller can match both arms and be finished. Adding a third outcome would be
+/// a breaking change, which is the correct signal.
+///
+/// `Copy`, which [`IrError`] cannot be — both payloads are `&'static str` from
+/// [`core::any::type_name`].
+///
+/// llvmkit-specific: LLVM's `Module` has no compile-time identity, so there is
+/// no upstream counterpart to port. See Doctrine D7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum BrandError {
+    /// A **live** module already holds the requested brand.
+    ///
+    /// At most one module may carry a given brand at a time, which is what lets
+    /// the brand stand in for module identity at compile time. Drop the
+    /// incumbent module to free the brand, pick a different brand type, or use
+    /// [`Module::dynamic`](crate::Module::dynamic) when the module count is not
+    /// statically known.
+    ///
+    /// Note that leaking a module (e.g. [`core::mem::forget`]) never releases
+    /// its brand — see [`Module::branded`](crate::Module::branded).
+    #[error("module brand `{brand}` is already held by a live module")]
+    InUse {
+        /// Rendered name of the brand type, from [`core::any::type_name`].
+        brand: &'static str,
+    },
+
+    /// A brand retired by [`Module::branded_once`](crate::Module::branded_once)
+    /// was claimed again.
+    ///
+    /// Retirement is permanent by design: a brand whose module is gone must
+    /// never name a *successor*, or handles minted from two different
+    /// generations of storage would share one static type.
+    #[error("module brand `{brand}` was permanently retired by a `branded_once` module")]
+    Retired {
+        /// Rendered name of the brand type, from [`core::any::type_name`].
+        brand: &'static str,
+    },
+}
+
+impl BrandError {
+    /// Whether this failure indicates a bug in llvmkit — see [`Blame`].
+    ///
+    /// Neither outcome does: both are a caller claiming a brand the registry
+    /// has already promised to someone else, live or retired.
+    pub fn blame(&self) -> Blame {
+        match self {
+            Self::InUse { .. } | Self::Retired { .. } => Blame::UsageError,
+        }
+    }
+}
+
+/// A `target datalayout = "..."` string could not be parsed.
+///
+/// Mirrors the `Error` returns of
+/// `lib/IR/DataLayout.cpp::DataLayout::parseLayoutString`, whose
+/// `Expected<DataLayout>` likewise carries exactly one failure kind. A struct
+/// rather than an enum because there is one outcome; making it a variant of
+/// [`IrError`] would oblige every consumer to write an arm for 54 unreachable
+/// ones.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+#[error("invalid datalayout: {reason}")]
+pub struct DataLayoutError {
+    /// Why the `target datalayout` string could not be parsed.
+    pub reason: String,
+}
+
+impl DataLayoutError {
+    /// Whether this failure indicates a bug in llvmkit — see [`Blame`].
+    ///
+    /// It does not: the one outcome is a layout string the caller supplied,
+    /// which `DataLayout::parseLayoutString` likewise returns as an `Error`
+    /// rather than reporting as a fatal internal error.
+    pub fn blame(&self) -> Blame {
+        Blame::UsageError
+    }
+}
+
 /// Crate-wide error.
 ///
-/// Variants are added incrementally as new subsystems land. Marked
-/// `#[non_exhaustive]` so future additions are non-breaking.
+/// Variants are added incrementally as new subsystems land, and the enum is
+/// **exhaustive**: a new variant is a breaking change, flagged in
+/// `CHANGELOG.md` under the pre-1.0 policy.
+///
+/// That is the deliberate trade. `#[non_exhaustive]` would make each addition
+/// non-breaking, but it does so by handing every downstream `match` a `_ =>`
+/// arm — and a catch-all on an error type is where a caller is forced to
+/// invent an outcome it cannot describe. This crate has already paid that
+/// bill: a 56-variant return type obliged the parser's brand mapper to write
+/// an arm for 54 unreachable variants, and it filled that arm by stuffing a
+/// stringified error into an I/O error with `ErrorKind::Other`. Narrower
+/// errors ([`BrandError`], [`DataLayoutError`]) and an exhaustive `IrError`
+/// are two halves of removing that pressure.
 ///
 /// `Hash` alongside `Eq` so an error can be de-duplicated: a verifier or a
 /// pass driver that collects failures across a whole module wants a
-/// `HashSet<IrError>`, not a `Vec` it has to scan. Every payload is a plain
-/// `String`, `&'static str`, or integer, so the derive is total. The sibling
+/// `HashSet<IrError>`, not a `Vec` it has to scan.
+/// Every payload is `Hash + Eq + Clone` -- scalars, owned strings, and the
+/// crate's own label and nested-error types (`TypeKindLabel`, `RenderedType`,
+/// `VerifierRule`, `VerifierSubject`, `BrandError`, `DataLayoutError`) -- so
+/// the derive is total. That bound, not a list of types, is what a new
+/// payload has to satisfy; `crates/llvmkit-ir/tests/ir_error_bounds.rs`
+/// checks it. The sibling
 /// `llvmkit_asmparser::ParseError` already carried `Hash` for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
-#[non_exhaustive]
 pub enum IrError {
     /// Integer width outside `[`[`MIN_INT_BITS`]`, `[`MAX_INT_BITS`]`]`.
     ///
@@ -637,13 +1136,37 @@ pub enum IrError {
         bits: u32,
     },
 
-    /// A type was passed where a different kind was expected.
+    /// A type was passed where a different *kind* was expected — the shape
+    /// where the expectation is fixed at the call site ("this operand must be
+    /// an integer") and only `got` varies.
+    ///
+    /// When both sides come from runtime types, use
+    /// [`IrError::TypeIdentityMismatch`] instead: two types of one kind render
+    /// the same label, and a diagnostic that says "expected struct, got
+    /// struct" names no fact about either operand.
     #[error("type mismatch: expected {expected}, got {got}")]
     TypeMismatch {
         /// The type kind the API required.
         expected: TypeKindLabel,
         /// The type kind actually supplied.
         got: TypeKindLabel,
+    },
+
+    /// Two types that were required to be *identical* differ.
+    ///
+    /// The distinction from [`IrError::TypeMismatch`] is which question was
+    /// asked. That variant answers "is this the right kind?", so a
+    /// [`TypeKindLabel`] is the whole answer. This one answers "are these the
+    /// same type?", where the kinds can agree and the types still differ —
+    /// `%Point` against `%Rect`, `[4 x i32]` against `[8 x i32]`. Both sides
+    /// are therefore [`RenderedType`], and the rendered text differs whenever
+    /// the types do.
+    #[error("type mismatch: expected '{expected}', got '{got}'")]
+    TypeIdentityMismatch {
+        /// The type the operation required, as captured at the call site.
+        expected: RenderedType,
+        /// The type actually supplied.
+        got: RenderedType,
     },
 
     /// Two integer or vector types that were required to agree have
@@ -732,6 +1255,20 @@ pub enum IrError {
         name: String,
     },
 
+    /// `set_struct_body_dyn` was handed a *literal* struct type.
+    ///
+    /// A literal struct's body is its identity — `{ i32, i8 }` is interned by
+    /// structure — so there is nothing to set, and no name to report.
+    /// `StructType::setBodyOrError` (`llvm/lib/IR/Type.cpp`) states the same
+    /// contract as `assert(isOpaque() && "Struct body already set!")`; a
+    /// literal struct is never opaque, so that assert is what upstream fires.
+    ///
+    /// Only the `_dyn` setter can reach this. `Module::set_struct_body` takes
+    /// a `StructType<'ctx, Opaque, B>`, whose typestate has already answered
+    /// the question; `set_struct_body_dyn`'s `StructBodyDyn` marker erases it.
+    #[error("a literal struct type has no settable body")]
+    LiteralStructBodyNotSettable,
+
     /// An identified struct's body reaches the struct being defined. Port of
     /// `StructType::checkBody` (`lib/IR/Type.cpp`), whose message this
     /// reproduces verbatim so `LLParser::parseStructDefinition` can hand it
@@ -755,6 +1292,22 @@ pub enum IrError {
     #[error("cannot allocate value of unsized type {kind}")]
     UnsizedType {
         /// Kind of the unsized type that was rejected.
+        kind: TypeKindLabel,
+    },
+
+    /// A known-bits query was given a value whose type is neither an integer
+    /// nor a pointer, nor a vector of either — so it has no bit pattern to
+    /// reason about.
+    ///
+    /// Mirrors the `assert((Ty->isIntOrIntVectorTy(BitWidth) ||
+    /// Ty->isPtrOrPtrVectorTy()) && "Not integer or pointer type!")` at the
+    /// head of `computeKnownBits` (`ValueTracking.cpp`). llvmkit takes no
+    /// runtime panics in production paths, so upstream's assert is an error
+    /// here — the same spelling the sibling `assert(Depth <=
+    /// MaxAnalysisRecursionDepth)` already gets in that routine.
+    #[error("not integer or pointer type: {kind}")]
+    NotIntOrPointerType {
+        /// Kind of the type that was rejected.
         kind: TypeKindLabel,
     },
 
@@ -871,6 +1424,32 @@ pub enum IrError {
         name: String,
     },
 
+    /// [`GlobalAliasBuilder::build`](crate::GlobalAliasBuilder::build) found
+    /// the type this module's arena records for the aliasee different from the
+    /// type the aliasee's handle carried.
+    ///
+    /// No caller input reaches this. `build` first refuses an aliasee from
+    /// another module with [`ForeignValueId`](Self::ForeignValueId), so the
+    /// slot it reads names the value the handle named. What is left is a handle
+    /// whose cached type disagrees with its value's, and a caller cannot choose
+    /// the type a handle carries: `TypeSlot` has a private field and its only
+    /// constructor, `TypeSlot::from_index`, is crate-private. llvmkit does not
+    /// otherwise prove that every handle it builds carries its value's own
+    /// type, which is why this comparison is made rather than trusted. It
+    /// stays an error because this crate takes no runtime panics in production
+    /// paths; [`IrError::blame`] answers [`Blame::LlvmkitInvariant`].
+    #[error("alias aliasee type changed before build")]
+    AliaseeTypeChangedBeforeBuild,
+
+    /// The ifunc twin of
+    /// [`AliaseeTypeChangedBeforeBuild`](Self::AliaseeTypeChangedBeforeBuild):
+    /// [`GlobalIfuncBuilder::build`](crate::GlobalIfuncBuilder::build) found
+    /// the resolver's type different from the type its handle carried when the
+    /// builder was created. Beyond caller input for the same reasons, and
+    /// blamed on llvmkit the same way.
+    #[error("ifunc resolver type changed before build")]
+    IfuncResolverTypeChangedBeforeBuild,
+
     /// A reserved `llvm.*` name is absent from the generated LLVM intrinsic table.
     #[error("unknown intrinsic `{name}`")]
     UnknownIntrinsic {
@@ -917,14 +1496,6 @@ pub enum IrError {
     InvalidOperation {
         /// Human-readable description of the violated LangRef invariant.
         message: &'static str,
-    },
-    /// `target datalayout = "..."` directive could not be parsed.
-    /// Mirrors the `Error` returns of
-    /// `lib/IR/DataLayout.cpp::DataLayout::parseLayoutString`.
-    #[error("invalid datalayout: {reason}")]
-    InvalidDataLayout {
-        /// Why the `target datalayout` string could not be parsed.
-        reason: String,
     },
     /// A `.ll` keyword did not name any variant of the enum it was parsed
     /// into — the error of the [`FromStr`](core::str::FromStr) family
@@ -983,28 +1554,49 @@ pub enum IrError {
         /// Type name of the analysis that was never registered.
         name: &'static str,
     },
-    /// An invalidator asked for a cached analysis result that is absent.
+    /// An invalidator asked for a cached analysis result that is absent, or a
+    /// `Requires` list's `collect` ran without its `prefetch`.
     #[error("analysis {name} is not cached")]
     AnalysisNotCached {
         /// Type name of the analysis whose cached result is absent.
+        name: &'static str,
+    },
+    /// An analysis manager ran analysis `name`, inserted the result into its
+    /// cache, and could not read that result straight back.
+    ///
+    /// No caller input reaches this. The read uses the key the insert just
+    /// used; nothing runs between the two but instrumentation callbacks, which
+    /// receive only the analysis name; and the result was boxed by the
+    /// operations registered under that analysis's own `TypeId`, so the
+    /// downcast names the type they produced. [`IrError::blame`] therefore
+    /// answers [`Blame::LlvmkitInvariant`]. Distinct from
+    /// [`AnalysisNotCached`](Self::AnalysisNotCached), which a caller can
+    /// provoke.
+    #[error("analysis {name} was cached, but its result could not be read back")]
+    AnalysisResultMissingAfterCaching {
+        /// Type name of the analysis whose freshly cached result could not be
+        /// read.
         name: &'static str,
     },
     /// IR validation failure detected by [`Module::verify`](crate::Module::verify) /
     /// [`Module::verify_borrowed`](crate::Module::verify_borrowed). The
     /// `rule` discriminator names the LangRef invariant that was
     /// violated; `function` / `block` carry diagnostic context, and
-    /// `message` is a human-readable description that mirrors the
-    /// shape of `Verifier::CheckFailed` output in
-    /// `llvm/lib/IR/Verifier.cpp`.
+    /// `message` **begins with upstream's own `Check` literal**, verbatim, so
+    /// a `llvm/test/Verifier/*.ll` fixture can be driven by its `CHECK` lines;
+    /// llvmkit's extra detail follows in parentheses. See [`VerifierRule`] for
+    /// the split between the two, and for the rules that have no upstream
+    /// literal to carry.
     #[error("verifier: {rule}: {message}")]
     VerifierFailure {
         /// The LangRef invariant that was violated.
         rule: VerifierRule,
-        /// Name of the function under verification, if known.
-        function: Option<String>,
-        /// Name of the offending basic block, if known.
-        block: Option<String>,
-        /// Human-readable description mirroring `Verifier::CheckFailed`.
+        /// What the finding was raised about. A partition, not two
+        /// independent `Option`s — see [`VerifierSubject`] for the two states
+        /// the old pair could spell and should not have.
+        subject: VerifierSubject,
+        /// `Verifier::CheckFailed`'s own literal for the failing `Check`,
+        /// followed by llvmkit's detail in parentheses where it has any.
         message: String,
     },
 
@@ -1076,8 +1668,28 @@ pub enum IrError {
     /// ([`IntoIntValue`](crate::IntoIntValue) /
     /// [`IntoFloatValue`](crate::IntoFloatValue) /
     /// [`IntoPointerValue`](crate::IntoPointerValue)) when handed a foreign id.
-    #[error("value id belongs to a different Module")]
+    ///
+    /// Raised for a value or constant *handle* from another module too, by the
+    /// APIs that keep only the handle's slot, which names a different value —
+    /// or nothing — in this module's arena: the global, alias and ifunc
+    /// builders, [`GlobalVariable::set_initializer`](crate::GlobalVariable::set_initializer),
+    /// [`GlobalAlias::set_aliasee`](crate::GlobalAlias::set_aliasee),
+    /// [`GlobalIfunc::set_resolver`](crate::GlobalIfunc::set_resolver) and
+    /// [`Module::metadata_constant`](crate::Module::metadata_constant).
+    #[error("value belongs to a different Module")]
     ForeignValueId,
+
+    /// A type handle minted by one [`Module`](crate::Module) reached an API of
+    /// another that would store its slot. Each module interns types in its own
+    /// arena, so the slot would name a different type there, or nothing.
+    ///
+    /// The type twin of [`ForeignValueId`](Self::ForeignValueId): two modules
+    /// sharing a brand (`DynBrand`, or a re-issued named brand) accept each
+    /// other's [`Type`](crate::Type) handles without a type error, and the
+    /// module tag is what refuses them. Raised by the global, alias and ifunc
+    /// builders for a value type from another module.
+    #[error("type belongs to a different Module")]
+    ForeignType,
 
     /// A [`MetadataId`](crate::MetadataId) named nothing in the target
     /// [`Module`](crate::Module) — the id's tag matched, but its slot is past
@@ -1088,6 +1700,10 @@ pub enum IrError {
     /// *foreign* id is [`ForeignMetadataId`](Self::ForeignMetadataId) instead:
     /// the tag separates the two cases, so an in-range slot from another module
     /// is rejected rather than silently mis-resolved.
+    ///
+    /// Not a caller outcome: an id whose tag matches was minted by this module
+    /// from a slot its append-only arena had just handed out, so
+    /// [`IrError::blame`] answers [`Blame::LlvmkitInvariant`].
     #[error("metadata slot {index} names nothing in this Module (holds {len})")]
     UnknownMetadataSlot {
         /// The index that was out of range.
@@ -1215,32 +1831,175 @@ pub enum IrError {
         message: String,
     },
 
-    /// [`Module::branded`](crate::Module::branded) /
-    /// [`branded_once`](crate::Module::branded_once) was asked for a brand type
-    /// that a **live** module already holds. At most one module may carry a
-    /// given brand at a time, which is what lets the brand stand in for module
-    /// identity at compile time. Drop the incumbent module to free the brand,
-    /// pick a different brand type, or use
-    /// [`Module::dynamic`](crate::Module::dynamic) when the module count is not
-    /// statically known.
+    /// A brand claim was refused — see [`BrandError`] for the two outcomes.
     ///
-    /// Note that leaking a module (e.g. [`core::mem::forget`]) never releases
-    /// its brand — see [`Module::branded`](crate::Module::branded).
-    #[error("module brand `{brand}` is already held by a live module")]
-    BrandInUse {
-        /// Rendered name of the brand type, from [`core::any::type_name`].
-        brand: &'static str,
-    },
+    /// This is a *wrapper*, and the distinction is the whole point of the
+    /// split. [`Module::branded`](crate::Module::branded) returns the narrow
+    /// [`BrandError`], so the code that actually handles a refused claim
+    /// matches two arms and is done; nothing is obliged to write a catch-all
+    /// for variants the registry cannot produce. This variant exists only so a
+    /// caller whose function already returns [`IrResult`] can widen with `?`
+    /// when it does not want to distinguish — the crate-level-error idiom in
+    /// `AGENTS.md`, "wrap third-party errors with `#[from]` so `?` works".
+    ///
+    /// Renders transparently, so the text is [`BrandError`]'s and the two
+    /// spellings cannot drift.
+    ///
+    /// It replaces the former flat `BrandInUse` / `BrandRetired` variants,
+    /// whose presence here is what let `Module::branded` declare 56 outcomes
+    /// for an operation with two.
+    #[error(transparent)]
+    Brand(#[from] BrandError),
 
-    /// A brand retired by [`Module::branded_once`](crate::Module::branded_once)
-    /// was claimed again. Retirement is permanent by design: a brand whose
-    /// module is gone must never name a *successor*, or handles minted from two
-    /// different generations of storage would share one static type.
-    #[error("module brand `{brand}` was permanently retired by a `branded_once` module")]
-    BrandRetired {
-        /// Rendered name of the brand type, from [`core::any::type_name`].
-        brand: &'static str,
-    },
+    /// A `target datalayout` string failed to parse — see [`DataLayoutError`]
+    /// for its single outcome.
+    ///
+    /// This is a *wrapper*, and the distinction is the whole point of the
+    /// split. [`DataLayout::parse`](crate::DataLayout::parse) returns the
+    /// narrow [`DataLayoutError`] directly, so code that handles a parse
+    /// failure needs no arm for the 54 outcomes a layout string cannot
+    /// produce. This variant exists only so a caller whose function already
+    /// returns [`IrResult`] can widen with `?` when it does not want to
+    /// distinguish — the crate-level-error idiom in `AGENTS.md`, "wrap
+    /// third-party errors with `#[from]` so `?` works".
+    ///
+    /// Renders transparently, so the text is [`DataLayoutError`]'s and the
+    /// two spellings cannot drift.
+    ///
+    /// It replaces the former flat `InvalidDataLayout` variant, whose
+    /// presence here is what let `DataLayout::parse` declare 55 outcomes for
+    /// an operation with one.
+    #[error(transparent)]
+    DataLayout(#[from] DataLayoutError),
+}
+
+impl IrError {
+    /// Whether this failure indicates a bug in llvmkit.
+    ///
+    /// One exhaustive match, deliberately: a new variant is a compile error
+    /// here, which is the only thing that keeps the classification honest. The
+    /// nested errors answer for themselves.
+    ///
+    /// [`Blame::LlvmkitInvariant`] only where no caller input could have
+    /// produced the variant — llvmkit reached a state it had promised was
+    /// impossible. Blame is a property of the *variant*, since that is all this
+    /// method sees, so a site no caller can reach raises a variant of its own
+    /// rather than sharing one with caller-reachable sites: a shared variant
+    /// would have to answer [`Blame::UsageError`] and under-report the bug.
+    /// Over-claiming an llvmkit bug sends users to report their own mistakes
+    /// against it.
+    pub fn blame(&self) -> Blame {
+        match self {
+            // llvmkit failing its own promise. A `MetadataId` is minted only
+            // by the module whose tag it carries (`MetadataId::from_raw` is
+            // crate-private), from a slot `MetadataStore` had just appended,
+            // and `ModuleId::fresh` never re-issues a tag. So once
+            // `metadata_slot_of`'s tag check has passed, a slot past the end
+            // of the arena is not something a caller can hand in.
+            Self::UnknownMetadataSlot { .. } => Blame::LlvmkitInvariant,
+
+            // The same, for the sites split out of `AnalysisNotCached` and
+            // `InvalidOperation` so that neither shares a variant with a
+            // caller-reachable site. Each variant's rustdoc states why no
+            // caller input reaches it.
+            Self::AnalysisResultMissingAfterCaching { .. }
+            | Self::AliaseeTypeChangedBeforeBuild
+            | Self::IfuncResolverTypeChangedBeforeBuild => Blame::LlvmkitInvariant,
+
+            // The caller's operand has the wrong type, width, length, address
+            // space or value category. `InvalidIntegerWidth` is a bound LLVM
+            // itself imposes — upstream's usage class folds bounds in.
+            Self::InvalidIntegerWidth { .. }
+            | Self::TypeMismatch { .. }
+            | Self::TypeIdentityMismatch { .. }
+            | Self::OperandWidthMismatch { .. }
+            | Self::ArrayLengthMismatch { .. }
+            | Self::AddressSpaceMismatch { .. }
+            | Self::UnsizedType { .. }
+            | Self::NotIntOrPointerType { .. }
+            | Self::ValueCategoryMismatch { .. }
+            | Self::ReturnTypeMismatch { .. }
+            | Self::ImmediateOverflow { .. }
+            | Self::DegenerateConstantRange { .. } => Blame::UsageError,
+
+            // Struct bodies the caller set, reset, or described inconsistently.
+            Self::StructBodyAlreadySet { .. }
+            | Self::LiteralStructBodyNotSettable
+            | Self::RecursiveStructBody { .. }
+            | Self::StructBodyMismatch { .. } => Blame::UsageError,
+
+            // An index or an arity the caller supplied does not fit.
+            Self::ArgumentIndexOutOfRange { .. }
+            | Self::AggregateIndexOutOfRange { .. }
+            | Self::GepInvalidIndices
+            | Self::FunctionParameterCountMismatch { .. }
+            | Self::CallArgumentCountMismatch { .. }
+            | Self::CallArgumentTypeMismatch { .. }
+            | Self::UnexpectedVarArgsSignature
+            | Self::MissingVarArgsSignature
+            | Self::PhiArgArityMismatch { .. } => Blame::UsageError,
+
+            // A name the caller chose is taken, reserved, or unknown, or its
+            // signature does not match the intrinsic it names.
+            Self::DuplicateFunctionName { .. }
+            | Self::DuplicateGlobalName { .. }
+            | Self::UnknownIntrinsic { .. }
+            | Self::ReservedIntrinsicName { .. }
+            | Self::IntrinsicSignatureMismatch { .. } => Blame::UsageError,
+
+            // Text or a raw number the caller supplied names nothing.
+            Self::InvalidKeyword { .. }
+            | Self::InvalidDiscriminant { .. }
+            | Self::InvalidOptimizationLevel { .. }
+            | Self::InvalidPassPipelineName { .. }
+            | Self::InvalidPassPipeline { .. } => Blame::UsageError,
+
+            // The broad LangRef-rule family, classified as one class: its sites
+            // reject a caller's argument or report a host bound. The two
+            // traced as beyond any caller's reach — an alias's and an ifunc's
+            // type re-check at `build` — raise their own variants, above.
+            Self::InvalidOperation { .. } => Blame::UsageError,
+
+            // Analysis-manager contracts the caller broke: an unregistered
+            // analysis, an invalidator asking about a dependency it never
+            // cached, or a `Requires` list's `collect` run without its
+            // `prefetch`. The manager's own read-back straight after caching
+            // is `AnalysisResultMissingAfterCaching`, above.
+            Self::AnalysisNotRegistered { .. } | Self::AnalysisNotCached { .. } => {
+                Blame::UsageError
+            }
+
+            // IR the caller built, parsed, or asked a pass to insert breaks a
+            // LangRef rule.
+            Self::VerifierFailure { .. }
+            | Self::AmbiguousPhiIncoming { .. }
+            | Self::PhiIncomingNotDominating { .. }
+            | Self::PhiCoherence { .. } => Blame::UsageError,
+
+            // The on-the-fly SSA layer's runtime laws, broken by the caller's
+            // sequencing or by mixing handles between builders.
+            Self::SsaUseOfUndefinedVariable { .. }
+            | Self::SsaBranchToSealedBlock { .. }
+            | Self::SsaBlockAlreadySealed { .. }
+            | Self::SsaBlockAlreadyFilled { .. }
+            | Self::SsaUnfilledBlock { .. }
+            | Self::SsaForeignVariable
+            | Self::SsaForeignBlock
+            | Self::SsaFunctionHasBlocks
+            | Self::SsaForeignFunction
+            | Self::SsaUnpositioned => Blame::UsageError,
+
+            // A handle or id the caller minted in one module and handed to
+            // another.
+            Self::ForeignValueId
+            | Self::ForeignType
+            | Self::ForeignMetadataId
+            | Self::ForeignNamedMetadataId => Blame::UsageError,
+
+            Self::Brand(error) => error.blame(),
+            Self::DataLayout(error) => error.blame(),
+        }
+    }
 }
 
 /// Crate-wide `Result` alias.

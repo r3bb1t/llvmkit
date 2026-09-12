@@ -789,7 +789,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> fmt::Debug for FloatType<'ctx, K, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FloatType")
             .field("id", &self.id)
-            .field("kind", &K::ieee_label())
+            .field("kind", &K::ieee_kind())
             .finish()
     }
 }

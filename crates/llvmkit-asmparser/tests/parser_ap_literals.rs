@@ -274,3 +274,114 @@ fn hex_float_constants_are_not_zero_padded_past_their_width() {
         "{text}"
     );
 }
+
+/// `LLParser::parseUInt64` gates on the token kind and the APSInt's
+/// **signedness**, never on its spelling:
+///
+/// ```text
+/// if (Lex.getKind() != lltok::APSInt || Lex.getAPSIntVal().isSigned())
+///   return tokError("expected integer");
+/// Val = Lex.getAPSIntVal().getLimitedValue();
+/// ```
+///
+/// `LLLexer::lexIdentifier`'s `[us]0x[0-9A-Fa-f]+` block stamps
+/// `APSInt(Tmp, TokStart[0] == 'u')`, so `u0x…` is unsigned and passes both
+/// gates wherever a `uint64` is wanted. `align` and `dereferenceable(N)` both
+/// read through `parseUInt64`.
+///
+/// Anchored on the routine, not a fixture: `grep -rlaE '[us]0x' test/Assembler
+/// test/Verifier` under `orig_cpp/llvm-project-llvmorg-22.1.4/llvm` matches
+/// `invalid-hexint.ll` and `matrix-intrinsics.ll` only, and both write the
+/// literal in a *value* position, which `parseValID` reads — not in one of
+/// `parseUInt64`'s.
+#[test]
+fn an_unsigned_hex_literal_is_accepted_wherever_a_uint64_is_wanted() {
+    let text = parse_and_render(
+        "uint64_u0x",
+        b"@g = global i32 0, align u0x4\n\
+define void @f(ptr align u0x8 dereferenceable(u0x10) %p) {\n\
+  ret void\n\
+}\n"
+        .as_slice(),
+    );
+    assert!(text.contains("@g = global i32 0, align 4"), "got:\n{text}");
+    assert!(
+        text.contains("ptr align 8 dereferenceable(16) %p"),
+        "got:\n{text}"
+    );
+}
+
+/// `parseUInt64` reads the value with `APSInt::getLimitedValue()`, whose
+/// default limit is `UINT64_MAX` and which **saturates** (`APInt::ugt(Limit) ?
+/// Limit : getZExtValue()`) rather than failing. So a literal too wide for 64
+/// bits is not a lexical error at all: it reaches
+/// `parseOptionalAlignment`'s own checks as `UINT64_MAX`, which is not a power
+/// of two.
+///
+/// The message therefore has to be `alignment is not a power of two`, not
+/// `expected integer` — the divergence was observable in the *diagnostic*, not
+/// only in an internal value.
+///
+/// Anchored on the routine; the search above finds no fixture that writes an
+/// over-wide literal in a `parseUInt64` position.
+#[test]
+fn an_over_wide_alignment_saturates_instead_of_failing_to_parse() {
+    let err = parse_err(
+        b"define void @f() {\n\
+  %a = alloca i32, align 99999999999999999999999\n\
+  ret void\n\
+}\n"
+        .as_slice(),
+    );
+    assert_eq!(err, "alignment is not a power of two");
+}
+
+/// `parseUInt32` shares `parseUInt64`'s guard and adds a range check *after*
+/// the saturating read:
+///
+/// ```text
+/// uint64_t Val64 = Lex.getAPSIntVal().getLimitedValue(0xFFFFFFFFULL+1);
+/// if (Val64 != unsigned(Val64)) return tokError("expected 32-bit integer (too large)");
+/// ```
+///
+/// Two consequences are pinned here. An `addrspace(u0x1)` is accepted, since
+/// the guard never looks at the spelling; and `align = 4294967296` inside an
+/// attribute group still answers the second message, because saturation lands
+/// on `0x100000000`, which is exactly what the range check rejects. Neither
+/// message may collapse into the other.
+#[test]
+fn parse_uint32_takes_an_unsigned_hex_literal_and_keeps_its_range_message() {
+    let text = parse_and_render(
+        "uint32_u0x",
+        b"@g = addrspace(u0x1) global i32 0\n@h = global ptr addrspace(u0x2) null\n".as_slice(),
+    );
+    assert!(
+        text.contains("@g = addrspace(1) global i32 0"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("@h = global ptr addrspace(2) null"),
+        "got:\n{text}"
+    );
+
+    let err = parse_err(
+        b"define void @f() {\n  ret void\n}\nattributes #0 = { align = 4294967296 }\n".as_slice(),
+    );
+    assert_eq!(err, "expected 32-bit integer (too large)");
+}
+
+/// The guard is on `APSInt::isSigned()`, so the *signed* spellings stay
+/// rejected: a negative decimal and `s0x…` both answer `expected integer`,
+/// which is the message `test/Assembler/align-param-attr-error2.ll` pins for
+/// the neighbouring empty-parens case.
+#[test]
+fn a_signed_literal_is_still_not_a_uint64() {
+    assert_eq!(
+        parse_err(b"@g = global i32 0, align -4\n".as_slice()),
+        "expected integer"
+    );
+    assert_eq!(
+        parse_err(b"@g = global i32 0, align s0x4\n".as_slice()),
+        "expected integer"
+    );
+}

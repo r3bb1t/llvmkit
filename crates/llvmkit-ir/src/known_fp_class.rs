@@ -46,7 +46,7 @@ use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::constant::ConstantData;
 use crate::denormal_mode::{DenormalMode, DenormalModeKind};
 use crate::fmf::FastMathFlags;
-use crate::fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
+use crate::fp_class::{FloatUnitKind, FpClassTest, KnownFpClass, MinMaxKind, RoundingIntrinsic};
 use crate::fp_predicate::{denormal_mode_of, enclosing_function_of, fcmp_implies_class};
 use crate::instr_types::{
     BranchKind, CastOpcode, ExtractElementInstData, InsertElementInstData, PhiData,
@@ -58,7 +58,7 @@ use crate::known_bits::KnownBits;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeKind};
 use crate::r#use::Use;
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{
     MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, compute_known_bits_at_depth,
     is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
@@ -577,7 +577,7 @@ fn phi_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let mut result: Option<KnownFpClass> = None;
     for slot in incoming {
         // Skip direct self references.
-        if slot == value.slot() {
+        if slot == value.slot_trusting_same_module() {
             continue;
         }
         // Upstream recurses *at* the limit rather than at `depth + 1`, which
@@ -1252,8 +1252,16 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let known_source = known_fp_class(source, interested_classes, query, depth + 1);
             KnownFpClass::round_to_integral(
                 known_source,
-                name == "llvm.trunc",
-                is_multi_unit_float_type(value.ty()),
+                if name == "llvm.trunc" {
+                    RoundingIntrinsic::Trunc
+                } else {
+                    RoundingIntrinsic::Other
+                },
+                if is_multi_unit_float_type(value.ty()) {
+                    FloatUnitKind::MultiUnit
+                } else {
+                    FloatUnitKind::SingleUnit
+                },
             )
         }
         "llvm.exp" | "llvm.exp2" | "llvm.exp10" => {
@@ -1560,9 +1568,12 @@ pub fn compute_known_fp_sign_bit<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `llvm::canIgnoreSignBitOfZero`.
 ///
-/// The `ret` arm of upstream's sibling reads the enclosing function's
-/// `nofpclass` return attribute, which llvmkit does not model; this predicate
-/// has no such arm, so nothing is lost here.
+/// Upstream's sibling `canIgnoreSignBitOfNaN` has a `case Instruction::Ret:`
+/// reading the enclosing function's `nofpclass` return attribute;
+/// `canIgnoreSignBitOfZero` has no such arm, so its absence here is upstream's
+/// shape and not a gap. (This comment used to justify the absence with
+/// "`nofpclass` … llvmkit does not model", which was false and was masking the
+/// sibling's arm being genuinely unported — see [`can_ignore_sign_bit_of_nan`].)
 pub fn can_ignore_sign_bit_of_zero<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ctx, B>) -> bool {
     let user = use_edge.user();
     let Some(kind) = instruction_kind(user) else {
@@ -1623,11 +1634,35 @@ pub fn can_ignore_sign_bit_of_nan<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ct
         InstructionKindData::Fneg(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Phi(_) => false,
+        // `case Instruction::Ret:
+        //    return User->getFunction()->getAttributes().getRetNoFPClass() &
+        //           FPClassTest::fcNan;`
+        InstructionKindData::Ret(_) => enclosing_function_slot(user)
+            .and_then(|function| function_no_fp_class(user, function, AttrIndex::Return))
+            .is_some_and(|mask| mask.contains(FpClassTest::NAN)),
         InstructionKindData::Call(_) | InstructionKindData::Invoke(_) => {
             sign_indifferent_intrinsic(user, kind, use_edge.index(), SignOf::Nan)
         }
         _ => false,
     }
+}
+
+/// `Instruction::getFunction()` — the function owning the block owning
+/// `instruction`, or `None` for an instruction not yet in one.
+/// The function an instruction belongs to. Ports `Instruction::getFunction`,
+/// which upstream reaches through `User->getFunction()`,
+/// `II->getFunction()` and `Q.CxtI->getFunction()`.
+pub(crate) fn enclosing_function_slot<'ctx, B: ModuleBrand + 'ctx>(
+    instruction: Value<'ctx, B>,
+) -> Option<ValueSlot> {
+    let ValueKindData::Instruction(data) = &instruction.data().kind else {
+        return None;
+    };
+    let block = value_from_slot(instruction, data.parent.get());
+    let ValueKindData::BasicBlock(block) = &block.data().kind else {
+        return None;
+    };
+    *block.parent.borrow()
 }
 
 /// Which of the two sign questions [`sign_indifferent_intrinsic`] is answering.

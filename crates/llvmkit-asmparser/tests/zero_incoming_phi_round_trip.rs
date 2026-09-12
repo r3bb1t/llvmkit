@@ -2,11 +2,19 @@
 //! surface (`edit_cond_br(..).remove_then`).
 //!
 //! Removing a block's only incoming edge empties its head phi. Before the fix,
-//! the op left that phi in place with zero incomings; it prints as
-//! `%p = phi i32` with no `[ … ]` pairs, a form LLVM's own LL parser rejects —
-//! so the module no longer round-trips. The fix mirrors LLVM
-//! `BasicBlock::removePredecessor`: the emptied phi is replaced with poison (of
-//! its own type) and erased, so the printed IR round-trips.
+//! the op left that phi in place with zero incomings and its users still
+//! reading it. The fix mirrors LLVM `BasicBlock::removePredecessor`, which
+//! removes each incoming through `PHINode::removeIncomingValue` with
+//! `DeletePHIIfEmpty` set: "If the PHI node is dead, because it has zero
+//! entries, nuke it now" — `replaceAllUsesWith(PoisonValue::get(getType()))`
+//! then `eraseFromParent()`.
+//!
+//! No verifier rule stands behind this, and none should: the emptied block
+//! here loses its only predecessor, so a leftover zero-entry phi would pass
+//! `visitBasicBlock`'s `numIncoming == numPreds` on `0 == 0`, and a
+//! bracket-less `%p = phi i32` is legal text besides —
+//! `test/Assembler/zero-input-phi.ll` round-trips one through
+//! `llvm-as | llvm-dis`. The assertions below are the guard.
 //!
 //! The IR is built through the public block-argument surface (a block parameter
 //! *is* a head phi) and the reshape pass machinery — no crate-internal phi
@@ -97,12 +105,11 @@ fn build_and_empty_phi() -> IrResult<String> {
     Ok(format!("{reverified}"))
 }
 
-/// The printed output of an edge removal that empties a phi must reparse. This
-/// is the exact property the bug broke: a bracket-less `%p = phi i32` has no
-/// legal LLVM textual form. (This crate's parser is intentionally lenient about
-/// zero-input phis — see `phi_real_incomings::zero_input_phi_still_parses` — so
-/// the reparse alone would accept the buggy output too; the precise guard is
-/// that the emptied phi is gone entirely, which the `= phi` assertion enforces.)
+/// The printed output of an edge removal that empties a phi must reparse and
+/// re-verify. (A bracket-less `%p = phi i32` parses on both sides — see
+/// `phi_real_incomings::zero_input_phi_still_parses` — so the reparse alone
+/// would accept the buggy output too; the precise guard is that the emptied phi
+/// is gone entirely, which the `= phi` assertion enforces.)
 #[test]
 fn emptied_phi_output_round_trips() -> Result<(), IrError> {
     let printed = build_and_empty_phi()?;

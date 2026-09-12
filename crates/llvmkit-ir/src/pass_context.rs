@@ -80,8 +80,8 @@ use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
 use super::phi_check::{check_phi_incoming, render_phi_violation};
-use super::r#type::{Type, TypeSlot};
-use super::value::{IntoErasedValue, IsValue, Typed, Value, ValueSlot};
+use super::r#type::{Type, TypeSlot, TypeSlotAccess};
+use super::value::{IntoErasedValue, IsValue, Typed, Value, ValueSlot, ValueSlotAccess};
 use super::value::{ValueKindData, ValueUse};
 use super::value_id::{BlockId, FunctionId, ValueId, ViewIn};
 use super::worklist::Worklist;
@@ -902,7 +902,10 @@ where
     /// cannot fail.
     #[inline]
     pub fn erase(&self, target: &NonTerminator<'m, B>) {
-        let id = target.slot();
+        // `target` may belong to another module; this infallible entry cannot
+        // refuse it.
+        // boundary (F1): refused by Task 26
+        let id = target.to_erased().slot_trusting_same_module();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         // Capture operand ids before erasing (erase drops their uses). Push them
         // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
@@ -949,13 +952,18 @@ where
     /// `replacement` is an erased-by-design operand position, so it takes a
     /// handle *or* a storable id ([`IntoErasedValue`]) — a pass that holds a
     /// builder result needs no intervening `view`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `view` or `replacement`
+    /// belongs to another module.
     #[inline]
     pub fn replace_all_uses<V>(&self, view: &InstructionView<'m, B>, replacement: V) -> IrResult<()>
     where
         V: IntoErasedValue<'m, B>,
     {
+        // Boundary: the caller's instruction view, admitted before anything
+        // reads it.
+        let id = view.slot_in(self.module.id())?;
         let replacement = replacement.into_erased_value(self.module.module_ref())?;
-        let id = view.slot();
         // Capture the former users only when a worklist is active — the
         // inactive path must stay allocation-free (the field's zero-overhead
         // promise). The `borrow()` is a let-RHS temporary, released before the
@@ -2179,6 +2187,18 @@ where
     /// [`IrError::ForeignValueId`] if an incoming id is not from this module;
     /// otherwise the same errors as [`Self::insert_phi_dyn`] (dominance /
     /// coherence).
+    ///
+    /// `Id` must be an id whose view narrows from a [`Value`] by **type**
+    /// alone. An id whose view is determined by value category --
+    /// [`GlobalId`](crate::GlobalId), [`GlobalAliasId`](crate::GlobalAliasId),
+    /// [`GlobalIfuncId`](crate::GlobalIfuncId), `FunctionId<Dyn>` -- type-checks
+    /// here but can never succeed, because the value this method builds is a
+    /// phi instruction. Such a call is rejected with the narrow's own
+    /// [`IrError::ValueCategoryMismatch`] **after** the phi has been created and
+    /// the mutator marked dirty: unlike [`Self::insert_phi_dyn`], whose
+    /// obligations are all witnessed before any mutation, this one obligation
+    /// cannot be witnessed until the phi exists. Prefer
+    /// [`Self::insert_phi_dyn`] when the result id is not type-marked.
     #[inline]
     pub fn insert_phi<Id, I>(
         &mut self,
@@ -2207,13 +2227,17 @@ where
             .ok_or(IrError::ForeignValueId)?
             .ty();
         let phi = self.insert_phi_value::<I>(block, ty, &erased)?;
-        // Total by construction: the phi was created with `ty` == `Id`'s type, so
-        // narrowing back to `Id::View` cannot fail. The narrow guards the
-        // invariant rather than trusting it, and only then is the id minted.
-        Id::View::try_from(phi).map_err(|_| IrError::InvalidOperation {
-            message: "insert_phi: constructed phi type disagreed with the incoming \
-                      handle type (internal invariant)",
-        })?;
+        // NOT total: `ty` matches `Id`'s type, but a narrow to `Id::View` is
+        // type-driven only for the type-marker views (`IntValue<W>`,
+        // `FloatValue<K>`, `PointerValue`, `VectorValue`, `ArrayValue`,
+        // `StructValue`). An `Id` whose view is determined by value *category*
+        // -- `GlobalId`, `GlobalAliasId`, `GlobalIfuncId`, `FunctionId<Dyn>` --
+        // satisfies every bound above and can never narrow back from a phi,
+        // because a phi is an instruction. That is the caller's choice of `Id`,
+        // so the narrow's own error is propagated unchanged: it already names
+        // the category (or the type) required and the one supplied. Rewriting
+        // it here replaced a matchable finding with prose.
+        Id::View::try_from(phi)?;
         Ok(Id::id_from_raw(module_ref.id(), phi.slot()))
     }
 
@@ -2255,7 +2279,8 @@ where
     /// unsatisfiable otherwise, so a pass that forgot it fails to compile — a
     /// type-level nudge rather than a runtime surprise.
     ///
-    /// Errors: [`IrError::PhiIncomingNotDominating`] if some incoming value does
+    /// Errors: [`IrError::ForeignType`] if `ty` belongs to another module;
+    /// [`IrError::PhiIncomingNotDominating`] if some incoming value does
     /// not dominate its edge; a coherence [`IrError`] (mapped from the shared
     /// phi check) if the incomings are incomplete, mistyped, or carry a
     /// differing duplicate for one predecessor.
@@ -2299,6 +2324,9 @@ where
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
+        // Boundary: the caller's phi type (from `insert_phi_dyn`), admitted
+        // before any coherence, dominance or arena work reads it.
+        let ty_id = ty.slot_in(self.patch.module_mut().id())?;
         let target_block = self.resolve_block(block)?.as_basic_block();
         let target_id = target_block.slot();
         // Resolve every predecessor id against this function's module up front:
@@ -2329,7 +2357,6 @@ where
 
         // (2) Completeness / type / differing-duplicate: the authoritative
         // per-phi coherence algorithm, mapped to an `IrError` on failure.
-        let ty_id = ty.id();
         let incoming_ids: Vec<(ValueSlot, ValueSlot)> = incomings
             .iter()
             .map(|(value, pred)| (value.id, pred.slot()))
@@ -2363,10 +2390,10 @@ where
             }
         }
         if let Some((value_block, pred_block)) = dom_failure {
-            let ctx = self.patch.module_mut().core_ref().context();
+            let module = self.patch.module_mut().module_ref();
             return Err(IrError::PhiIncomingNotDominating {
-                value_block: ctx.block_diag_name(value_block),
-                pred_block: ctx.block_diag_name(pred_block),
+                value_block: crate::asm_writer::block_slot_label(module, value_block),
+                pred_block: crate::asm_writer::block_slot_label(module, pred_block),
             });
         }
 

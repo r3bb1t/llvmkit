@@ -30,8 +30,9 @@ use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
 
 use crate::TypeKindLabel;
+use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
-use crate::module::{ModuleBrand, ModuleCore, ModuleRef, ModuleView};
+use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef, ModuleView};
 
 /// Minimum legal integer width. Mirrors `IntegerType::MIN_INT_BITS`
 /// (`DerivedTypes.h`).
@@ -132,6 +133,41 @@ pub(crate) enum TypeData {
 }
 
 impl TypeData {
+    /// The diagnostic label for this type's kind.
+    ///
+    /// The single `TypeData` → [`TypeKindLabel`] map in the crate.
+    /// [`Type::kind_label`] delegates here, and so does
+    /// `function::signature_matches_marker`, which used to carry a
+    /// seven-arm copy keyed on a `&'static str` and closed with an
+    /// `unreachable!`. One map, exhaustively matched, so a new `TypeData`
+    /// variant is a compile error in exactly one place.
+    pub(crate) fn kind_label(&self) -> TypeKindLabel {
+        match self {
+            TypeData::Void => TypeKindLabel::Void,
+            TypeData::Half => TypeKindLabel::Half,
+            TypeData::Bfloat => TypeKindLabel::Bfloat,
+            TypeData::Float => TypeKindLabel::Float,
+            TypeData::Double => TypeKindLabel::Double,
+            TypeData::X86Fp80 => TypeKindLabel::X86Fp80,
+            TypeData::Fp128 => TypeKindLabel::Fp128,
+            TypeData::PpcFp128 => TypeKindLabel::PpcFp128,
+            TypeData::X86Amx => TypeKindLabel::X86Amx,
+            TypeData::WasmExnRef => TypeKindLabel::WasmExnRef,
+            TypeData::Label => TypeKindLabel::Label,
+            TypeData::Metadata => TypeKindLabel::Metadata,
+            TypeData::Token => TypeKindLabel::Token,
+            TypeData::Integer { .. } => TypeKindLabel::Integer,
+            TypeData::Pointer { .. } => TypeKindLabel::Pointer,
+            TypeData::Function { .. } => TypeKindLabel::Function,
+            TypeData::Array { .. } => TypeKindLabel::Array,
+            TypeData::FixedVector { .. } => TypeKindLabel::FixedVector,
+            TypeData::ScalableVector { .. } => TypeKindLabel::ScalableVector,
+            TypeData::Struct(_) => TypeKindLabel::Struct,
+            TypeData::TypedPointer { .. } => TypeKindLabel::TypedPointer,
+            TypeData::TargetExt(_) => TypeKindLabel::TargetExt,
+        }
+    }
+
     // ---- Per-variant projection helpers ----
     //
     // Every typed handle (IntType, ArrayType, ...) wraps a `TypeSlot` whose
@@ -281,7 +317,7 @@ pub(crate) struct TargetExtTypeData {
 ///
 /// Two-field record: an arena index plus a brand-carrying module
 /// reference. Equality and hashing compare the branded module reference by
-/// [`ModuleId`](crate::ModuleId), so the handle remains cheap to copy and
+/// [`ModuleId`], so the handle remains cheap to copy and
 /// store in maps.
 pub struct Type<'ctx, B: ModuleBrand> {
     pub(crate) id: TypeSlot,
@@ -412,9 +448,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             (Some(lhs), Some(rhs)) => IrError::OperandWidthMismatch { lhs, rhs },
             _ => match (expected_data.as_pointer(), got_data.as_pointer()) {
                 (Some(expected), Some(got)) => IrError::AddressSpaceMismatch { expected, got },
-                _ => IrError::TypeMismatch {
-                    expected: self.kind_label(),
-                    got: got.kind_label(),
+                // Every failure here is an *identity* mismatch — the guard
+                // above is `self.id == got.id` — so the kinds can agree while
+                // the types differ. Reporting labels alone rendered
+                // "expected struct, got struct" for two distinct structs, and
+                // the two arms above are the special cases that were added to
+                // dodge that for integers and pointers rather than to fix it.
+                _ => IrError::TypeIdentityMismatch {
+                    expected: self.rendered(),
+                    got: got.rendered(),
                 },
             },
         })
@@ -453,30 +495,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 
     /// `TypeKindLabel` for diagnostics.
     pub fn kind_label(self) -> TypeKindLabel {
-        match self.data() {
-            TypeData::Void => TypeKindLabel::Void,
-            TypeData::Half => TypeKindLabel::Half,
-            TypeData::Bfloat => TypeKindLabel::Bfloat,
-            TypeData::Float => TypeKindLabel::Float,
-            TypeData::Double => TypeKindLabel::Double,
-            TypeData::X86Fp80 => TypeKindLabel::X86Fp80,
-            TypeData::Fp128 => TypeKindLabel::Fp128,
-            TypeData::PpcFp128 => TypeKindLabel::PpcFp128,
-            TypeData::X86Amx => TypeKindLabel::X86Amx,
-            TypeData::WasmExnRef => TypeKindLabel::WasmExnRef,
-            TypeData::Label => TypeKindLabel::Label,
-            TypeData::Metadata => TypeKindLabel::Metadata,
-            TypeData::Token => TypeKindLabel::Token,
-            TypeData::Integer { .. } => TypeKindLabel::Integer,
-            TypeData::Pointer { .. } => TypeKindLabel::Pointer,
-            TypeData::Function { .. } => TypeKindLabel::Function,
-            TypeData::Array { .. } => TypeKindLabel::Array,
-            TypeData::FixedVector { .. } => TypeKindLabel::FixedVector,
-            TypeData::ScalableVector { .. } => TypeKindLabel::ScalableVector,
-            TypeData::Struct(_) => TypeKindLabel::Struct,
-            TypeData::TypedPointer { .. } => TypeKindLabel::TypedPointer,
-            TypeData::TargetExt(_) => TypeKindLabel::TargetExt,
-        }
+        self.data().kind_label()
+    }
+
+    /// This type's kind *and* printed form, for a diagnostic that compares two
+    /// runtime types.
+    ///
+    /// [`kind_label`](Self::kind_label) is enough when the expectation is
+    /// fixed at the call site ("must be an integer"). It is not enough when
+    /// both sides are runtime types: two structs both label `struct`, so a
+    /// diagnostic built from labels alone renders "expected struct, got
+    /// struct". [`RenderedType`] carries the spelling too, and this is its
+    /// only constructor — which is what keeps its two halves from disagreeing.
+    ///
+    /// Allocates, so it belongs on an error path.
+    pub fn rendered(self) -> RenderedType {
+        RenderedType::new(self.kind_label(), self.to_string().into_boxed_str())
     }
 
     // ---- LLVM-style predicates (`Type.h`) ----
@@ -541,19 +575,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 
     /// Mirrors `isIEEELikeFPTy`.
     pub fn is_ieee_like_fp(self) -> bool {
-        matches!(
-            self.data(),
-            TypeData::Half
-                | TypeData::Bfloat
-                | TypeData::Float
-                | TypeData::Double
-                | TypeData::Fp128
-        )
+        is_ieee_like_fp_data(self.data())
     }
 
     /// Mirrors `isFloatingPointTy`.
     pub fn is_floating_point(self) -> bool {
-        self.is_ieee_like_fp() || matches!(self.data(), TypeData::X86Fp80 | TypeData::PpcFp128)
+        is_floating_point_data(self.data())
     }
 
     /// Mirrors `isFPOrFPVectorTy` — a floating-point type, or a fixed or
@@ -567,12 +594,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// predicate `parseCompare`'s `FCmp` arm and `parseAtomicRMW`'s
     /// floating-point-operand check ask.
     pub fn is_float_or_float_vector(self) -> bool {
-        match self.data() {
-            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-                Type::new(*elem, self.module).is_floating_point()
-            }
-            _ => self.is_floating_point(),
-        }
+        is_float_or_float_vector(self.module.module(), self.id)
     }
 
     /// Mirrors `isAggregateType`. Vectors are first-class but not
@@ -634,12 +656,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// The element type of a vector, or `self` for anything else.
     /// Mirrors `Type::getScalarType`.
     pub fn scalar_type(self) -> Self {
-        match self.data() {
-            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-                Type::new(*elem, self.module)
-            }
-            _ => self,
-        }
+        Type::new(scalar_type_slot(self.module.module(), self.id), self.module)
     }
 
     /// Element count of a vector — the *minimum* count for a scalable one, as
@@ -687,12 +704,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 
     /// Mirrors `Type::isIntOrIntVectorTy`.
     pub fn is_int_or_int_vector(self) -> bool {
-        self.scalar_type().is_integer()
+        is_int_or_int_vector(self.module.module(), self.id)
+    }
+
+    /// Mirrors `Type::isIntegerTy(unsigned BitWidth)`.
+    #[inline]
+    pub fn is_integer_of_width(self, bit_width: u32) -> bool {
+        matches!(self.data(), TypeData::Integer { bits } if *bits == bit_width)
+    }
+
+    /// Mirrors `Type::isIntOrIntVectorTy(unsigned BitWidth)` — the width-taking
+    /// overload, `getScalarType()->isIntegerTy(BitWidth)`. `i1`/`<N x i1>` is
+    /// the width every caller here asks for, and is what `m_LogicalOp`'s
+    /// `LogicalOp_match` and `isImpliedCondition`'s entry assertion require.
+    #[inline]
+    pub fn is_int_or_int_vector_of_width(self, bit_width: u32) -> bool {
+        self.scalar_type().is_integer_of_width(bit_width)
     }
 
     /// Mirrors `Type::isPtrOrPtrVectorTy`.
     pub fn is_ptr_or_ptr_vector(self) -> bool {
-        self.scalar_type().is_pointer()
+        is_ptr_or_ptr_vector(self.module.module(), self.id)
     }
 
     /// Address space of a pointer type, or `None` if this is not one.
@@ -774,7 +806,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 
 /// Public discriminator for analysis-mode pattern matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum TypeKind {
     Void,
     Half,
@@ -941,6 +972,55 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
 // Helpers
 // --------------------------------------------------------------------------
 
+/// `Type::getScalarType` one layer below [`Type::scalar_type`].
+///
+/// The scalar/vector projection family needs a slot-level form because
+/// `constants.rs`, `verifier.rs` and `value_tracking.rs` reach it from inside
+/// routines that hold a `&ModuleCore` and a `TypeSlot` and cannot construct a
+/// `Type` view. These four are the one implementation of each predicate; the
+/// `Type` methods above are thin wrappers, not second copies.
+pub(crate) fn scalar_type_slot(module: &ModuleCore, id: TypeSlot) -> TypeSlot {
+    match module.context().type_data(id) {
+        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
+        _ => id,
+    }
+}
+
+/// `Type::isIntOrIntVectorTy`, at the slot layer.
+pub(crate) fn is_int_or_int_vector(module: &ModuleCore, id: TypeSlot) -> bool {
+    matches!(
+        module.context().type_data(scalar_type_slot(module, id)),
+        TypeData::Integer { .. }
+    )
+}
+
+/// `Type::isPtrOrPtrVectorTy`, at the slot layer.
+pub(crate) fn is_ptr_or_ptr_vector(module: &ModuleCore, id: TypeSlot) -> bool {
+    matches!(
+        module.context().type_data(scalar_type_slot(module, id)),
+        TypeData::Pointer { .. }
+    )
+}
+
+/// `Type::isFPOrFPVectorTy`, at the slot layer.
+pub(crate) fn is_float_or_float_vector(module: &ModuleCore, id: TypeSlot) -> bool {
+    is_floating_point_data(module.context().type_data(scalar_type_slot(module, id)))
+}
+
+/// `Type::isIEEELikeFPTy` against the payload, so [`Type::is_ieee_like_fp`] and
+/// the slot-layer predicates share one list rather than restating it.
+pub(crate) fn is_ieee_like_fp_data(data: &TypeData) -> bool {
+    matches!(
+        data,
+        TypeData::Half | TypeData::Bfloat | TypeData::Float | TypeData::Double | TypeData::Fp128
+    )
+}
+
+/// `Type::isFloatingPointTy` against the payload.
+pub(crate) fn is_floating_point_data(data: &TypeData) -> bool {
+    is_ieee_like_fp_data(data) || matches!(data, TypeData::X86Fp80 | TypeData::PpcFp128)
+}
+
 fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
     let data = module.context().type_data(id);
     match data {
@@ -1086,3 +1166,44 @@ impl<'ctx, B: ModuleBrand> IrType<'ctx, B> for Type<'ctx, B> {
         self
     }
 }
+
+/// A type handle's route to the arena [`TypeSlot`] it names: one checked door
+/// and one unchecked door — the type twin of `ValueSlotAccess` in `value.rs`.
+///
+/// Each module interns types in its own arena, so a type handle's slot means
+/// something only in the module that minted it, exactly as a value handle's
+/// does, and two modules sharing a brand accept each other's type handles
+/// without a type error.
+///
+/// - [`slot_in`](Self::slot_in) is the **checked door**. It refuses a handle
+///   minted by a module other than `owner` with [`IrError::ForeignType`]; a
+///   boundary — a site where a caller's type meets a second module — takes it
+///   before the slot is stored or looked up.
+/// - [`slot_trusting_same_module`](Self::slot_trusting_same_module) is the
+///   **unchecked door**: the slot, trusting that it is used only with the
+///   handle's own module.
+///
+/// Crate-private and blanket-implemented over [`IrType`], so every type handle
+/// has both doors under the same two names and nothing outside the crate has
+/// either.
+pub(crate) trait TypeSlotAccess<'ctx, B: ModuleBrand>: IrType<'ctx, B> {
+    /// The checked door: this handle's slot, if `owner` minted the handle;
+    /// [`IrError::ForeignType`] otherwise.
+    #[inline]
+    fn slot_in(self, owner: ModuleId) -> IrResult<TypeSlot> {
+        let ty = self.as_type();
+        if ty.module.id() != owner {
+            return Err(IrError::ForeignType);
+        }
+        Ok(ty.id)
+    }
+
+    /// The unchecked door: this handle's slot, trusting that the caller uses
+    /// it only with the handle's own module.
+    #[inline]
+    fn slot_trusting_same_module(self) -> TypeSlot {
+        self.as_type().id
+    }
+}
+
+impl<'ctx, B: ModuleBrand, T: IrType<'ctx, B>> TypeSlotAccess<'ctx, B> for T {}

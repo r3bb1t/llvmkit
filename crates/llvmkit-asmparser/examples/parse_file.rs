@@ -12,15 +12,13 @@
 //! lex/parse error, prints a one-line `(line:col)` diagnostic against a
 //! [`SourceMap`] over the original bytes and exits with status 1.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
-use llvmkit_asmparser::read_to_owned;
 use llvmkit_ir::module_new;
-use llvmkit_support::{SourceMap, Span};
+use llvmkit_support::SourceMap;
 
 fn main() -> ExitCode {
     let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
@@ -30,7 +28,7 @@ fn main() -> ExitCode {
 
     // Single I/O round-trip — the parser borrows from this slice for its
     // entire run.
-    let bytes = match File::open(&path).and_then(read_to_owned) {
+    let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: cannot read {}: {e}", path.display());
@@ -67,15 +65,17 @@ fn main() -> ExitCode {
 
 fn report_error(path: &Path, src: &[u8], err: &ParseError) {
     let sm = SourceMap::new(src);
-    let span = err.loc().map(|l| l.span).unwrap_or(Span::new(0, 0));
-    let (line, col) = sm.line_col(span.start);
-    eprintln!("{path}:{line}:{col}: {err}", path = path.display());
-    if let Some(line_bytes) = sm.line_text(line) {
+    let span = err.loc();
+    let at = sm.line_col(span.start);
+    eprintln!("{path}:{at}: {err}", path = path.display());
+    if let Some(line_bytes) = sm.line_text(at.line) {
         eprintln!("  | {}", String::from_utf8_lossy(line_bytes));
-        let underline_len = (span.end.saturating_sub(span.start) as usize).max(1);
+        let underline_len = usize::try_from(span.end.saturating_sub(span.start))
+            .unwrap_or(1)
+            .max(1);
         eprintln!(
             "  | {pad}{caret}",
-            pad = " ".repeat((col - 1) as usize),
+            pad = " ".repeat(usize::try_from(at.column.saturating_sub(1)).unwrap_or(0)),
             caret = "^".repeat(underline_len)
         );
     }

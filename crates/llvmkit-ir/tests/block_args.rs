@@ -281,9 +281,11 @@ fn block_args_br_type_mismatch_errors() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg_f64 = m.view(f).param(1)?; // f64 argument
     let res = b.br_with_args(hdr_label, &[arg_f64.as_erased()]);
+    // The parameter phi's type against the incoming argument's — two runtime
+    // types, so the report names both spellings.
     assert!(
-        matches!(res, Err(IrError::TypeMismatch { .. })),
-        "expected TypeMismatch, got: {res:?}"
+        matches!(res, Err(IrError::TypeIdentityMismatch { .. })),
+        "expected TypeIdentityMismatch, got: {res:?}"
     );
     Ok(())
 }

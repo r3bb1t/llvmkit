@@ -192,11 +192,230 @@ impl ConstantRangeList {
             self.insert(range);
         }
     }
+
+    /// Remove `sub_range` from every range in the list. Mirrors
+    /// `ConstantRangeList::subtract`.
+    ///
+    /// Upstream returns early on an empty `SubRange` or an empty list and then
+    /// *asserts* three things: `SubRange` is not the full set, its bounds are
+    /// strictly ordered, and the widths agree. This crate raises no runtime
+    /// panics on a production path, so each assert is a guard that returns the
+    /// list unchanged — the same treatment [`Self::insert`] gives upstream's
+    /// asserts.
+    ///
+    /// Every comparison here is **signed**, including the two containment
+    /// tests. Upstream's own comment on the first of them says so explicitly
+    /// ("Note that `ConstantRange::contains(ConstantRange)` checks unsigned,
+    /// but we need signed checking here"), which is why this reads nothing from
+    /// `insert`'s unsigned `contains` shortcut.
+    pub fn subtract(&mut self, sub_range: &ConstantRange) {
+        // `if (SubRange.isEmptySet() || empty()) return;`
+        if sub_range.is_empty_set() || self.is_empty() {
+            return;
+        }
+        // `assert(!SubRange.isFullSet() && "Do not support full set");`
+        // `assert(SubRange.getLower().slt(SubRange.getUpper()));`
+        if sub_range.is_full_set() || !sub_range.lower().slt(sub_range.upper()) {
+            return;
+        }
+        // `assert(getBitWidth() == SubRange.getBitWidth());`
+        if self.bit_width() != Some(sub_range.bit_width()) {
+            return;
+        }
+
+        // Handle common cases.
+        let (Some(first), Some(last)) = (self.ranges.first(), self.ranges.last()) else {
+            unreachable!("a non-empty list has a first and a last range")
+        };
+        // `if (Ranges.back().getUpper().sle(SubRange.getLower())) return;`
+        if last.upper().sle(sub_range.lower()) {
+            return;
+        }
+        // `if (SubRange.getUpper().sle(Ranges.front().getLower())) return;`
+        if sub_range.upper().sle(first.lower()) {
+            return;
+        }
+
+        let mut result: Vec<ConstantRange> = Vec::new();
+        // `auto AppendRangeIfNonEmpty = [&Result](APInt Start, APInt End) {
+        //    if (Start.slt(End)) Result.push_back(ConstantRange(Start, End)); };`
+        let append_if_non_empty = |result: &mut Vec<ConstantRange>, start: &ApInt, end: &ApInt| {
+            if start.slt(end) {
+                result.push(merged_range(start.clone(), end.clone()));
+            }
+        };
+
+        for range in &self.ranges {
+            if sub_range.upper().sle(range.lower()) || range.upper().sle(sub_range.lower()) {
+                // "Range" and "SubRange" do not overlap.
+                //       L---U        : Range
+                // L---U              : SubRange (Case1)
+                //             L---U  : SubRange (Case2)
+                result.push(range.clone());
+            } else if range.lower().sle(sub_range.lower()) && sub_range.upper().sle(range.upper()) {
+                // "Range" contains "SubRange".
+                //       L---U        : Range
+                //        L-U         : SubRange
+                append_if_non_empty(&mut result, range.lower(), sub_range.lower());
+                append_if_non_empty(&mut result, sub_range.upper(), range.upper());
+            } else if sub_range.lower().sle(range.lower()) && range.upper().sle(sub_range.upper()) {
+                // "SubRange" contains "Range".
+                //        L-U        : Range
+                //       L---U       : SubRange
+                continue;
+            } else if range.lower().sge(sub_range.lower()) && range.lower().sle(sub_range.upper()) {
+                // "Range" and "SubRange" overlap at the left.
+                //       L---U        : Range
+                //     L---U          : SubRange
+                append_if_non_empty(&mut result, sub_range.upper(), range.upper());
+            } else {
+                // "Range" and "SubRange" overlap at the right.
+                //       L---U        : Range
+                //         L---U      : SubRange
+                // Upstream asserts `SubRange.getLower()` lies inside `Range`
+                // here; the four arms above leave no other shape.
+                append_if_non_empty(&mut result, range.lower(), sub_range.lower());
+            }
+        }
+
+        self.ranges = result;
+    }
+
+    /// The union of two lists. Mirrors `ConstantRangeList::unionWith`.
+    ///
+    /// Upstream asserts the widths agree; this returns `self` unchanged
+    /// instead, for the reason [`Self::subtract`] gives.
+    #[must_use]
+    pub fn union_with(&self, other: &Self) -> Self {
+        // `if (empty()) return CRL; if (CRL.empty()) return *this;`
+        if self.is_empty() {
+            return other.clone();
+        }
+        if other.is_empty() {
+            return self.clone();
+        }
+        // `assert(getBitWidth() == CRL.getBitWidth() && …);`
+        if self.bit_width() != other.bit_width() {
+            return self.clone();
+        }
+
+        let mut result: Vec<ConstantRange> = Vec::new();
+        let mut i = 0usize;
+        let mut j = 0usize;
+        // "PreviousRange" tracks the lowest unioned range that is being
+        // processed. Its lower is fixed and the upper may be updated over
+        // iterations.
+        let mut previous_range = if self.ranges[i].lower().slt(other.ranges[j].lower()) {
+            let range = self.ranges[i].clone();
+            i += 1;
+            range
+        } else {
+            let range = other.ranges[j].clone();
+            j += 1;
+            range
+        };
+
+        // Try to union "PreviousRange" and "CR". If they are disjoint, push
+        // "PreviousRange" to the result and assign it to "CR", a new union
+        // range. Otherwise, update the upper of "PreviousRange" to cover "CR".
+        // Note that, the lower of "PreviousRange" is always less or equal the
+        // lower of "CR".
+        let union_and_update_range =
+            |result: &mut Vec<ConstantRange>, previous: &mut ConstantRange, cr: &ConstantRange| {
+                if previous.upper().slt(cr.lower()) {
+                    result.push(previous.clone());
+                    *previous = cr.clone();
+                } else {
+                    *previous =
+                        merged_range(previous.lower().clone(), smax(previous.upper(), cr.upper()));
+                }
+            };
+
+        while i < self.len() || j < other.len() {
+            if j == other.len()
+                || (i < self.len() && self.ranges[i].lower().slt(other.ranges[j].lower()))
+            {
+                // Merge PreviousRange with this.
+                let range = self.ranges[i].clone();
+                i += 1;
+                union_and_update_range(&mut result, &mut previous_range, &range);
+            } else {
+                // Merge PreviousRange with CRL.
+                let range = other.ranges[j].clone();
+                j += 1;
+                union_and_update_range(&mut result, &mut previous_range, &range);
+            }
+        }
+        result.push(previous_range);
+        Self { ranges: result }
+    }
+
+    /// The intersection of two lists. Mirrors
+    /// `ConstantRangeList::intersectWith`.
+    ///
+    /// Upstream's comment explains why it does not delegate to
+    /// `ConstantRange::intersectWith`: that routine handles the wrapped-upper
+    /// case and can yield *two* ranges, where this one wants the plain signed
+    /// `(max(lowers), min(uppers))`.
+    ///
+    /// Upstream asserts the widths agree; this returns an empty list instead,
+    /// for the reason [`Self::subtract`] gives.
+    #[must_use]
+    pub fn intersect_with(&self, other: &Self) -> Self {
+        // `if (empty()) return *this; if (CRL.empty()) return CRL;`
+        if self.is_empty() {
+            return self.clone();
+        }
+        if other.is_empty() {
+            return other.clone();
+        }
+        // `assert(getBitWidth() == CRL.getBitWidth() && …);`
+        if self.bit_width() != other.bit_width() {
+            return Self::default();
+        }
+
+        let mut result: Vec<ConstantRange> = Vec::new();
+        let mut i = 0usize;
+        let mut j = 0usize;
+        while i < self.len() && j < other.len() {
+            let range = &self.ranges[i];
+            let other_range = &other.ranges[j];
+
+            // The intersection of two Ranges is (max(lowers), min(uppers)), and
+            // it's possible that max(lowers) > min(uppers) if they don't have
+            // intersection. Add the intersection to result only if it's
+            // non-empty.
+            let start = smax(range.lower(), other_range.lower());
+            let end = smin(range.upper(), other_range.upper());
+            if start.slt(&end) {
+                result.push(merged_range(start, end));
+            }
+
+            // Move to the next Range in one list determined by the uppers.
+            // For example: A = {(0, 2), (4, 8)}; B = {(-2, 5), (6, 10)}
+            // We need to intersect three pairs: A0 && B0; A1 && B0; A1 && B1.
+            if range.upper().slt(other_range.upper()) {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        Self { ranges: result }
+    }
 }
 
 /// `APIntOps::smax`.
 fn smax(lhs: &ApInt, rhs: &ApInt) -> ApInt {
     if lhs.sgt(rhs) {
+        lhs.clone()
+    } else {
+        rhs.clone()
+    }
+}
+
+/// `APIntOps::smin`.
+fn smin(lhs: &ApInt, rhs: &ApInt) -> ApInt {
+    if lhs.slt(rhs) {
         lhs.clone()
     } else {
         rhs.clone()
@@ -209,9 +428,11 @@ fn ap_int_from_i64(value: i64) -> ApInt {
     ApInt::from_words(64, &[i64::cast_unsigned(value)])
 }
 
-/// `ConstantRange(Lower, Upper)` as upstream writes it inside `insert`, where
-/// the bounds are strictly ordered by construction and the constructor's
-/// assert is relied on never to fire.
+/// `ConstantRange(Lower, Upper)` as upstream writes it inside `insert`,
+/// `subtract`, `unionWith` and `intersectWith`, where the bounds are strictly
+/// ordered by construction and the constructor's assert is relied on never to
+/// fire. Every caller here either takes an `smax` of an upper already above the
+/// lower, or sits behind an explicit `lower.slt(upper)` test.
 fn merged_range(lower: ApInt, upper: ApInt) -> ConstantRange {
     match ConstantRange::new(lower, upper) {
         Ok(range) => range,
@@ -327,6 +548,158 @@ mod tests {
         expected.insert_signed(-8, -2);
         expected.insert_signed(0, 20);
         assert!(crl == expected);
+    }
+
+    /// Upstream's `GetCRL` test helper: the list built from `(lower, upper)`
+    /// pairs at 64 bits.
+    fn crl(pairs: &[(i64, i64)]) -> ConstantRangeList {
+        ConstantRangeList::new(pairs.iter().map(|(lo, hi)| range(*lo, *hi)).collect())
+            .expect("test range lists are ordered")
+    }
+
+    /// Ports `ConstantRangeListTest.Subtract`
+    /// (`unittests/IR/ConstantRangeListTest.cpp`).
+    #[test]
+    fn subtract() {
+        let base = crl(&[(0, 4), (8, 12)]);
+
+        // Execute ConstantRangeList::subtract(ConstantRange) and check the
+        // result is expected. Takes "crl" by value so that subtract() does not
+        // affect the argument in caller.
+        let subtract_and_check =
+            |mut list: ConstantRangeList, sub: (i64, i64), expected: ConstantRangeList| {
+                list.subtract(&range(sub.0, sub.1));
+                assert_eq!(list, expected, "subtract {sub:?}");
+            };
+
+        // No overlap
+        subtract_and_check(base.clone(), (-4, 0), base.clone());
+        subtract_and_check(base.clone(), (4, 8), base.clone());
+        subtract_and_check(base.clone(), (12, 16), base.clone());
+
+        // Overlap (left, right, or both)
+        subtract_and_check(base.clone(), (-4, 2), crl(&[(2, 4), (8, 12)]));
+        subtract_and_check(base.clone(), (-4, 4), crl(&[(8, 12)]));
+        subtract_and_check(base.clone(), (-4, 8), crl(&[(8, 12)]));
+        subtract_and_check(base.clone(), (0, 2), crl(&[(2, 4), (8, 12)]));
+        subtract_and_check(base.clone(), (0, 4), crl(&[(8, 12)]));
+        subtract_and_check(base.clone(), (0, 8), crl(&[(8, 12)]));
+        subtract_and_check(base.clone(), (10, 12), crl(&[(0, 4), (8, 10)]));
+        subtract_and_check(base.clone(), (8, 12), crl(&[(0, 4)]));
+        subtract_and_check(base.clone(), (6, 12), crl(&[(0, 4)]));
+        subtract_and_check(base.clone(), (10, 16), crl(&[(0, 4), (8, 10)]));
+        subtract_and_check(base.clone(), (8, 16), crl(&[(0, 4)]));
+        subtract_and_check(base.clone(), (6, 16), crl(&[(0, 4)]));
+        subtract_and_check(base.clone(), (2, 10), crl(&[(0, 2), (10, 12)]));
+
+        // Subset
+        subtract_and_check(base.clone(), (2, 3), crl(&[(0, 2), (3, 4), (8, 12)]));
+        subtract_and_check(base.clone(), (10, 11), crl(&[(0, 4), (8, 10), (11, 12)]));
+
+        // Superset
+        subtract_and_check(base.clone(), (0, 12), crl(&[]));
+        subtract_and_check(base, (-4, 16), crl(&[]));
+    }
+
+    /// Ports `ConstantRangeListTest.Union`
+    /// (`unittests/IR/ConstantRangeListTest.cpp`).
+    #[test]
+    fn union() {
+        let base = crl(&[(0, 4), (8, 12)]);
+
+        // Union with a subset.
+        let empty = ConstantRangeList::default();
+        assert_eq!(base.union_with(&empty), base);
+        assert_eq!(empty.union_with(&base), base);
+
+        assert_eq!(base.union_with(&crl(&[(0, 2)])), base);
+        assert_eq!(base.union_with(&crl(&[(10, 12)])), base);
+
+        assert_eq!(base.union_with(&crl(&[(0, 2), (8, 10)])), base);
+        assert_eq!(base.union_with(&crl(&[(0, 2), (10, 12)])), base);
+        assert_eq!(base.union_with(&crl(&[(2, 4), (8, 10)])), base);
+        assert_eq!(base.union_with(&crl(&[(2, 4), (10, 12)])), base);
+
+        assert_eq!(base.union_with(&crl(&[(0, 4), (8, 10), (11, 12)])), base);
+
+        assert_eq!(base.union_with(&base), base);
+
+        // Union with new ranges.
+        assert_eq!(
+            base.union_with(&crl(&[(-4, -2)])),
+            crl(&[(-4, -2), (0, 4), (8, 12)])
+        );
+        assert_eq!(
+            base.union_with(&crl(&[(6, 7)])),
+            crl(&[(0, 4), (6, 7), (8, 12)])
+        );
+        assert_eq!(
+            base.union_with(&crl(&[(16, 18)])),
+            crl(&[(0, 4), (8, 12), (16, 18)])
+        );
+
+        assert_eq!(base.union_with(&crl(&[(-2, 2)])), crl(&[(-2, 4), (8, 12)]));
+        assert_eq!(base.union_with(&crl(&[(2, 6)])), crl(&[(0, 6), (8, 12)]));
+        assert_eq!(base.union_with(&crl(&[(10, 16)])), crl(&[(0, 4), (8, 16)]));
+
+        assert_eq!(base.union_with(&crl(&[(-2, 10)])), crl(&[(-2, 12)]));
+        assert_eq!(base.union_with(&crl(&[(2, 10)])), crl(&[(0, 12)]));
+        assert_eq!(base.union_with(&crl(&[(4, 16)])), crl(&[(0, 16)]));
+        assert_eq!(base.union_with(&crl(&[(-2, 16)])), crl(&[(-2, 16)]));
+    }
+
+    /// Ports `ConstantRangeListTest.Intersect`
+    /// (`unittests/IR/ConstantRangeListTest.cpp`).
+    #[test]
+    fn intersect() {
+        let base = crl(&[(0, 4), (8, 12)]);
+
+        // No intersection.
+        let empty = ConstantRangeList::default();
+        assert_eq!(base.intersect_with(&empty), empty);
+        assert_eq!(empty.intersect_with(&base), empty);
+
+        assert_eq!(base.intersect_with(&crl(&[(-2, 0)])), empty);
+        assert_eq!(base.intersect_with(&crl(&[(6, 8)])), empty);
+        assert_eq!(base.intersect_with(&crl(&[(12, 16)])), empty);
+
+        // Single intersect range.
+        assert_eq!(base.intersect_with(&crl(&[(-2, 2)])), crl(&[(0, 2)]));
+        assert_eq!(base.intersect_with(&crl(&[(-2, 6)])), crl(&[(0, 4)]));
+        assert_eq!(base.intersect_with(&crl(&[(2, 4)])), crl(&[(2, 4)]));
+        assert_eq!(base.intersect_with(&crl(&[(2, 6)])), crl(&[(2, 4)]));
+        assert_eq!(base.intersect_with(&crl(&[(6, 10)])), crl(&[(8, 10)]));
+        assert_eq!(base.intersect_with(&crl(&[(6, 16)])), crl(&[(8, 12)]));
+        assert_eq!(base.intersect_with(&crl(&[(10, 12)])), crl(&[(10, 12)]));
+        assert_eq!(base.intersect_with(&crl(&[(10, 16)])), crl(&[(10, 12)]));
+
+        // Multiple intersect ranges.
+        assert_eq!(
+            base.intersect_with(&crl(&[(-2, 10)])),
+            crl(&[(0, 4), (8, 10)])
+        );
+        assert_eq!(base.intersect_with(&crl(&[(-2, 16)])), base);
+        assert_eq!(
+            base.intersect_with(&crl(&[(2, 10)])),
+            crl(&[(2, 4), (8, 10)])
+        );
+        assert_eq!(
+            base.intersect_with(&crl(&[(2, 16)])),
+            crl(&[(2, 4), (8, 12)])
+        );
+        assert_eq!(
+            base.intersect_with(&crl(&[(-2, 2), (6, 10)])),
+            crl(&[(0, 2), (8, 10)])
+        );
+        assert_eq!(
+            base.intersect_with(&crl(&[(2, 6), (10, 16)])),
+            crl(&[(2, 4), (10, 12)])
+        );
+        assert_eq!(
+            base.intersect_with(&crl(&[(-2, 2), (7, 10), (11, 16)])),
+            crl(&[(0, 2), (8, 10), (11, 12)])
+        );
+        assert_eq!(base.intersect_with(&base), base);
     }
 
     /// llvmkit-specific: no upstream counterpart. `ConstantRangeList::print`

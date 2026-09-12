@@ -4,10 +4,15 @@
 //!
 //! Rows for semantics llvmkit does not model (`Float8*`, `Float6*`,
 //! `Float4E2M1FN`, `FloatTF32`) are omitted; every row for the seven modeled
-//! semantics is ported as written. Where upstream asserts through
-//! `classify() -> FPClassTest` — a finer classification than llvmkit's
-//! `ApFloatCategory` — the surrounding assertions are ported and the
-//! `classify()` line is noted as unmodeled rather than approximated.
+//! semantics is ported as written.
+//!
+//! Where upstream asserts through `classify() -> FPClassTest`, those lines are
+//! ported too — llvmkit **does** model `FPClassTest`, as
+//! `llvmkit_ir::fp_class::FpClassTest`, and `FpClassTest::of(&ApFloat)` is the
+//! port of `APFloat::classify()`. They live beside that type, in `fp_class.rs`'s
+//! `classify_separates_the_two_nans` and `classify_separates_the_two_subnormals`,
+//! rather than being restated here. (This note used to say llvmkit does not
+//! model `FPClassTest`; that has not been true since `fp_class.rs` landed.)
 
 use llvmkit_ir::{
     ApFloat, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics, ApFloatSign, ApFloatStatus,
@@ -202,8 +207,9 @@ fn make_nan() {
 
 // ── Classification ──────────────────────────────────────────────────────────
 
-/// Port of `TEST(APFloatTest, isSignaling)`. The `classify()` assertions are
-/// upstream's finer `FPClassTest`, which llvmkit does not model.
+/// Port of `TEST(APFloatTest, isSignaling)`. Its `classify()` assertions are
+/// ported alongside `FpClassTest::of` itself, in `fp_class.rs`'s
+/// `classify_separates_the_two_nans`.
 #[test]
 fn is_signaling() {
     let payload = ApInt::one_bit_set(4, 2);

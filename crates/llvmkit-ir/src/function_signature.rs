@@ -23,7 +23,9 @@ use crate::ir_builder::{IrBuilder, Unpositioned, constant_folder::ConstantFolder
 use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeKind};
-use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot};
+use crate::value::{
+    FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot, ValueSlotAccess,
+};
 use crate::value_id::{TypedFunctionId, TypedVarArgsFunctionId};
 
 #[doc(hidden)]
@@ -113,9 +115,6 @@ pub trait FunctionParam: Sized + 'static {
     fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
     where
         B: ModuleBrand + 'ctx;
-
-    /// Diagnostic kind label expected by this schema.
-    fn expected_kind_label() -> TypeKindLabel;
 
     /// Validate that a raw argument can be represented by [`Self::Value`].
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
@@ -608,8 +607,11 @@ macro_rules! impl_into_typed_callee {
             #[inline]
             fn $method(
                 self,
-                _module: ModuleRef<'ctx, B>,
+                module: ModuleRef<'ctx, B>,
             ) -> IrResult<$facade<'ctx, Ret, Params, B>> {
+                // Boundary: refuse a facade whose function another module
+                // minted.
+                ValueSlotAccess::slot_in(self.as_function(), module.id())?;
                 Ok(self)
             }
         }
@@ -742,11 +744,6 @@ impl FunctionParam for Ptr {
     }
 
     #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Pointer
-    }
-
-    #[inline]
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
@@ -834,11 +831,6 @@ macro_rules! impl_int_signature_marker {
                 B: ModuleBrand + 'ctx,
             {
                 matches!(ty.kind(), TypeKind::Integer { bits } if bits == $bits)
-            }
-
-            #[inline]
-            fn expected_kind_label() -> TypeKindLabel {
-                TypeKindLabel::Integer
             }
 
             #[inline]
@@ -939,11 +931,6 @@ impl<const N: u32> FunctionParam for Width<N> {
     }
 
     #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Integer
-    }
-
-    #[inline]
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
@@ -1031,11 +1018,6 @@ macro_rules! impl_float_signature_marker {
                 B: ModuleBrand + 'ctx,
             {
                 matches!(ty.kind(), $kind)
-            }
-
-            #[inline]
-            fn expected_kind_label() -> TypeKindLabel {
-                TypeKindLabel::$label
             }
 
             #[inline]

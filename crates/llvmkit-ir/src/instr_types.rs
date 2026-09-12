@@ -1433,6 +1433,55 @@ impl OverflowFlags {
     }
 }
 
+/// The `exact` bit for `udiv` / `sdiv` / `lshr` / `ashr`. Mirrors
+/// `PossiblyExactOperator` (`IR/Operator.h`), and stands in the same
+/// relation to upstream's `bool IsExact` that [`OverflowFlags`] stands in
+/// to its `bool HasNUW, bool HasNSW` pair: the four
+/// `IRBuilder::CreateUDiv`-family entry points thread one exactness bit
+/// down to `IRBuilderFolder::FoldExactBinOp`, and this is what carries it
+/// across the equivalent seam here. Public construction is chainable
+/// (`ExactFlags::new().exact()`); the bool constructor is crate-internal
+/// per the no-bool-params convention.
+///
+/// Distinct from the per-opcode [`UdivFlags`] / [`SdivFlags`] /
+/// [`LshrFlags`] / [`AshrFlags`] structs for the same reason
+/// [`IntBinOpFlags`] is distinct from [`AddFlags`]: a dispatcher holding a
+/// runtime [`BinaryOpcode`] cannot name which of the four to construct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ExactFlags {
+    pub(crate) exact: bool,
+}
+
+impl ExactFlags {
+    /// No `exact` flag set.
+    #[inline]
+    pub const fn new() -> Self {
+        Self { exact: false }
+    }
+
+    /// Set the `exact` flag.
+    #[inline]
+    #[must_use]
+    pub const fn exact(mut self) -> Self {
+        self.exact = true;
+        self
+    }
+
+    #[inline]
+    pub const fn is_exact(self) -> bool {
+        self.exact
+    }
+
+    /// Crate-internal bool constructor, mirroring
+    /// [`OverflowFlags::from_parts`]: builder call sites carrying a runtime
+    /// exactness bool funnel through here rather than duplicating a
+    /// `.exact()` call behind an `if`.
+    #[inline]
+    pub(crate) const fn from_parts(exact: bool) -> Self {
+        Self { exact }
+    }
+}
+
 /// Flags for `or`. The `disjoint` flag asserts the two operands have no set
 /// bits in common. Mirrors `PossiblyDisjointOperator` in `Operator.h`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

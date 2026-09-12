@@ -363,6 +363,35 @@ impl core::ops::BitOrAssign for FpClassTest {
     }
 }
 
+/// Which rounding intrinsic [`KnownFpClass::round_to_integral`] is answering
+/// for.
+///
+/// Spells upstream's `bool IsTrunc` parameter
+/// (`KnownFPClass::roundToIntegral`). A bare `bool` here sat next to a second,
+/// unrelated `bool` in the same signature, so a call read `(finite, false,
+/// true)` and a swap of the two type-checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundingIntrinsic {
+    /// `llvm.trunc` — upstream's `IsTrunc == true`.
+    Trunc,
+    /// `floor`, `ceil`, `rint`, `nearbyint`, `round`, `roundeven`.
+    Other,
+}
+
+/// Whether the float type occupies more than one unit, i.e. `ppc_fp128`.
+///
+/// Spells upstream's `bool IsMultiUnitFPType`. Upstream's own comment records
+/// this as the case where infinities do *not* pass through for anything but
+/// `trunc`, which is why it is a distinct axis from [`RoundingIntrinsic`]
+/// rather than a second field of one flag struct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatUnitKind {
+    /// Every IEEE type llvmkit models except `ppc_fp128`.
+    SingleUnit,
+    /// `ppc_fp128`.
+    MultiUnit,
+}
+
 /// What is known about a floating-point value's class and sign.
 ///
 /// Ports `llvm::KnownFPClass` (`llvm/Support/KnownFPClass.h`). The default is
@@ -1075,18 +1104,26 @@ impl KnownFpClass {
     /// What is known of a rounding intrinsic — `trunc`, `floor`, `ceil`,
     /// `rint`, `nearbyint`, `round` or `roundeven`.
     ///
-    /// Ports `KnownFPClass::roundToIntegral`. `is_trunc` selects `trunc`, and
-    /// `is_multi_unit_float_type` marks `ppc_fp128`, which upstream's comment
-    /// records as the special case where infinities do *not* pass through for
-    /// anything but `trunc`.
-    pub fn round_to_integral(source: Self, is_trunc: bool, is_multi_unit_float_type: bool) -> Self {
+    /// Ports `KnownFPClass::roundToIntegral(Src, bool IsTrunc, bool
+    /// IsMultiUnitFPType)`. Upstream's two `bool`s become two named enums —
+    /// same logic, same branch, only the spelling differs — because they are
+    /// unrelated axes sitting adjacent in one signature, where a swap
+    /// type-checks. `ppc_fp128` is the case upstream's comment records as the
+    /// one where infinities do *not* pass through for anything but `trunc`.
+    pub fn round_to_integral(
+        source: Self,
+        intrinsic: RoundingIntrinsic,
+        unit_kind: FloatUnitKind,
+    ) -> Self {
         let mut known = Self::unknown();
 
         // An integral result cannot be subnormal.
         known.known_not(FpClassTest::SUBNORMAL);
         known.propagate_nan(source, true);
 
-        if is_trunc || !is_multi_unit_float_type {
+        if matches!(intrinsic, RoundingIntrinsic::Trunc)
+            || matches!(unit_kind, FloatUnitKind::SingleUnit)
+        {
             if source.is_known_never_positive_infinity() {
                 known.known_not(FpClassTest::POSITIVE_INFINITY);
             }
@@ -1698,16 +1735,28 @@ mod tests {
     fn round_to_integral_never_yields_a_subnormal() {
         let finite = KnownFpClass::from_classes(FpClassTest::FINITE);
 
-        let rounded = KnownFpClass::round_to_integral(finite, false, false);
+        let rounded = KnownFpClass::round_to_integral(
+            finite,
+            RoundingIntrinsic::Other,
+            FloatUnitKind::SingleUnit,
+        );
         assert!(rounded.is_known_never(FpClassTest::SUBNORMAL));
         assert!(rounded.is_known_never(FpClassTest::INFINITY));
 
         // On a multi-unit type, a non-`trunc` rounding does not pass
         // infinities through.
-        let multi_unit = KnownFpClass::round_to_integral(finite, false, true);
+        let multi_unit = KnownFpClass::round_to_integral(
+            finite,
+            RoundingIntrinsic::Other,
+            FloatUnitKind::MultiUnit,
+        );
         assert!(!multi_unit.is_known_never(FpClassTest::INFINITY));
         // ... but `trunc` does.
-        let truncated = KnownFpClass::round_to_integral(finite, true, true);
+        let truncated = KnownFpClass::round_to_integral(
+            finite,
+            RoundingIntrinsic::Trunc,
+            FloatUnitKind::MultiUnit,
+        );
         assert!(truncated.is_known_never(FpClassTest::INFINITY));
     }
 

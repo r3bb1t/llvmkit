@@ -33,7 +33,7 @@
 
 use crate::ApInt;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
-use crate::constant::{Constant, ConstantData, ConstantExprOpcode};
+use crate::constant::{Constant, ConstantData, ConstantExprFlags, ConstantExprOpcode};
 use crate::data_layout::DataLayout;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::global_value::Linkage;
@@ -42,8 +42,8 @@ use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
-use crate::value::{Value, ValueKindData, ValueSlot};
-use crate::value_tracking::value_from_slot;
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
+use crate::value_tracking::{returned_arg_operand, value_from_slot};
 use std::collections::HashSet;
 
 /// How many layers [`underlying_object`] peels before giving up.
@@ -157,7 +157,7 @@ pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
             underlying_object(candidate, MAX_LOOKUP_SEARCH_DEPTH)
         };
 
-        if !visited.insert(candidate.slot()) {
+        if !visited.insert(candidate.slot_trusting_same_module()) {
             continue;
         }
         if visited.len() == MAX_VISITED_AGGRESSIVE {
@@ -184,7 +184,11 @@ pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
 
         match object {
             None => object = Some(candidate),
-            Some(known) if known.slot() != candidate.slot() => return first_object,
+            Some(known)
+                if known.slot_trusting_same_module() != candidate.slot_trusting_same_module() =>
+            {
+                return first_object;
+            }
             Some(_) => {}
         }
     }
@@ -207,7 +211,7 @@ pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
 
     while let Some(candidate) = worklist.pop() {
         let candidate = underlying_object(candidate, max_lookup);
-        if !visited.insert(candidate.slot()) {
+        if !visited.insert(candidate.slot_trusting_same_module()) {
             continue;
         }
         match instruction_kind(candidate) {
@@ -246,7 +250,7 @@ pub fn underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
 
     while let Some(current) = working.pop() {
         for object in underlying_objects(current, MAX_LOOKUP_SEARCH_DEPTH) {
-            if !visited.insert(object.slot()) {
+            if !visited.insert(object.slot_trusting_same_module()) {
                 continue;
             }
             if operator_opcode(object) == Some(Opcode::IntToPtr)
@@ -330,14 +334,18 @@ pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
     let mut result: Option<Value<'ctx, B>> = None;
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     let mut worklist = Vec::new();
-    visited.insert(value.slot());
+    visited.insert(value.slot_trusting_same_module());
     worklist.push(value);
 
     while let Some(current) = worklist.pop() {
         let mut pending: Vec<Value<'ctx, B>> = Vec::new();
         match instruction_kind(current)? {
             InstructionKindData::Alloca(_) => match result {
-                Some(known) if known.slot() != current.slot() => return None,
+                Some(known)
+                    if known.slot_trusting_same_module() != current.slot_trusting_same_module() =>
+                {
+                    return None;
+                }
                 _ => result = Some(current),
             },
             InstructionKindData::Cast(data) => {
@@ -366,12 +374,12 @@ pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
             | InstructionKindData::CallBr(_) => {
                 // A call only continues the walk through a `returned` argument;
                 // anything else could have produced the pointer from nowhere.
-                pending.push(returned_argument(current)?);
+                pending.push(returned_arg_operand(current)?);
             }
             _ => return None,
         }
         for candidate in pending {
-            if visited.insert(candidate.slot()) {
+            if visited.insert(candidate.slot_trusting_same_module()) {
                 worklist.push(candidate);
             }
         }
@@ -388,7 +396,13 @@ pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `llvm::onlyUsedByLifetimeMarkers`.
 pub fn only_used_by_lifetime_markers<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
-    only_used_by_markers(value, true, false)
+    only_used_by_markers(
+        value,
+        AllowedMarkers {
+            lifetime: true,
+            droppable: false,
+        },
+    )
 }
 
 /// Whether every user of `value` is a lifetime marker or a droppable
@@ -401,15 +415,42 @@ pub fn only_used_by_lifetime_markers<'ctx, B: ModuleBrand + 'ctx>(value: Value<'
 pub fn only_used_by_lifetime_markers_or_droppable_instructions<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> bool {
-    only_used_by_markers(value, true, true)
+    only_used_by_markers(
+        value,
+        AllowedMarkers {
+            lifetime: true,
+            droppable: true,
+        },
+    )
+}
+
+/// Which kinds of user [`only_used_by_markers`] tolerates.
+///
+/// Spells the two adjacent `bool`s of upstream's
+/// `onlyUsedByLifetimeMarkersOrDroppableInstsHelper(V, bool AllowLifetime,
+/// bool AllowDroppable)`. Unlike the pairs in `round_to_integral` and
+/// `is_known_negation`, these two *are* one concept — both answer "may a user
+/// of this kind appear" — so they group into one value with named fields
+/// rather than becoming two independent enums. Same shape as
+/// `ConstantRange`'s `NoWrapKind`, and the same reason: neither flag can be
+/// mistaken for the other at a call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AllowedMarkers {
+    /// `llvm.lifetime.start` / `llvm.lifetime.end`.
+    lifetime: bool,
+    /// `User::isDroppable` intrinsics.
+    droppable: bool,
 }
 
 /// Ports the static `onlyUsedByLifetimeMarkersOrDroppableInstsHelper`.
 fn only_used_by_markers<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-    allow_lifetime: bool,
-    allow_droppable: bool,
+    allowed: AllowedMarkers,
 ) -> bool {
+    let AllowedMarkers {
+        lifetime: allow_lifetime,
+        droppable: allow_droppable,
+    } = allowed;
     value.users().all(|user| {
         let Some(name) = called_intrinsic_name(user.to_erased()) else {
             return false;
@@ -445,7 +486,7 @@ fn argument_aliasing_to_returned_pointer_impl<'ctx, B: ModuleBrand + 'ctx>(
     call: Value<'ctx, B>,
     must_preserve_nullness: bool,
 ) -> Option<Value<'ctx, B>> {
-    if let Some(returned) = returned_argument(call) {
+    if let Some(returned) = returned_arg_operand(call) {
         return Some(returned);
     }
     if !intrinsic_returns_aliasing_argument(call, must_preserve_nullness) {
@@ -626,7 +667,7 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
     // on the global itself.
     let index_bits = index_type_size_in_bits(value.ty(), data_layout);
     let (base, byte_offset) = strip_and_accumulate_offset(value, index_bits, true, data_layout);
-    if base.slot() != global.slot() {
+    if base.slot_trusting_same_module() != global.slot_trusting_same_module() {
         return None;
     }
     let start_index = byte_offset.limited_value(u64::MAX);
@@ -764,7 +805,7 @@ fn string_length_recursive<'ctx, B: ModuleBrand + 'ctx>(
     let value = strip_pointer_casts(value);
 
     if let Some(InstructionKindData::Phi(data)) = instruction_kind(value) {
-        if !phis.insert(value.slot()) {
+        if !phis.insert(value.slot_trusting_same_module()) {
             return StringLength::Cyclic;
         }
         // See whether every incoming string has the same length.
@@ -942,7 +983,9 @@ fn merge_bytewise<'ctx, B: ModuleBrand + 'ctx>(
     match (lhs, rhs) {
         (BytewiseValue::AnyByte, other) | (other, BytewiseValue::AnyByte) => Some(other),
         (BytewiseValue::Byte(a), BytewiseValue::Byte(b)) if a == b => Some(BytewiseValue::Byte(a)),
-        (BytewiseValue::Value(a), BytewiseValue::Value(b)) if a.slot() == b.slot() => {
+        (BytewiseValue::Value(a), BytewiseValue::Value(b))
+            if a.slot_trusting_same_module() == b.slot_trusting_same_module() =>
+        {
             Some(BytewiseValue::Value(a))
         }
         _ => None,
@@ -1054,7 +1097,9 @@ fn underlying_object_from_int<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports `Value::stripPointerCasts` for the cases the string walk meets:
 /// `bitcast` and `addrspacecast` of a pointer, plus zero-offset GEPs.
-fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, B> {
+pub(crate) fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Value<'ctx, B> {
     let mut current = value;
     for _ in 0..MAX_LOOKUP_SEARCH_DEPTH {
         let next = match operator_opcode(current) {
@@ -1073,6 +1118,87 @@ fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Va
         }
     }
     current
+}
+
+/// Ports `Value::stripInBoundsOffsets` (`llvm/lib/IR/Value.cpp`) — the
+/// `PSK_InBounds` instantiation of `stripPointerCastsAndOffsets`, in that
+/// template's own arm order.
+///
+/// `Verifier::visitCallBase`'s `swifterror` loop is its one caller here:
+/// `dyn_cast<AllocaInst>(SwiftErrorArg->stripInBoundsOffsets())`.
+///
+/// Two differences from its siblings above, both upstream's: the GEP arm peels
+/// an `inbounds` GEP whatever its indices are (not only an all-zero one), and
+/// the loop terminates on a `Visited` set rather than a depth cap — upstream's
+/// `do { … } while (Visited.insert(V).second)`, whose comment says the cycle
+/// guard exists because the value may sit in an unreachable block.
+pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Value<'ctx, B> {
+    // `if (!V->getType()->isPointerTy()) return V;`
+    if !is_pointer(value.ty()) {
+        return value;
+    }
+    let mut current = value;
+    let mut visited: HashSet<ValueSlot> = HashSet::new();
+    visited.insert(current.slot_trusting_same_module());
+    loop {
+        let next = match operator_opcode(current) {
+            // `if (auto *GEP = dyn_cast<GEPOperator>(V)) { case PSK_InBounds:
+            //    if (!GEP->isInBounds()) return V; … V = GEP->getPointerOperand(); }`
+            Some(Opcode::GetElementPtr) => match instruction_kind(current) {
+                Some(InstructionKindData::Gep(data))
+                    if data.flags.contains(GepNoWrapFlags::IN_BOUNDS) =>
+                {
+                    Some(value_from_slot(current, data.ptr.get()))
+                }
+                // A constant-expression GEP: llvmkit's `GepOffset` form is
+                // always `inbounds` (see `gep_operator_pointer_operand`), and
+                // an `Expr` GEP carries its flags with it.
+                _ => match &current.data().kind {
+                    ValueKindData::Constant(ConstantData::GepOffset { base_id, .. }) => {
+                        Some(value_from_slot(current, *base_id))
+                    }
+                    ValueKindData::Constant(ConstantData::Expr(expr))
+                        if matches!(
+                            &expr.flags,
+                            ConstantExprFlags::Gep(gep)
+                                if gep.no_wrap().contains(GepNoWrapFlags::IN_BOUNDS)
+                        ) =>
+                    {
+                        expr.operands
+                            .first()
+                            .map(|slot| value_from_slot(current, *slot))
+                    }
+                    _ => return current,
+                },
+            },
+            // `else if (Operator::getOpcode(V) == Instruction::BitCast) {
+            //    Value *NewV = cast<Operator>(V)->getOperand(0);
+            //    if (!NewV->getType()->isPointerTy()) return V; V = NewV; }`
+            Some(Opcode::BitCast) => match operator_operand(current, 0) {
+                Some(next) if is_pointer(next.ty()) => Some(next),
+                _ => return current,
+            },
+            // `else if (StripKind != PSK_ZeroIndicesSameRepresentation &&
+            //    Operator::getOpcode(V) == Instruction::AddrSpaceCast)`
+            Some(Opcode::AddrSpaceCast) => operator_operand(current, 0),
+            // `else { if (const auto *Call = dyn_cast<CallBase>(V)) { if (const
+            //    Value *RV = Call->getReturnedArgOperand()) { V = RV;
+            //    continue; } … } return V; }` — the
+            //    `launder`/`strip.invariant.group` arm below it is
+            //    `PSK_ForAliasAnalysis` only.
+            _ => returned_arg_operand(current),
+        };
+        let Some(next) = next else {
+            return current;
+        };
+        current = next;
+        // `while (Visited.insert(V).second);`
+        if !visited.insert(current.slot_trusting_same_module()) {
+            return current;
+        }
+    }
 }
 
 /// Ports `Value::stripPointerCastsSameRepresentation` (`llvm/lib/IR/Value.cpp`),
@@ -1302,61 +1428,6 @@ fn call_argument<'ctx, B: ModuleBrand + 'ctx>(
         _ => return None,
     };
     Some(value_from_slot(call, args.get(index)?.get()))
-}
-
-/// The argument a call marks `returned`.
-///
-/// Ports `CallBase::getReturnedArgOperand`, via
-/// `CallBase::getArgOperandWithAttribute`: the call site's own parameter
-/// attributes first, then — when it names a function directly — that
-/// function's. The fallback is load-bearing, because `declare ptr @f(ptr
-/// returned)` puts the attribute on the declaration and a call site that does
-/// not repeat it still returns its argument.
-fn returned_argument<'ctx, B: ModuleBrand + 'ctx>(call: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
-    let (args, callee, arg_attrs) = match instruction_kind(call)? {
-        InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs.arg_attrs()),
-        InstructionKindData::Invoke(data) => {
-            (&data.args, data.callee.get(), data.attrs.arg_attrs())
-        }
-        InstructionKindData::CallBr(data) => {
-            (&data.args, data.callee.get(), data.attrs.arg_attrs())
-        }
-        _ => return None,
-    };
-
-    let index = returned_parameter_index(arg_attrs.len(), |index| {
-        arg_attrs
-            .get(index)
-            .and_then(|attrs| attrs.get(AttrIndex::Param(u32::try_from(index).ok()?)))
-            .is_some_and(has_returned)
-    })
-    .or_else(|| {
-        let callee = value_from_slot(call, callee);
-        let ValueKindData::Function(data) = &callee.data().kind else {
-            return None;
-        };
-        let attributes = data.attributes.borrow();
-        returned_parameter_index(args.len(), |index| {
-            u32::try_from(index).ok().is_some_and(|slot| {
-                attributes
-                    .get(AttrIndex::Param(slot))
-                    .is_some_and(has_returned)
-            })
-        })
-    })?;
-
-    Some(value_from_slot(call, args.get(index)?.get()))
-}
-
-/// The first parameter position below `count` for which `carries` holds.
-fn returned_parameter_index<F: Fn(usize) -> bool>(count: usize, carries: F) -> Option<usize> {
-    (0..count).find(|index| carries(*index))
-}
-
-fn has_returned(attrs: &[AttributeStored]) -> bool {
-    attrs
-        .iter()
-        .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::Returned)))
 }
 
 /// The return-position attributes of a call/invoke/callbr.

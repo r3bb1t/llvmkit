@@ -40,7 +40,7 @@ use super::derived_types::{
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::function::FunctionData;
 use super::instruction::{Instruction, InstructionData, InstructionView, state::Attached};
-use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified};
 use super::struct_body_state::StructBodyDyn;
 use super::r#type::{Type, TypeData, TypeSlot};
 use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId};
@@ -308,7 +308,7 @@ pub(super) enum ValueKindData {
 /// Three-field record:
 /// - `id: ValueSlot` — arena index.
 /// - `module: ModuleRef<'ctx>` — brand carrier; equality routes through
-///   the process-global [`ModuleId`](crate::ModuleId).
+///   the process-global [`ModuleId`].
 /// - `ty: TypeSlot` — cached type. Values do not change type, so caching
 ///   here saves an arena lookup on every `value.ty()` access.
 ///
@@ -394,7 +394,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     ///
     /// Unlike [`slot`](Self::slot) — which returns the bare, untagged arena
     /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
-    /// [`ModuleId`](crate::ModuleId) and can be resolved back into a handle
+    /// [`ModuleId`] and can be resolved back into a handle
     /// with [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
@@ -792,9 +792,55 @@ pub trait IsValue<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::f
     /// `x.as_erased().id` widen-then-project chain.
     #[inline]
     fn slot(self) -> ValueSlot {
+        ValueSlotAccess::slot_trusting_same_module(self)
+    }
+}
+
+/// A value handle's route to the arena [`ValueSlot`] it names: one checked
+/// door and one unchecked door.
+///
+/// A handle is a slot plus the module that minted it, and the slot means
+/// something only in that module's arena. Each module owns its own arenas, and
+/// two modules that share a brand — every `Module::dynamic` is `DynBrand` — can
+/// be handed each other's handles without a type error, so under D7 the module
+/// tag is the backstop. These two methods are where it is applied:
+///
+/// - [`slot_in`](Self::slot_in) is the **checked door**. It compares the
+///   handle's module with `owner`, the module about to store or look up the
+///   slot, and refuses a foreign handle with [`IrError::ForeignValueId`]. A
+///   *boundary* — a site where a caller's handle meets a second module — takes
+///   this door, before anything is looked up, stored or linked into a use list.
+/// - [`slot_trusting_same_module`](Self::slot_trusting_same_module) is the
+///   **unchecked door**. It hands the slot out and trusts that it is used only
+///   with the handle's own module: a read through the handle's own module, or
+///   a handle the same routine minted or already admitted through `slot_in`.
+///
+/// Modelled on `MetadataId::into_stored` / `MetadataId::from_stored` in
+/// `metadata.rs`: the comparison is written once, here, so a boundary cannot
+/// forget it one level up. Crate-private and blanket-implemented over
+/// [`IsValue`], so every value handle has both doors under the same two names
+/// and nothing outside the crate has either.
+pub(crate) trait ValueSlotAccess<'ctx, B: ModuleBrand>: IsValue<'ctx, B> {
+    /// The checked door: this handle's slot, if `owner` minted the handle;
+    /// [`IrError::ForeignValueId`] otherwise.
+    #[inline]
+    fn slot_in(self, owner: ModuleId) -> IrResult<ValueSlot> {
+        let value = self.as_erased();
+        if value.module.id() != owner {
+            return Err(IrError::ForeignValueId);
+        }
+        Ok(value.id)
+    }
+
+    /// The unchecked door: this handle's slot, trusting that the caller uses
+    /// it only with the handle's own module.
+    #[inline]
+    fn slot_trusting_same_module(self) -> ValueSlot {
         self.as_erased().id
     }
 }
+
+impl<'ctx, B: ModuleBrand, T: IsValue<'ctx, B>> ValueSlotAccess<'ctx, B> for T {}
 
 /// Sealed accessor trait: anything that has an IR type. Implemented by
 /// every value handle and every type handle.
@@ -869,8 +915,9 @@ impl<B: ModuleBrand> HasDebugLoc for Value<'_, B> {
 /// those three *narrow* to a pinned IR type, this one only widens, so it
 /// accepts strictly more:
 ///
-/// - every value **handle** — the whole [`IsValue`] family — for which the
-///   `module` argument is unused and the lift is infallible; and
+/// - every value **handle** — the whole [`IsValue`] family — which is refused
+///   with [`IrError::ForeignValueId`] when minted by a module other than
+///   `module`, exactly as an id is; and
 /// - the storable **ids** ([`ValueId`], [`IntValueId`], [`FloatValueId`],
 ///   [`PointerValueId`], [`FunctionId`](crate::FunctionId) and
 ///   [`GlobalId`](crate::GlobalId)), which resolve against `module` and report
@@ -904,8 +951,9 @@ pub(crate) mod into_erased_value_sealed {
 }
 
 /// Implement [`IntoErasedValue`] for one or more value **handles**, whose lift
-/// is the infallible [`IsValue::as_erased`] widen (the `module` argument is
-/// unused). Optional square-bracketed marker parameters are emitted ahead of
+/// is the [`IsValue::as_erased`] widen after the handle's module is checked
+/// against `module` through [`ValueSlotAccess::slot_in`]. Optional
+/// square-bracketed marker parameters are emitted ahead of
 /// the brand `B`, matching how every handle orders its generics
 /// (`IntValue<'ctx, W, B>`, `ArrayValue<'ctx, E, L, B>`, ...).
 ///
@@ -925,8 +973,12 @@ macro_rules! impl_into_erased_value_for_handle {
             #[inline]
             fn into_erased_value(
                 self,
-                _module: $crate::module::ModuleRef<'ctx, B>,
+                module: $crate::module::ModuleRef<'ctx, B>,
             ) -> $crate::error::IrResult<$crate::value::Value<'ctx, B>> {
+                // Boundary: the caller's handle meets `module`. The checked
+                // door refuses one minted elsewhere; the slot it returns is
+                // read again, once admitted, where the operand is stored.
+                $crate::value::ValueSlotAccess::slot_in(self, module.id())?;
                 Ok($crate::value::IsValue::as_erased(self))
             }
         }
@@ -1415,9 +1467,9 @@ where
             TypeData::Array { elem, n } => {
                 let expected_elem = E::element_ir_type(v.module);
                 if *elem != expected_elem.id() {
-                    return Err(IrError::TypeMismatch {
-                        expected: expected_elem.kind_label(),
-                        got: Type::new(*elem, v.module).kind_label(),
+                    return Err(IrError::TypeIdentityMismatch {
+                        expected: expected_elem.rendered(),
+                        got: Type::new(*elem, v.module).rendered(),
                     });
                 }
                 if *n != N {
@@ -1898,9 +1950,9 @@ where
             TypeData::FixedVector { elem, n } => {
                 let expected_elem = E::element_ir_type(v.module);
                 if *elem != expected_elem.id() {
-                    return Err(IrError::TypeMismatch {
-                        expected: expected_elem.kind_label(),
-                        got: Type::new(*elem, v.module).kind_label(),
+                    return Err(IrError::TypeIdentityMismatch {
+                        expected: expected_elem.rendered(),
+                        got: Type::new(*elem, v.module).rendered(),
                     });
                 }
                 if *n != N {
@@ -2389,7 +2441,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Debug for FloatValue<'ctx, 
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FloatValue")
             .field("id", &self.id)
-            .field("kind", &K::ieee_label())
+            .field("kind", &K::ieee_kind())
             .finish()
     }
 }
@@ -2684,14 +2736,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> into_pointer_value_sealed::Sealed
 
 impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValue<'ctx, B> {
     #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(self)
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerNull<'ctx, B> {
     #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(PointerValue::from_value_unchecked(
             crate::value::IsValue::as_erased(self),
         ))

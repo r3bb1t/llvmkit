@@ -4,12 +4,11 @@
 //! ## Upstream provenance
 //!
 //! Each test cites a specific `TEST(DataLayout*, ...)` block. The Task 7
-//! audited diagnostics below compare llvmkit's exact
-//! [`IrError::InvalidDataLayout`] reason string; rows are marked
-//! `llvmkit-specific subset` when that string intentionally differs from
-//! upstream `FailedWithMessage` text.
+//! audited diagnostics below compare llvmkit's exact [`DataLayoutError`]
+//! reason string; rows are marked `llvmkit-specific subset` when that string
+//! intentionally differs from upstream `FailedWithMessage` text.
 
-use llvmkit_ir::{Align, DataLayout, IrError, ManglingMode, MaybeAlign, module_new};
+use llvmkit_ir::{Align, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, module_new};
 
 fn parse(s: &str) -> DataLayout {
     DataLayout::parse(s).unwrap_or_else(|e| panic!("parse {s:?}: {e:?}"))
@@ -18,8 +17,9 @@ fn parse(s: &str) -> DataLayout {
 fn parse_err(s: &str) -> String {
     match DataLayout::parse(s) {
         Ok(_) => panic!("expected error for {s:?}"),
-        Err(IrError::InvalidDataLayout { reason }) => reason,
-        Err(other) => panic!("expected InvalidDataLayout, got {other:?}"),
+        // Exhaustive, no `_` arm: pins `DataLayoutError` to its one shape —
+        // a second variant would stop this from compiling.
+        Err(DataLayoutError { reason }) => reason,
     }
 }
 
@@ -738,9 +738,9 @@ fn value_or_abi_type_align() {
 
 /// `llvmkit-specific`: `FromStr` is `DataLayout::parse` under the trait, so
 /// `"…".parse()` and the named entry point agree — including on the error,
-/// which stays [`IrError::InvalidDataLayout`] with its specific reason rather
-/// than a generic keyword rejection. No upstream counterpart: C++ has no
-/// `FromStr`; the functional reference is
+/// which stays [`DataLayoutError`] with its specific reason rather than a
+/// generic keyword rejection. No upstream counterpart: C++ has no `FromStr`;
+/// the functional reference is
 /// `static Expected<DataLayout> DataLayout::parse(StringRef)`
 /// (`lib/IR/DataLayout.cpp`).
 #[test]
@@ -751,10 +751,10 @@ fn from_str_agrees_with_parse() {
     assert_eq!(via_trait.to_string(), text);
 
     match "e-p:0:64".parse::<DataLayout>() {
-        Err(IrError::InvalidDataLayout { reason }) => {
+        Err(DataLayoutError { reason }) => {
             assert_eq!(reason, parse_err("e-p:0:64"));
         }
-        other => panic!("expected InvalidDataLayout, got {other:?}"),
+        Ok(dl) => panic!("expected an error, got {dl:?}"),
     }
 }
 

@@ -9,7 +9,7 @@ use super::array_len::ArrLenDyn;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
-    ConstantExprOpcode,
+    ConstantExprOpcode, is_poison, is_undef, is_undef_or_poison,
 };
 use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::FunctionPtrAlignType;
@@ -1958,11 +1958,12 @@ fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, 
 /// which is llvmkit's representation choice rather than upstream's, since
 /// `ConstantVector::get` needs a fixed count and so cannot hold one at all.
 /// It round-trips because [`fmt_aggregate_constant`](crate::asm_writer) prints
-/// a uniform vector as `splat (…)`. **That collapse only covers integer and
-/// floating-point elements**, mirroring `AsmWriter.cpp`'s own restriction, so a
-/// scalable vector of uniform *pointers* or `undef` still prints as an element
-/// list — which is not a form LLVM has for a scalable type. See
-/// `docs/future-work.md`; the fix belongs in the printer, not here.
+/// a uniform vector as `splat (…)`. `AsmWriter.cpp` restricts that shorthand to
+/// `ConstantInt` and `ConstantFP`, and `prints_as_splat` mirrors the
+/// restriction for *fixed* vectors only: a scalable vector takes the shorthand
+/// whatever its element category, because it has no other spelling. Nothing
+/// else can be built — `VectorType::const_vector` requires a scalable
+/// constant's lanes to agree.
 fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     scalar: Constant<'ctx, B>,
@@ -2950,24 +2951,6 @@ fn constant_int_same_unsigned_value<'ctx, B: ModuleBrand + 'ctx>(
     lhs.ap_int()
         .zext_or_trunc(width)
         .eq_ap_int(&rhs.ap_int().zext_or_trunc(width))
-}
-
-fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    matches!(
-        &constant.as_erased().data().kind,
-        ValueKindData::Constant(ConstantData::Poison)
-    )
-}
-
-fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    matches!(
-        &constant.as_erased().data().kind,
-        ValueKindData::Constant(ConstantData::Undef)
-    )
-}
-
-fn is_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    is_undef(constant) || is_poison(constant)
 }
 
 fn binop_identity<'ctx, B: ModuleBrand + 'ctx>(

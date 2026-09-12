@@ -3,9 +3,7 @@
 //! llvmkit keeps the validated-params capability scoped to one facade call.
 
 use llvmkit_ir::function_signature::token::ValidatedFunctionParams;
-use llvmkit_ir::{
-    Argument, FunctionParam, IrResult, ModuleBrand, ModuleView, Type, TypeKindLabel, Value,
-};
+use llvmkit_ir::{Argument, FunctionParam, IrResult, ModuleBrand, ModuleView, Type, Value};
 
 struct Leaker;
 
@@ -24,10 +22,6 @@ impl FunctionParam for Leaker {
         B: ModuleBrand + 'ctx,
     {
         true
-    }
-
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Integer
     }
 
     fn validate_argument<'ctx, B>(_arg: Argument<'ctx, B>) -> IrResult<()>

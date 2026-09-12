@@ -110,7 +110,7 @@ The reason `N/A` is one row and not fifty: `test/Assembler` is overwhelmingly
 
 | Upstream spelling | Fixtures | llvmkit |
 |---|---|---|
-| `llvm-as` / `not llvm-as` | most | `parser::parse_assembly_file` succeeding or failing |
+| `llvm-as` / `not llvm-as` | most | `parser::parse_assembly_with_name` succeeding or failing |
 | `llvm-as \| llvm-dis` | many | parse then `format!("{module}")` |
 | `opt` (43 fixtures; mostly `opt -S` with no passes) | 43 | same as `llvm-as \| llvm-dis` for these fixtures |
 | `-disable-output`, `-o /dev/null` | many | no output is compared; irrelevant here |
@@ -134,7 +134,7 @@ another was deleted outright, so the letters are not a stable namespace.
 | **G1** | `AutoUpgrade` is not ported: an intrinsic name or signature upstream silently rewrites is rejected instead. |
 | **G2** | Target-specific intrinsic tables (`llvm.amdgcn.*`, `llvm.nvvm.*`, `llvm.wasm.*`, `llvm.aarch64.*`) are not modelled. |
 | **G3** | An unknown `llvm.`-prefixed declaration is rejected; `LLParser::parseFunctionHeader` keeps it and leaves the complaint to the Verifier. |
-| **G4** | An alias/ifunc aliasee may be a constant expression (`getelementptr`, `addrspacecast`); llvmkit's `parse_alias_or_ifunc` sends everything through the TYPE VALUE branch where `LLParser::parseAliasOrIFunc` branches on the aliasee's *first token* and routes those keywords through a bare `parseValID`. This is the "self-typed aliasee does not parse" entry already in [`future-work.md`](future-work.md), and these five fixtures are what it costs. |
+| **G4** | *Closed.* An alias/ifunc aliasee written as a bare constant expression (`bitcast`, `getelementptr`, `addrspacecast`, `inttoptr`) now parses: `parse_constant_expr` types itself, `parse_alias_or_ifunc` branches on the aliasee's first token as `LLParser::parseAliasOrIFunc` does, and `fmt_alias` / `fmt_ifunc` suppress the leading operand type for a constant expression as `writeOperand(Aliasee, !isa<ConstantExpr>(Aliasee))` does. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G6** | Symbolic address-space **printing** (`llvm-dis --print-addrspace-name=true`) is not modelled: `printAddressSpace`'s `PrintAddrspaceName` branch is `static cl::opt<bool>`-gated and llvmkit has no printer-option layer, so it has no reachable trigger. Parsing `addrspace("A"/"G"/"P")` and `addrspace("<datalayout name>")` is ported, and the data the branch would print is modelled (`DataLayout::address_space_name`). |
 | **G7** | *Closed.* `getelementptr` with a vector-of-pointers base or vector indices is now modelled (`IrBuilder::gep_erased`, `GetElementPtrInst::getGEPReturnType`). Kept as a row so a reader meeting the letter in an older commit message finds it; see the note above about letters that are simply absent. |
 | **G8** | Metadata fields that take a value or a brace list (`!DITemplateValueParameter(value: i32 7)`, `!GenericDINode(operands: {...})`) are not parsed. |
@@ -142,9 +142,9 @@ another was deleted outright, so the letters are not a stable namespace.
 | **G10** | `!DIEnumerator` values wider than i128 are rejected; upstream stores an `APInt` of any width. |
 | **G11** | A global variable's trailing `"key" = "value"` attribute list is not parsed. |
 | **G12** | `fpext` (and its siblings) reject a scalable-vector source. |
-| **G13** | A forward-referenced function whose later definition/ifunc has the same name is rejected instead of resolved. |
+| **G13** | *Closed.* A forward-referenced function whose later definition/ifunc had the same name was rejected instead of resolved, because the callee position minted a typed `Function` at the call site's signature. `resolve_direct_callee` mints `getGlobalVal`'s untyped placeholder now and `claim_function_forward_ref` RAUWs it at the header. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G14** | `-allow-incomplete-ir`'s `dropUnknownMetadataReferences` half is not implemented (recorded in docs/divergences.md). |
-| **G15** | A forward reference to an explicitly numbered global (`@6`) is not resolved. |
+| **G15** | An **unnamed** global (`@""`) does not consume `NumberedVals.getNext()`, so a reference to the number it should have taken is undefined. Probed 2026-08-28 with `target/release/examples/parse_file.exe`: on `@5 = global i8 0` + `@"" = global i8 1`, `store ptr @5` resolves and `store ptr @6` answers `use of undefined value '@6'`. The row used to say "a forward reference to an explicitly numbered global is not resolved", which was wrong twice over — `@6` there is not a forward reference, and numbered forward references resolve. |
 | **G16** | The `typeidCompatibleVTable:` module-summary entry kind is not parsed. |
 | **G17** | Diagnostic text differs from upstream's: llvmkit routes a complete upstream message through an `expected ...` wrapper, or words the check differently. |
 | **G18** | The check runs at a different stage than upstream's, or not at all: upstream's `llvm-as` rejects at parse/verify time and llvmkit accepts. |
@@ -159,7 +159,7 @@ Which fixture sits on which gap:
 - **G1**: `auto_upgrade_intrinsics.ll`, `autoupgrade-invalid-masked-align.ll`, `autoupgrade-invalid-mem-intrinsics.ll`, `autoupgrade-invalid-name-mangling.ll`, `autoupgrade-lifetime-intrinsics.ll`, `implicit-intrinsic-declaration-invalid.ll`, `implicit-intrinsic-declaration-invalid3.ll`, `implicit-intrinsic-declaration.ll`, `invalid-vecreduce.ll`, `metadata.ll`, `opaque-ptr-intrinsic-remangling.ll`, `remangle.ll`, `struct-ret-without-upgrade.ll`
 - **G2**: `amdgcn-unreachable.ll`, `amdgpu-image-atomic-attributes.ll`, `auto_upgrade_nvvm_intrinsics.ll`, `autoupgrade-thread-pointer.ll`, `autoupgrade-wasm-intrinsics.ll`
 - **G3**: `immarg-param-attribute.ll`, `invalid-immarg.ll`, `invalid-immarg4.ll`, `invalid-immarg5.ll`, `metadata-function-local.ll`, `token.ll`
-- **G4**: `ConstantExprNoFold.ll`, `addrspacecast-alias.ll`, `alias-use-list-order.ll`, `getelementptr.ll`, `uselistorder.ll`
+- **G4**: closed
 - **G6**: `symbolic-addrspace-datalayout.ll`
 - **G7**: closed
 - **G8**: `DIDefaultTemplateParam.ll`, `ditemplateparameter.ll`, `generic-debug-node.ll`
@@ -167,12 +167,12 @@ Which fixture sits on which gap:
 - **G10**: `DIEnumeratorBig.ll`
 - **G11**: `globalvariable-attributes.ll`
 - **G12**: `fast-math-flags.ll`
-- **G13**: `2003-05-15-AssemblerProblem.ll`
+- **G13**: closed
 - **G14**: `incomplete-ir-metadata.ll`
-- **G15**: `opaque-ptr.ll`, `skip-value-numbers-globals.ll`
+- **G15**: `skip-value-numbers-globals.ll`
 - **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
-- **G17**: `2007-01-16-CrashOnBadCast.ll`, `alias-redefinition.ll`, `dicompileunit-invalid-language.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `opaque-ptr-invalid-forward-ref.ll`, `ptrtoaddr-invalid.ll`
-- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-dicompileunit-emissionkind-bad.ll`, `invalid-dicompileunit-language-overflow.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid-generic-debug-node-tag-overflow.ll`, `invalid-generic-debug-node-tag-wrong-type.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
+- **G17**: `2007-01-16-CrashOnBadCast.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `ptrtoaddr-invalid.ll`
+- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
 - **G19**: `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
 - **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
 - **G21**: `thinlto-summary.ll`
@@ -303,7 +303,7 @@ collision.
 | `2003-04-25-UnresolvedGlobalReference.ll` | ported | 1 pass |
 | `2003-05-03-BytecodeReaderProblem.ll` | ported | 1 pass |
 | `2003-05-12-MinIntProblem.ll` | ported | 1 pass |
-| `2003-05-15-AssemblerProblem.ll` | blocked-model | **G13** — rejected at 11:13: `expected forward function definition with matching signature` |
+| `2003-05-15-AssemblerProblem.ll` | ported | 1 pass |
 | `2003-05-15-SwitchBug.ll` | ported | 1 pass |
 | `2003-05-21-ConstantShiftExpr.ll` | ported | 1 pass |
 | `2003-05-21-EmptyStructTest.ll` | ported | 1 pass |
@@ -357,7 +357,7 @@ collision.
 | `ConstantExprFold.ll` | ported | 1 pass |
 | `ConstantExprFoldCast.ll` | ported | 1 pass |
 | `ConstantExprFoldSelect.ll` | ported | 1 pass |
-| `ConstantExprNoFold.ll` | blocked-model | **G4** — rejected at 24:23: `expected type` |
+| `ConstantExprNoFold.ll` | ported | 1 pass |
 | `DICommonBlock.ll` | blocked-model | **G19** — printed module does not re-print identically |
 | `DIDefaultTemplateParam.ll` | blocked-model | **G8** — rejected at 60:62: `expected metadata field value` |
 | `DIEnumerator.ll` | blocked-model | **G19** — printed module does not re-print identically |
@@ -367,11 +367,11 @@ collision.
 | `MultipleReturnValueType.ll` | blocked-model | **G20** — printed module does not re-parse: functions are not values, refer to them as pointers |
 | `aarch64-intrinsics-attributes.ll` | ported | 1 pass |
 | `absolute_symbol.ll` | ported | 1 pass |
-| `addrspacecast-alias.ll` | blocked-model | **G4** — rejected at 7:40: `expected type` |
+| `addrspacecast-alias.ll` | ported | 1 pass; its `CHECK` line is pinned by `parser_module_level.rs::a_self_typed_addrspacecast_aliasee_round_trips` |
 | `aggregate-constant-values.ll` | ported | 1 pass |
 | `aggregate-return-single-value.ll` | ported | 1 pass |
-| `alias-redefinition.ll` | blocked-model | **G17** — reported `expected valid alias definition: a global named "bar" already exists in this module`, upstream `redefinition of global '@bar'` |
-| `alias-use-list-order.ll` | blocked-model | **G4** — rejected at 10:26: `expected type` |
+| `alias-redefinition.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
+| `alias-use-list-order.ll` | ported | 1 pass |
 | `align-inst-alloca.ll` | ported | 1 reject (0 with upstream's diagnostic pinned) |
 | `align-inst-load.ll` | ported | 1 reject (0 with upstream's diagnostic pinned) |
 | `align-inst-store.ll` | ported | 1 reject (0 with upstream's diagnostic pinned) |
@@ -462,7 +462,7 @@ collision.
 | `debug-variant-discriminator.ll` | ported | 1 pass |
 | `dicompileunit-conflicting-language-fields.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `dicompileunit-invalid-language-version.ll` | ported | 4 reject (4 with upstream's diagnostic pinned) |
-| `dicompileunit-invalid-language.ll` | blocked-model | **G17** — 2/4 parts blocked. reported `invalid DWARF language 'DW_LNAME_C'`, upstream `expected DWARF language` |
+| `dicompileunit-invalid-language.ll` | ported | 4 split-file parts, 4 rejects (4 with upstream's diagnostic pinned) |
 | `dicompileunit.ll` | ported | 1 pass |
 | `dicompositetype-members.ll` | ported | 1 pass |
 | `diexpression.ll` | ported | 1 pass |
@@ -498,7 +498,7 @@ collision.
 | `fp-intrinsics-attr.ll` | ported | 1 pass |
 | `function-operand-uselistorder.ll` | ported | 1 pass |
 | `generic-debug-node.ll` | blocked-model | **G8** — rejected at 11:64: `expected metadata field value` |
-| `getelementptr.ll` | blocked-model | **G4** — rejected at 28:29: `expected type` |
+| `getelementptr.ll` | ported | 1 pass |
 | `getelementptr_invalid_ptr.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `getelementptr_struct.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `getelementptr_vec_ce.ll` | ported | 1 pass |
@@ -563,9 +563,9 @@ collision.
 | `invalid-comdat2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-datalayout-override.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-debug-info-version.ll` | ported | 1 pass |
-| `invalid-dicompileunit-emissionkind-bad.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `value for 'emissionKind' too large` |
+| `invalid-dicompileunit-emissionkind-bad.ll` | ported | 1 reject (1 with upstream's diagnostic and caret pinned) |
 | `invalid-dicompileunit-language-bad.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `invalid-dicompileunit-language-overflow.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `value for 'language' too large, limit is 65535` |
+| `invalid-dicompileunit-language-overflow.ll` | ported | 1 reject (1 with upstream's diagnostic and caret pinned) |
 | `invalid-dicompileunit-missing-language.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-dicompileunit-null-file.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-dicompileunit-uniqued.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
@@ -611,8 +611,8 @@ collision.
 | `invalid-fp80hex.ll` | blocked-model | **G17** — reported `expected '=' after global name`, upstream `expected '=' in global variable` |
 | `invalid-generic-debug-node-tag-bad.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-generic-debug-node-tag-missing.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `invalid-generic-debug-node-tag-overflow.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `value for 'tag' too large, limit is 65535` |
-| `invalid-generic-debug-node-tag-wrong-type.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `expected DWARF tag` |
+| `invalid-generic-debug-node-tag-overflow.ll` | ported | 1 reject (1 with upstream's diagnostic and caret pinned) |
+| `invalid-generic-debug-node-tag-wrong-type.ll` | ported | 1 reject (1 with upstream's diagnostic and caret pinned) |
 | `invalid-gep-missing-explicit-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-hexint.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-immarg.ll` | blocked-model | **G3** — reported `expected unknown intrinsic`, upstream `Attribute 'immarg' is incompatible with other attributes except the 'range' attribute` |
@@ -709,9 +709,9 @@ collision.
 | `opaque-ptr-cmpxchg.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `opaque-ptr-intrinsic-remangling.ll` | blocked-model | **G1** — rejected at 30:1: `expected valid invoke: call argument #2 type mismatch: expected ptr, got void ()` |
 | `opaque-ptr-invalid-forward-ref-2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `opaque-ptr-invalid-forward-ref.ll` | blocked-model | **G17** — reported `forward reference and definition of global have different types`, upstream `invalid forward reference to function 'f' with wrong type: expected 'ptr' but was 'ptr addrspace(1)'` |
+| `opaque-ptr-invalid-forward-ref.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `opaque-ptr-struct-types.ll` | ported | 1 pass |
-| `opaque-ptr.ll` | blocked-model | **G15** — rejected at 173:13: `use of undefined global '@0'` |
+| `opaque-ptr.ll` | ported | 1 pass |
 | `phi-first-class-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `pr119818.ll` | ported | 1 pass |
 | `private-hidden-alias.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
@@ -769,7 +769,7 @@ collision.
 | `unnamed.ll` | ported | 1 pass |
 | `unsized-recursive-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `unsupported-constexprs.ll` | ported | 2 reject (2 with upstream's diagnostic pinned) |
-| `uselistorder.ll` | blocked-model | **G4** — rejected at 7:16: `expected type` |
+| `uselistorder.ll` | ported | 1 pass, in `parser_use_list.rs::the_upstream_uselistorder_fixture_parses_clean` rather than as a manifest row: its own `uselistorder` directives permute use lists that plain `Display` drops, so the corpus runner's print-twice law cannot hold for it |
 | `uselistorder_bb.ll` | ported | 1 pass |
 | `uselistorder_global.ll` | ported | 1 pass |
 | `uwtable-1.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

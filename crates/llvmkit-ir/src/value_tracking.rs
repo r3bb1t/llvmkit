@@ -21,6 +21,7 @@ use crate::constant_range::{
 };
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
+use crate::function::FunctionValue;
 use crate::instr_types::{
     AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CastOpData,
     CastOpcode, CmpInstData, ExtractElementInstData, GepInstData, InsertElementInstData, LshrFlags,
@@ -28,15 +29,18 @@ use crate::instr_types::{
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
+use crate::marker::ReturnMarker;
 use crate::metadata::MetadataAttachmentKind;
-use crate::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef};
+use crate::module::{DynBrand, ModuleBrand, ModuleRef};
 use crate::pass_context::FunctionView;
 use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
-use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
-use crate::value::{Value, ValueKindData, ValueSlot};
+// `Type::getScalarType` is ported once, at the slot layer, in `type.rs`;
+// `scalar_type_slot` is an import, not a local definition.
+use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess, scalar_type_slot};
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::vector_utils::splat_value;
-use crate::{ApInt, IrResult, KnownBits, ShiftAmountKnowledge};
+use crate::{ApInt, IrError, IrResult, KnownBits, ShiftAmountKnowledge};
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::ops::Not;
@@ -72,7 +76,10 @@ impl KnownBitsCacheKey {
             value,
             context_instruction: query
                 .context_instruction
-                .map(|instruction| instruction.slot()),
+                // boundary (F2): Task 27
+                // The query's context instruction, keyed beside a caller's
+                // value in a cache the query may share across calls.
+                .map(|instruction| instruction.slot_trusting_same_module()),
             demanded_elements: query.demanded_elements.cloned(),
             uses_instruction_info: query.uses_instruction_info(),
         }
@@ -496,7 +503,10 @@ pub fn known_bits_from_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<KnownBits> {
     let mut stack = HashSet::new();
-    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    // This is the second entry point that reaches a width without going through
+    // `compute_known_bits_inner` — its non-instruction arm answers directly —
+    // so it carries the same guard rather than inheriting one.
+    let width = require_int_or_pointer_width(value, query.data_layout())?;
     match &value.data().kind {
         ValueKindData::Instruction(inst) => {
             compute_instruction_known_bits(value, inst, query, 0, &mut stack)
@@ -511,19 +521,48 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    if depth > query.max_depth() {
+    // Upstream asserts the operand is integer-or-pointer at the head of
+    // `computeKnownBits`, above its `m_APInt` fast path and above the depth
+    // cutoff. Keep that order: below the fast path a float constant would
+    // return before ever being checked, and below the cache lookup a value
+    // memoized before this guard existed could still be handed back.
+    let width = require_int_or_pointer_width(value, query.data_layout())?;
+    // Upstream's constant fast path runs *before* the recursion cutoff.
+    // `computeKnownBits` answers `m_APInt` with `KnownBits::makeConstant`,
+    // `ConstantPointerNull` / `ConstantAggregateZero` with `setAllZero` and
+    // `UndefValue` with `resetAll`, returning from each; only afterwards does
+    // `if (Depth == MaxAnalysisRecursionDepth) return;` gate the recursive
+    // walk, under the comment "All recursive calls that increase depth must
+    // come after this." A constant therefore reports its exact value at any
+    // depth, and -- like upstream's early `return` -- never reaches
+    // `computeKnownBitsFromContext`. The recursive constant arms
+    // (`ConstantExpr`, aggregates) are *not* part of that fast path upstream
+    // either: a `ConstantExpr` is an `Operator`, so it goes through
+    // `computeKnownBitsFromOperator` below the cutoff.
+    if let ValueKindData::Constant(constant) = &value.data().kind
+        && let Some(known) = leaf_constant_known_bits(constant, width)
+    {
+        return Ok(known);
+    }
+    // Upstream writes this as `Depth == MaxAnalysisRecursionDepth`, resting on
+    // the `assert(Depth <= MaxAnalysisRecursionDepth)` above it. llvmkit takes
+    // no runtime panics in production paths, so the assert and the equality
+    // are folded into one comparison rather than dropped.
+    if depth >= query.max_depth() {
         return Ok(KnownBits::unknown(width));
     }
-    if stack.contains(&value.slot()) {
+    if stack.contains(&value.slot_trusting_same_module()) {
         return Ok(KnownBits::unknown(width));
     }
-    let cache_key = KnownBitsCacheKey::new(value.slot(), query);
+    // boundary (F2): Task 27
+    // A caller's value keyed into the query's cache, which a
+    // `KnownBitsAnalysisResult` scopes to one function.
+    let cache_key = KnownBitsCacheKey::new(value.slot_trusting_same_module(), query);
     if let Some(cached) = query.cache().borrow().get(&cache_key).cloned() {
         return Ok(cached);
     }
 
-    stack.insert(value.slot());
+    stack.insert(value.slot_trusting_same_module());
     let known = match &value.data().kind {
         ValueKindData::Constant(c) => compute_constant_known_bits(value, c, query, depth, stack)?,
         ValueKindData::Instruction(inst) => {
@@ -538,7 +577,7 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | ValueKindData::MetadataAsValue(_)
         | ValueKindData::InlineAsm(_) => KnownBits::unknown(width),
     };
-    stack.remove(&value.slot());
+    stack.remove(&value.slot_trusting_same_module());
 
     // `computeKnownBitsFromContext` strictly refines what the operator walk
     // found, so upstream runs it after; the same order is kept here.
@@ -546,6 +585,23 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     query.cache().borrow_mut().insert(cache_key, known.clone());
     Ok(known)
+}
+
+/// The non-recursive half of the constant arm: the cases upstream's
+/// `computeKnownBits` answers *above* its `Depth == MaxAnalysisRecursionDepth`
+/// cutoff. `None` for the arms that are `Operator`s or aggregates upstream and
+/// so sit below it.
+fn leaf_constant_known_bits(constant: &ConstantData, width: u32) -> Option<KnownBits> {
+    Some(match constant {
+        // `match(V, m_APInt(C))` -> `KnownBits::makeConstant(*C)`.
+        ConstantData::Int(words) => KnownBits::from_ap_int(ApInt::from_words(width, words)),
+        // `isa<ConstantPointerNull>(V)` -> `Known.setAllZero()`.
+        ConstantData::PointerNull => KnownBits::from_ap_int(ApInt::zero(width)),
+        // `isa<UndefValue>(V)` -> `Known.resetAll(); return;`. `PoisonValue`
+        // derives from `UndefValue`, so it lands on the same arm.
+        ConstantData::Undef | ConstantData::Poison => KnownBits::unknown(width),
+        _ => return None,
+    })
 }
 
 fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
@@ -556,17 +612,29 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    // The leaf arms (`m_APInt`, `ConstantPointerNull`, `UndefValue`) are
+    // answered by `leaf_constant_known_bits` above the recursion cutoff in
+    // `compute_known_bits_inner`, exactly as upstream answers them above its
+    // `Depth == MaxAnalysisRecursionDepth` return; this dispatch reads them
+    // from the same helper rather than restating them.
+    if let Some(known) = leaf_constant_known_bits(constant, width) {
+        return Ok(known);
+    }
     Ok(match constant {
-        ConstantData::Int(words) => KnownBits::from_ap_int(ApInt::from_words(width, words)),
-        ConstantData::PointerNull => KnownBits::from_ap_int(ApInt::zero(width)),
         ConstantData::Expr(expr) => {
             compute_constant_expr_known_bits(value, expr, query, depth, stack)?
         }
-        ConstantData::Undef | ConstantData::Poison => KnownBits::unknown(width),
         ConstantData::Aggregate(elements) => {
             aggregate_constant_known_bits(value, elements, query, depth, stack)?
         }
-        ConstantData::Float(_)
+        // Answered above, by `leaf_constant_known_bits`; listed so a new
+        // `ConstantData` variant is a non-exhaustive-match error here rather
+        // than a silent `unknown`.
+        ConstantData::Int(_)
+        | ConstantData::PointerNull
+        | ConstantData::Undef
+        | ConstantData::Poison
+        | ConstantData::Float(_)
         | ConstantData::GlobalValueRef { .. }
         | ConstantData::ForwardRefPlaceholder
         | ConstantData::GepOffset { .. }
@@ -672,10 +740,17 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    // Both callers -- `known_bits_from_operator` and `compute_known_bits_inner`
+    // -- run `require_int_or_pointer_width` first, so `None` cannot arrive
+    // here. Propagating rather than substituting `0` keeps that a fact of the
+    // control flow instead of a claim in a comment: a third caller added
+    // without the guard gets an error, not a zero-width `KnownBits` whose
+    // predicates are all vacuously true.
+    let width = require_int_or_pointer_width(value, query.data_layout())?;
     let known = match &inst.kind {
         InstructionKindData::Add(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::add_with_flags(
                 &lhs,
                 &rhs,
@@ -686,7 +761,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Sub(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::sub_with_flags(
                 &lhs,
                 &rhs,
@@ -698,7 +774,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
         InstructionKindData::Mul(data) => mul_known(value, data, query, depth, stack),
         InstructionKindData::Udiv(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::udiv_with_exact(
                 &lhs,
                 &rhs,
@@ -706,7 +783,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Sdiv(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::sdiv_with_exact(
                 &lhs,
                 &rhs,
@@ -720,7 +798,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             binary_known(value, data, query, depth, stack, KnownBits::srem)
         }
         InstructionKindData::Shl(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::shl_with_flags(
                 &lhs,
                 &rhs,
@@ -732,7 +811,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Lshr(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::lshr_with_flags(
                 &lhs,
                 &rhs,
@@ -741,7 +821,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Ashr(data) => {
-            let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
+            let BinaryOperands { lhs, rhs } =
+                binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::ashr_with_flags(
                 &lhs,
                 &rhs,
@@ -796,7 +877,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 callee_id: data.callee.get(),
                 args: &data.args,
                 return_attrs: data.attrs.return_attrs(),
-                arg_attrs: data.attrs.arg_attrs(),
+                instruction: inst,
             },
             query,
             depth,
@@ -808,7 +889,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 callee_id: data.callee.get(),
                 args: &data.args,
                 return_attrs: data.attrs.return_attrs(),
-                arg_attrs: data.attrs.arg_attrs(),
+                instruction: inst,
             },
             query,
             depth,
@@ -853,15 +934,16 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | InstructionKindData::Br(_)
         | InstructionKindData::Unreachable(_) => Ok(KnownBits::unknown(width)),
     }?;
+    // `case Instruction::Load: if (MDNode *MD = Q.IIQ.getMetadata(…,
+    //  LLVMContext::MD_range)) computeKnownBitsFromRangeMetadata(*MD, Known);`
+    //
+    // `Load` only. The `Call`/`Invoke` arm reads the same metadata, but *inside*
+    // `call_known_bits` and before the `returned`-argument union, because the
+    // conflict reset that follows that union exists to catch a disagreement
+    // between the two. Hoisting the read to here would put it after the reset,
+    // where the conflict survives.
     Ok(
-        if query.uses_instruction_info()
-            && matches!(
-                &inst.kind,
-                InstructionKindData::Load(_)
-                    | InstructionKindData::Call(_)
-                    | InstructionKindData::Invoke(_)
-            )
-        {
+        if query.uses_instruction_info() && matches!(&inst.kind, InstructionKindData::Load(_)) {
             known.union_with(&range_metadata_known_bits(value, inst, width))
         } else {
             known
@@ -880,7 +962,7 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = value.module();
     let module = module_view.core_ref();
     let store = module_view.metadata_store();
-    let expected_ty = scalar_type_id(module, value.ty().id);
+    let expected_ty = scalar_type_slot(module, value.ty().slot_trusting_same_module());
     let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id.slot(), expected_ty)
     else {
         return KnownBits::unknown(bit_width);
@@ -897,7 +979,10 @@ fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx>(
         return KnownBits::unknown(bit_width);
     };
     let module_view = value.module();
-    let expected_ty = scalar_type_id(module_view.core_ref(), value.ty().id);
+    let expected_ty = scalar_type_slot(
+        module_view.core_ref(),
+        value.ty().slot_trusting_same_module(),
+    );
     let ranges = stored.iter().filter_map(|attr| match attr {
         AttributeStored::Range { ty, lower, upper } if *ty == expected_ty => {
             let range = ConstantRange::new(lower.clone(), upper.clone()).ok()?;
@@ -943,9 +1028,20 @@ struct CallKnownBitsInputs<'a> {
     callee_id: ValueSlot,
     args: &'a [Cell<ValueSlot>],
     return_attrs: &'a AttributeStorage,
-    arg_attrs: &'a [AttributeStorage],
+    instruction: &'a InstructionData,
 }
 
+/// `computeKnownBitsFromOperator`'s `case Instruction::Call: case
+/// Instruction::Invoke:` arm.
+///
+/// The order of the four steps is load-bearing, not incidental. `!range`
+/// metadata is read **first**, so that the conflict check after the
+/// `returned`-argument union sees it; a call may carry range metadata saying one
+/// thing and a `returned` argument saying another, and upstream's comment on
+/// that reset ("If the function doesn't return properly for all input values
+/// … there might be conflicts between the argument value and the range
+/// metadata") names exactly that pair. `KnownBits::unionWith` ORs the known-bit
+/// masks, so it is the operation that *creates* the conflict this discards.
 fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     inputs: CallKnownBitsInputs<'_>,
@@ -954,8 +1050,25 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(anchor, query.data_layout()).unwrap_or(0);
-    let mut known = range_attribute_known_bits(anchor, inputs.return_attrs, width);
-    if let Some(returned_arg) = returned_arg_operand(anchor, inputs.args, inputs.arg_attrs)
+    // `if (MDNode *MD = Q.IIQ.getMetadata(cast<Instruction>(I),
+    //      LLVMContext::MD_range))
+    //    computeKnownBitsFromRangeMetadata(*MD, Known);` — `Q.IIQ.getMetadata`
+    // answers null when the query does not use instruction info.
+    let mut known = if query.uses_instruction_info() {
+        range_metadata_known_bits(anchor, inputs.instruction, width)
+    } else {
+        KnownBits::unknown(width)
+    };
+    // `if (std::optional<ConstantRange> Range = CB->getRange())
+    //    Known = Known.unionWith(Range->toKnownBits());`
+    known = known.union_with(&range_attribute_known_bits(
+        anchor,
+        inputs.return_attrs,
+        width,
+    ));
+    // `if (const Value *RV = CB->getReturnedArgOperand())
+    //    if (RV->getType() == I->getType()) { … }`
+    if let Some(returned_arg) = returned_arg_operand(anchor)
         && returned_arg.ty() == anchor.ty()
     {
         known = known.union_with(&compute_known_bits_inner(
@@ -964,46 +1077,95 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             depth + 1,
             stack,
         )?);
+        // `if (Known.hasConflict()) Known.resetAll();`
+        if known.has_conflict() {
+            known = KnownBits::unknown(width);
+        }
     }
+    // `if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(I)) switch (…)`
     if let Some(semantic) = intrinsic_semantic_for_callee(anchor, inputs.callee_id) {
         let intrinsic_known =
             intrinsic_known_bits(anchor, semantic, inputs.args, query, depth, stack)?;
         known = known.union_with(&intrinsic_known);
     }
-    if known.has_conflict() {
-        Ok(KnownBits::unknown(width))
-    } else {
-        Ok(known)
-    }
+    Ok(known)
 }
 
-fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    args: &[Cell<ValueSlot>],
-    arg_attrs: &[AttributeStorage],
+/// The argument a call marks `returned`, or `None`.
+///
+/// Ports `CallBase::getReturnedArgOperand`, which is
+/// `getArgOperandWithAttribute(Attribute::Returned)` (`Instructions.cpp`). Both
+/// of that routine's legs are load-bearing and each is the *only* one that sees
+/// its own shape:
+///
+/// - `Attrs.hasAttrSomewhere(Kind, &Index)` — the call site's own parameter
+///   attributes, which is where `call ptr @f(ptr %x, ptr returned %y)` files it
+///   and the callee's declaration does not.
+/// - `F->getAttributes().hasAttrSomewhere(Kind, &Index)` when the call names a
+///   function directly — `declare ptr @f(ptr returned)` puts the attribute on
+///   the declaration and a call site that does not repeat it still returns its
+///   argument.
+///
+/// The two storages are keyed differently, which is the trap this routine
+/// exists to hold in one place. A **call site** gives every argument its own
+/// [`AttributeStorage`] and files it at `AttrIndex::Param(0)`
+/// (`LLParser::parseOptionalParamAttrs` builds one storage per argument and
+/// `AsmWriter` reads it back at `Param(0)`), so the parameter position is the
+/// slice index, not the key. A **`Function`**'s single `AttributeList` keys
+/// parameter `i` at `AttrIndex::Param(i)`. Reading either storage with the
+/// other's key silently answers `None`.
+pub(crate) fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
+    call: Value<'ctx, B>,
 ) -> Option<Value<'ctx, B>> {
-    arg_attrs.iter().enumerate().find_map(|(idx, attrs)| {
-        returned_attr(attrs, idx)
-            .then(|| args.get(idx).map(|arg| value_from_slot(anchor, arg.get())))?
-    })
-}
-
-fn returned_attr(attrs: &AttributeStorage, idx: usize) -> bool {
-    let direct_slot = attrs
-        .get(AttrIndex::Param(0))
-        .is_some_and(attribute_slice_has_returned);
-    if direct_slot {
-        return true;
-    }
-    let Some(idx) = u32::try_from(idx).ok() else {
-        return false;
+    // `dyn_cast<CallBase>`.
+    let (args, callee, arg_attrs) = match instruction_kind(call)? {
+        InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs.arg_attrs()),
+        InstructionKindData::Invoke(data) => {
+            (&data.args, data.callee.get(), data.attrs.arg_attrs())
+        }
+        InstructionKindData::CallBr(data) => {
+            (&data.args, data.callee.get(), data.attrs.arg_attrs())
+        }
+        _ => return None,
     };
-    attrs
-        .get(AttrIndex::Param(idx))
-        .is_some_and(attribute_slice_has_returned)
+
+    // `if (Attrs.hasAttrSomewhere(Kind, &Index))`.
+    let index = returned_parameter_index(arg_attrs.len(), |index| {
+        arg_attrs
+            .get(index)
+            .and_then(|attrs| attrs.get(AttrIndex::Param(0)))
+            .is_some_and(has_returned)
+    })
+    // `if (const Function *F = getCalledFunction())
+    //    if (F->getAttributes().hasAttrSomewhere(Kind, &Index))`.
+    .or_else(|| {
+        let callee = value_from_slot(call, callee);
+        let ValueKindData::Function(data) = &callee.data().kind else {
+            return None;
+        };
+        let attributes = data.attributes.borrow();
+        returned_parameter_index(args.len(), |index| {
+            u32::try_from(index).ok().is_some_and(|slot| {
+                attributes
+                    .get(AttrIndex::Param(slot))
+                    .is_some_and(has_returned)
+            })
+        })
+    })?;
+
+    // `return getArgOperand(Index - AttributeList::FirstArgIndex);`
+    Some(value_from_slot(call, args.get(index)?.get()))
 }
 
-fn attribute_slice_has_returned(attrs: &[AttributeStored]) -> bool {
+/// The first parameter position below `count` for which `carries` holds.
+///
+/// Stands in for `AttributeList::hasAttrSomewhere`'s `Index` out-parameter,
+/// already rebased to a parameter number.
+fn returned_parameter_index<F: Fn(usize) -> bool>(count: usize, carries: F) -> Option<usize> {
+    (0..count).find(|index| carries(*index))
+}
+
+fn has_returned(attrs: &[AttributeStored]) -> bool {
     attrs
         .iter()
         .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::Returned)))
@@ -1151,8 +1313,90 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let mask = arg_bits(1, stack)?.anyext_or_trunc(width);
             Ok(KnownBits::bitand(&ptr, &mask))
         }
+        IntrinsicSemantic::Vscale => {
+            // `if (!II->getParent() || !II->getFunction()) break;` then
+            // `Known = getVScaleRange(II->getFunction(), BitWidth).toKnownBits();`
+            let Some(function) = enclosing_function(anchor) else {
+                return Ok(KnownBits::unknown(width));
+            };
+            Ok(get_vscale_range(function, width)?.to_known_bits())
+        }
         _ => Ok(KnownBits::unknown(width)),
     }
+}
+
+/// The range `vscale` can take inside `function`, read off its
+/// `vscale_range` function attribute.
+///
+/// Ports `llvm::getVScaleRange` (`ValueTracking.cpp`). Upstream's
+/// `Attribute::getVScaleRangeMin` / `getVScaleRangeMax` pair is
+/// `AttributeStorage::vscale_range` here, and upstream's
+/// `std::optional<unsigned>` max — where a packed `0` means "unbounded" — is
+/// already an `Option<u32>` in [`crate::Attribute::VScaleRange`].
+///
+/// Fallible where upstream is not, for the reason
+/// [`ConstantRange::new`](crate::ConstantRange::new) is: upstream asserts its
+/// `Lower != Upper || isFullSet || isEmptySet` invariant in the
+/// `ConstantRange` constructor and llvmkit returns the error instead. The one
+/// input that can trip it is a `vscale_range(min, max)` with `max + 1 == min`,
+/// which the verifier rejects.
+pub fn get_vscale_range<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, R, B>,
+    bit_width: u32,
+) -> IrResult<ConstantRange> {
+    let Some((attr_min, attr_max)) = function_vscale_range(function.as_erased()) else {
+        // Without vscale_range, we only know that vscale is non-zero.
+        return ConstantRange::new(ApInt::from_words(bit_width, &[1]), ApInt::zero(bit_width));
+    };
+
+    // Minimum is larger than vscale width, result is always poison.
+    if bit_width_u32(attr_min) > bit_width {
+        return Ok(ConstantRange::empty(bit_width));
+    }
+
+    let min = ApInt::from_words(bit_width, &[u64::from(attr_min)]);
+    match attr_max {
+        // `APInt(BitWidth, *AttrMax) + 1`: `attr_max` is known to fit in
+        // `bit_width` by the test above, so adding one before the truncation
+        // `from_words` performs is the same modular result.
+        Some(attr_max) if bit_width_u32(attr_max) <= bit_width => ConstantRange::new(
+            min,
+            ApInt::from_words(bit_width, &[u64::from(attr_max) + 1]),
+        ),
+        _ => ConstantRange::new(min, ApInt::zero(bit_width)),
+    }
+}
+
+/// The `vscale_range` pair on `function`, if that value really is a function
+/// and carries the attribute. Ports `F->getFnAttribute(Attribute::VScaleRange)`.
+fn function_vscale_range<'ctx, B: ModuleBrand + 'ctx>(
+    function: Value<'ctx, B>,
+) -> Option<(u32, Option<u32>)> {
+    let ValueKindData::Function(data) = &function.data().kind else {
+        return None;
+    };
+    data.attributes.borrow().vscale_range(AttrIndex::Function)
+}
+
+/// `match(V, m_VScale())`: a call to `@llvm.vscale`.
+fn is_vscale_call<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    let callee = match instruction_kind(value) {
+        Some(InstructionKindData::Call(data)) => data.callee.get(),
+        Some(InstructionKindData::Invoke(data)) => data.callee.get(),
+        _ => return false,
+    };
+    intrinsic_semantic_for_callee(value, callee) == Some(IntrinsicSemantic::Vscale)
+}
+
+/// The function an instruction belongs to, as a handle. `II->getFunction()` /
+/// `Q.CxtI->getFunction()`; the walk itself is
+/// [`crate::known_fp_class::enclosing_function_slot`], which already ports
+/// `Instruction::getFunction`.
+fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
+    instruction: Value<'ctx, B>,
+) -> Option<FunctionValue<'ctx, crate::marker::Dyn, B>> {
+    let slot = crate::known_fp_class::enclosing_function_slot(instruction)?;
+    FunctionValue::try_from(value_from_slot(instruction, slot)).ok()
 }
 
 fn argument_constant<'ctx, B: ModuleBrand + 'ctx>(value: Option<Value<'ctx, B>>) -> Option<ApInt> {
@@ -1173,13 +1417,6 @@ fn bit_width_u32(value: u32) -> u32 {
         0
     } else {
         u32::BITS - value.leading_zeros()
-    }
-}
-
-fn scalar_type_id(module: &ModuleCore, ty: TypeSlot) -> TypeSlot {
-    match module.context().type_data(ty) {
-        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
-        _ => ty,
     }
 }
 
@@ -1231,13 +1468,24 @@ pub fn analyze_known_bits_from_and_xor_or<'a, 'ctx, B: ModuleBrand + 'ctx>(
     .map(Some)
 }
 
+/// Known bits of a binary operator's two operands.
+///
+/// A named pair rather than `(KnownBits, KnownBits)`: both halves are the same
+/// type, and it is returned to nine call sites that each destructure it, so a
+/// transposition would compile and silently produce a wrong analysis result
+/// rather than a type error.
+struct BinaryOperands {
+    lhs: KnownBits,
+    rhs: KnownBits,
+}
+
 fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     data: &BinaryOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
-) -> IrResult<(KnownBits, KnownBits)> {
+) -> IrResult<BinaryOperands> {
     let lhs = compute_known_bits_inner(
         value_from_slot(anchor, data.lhs.get()),
         query,
@@ -1250,7 +1498,7 @@ fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         depth + 1,
         stack,
     )?;
-    Ok((lhs, rhs))
+    Ok(BinaryOperands { lhs, rhs })
 }
 
 fn binary_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
@@ -1261,7 +1509,7 @@ fn binary_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
     f: fn(&KnownBits, &KnownBits) -> KnownBits,
 ) -> IrResult<KnownBits> {
-    let (lhs, rhs) = binary_operand_known_bits(anchor, data, query, depth, stack)?;
+    let BinaryOperands { lhs, rhs } = binary_operand_known_bits(anchor, data, query, depth, stack)?;
     Ok(f(&lhs, &rhs))
 }
 
@@ -1311,7 +1559,7 @@ fn bitwise_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let (lhs, rhs) = binary_operand_known_bits(anchor, data, query, depth, stack)?;
+    let BinaryOperands { lhs, rhs } = binary_operand_known_bits(anchor, data, query, depth, stack)?;
     and_xor_or_known(
         anchor,
         data,
@@ -1693,7 +1941,7 @@ fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
         };
         let lhs = operands.lhs.get();
         let rhs = operands.rhs.get();
-        let phi_slot = phi.slot();
+        let phi_slot = phi.slot_trusting_same_module();
         if lhs != phi_slot && rhs != phi_slot {
             continue;
         }
@@ -1727,17 +1975,20 @@ fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
 /// - The `m_Br(m_c_ICmp(..))` refinement that narrows an incoming value by the
 ///   branch condition guarding its edge.
 ///
-/// One piece is deliberately **not** copied. Upstream gates the intersection
-/// loop on `Depth < MaxAnalysisRecursionDepth - 1` and then recurses at the
-/// fixed depth `MaxAnalysisRecursionDepth - 1`, capping the search under an
-/// incoming value at one level so it does not "spin around in loops". llvmkit
-/// recurses at `depth + 1` instead, because it already terminates by a
-/// different mechanism — the `stack` set rejects re-entering a value that is
-/// mid-computation — and because [`compute_known_bits_inner`] memoizes on
-/// `(slot, query)` with no depth component. Entering an incoming value at a
-/// fixed deep depth would cache the weak answer computed there and hand it to
-/// a later shallow query of the same value. The result is that llvmkit can
-/// answer *more* precisely than upstream for a shallow phi, never less.
+/// One piece is deliberately **not** copied, and it is narrower than the whole
+/// guard. Upstream gates the intersection loop on
+/// `Depth < MaxAnalysisRecursionDepth - 1` **and** then recurses at the fixed
+/// depth `MaxAnalysisRecursionDepth - 1`, capping the search under an incoming
+/// value at one level so it does not "spin around in loops". The *gate* is
+/// ported below. The *fixed recursion depth* is not: llvmkit recurses at
+/// `depth + 1`, because it already terminates by a different mechanism — the
+/// `stack` set rejects re-entering a value that is mid-computation — and
+/// because [`compute_known_bits_inner`] memoizes on `(slot, query)` with no
+/// depth component. Entering an incoming value at a fixed deep depth would
+/// cache the weak answer computed there and hand it to a later shallow query
+/// of the same value. The result is that llvmkit can answer *more* precisely
+/// than upstream for a shallow phi, never less; keying the known-bits cache by
+/// depth is what makes the fixed depth portable.
 fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &PhiData,
@@ -1759,8 +2010,10 @@ fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // Otherwise take the intersection of the incoming known-bit sets, taking
-    // conservative care to avoid excessive recursion.
-    if !known.is_unknown() {
+    // conservative care to avoid excessive recursion. Upstream's guard is
+    // `if (Depth < MaxAnalysisRecursionDepth - 1 && Known.isUnknown())`; both
+    // halves are ported.
+    if depth >= query.max_depth().saturating_sub(1) || !known.is_unknown() {
         return Ok(known);
     }
     // `None` until the first non-self incoming is folded in, which is what
@@ -1772,7 +2025,7 @@ fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let mut result: Option<KnownBits> = None;
     for (incoming_value, _) in incoming.iter() {
         // Skip direct self references.
-        if incoming_value.get() == value.slot() {
+        if incoming_value.get() == value.slot_trusting_same_module() {
             continue;
         }
         let next = compute_known_bits_inner(
@@ -1977,12 +2230,12 @@ fn compute_num_sign_bits_impl<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if depth >= query.max_depth() {
         return Ok(1);
     }
-    if stack.contains(&value.slot()) {
+    if stack.contains(&value.slot_trusting_same_module()) {
         return Ok(1);
     }
-    stack.insert(value.slot());
+    stack.insert(value.slot_trusting_same_module());
     let answer = compute_num_sign_bits_operator(value, query, depth, stack, ty_bits);
-    stack.remove(&value.slot());
+    stack.remove(&value.slot_trusting_same_module());
     let first_answer = answer?;
 
     // `FirstAnswer` is what the operator switch established before falling
@@ -2414,24 +2667,54 @@ fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Opti
     }
 }
 
+/// Whether the negating `sub` must carry `nsw`.
+///
+/// Spells upstream's `bool NeedNSW` (`isKnownNegation`). It sits adjacent to a
+/// second, unrelated `bool` in that signature, so the sole llvmkit call site
+/// read `is_known_negation(true_value, false_value, false, true)` — four
+/// positional arguments, two of them indistinguishable to the compiler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NswRequirement {
+    /// Upstream's `NeedNSW == true`.
+    Required,
+    /// Upstream's default.
+    NotRequired,
+}
+
+/// Whether a subtrahend whose zero is a poison lane still counts.
+///
+/// Spells upstream's `bool AllowPoison`, which defaults to `true`: `m_Neg`
+/// accepts such a zero and the `Zero->isNullValue()` check then filters it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoisonPolicy {
+    /// Upstream's default, `AllowPoison == true`.
+    Allow,
+    /// Require a literal zero.
+    Disallow,
+}
+
 /// Return true when `x` and `y` are provably negations of one another.
 ///
-/// Ports `llvm::isKnownNegation` (`ValueTracking.cpp`). `need_nsw` requires
-/// the negating `sub` to carry `nsw`; `allow_poison` admits a subtrahend whose
-/// zero is a poison lane rather than a literal zero, which is exactly what
-/// upstream's `m_Neg` accepts and its `Zero->isNullValue()` check then filters.
+/// Ports `llvm::isKnownNegation(X, Y, bool NeedNSW, bool AllowPoison)`
+/// (`ValueTracking.cpp`). The two `bool`s become [`NswRequirement`] and
+/// [`PoisonPolicy`] — same logic, same branches, only the spelling differs.
 pub fn is_known_negation<'ctx, B: ModuleBrand + 'ctx>(
     x: Value<'ctx, B>,
     y: Value<'ctx, B>,
-    need_nsw: bool,
-    allow_poison: bool,
+    nsw: NswRequirement,
+    poison: PoisonPolicy,
 ) -> bool {
+    let need_nsw = matches!(nsw, NswRequirement::Required);
+    let allow_poison = matches!(poison, PoisonPolicy::Allow);
     let is_negation_of = |x: Value<'ctx, B>, y: Value<'ctx, B>| -> bool {
         // `m_Neg(m_Specific(Y))` is `m_Sub(m_ZeroInt(), Y)`.
         let Some(InstructionKindData::Sub(data)) = instruction_kind(x) else {
             return false;
         };
-        if data.rhs.get() != y.slot() {
+        // boundary (F2): Task 27
+        // `x` and `y` are the caller's two values; `x`'s operand is compared
+        // with `y`'s slot as if they shared an arena.
+        if data.rhs.get() != y.slot_trusting_same_module() {
             return false;
         }
         let Some(zero_is_null) = zero_int_constant(value_from_slot(x, data.lhs.get())) else {
@@ -2566,12 +2849,11 @@ where
 /// Ports `llvm::isKnownToBeAPowerOfTwo` (`ValueTracking.cpp`). `or_zero`
 /// widens the claim to "a power of two, or zero".
 ///
-/// Three of upstream's sources are not consulted, each because llvmkit does
+/// Two of upstream's sources are not consulted, each because llvmkit does
 /// not model the input rather than because the reasoning was skipped, and each
 /// omission only makes the answer weaker: the `@llvm.assume` refinement (no
-/// `AssumptionCache`), the dominating-condition refinement (no `DomConditionCache`),
-/// and the `vscale` arm (`vscale_range` is on `attribute_td_drift.rs`'s
-/// `NOT_YET_MODELED` list, so the attribute it reads does not exist here).
+/// `AssumptionCache`) and the dominating-condition refinement (no
+/// `DomConditionCache`).
 pub fn is_known_to_be_a_power_of_two<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     or_zero: bool,
@@ -2605,6 +2887,17 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let Some(kind) = instruction_kind(value) else {
         return Ok(false);
     };
+
+    // `if (Q.CxtI && match(V, m_VScale()))` -- the presence of a
+    // `vscale_range` attribute on the *context instruction's* function is
+    // itself the proof, because the attribute indicates vscale is a
+    // power of two.
+    if let Some(context) = query.context_instruction()
+        && is_vscale_call(value)
+    {
+        return Ok(enclosing_function(context)
+            .is_some_and(|function| function_vscale_range(function.as_erased()).is_some()));
+    }
 
     // `1 << X` is a power of two unless the one is shifted off the end, in
     // which case the result is poison rather than wrong.
@@ -2699,7 +2992,7 @@ fn is_negation_of_operand<'ctx, B: ModuleBrand + 'ctx>(
     let Some(InstructionKindData::Sub(data)) = instruction_kind(candidate) else {
         return false;
     };
-    data.rhs.get() == other.slot()
+    data.rhs.get() == other.slot_trusting_same_module()
         && zero_int_constant(value_from_slot(candidate, data.lhs.get())).is_some()
 }
 
@@ -2770,7 +3063,8 @@ fn is_and_with_operand<'ctx, B: ModuleBrand + 'ctx>(
     other: Value<'ctx, B>,
 ) -> bool {
     matches!(instruction_kind(candidate), Some(InstructionKindData::And(data))
-        if data.lhs.get() == other.slot() || data.rhs.get() == other.slot())
+        if data.lhs.get() == other.slot_trusting_same_module()
+            || data.rhs.get() == other.slot_trusting_same_module())
 }
 
 /// The `Instruction::PHI` arm of `isKnownToBeAPowerOfTwo`.
@@ -2796,7 +3090,7 @@ fn power_of_two_phi<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let incoming = data.incoming.borrow();
     for (operand, _) in incoming.iter() {
         // A value coming from the phi itself is a power of two by induction.
-        if operand.get() == value.slot() {
+        if operand.get() == value.slot_trusting_same_module() {
             continue;
         }
         if !is_known_to_be_a_power_of_two_inner(
@@ -2907,7 +3201,7 @@ fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let (Some(first), Some(second)) = (argument(0), argument(1)) else {
                 return Ok(false);
             };
-            if first.slot() != second.slot() {
+            if first.slot_trusting_same_module() != second.slot_trusting_same_module() {
                 return Ok(false);
             }
             is_known_to_be_a_power_of_two_inner(first, or_zero, query, depth)
@@ -3070,7 +3364,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PossibleValues<'ctx, B> {
             return Ok(true);
         }
         if matches!(value.data().kind, ValueKindData::Instruction(_)) {
-            if self.visited.insert(value.slot()) {
+            if self.visited.insert(value.slot_trusting_same_module()) {
                 self.worklist.push(value);
             }
             return Ok(true);
@@ -3274,7 +3568,10 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let Some((right_a, right_b)) = and_pair(rhs) else {
                 continue;
             };
-            if (right_a.slot() == mask.slot() || right_b.slot() == mask.slot())
+            // boundary (F2): Task 27
+            // One side of the caller's `lhs` / `rhs` pair against the other.
+            if (right_a.slot_trusting_same_module() == mask.slot_trusting_same_module()
+                || right_b.slot_trusting_same_module() == mask.slot_trusting_same_module())
                 && is_known_not_undef(mask, query)?
             {
                 return Ok(true);
@@ -3285,8 +3582,10 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // X op (Y & ~X).
     if let Some((right_a, right_b)) = and_pair(rhs) {
         for side in [right_a, right_b] {
-            if not_operand(side).is_some_and(|inner| inner.slot() == lhs.slot())
-                && is_known_not_undef(lhs, query)?
+            // boundary (F2): Task 27
+            if not_operand(side).is_some_and(|inner| {
+                inner.slot_trusting_same_module() == lhs.slot_trusting_same_module()
+            }) && is_known_not_undef(lhs, query)?
             {
                 return Ok(true);
             }
@@ -3300,8 +3599,12 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let Some((and_a, and_b)) = and_pair(anded) else {
                 continue;
             };
-            let matches_shape = (and_a.slot() == lhs.slot() && and_b.slot() == deferred.slot())
-                || (and_b.slot() == lhs.slot() && and_a.slot() == deferred.slot());
+            // boundary (F2): Task 27
+            let matches_shape = (and_a.slot_trusting_same_module()
+                == lhs.slot_trusting_same_module()
+                && and_b.slot_trusting_same_module() == deferred.slot_trusting_same_module())
+                || (and_b.slot_trusting_same_module() == lhs.slot_trusting_same_module()
+                    && and_a.slot_trusting_same_module() == deferred.slot_trusting_same_module());
             if matches_shape
                 && is_known_not_undef(lhs, query)?
                 && is_known_not_undef(deferred, query)?
@@ -3314,7 +3617,10 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // Peek through extends to find a `not` of the other side: (ext Y) op ext(~Y).
     if let Some(extended) = zext_or_sext_source(lhs)
         && let Some(right_source) = zext_or_sext_source(rhs)
-        && not_operand(right_source).is_some_and(|inner| inner.slot() == extended.slot())
+        // boundary (F2): Task 27
+            && not_operand(right_source).is_some_and(|inner| {
+                inner.slot_trusting_same_module() == extended.slot_trusting_same_module()
+            })
         && is_known_not_undef(extended, query)?
     {
         return Ok(true);
@@ -3324,8 +3630,11 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if let Some((a, b)) = and_pair(lhs)
         && let Some(negated) = not_operand(rhs)
         && let Some((or_a, or_b)) = binary_operands_of(negated, BinaryOpcode::Or)
-        && ((or_a.slot() == a.slot() && or_b.slot() == b.slot())
-            || (or_b.slot() == a.slot() && or_a.slot() == b.slot()))
+        // boundary (F2): Task 27
+            && ((or_a.slot_trusting_same_module() == a.slot_trusting_same_module()
+                && or_b.slot_trusting_same_module() == b.slot_trusting_same_module())
+            || (or_b.slot_trusting_same_module() == a.slot_trusting_same_module()
+                    && or_a.slot_trusting_same_module() == b.slot_trusting_same_module()))
         && is_known_not_undef(a, query)?
         && is_known_not_undef(b, query)?
     {
@@ -3362,7 +3671,8 @@ fn complementary_shift_pair<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let Some((_, lhs_amount)) = binary_operands_of(lhs, lhs_opcode) else {
         return false;
     };
-    if lhs_amount.slot() != shift.slot() {
+    // boundary (F2): Task 27
+    if lhs_amount.slot_trusting_same_module() != shift.slot_trusting_same_module() {
         return false;
     }
     let Some(width) = value_bit_width(lhs, query.data_layout()) else {
@@ -3394,11 +3704,15 @@ fn is_known_non_equal_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> IrResult<bool> {
-    if v1.slot() == v2.slot() {
+    // boundary (F2): Task 27
+    // The caller's two values: a same-numbered slot from another module reads
+    // as the same value.
+    if v1.slot_trusting_same_module() == v2.slot_trusting_same_module() {
         return Ok(false);
     }
     // Casts are not looked through.
-    if v1.ty().id() != v2.ty().id() {
+    // boundary (F2): Task 27
+    if v1.ty().slot_trusting_same_module() != v2.ty().slot_trusting_same_module() {
         return Ok(false);
     }
     if depth >= query.max_depth() {
@@ -3527,7 +3841,9 @@ fn invertible_operands<'ctx, B: ModuleBrand + 'ctx>(
         {
             let source1 = operand(v1, a.src.get());
             let source2 = operand(v2, b.src.get());
-            (source1.ty().id() == source2.ty().id()).then_some((source1, source2))
+            // boundary (F2): Task 27
+            (source1.ty().slot_trusting_same_module() == source2.ty().slot_trusting_same_module())
+                .then_some((source1, source2))
         }
         (InstructionKindData::Phi(p1), InstructionKindData::Phi(p2)) => {
             invertible_recurrences(v1, p1, v2, p2)
@@ -3581,7 +3897,10 @@ fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx>(
 
     // Mutually defined recurrences are not reasoned about: the pair the
     // increments reduce to has to be the two phis themselves.
-    if first.slot() != v1.slot() || second.slot() != v2.slot() {
+    // boundary (F2): Task 27
+    if first.slot_trusting_same_module() != v1.slot_trusting_same_module()
+        || second.slot_trusting_same_module() != v2.slot_trusting_same_module()
+    {
         return None;
     }
     Some((
@@ -3666,9 +3985,11 @@ fn modifying_binop_of_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Xor(data) | InstructionKindData::Add(data) => data,
         _ => return Ok(false),
     };
-    let other = if v2.slot() == data.lhs.get() {
+    // boundary (F2): Task 27
+    let v2_slot = v2.slot_trusting_same_module();
+    let other = if v2_slot == data.lhs.get() {
         data.rhs.get()
-    } else if v2.slot() == data.rhs.get() {
+    } else if v2_slot == data.rhs.get() {
         data.lhs.get()
     } else {
         return Ok(false);
@@ -3690,7 +4011,8 @@ fn non_equal_scaled<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let Some((found, data)) = instruction_kind(v2).and_then(binary_operator_parts) else {
         return Ok(false);
     };
-    if found != opcode || data.lhs.get() != v1.slot() {
+    // boundary (F2): Task 27
+    if found != opcode || data.lhs.get() != v1.slot_trusting_same_module() {
         return Ok(false);
     }
     if !(data.no_unsigned_wrap || data.no_signed_wrap) {
@@ -3780,7 +4102,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
     pub fn new(condition: Value<'ctx, B>) -> Self {
         let mut affected_values = HashSet::new();
         find_values_affected_by_condition(condition, false, |affected| {
-            affected_values.insert(affected.slot());
+            affected_values.insert(affected.slot_trusting_same_module());
         });
         Self {
             condition,
@@ -3809,7 +4131,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
 
     /// Whether `value` is one of the values the condition constrains.
     pub fn affects(&self, value: Value<'ctx, B>) -> bool {
-        self.affected_values.contains(&value.slot())
+        // boundary (F2): Task 27
+        // A caller's value against the set this condition's own module filled.
+        self.affected_values
+            .contains(&value.slot_trusting_same_module())
     }
 }
 
@@ -4397,7 +4722,8 @@ pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Select(data) => {
             let condition = value_from_slot(value, data.cond.get());
             // Don't match a scalar select of bool vectors.
-            if condition.ty().id() != value.ty().id() {
+            if condition.ty().slot_trusting_same_module() != value.ty().slot_trusting_same_module()
+            {
                 return None;
             }
             let true_value = value_from_slot(value, data.true_val.get());
@@ -4785,7 +5111,8 @@ fn directly_implies_poison<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     depth: u32,
 ) -> bool {
-    if value_assumed_poison.slot() == value.slot() {
+    // boundary (F2): Task 27
+    if value_assumed_poison.slot_trusting_same_module() == value.slot_trusting_same_module() {
         return true;
     }
     const MAX_DEPTH: u32 = 2;
@@ -5446,13 +5773,13 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let (_, false) = vector_shape(rhs)? else {
         return None;
     };
-    let (lhs_demand, rhs_demand) = crate::vector_utils::shuffle_demanded_elements(
+    let demand = crate::vector_utils::shuffle_demanded_elements(
         source_width,
         &data.mask,
         &demanded,
         allow_undefined_elements,
     )?;
-    Some((lhs, lhs_demand, rhs, rhs_demand))
+    Some((lhs, demand.lhs, rhs, demand.rhs))
 }
 
 /// Ports `case Instruction::ShuffleVector:` of `computeKnownBits`.
@@ -5584,6 +5911,29 @@ fn value_bit_width<'ctx, B: ModuleBrand + 'ctx>(
     type_bit_width(value.ty(), dl)
 }
 
+/// The precondition `computeKnownBits` asserts, as a fallible width query.
+///
+/// Mirrors `assert((Ty->isIntOrIntVectorTy(BitWidth) ||
+/// Ty->isPtrOrPtrVectorTy()) && "Not integer or pointer type!")`
+/// (`ValueTracking.cpp`), spelled as an error because llvmkit takes no runtime
+/// panics in production paths — the same trade the sibling `assert(Depth <=
+/// MaxAnalysisRecursionDepth)` already gets in this routine.
+///
+/// [`type_bit_width`] answers `Some` for exactly integers, pointers and vectors
+/// of either, so its `None` **is** upstream's condition. Deriving the guard
+/// from the width query rather than writing a second predicate is deliberate:
+/// two spellings of one condition drift, and the wrong answer this replaced
+/// came from precisely that gap — the width was `None`, the caller substituted
+/// `0`, and a zero-width `ApInt` made `KnownBits::is_zero` vacuously true.
+fn require_int_or_pointer_width<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    dl: &DataLayout,
+) -> IrResult<u32> {
+    value_bit_width(value, dl).ok_or_else(|| IrError::NotIntOrPointerType {
+        kind: value.ty().kind_label(),
+    })
+}
+
 /// Ports the static `isGuaranteedNotToBeUndefOrPoison(V, AC, CtxI, DT, Depth,
 /// Kind)` (`ValueTracking.cpp`).
 ///
@@ -5665,7 +6015,7 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let incoming = data.incoming.borrow();
             let mut well_defined = true;
             for (operand, _) in incoming.iter() {
-                if operand.get() == value.slot() {
+                if operand.get() == value.slot_trusting_same_module() {
                     continue;
                 }
                 if !is_guaranteed_not_to_be_undef_or_poison(
@@ -5788,7 +6138,10 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx>(
         let Some(condition) = branch_or_switch_condition(terminator) else {
             continue;
         };
-        if condition == value.slot() {
+        // boundary (F2): Task 27
+        // Conditions read from the query's dominator tree and context,
+        // compared with the caller's value.
+        if condition == value.slot_trusting_same_module() {
             return true;
         }
         // For poison — but not undef, which does not propagate eagerly — a
@@ -5806,7 +6159,8 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx>(
             .iter()
             .enumerate()
             .any(|(index, operand)| {
-                *operand == value.slot() && propagates_poison(condition, index)
+                // boundary (F2): Task 27
+                *operand == value.slot_trusting_same_module() && propagates_poison(condition, index)
             });
         if propagates {
             return true;
@@ -5980,7 +6334,10 @@ fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Modul
 }
 
 fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
-    Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
+    Type::new(
+        ty.slot_trusting_same_module(),
+        ModuleRef::new(ty.module().core_ref()),
+    )
 }
 
 #[cfg(test)]

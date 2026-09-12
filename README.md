@@ -606,8 +606,8 @@ single static type could name each module individually.
 
 **What is compile-time.** A process-global registry admits at most one live
 `Module` per brand type, so a brand names exactly one module; a second claim is
-`IrError::BrandInUse`, and `Module::branded_once` retires its brand permanently
-on drop (`IrError::BrandRetired`) so a stale `'static` id can never be replayed
+`BrandError::InUse`, and `Module::branded_once` retires its brand permanently
+on drop (`BrandError::Retired`) so a stale `'static` id can never be replayed
 against fresh storage. Because of that lock, two **distinct** brand types are
 two distinct modules, and handing a handle or id from one to the other's
 builders, mutators, or resolvers is a type error — no runtime check is involved,
@@ -959,8 +959,10 @@ locks.
   the owning module's brand — a `'static` *type* parameter `B`. Two modules with
   **distinct** brand types cannot exchange operands: that is a type error, caught
   at compile time, with no runtime check involved. A process-global registry
-  admits at most one live `Module` per brand (`IrError::BrandInUse` /
-  `BrandRetired`), which is what makes a brand name *one* module unambiguously.
+  admits at most one live `Module` per brand — `Module::branded` returns
+  `Result<_, BrandError>`, whose only two outcomes are `BrandError::InUse` and
+  `BrandError::Retired` — which is what makes a brand name *one* module
+  unambiguously.
   Where two modules deliberately **share** a brand type — every
   `Module::dynamic` module is `DynBrand`, and a named brand is re-issued after
   the previous module drops — the compile-time half cannot apply, and a mix-up

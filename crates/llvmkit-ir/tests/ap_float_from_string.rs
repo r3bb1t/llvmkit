@@ -4,12 +4,18 @@
 //! *rules* come from `IEEEFloat::convertFromString` and its two helpers
 //! (`convertFromStringSpecials`, `convertFromHexadecimalString`), and the
 //! closest upstream test family is `llvm/unittests/ADT/APFloatTest.cpp`'s
-//! `fromHexadecimalString` / `fromStringSpecials` / `makeNaN`. The specific
-//! spellings below were picked here to sit on the interesting boundaries —
-//! the subnormal edge, the two tie-to-even directions, the payload radices —
-//! so they are marked `llvmkit-specific subset` in `UPSTREAM.md` rather than
-//! claiming to be those tests. Porting those three fixtures verbatim is
-//! recorded as remaining work in `docs/future-work.md`.
+//! `fromHexadecimalString` / `fromStringSpecials`. The specific spellings below
+//! were picked here to sit on the interesting boundaries — the subnormal edge,
+//! the two tie-to-even directions, the payload radices — so they are marked
+//! `llvmkit-specific subset` in `UPSTREAM.md` rather than claiming to be those
+//! tests. Porting those **two** fixtures verbatim is recorded as remaining work
+//! in `docs/future-work.md`.
+//!
+//! (This note used to name a third fixture, `makeNaN`, and to claim a
+//! `docs/future-work.md` entry that did not exist. `TEST(APFloatTest, makeNaN)`
+//! is now a genuine port —
+//! `ap_float_upstream_predicates.rs::make_nan`, `UPSTREAM.md` row marked
+//! `port` — and the backlog entry has been written.)
 //!
 //! The verbatim port of the arithmetic tables lives next door in
 //! `ap_float_upstream_arithmetic.rs`, and it exercises this parser hard: all

@@ -369,6 +369,20 @@ impl ConstraintInfo {
     pub fn has_alternatives(&self) -> bool {
         !self.alternatives.is_empty()
     }
+
+    /// `true` when this constraint corresponds to a call argument.
+    ///
+    /// Mirrors `InlineAsm::ConstraintInfo::hasArg`
+    /// (`llvm/include/llvm/IR/InlineAsm.h`), which is
+    /// `Type == isInput || (Type == isOutput && isIndirect)` — a clobber or a
+    /// label consumes no argument, and a direct output is returned rather than
+    /// passed. `Verifier::verifyInlineAsmCall` walks the constraint list
+    /// against the argument list through exactly this predicate.
+    #[must_use]
+    pub fn has_arg(&self) -> bool {
+        self.kind == ConstraintKind::Input
+            || (self.kind == ConstraintKind::Output && self.is_indirect)
+    }
 }
 
 /// Why a constraint string did not parse.

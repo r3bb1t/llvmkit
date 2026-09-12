@@ -59,7 +59,9 @@
 
 
 
+
 ; CHECK-NONE-BEFORE: <stdin>:[[@LINE+1]]:38: error: cannot use 'none' with other component
 define void @test(ptr captures(none, address) %p) {
   ret void
 }
+

@@ -4,3 +4,4 @@ define void @foo() {
 ; CHECK-ZEROINIT: error: invalid type for null constant
   ret void
 }
+

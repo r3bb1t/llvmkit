@@ -78,8 +78,13 @@ fn nsw_nuw_reversed_binops_round_trips() {
 }
 
 /// `trunc nuw nsw` — exact `test/Assembler/flags.ll` spelling
-/// (`@test_trunc_both`; the upstream vector form needs vector int-cast
-/// support, which parse_int_cast lacks).
+/// (`@test_trunc_both`). The whole of `flags.ll`, its four `<2 x i64>` vector
+/// trunc functions included, runs in the corpus at `status=pass`; this excerpt
+/// stays because it asserts the printed line rather than only round-trip
+/// stability. (An earlier revision of this comment said the vector form "needs
+/// vector int-cast support, which parse_int_cast lacks" — `parse_int_cast` has
+/// had that support since the vector-cast work, and the reason was never
+/// revised.)
 #[test]
 fn nuw_nsw_trunc_round_trips() {
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/nuw_nsw_trunc_round_trips.ll");
@@ -89,9 +94,10 @@ fn nuw_nsw_trunc_round_trips() {
 }
 
 /// `trunc nsw nuw` — reversed flag order from `test/Assembler/flags.ll`
-/// (`@test_trunc_both_reversed`; the upstream vector form needs vector
-/// int-cast support, which parse_int_cast lacks); prints canonically as
-/// `nuw nsw`.
+/// (`@test_trunc_both_reversed`); prints canonically as `nuw nsw`. The vector
+/// twin `@test_trunc_both_reversed_vector` runs in the corpus with the rest of
+/// `flags.ll`; see the note on `nuw_nsw_trunc_round_trips` for the stale
+/// blocker this comment used to carry.
 #[test]
 fn nsw_nuw_reversed_trunc_round_trips() {
     const FIXTURE: &[u8] =
@@ -434,9 +440,10 @@ fn legacy_memory_keyword_overwrites_explicit_memory() {
 /// "j"="2"` does not.
 ///
 /// llvmkit de-duplicated by full structural equality instead, so every pair
-/// below round-tripped with *both* members present. That half of ledger entry
-/// 24 is closed; the entry survives, narrowed to the print-order residual
-/// asserted at the end of this test.
+/// below round-tripped with *both* members present. Ledger entry 24 covered
+/// that and the print *order*; both halves are closed and the entry is gone —
+/// `lower_bound(Attrs, Kind, AttributeComparator())` is ported, so the last
+/// case below now prints `"j"` first, as upstream does.
 #[test]
 fn an_attribute_list_holds_one_attribute_per_kind() {
     for (spelled, expected) in [
@@ -468,15 +475,15 @@ fn an_attribute_list_holds_one_attribute_per_kind() {
     assert_check_lines(&text, &["declare void @f(float nofpclass(inf) %0)\n"]);
 
     // The negative: two string attributes with *different* keys both survive,
-    // because `hasAttribute(Kind)` compares the key. They print in *source*
-    // order, where `AttributeImpl::cmp` would sort them by key and put `"j"`
-    // first — that is what divergence 24 is narrowed to, and this line is what
-    // pins it.
+    // because `hasAttribute(Kind)` compares the key — and they come back in
+    // `AttributeImpl::cmp`'s order (its string arm is
+    // `getKindAsString().compare(AI.getKindAsString())`), not the order they
+    // were written in.
     let text = parse_fixture(
         "an_attribute_list_holds_one_attribute_per_kind_distinct_keys",
         b"declare void @f() \"k\"=\"1\" \"j\"=\"2\"\n",
     );
-    assert_check_lines(&text, &["declare void @f() \"k\"=\"1\" \"j\"=\"2\"\n"]);
+    assert_check_lines(&text, &["declare void @f() \"j\"=\"2\" \"k\"=\"1\"\n"]);
 }
 
 /// The same `expected access kind (none, read, write, readwrite)` arm, reached
@@ -620,11 +627,7 @@ fn comdat_definition_diagnostics_match_upstream_text_and_anchor() {
     ] {
         let err = parse_err(src.as_bytes());
         assert_eq!(err.to_string(), expected, "message text for `{src}`");
-        let start = err
-            .loc()
-            .unwrap_or_else(|| panic!("`{expected}` should carry a location"))
-            .span
-            .start;
+        let start = err.loc().start;
         let offset = usize::try_from(start).unwrap_or(usize::MAX);
         assert_eq!(
             line_and_column(src.as_bytes(), offset),

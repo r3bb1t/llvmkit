@@ -865,7 +865,17 @@ fn set_initializer_type_mismatch_rejected() {
         .view(g)
         .set_initializer(&m, zero64)
         .expect_err("expected mismatch");
-    assert!(matches!(err, IrError::TypeMismatch { .. }), "got: {err:?}");
+    // Both sides are integers, so this assertion used to hold against "type
+    // mismatch: expected integer, got integer" — and would have held just as
+    // well had the check compared the global against itself.
+    assert_eq!(
+        err,
+        IrError::TypeIdentityMismatch {
+            expected: i32_ty.as_type().rendered(),
+            got: i64_ty.as_type().rendered(),
+        },
+        "got: {err:?}"
+    );
 }
 
 /// Mirrors `Verifier::visitGlobalVariable` -- the `hasCommonLinkage`
@@ -1026,4 +1036,130 @@ fn alias_ifunc_partition_clear_apis() {
     assert_eq!(m.view(ifunc).partition().as_deref(), Some("part"));
     m.view(ifunc).clear_partition(&m);
     assert!(m.view(ifunc).partition().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// A constant handle from another module
+// ---------------------------------------------------------------------------
+//
+// Two `Module::dynamic` modules share the `DynBrand` brand, so a constant handle
+// from one type-checks as an argument to the other's alias and ifunc APIs.
+// Those APIs keep only the handle's arena slot, which names a different value —
+// or nothing — in the other module. Each must refuse with
+// `IrError::ForeignValueId` before it reads its own arena at that slot.
+//
+// llvmkit-specific, no upstream counterpart: upstream's `GlobalAlias::create`,
+// `GlobalIFunc::create`, `GlobalAlias::setAliasee` and `GlobalIFunc::setResolver`
+// take a `Constant *`, whose identity is its address, so there is no slot to
+// mistake for another module's.
+
+/// `alias_builder(..).build()` refuses an aliasee from another module, even
+/// where that module's slot names a value here. `b` holds a run of `i32`
+/// constants so the foreign slot is in range and names one of them.
+#[test]
+fn alias_builder_rejects_an_aliasee_from_another_module() {
+    let a = Module::dynamic("alias-a");
+    let b = Module::dynamic("alias-b");
+    let target = a
+        .add_global("target", a.i32_type().const_int(0i32))
+        .expect("target");
+    let b_i32 = b.i32_type();
+    for value in 1i32..9 {
+        let _ = b_i32.const_int(value);
+    }
+    let error = b
+        .alias_builder("alias", b_i32.as_type(), a.view(target))
+        .build()
+        .expect_err("an aliasee from another module must be refused");
+    assert!(matches!(error, IrError::ForeignValueId), "got {error:?}");
+    assert!(
+        b.alias("alias").is_none(),
+        "a refused build must not install"
+    );
+}
+
+/// `ifunc_builder(..).build()` refuses a resolver from another module, here
+/// one whose slot names nothing in `b`'s empty arena.
+#[test]
+fn ifunc_builder_rejects_a_resolver_from_another_module() {
+    let a = Module::dynamic("ifunc-a");
+    let b = Module::dynamic("ifunc-b");
+    let resolver = a
+        .add_global("resolver", a.i32_type().const_int(0i32))
+        .expect("resolver");
+    let error = b
+        .ifunc_builder("ifunc", b.i32_type().as_type(), a.view(resolver))
+        .build()
+        .expect_err("a resolver from another module must be refused");
+    assert!(matches!(error, IrError::ForeignValueId), "got {error:?}");
+    assert!(
+        b.ifunc("ifunc").is_none(),
+        "a refused build must not install"
+    );
+}
+
+/// `set_aliasee` refuses a constant from another module rather than storing
+/// its slot as this alias's aliasee.
+#[test]
+fn set_aliasee_rejects_a_constant_from_another_module() {
+    let a = Module::dynamic("set-aliasee-a");
+    let b = Module::dynamic("set-aliasee-b");
+    let foreign = a
+        .add_global("foreign", a.i32_type().const_int(0i32))
+        .expect("foreign");
+    let b_i32 = b.i32_type();
+    let own = b.add_global("own", b_i32.const_int(0i32)).expect("own");
+    let alias = b
+        .alias_builder("alias", b_i32.as_type(), b.view(own))
+        .build()
+        .expect("alias");
+    let before = format!("{b}");
+    let error = b
+        .view(alias)
+        .set_aliasee(&b, a.view(foreign))
+        .expect_err("an aliasee from another module must be refused");
+    assert!(matches!(error, IrError::ForeignValueId), "got {error:?}");
+    assert_eq!(
+        b.view(alias).aliasee().as_erased().id(),
+        b.view(own).as_erased().id(),
+        "a refused set_aliasee must leave the original aliasee in place"
+    );
+    assert_eq!(
+        format!("{b}"),
+        before,
+        "a refused set_aliasee must not mutate"
+    );
+}
+
+/// `set_resolver` refuses a constant from another module rather than storing
+/// its slot as this ifunc's resolver.
+#[test]
+fn set_resolver_rejects_a_constant_from_another_module() {
+    let a = Module::dynamic("set-resolver-a");
+    let b = Module::dynamic("set-resolver-b");
+    let foreign = a
+        .add_global("foreign", a.i32_type().const_int(0i32))
+        .expect("foreign");
+    let b_i32 = b.i32_type();
+    let own = b.add_global("own", b_i32.const_int(0i32)).expect("own");
+    let ifunc = b
+        .ifunc_builder("ifunc", b_i32.as_type(), b.view(own))
+        .build()
+        .expect("ifunc");
+    let before = format!("{b}");
+    let error = b
+        .view(ifunc)
+        .set_resolver(&b, a.view(foreign))
+        .expect_err("a resolver from another module must be refused");
+    assert!(matches!(error, IrError::ForeignValueId), "got {error:?}");
+    assert_eq!(
+        b.view(ifunc).resolver().as_erased().id(),
+        b.view(own).as_erased().id(),
+        "a refused set_resolver must leave the original resolver in place"
+    );
+    assert_eq!(
+        format!("{b}"),
+        before,
+        "a refused set_resolver must not mutate"
+    );
 }

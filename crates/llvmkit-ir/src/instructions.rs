@@ -1692,7 +1692,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
                 .any(|(v, b)| *b == block_id && v.get() != value_id)
             {
                 return Err(crate::IrError::AmbiguousPhiIncoming {
-                    block: module.context().block_diag_name(block_id),
+                    block: crate::asm_writer::block_slot_label(self.module, block_id),
                 });
             }
             self.payload()
@@ -1935,7 +1935,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
                 .any(|(v, b)| *b == block_id && v.get() != value_id)
             {
                 return Err(crate::IrError::AmbiguousPhiIncoming {
-                    block: module.context().block_diag_name(block_id),
+                    block: crate::asm_writer::block_slot_label(self.module, block_id),
                 });
             }
             self.payload()
@@ -2142,7 +2142,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
                 .any(|(v, b)| *b == block_id && v.get() != value_id)
             {
                 return Err(crate::IrError::AmbiguousPhiIncoming {
-                    block: module.context().block_diag_name(block_id),
+                    block: crate::asm_writer::block_slot_label(self.module, block_id),
                 });
             }
             self.payload()
@@ -2916,9 +2916,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
         let expected = Type::new(self.ty, self.module);
         let got = value.ty();
         if got != expected {
-            return Err(crate::IrError::TypeMismatch {
-                expected: expected.kind_label(),
-                got: got.kind_label(),
+            return Err(crate::IrError::TypeIdentityMismatch {
+                expected: expected.rendered(),
+                got: got.rendered(),
             });
         }
         let payload = self.payload();

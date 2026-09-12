@@ -177,3 +177,47 @@ where
         self.inner.call()
     }
 }
+
+/// Whether lowering `id` can produce a real function call.
+///
+/// Mirrors `IntrinsicInst::mayLowerToFunctionCall` (`lib/IR/IntrinsicInst.cpp`),
+/// case for case and in its own order. Upstream's `switch` answers `true` for
+/// the ObjC ARC family listed below and `false` from its `default:` — every
+/// other generated intrinsic, target-specific ones included, reaches that
+/// `default:` and is `false` here for want of a match in the table.
+///
+/// `Verifier::visitIntrinsicCall` gates its funclet-token rule on this
+/// predicate, and `Verifier::visitEHPadPredecessors` uses it to let a
+/// `nounwind` intrinsic `invoke` cross a funclet edge without a `"funclet"`
+/// bundle.
+pub fn may_lower_to_function_call(id: IntrinsicId) -> bool {
+    /// Upstream's `case` labels, in upstream's order.
+    const LOWERS_TO_CALL: &[IntrinsicId] = &[
+        IntrinsicId::OBJC_AUTORELEASE,
+        IntrinsicId::OBJC_AUTORELEASEPOOLPOP,
+        IntrinsicId::OBJC_AUTORELEASEPOOLPUSH,
+        IntrinsicId::OBJC_AUTORELEASERETURNVALUE,
+        IntrinsicId::OBJC_COPYWEAK,
+        IntrinsicId::OBJC_DESTROYWEAK,
+        IntrinsicId::OBJC_INITWEAK,
+        IntrinsicId::OBJC_LOADWEAK,
+        IntrinsicId::OBJC_LOADWEAKRETAINED,
+        IntrinsicId::OBJC_MOVEWEAK,
+        IntrinsicId::OBJC_RELEASE,
+        IntrinsicId::OBJC_RETAIN,
+        IntrinsicId::OBJC_RETAINAUTORELEASE,
+        IntrinsicId::OBJC_RETAINAUTORELEASERETURNVALUE,
+        IntrinsicId::OBJC_RETAINAUTORELEASEDRETURNVALUE,
+        IntrinsicId::OBJC_RETAINBLOCK,
+        IntrinsicId::OBJC_STORESTRONG,
+        IntrinsicId::OBJC_STOREWEAK,
+        IntrinsicId::OBJC_UNSAFECLAIMAUTORELEASEDRETURNVALUE,
+        IntrinsicId::OBJC_RETAINEDOBJECT,
+        IntrinsicId::OBJC_UNRETAINEDOBJECT,
+        IntrinsicId::OBJC_UNRETAINEDPOINTER,
+        IntrinsicId::OBJC_RETAIN_AUTORELEASE,
+        IntrinsicId::OBJC_SYNC_ENTER,
+        IntrinsicId::OBJC_SYNC_EXIT,
+    ];
+    LOWERS_TO_CALL.contains(&id)
+}

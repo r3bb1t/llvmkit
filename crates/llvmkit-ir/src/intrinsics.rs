@@ -6,7 +6,9 @@
 use core::num::NonZeroU32;
 
 use crate::Branded;
-use crate::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects};
+use crate::attributes::{
+    AttrIndex, AttrKind, Attribute, AttributeStorage, CaptureInfo, MemoryEffects,
+};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
 use crate::module::{Module, ModuleBrand, ModuleRef};
@@ -314,6 +316,75 @@ impl IntrinsicId {
     pub const PTRMASK: Self = checked_intrinsic_id(generated::SEMANTIC_PTRMASK);
     pub const VSCALE: Self = checked_intrinsic_id(generated::SEMANTIC_VSCALE);
 
+    /// `Intrinsic::call_preallocated_setup`, read by
+    /// `Verifier::visitCallBase`'s `"preallocated"` operand-bundle arm.
+    pub(crate) const CALL_PREALLOCATED_SETUP: Self =
+        checked_intrinsic_id(generated::SEMANTIC_CALL_PREALLOCATED_SETUP);
+
+    /// The two intrinsics `Verifier::visitCallBrInst`'s non-inline-asm arm
+    /// names: `Intrinsic::amdgcn_kill` is the `switch`'s only case, and
+    /// `Intrinsic::amdgcn_unreachable` is what its indirect destination may
+    /// call instead of holding an `unreachable`. Crate-internal, for the same
+    /// reason the ObjC ARC ids are: they spell one routine, not a catalogue.
+    pub(crate) const AMDGCN_KILL: Self = checked_intrinsic_id(generated::SEMANTIC_AMDGCN_KILL);
+    pub(crate) const AMDGCN_UNREACHABLE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_AMDGCN_UNREACHABLE);
+
+    /// `Intrinsic::callbr_landingpad`, the one `case` of
+    /// `Verifier::visitIntrinsicCall`'s per-intrinsic `switch` that is ported.
+    pub(crate) const CALLBR_LANDINGPAD: Self =
+        checked_intrinsic_id(generated::SEMANTIC_CALLBR_LANDINGPAD);
+
+    /// The ObjC ARC intrinsics named by `IntrinsicInst::mayLowerToFunctionCall`
+    /// and `Verifier::verifyAttachedCallBundle`. Crate-internal: they exist to
+    /// spell those two routines, not as a public intrinsic catalogue.
+    pub(crate) const OBJC_AUTORELEASE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_AUTORELEASE);
+    pub(crate) const OBJC_AUTORELEASEPOOLPOP: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_AUTORELEASEPOOLPOP);
+    pub(crate) const OBJC_AUTORELEASEPOOLPUSH: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_AUTORELEASEPOOLPUSH);
+    pub(crate) const OBJC_AUTORELEASERETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_AUTORELEASERETURNVALUE);
+    pub(crate) const OBJC_COPYWEAK: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_COPYWEAK);
+    pub(crate) const OBJC_DESTROYWEAK: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_DESTROYWEAK);
+    pub(crate) const OBJC_INITWEAK: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_INITWEAK);
+    pub(crate) const OBJC_LOADWEAK: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_LOADWEAK);
+    pub(crate) const OBJC_LOADWEAKRETAINED: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_LOADWEAKRETAINED);
+    pub(crate) const OBJC_MOVEWEAK: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_MOVEWEAK);
+    pub(crate) const OBJC_RELEASE: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_RELEASE);
+    pub(crate) const OBJC_RETAIN: Self = checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAIN);
+    pub(crate) const OBJC_RETAINAUTORELEASE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINAUTORELEASE);
+    pub(crate) const OBJC_RETAINAUTORELEASERETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINAUTORELEASERETURNVALUE);
+    pub(crate) const OBJC_RETAINAUTORELEASEDRETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINAUTORELEASEDRETURNVALUE);
+    pub(crate) const OBJC_RETAINBLOCK: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINBLOCK);
+    pub(crate) const OBJC_STORESTRONG: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_STORESTRONG);
+    pub(crate) const OBJC_STOREWEAK: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_STOREWEAK);
+    pub(crate) const OBJC_UNSAFECLAIMAUTORELEASEDRETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_UNSAFECLAIMAUTORELEASEDRETURNVALUE);
+    pub(crate) const OBJC_RETAINEDOBJECT: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAINEDOBJECT);
+    pub(crate) const OBJC_UNRETAINEDOBJECT: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_UNRETAINEDOBJECT);
+    pub(crate) const OBJC_UNRETAINEDPOINTER: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_UNRETAINEDPOINTER);
+    pub(crate) const OBJC_RETAIN_AUTORELEASE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_RETAIN_AUTORELEASE);
+    pub(crate) const OBJC_SYNC_ENTER: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_SYNC_ENTER);
+    pub(crate) const OBJC_SYNC_EXIT: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_SYNC_EXIT);
+    pub(crate) const OBJC_CLAIMAUTORELEASEDRETURNVALUE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_OBJC_CLAIMAUTORELEASEDRETURNVALUE);
+
     pub fn lookup(name: &str) -> Option<Self> {
         let _ = generated_table_anchor();
         let target_set = target_set_for_name(name)?;
@@ -402,6 +473,15 @@ impl IntrinsicId {
     /// Ports the `IntrNoFree` property.
     pub fn no_free(self) -> bool {
         self.record().fn_attrs.no_free
+    }
+
+    /// Whether the declaration carries `noreturn`.
+    ///
+    /// Ports the `IntrNoReturn` property. `CallBase::doesNotReturn` reads the
+    /// same attribute off a call site, which is what
+    /// `Verifier::verifyAttachedCallBundle`'s void-return arm tests.
+    pub fn no_return(self) -> bool {
+        self.record().fn_attrs.no_return
     }
 
     pub fn memory_effects(self) -> MemoryEffects {
@@ -557,8 +637,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         &self,
         module: ModuleRef<'ctx, B>,
     ) -> IrResult<FunctionType<'ctx, B>> {
-        let descriptors = iit_descriptors(self.id.record())?;
+        let descriptors =
+            iit_descriptors(self.id.record()).map_err(|_| intrinsic_mismatch_for_id(self.id))?;
         generated_function_type_from_descriptors(module, &descriptors, &self.overloads)
+            .map_err(|_| intrinsic_mismatch_for_id(self.id))
     }
 
     pub(crate) fn to_function_data(&self) -> IntrinsicFunctionData {
@@ -576,7 +658,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         let mut storage = AttributeStorage::new();
         add_function_attrs::<B>(&mut storage, record);
         for indexed in record.arg_attrs {
-            add_indexed_attr::<B>(&mut storage, *indexed, fn_ty)?;
+            add_indexed_attr::<B>(&mut storage, *indexed, fn_ty)
+                .map_err(|_| intrinsic_mismatch_for_id(self.id))?;
         }
         Ok(storage)
     }
@@ -656,7 +739,12 @@ fn add_indexed_attr<B: ModuleBrand>(
 ) -> IrResult<()> {
     let index = attribute_index(indexed.index);
     let attr = match indexed.attr {
-        IntrinsicArgAttr::NoCapture => Attribute::<B>::Enum(AttrKind::NoCapture),
+        // `IntrinsicEmitter.cpp`'s `ArgAttribute` loop handles `NoCapture`
+        // "separately" from every other kind — `getArgAttrEnumName` is
+        // `llvm_unreachable` for it — and emits
+        // `Attribute::getWithCaptureInfo(C, CaptureInfo::none())`. There is no
+        // `Attribute::NoCapture` in LLVM 22 to emit.
+        IntrinsicArgAttr::NoCapture => Attribute::<B>::Captures(CaptureInfo::none()),
         IntrinsicArgAttr::NoAlias => Attribute::<B>::Enum(AttrKind::NoAlias),
         IntrinsicArgAttr::NoUndef => Attribute::<B>::Enum(AttrKind::NoUndef),
         IntrinsicArgAttr::NonNull => Attribute::<B>::Enum(AttrKind::NonNull),
@@ -929,7 +1017,7 @@ fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx>(
             Ok(())
         }
         IitDescriptor::Argument { index, kind } => {
-            validate_overload_kind(module, actual, kind)?;
+            validate_overload_kind(actual, kind)?;
             match_overload_slot(overloads, index, actual)
         }
         IitDescriptor::ExtendArgument(index) => {
@@ -1200,6 +1288,15 @@ fn intrinsic_mismatch_for_id(id: IntrinsicId) -> IrError {
     }
 }
 
+/// Same concept as [`intrinsic_mismatch_for_id`], for the call sites that
+/// have the caller's full spelling of the name (which may carry an overload
+/// suffix `id.base_name()` does not) rather than only the resolved id.
+fn intrinsic_mismatch_for_name(name: &str) -> IrError {
+    IrError::IntrinsicSignatureMismatch {
+        name: name.to_owned(),
+    }
+}
+
 fn target_set_for_name(name: &str) -> Option<&'static IntrinsicTargetSet> {
     let rest = name.strip_prefix("llvm.")?;
     let first_component = rest.split('.').next()?;
@@ -1306,7 +1403,7 @@ where
         return Err(intrinsic_mismatch_for_id(id));
     }
     let record = id.record();
-    let descriptors = iit_descriptors(record)?;
+    let descriptors = iit_descriptors(record).map_err(|_| intrinsic_mismatch_for_name(name))?;
     if !record.is_overloaded {
         if name != record.base_name {
             return Err(intrinsic_mismatch_for_id(id));
@@ -1319,7 +1416,8 @@ where
         .and_then(|rest| rest.strip_prefix('.'))
         .filter(|rest| !rest.is_empty())
         .ok_or_else(|| intrinsic_mismatch_for_id(id))?;
-    let overloads = parse_mangled_overload_types(module, suffix)?;
+    let overloads = parse_mangled_overload_types(module, suffix)
+        .map_err(|_| intrinsic_mismatch_for_name(name))?;
     if overloads.len() != overload_slot_count(&descriptors) {
         return Err(intrinsic_mismatch_for_id(id));
     }
@@ -1964,7 +2062,7 @@ where
         }
         IitDescriptor::Argument { index, kind } => {
             let ty = *overloads.get(index).ok_or_else(intrinsic_mismatch)?;
-            validate_overload_kind(module, ty, kind)?;
+            validate_overload_kind(ty, kind)?;
             Ok(ty)
         }
         IitDescriptor::ExtendArgument(index) => {
@@ -2008,70 +2106,21 @@ where
     }
 }
 
-fn validate_overload_kind<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
-    kind: IitArgKind,
-) -> IrResult<()>
+fn validate_overload_kind<'ctx, B>(ty: Type<'ctx, B>, kind: IitArgKind) -> IrResult<()>
 where
     B: ModuleBrand + 'ctx,
 {
     let ok = match kind {
         IitArgKind::Any | IitArgKind::MatchType => true,
-        IitArgKind::AnyInteger => is_integer_or_integer_vector(module, ty),
-        IitArgKind::AnyFloat => is_float_or_float_vector(module, ty),
-        IitArgKind::AnyVector => is_vector(ty),
-        IitArgKind::AnyPointer => matches!(ty.data(), TypeData::Pointer { .. }),
+        IitArgKind::AnyInteger => ty.is_int_or_int_vector(),
+        IitArgKind::AnyFloat => ty.is_float_or_float_vector(),
+        IitArgKind::AnyVector => ty.is_vector(),
+        IitArgKind::AnyPointer => ty.is_pointer(),
     };
     if ok {
         Ok(())
     } else {
         Err(intrinsic_mismatch())
-    }
-}
-
-fn is_integer_or_integer_vector<'ctx, B>(module: ModuleRef<'ctx, B>, ty: Type<'ctx, B>) -> bool
-where
-    B: ModuleBrand + 'ctx,
-{
-    matches!(scalar_type_data(module, ty), TypeData::Integer { .. })
-}
-
-fn is_float_or_float_vector<'ctx, B>(module: ModuleRef<'ctx, B>, ty: Type<'ctx, B>) -> bool
-where
-    B: ModuleBrand + 'ctx,
-{
-    matches!(
-        scalar_type_data(module, ty),
-        TypeData::Half
-            | TypeData::Bfloat
-            | TypeData::Float
-            | TypeData::Double
-            | TypeData::X86Fp80
-            | TypeData::Fp128
-            | TypeData::PpcFp128
-    )
-}
-
-fn is_vector<'ctx, B>(ty: Type<'ctx, B>) -> bool
-where
-    B: ModuleBrand + 'ctx,
-{
-    matches!(
-        ty.data(),
-        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
-    )
-}
-
-fn scalar_type_data<'ctx, B>(module: ModuleRef<'ctx, B>, ty: Type<'ctx, B>) -> &'ctx TypeData
-where
-    B: ModuleBrand + 'ctx,
-{
-    match ty.data() {
-        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            Type::new(*elem, module).data()
-        }
-        data => data,
     }
 }
 

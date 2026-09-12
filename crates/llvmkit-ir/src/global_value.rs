@@ -17,7 +17,6 @@ use crate::error::IrError;
 /// values are not stable across LLVM bitcode versions, so we encode
 /// only the symbolic set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum Linkage {
     /// Externally visible function/variable.
     External,
@@ -140,7 +139,6 @@ impl FromStr for Linkage {
 
 /// Visibility marker. Mirrors `GlobalValue::VisibilityTypes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum Visibility {
     /// The GV is visible (default).
     #[default]
@@ -208,7 +206,6 @@ impl FromStr for Visibility {
 
 /// DLL storage class. Mirrors `GlobalValue::DLLStorageClassTypes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum DllStorageClass {
     /// No DLL storage class (default).
     #[default]
@@ -317,7 +314,6 @@ impl FromStr for DsoLocality {
 
 /// Thread-local mode. Mirrors `GlobalValue::ThreadLocalMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum ThreadLocalMode {
     /// Not thread-local (default).
     #[default]

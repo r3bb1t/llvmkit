@@ -35,9 +35,9 @@
 //! sibling, which is the behaviour that case was demonstrating.
 
 use llvmkit_ir::{
-    ApInt, ShuffleMaskElem, horizontal_demanded_elements_for_first_operand,
-    narrow_shuffle_mask_elements, shuffle_demanded_elements, shuffle_mask_with_widest_elements,
-    widen_shuffle_mask_elements,
+    ApInt, DemandedOperandElements, ShuffleMaskElem,
+    horizontal_demanded_elements_for_first_operand, narrow_shuffle_mask_elements,
+    shuffle_demanded_elements, shuffle_mask_with_widest_elements, widen_shuffle_mask_elements,
 };
 
 /// Upstream's mask literals are bare `int`s, negative meaning undefined.
@@ -60,9 +60,11 @@ fn demanded(
     demanded: &ApInt,
     allow_undef: bool,
 ) -> (u64, u64) {
-    let (left, right) =
-        shuffle_demanded_elements(source_width, &mask(elements), demanded, allow_undef)
-            .expect("the mask is valid for this demanded set");
+    let DemandedOperandElements {
+        lhs: left,
+        rhs: right,
+    } = shuffle_demanded_elements(source_width, &mask(elements), demanded, allow_undef)
+        .expect("the mask is valid for this demanded set");
     (left.limited_value(u64::MAX), right.limited_value(u64::MAX))
 }
 
@@ -244,7 +246,10 @@ fn get_shuffle_demanded_elts() {
 
 /// Upstream's `getHorizDemandedEltsForFirstOperand(…, LHS, RHS)` pair.
 fn horizontal(vector_bit_width: u32, demanded: &ApInt) -> (u64, u64) {
-    let (left, right) = horizontal_demanded_elements_for_first_operand(vector_bit_width, demanded)
+    let DemandedOperandElements {
+        lhs: left,
+        rhs: right,
+    } = horizontal_demanded_elements_for_first_operand(vector_bit_width, demanded)
         .expect("128 bits or wider");
     (left.limited_value(u64::MAX), right.limited_value(u64::MAX))
 }

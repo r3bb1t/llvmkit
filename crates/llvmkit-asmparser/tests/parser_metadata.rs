@@ -805,9 +805,10 @@ fn a_malformed_metadata_tuple_operand_type_keeps_the_type_s_own_message() {
 /// whole under `fixtures/upstream/Verifier/`.
 ///
 /// The fixture's `RUN` line is `opt %s -o /dev/null -S 2>&1 | FileCheck %s`, so
-/// most of its `CHECK` block is the *verifier's* rendering, which llvmkit does
-/// not reproduce (`docs/divergences.md` entry 121), and llvmkit does not
-/// auto-upgrade `@llvm.dbg.declare` into a `#dbg_declare` record either
+/// most of its `CHECK` block is the *verifier's* rendering of a `#dbg_declare`
+/// **record** — `Verifier::visitDbgRecords`' `invalid #dbg record …` family,
+/// which llvmkit has no `DbgRecord` model to raise, and which it never reaches
+/// anyway because it does not auto-upgrade `@llvm.dbg.declare` into a record
 /// (`docs/future-work.md`, AutoUpgrade). One token in that block is pure
 /// `AsmWriter` output, and it is the one asserted here: `ptr %1`, the
 /// intrinsic's `ValueAsMetadata` operand, from

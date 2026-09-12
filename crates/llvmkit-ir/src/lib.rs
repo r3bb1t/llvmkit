@@ -89,6 +89,7 @@ pub mod denormal_mode;
 pub mod derived_types;
 pub mod dominator_tree;
 pub mod dwarf;
+pub mod eh_personalities;
 pub mod element;
 pub mod error;
 pub mod float_kind;
@@ -215,7 +216,8 @@ pub use constant_folding::{
     lossless_unsigned_trunc,
 };
 pub use constant_range::{
-    ConstantRange, EquivalentIcmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
+    ConstantRange, EquivalentIcmp, NoWrapKind, OverflowResult, PosNegHalves, PreferredRangeType,
+    RangeIntrinsic,
 };
 pub use constant_range_list::ConstantRangeList;
 pub use constants::{
@@ -238,7 +240,10 @@ pub use derived_types::{
     TargetExtProperty, TargetExtType, TokenType, VectorType, VoidType,
 };
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
-pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
+pub use error::{
+    Blame, BrandError, DataLayoutError, IrError, IrResult, RenderedType, TypeKindLabel,
+    ValueCategoryLabel, VerifierRule, VerifierSubject,
+};
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};
 pub use function_signature::{
@@ -257,10 +262,10 @@ pub use inline_asm::{
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
-    CallAttributeData, CastOpcode, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags, LshrFlags,
-    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SdivFlags, ShlFlags,
-    ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode,
-    ZextFlags,
+    CallAttributeData, CastOpcode, CmpXchgFlags, ExactFlags, IcmpFlags, IntBinOpFlags,
+    IntCastFlags, LshrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags,
+    SdivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags,
+    UiToFpFlags, UnaryOpcode, ZextFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
@@ -385,7 +390,7 @@ pub use float_kind::{
     PpcFp128, StaticFloatKind, X86Fp80,
 };
 // `f32`/`f64` are std types — no re-export needed.
-pub use fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
+pub use fp_class::{FloatUnitKind, FpClassTest, KnownFpClass, MinMaxKind, RoundingIntrinsic};
 pub use fp_predicate::{
     ImpliedFpClasses, fcmp_implies_class, fcmp_implies_class_of_class,
     fcmp_implies_class_of_constant, fcmp_to_class_test, fcmp_to_class_test_of_constant,
@@ -437,32 +442,32 @@ pub use speculation::{
 };
 pub use value_tracking::{
     CondContext, KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH,
-    ValueTrackingQuery, adjust_known_bits_for_select_arm, can_create_poison,
-    can_create_undef_or_poison, collect_possible_values, compute_constant_range,
+    NswRequirement, PoisonPolicy, ValueTrackingQuery, adjust_known_bits_for_select_arm,
+    can_create_poison, can_create_undef_or_poison, collect_possible_values, compute_constant_range,
     compute_constant_range_including_known_bits, compute_known_bits,
     compute_known_bits_from_context, compute_max_significant_bits, compute_num_sign_bits,
     compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
     compute_overflow_for_signed_sub, compute_overflow_for_unsigned_add,
-    compute_overflow_for_unsigned_mul, compute_overflow_for_unsigned_sub, have_no_common_bits_set,
-    implies_poison, is_known_inversion, is_known_negation, is_known_negative, is_known_non_equal,
-    is_known_non_negative, is_known_non_zero, is_known_not_poison, is_known_not_undef,
-    is_known_not_undef_or_poison, is_known_one, is_known_positive, is_known_to_be_a_power_of_two,
-    is_known_zero, is_only_used_in_zero_comparison, is_only_used_in_zero_equality_comparison,
-    is_sign_bit_check, known_bits_from_operator, masked_value_is_zero, propagates_poison,
-    strip_null_test,
+    compute_overflow_for_unsigned_mul, compute_overflow_for_unsigned_sub, get_vscale_range,
+    have_no_common_bits_set, implies_poison, is_known_inversion, is_known_negation,
+    is_known_negative, is_known_non_equal, is_known_non_negative, is_known_non_zero,
+    is_known_not_poison, is_known_not_undef, is_known_not_undef_or_poison, is_known_one,
+    is_known_positive, is_known_to_be_a_power_of_two, is_known_zero,
+    is_only_used_in_zero_comparison, is_only_used_in_zero_equality_comparison, is_sign_bit_check,
+    known_bits_from_operator, masked_value_is_zero, propagates_poison, strip_null_test,
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 pub use vector_utils::{
-    MaskedSlide, ShuffleSource, create_interleave_mask, create_replicated_mask,
-    create_sequential_mask, create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor,
-    find_scalar_element, horizontal_demanded_elements_for_first_operand,
-    interleave_intrinsic_factor, is_splat_value, is_trivially_scalarizable,
-    is_trivially_vectorizable, is_vector_intrinsic_with_struct_return_overload_at_field,
-    mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
-    mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
-    possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,
-    shuffle_mask_with_widest_elements, splat_index, splat_value, widen_shuffle_mask_elements,
-    widen_shuffle_mask_elements_in_pairs,
+    DemandedOperandElements, MaskedSlide, ShuffleSource, create_interleave_mask,
+    create_replicated_mask, create_sequential_mask, create_stride_mask, create_unary_mask,
+    deinterleave_intrinsic_factor, find_scalar_element,
+    horizontal_demanded_elements_for_first_operand, interleave_intrinsic_factor, is_splat_value,
+    is_trivially_scalarizable, is_trivially_vectorizable,
+    is_vector_intrinsic_with_struct_return_overload_at_field, mask_contains_all_one_or_undefined,
+    mask_is_all_one_or_undefined, mask_is_all_zero_or_undefined, masked_slide_pair,
+    narrow_shuffle_mask_elements, possibly_demanded_elements_in_mask, scale_shuffle_mask_elements,
+    shuffle_demanded_elements, shuffle_mask_with_widest_elements, splat_index, splat_value,
+    widen_shuffle_mask_elements, widen_shuffle_mask_elements_in_pairs,
 };
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 

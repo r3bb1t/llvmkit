@@ -213,7 +213,7 @@ takes the typed route, which is why its call reads
 |Inkwell|llvmkit|Notes|
 |---|---|---|
 |`Context::create()`|`module_new!(name)?`|owned, branded module token; no separate context|
-|`context.create_module(n)`|`module_new!(n)?` / `Module::branded::<B, _>(n)?` / `Module::dynamic(n)`|same, three brand policies. Only `dynamic` is infallible — the other two claim a brand in the process-global registry (`IrError::BrandInUse` / `BrandRetired`)|
+|`context.create_module(n)`|`module_new!(n)?` / `Module::branded::<B, _>(n)?` / `Module::dynamic(n)`|same, three brand policies. Only `dynamic` is infallible — the other two claim a brand in the process-global registry (`BrandError::InUse` / `Retired`)|
 |storing an `IntValue<'ctx>` in a struct or `HashMap`|store the id (`IntValueId<W, B>`, `FunctionId<R, B>`, `BlockId<R, B, Params>`, …); read through `m.view(id)` / `m.try_view(id)`|ids are `Copy + Send + 'static` and borrow nothing. `handle.id()` mints one from a handle. A stale or foreign id is `IrError::ForeignValueId`, `None`, or a panic — never a dangling read (`#![forbid(unsafe_code)]` workspace-wide)|
 |`context.i32_type()`|`m.i32_type()`|on the module (or its `ModuleView`), not on a context|
 |`context.custom_width_int_type(n)`|`m.custom_width_int_type(n)?`|fallible (returns `IrResult<IntType<'ctx, IntDyn, B>>`)|
@@ -235,7 +235,7 @@ takes the typed route, which is why its call reads
 |`module.get_function(name)`|`m.function_dyn(name)`|`Option<FunctionId<Dyn, B>>` — an id, symmetric with `add_function_dyn`. `m.function::<R>(name)?` is the narrowing form: `IrResult<Option<FunctionId<R, B>>>`, where a signature that does not match `R` is `IrError::ReturnTypeMismatch` rather than a silently widened id|
 |`module.get_global(name)`|`m.global(name)`|`Option<GlobalId<B>>`; `alias` / `ifunc` follow the same bare-noun shape — llvmkit's lookup is shorter than inkwell's. All of these take `&self` and work on a `Verified` module too|
 |`module.get_functions()`|`m.as_view().functions()`|`ExactSizeIterator<Item = FunctionView>` on the read-only module view|
-|`Context::create_module_from_ir(buf)`|`parse_dynamic(src)?` / `parse_branded::<B>(src)?` / `parse_file_dynamic(path)?` / `parse_file_branded::<B>(path)?`|in `llvmkit_asmparser`; textual `.ll` only — there is no bitcode reader. Each returns the owned `Module<_, Unverified>` with its brand intact, so a parsed module can be verified, stored and moved. `parse_into(module, src)?` parses into a module you already made and hands it back. The closure form `parse_assembly(src, |m, parsed| ..)` remains only for callers who need the `ParsedModule` slot mapping, which borrows the module it came from|
+|`Context::create_module_from_ir(buf)`|`parse_dynamic(src)?` / `parse_into(Module::branded::<B, _>(name)?, src)?`|in `llvmkit_asmparser`; textual `.ll` only — there is no bitcode reader, and no path-taking entry point — reading a file is the caller's job (`std::fs::read` before parsing), the same split upstream draws between `lib/AsmParser` and Support's `MemoryBuffer::getFileOrSTDIN`. `parse_dynamic` returns the owned `Module<DynBrand, Unverified>`, so a parsed module can be verified, stored and moved; `parse_into(module, src)?` parses into a module you already made — a branded one included — and hands it back. The closure form `parse_assembly(src, |m, parsed| ..)` remains only for callers who need the `ParsedModule` slot mapping, which borrows the module it came from|
 |—|`m.function_builder::<Dyn, _>(name, fn_ty)`|new — chainable `.linkage()` / `.calling_conv()` / `.attribute()` / `.build()?`, where `build()` yields `IrResult<FunctionId<R, B>>`|
 |`function.get_nth_param(n)`|`m.view(f).param(n)?`|fallible (`Err(ArgumentIndexOutOfRange)`); returns `Argument<'ctx, B>`|
 |`function.get_param_iter()`|`m.view(f).params()`|`ExactSizeIterator<Item = Argument<'ctx, B>>`|
@@ -294,7 +294,7 @@ module. `module_new!` mints one per expansion site (unnameable outside it),
 `Module::branded::<B>` takes one you name, `Module::branded_once::<B>` retires it
 permanently on drop, and `DynBrand` (via `Module::dynamic`) opts out in favour of
 the runtime module tag alone. A process-global registry admits at most one live
-module per named brand (`IrError::BrandInUse` / `BrandRetired`); `DynBrand` is
+module per named brand (`BrandError::InUse` / `Retired`); `DynBrand` is
 exempt from it, which is precisely why it buys no compile-time separation.
 Handles from two distinct brands cannot be mixed in normal code.
 

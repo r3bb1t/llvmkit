@@ -10,7 +10,7 @@ use super::ap_int::Signedness;
 use super::cmp_predicate::{CmpPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
-    ConstantExprOpcode,
+    ConstantExprOpcode, is_poison, is_undef,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
@@ -2714,20 +2714,6 @@ fn usize_from_u64(value: u64) -> IrResult<usize> {
     usize::try_from(value).map_err(|_| IrError::InvalidOperation {
         message: "constant fold size does not fit usize",
     })
-}
-
-fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    matches!(
-        &constant.as_erased().data().kind,
-        ValueKindData::Constant(ConstantData::Undef)
-    )
-}
-
-fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    matches!(
-        &constant.as_erased().data().kind,
-        ValueKindData::Constant(ConstantData::Poison)
-    )
 }
 
 fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(

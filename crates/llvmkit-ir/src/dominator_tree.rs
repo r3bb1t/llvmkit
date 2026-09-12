@@ -17,7 +17,7 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::ModuleBrand;
 use super::pass_context::BasicBlockView;
 use super::r#use::Use;
-use super::value::{IsValue, Value, ValueKindData, ValueSlot};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::value_id::BlockId;
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
@@ -66,7 +66,10 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.slot()
+        // boundary (F2): Task 27
+        // Compared with slots the tree stored for its own function; nothing
+        // proves this block belongs to that function's module.
+        self.to_erased().slot_trusting_same_module()
     }
 }
 
@@ -86,7 +89,8 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.slot()
+        // boundary (F2): Task 27
+        self.to_erased().slot_trusting_same_module()
     }
 }
 
@@ -140,7 +144,8 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.slot()
+        // boundary (F2): Task 27
+        self.to_erased().slot_trusting_same_module()
     }
 }
 
@@ -158,7 +163,8 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.slot()
+        // boundary (F2): Task 27
+        self.to_erased().slot_trusting_same_module()
     }
 }
 
@@ -167,7 +173,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockV
 impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.as_basic_block().slot()
+        // boundary (F2): Task 27
+        self.as_basic_block()
+            .to_erased()
+            .slot_trusting_same_module()
     }
 }
 
@@ -238,8 +247,12 @@ impl DominatorTree {
     ) -> bool {
         let use_bb = user.parent();
         let def_bb = def.parent();
-        let def_id = def.slot();
-        let user_id = user.slot();
+        // boundary (F2): Task 27
+        // `def` and `user` are the caller's; the tree's maps hold its own
+        // function's slots, and nothing proves the three share a module.
+        let def_id = def.slot_trusting_same_module();
+        // boundary (F2): Task 27
+        let user_id = user.slot_trusting_same_module();
 
         if !self.is_reachable_from_entry(use_bb) {
             return true;
@@ -253,6 +266,9 @@ impl DominatorTree {
         if is_invoke(def) || is_callbr(def) || is_phi(user) {
             return self.dominates_instruction_block(def, use_bb);
         }
+        // boundary (F2): Task 27
+        // Two ids' raw slots: `def` and `user` are the caller's, and nothing
+        // proves they come from the same module.
         if def_bb.slot() != use_bb.slot() {
             return self.dominates_block(def_bb, use_bb);
         }
@@ -271,20 +287,23 @@ impl DominatorTree {
     {
         let use_bb_id = block.dominator_block_id();
         let def_bb = def.parent();
-        let def_id = def.slot();
+        // boundary (F2): Task 27
+        let def_id = def.slot_trusting_same_module();
         if !self.reachable.contains(&use_bb_id) {
             return true;
         }
         if !self.is_reachable_from_entry(def_bb) {
             return false;
         }
-        if def_bb.slot() == use_bb_id {
+        // boundary (F2): Task 27
+        let def_bb_id = def_bb.slot();
+        if def_bb_id == use_bb_id {
             return false;
         }
         if let Some(normal_dest) = self.normal_dest.get(&def_id).copied() {
-            return self.dominates_edge_slots(def_bb.slot(), normal_dest, use_bb_id);
+            return self.dominates_edge_slots(def_bb_id, normal_dest, use_bb_id);
         }
-        self.dominates_block_ids(def_bb.slot(), use_bb_id)
+        self.dominates_block_ids(def_bb_id, use_bb_id)
     }
 
     /// Whether `def` dominates this specific operand use. Non-instruction
@@ -300,8 +319,10 @@ impl DominatorTree {
         let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
             return true;
         };
-        let def_id = def_inst.slot();
-        let user_id = user_inst.slot();
+        // boundary (F2): Task 27
+        let def_id = def_inst.slot_trusting_same_module();
+        // boundary (F2): Task 27
+        let user_id = user_inst.slot_trusting_same_module();
         let Some(def_bb_id) = self.instruction_parent.get(&def_id).copied() else {
             return false;
         };
@@ -347,10 +368,12 @@ impl DominatorTree {
         let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
             return true;
         };
+        // boundary (F2): Task 27
+        let user_id = user_inst.slot_trusting_same_module();
         self.dominates_edge_use_ids(
             edge.start().slot(),
             edge.end().slot(),
-            user_inst.slot(),
+            user_id,
             use_edge.index(),
         )
     }
@@ -531,12 +554,13 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
     };
     let all_reachable = reachable.clone();
     let mut doms: HashMap<ValueSlot, HashSet<ValueSlot>> = HashMap::new();
+    let entry_id = entry.to_erased().slot_trusting_same_module();
     for block in function.basic_blocks().map(|bb| bb.as_dyn()) {
-        let id = block.slot();
+        let id = block.to_erased().slot_trusting_same_module();
         if !reachable.contains(&id) {
             continue;
         }
-        if id == entry.slot() {
+        if id == entry_id {
             doms.insert(id, HashSet::from([id]));
         } else {
             doms.insert(id, all_reachable.clone());
@@ -547,14 +571,15 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
     while changed {
         changed = false;
         for block in function.basic_blocks().map(|bb| bb.as_dyn()) {
-            let block_id = block.slot();
-            if block_id == entry.slot() || !reachable.contains(&block_id) {
+            let block_id = block.to_erased().slot_trusting_same_module();
+            if block_id == entry_id || !reachable.contains(&block_id) {
                 continue;
             }
             let mut pred_sets = cfg
                 .predecessors(&block)
-                .filter(|pred| reachable.contains(&pred.slot()))
-                .filter_map(|pred| doms.get(&pred.slot()).cloned());
+                .map(|pred| pred.slot())
+                .filter(|pred| reachable.contains(pred))
+                .filter_map(|pred| doms.get(&pred).cloned());
             let mut new_set = pred_sets.next().unwrap_or_default();
             for pred_set in pred_sets {
                 new_set = new_set.intersection(&pred_set).copied().collect();
@@ -580,7 +605,7 @@ fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
         .basic_blocks()
         .map(|bb| {
             (
-                bb.slot(),
+                bb.to_erased().slot_trusting_same_module(),
                 cfg.predecessors(&bb.as_dyn())
                     .map(|pred| pred.slot())
                     .collect(),
@@ -604,9 +629,9 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
     let mut normal_dest = HashMap::new();
     let mut phi_incoming_blocks = HashMap::new();
     for block in function.basic_blocks() {
-        let block_id = block.slot();
+        let block_id = block.to_erased().slot_trusting_same_module();
         for (index, inst) in block.instructions().enumerate() {
-            let inst_id = inst.slot();
+            let inst_id = inst.to_erased().slot_trusting_same_module();
             parent.insert(inst_id, block_id);
             order.insert(inst_id, (block_id, index));
             if let ValueKindData::Instruction(data) = &inst.as_erased().data().kind {

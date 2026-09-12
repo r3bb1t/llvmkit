@@ -287,12 +287,12 @@ fn upstream_forward_global_reference_fixture_parses() {
 
 /// llvmkit-specific regression for the forward-callee path exercised by
 /// `test/Assembler/2002-05-02-InvalidForwardRef.ll`: repeated forward
-/// references to one function each keep their OWN call-site type rather
-/// than being silently rewritten to the first provisional signature. Under
+/// references to one function each keep their OWN call-site type. Under
 /// opaque pointers a forward-referenced `@foo` is a bare `ptr` like any
-/// other callee, so `LLParser::parseCall` lets each call carry its own
-/// function type (`CallBase`); the second call stays `i64`, not rewritten
-/// to the `i32` the first call provisionally created.
+/// other callee — `LLParser::getGlobalVal` hands back one untyped
+/// `createGlobalFwdRef` placeholder for every reference — so
+/// `LLParser::parseCall` lets each call carry its own function type
+/// (`CallBase`), and the `declare` below settles neither of them.
 #[test]
 fn forward_global_reference_calls_keep_their_own_types() {
     let text = parse_and_render(
@@ -321,6 +321,62 @@ fn forward_function_definition_applies_parameter_names() {
     );
     assert!(text.contains("define i32 @callee(i32 %x)"), "{text}");
     assert!(text.contains("ret i32 %x"), "{text}");
+}
+
+/// `LLParser::parseFunctionHeader`'s forward-reference arm compares
+/// `FwdFn->getType() != PFT` and nothing else, so a call site's arguments
+/// never constrain the eventual `declare`: the callee is a bare `ptr`
+/// placeholder and the call carries its own `FunctionType` on the
+/// `CallBase`. `test/Assembler/2003-05-15-AssemblerProblem.ll` pins the
+/// `define` order (corpus manifest row); LLVM 22.1.4 ships no fixture for
+/// the `declare` order, so the routine is the anchor (D11).
+///
+/// llvmkit used to build a real `Function` at the first call site's
+/// signature and reject the later header with `forward function declaration
+/// with matching signature`, a text and a rule upstream never had.
+#[test]
+fn forward_callee_signature_does_not_constrain_the_later_declaration() {
+    let text = parse_and_render(
+        "define void @caller() {\nentry:\n  call void @callee(i32 1)\n  ret void\n}\ndeclare void @callee()\n",
+    );
+    assert!(text.contains("call void @callee(i32 1)"), "{text}");
+    assert!(text.contains("declare void @callee()"), "{text}");
+}
+
+/// The `@N` half of the same arm. `getGlobalVal(unsigned ID, Ty, Loc)` misses
+/// `NumberedVals` and mints a `ForwardRefValIDs` placeholder exactly as the
+/// named overload does; llvmkit used to answer `use of undefined value '@0'`
+/// outright, which is why `test/Assembler/opaque-ptr.ll` — whose
+/// `@call_unnamed_fn` calls `@0` above `define void @0()` — was unreadable.
+/// That fixture is the upstream source, and now carries a corpus manifest row.
+#[test]
+fn numbered_forward_callee_resolves_at_its_definition() {
+    let text = parse_and_render(
+        "define void @call_unnamed_fn() {\n  call void @0()\n  ret void\n}\ndefine void @0() {\n  ret void\n}\n",
+    );
+    assert!(text.contains("call void @0()"), "{text}");
+    assert!(text.contains("define void @0()"), "{text}");
+}
+
+/// `parseFunctionHeader`'s numbered forward-reference text, which is worded
+/// and anchored differently from its named twin: `error(NameLoc, "type of
+/// definition and forward reference of '@N' disagree: expected '…' but was
+/// '…'")`, on the header's own `@N` rather than on the reference.
+///
+/// LLVM 22.1.4 ships no fixture for it: `grep -ran "type of definition and
+/// forward reference" test/` over the vendored tree returns nothing, while the
+/// same search for its named twin returns exactly
+/// `test/Assembler/opaque-ptr-invalid-forward-ref.ll`. The routine is
+/// therefore the anchor (D11); the text is upstream's, verbatim.
+#[test]
+fn numbered_forward_reference_type_disagreement_matches_upstream_text() {
+    let err =
+        parse_err("@a = alias void (), ptr addrspace(1) @0\ndefine void @0() {\n  ret void\n}\n");
+    assert_eq!(
+        err.to_string(),
+        "type of definition and forward reference of '@0' disagree: \
+         expected 'ptr' but was 'ptr addrspace(1)'"
+    );
 }
 
 /// Mirrors `LLParser::PerFunctionState::finishFunction`: placeholder blocks

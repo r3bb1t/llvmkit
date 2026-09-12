@@ -30,9 +30,9 @@ use core::iter::FusedIterator;
 use core::str::FromStr;
 
 use crate::align::{Align, MaybeAlign};
-use crate::error::{IrError, IrResult};
+use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore};
-use crate::r#type::{Type, TypeData, TypeSlot};
+use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 
 // --------------------------------------------------------------------------
 // Sub-records
@@ -208,7 +208,6 @@ impl PointerSpec {
 /// Function-pointer alignment kind. Mirrors
 /// `DataLayout::FunctionPtrAlignType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum FunctionPtrAlignType {
     /// `Fi<abi>` -- pointer alignment is independent of function
     /// alignment.
@@ -222,7 +221,6 @@ pub enum FunctionPtrAlignType {
 /// Symbol-name mangling mode. Mirrors
 /// `DataLayout::ManglingModeT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
 pub enum ManglingMode {
     /// No mangling (default).
     #[default]
@@ -356,9 +354,11 @@ impl Default for DataLayout {
 impl DataLayout {
     /// Parse a layout string. Mirrors
     /// `static Expected<DataLayout> DataLayout::parse(StringRef)`.
-    /// Returns [`IrError::InvalidDataLayout`] on the first parse
-    /// failure.
-    pub fn parse<S>(s: S) -> IrResult<Self>
+    ///
+    /// # Errors
+    ///
+    /// [`DataLayoutError`] on the first parse failure.
+    pub fn parse<S>(s: S) -> Result<Self, DataLayoutError>
     where
         S: AsRef<str>,
     {
@@ -598,7 +598,7 @@ impl DataLayout {
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
     pub fn type_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
-        self.type_size_in_bits_inner(ty.module().core_ref(), ty.id())
+        self.type_size_in_bits_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
@@ -621,7 +621,7 @@ impl DataLayout {
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
     pub fn type_alloc_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
-        self.type_alloc_size_inner(ty.module().core_ref(), ty.id())
+        self.type_alloc_size_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
@@ -631,12 +631,16 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getABITypeAlign`.
     pub fn abi_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
-        self.alignment(ty.module().core_ref(), ty.id(), true)
+        self.alignment(ty.module().core_ref(), ty.slot_trusting_same_module(), true)
     }
 
     /// Mirrors `DataLayout::getPrefTypeAlign`.
     pub fn pref_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
-        self.alignment(ty.module().core_ref(), ty.id(), false)
+        self.alignment(
+            ty.module().core_ref(),
+            ty.slot_trusting_same_module(),
+            false,
+        )
     }
 
     /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If
@@ -881,7 +885,7 @@ impl DataLayout {
     /// Compute (without caching) the layout of an aggregate struct.
     /// Mirrors `StructLayout::StructLayout` in `DataLayout.cpp`.
     pub fn struct_layout<B: ModuleBrand>(&self, ty: Type<'_, B>) -> StructLayoutInfo {
-        self.struct_layout_inner(ty.module().core_ref(), ty.id())
+        self.struct_layout_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     fn struct_layout_inner(&self, module: &ModuleCore, id: TypeSlot) -> StructLayoutInfo {
@@ -1074,14 +1078,14 @@ impl fmt::Display for DataLayout {
 }
 
 impl FromStr for DataLayout {
-    type Err = IrError;
+    type Err = DataLayoutError;
 
     /// Delegates to [`DataLayout::parse`], which stays the named entry point
     /// (it is the mirror of `static Expected<DataLayout>
     /// DataLayout::parse(StringRef)`, and it takes `impl AsRef<str>`).
     /// `FromStr` exists so `"e-p:64:64".parse()` and `str::parse` in generic
-    /// code work; the error is still [`IrError::InvalidDataLayout`], naming
-    /// the specific parse failure rather than a bare "invalid keyword".
+    /// code work; the error is still [`DataLayoutError`], naming the specific
+    /// parse failure rather than a bare "invalid keyword".
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
@@ -1095,7 +1099,7 @@ impl FromStr for DataLayout {
 impl DataLayout {
     /// Top-level parser. Mirrors
     /// `DataLayout::parseLayoutString(StringRef)`.
-    fn parse_layout_string(&mut self, layout: &str) -> IrResult<()> {
+    fn parse_layout_string(&mut self, layout: &str) -> Result<(), DataLayoutError> {
         self.string_representation = layout.to_owned();
         if layout.is_empty() {
             return Ok(());
@@ -1129,7 +1133,7 @@ impl DataLayout {
         spec: &str,
         non_integral_address_spaces: &mut Vec<u32>,
         addr_space_names: &mut std::collections::HashSet<String>,
-    ) -> IrResult<()> {
+    ) -> Result<(), DataLayoutError> {
         // Two-character `ni` specifier first. Mirrors upstream's
         // `Spec.starts_with("ni")` arm.
         if let Some(rest) = spec.strip_prefix("ni") {
@@ -1263,7 +1267,7 @@ impl DataLayout {
     }
 
     /// Mirrors `DataLayout::parsePrimitiveSpec`.
-    fn parse_primitive_spec(&mut self, spec: &str) -> IrResult<()> {
+    fn parse_primitive_spec(&mut self, spec: &str) -> Result<(), DataLayoutError> {
         let kind = spec.as_bytes()[0];
         let components: Vec<&str> = spec[1..].split(':').collect();
         if components.len() < 2 || components.len() > 3 {
@@ -1289,7 +1293,7 @@ impl DataLayout {
     }
 
     /// Mirrors `DataLayout::parseAggregateSpec`.
-    fn parse_aggregate_spec(&mut self, spec: &str) -> IrResult<()> {
+    fn parse_aggregate_spec(&mut self, spec: &str) -> Result<(), DataLayoutError> {
         let components: Vec<&str> = spec[1..].split(':').collect();
         if components.len() < 2 || components.len() > 3 {
             return Err(spec_format("a:<abi>[:<pref>]"));
@@ -1324,7 +1328,7 @@ impl DataLayout {
         &mut self,
         spec: &str,
         addr_space_names: &mut std::collections::HashSet<String>,
-    ) -> IrResult<()> {
+    ) -> Result<(), DataLayoutError> {
         let components: Vec<&str> = spec[1..].split(':').collect();
         if components.len() < 3 || components.len() > 5 {
             return Err(spec_format("p[<n>]:<size>:<abi>[:<pref>[:<idx>]]"));
@@ -1409,7 +1413,7 @@ impl DataLayout {
 // --------------------------------------------------------------------------
 
 /// Mirrors `parseSize`: 24-bit non-zero unsigned integer.
-fn parse_size(s: &str, name: &str) -> IrResult<u32> {
+fn parse_size(s: &str, name: &str) -> Result<u32, DataLayoutError> {
     if s.is_empty() {
         return Err(invalid(format!("{name} component cannot be empty")));
     }
@@ -1428,7 +1432,7 @@ fn parse_size(s: &str, name: &str) -> IrResult<u32> {
 /// Mirrors `parseAlignment`. Returns the byte alignment (input is
 /// the "in-bits" alignment; must be a power-of-two times the byte
 /// width).
-fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> IrResult<Align> {
+fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> Result<Align, DataLayoutError> {
     if s.is_empty() {
         return Err(invalid(format!(
             "{name} alignment component cannot be empty"
@@ -1453,11 +1457,15 @@ fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> IrResult<Align> {
             "{name} alignment must be a power of two times the byte width"
         )));
     }
-    Align::new(v / 8)
+    // `v / 8` just passed `is_power_of_two`, hence non-zero, and `v <= u16::MAX`
+    // (checked above) keeps it far below the `1 << 63` ceiling `Align::new`
+    // otherwise rejects, so its `IrError` half is unreachable here.
+    Ok(Align::new(v / 8)
+        .unwrap_or_else(|_| unreachable!("v / 8 is a non-zero power of two within Align's range")))
 }
 
 /// Mirrors `parseAddrSpace`.
-fn parse_addr_space(s: &str) -> IrResult<u32> {
+fn parse_addr_space(s: &str) -> Result<u32, DataLayoutError> {
     if s.is_empty() {
         return Err(invalid("address space component cannot be empty".into()));
     }
@@ -1473,7 +1481,7 @@ fn parse_addr_space(s: &str) -> IrResult<u32> {
 
 /// Mirrors `parseAddrSpaceAndName`. Accepts `<digits>` or
 /// `<digits>(<name>)` or `(<name>)`.
-fn parse_addr_space_and_name(s: &str) -> IrResult<(u32, String)> {
+fn parse_addr_space_and_name(s: &str) -> Result<(u32, String), DataLayoutError> {
     if s.is_empty() {
         return Err(invalid("address space component cannot be empty".into()));
     }
@@ -1657,10 +1665,10 @@ fn const_align(n: u64) -> Align {
 // Error helpers
 // --------------------------------------------------------------------------
 
-fn invalid(reason: String) -> IrError {
-    IrError::InvalidDataLayout { reason }
+fn invalid(reason: String) -> DataLayoutError {
+    DataLayoutError { reason }
 }
 
-fn spec_format(form: &str) -> IrError {
+fn spec_format(form: &str) -> DataLayoutError {
     invalid(format!("malformed specification, expected {form}"))
 }

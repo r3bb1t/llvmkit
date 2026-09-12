@@ -33,31 +33,31 @@ pub mod parse_error;
 pub mod parser;
 pub mod slot_mapping;
 
-use std::io::{self, Read};
-
 /// Every parsing entry point, at the crate root.
 ///
-/// [`parse_dynamic`] / [`parse_branded`] and their `_file` twins are the
-/// ordinary way in: each returns the owned [`Module`](llvmkit_ir::Module)
-/// itself. The `parse_assembly*` forms take a closure instead, because they
-/// also hand back the [`ParsedModule`] slot mapping — a by-product that
-/// *borrows* the module, so the two cannot both be returned from one call.
-/// The `parse_type*` / `parse_constant_value*` family parses one fragment
-/// against an existing module, mirroring `Parser.h`'s standalone entry points.
+/// [`parse_dynamic`] is the ordinary way in: it returns the owned
+/// [`Module`](llvmkit_ir::Module) itself. The parser takes `&[u8]` and
+/// performs no I/O of its own — reading a file is the caller's job, the same
+/// split upstream draws between `lib/AsmParser` and `MemoryBuffer::
+/// getFileOrSTDIN` in Support. The `parse_assembly*` forms take a closure
+/// instead, because they also hand back the [`ParsedModule`] slot mapping — a
+/// by-product that *borrows* the module, so the two cannot both be returned
+/// from one call; [`parse_assembly_with_name`] is the primitive of that
+/// family for a caller supplying its own module name. The `parse_type*` /
+/// `parse_constant_value*` family parses one fragment against an existing
+/// module, mirroring `Parser.h`'s standalone entry points.
 ///
 /// Every form that reads a whole module has a `_with_config` twin taking a
 /// [`ParserConfig`] — upstream's `Run(UpgradeDebugInfo, DataLayoutCallback)`
 /// parameters plus the `-allow-incomplete-ir` option. The plain forms run
 /// under [`ParserConfig::DEFAULT`], which is what `parseAssembly` passes.
 pub use parser::{
-    DataLayoutCallback, ParserConfig, parse_assembly, parse_assembly_file,
-    parse_assembly_file_with_config, parse_assembly_with_config, parse_assembly_with_context,
-    parse_assembly_with_context_and_config, parse_assembly_with_index,
-    parse_assembly_with_index_and_config, parse_branded, parse_branded_with_config,
-    parse_constant_value, parse_constant_value_with_slots, parse_dynamic,
-    parse_dynamic_with_config, parse_file_branded, parse_file_dynamic, parse_into,
-    parse_into_with_config, parse_summary_index_assembly, parse_summary_index_assembly_file,
-    parse_type, parse_type_at_beginning, parse_type_at_beginning_with_slots, parse_type_with_slots,
+    DataLayoutCallback, ParserConfig, parse_assembly, parse_assembly_with_config,
+    parse_assembly_with_context, parse_assembly_with_context_and_config, parse_assembly_with_index,
+    parse_assembly_with_index_and_config, parse_assembly_with_name, parse_constant_value,
+    parse_constant_value_with_slots, parse_dynamic, parse_dynamic_with_config, parse_into,
+    parse_into_with_config, parse_summary_index_assembly, parse_type, parse_type_at_beginning,
+    parse_type_at_beginning_with_slots, parse_type_with_slots,
 };
 
 /// The types those entry points speak: what they return, what they take, and
@@ -67,18 +67,5 @@ pub use parser::{
 pub use ll_parser::ParsedModule;
 #[doc(inline)]
 pub use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
-pub use parse_error::{DiagLoc, ParseError, ParseResult, SymbolId, SymbolKind};
+pub use parse_error::{MetadataKeywordFamily, ParseError, ParseResult, SymbolId, SymbolKind};
 pub use slot_mapping::{GlobalRef, SlotMapping};
-
-/// Drain `r` into a fresh `Vec<u8>`. Convenience helper for the common case
-/// where a caller has any `Read` source and wants to feed it to
-/// [`ll_lexer::Lexer::new`].
-///
-/// The lexer itself takes a borrowed slice — no I/O traits in its signature
-/// — so this is the recommended boundary between `Read` sources and the
-/// lexer.
-pub fn read_to_owned<R: Read>(mut r: R) -> io::Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    r.read_to_end(&mut buf)?;
-    Ok(buf)
-}

@@ -149,6 +149,7 @@ dependencies = [
  "llvmkit-macros",
  "llvmkit-support",
  "thiserror",
+ "trybuild",
 ]
 
 [[package]]

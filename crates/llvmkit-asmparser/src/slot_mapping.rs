@@ -51,7 +51,6 @@ use crate::numbered_values::NumberedValues;
 /// Erased handle for a slot-numbered global. Mirrors the `GlobalValue *`
 /// payload of upstream `SlotMapping::GlobalValues`.
 #[derive(Branded)]
-#[non_exhaustive]
 pub enum GlobalRef<'ctx, B: ModuleBrand> {
     /// Function definition or declaration. Carries the [`Dyn`] return marker
     /// because the parser cannot pin the static return shape without

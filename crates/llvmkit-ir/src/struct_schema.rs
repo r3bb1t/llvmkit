@@ -20,6 +20,7 @@ use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::{Type, TypeData};
 use crate::value::{
     FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlot,
+    ValueSlotAccess,
 };
 
 #[doc(hidden)]
@@ -59,9 +60,6 @@ pub trait IrField: Sized + 'static {
     fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
     where
         B: ModuleBrand + 'ctx;
-
-    /// Diagnostic kind label expected by this schema.
-    fn expected_kind_label() -> TypeKindLabel;
 
     /// Convert a raw field value after [`matches_ir_type`](Self::matches_ir_type)
     /// has accepted its type.
@@ -118,10 +116,16 @@ pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand>: Sized + Copy
     /// Validate a raw struct-typed value against schema `S` before wrapping it.
     #[inline]
     fn try_from_struct_value(raw: StructValue<'ctx, B>) -> IrResult<Self> {
-        if !<S as IrField>::matches_ir_type(raw.ty().as_type()) {
-            return Err(IrError::TypeMismatch {
-                expected: TypeKindLabel::Struct,
-                got: raw.ty().as_type().kind_label(),
+        let got = raw.ty().as_type();
+        if !<S as IrField>::matches_ir_type(got) {
+            // `matches_ir_type` compares the struct's *name*, not just its
+            // kind, so the common failure is one identified struct given
+            // where another was required — and `expected:
+            // TypeKindLabel::Struct` rendered that as "expected struct, got
+            // struct".
+            return Err(IrError::TypeIdentityMismatch {
+                expected: <S as IrField>::ir_type(got.module())?.rendered(),
+                got: got.rendered(),
             });
         }
         let validated = ValidatedStructValue::new();
@@ -214,11 +218,6 @@ where
         S::matches_fields(&fields)
     }
 
-    #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Struct
-    }
-
     fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
@@ -247,11 +246,6 @@ macro_rules! impl_int_field {
                 B: ModuleBrand + 'ctx,
             {
                 matches!(ty.kind(), crate::TypeKind::Integer { bits } if bits == $bits)
-            }
-
-            #[inline]
-            fn expected_kind_label() -> TypeKindLabel {
-                TypeKindLabel::Integer
             }
 
             #[inline]
@@ -307,11 +301,6 @@ impl IrField for IntDyn {
     }
 
     #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Integer
-    }
-
-    #[inline]
     fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
@@ -348,11 +337,6 @@ impl<const N: u32> IrField for Width<N> {
         B: ModuleBrand + 'ctx,
     {
         matches!(ty.kind(), crate::TypeKind::Integer { bits } if bits == N)
-    }
-
-    #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Integer
     }
 
     #[inline]
@@ -394,11 +378,6 @@ macro_rules! impl_float_field {
                 B: ModuleBrand + 'ctx,
             {
                 matches!(ty.kind(), $kind)
-            }
-
-            #[inline]
-            fn expected_kind_label() -> TypeKindLabel {
-                TypeKindLabel::Float
             }
 
             #[inline]
@@ -453,11 +432,6 @@ impl IrField for Ptr {
     }
 
     #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Pointer
-    }
-
-    #[inline]
     fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
@@ -484,8 +458,12 @@ macro_rules! impl_struct_into_field {
             S: StructSchema,
             B: ModuleBrand + 'ctx,
         {
-            fn into_ir_field(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().as_erased())
+            fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                let value = S::try_value_from_ir(self)?.as_struct_value();
+                // Boundary: refuse a value another module minted. The schema
+                // narrow above reads it only through its own module.
+                value.slot_in(module.id())?;
+                Ok(value.as_erased())
             }
         }
     };
@@ -503,8 +481,12 @@ macro_rules! impl_struct_into_call_arg {
             S: StructSchema,
             B: ModuleBrand + 'ctx,
         {
-            fn into_call_arg(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().as_erased())
+            fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                let value = S::try_value_from_ir(self)?.as_struct_value();
+                // Boundary: refuse a value another module minted. The schema
+                // narrow above reads it only through its own module.
+                value.slot_in(module.id())?;
+                Ok(value.as_erased())
             }
         }
     };
@@ -701,11 +683,6 @@ where
         <S as IrField>::matches_ir_type(ty)
     }
 
-    #[inline]
-    fn expected_kind_label() -> TypeKindLabel {
-        TypeKindLabel::Struct
-    }
-
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
@@ -713,9 +690,11 @@ where
         if <S as IrField>::matches_ir_type(arg.ty()) {
             Ok(())
         } else {
-            Err(IrError::TypeMismatch {
-                expected: TypeKindLabel::Struct,
-                got: arg.ty().kind_label(),
+            // Same reasoning as `try_from_struct_value` above: the guard is
+            // finer than the kind, so both sides must carry their spelling.
+            Err(IrError::TypeIdentityMismatch {
+                expected: <S as IrField>::ir_type(arg.ty().module())?.rendered(),
+                got: arg.ty().rendered(),
             })
         }
     }

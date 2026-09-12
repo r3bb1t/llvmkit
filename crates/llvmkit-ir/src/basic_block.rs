@@ -30,7 +30,9 @@ use super::ir_builder::{IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value::{
+    HasDebugLoc, HasName, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess, sealed,
+};
 use super::value_id::BlockId;
 use super::value_id::ViewIn;
 use super::{DebugLoc, IrError, IrResult, Type};
@@ -330,8 +332,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
     #[inline]
     fn into_basic_block_label(
         self,
-        _module: ModuleRef<'ctx, B>,
+        module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        // Boundary: refuse a block another module minted.
+        self.to_erased().slot_in(module.id())?;
         Ok(self)
     }
 }
@@ -356,8 +360,10 @@ where
     #[inline]
     fn into_basic_block_label(
         self,
-        _module: ModuleRef<'ctx, B>,
+        module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        // Boundary: refuse a block another module minted.
+        self.to_erased().slot_in(module.id())?;
         Ok(BasicBlockLabel {
             id: self.id,
             module: self.module,
@@ -388,8 +394,10 @@ where
     #[inline]
     fn into_basic_block_label(
         self,
-        _module: ModuleRef<'ctx, B>,
+        module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        // Boundary: refuse a block another module minted.
+        self.to_erased().slot_in(module.id())?;
         // `IntoBasicBlockLabel` yields the parameter-erased label (its return
         // type pins `BlockParamsDyn`), so construct it directly rather than
         // through `label()`, which threads this block's `Params`.
@@ -954,9 +962,9 @@ pub(crate) fn block_parameter_phis<'ctx, B: ModuleBrand>(
 /// Branching
 /// into a parameterised block without arguments adds no incomings, so the
 /// target's parameter-phis stay one entry short — an incomplete phi that used
-/// to surface only at [`Module::verify`](crate::Module::verify)
-/// (`PhiEmptyInReachableBlock`, or the shared `check_phi` count guard). The
-/// caller must use the argument-carrying builder for that edge instead.
+/// to surface only at [`Module::verify`](crate::Module::verify), through the
+/// shared `check_phi` count guard. The caller must use the argument-carrying
+/// builder for that edge instead.
 ///
 /// Reports the same [`IrError::PhiArgArityMismatch`] the `_with_args` builders
 /// already produce for a wrong argument count, so one wrong count reads the
@@ -1047,6 +1055,13 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// parent function. The original block keeps the prefix; the caller
     /// is responsible for adding a terminator that flows to the new
     /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `before` belongs to another
+    /// module, and with [`IrError::InvalidOperation`] if this block has no
+    /// parent function or `before` is not one of its instructions. Upstream
+    /// has no error path for any of them: it takes the split point as an
+    /// iterator into the block's own instruction list. Every refusal happens
+    /// before anything is read, appended or moved.
     pub fn split_at<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,
@@ -1056,6 +1071,9 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     where
         Name: Into<String>,
     {
+        // Boundary: the caller's split point, admitted before the block is
+        // read or a new block appended.
+        let split_id = before.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let parent_fn_id = match self.parent_id() {
             Some(id) => id,
@@ -1067,18 +1085,20 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         };
         let parent_fn =
             FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
+        // Every refusal precedes the first mutation: find the split point
+        // before the new block is appended, so a split point outside this
+        // block leaves the function untouched.
+        let pos = self
+            .data()
+            .instructions
+            .borrow()
+            .iter()
+            .position(|id| *id == split_id)
+            .ok_or(IrError::InvalidOperation {
+                message: "split instruction is not in this block",
+            })?;
         let new_block = parent_fn.append_basic_block(module_token, name);
-        let split_id = before.slot();
-        let suffix: Vec<ValueSlot> = {
-            let mut src = self.data().instructions.borrow_mut();
-            let pos =
-                src.iter()
-                    .position(|id| *id == split_id)
-                    .ok_or(IrError::InvalidOperation {
-                        message: "split instruction is not in this block",
-                    })?;
-            src.split_off(pos)
-        };
+        let suffix: Vec<ValueSlot> = self.data().instructions.borrow_mut().split_off(pos);
         let new_id = new_block.slot();
         {
             let mut dst = new_block.data().instructions.borrow_mut();

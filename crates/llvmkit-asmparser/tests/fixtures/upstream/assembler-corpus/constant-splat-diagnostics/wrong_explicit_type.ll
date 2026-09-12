@@ -2,3 +2,4 @@
 define <4 x i32> @wrong_explicit_type() {
   ret <4 x i32> splat (i8 7)
 }
+

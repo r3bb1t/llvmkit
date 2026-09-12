@@ -4,9 +4,9 @@ use llvmkit_ir::{
     ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn, DynBrand,
     FunctionAnalysisManager, InstructionView, IntValue, IrBuilder, IrError, KnownBits,
     KnownBitsAnalysis, Linkage, LshrFlags, MetadataAttachmentKind, ModuleBrand, MulFlags, NoFolder,
-    PointerValue, PreservedAnalyses, ShuffleMaskElem, Value, ValueTrackingQuery, Width,
-    compute_known_bits, is_known_non_zero, is_known_not_poison, is_known_one, is_known_zero,
-    module_new,
+    PointerValue, PreservedAnalyses, ShuffleMaskElem, TypeKindLabel, Value, ValueTrackingQuery,
+    Width, compute_known_bits, is_known_non_zero, is_known_not_poison, is_known_one, is_known_zero,
+    known_bits_from_operator, module_new,
 };
 
 fn zeros(width: usize) -> String {
@@ -1006,5 +1006,64 @@ fn a_scalable_shuffle_propagates_its_sources_known_bits() -> Result<(), IrError>
     // three ones survive and bit 3 does not. Before the scalable arm was
     // ported this was `????????` — the caller never recursed.
     assert_eq!(known(b.view(shuffle), &query)?.to_string(), "0000?111");
+    Ok(())
+}
+
+/// llvmkit-specific (**no upstream test counterpart**, by construction):
+/// upstream guards this with `assert((Ty->isIntOrIntVectorTy(BitWidth) ||
+/// Ty->isPtrOrPtrVectorTy()) && "Not integer or pointer type!")` at the head of
+/// `computeKnownBits` (`ValueTracking.cpp`), and an assert carries no fixture —
+/// it compiles out of a release build, so upstream has nothing to port here.
+/// llvmkit takes no runtime panics in production paths, so the assert is
+/// spelled as an `IrError`, and this pins that it is raised at all.
+///
+/// Before the guard existed this was a wrong *answer*, not a missing check:
+/// `value_bit_width` returns `None` for a float, the call sites collapsed it
+/// with `.unwrap_or(0)`, and `ApInt::is_all_ones` opens with `bit_width == 0 ||`
+/// — which made `KnownBits::is_zero` vacuously true. `is_known_zero` reported
+/// `Ok(true)` for `float 3.5`.
+#[test]
+fn a_float_operand_is_refused_rather_than_reported_known_zero() -> Result<(), IrError> {
+    let m = module_new!("vt-float-guard")?;
+    let f32_ty = m.f32_type();
+    let three_five = f32_ty.const_float(3.5_f32);
+
+    let dl = m.data_layout();
+    let query = ValueTrackingQuery::new(&dl);
+
+    assert!(
+        matches!(
+            is_known_zero(three_five.as_erased(), &query),
+            Err(IrError::NotIntOrPointerType {
+                kind: TypeKindLabel::Float
+            })
+        ),
+        "a float must be refused, not answered; got {:?}",
+        is_known_zero(three_five.as_erased(), &query)
+    );
+
+    // The same guard must cover the whole family, not just the one entry point
+    // the defect was found through.
+    assert!(matches!(
+        compute_known_bits(three_five.as_erased(), &query),
+        Err(IrError::NotIntOrPointerType { .. })
+    ));
+    assert!(matches!(
+        is_known_one(three_five.as_erased(), 0, &query),
+        Err(IrError::NotIntOrPointerType { .. })
+    ));
+    assert!(matches!(
+        is_known_non_zero(three_five.as_erased(), &query),
+        Err(IrError::NotIntOrPointerType { .. })
+    ));
+    assert!(matches!(
+        known_bits_from_operator(three_five.as_erased(), &query),
+        Err(IrError::NotIntOrPointerType { .. })
+    ));
+
+    // An integer still answers, so the guard is not simply refusing everything.
+    let i8_ty = m.i8_type();
+    let zero = i8_ty.const_int(0_i8);
+    assert!(is_known_zero(zero.as_erased(), &query)?);
     Ok(())
 }

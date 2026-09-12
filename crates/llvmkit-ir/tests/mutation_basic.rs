@@ -490,3 +490,55 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
     let _ = b.ret_void();
     Ok(())
 }
+
+/// `BasicBlock::split_at` refuses a split point that lives in another block of
+/// the same function, and refuses it before anything is appended: the module
+/// prints exactly as it did before the call.
+///
+/// No upstream counterpart: `BasicBlock::splitBasicBlock`
+/// (`lib/IR/BasicBlock.cpp`) takes the split point as an iterator into the
+/// block's own instruction list, so a split point from another block has no
+/// error path there — it asserts only that the block is terminated and that the
+/// iterator is not `end()`. llvmkit takes an `InstructionView`, which can name
+/// any instruction, so it returns `IrError::InvalidOperation`, and a refused
+/// call must not mutate. `split_at` used to append the new block
+/// before looking for the split point, so this call returned the error and
+/// left an empty `entry.split` block in the function.
+#[test]
+fn split_at_refuses_an_instruction_of_another_block_without_mutating() -> Result<(), IrError> {
+    let m = module_new!("split-at-foreign-block")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let next = m.view(f).append_basic_block(&m, "next");
+
+    // entry: br next    next: ret 0
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.br(next.id())?;
+    let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
+    b2.ret(i32_ty.const_int(0_u32))?;
+    let printed_before = format!("{m}");
+
+    let mut blocks = m.view(f).basic_blocks();
+    let entry = blocks.next().expect("entry was appended first");
+    let next = blocks.next().expect("next was appended second");
+    let foreign = next.terminator().expect("next is terminated by the ret");
+
+    let result = entry.split_at(&m, &foreign, "entry.split");
+    assert!(
+        matches!(
+            result,
+            Err(IrError::InvalidOperation {
+                message: "split instruction is not in this block"
+            })
+        ),
+        "split_at must refuse a split point outside the block"
+    );
+    assert_eq!(
+        format!("{m}"),
+        printed_before,
+        "a refused split must not mutate the module"
+    );
+    Ok(())
+}

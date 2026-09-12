@@ -13,39 +13,93 @@
 //! they add real `parse*` arms; the variants ship now so the parser does
 //! not have to relitigate the public error shape later.
 
+use core::fmt;
 use std::borrow::Cow;
 
 use llvmkit_support::Span;
 
-use crate::file_loc::FileLocRange;
+use llvmkit_ir::metadata::{SpecializedMetadataField, SpecializedMetadataKind};
+
 use crate::ll_lexer::LexError;
 use crate::numbered_values::AddError as SlotAddError;
 
-/// Where in the source a diagnostic points. Carrying both the byte
-/// [`Span`] (set by every parser arm) and the optional [`FileLocRange`]
-/// projection (populated when the parser is configured to track line/col)
-/// keeps low-level tooling and human-facing renderers happy without a
-/// second walk over the source buffer.
+/// Which keyword family a rejected specialized-metadata value belonged to.
+///
+/// `LLParser::parseMDField` has one overload per family, each reporting
+/// `invalid <family> '<spelling>'` with its own wording. The set is closed —
+/// it is exactly the families the parser has a lookup table for — so it is an
+/// enum rather than the `&'static str` it used to be, and `Display` carries
+/// upstream's wording verbatim so the rendered text does not move.
+///
+/// Derive the set with:
+///
+/// ```bash
+/// { grep -rho 'what: "[^"]*"' ll_parser.rs | sed 's/what: //'
+///   grep -rho 'keyword("[^"]*"' ll_parser.rs | sed 's/keyword(//'; } | sort -u
+/// ```
+///
+/// The two paths are disjoint: 5 direct construction sites and 11 through the
+/// `keyword(what, lookup)` closure.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct DiagLoc {
-    pub span: Span,
-    pub file: Option<FileLocRange>,
+pub enum MetadataKeywordFamily {
+    /// `DW_ATE_*` on a `DIBasicType`.
+    DwarfAttributeEncoding,
+    /// `DW_CC_*`.
+    DwarfCallingConvention,
+    /// `DW_APPLE_ENUM_KIND_*`.
+    DwarfEnumKindCode,
+    /// `DW_LANG_*`.
+    DwarfLanguage,
+    /// `DW_MACINFO_*`.
+    DwarfMacinfoType,
+    /// `DW_OP_*` inside a `DIExpression`.
+    DwarfOp,
+    /// `DW_LNAME_*`.
+    DwarfSourceLanguageName,
+    /// `DW_TAG_*`.
+    DwarfTag,
+    /// `DW_ATE_*` where upstream words it "type attribute encoding".
+    DwarfTypeAttributeEncoding,
+    /// `DW_VIRTUALITY_*`.
+    DwarfVirtualityCode,
+    /// `CSK_*` on a `DIFile`.
+    ChecksumKind,
+    /// `DIFlag*`.
+    DebugInfoFlag,
+    /// `DICompileUnit`'s `emissionKind:`.
+    EmissionKind,
+    /// `DIBasicType`'s fixed-point `kind:`.
+    FixedPointKind,
+    /// `DICompileUnit`'s `nameTableKind:`.
+    NameTableKind,
+    /// `DISPFlag*`.
+    SubprogramDebugInfoFlag,
 }
 
-impl DiagLoc {
-    /// Construct a diagnostic location pinned to a byte span only.
-    #[inline]
-    pub const fn span(span: Span) -> Self {
-        Self { span, file: None }
-    }
-
-    /// Attach a [`FileLocRange`] projection to an existing diagnostic.
-    #[inline]
-    pub const fn with_file(self, file: FileLocRange) -> Self {
-        Self {
-            span: self.span,
-            file: Some(file),
-        }
+impl fmt::Display for MetadataKeywordFamily {
+    /// Upstream's own wording for each family, so
+    /// `ParseError::InvalidMetadataFieldValue` renders byte-for-byte as
+    /// `LLParser::parseMDField` does.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::DwarfAttributeEncoding => "DWARF attribute encoding",
+            Self::DwarfCallingConvention => "DWARF calling convention",
+            Self::DwarfEnumKindCode => "DWARF enum kind code",
+            Self::DwarfLanguage => "DWARF language",
+            Self::DwarfMacinfoType => "DWARF macinfo type",
+            Self::DwarfOp => "DWARF op",
+            Self::DwarfSourceLanguageName => "DWARF source language name",
+            Self::DwarfTag => "DWARF tag",
+            Self::DwarfTypeAttributeEncoding => "DWARF type attribute encoding",
+            Self::DwarfVirtualityCode => "DWARF virtuality code",
+            Self::ChecksumKind => "checksum kind",
+            Self::DebugInfoFlag => "debug info flag",
+            Self::EmissionKind => "emission kind",
+            Self::FixedPointKind => "fixed-point kind",
+            Self::NameTableKind => "nameTable kind",
+            Self::SubprogramDebugInfoFlag => "subprogram debug info flag",
+        };
+        f.write_str(s)
     }
 }
 
@@ -54,7 +108,6 @@ impl DiagLoc {
 /// `ForwardRefVals` / `ForwardRefBlocks` / `ForwardRefMDNodes` /
 /// `NumberedTypes` tables in `LLParser`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
 pub enum SymbolKind {
     /// `@name` — function or global variable, as a *definition*.
     Global,
@@ -148,13 +201,12 @@ impl core::fmt::Display for SymbolId {
 /// Wording matches `LLParser.cpp` for the cases shipped today; structured
 /// fields let callers match without inspecting the rendered string.
 ///
-/// No message embeds its [`DiagLoc`]: a location is data for a renderer to
+/// No message embeds its location: a location is data for a renderer to
 /// place, not prose, and every variant that has one hands it over through
 /// [`ParseError::loc`]. Upstream is the same shape — `LLParser::error`
 /// carries the `LocTy` beside the `Twine`, and `SMDiagnostic` decides how
 /// to print it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum ParseError {
     /// The lexer rejected the next token.
     #[error(transparent)]
@@ -168,7 +220,7 @@ pub enum ParseError {
     #[error("expected {expected}")]
     Expected {
         expected: Cow<'static, str>,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// A diagnostic whose wording is *not* of the `expected <production>`
@@ -191,7 +243,7 @@ pub enum ParseError {
     #[error("{message}")]
     Message {
         message: Cow<'static, str>,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// `redefinition of <symbol>` — mirrors `LLParser::checkValueID` and
@@ -200,7 +252,7 @@ pub enum ParseError {
     Redefinition {
         kind: SymbolKind,
         id: SymbolId,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// `use of undefined ...` — mirrors the `"use of undefined "`
@@ -211,7 +263,7 @@ pub enum ParseError {
     UndefinedSymbol {
         kind: SymbolKind,
         id: SymbolId,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// `'%x' defined with type 'T' but expected 'U'` — mirrors the
@@ -224,21 +276,21 @@ pub enum ParseError {
         name: String,
         defined: String,
         expected: String,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// `'%x' is not a basic block` — the label arm of
     /// `LLParser::checkValidVariableType`: a `label` operand named something
     /// that is bound to an ordinary value.
     #[error("'{name}' is not a basic block")]
-    NotABasicBlock { name: String, loc: DiagLoc },
+    NotABasicBlock { name: String, loc: Span },
 
     /// `instruction forward referenced with type '<T>'` — mirrors
     /// `LLParser::PerFunctionState::setInstName`, where the definition of a
     /// name disagrees with the type its earlier forward reference demanded.
     /// The type named is the *forward reference's*, as upstream spells it.
     #[error("instruction forward referenced with type '{ty}'")]
-    InstructionForwardReferencedWithType { ty: String, loc: DiagLoc },
+    InstructionForwardReferencedWithType { ty: String, loc: Span },
 
     /// `slot mapping rejected slot id` — wraps a [`SlotAddError`] from
     /// [`crate::numbered_values::NumberedValues::add`]. Mirrors the
@@ -248,7 +300,7 @@ pub enum ParseError {
     InvalidSlotId {
         #[source]
         source: SlotAddError,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// `iN` for `N` outside `[MIN_INT_BITS, MAX_INT_BITS]`.
@@ -257,7 +309,7 @@ pub enum ParseError {
     /// reproduces; `width` and `max` remain as structured fields for callers
     /// that want the numbers, since the rendered text names neither.
     #[error("bitwidth for integer type out of range")]
-    IntegerWidthOutOfRange { width: u64, max: u32, loc: DiagLoc },
+    IntegerWidthOutOfRange { width: u64, max: u32, loc: Span },
 
     /// A specialized `DI*` node named a field its class does not declare.
     /// Mirrors the fall-through arm of `LLParser`'s `PARSE_MD_FIELDS` macro
@@ -265,20 +317,27 @@ pub enum ParseError {
     /// `PARSE_MD_FIELD` in the class's `VISIT_MD_FIELDS` block has failed to
     /// match. The accepted set is
     /// [`llvmkit_ir::metadata::SpecializedMetadataKind::declared_fields`].
+    ///
+    /// `field` stays a `String`, deliberately: it is reached only when
+    /// `accepts_field` returned false, so it is text the user typed and is by
+    /// definition outside the closed set. Its sibling
+    /// `DuplicateMetadataField` is the opposite case and carries the typed
+    /// value -- upstream renders the macro literal `#NAME` there, never
+    /// `Lex.getStrVal()`.
     #[error("invalid field '{field}'")]
     InvalidMetadataField {
-        kind: &'static str,
+        kind: SpecializedMetadataKind,
         field: String,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// A specialized `DI*` node repeated a field. Mirrors
     /// `LLParser::parseMDField`'s `Result.Seen` guard (`LLParser.cpp`).
-    #[error("field '{field}' cannot be specified more than once")]
+    #[error("field '{}' cannot be specified more than once", .field.name())]
     DuplicateMetadataField {
-        kind: &'static str,
-        field: String,
-        loc: DiagLoc,
+        kind: SpecializedMetadataKind,
+        field: SpecializedMetadataField,
+        loc: Span,
     },
 
     /// A specialized `DI*` node omitted a field its class declares `REQUIRED`.
@@ -286,100 +345,76 @@ pub enum ParseError {
     /// macro (`LLParser.cpp`), which — like this — reports against the closing
     /// `)` rather than the node's opening token. The required set is
     /// [`llvmkit_ir::metadata::SpecializedMetadataKind::required_fields`].
-    #[error("missing required field '{field}'")]
+    #[error("missing required field '{}'", .field.name())]
     MissingRequiredMetadataField {
-        kind: &'static str,
-        field: &'static str,
-        loc: DiagLoc,
+        kind: SpecializedMetadataKind,
+        field: SpecializedMetadataField,
+        loc: Span,
     },
 
     /// A `DW_*` / `DIFlag*` / kind keyword that its family's table does not
-    /// contain. `what` is upstream's own wording for the family, so the
-    /// rendered message matches `LLParser::parseMDField`'s byte for byte —
-    /// `invalid DWARF tag 'x'`, `invalid debug info flag 'x'`,
-    /// `invalid checksum kind 'x'`, and the eleven siblings.
+    /// contain — `invalid DWARF tag 'x'`, `invalid debug info flag 'x'`,
+    /// `invalid checksum kind 'x'`, and the thirteen siblings.
+    ///
+    /// [`MetadataKeywordFamily`]'s `Display` is upstream's own wording, so the
+    /// rendered message still matches `LLParser::parseMDField`'s byte for byte.
+    /// `value` stays a `String`: it is the spelling the *user* typed, and this
+    /// diagnostic exists precisely to say it was not recognised.
     #[error("invalid {what} '{value}'")]
     InvalidMetadataFieldValue {
-        what: &'static str,
+        what: MetadataKeywordFamily,
         value: String,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// An unsigned metadata field over its declared maximum. Mirrors
     /// `LLParser::parseMDField(MDUnsignedField&)`; the limit is the one the
     /// field's type carries (`LineField` is `UINT32_MAX`, `ColumnField`
     /// `UINT16_MAX`, and a bare `MDUnsignedField` may narrow further).
-    #[error("value for '{field}' too large, limit is {limit}")]
+    #[error("value for '{}' too large, limit is {limit}", .field.name())]
     MetadataFieldValueTooLarge {
-        field: String,
+        field: SpecializedMetadataField,
         limit: u64,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// A signed metadata field under its declared minimum. Mirrors
     /// `LLParser::parseMDField(MDSignedField&)`.
-    #[error("value for '{field}' too small, limit is {limit}")]
+    #[error("value for '{}' too small, limit is {limit}", .field.name())]
     MetadataFieldValueTooSmall {
-        field: String,
+        field: SpecializedMetadataField,
         limit: i64,
-        loc: DiagLoc,
+        loc: Span,
     },
 
     /// `null` given for an `MDField` upstream declares `(/* AllowNull */
     /// false)`.
-    #[error("'{field}' cannot be null")]
-    MetadataFieldCannotBeNull { field: String, loc: DiagLoc },
+    #[error("'{}' cannot be null", .field.name())]
+    MetadataFieldCannotBeNull {
+        field: SpecializedMetadataField,
+        loc: Span,
+    },
 
     /// `""` given for an `MDStringField` upstream declares
     /// `EmptyIs::Error`.
-    #[error("'{field}' cannot be empty")]
-    MetadataFieldCannotBeEmpty { field: String, loc: DiagLoc },
-
-    /// I/O failure pulling source bytes. The lexer itself does not perform
-    /// I/O; this is for the file-reading entry points and callers using
-    /// [`crate::read_to_owned`]-style helpers. `message` is the `Display`
-    /// form of the underlying [`std::io::Error`]; we don't keep the
-    /// [`std::io::Error`] itself because it lacks `Clone`/`Eq`/`Hash`,
-    /// which the rest of [`ParseError`] derives. `kind` is kept beside it
-    /// because [`std::io::ErrorKind`] *is* `Copy + Eq + Hash`, so a caller
-    /// can still tell `NotFound` from `PermissionDenied` without parsing
-    /// the message back.
-    #[error("I/O error reading source: {message}")]
-    Io {
-        kind: std::io::ErrorKind,
-        message: String,
+    #[error("'{}' cannot be empty", .field.name())]
+    MetadataFieldCannotBeEmpty {
+        field: SpecializedMetadataField,
+        loc: Span,
     },
-
-    /// A live module already holds the brand requested by
-    /// [`crate::parse_branded`] / [`crate::parse_file_branded`]. Mirrors
-    /// [`llvmkit_ir::IrError::BrandInUse`]; the registry-exempt
-    /// [`crate::parse_dynamic`] entry points can never produce it.
-    #[error("module brand `{brand}` is already held by a live module")]
-    BrandInUse { brand: &'static str },
-
-    /// The brand requested by [`crate::parse_branded`] /
-    /// [`crate::parse_file_branded`] was permanently retired by a
-    /// [`llvmkit_ir::Module::branded_once`] module. Mirrors
-    /// [`llvmkit_ir::IrError::BrandRetired`].
-    #[error("module brand `{brand}` was permanently retired")]
-    BrandRetired { brand: &'static str },
-}
-
-impl From<std::io::Error> for ParseError {
-    #[inline]
-    fn from(e: std::io::Error) -> Self {
-        ParseError::Io {
-            kind: e.kind(),
-            message: e.to_string(),
-        }
-    }
 }
 
 impl ParseError {
-    /// The diagnostic location to highlight, when the variant carries one.
-    pub fn loc(&self) -> Option<DiagLoc> {
+    /// The diagnostic location to highlight.
+    ///
+    /// Every `ParseError` is a diagnostic about a token, so this is total —
+    /// the `Option` it used to return existed only for the variants (`Io`,
+    /// `BrandInUse`, `BrandRetired`) that were not diagnostics at all, and
+    /// all three are gone. Doctrine D1: a two-state value does not carry its
+    /// state in a predicate.
+    pub fn loc(&self) -> Span {
         match self {
-            ParseError::Lex(e) => Some(DiagLoc::span(e.span())),
+            ParseError::Lex(e) => e.span(),
             ParseError::Expected { loc, .. }
             | ParseError::Message { loc, .. }
             | ParseError::Redefinition { loc, .. }
@@ -396,10 +431,7 @@ impl ParseError {
             | ParseError::MetadataFieldValueTooLarge { loc, .. }
             | ParseError::MetadataFieldValueTooSmall { loc, .. }
             | ParseError::MetadataFieldCannotBeNull { loc, .. }
-            | ParseError::MetadataFieldCannotBeEmpty { loc, .. } => Some(*loc),
-            ParseError::Io { .. }
-            | ParseError::BrandInUse { .. }
-            | ParseError::BrandRetired { .. } => None,
+            | ParseError::MetadataFieldCannotBeEmpty { loc, .. } => *loc,
         }
     }
 }
@@ -420,11 +452,10 @@ mod tests {
         let span = Span::new(5, 9);
         let err = ParseError::Expected {
             expected: "type".into(),
-            loc: DiagLoc::span(span),
+            loc: span,
         };
-        let loc = err.loc().unwrap();
-        assert_eq!(loc.span, span);
-        assert!(loc.file.is_none());
+        let loc = err.loc();
+        assert_eq!(loc, span);
     }
 
     /// Ports the `redefinition of ...` diagnostic family from
@@ -441,7 +472,7 @@ mod tests {
         let err = ParseError::Redefinition {
             kind: SymbolKind::Global,
             id: SymbolId::Named("foo".into()),
-            loc: DiagLoc::span(Span::new(0, 4)),
+            loc: Span::new(0, 4),
         };
         if let ParseError::Redefinition { kind, id, .. } = &err {
             assert_eq!(*kind, SymbolKind::Global);
@@ -457,55 +488,36 @@ mod tests {
     /// `LLParser.cpp` — and its `"use of undefined "` sibling in
     /// `LLParser::validateEndOfModule`. The sigil comes from the namespace
     /// ([`SymbolKind::sigil`]), so a numbered metadata slot renders `!0` and
-    /// not `%0`; the [`DiagLoc`] stays out of the prose, since upstream also
+    /// not `%0`; the location stays out of the prose, since upstream also
     /// carries its `LocTy` beside the message rather than inside it.
     #[test]
     fn diagnostics_match_upstream_wording() {
         let redefinition = ParseError::Redefinition {
             kind: SymbolKind::Global,
             id: SymbolId::Named("foo".into()),
-            loc: DiagLoc::span(Span::new(0, 4)),
+            loc: Span::new(0, 4),
         };
         assert_eq!(redefinition.to_string(), "redefinition of global '@foo'");
 
         let undefined = ParseError::UndefinedSymbol {
             kind: SymbolKind::Metadata,
             id: SymbolId::Numbered(0),
-            loc: DiagLoc::span(Span::new(0, 2)),
+            loc: Span::new(0, 2),
         };
         assert_eq!(undefined.to_string(), "use of undefined metadata '!0'");
 
         let undefined_local = ParseError::UndefinedSymbol {
             kind: SymbolKind::Local,
             id: SymbolId::Named("x".into()),
-            loc: DiagLoc::span(Span::new(0, 2)),
+            loc: Span::new(0, 2),
         };
         assert_eq!(undefined_local.to_string(), "use of undefined value '%x'");
 
         let expected = ParseError::Expected {
             expected: "type".into(),
-            loc: DiagLoc::span(Span::new(5, 9)),
+            loc: Span::new(5, 9),
         };
         assert_eq!(expected.to_string(), "expected type");
-    }
-
-    /// llvmkit-specific (no upstream counterpart: `llvm::SMDiagnostic` keeps
-    /// no `std::error_code`): an I/O failure keeps the
-    /// [`std::io::ErrorKind`] beside its message, so `NotFound` stays
-    /// matchable without parsing the rendered string back.
-    #[test]
-    fn io_errors_keep_their_kind() {
-        let err: ParseError =
-            std::io::Error::new(std::io::ErrorKind::NotFound, "no such file").into();
-        match &err {
-            ParseError::Io { kind, message } => {
-                assert_eq!(*kind, std::io::ErrorKind::NotFound);
-                assert_eq!(message, "no such file");
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-        assert_eq!(err.to_string(), "I/O error reading source: no such file");
-        assert_eq!(err.loc(), None);
     }
 
     /// llvmkit-specific (**no upstream counterpart**): lexer errors flow
@@ -518,7 +530,7 @@ mod tests {
             span: Span::new(0, 4),
         };
         let err: ParseError = lex.clone().into();
-        assert_eq!(err.loc().map(|l| l.span), Some(lex.span()));
+        assert_eq!(err.loc(), lex.span());
         // The variant survives the conversion rather than being flattened to
         // a generic string, so a caller can still match on it.
         assert!(matches!(
@@ -539,7 +551,7 @@ mod tests {
         let err = ParseError::IntegerWidthOutOfRange {
             width: 1 << 30,
             max: llvmkit_ir::MAX_INT_BITS,
-            loc: DiagLoc::span(Span::new(2, 10)),
+            loc: Span::new(2, 10),
         };
         assert_eq!(err.to_string(), "bitwidth for integer type out of range");
         assert!(matches!(

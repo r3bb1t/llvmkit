@@ -79,19 +79,29 @@ fn wrong_element_count_is_rejected() {
 }
 
 /// An element-type mismatch (`[4 x i64]` into `<i32, ArrLen<4>>`) is rejected
-/// with a `TypeMismatch`.
+/// with a `TypeIdentityMismatch` naming both element types.
+///
+/// Both elements are integers, so this assertion used to read
+/// `TypeMismatch { .. }` against "type mismatch: expected integer, got
+/// integer" — true, contentless, and equally satisfied had the narrowing
+/// compared the wrong pair.
 #[test]
 fn wrong_element_type_is_rejected() {
     let m = module_new!("at").expect("fresh module");
+    let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let v = m.array_type(i64_ty, 4).as_type().poison().as_erased();
 
     let err = ArrayValue::<i32, ArrLen<4>, _>::try_from(v)
         .expect_err("[4 x i64] must not narrow to <i32, ArrLen<4>>");
-    assert!(
-        matches!(err, IrError::TypeMismatch { .. }),
-        "expected TypeMismatch, got {err:?}",
+    assert_eq!(
+        err,
+        IrError::TypeIdentityMismatch {
+            expected: i32_ty.as_type().rendered(),
+            got: i64_ty.as_type().rendered(),
+        },
     );
+    assert_eq!(err.to_string(), "type mismatch: expected 'i32', got 'i64'");
 }
 
 /// The erased `ArrayValue<'ctx>` narrowing still accepts any array value

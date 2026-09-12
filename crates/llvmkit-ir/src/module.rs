@@ -57,7 +57,8 @@ use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
 use super::constant::{
-    Constant, ConstantExprFlags, ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant,
+    Constant, ConstantData, ConstantExprFlags, ConstantExprOpcode, ForwardRefValue,
+    IntoConstantValue, IsConstant,
 };
 use super::constant_range::metadata_constant_int;
 use super::constants::ConstantExprOptions;
@@ -67,7 +68,7 @@ use super::derived_types::{
     TargetExtType, TokenType, VectorType, VoidType,
 };
 use super::element::{ElemDyn, StaticVecElem};
-use super::error::{IrError, IrResult, TypeKindLabel};
+use super::error::{BrandError, IrError, IrResult};
 use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
@@ -75,10 +76,10 @@ use super::function_signature::TypedVarArgsFunctionValue;
 use super::function_signature::{
     FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
 };
-use super::global_alias::{GlobalAlias, GlobalAliasBuilder};
-use super::global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
+use super::global_alias::{GlobalAlias, GlobalAliasBuilder, GlobalAliasData};
+use super::global_ifunc::{GlobalIfunc, GlobalIfuncBuilder, GlobalIfuncData};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
-use super::global_variable::{GlobalBuilder, GlobalVariable};
+use super::global_variable::{GlobalBuilder, GlobalVariable, GlobalVariableData};
 use super::inline_asm::{InlineAsm, InlineAsmData, InlineAsmOptions};
 use super::int_width::{IntDyn, Width};
 use super::intrinsics::IntrinsicFunctionData;
@@ -106,7 +107,9 @@ use super::struct_schema::StructSchema;
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueUse};
+use super::value::{
+    GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse,
+};
 use super::value_id::{
     FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
     ValueId, ViewIn,
@@ -316,7 +319,7 @@ impl<B> BrandGuard<B> {
     /// No user code runs inside the section: `B` is only ever fed to
     /// [`TypeId::of`] and [`core::any::type_name`], both of which are compiler
     /// intrinsics, and both are evaluated *before* the lock is taken.
-    fn claim(retire_on_drop: bool) -> IrResult<Self>
+    fn claim(retire_on_drop: bool) -> Result<Self, BrandError>
     where
         B: ModuleBrand,
     {
@@ -324,8 +327,8 @@ impl<B> BrandGuard<B> {
         let name = core::any::type_name::<B>();
         match lock_brands().entry(brand) {
             Entry::Occupied(slot) => match slot.get() {
-                BrandState::InUse => Err(IrError::BrandInUse { brand: name }),
-                BrandState::Retired => Err(IrError::BrandRetired { brand: name }),
+                BrandState::InUse => Err(BrandError::InUse { brand: name }),
+                BrandState::Retired => Err(BrandError::Retired { brand: name }),
             },
             Entry::Vacant(slot) => {
                 slot.insert(BrandState::InUse);
@@ -370,7 +373,7 @@ impl<B> Drop for BrandGuard<B> {
 /// owned, movable token rather than one pinned to the callback's frame.
 ///
 /// ```
-/// use llvmkit_ir::{IrError, module_new};
+/// use llvmkit_ir::{BrandError, module_new};
 ///
 /// let m = module_new!("lifted")?;
 /// assert_eq!(m.name(), "lifted");
@@ -378,7 +381,7 @@ impl<B> Drop for BrandGuard<B> {
 /// // A second expansion site is a *different* brand, so both are live at once.
 /// let other = module_new!("other")?;
 /// assert_ne!(m.id(), other.id());
-/// # Ok::<(), IrError>(())
+/// # Ok::<(), BrandError>(())
 /// ```
 ///
 /// # One brand per expansion *site*, not per evaluation
@@ -386,16 +389,16 @@ impl<B> Drop for BrandGuard<B> {
 /// The brand is minted where the macro is *written*, not each time control
 /// reaches it. A `module_new!` inside a loop therefore asks for the same brand
 /// on every iteration, and the second iteration fails with
-/// [`IrError::BrandInUse`] while the first module is still alive:
+/// [`BrandError::InUse`] while the first module is still alive:
 ///
 /// ```
-/// use llvmkit_ir::{IrError, Module, module_new};
+/// use llvmkit_ir::{BrandError, Module, module_new};
 ///
 /// let mut held = Vec::new();
 /// for i in 0..2 {
 ///     match module_new!(format!("m{i}")) {
 ///         Ok(m) => held.push(m),
-///         Err(e) => assert!(matches!(e, IrError::BrandInUse { .. })),
+///         Err(e) => assert!(matches!(e, BrandError::InUse { .. })),
 ///     }
 /// }
 /// assert_eq!(held.len(), 1);
@@ -2172,19 +2175,19 @@ impl<'ctx> ModuleCore {
     /// Crate-internal: install a built [`GlobalBuilder`] into the
     /// module. Performs the duplicate-name check and the comdat
     /// existence check, then pushes to the value arena.
+    ///
+    /// `data` carries only slots `GlobalBuilder::build` admitted through the
+    /// checked doors, so every slot in it names this module's arena.
     pub(super) fn install_global_variable<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: GlobalBuilder<'ctx, B>,
+        name: String,
+        data: GlobalVariableData,
+        address_space: u32,
     ) -> IrResult<GlobalVariable<'ctx, B>> {
-        let (name, data, _initializer, address_space, value_type) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
-        // Sanity: value_type must already be in the same context. Use
-        // the cached id directly. (Construction APIs only hand out
-        // typed ids belonging to this module.)
-        let _ = value_type;
         let seeded_initializer = data.initializer.get();
         let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
@@ -2212,11 +2215,14 @@ impl<'ctx> ModuleCore {
         ))
     }
 
+    /// `data` carries only slots `GlobalAliasBuilder::build` admitted through
+    /// the checked doors, so every slot in it names this module's arena.
     pub(super) fn install_global_alias<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: GlobalAliasBuilder<'ctx, B>,
+        name: String,
+        data: GlobalAliasData,
+        address_space: u32,
     ) -> IrResult<GlobalAlias<'ctx, B>> {
-        let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateGlobalName { name });
         }
@@ -2246,11 +2252,14 @@ impl<'ctx> ModuleCore {
         ))
     }
 
+    /// `data` carries only slots `GlobalIfuncBuilder::build` admitted through
+    /// the checked doors, so every slot in it names this module's arena.
     pub(super) fn install_global_ifunc<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: GlobalIfuncBuilder<'ctx, B>,
+        name: String,
+        data: GlobalIfuncData,
+        address_space: u32,
     ) -> IrResult<GlobalIfunc<'ctx, B>> {
-        let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateGlobalName { name });
         }
@@ -2503,7 +2512,9 @@ impl<'ctx> ModuleCore {
     /// with [`metadata_reserve`](Self::metadata_reserve).
     ///
     /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
-    /// module, `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    /// module. `Err(IrError::UnknownMetadataSlot)` is not a caller outcome:
+    /// every id this module mints names a node here, so that error means
+    /// llvmkit's own bookkeeping failed — see [`IrError::blame`].
     pub fn metadata_set<B>(&self, id: MetadataId<B>, kind: MetadataKind<B>) -> IrResult<()>
     where
         B: ModuleBrand,
@@ -2677,6 +2688,25 @@ impl<'ctx> ModuleCore {
             unreachable!("a stored NamedMetadataId always names a node in the append-only list")
         });
         node.add_operand(op);
+        Ok(())
+    }
+
+    /// Drop every operand of a named metadata node. Mirrors
+    /// `NamedMDNode::clearOperands`.
+    ///
+    /// `Err(IrError::ForeignNamedMetadataId)` when `id` was minted by another
+    /// module. As with [`named_metadata_add_operand`](Self::named_metadata_add_operand)
+    /// there is no unknown-slot case: the named-metadata list is append-only.
+    pub fn named_metadata_clear_operands<B>(&self, id: NamedMetadataId<B>) -> IrResult<()>
+    where
+        B: ModuleBrand,
+    {
+        let slot = id.into_stored(self.id)?.slot();
+        let mut nmd = self.named_metadata.borrow_mut();
+        let node = nmd.get_mut(slot.0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        node.clear_operands();
         Ok(())
     }
 
@@ -2861,6 +2891,31 @@ impl<'ctx> ModuleCore {
         Some((bits, value))
     }
 
+    /// The global value behind a constant metadata operand, with
+    /// [`MetadataKind::Ref`] links followed. `None` for anything that is not
+    /// a `GlobalValue` — the `mdconst::dyn_extract_or_null<GlobalValue>`
+    /// shape.
+    ///
+    /// The extra hop upstream does not have: llvmkit gives a global object its
+    /// *value* type and interns a pointer-typed
+    /// [`ConstantData::GlobalValueRef`] to stand for `@name` where a constant
+    /// is wanted, so the operand names the wrapper and the answer is its
+    /// referent.
+    pub(super) fn metadata_constant_global_value(
+        &self,
+        id: MetadataId<StoredBrand>,
+    ) -> Option<ValueSlot> {
+        let store = self.metadata.borrow();
+        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let MetadataKind::Constant(value_id) = store.get(slot)? else {
+            return None;
+        };
+        match &self.context().value_data(value_id.slot()).kind {
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Some(*value),
+            _ => None,
+        }
+    }
+
     /// The replace half of `Module::setModuleFlag` (`lib/IR/Module.cpp`):
     /// overwrite the first flag whose key string is `key` with
     /// `replacement`, preserving its position. `false` when no flag carries
@@ -2977,11 +3032,11 @@ impl Module<DynBrand, Unverified> {
     /// Construct a fresh module under the **named** brand `B`.
     ///
     /// At most one live module may hold a given brand type. A second call for a
-    /// brand whose module is still alive fails with [`IrError::BrandInUse`];
+    /// brand whose module is still alive fails with [`BrandError::InUse`];
     /// once that module is dropped the brand is free again.
     ///
     /// ```
-    /// use llvmkit_ir::{IrError, Module};
+    /// use llvmkit_ir::{BrandError, Module};
     ///
     /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// struct LiftedBin;
@@ -2990,12 +3045,12 @@ impl Module<DynBrand, Unverified> {
     /// let m = Module::branded::<LiftedBin, _>("lifted")?;
     /// assert!(matches!(
     ///     Module::branded::<LiftedBin, _>("again"),
-    ///     Err(IrError::BrandInUse { .. })
+    ///     Err(BrandError::InUse { .. })
     /// ));
     ///
     /// drop(m);
     /// let _reused = Module::branded::<LiftedBin, _>("again")?;
-    /// # Ok::<(), IrError>(())
+    /// # Ok::<(), BrandError>(())
     /// ```
     ///
     /// # Leaking
@@ -3010,10 +3065,10 @@ impl Module<DynBrand, Unverified> {
     ///
     /// # Errors
     ///
-    /// [`IrError::BrandInUse`] if a live module already holds `B`;
-    /// [`IrError::BrandRetired`] if `B` was retired by
+    /// [`BrandError::InUse`] if a live module already holds `B`;
+    /// [`BrandError::Retired`] if `B` was retired by
     /// [`branded_once`](Self::branded_once).
-    pub fn branded<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    pub fn branded<B, N>(name: N) -> Result<Module<B, Unverified>, BrandError>
     where
         B: ModuleBrand,
         N: Into<String>,
@@ -3025,14 +3080,14 @@ impl Module<DynBrand, Unverified> {
     /// permanently** when the module is dropped.
     ///
     /// Where [`branded`](Self::branded) frees the brand for reuse, this marks it
-    /// dead: every later claim fails with [`IrError::BrandRetired`], forever.
+    /// dead: every later claim fails with [`BrandError::Retired`], forever.
     /// Use it when handles minted from the module may outlive it — a retired
     /// brand can never name a *successor* module, so a stale handle can never be
     /// replayed against fresh storage even if the runtime [`ModuleId`] check
     /// were bypassed.
     ///
     /// ```
-    /// use llvmkit_ir::{IrError, Module};
+    /// use llvmkit_ir::{BrandError, Module};
     ///
     /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// struct BuiltOnce;
@@ -3041,16 +3096,16 @@ impl Module<DynBrand, Unverified> {
     /// drop(Module::branded_once::<BuiltOnce, _>("once")?);
     /// assert!(matches!(
     ///     Module::branded_once::<BuiltOnce, _>("twice"),
-    ///     Err(IrError::BrandRetired { .. })
+    ///     Err(BrandError::Retired { .. })
     /// ));
-    /// # Ok::<(), IrError>(())
+    /// # Ok::<(), BrandError>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// [`IrError::BrandInUse`] if a live module already holds `B`;
-    /// [`IrError::BrandRetired`] if `B` has already been retired.
-    pub fn branded_once<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    /// [`BrandError::InUse`] if a live module already holds `B`;
+    /// [`BrandError::Retired`] if `B` has already been retired.
+    pub fn branded_once<B, N>(name: N) -> Result<Module<B, Unverified>, BrandError>
     where
         B: ModuleBrand,
         N: Into<String>,
@@ -3073,7 +3128,7 @@ impl Module<DynBrand, Unverified> {
     ///    partially-constructed module can never strand a brand as `InUse`. (If
     ///    it could, the guard's `Drop` would still release it on unwind — but
     ///    the ordering means that never has to happen.)
-    fn registered<B, N>(name: N, retire_on_drop: bool) -> IrResult<Module<B, Unverified>>
+    fn registered<B, N>(name: N, retire_on_drop: bool) -> Result<Module<B, Unverified>, BrandError>
     where
         B: ModuleBrand,
         N: Into<String>,
@@ -3857,10 +3912,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .as_struct()
             .unwrap_or_else(|| unreachable!("StructType wraps struct data"));
         if s.identity.is_literal() {
-            return Err(IrError::TypeMismatch {
-                expected: TypeKindLabel::Struct,
-                got: TypeKindLabel::Struct,
-            });
+            // This used to report `TypeMismatch { expected: Struct, got:
+            // Struct }` — two literals, so it rendered "type mismatch:
+            // expected struct, got struct" unconditionally, for a refusal
+            // that is not a type mismatch at all. Both operands *are*
+            // structs; the fault is that a literal one has no body to set.
+            return Err(IrError::LiteralStructBodyNotSettable);
         }
         self.core().ctx.set_named_struct_body(st.id, body)
     }
@@ -4208,7 +4265,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         N: Into<String>,
         C: IntoConstantValue<'ctx, B>,
     {
-        let constant = initializer.into_constant(self.module_ref());
+        let constant = initializer.into_constant(self.module_ref())?;
         GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
             .initializer(constant)
             .build()
@@ -4223,7 +4280,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         N: Into<String>,
         C: IntoConstantValue<'ctx, B>,
     {
-        let constant = initializer.into_constant(self.module_ref());
+        let constant = initializer.into_constant(self.module_ref())?;
         GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
             .constant()
             .initializer(constant)
@@ -4438,11 +4495,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         C: IsConstant<'ctx, B>,
     {
-        let constant = c.as_constant();
-        if constant.module.id() != self.core().id() {
-            return Err(IrError::ForeignValueId);
-        }
-        Ok(self.core().metadata_constant_value(constant.id))
+        let slot = c.as_constant().slot_in(self.core().id())?;
+        Ok(self.core().metadata_constant_value(slot))
     }
 
     /// Create a specialized `DI*` metadata node.
@@ -4468,7 +4522,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Mirrors LLVM's uniqued `MetadataAsValue::get`.
     ///
     /// `Err(IrError::ForeignMetadataId)` when `md` was minted by another
-    /// module, `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    /// module. `Err(IrError::UnknownMetadataSlot)` is not a caller outcome:
+    /// every id this module mints names a node here, so that error means
+    /// llvmkit's own bookkeeping failed — see [`IrError::blame`].
     pub fn metadata_as_value(&'ctx self, md: MetadataId<B>) -> IrResult<Value<'ctx, B>> {
         let slot = self.core().metadata_slot_of(md)?;
         let ty = self.core().ctx.metadata();
@@ -4500,8 +4556,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Overwrite a reserved metadata node, pairing with `metadata_reserve`.
     ///
     /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
-    /// module; `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
-    /// It used to no-op silently, which the 2.0 contract forbids.
+    /// module. `Err(IrError::UnknownMetadataSlot)` is not a caller outcome:
+    /// every id this module mints names a node here, so that error means
+    /// llvmkit's own bookkeeping failed — see [`IrError::blame`]. It used to
+    /// no-op silently, which the 2.0 contract forbids.
     pub fn metadata_set(&'ctx self, id: MetadataId<B>, kind: MetadataKind<B>) -> IrResult<()> {
         self.core().metadata_set(id, kind)
     }
@@ -4554,6 +4612,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().named_metadata_add_operand(id, operand)
     }
 
+    /// Drop every operand of a named metadata node, keeping the node itself.
+    /// Mirrors `NamedMDNode::clearOperands`.
+    ///
+    /// `Err(IrError::ForeignNamedMetadataId)` when `id` was minted by another
+    /// module.
+    pub fn named_metadata_clear_operands(&'ctx self, id: NamedMetadataId<B>) -> IrResult<()> {
+        self.core().named_metadata_clear_operands(id)
+    }
+
     /// Look up a named metadata node by id, cloning it out. `None` when `id`
     /// belongs to another module — never another module's node. A native id
     /// always resolves: the named-metadata list is append-only.
@@ -4579,8 +4646,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// `llvm.module.flags` named metadata node, creating the node if absent.
     ///
     /// `Err(IrError::ForeignMetadataId)` when `value` was minted by another
-    /// module (checked before anything is interned);
-    /// `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    /// module (checked before anything is interned).
+    /// `Err(IrError::UnknownMetadataSlot)` is not a caller outcome: every id
+    /// this module mints names a node here, so that error means llvmkit's own
+    /// bookkeeping failed — see [`IrError::blame`].
     pub fn add_module_flag<Key>(
         &'ctx self,
         behavior: ModuleFlagBehavior,
@@ -4601,8 +4670,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// (`lib/IR/Module.cpp`).
     ///
     /// `Err(IrError::ForeignMetadataId)` when `value` was minted by another
-    /// module; `Err(IrError::UnknownMetadataSlot)` when it names nothing
-    /// here.
+    /// module. `Err(IrError::UnknownMetadataSlot)` is not a caller outcome:
+    /// every id this module mints names a node here, so that error means
+    /// llvmkit's own bookkeeping failed — see [`IrError::blame`].
     pub fn set_module_flag<Key>(
         &'ctx self,
         behavior: ModuleFlagBehavior,
@@ -4701,6 +4771,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ) -> Option<(u32, ApInt)> {
         let id = id.into_stored(self.core().id()).ok()?;
         self.core().metadata_constant_int_value(id)
+    }
+
+    /// Crate-internal: the global value behind a constant metadata operand,
+    /// with [`MetadataKind::Ref`] links followed. `None` for anything that is
+    /// not a `GlobalValue` — the `mdconst::dyn_extract_or_null<GlobalValue>`
+    /// shape.
+    pub(crate) fn metadata_constant_global_value(
+        &'ctx self,
+        id: MetadataId<B>,
+    ) -> Option<Value<'ctx, B>> {
+        let id = id.into_stored(self.core().id()).ok()?;
+        let slot = self.core().metadata_constant_global_value(id)?;
+        let ty = self.core().ctx.value_data(slot).ty;
+        Some(Value::from_parts(slot, self.module_ref(), ty))
     }
 
     /// Shared tuple constructor for

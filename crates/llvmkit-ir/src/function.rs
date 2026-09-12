@@ -62,7 +62,7 @@ use super::r#type::{Type, TypeData, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData,
-    ValueSlot, sealed,
+    ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::ViewIn;
 use super::value_id::{FunctionId, TypedFunctionId};
@@ -724,7 +724,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .map(|value| value == "true")
     }
 
-    fn function_string_attribute(self, key: &str) -> Option<String> {
+    pub(crate) fn function_string_attribute(self, key: &str) -> Option<String> {
         {
             let attrs = self.data().attributes.borrow();
             if let Some(value) = Self::string_attribute_in_storage(&attrs, key) {
@@ -1146,16 +1146,11 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
         ExpectedRetKind::Ptr => matches!(ret, TypeData::Pointer { .. }),
         ExpectedRetKind::IntStatic(b) => matches!(ret, TypeData::Integer { bits } if *bits == b),
         ExpectedRetKind::IntDyn => matches!(ret, TypeData::Integer { .. }),
-        ExpectedRetKind::FloatStatic(label) => match label {
-            "half" => matches!(ret, TypeData::Half),
-            "bfloat" => matches!(ret, TypeData::Bfloat),
-            "float" => matches!(ret, TypeData::Float),
-            "double" => matches!(ret, TypeData::Double),
-            "fp128" => matches!(ret, TypeData::Fp128),
-            "x86_fp80" => matches!(ret, TypeData::X86Fp80),
-            "ppc_fp128" => matches!(ret, TypeData::PpcFp128),
-            _ => unreachable!("FloatKind::ieee_label() returned unrecognised tag"),
-        },
+        // One equality against the crate's single `TypeData` -> label map.
+        // This was a seven-arm match on a `&'static str` closed by an
+        // `unreachable!`, which is to say a hand-written inverse of a map that
+        // already existed — and the panic guarded only the two copies agreeing.
+        ExpectedRetKind::FloatStatic(kind) => ret.kind_label() == kind,
         ExpectedRetKind::FloatDyn => matches!(
             ret,
             TypeData::Half
@@ -1270,7 +1265,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B>
     for FunctionValue<'ctx, R, B>
 {
     #[inline]
-    fn into_callee(self, _module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+    fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+        // Boundary: refuse a handle minted by another module.
+        self.slot_in(module.id())?;
         Ok(self)
     }
 }

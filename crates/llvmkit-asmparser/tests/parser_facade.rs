@@ -6,11 +6,8 @@
 use llvmkit_asmparser::file_loc::{FileLoc, FileLocRange};
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_asmparser::parser;
-use llvmkit_asmparser::{
-    ParserConfig, parse_branded, parse_dynamic, parse_dynamic_with_config, parse_file_dynamic,
-    parse_into,
-};
-use llvmkit_ir::{AnyTypeEnum, Module, module_new};
+use llvmkit_asmparser::{ParserConfig, parse_dynamic, parse_dynamic_with_config, parse_into};
+use llvmkit_ir::{AnyTypeEnum, BrandError, Module, module_new};
 
 const MINIMAL: &str = include_str!("fixtures/facade_minimal.ll");
 const INCOMPLETE_IR_DECLARATIONS: &str =
@@ -65,27 +62,28 @@ fn parse_dynamic_modules_collect_into_a_vec() {
     assert!(format!("{}", modules[2]).contains("@c = global i32 3"));
 }
 
-/// A named brand survives the parse: the returned token carries `B`, so its
-/// handles are statically separated from every other module's.
+/// llvmkit-specific (**no upstream counterpart**): C++ has no compile-time
+/// module identity. Locks the replacement for the deleted `parse_branded`:
+/// the caller claims the brand, names the module, and hands both to
+/// `parse_into`, so no brand outcome enters `ParseError`.
 #[test]
-fn parse_branded_returns_the_named_brand() {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+fn a_branded_module_is_claimed_by_the_caller_then_parsed_into() {
     struct ParsedFacade;
     impl llvmkit_ir::ModuleBrand for ParsedFacade {}
 
-    let module: Module<ParsedFacade, _> =
-        parse_branded::<ParsedFacade, _>(MINIMAL).expect("branded parse succeeds");
+    let module = Module::branded::<ParsedFacade, _>("facade.ll").expect("brand is free");
+    let module = parse_into(module, MINIMAL).expect("branded parse succeeds");
+    assert_eq!(module.name(), "facade.ll");
+
+    // The brand is held, so a second claim is refused — by `BrandError`, which
+    // `ParseError` no longer has a variant for.
+    assert!(matches!(
+        Module::branded::<ParsedFacade, _>("again"),
+        Err(BrandError::InUse { .. })
+    ));
+
     let module = module.verify().expect("parsed module verifies");
     assert!(format!("{module}").contains("define i32 @main()"));
-
-    // The brand is claimed for as long as the module lives.
-    assert!(matches!(
-        parse_branded::<ParsedFacade, _>(MINIMAL),
-        Err(ParseError::BrandInUse { .. })
-    ));
-    drop(module);
-    // ...and released when it dies.
-    assert!(parse_branded::<ParsedFacade, _>(MINIMAL).is_ok());
 }
 
 /// `parse_into` lets the caller pick the module — here an unnameable
@@ -101,35 +99,52 @@ fn parse_into_fills_a_caller_supplied_module() {
     assert!(format!("{module}").contains("define i32 @main()"));
 }
 
-/// The file entry point names the module after the file and returns it owned.
+/// llvmkit-specific (**no upstream counterpart**): upstream's file entry points
+/// exist because `MemoryBufferRef` bundles the bytes with their identifier;
+/// llvmkit hangs the identifier on the `Module`, so the caller supplies both
+/// directly. Locks that the parser never opens a file: reading is the caller's
+/// `std::io::Error`, and parsing is `ParseError`, with no type spanning both.
 #[test]
-fn parse_file_dynamic_returns_an_owned_module_named_after_the_file() {
-    let module = parse_file_dynamic(concat!(
+fn the_caller_reads_the_file_and_names_the_module() {
+    let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/facade_minimal.ll"
-    ))
-    .expect("owned file parse succeeds");
+    );
+    let source = std::fs::read(path).expect("fixture reads");
+
+    let module =
+        parse_into(Module::dynamic("facade_minimal.ll"), &source).expect("owned parse succeeds");
     assert_eq!(module.name(), "facade_minimal.ll");
+
     let module = module.verify().expect("parsed module verifies");
     assert!(format!("{module}").contains("define i32 @main()"));
 }
 
-/// Ports `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` file-loading
-/// wrapper shape.
+/// Ports the closure half of `llvm/lib/AsmParser/Parser.cpp::parseAssembly`,
+/// whose `MemoryBufferRef` carries the buffer identifier that becomes the
+/// module's. `parse_assembly_with_name` is llvmkit's spelling of that pairing:
+/// the closure form constructs the module itself, so the name must be a
+/// parameter rather than a property of the bytes.
 #[test]
-fn parse_assembly_file_reads_file() {
-    parser::parse_assembly_file(
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/facade_minimal.ll"
-        ),
+fn parse_assembly_with_name_uses_the_given_module_name() {
+    let source = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/facade_minimal.ll"
+    ))
+    .expect("fixture reads");
+
+    parser::parse_assembly_with_name(
+        "facade_minimal.ll",
+        &source,
+        &ParserConfig::DEFAULT,
         |module, _parsed| {
+            assert_eq!(module.name(), "facade_minimal.ll");
             let printed = format!("{module}");
             assert!(printed.contains("define i32 @main()"));
             assert!(printed.contains("ret i32 0"));
         },
     )
-    .expect("facade file parse succeeds");
+    .expect("closure parse succeeds");
 }
 
 /// Mirrors `LLParser.cpp::parseTypeAtBeginning`: parsing stops after the
@@ -315,22 +330,21 @@ fn parser_context_records_several_functions_on_one_line() {
 /// here. The fixture is checked in verbatim; its six `CHECK` lines are
 /// asserted below in its own order.
 ///
-/// **Two of the six lines diverge and are asserted as they actually are, not
-/// trimmed.** Both are recorded in `docs/divergences.md`.
+/// **One of the six lines diverges and is asserted as it actually is, not
+/// trimmed**, and it is recorded in `docs/divergences.md`: `@fn1`'s
+/// declaration prints its parameter *names*.
+/// `AssemblyWriter::printFunction` branches on `F->isDeclaration()` and prints
+/// only the types there; llvmkit's `fmt_function_header` prints names
+/// unconditionally, so the line reads `declare void @fn1(i32 %0)`. Unrelated
+/// to this fixture and pre-existing — `crates/llvmkit-ir/tests/
+/// builder_call.rs::…` already pins `declare float @llvm.acos.f32(float %0)`.
 ///
-/// 1. `@fn2`'s three call sites disagree on the signature, so upstream's
-///    `GetCommonFunctionType` answers null and it emits
-///    `@fn2 = external global i8`. llvmkit's `parse_direct_callee` has already
-///    built a real `declare void @fn2(i32)` at the *first* call site — it does
-///    not route a direct callee through a `ForwardRefVals` placeholder the way
-///    `getGlobalVal` does — and llvmkit-ir has no function-removal or
-///    function-RAUW API to undo it with.
-/// 2. `@fn1`'s declaration prints its parameter *names*.
-///    `AssemblyWriter::printFunction` branches on `F->isDeclaration()` and
-///    prints only the types there; llvmkit's `fmt_function_header` prints
-///    names unconditionally, so the line reads `declare void @fn1(i32 %0)`.
-///    Unrelated to this fixture and pre-existing — `crates/llvmkit-ir/tests/
-///    builder_call.rs::…` already pins `declare float @llvm.acos.f32(float %0)`.
+/// The `@fn2` line used to diverge too: llvmkit built a real `declare void
+/// @fn2(i32)` at the *first* call site instead of routing a direct callee
+/// through a `ForwardRefVals` placeholder, so `GetCommonFunctionType` never
+/// got the chance to answer null for its three disagreeing call sites. The
+/// callee position goes through `global_forward_ref` now, so the `i8` fallback
+/// is reached.
 #[test]
 fn incomplete_ir_declarations() {
     let config = ParserConfig {
@@ -341,14 +355,16 @@ fn incomplete_ir_declarations() {
         .expect("incomplete IR parses");
     let printed = format!("{module}");
     // `@g1`..`@g4` are never callees — an argument, two pointer operands and a
-    // return operand — so each takes upstream's dummy `i8` fallback.
+    // return operand — so each takes upstream's dummy `i8` fallback, and so
+    // does `@fn2`, whose three call sites disagree.
     for expected in [
+        "@fn2 = external global i8",
         "@g1 = external global i8",
         "@g2 = external global i8",
         "@g3 = external global i8",
         "@g4 = external global i8",
         // `@fn1` is called twice at one signature, which is the whole point of
-        // `GetCommonFunctionType`. Divergence 2 supplies the ` %0`.
+        // `GetCommonFunctionType`. The printer divergence supplies the ` %0`.
         "declare void @fn1(i32 %0)",
     ] {
         assert!(
@@ -356,12 +372,6 @@ fn incomplete_ir_declarations() {
             "missing {expected} in:\n{printed}"
         );
     }
-    // Divergence 1, pinned so a future fix has to update this test.
-    assert!(
-        !printed.contains("@fn2 = external global i8"),
-        "llvmkit is not expected to reach upstream's @fn2 fallback yet"
-    );
-    assert!(printed.contains("declare void @fn2(i32 %0)"), "{printed}");
 }
 
 /// llvmkit-specific: the same fixture under the **default** configuration,
@@ -371,15 +381,17 @@ fn incomplete_ir_declarations() {
 /// so the closest anchor is `LLParser::validateEndOfModule`'s
 /// `use of undefined value '@…'` guard.
 ///
-/// The reported name is `@g1`, not upstream's `@fn1`: `ForwardRefVals` is one
-/// sorted `std::map` there, while llvmkit splits value references from direct
-/// callees across two maps checked in that order. Recorded in
-/// `docs/divergences.md`.
+/// The reported name is `@fn1`, upstream's: `validateEndOfModule` reports
+/// `ForwardRefVals.begin()`, which for a sorted `std::map` is the
+/// lexicographically first leftover, and llvmkit's `forward_ref_globals` is a
+/// `BTreeMap` holding every `@`-reference — callee or not — for the same
+/// reason. It used to answer `@g1`, because a direct callee lived in a second
+/// map swept afterwards.
 #[test]
 fn incomplete_ir_is_rejected_by_default() {
     let err = parse_dynamic(INCOMPLETE_IR_DECLARATIONS)
         .expect_err("incomplete IR is refused without the option");
-    assert_eq!(err.to_string(), "use of undefined value '@g1'");
+    assert_eq!(err.to_string(), "use of undefined value '@fn1'");
 }
 
 /// llvmkit-specific: [`ParserConfig::data_layout_callback`] replaces the
@@ -426,4 +438,88 @@ fn data_layout_callback_declining_keeps_the_files_layout() {
     let module = parse_dynamic_with_config("target datalayout = \"e-p:64:64\"\n", &config)
         .expect("declined override parses");
     assert!(format!("{module}").contains("target datalayout = \"e-p:64:64\""));
+}
+
+/// Assert a module carries upstream's string-parse identifier, in both places
+/// it is observable: the stored name, and the `; ModuleID` comment
+/// `AssemblyWriter::printModule` prints from it. The second is what actually
+/// locks the divergence — the name reaches output only through that line.
+fn assert_named_like_upstream(module: &Module<llvmkit_ir::DynBrand, llvmkit_ir::Unverified>) {
+    assert_eq!(module.name(), "<string>");
+    assert!(
+        format!("{module}").starts_with("; ModuleID = '<string>'\n"),
+        "printed module did not open with upstream's ModuleID line:\n{module}"
+    );
+}
+
+/// Ports `llvm/lib/AsmParser/Parser.cpp::parseAssemblyString`, which builds
+/// `MemoryBufferRef F(AsmString, "<string>")` — so a module parsed from a
+/// string, with no filename to take an identifier from, is named `<string>`
+/// and prints that in its `; ModuleID` comment.
+///
+/// Covers **every** entry point that supplies the default, not just one. Five
+/// entry points carry it, and a mutation run proved the suite blind to four of
+/// them: reverting those four to `"asm"` left the whole workspace green. Each
+/// arm below fails independently if its own site regresses.
+#[test]
+fn a_string_parsed_module_is_named_like_upstreams() {
+    // Owned form.
+    let module = parse_dynamic(MINIMAL).expect("parse succeeds");
+    assert_named_like_upstream(&module);
+    let module = module.verify().expect("parsed module verifies");
+    assert!(format!("{module}").contains("define i32 @main()"));
+
+    let module = parse_dynamic_with_config(MINIMAL, &ParserConfig::DEFAULT)
+        .expect("configured parse succeeds");
+    assert_named_like_upstream(&module);
+
+    // Closure forms. Each reaches the default by its own path.
+    parser::parse_assembly(MINIMAL, |module, _parsed| {
+        assert_named_like_upstream(module)
+    })
+    .expect("closure parse succeeds");
+
+    parser::parse_assembly_with_config(MINIMAL, &ParserConfig::DEFAULT, |module, _parsed| {
+        assert_named_like_upstream(module)
+    })
+    .expect("configured closure parse succeeds");
+
+    parser::parse_assembly_with_index(MINIMAL, |module, _parsed| {
+        assert_named_like_upstream(module)
+    })
+    .expect("index parse succeeds");
+
+    parser::parse_assembly_with_context(MINIMAL, |module, _parsed, _context| {
+        assert_named_like_upstream(module)
+    })
+    .expect("context parse succeeds");
+}
+
+/// llvmkit-specific (**no upstream counterpart**): upstream's
+/// `Parser.cpp::parseSummaryIndexAssembly` builds no `Module` at all — it
+/// passes a null `Module *` — so there is no identifier of upstream's to port
+/// and nothing to compare against.
+///
+/// Pins a deliberate exception rather than a behaviour. When the string-parse
+/// default moved to `<string>`, this site kept `"summary"` on the reasoning
+/// that its module is scaffolding: dropped, never printed, and not read by the
+/// GUID computation, which uses `source_filename()`. Without this test a lone
+/// `"summary"` among four `<string>`s reads as a straggler someone missed, and
+/// "fixing" it would pass the suite.
+/// Read at the source level, not through the API, and deliberately so: the
+/// scaffold module is dropped inside the call and its name reaches no caller,
+/// so no runtime assertion can observe it. That unobservability is exactly why
+/// the site needs a guard — nothing else in the suite would notice it change.
+/// Same idiom as this crate's other source-reading guards.
+#[test]
+fn the_summary_index_scaffold_module_keeps_its_own_name() {
+    const PARSER_RS: &str = include_str!("../src/parser.rs");
+
+    assert!(
+        PARSER_RS.contains(r#"let module = Module::dynamic("summary");"#),
+        "parse_summary_index_assembly's scaffold module must keep its own name: \
+         upstream's parseSummaryIndexAssembly builds no Module at all, so there \
+         is no identifier to match and routing this site through the \
+         string-parse default would invent a behaviour rather than port one"
+    );
 }

@@ -527,8 +527,14 @@ fn switch_with_args_type_mismatch_errors() -> Result<(), IrError> {
         [(0_i32, param_label, &wrong[..])],
         "",
     );
+    // As in `block_args.rs::block_args_br_type_mismatch_errors`: the case
+    // argument is compared against the parameter phi's own type, so both
+    // spellings are reported rather than two kind labels.
     assert!(
-        matches!(res.map(|(_, _)| ()), Err(IrError::TypeMismatch { .. })),
+        matches!(
+            res.map(|(_, _)| ()),
+            Err(IrError::TypeIdentityMismatch { .. })
+        ),
         "a mistyped case argument must be rejected"
     );
     Ok(())
@@ -590,6 +596,14 @@ fn switch_dyn_with_args_seeds_default_and_case() -> Result<(), IrError> {
 /// Both `invoke` edges are mandatory, so both carry an argument list: the
 /// normal and unwind destinations are each parameterised here and each is
 /// seeded from the invoking block. The module verifies clean.
+///
+/// The unwind destination carries a `landingpad` after its block parameter,
+/// and the function a `personality`, because `Verifier::visitInvokeInst`
+/// requires the unwind destination to be an EH pad and
+/// `visitLandingPadInst` requires the personality —
+/// `BasicBlock::isEHPad()` reads `getFirstNonPHIIt()`, so a parameterised
+/// block (a phi) followed by the pad is one. Neither is what this test is
+/// about; without them the module is not IR upstream accepts.
 #[test]
 fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
     let m = module_new!("invoke_block_args")?;
@@ -597,6 +611,8 @@ fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
     let callee = m.add_typed_function::<(), (), _>("callee", Linkage::External)?;
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    m.view(f)
+        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
     let bwp = IrBuilder::new_for::<Dyn>(&m);
@@ -623,6 +639,7 @@ fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
     let np: IntValue<'_, i32, _> = normal_params[0].try_into()?;
     b.ret(np)?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
+    let _closed = b.landingpad(i32_ty.as_type(), true, "lp")?.finish();
     let up: IntValue<'_, i32, _> = unwind_params[0].try_into()?;
     b.ret(up)?;
 

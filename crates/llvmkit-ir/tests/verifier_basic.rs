@@ -187,9 +187,16 @@ fn intrinsic_declaration_by_name_applies_generated_argument_names() -> Result<()
     Ok(())
 }
 
-/// Mirrors `Verifier::visitFunction` / `visitInstruction`: intrinsic
-/// declarations may only be used as the direct callee operand, not as an
-/// ordinary call argument.
+/// Mirrors `Verifier::visitFunction`'s address-taken guard: an
+/// `llvm.`-prefixed function may only be named as the direct callee operand of
+/// a call, never as an ordinary argument, and the diagnostic is
+/// `Invalid user of intrinsic instruction!`.
+///
+/// The assertion used to read `intrinsic can only be used as callee`, which is
+/// `LLParser::validateEndOfModule`'s wording for the *parser's* leftover
+/// sweep, not the Verifier's — llvmkit had borrowed it for a rule upstream
+/// words differently, so the test agreed with the code and neither agreed with
+/// LLVM. The text below is `Verifier.cpp`'s own `Check` literal.
 #[test]
 fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), IrError> {
     let m = module_new!("intrinsic-noncallee-use")?;
@@ -209,7 +216,7 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
         .expect_err("non-callee intrinsic operand rejected");
     assert!(
         err.to_string()
-            .contains("intrinsic can only be used as callee"),
+            .contains("Invalid user of intrinsic instruction!"),
         "{err}"
     );
     Ok(())
@@ -676,6 +683,12 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
+    // `Verifier::visitInvokeInst` requires the unwind destination to be an EH
+    // pad, and `visitLandingPadInst` requires the `personality`. Neither is
+    // what this test is about; without them the module is not IR upstream
+    // accepts, and the dominance failure it does pin would never be reached.
+    m.view(f)
+        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let normal = m.view(f).append_basic_block(&m, "normal");
     let unwind = m.view(f).append_basic_block(&m, "unwind");
@@ -697,6 +710,7 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
         .position_at_end(normal)
         .ret(invoke_value)?;
     let bu = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
+    let _closed = bu.landingpad(i32_ty.as_type(), true, "lp")?.finish();
     let bad = bu.int_add(invoke_value, x, "bad")?;
     bu.ret(bad)?;
 
@@ -820,6 +834,109 @@ fn verify_vector_gep_with_disagreeing_index_widths_fails() -> Result<(), IrError
                 rule: VerifierRule::GepVectorWidthMismatch,
                 ..
             }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// `Verifier::visitIntrinsicCall`'s first statement:
+/// `Check(IF->isDeclaration(), "Intrinsic functions should never be defined!",
+/// IF)`.
+///
+/// **No upstream `.ll` fixture pins it** — searched at `llvmorg-22.1.4` with
+/// `grep -rln -a 'Intrinsic functions should never be defined'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/`, no matches — and llvmkit's
+/// own `.ll` parser cannot reach it either: `parse_define` refuses an intrinsic
+/// name outright, which is a divergence of its own (upstream's `LLParser`
+/// accepts the text and leaves the verdict to the `Verifier`). The builder is
+/// the entry point that reaches the rule, so it is the one used here.
+///
+/// The message used to be llvmkit's, lowercase and without the `!`, raised by
+/// an invented `visit_function` check that upstream has no counterpart for.
+#[test]
+fn defined_intrinsic_called_from_a_body_is_rejected() -> Result<(), IrError> {
+    let m = module_new!("defined-intrinsic")?;
+    let intrinsic = m.get_or_insert_intrinsic_declaration_by_name("llvm.donothing")?;
+    let body = m.view(intrinsic).append_basic_block(&m, "entry");
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(body)
+        .ret_void()?;
+
+    let void_ty = m.void_type();
+    let no_params: [llvmkit_ir::Type<'_, _>; 0] = [];
+    let caller_ty = m.function_type(void_ty.as_type(), no_params);
+    let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let no_args: [llvmkit_ir::Value<'_, _>; 0] = [];
+    b.call_dyn::<Dyn, _, _, _, _>(m.view(intrinsic), no_args, "")?;
+    b.ret_void()?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("an intrinsic with a body is rejected at its call site");
+    assert!(
+        matches!(
+            &err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::IntrinsicDefined,
+                message,
+                ..
+            } if message.contains("Intrinsic functions should never be defined!")
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// The `Constant` half of `Verifier::visitIntrinsicCall`'s argument walk:
+/// `Check(!Const->getType()->isX86_AMXTy(), "const x86_amx is not allowed in
+/// argument!")`.
+///
+/// The upstream fixture is `test/Verifier/x86_amx9.ll`, whose argument is
+/// `x86_amx bitcast (<256 x i32> … to x86_amx)`. **It cannot be ported as
+/// written**: llvmkit's parser answers `invalid bitcast constant expression`
+/// for a `bitcast` to `x86_amx`, so the fixture never reaches the verifier. An
+/// `undef` of the same type is the same `Constant` for this `Check`'s purposes
+/// — it tests the operand's *type*, not its form — and reaches it through the
+/// builder. `docs/divergences.md` entry 132 names the fixture.
+#[test]
+fn const_x86_amx_intrinsic_argument_is_rejected() -> Result<(), IrError> {
+    let m = module_new!("amx-const-arg")?;
+    let intrinsic =
+        m.get_or_insert_intrinsic_declaration_by_name("llvm.x86.tilestored64.internal")?;
+
+    let void_ty = m.void_type();
+    let no_params: [llvmkit_ir::Type<'_, _>; 0] = [];
+    let caller_ty = m.function_type(void_ty.as_type(), no_params);
+    let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+
+    let i16_ty = m.i16_type();
+    let i64_ty = m.i64_type();
+    let args = [
+        i16_ty.const_int(1_i16).as_erased(),
+        i16_ty.const_int(1_i16).as_erased(),
+        m.ptr_type(0).const_null().as_erased(),
+        i64_ty.const_int(64_i64).as_erased(),
+        m.x86_amx_type().undef().as_erased(),
+    ];
+    b.call_dyn::<Dyn, _, _, _, _>(m.view(intrinsic), args, "")?;
+    b.ret_void()?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("a constant x86_amx argument is rejected");
+    assert!(
+        matches!(
+            &err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::ConstX86AmxArgument,
+                message,
+                ..
+            } if message.contains("const x86_amx is not allowed in argument!")
         ),
         "got {err:?}"
     );

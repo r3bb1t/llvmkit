@@ -2,3 +2,4 @@
 define <4 x i32> @not_a_vector() {
   ret i32 splat (i32 7)
 }
+

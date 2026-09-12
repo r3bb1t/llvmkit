@@ -1,7 +1,7 @@
 use llvmkit_ir::{
     Constant, Dyn, IntValue, IntoIrField, IrBuilder, IrError, IrField, Linkage, Module,
     ModuleBrand, ModuleView, StructFields, StructSchema, StructSchemaValue, StructValue, Type,
-    TypeKindLabel, ValidatedStructValue, Value, module_new,
+    ValidatedStructValue, Value, module_new,
 };
 use llvmkit_macros::Branded;
 
@@ -373,12 +373,22 @@ fn struct_schema_try_value_from_ir_rejects_wrong_schema() -> Result<(), IrError>
     let rect_ty = <Rect as StructSchema>::ir_type(m.as_view())?;
     let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()]);
     let f = m.add_function_dyn("raw_take_rect", fn_ty, Linkage::External)?;
+    // Two identified structs both label `struct`, so reporting only the kinds
+    // rendered "type mismatch: expected struct, got struct" — an assertion
+    // that would have passed just as well had the schemas been swapped, or
+    // had any other struct arrived.
+    let point_ty = <Point as StructSchema>::ir_type(m.as_view())?;
     assert_eq!(
         Point::try_value_from_ir(m.view(f).param(0)?),
-        Err(IrError::TypeMismatch {
-            expected: TypeKindLabel::Struct,
-            got: TypeKindLabel::Struct,
+        Err(IrError::TypeIdentityMismatch {
+            expected: point_ty.as_type().rendered(),
+            got: rect_ty.as_type().rendered(),
         })
+    );
+    let error = Point::try_value_from_ir(m.view(f).param(0)?).expect_err("a Rect is not a Point");
+    assert_eq!(
+        error.to_string(),
+        "type mismatch: expected '%Point', got '%Rect'"
     );
     Ok(())
 }
@@ -448,13 +458,17 @@ fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<
     let err = b
         .extract_field::<Point, i64, _, _>(point, 0, "bad")
         .expect_err("field type mismatch must be rejected");
+    // Both sides are integers, so `TypeKindLabel` alone rendered "expected
+    // integer, got integer" — a sentence with no content, blessed here by a
+    // passing assertion until the identity variant landed.
     assert_eq!(
         err,
-        IrError::TypeMismatch {
-            expected: llvmkit_ir::TypeKindLabel::Integer,
-            got: llvmkit_ir::TypeKindLabel::Integer,
+        IrError::TypeIdentityMismatch {
+            expected: m.i64_type().as_type().rendered(),
+            got: m.i32_type().as_type().rendered(),
         }
     );
+    assert_eq!(err.to_string(), "type mismatch: expected 'i64', got 'i32'");
     assert_eq!(b.insert_block().instructions().len(), 0);
     b.ret_void()?;
     Ok(())

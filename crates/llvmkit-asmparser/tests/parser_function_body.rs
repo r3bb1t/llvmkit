@@ -36,11 +36,7 @@ fn parse_expect_error_at(src: &str) -> (String, (u32, u32)) {
         Ok(()) => panic!("expected parse to fail, but it succeeded"),
         Err(e) => e,
     };
-    let start = error
-        .loc()
-        .expect("diagnostic carries a location")
-        .span
-        .start;
+    let start = error.loc().start;
     let offset = usize::try_from(start).unwrap_or(usize::MAX);
     (format!("{error}"), line_and_column(src.as_bytes(), offset))
 }
@@ -157,19 +153,31 @@ fn parses_implicit_unnamed_blocks_with_shared_numbering() {
 
 /// Mirrors `LLParser::setInstName(NameID=-1, NameStr="")`: an unnamed
 /// non-void `callbr` result still consumes the next numbered local slot.
+///
+/// The callee is inline asm because that is the only non-void `callbr` LLVM
+/// accepts: `Verifier::visitCallBrInst`'s non-inline-asm arm ends in
+/// `default: CheckFailed("Callbr currently only supports asm-goto and selected
+/// intrinsics")`, and its one supported intrinsic — `llvm.amdgcn.kill` —
+/// returns `void`. The shape is `test/Verifier/callbr.ll`'s `@test4`
+/// ("Ensure you can use the return value of a callbr in indirect targets"),
+/// with the result left unnamed, which is what this test is about. It used to
+/// name `@callee`, and `parse_and_verify` accepted that only because the
+/// `default:` arm was unported.
 #[test]
 fn parses_unnamed_non_void_callbr_result_numbering() {
-    let src = "declare i32 @callee()\n\
-               define i32 @callbr_unnamed_result() {\n\
+    let src = "define i32 @callbr_unnamed_result() {\n\
                entry:\n  \
-                 callbr i32 @callee() to label %fallthrough []\n\
+                 callbr i32 asm sideeffect \"\", \"=r,!i\"() to label %fallthrough \
+                 [label %indirect]\n\
                fallthrough:\n  \
+                 ret i32 %0\n\
+               indirect:\n  \
                  ret i32 %0\n\
                }\n";
 
     parse_and_verify(src);
     let printed = parse_and_print(src);
-    assert!(printed.contains("callbr i32 @callee()"), "{printed}");
+    assert!(printed.contains("callbr i32 asm sideeffect"), "{printed}");
     assert!(printed.contains("ret i32 %0"), "{printed}");
 }
 
@@ -1774,4 +1782,367 @@ fn fence_rejects_unordered_and_monotonic() {
         let src = format!("define void @f() {{\nentry:\n  fence {ordering}\n  ret void\n}}\n");
         assert_eq!(parse_expect_error(&src), expected, "{ordering}");
     }
+}
+
+/// Every `LLParser::parseTypeAndBasicBlock` call site, one case each, asserting
+/// upstream's `expected a basic block` **and** the token it anchors at.
+///
+/// `parseTypeAndBasicBlock` takes `Loc = Lex.getLoc()` before
+/// `parseTypeAndValue` and reports at that `Loc`, so the caret lands on the
+/// first token of the *type*, not on the value and not on wherever the lexer
+/// has since reached. Each case therefore names the offending type token and
+/// the expectation is derived from the source: a hardcoded column can be
+/// re-blessed, a token cannot.
+///
+/// **llvmkit-authored sources; no upstream fixture pins this message.**
+/// `rg --no-ignore --hidden -l "expected a basic block" llvm/test/` over the
+/// vendored `llvmorg-22.1.4` tree returns only
+/// `CodeGen/MIR/X86/expected-basic-block-at-start-of-body.mir`, which is the
+/// MIR parser's own message and not `LLParser`'s. The rule is the anchor
+/// (D11): `lib/AsmParser/LLParser.cpp::LLParser::parseTypeAndBasicBlock`.
+///
+/// Upstream reaches this routine from fifteen call sites across eight
+/// terminator parsers — `parseBr` (x2), `parseSwitch` (x2), `parseIndirectBr`
+/// (x2, first iteration unrolled), `parseInvoke` (x2), `parseCleanupRet`,
+/// `parseCatchRet`, `parseCatchSwitch` (x2), `parseCallBr` (x3, first indirect
+/// destination unrolled) — and this table has one case per site, in that order.
+#[test]
+fn every_type_and_basic_block_site_reports_expected_a_basic_block() {
+    const PROLOGUE: &str = "declare void @g()\n\
+                            define void @f(i1 %c, i32 %x, ptr %p) personality ptr null {\n\
+                            entry:\n";
+    let cases: [(&str, String, &str); 15] = [
+        (
+            "br then-target",
+            format!("{PROLOGUE}  br i1 %c, i64 0, label %b\nb:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "br else-target",
+            format!("{PROLOGUE}  br i1 %c, label %b, i64 0\nb:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "switch default",
+            format!("{PROLOGUE}  switch i32 %x, i64 0 [ ]\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "switch case destination",
+            format!("{PROLOGUE}  switch i32 %x, label %b [ i32 0, i64 1 ]\nb:\n  ret void\n}}\n"),
+            "i64 1",
+        ),
+        (
+            "indirectbr first destination",
+            format!("{PROLOGUE}  indirectbr ptr %p, [ i64 0 ]\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "indirectbr later destination",
+            format!("{PROLOGUE}  indirectbr ptr %p, [ label %b, i64 0 ]\nb:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "invoke normal destination",
+            format!("{PROLOGUE}  invoke void @g() to i64 0 unwind label %u\nu:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "invoke unwind destination",
+            format!("{PROLOGUE}  invoke void @g() to label %n unwind i64 0\nn:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "cleanupret unwind destination",
+            format!(
+                "{PROLOGUE}  %cp = cleanuppad within none []\n  \
+                 cleanupret from %cp unwind i64 0\n}}\n"
+            ),
+            "i64 0",
+        ),
+        (
+            "catchret destination",
+            format!(
+                "{PROLOGUE}  %cs = catchswitch within none [label %h] unwind to caller\nh:\n  \
+                 %cp = catchpad within %cs []\n  \
+                 catchret from %cp to i64 0\n}}\n"
+            ),
+            "i64 0",
+        ),
+        (
+            "catchswitch handler",
+            format!("{PROLOGUE}  %cs = catchswitch within none [i64 0] unwind to caller\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "catchswitch unwind destination",
+            format!(
+                "{PROLOGUE}  %cs = catchswitch within none [label %h] unwind i64 0\nh:\n  \
+                 ret void\n}}\n"
+            ),
+            "i64 0",
+        ),
+        (
+            "callbr fallthrough destination",
+            format!("{PROLOGUE}  callbr void @g() to i64 0 []\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "callbr first indirect target",
+            format!("{PROLOGUE}  callbr void @g() to label %n [i64 0]\nn:\n  ret void\n}}\n"),
+            "i64 0",
+        ),
+        (
+            "callbr later indirect target",
+            format!(
+                "{PROLOGUE}  callbr void @g() to label %n [label %b, i64 0]\nn:\n  \
+                 ret void\nb:\n  ret void\n}}\n"
+            ),
+            "i64 0",
+        ),
+    ];
+
+    for (name, source, anchor_token) in cases {
+        let (message, at) = parse_expect_error_at(&source);
+        assert_eq!(message, "expected a basic block", "case {name}");
+        let offset = source
+            .rfind(anchor_token)
+            .unwrap_or_else(|| panic!("case {name}: anchor token {anchor_token} not in source"));
+        assert_eq!(
+            at,
+            line_and_column(source.as_bytes(), offset),
+            "case {name}: caret is not on {anchor_token}"
+        );
+    }
+}
+
+/// `parseTypeAndBasicBlock`'s other outcome: a token that cannot begin a type
+/// never reaches the `isa<BasicBlock>` guard at all — `parseType` rejects it
+/// first with `expected type`, at the same `Loc`.
+///
+/// This is what makes an empty or comma-terminated destination list report
+/// `expected type` rather than a bespoke `label` expectation, and it is the
+/// half of the routine that a `label`-keyword lookahead cannot reproduce.
+///
+/// **llvmkit-authored sources**; see
+/// [`every_type_and_basic_block_site_reports_expected_a_basic_block`] for why
+/// no vendored fixture covers this routine.
+#[test]
+fn a_non_type_token_in_a_block_operand_reports_expected_type() {
+    const PROLOGUE: &str = "declare void @g()\n\
+                            define void @f(ptr %p) personality ptr null {\n\
+                            entry:\n";
+    let cases = [
+        (
+            "empty catchswitch handler list",
+            format!("{PROLOGUE}  %cs = catchswitch within none [] unwind to caller\n}}\n"),
+        ),
+        (
+            "trailing comma in a catchswitch handler list",
+            format!(
+                "{PROLOGUE}  %cs = catchswitch within none [label %h,] unwind to caller\nh:\n  \
+                 ret void\n}}\n"
+            ),
+        ),
+        (
+            "trailing comma in an indirectbr destination list",
+            format!("{PROLOGUE}  indirectbr ptr %p, [ label %b, ]\nb:\n  ret void\n}}\n"),
+        ),
+        (
+            "trailing comma in a callbr indirect list",
+            format!(
+                "{PROLOGUE}  callbr void @g() to label %n [label %b, ]\nn:\n  \
+                 ret void\nb:\n  ret void\n}}\n"
+            ),
+        ),
+    ];
+
+    for (name, source) in cases {
+        let (message, at) = parse_expect_error_at(&source);
+        assert_eq!(message, "expected type", "case {name}");
+        let offset = source
+            .find(']')
+            .unwrap_or_else(|| panic!("case {name}: no closing bracket in source"));
+        assert_eq!(
+            at,
+            line_and_column(source.as_bytes(), offset),
+            "case {name}: caret is not on the closing bracket"
+        );
+    }
+}
+
+/// `parseIndirectBr` and `parseCallBr` unroll the first iteration of their
+/// destination list — `if (Lex.getKind() != lltok::rsquare) { … while
+/// (EatIfPresent(lltok::comma)) … }` — and then demand the `]` with
+/// `parseToken(lltok::rsquare, "expected ']' at end of block list")`.
+///
+/// A single `while (peek != ']')` loop is not that shape: it accepts a list
+/// whose entries carry no comma between them, because the loop re-enters on
+/// any non-`]` token. This locks the missing-comma half; the trailing-comma
+/// half is in
+/// [`a_non_type_token_in_a_block_operand_reports_expected_type`].
+///
+/// **llvmkit-authored sources.** `test/Assembler/indirectbr.ll` and
+/// `test/Assembler/callbr.ll` are both positives, and
+/// `rg --no-ignore --hidden -l "at end of block list" llvm/test/` over the
+/// vendored tree returns nothing.
+#[test]
+fn a_destination_list_without_commas_reports_the_closing_bracket() {
+    const PROLOGUE: &str = "declare void @g()\n\
+                            define void @f(ptr %p) {\n\
+                            entry:\n";
+    let cases = [
+        (
+            "indirectbr",
+            format!(
+                "{PROLOGUE}  indirectbr ptr %p, [ label %a label %b ]\na:\n  ret void\nb:\n  \
+                 ret void\n}}\n"
+            ),
+        ),
+        (
+            "callbr",
+            format!(
+                "{PROLOGUE}  callbr void @g() to label %n [label %a label %b]\nn:\n  \
+                 ret void\na:\n  ret void\nb:\n  ret void\n}}\n"
+            ),
+        ),
+    ];
+
+    for (name, source) in cases {
+        let (message, at) = parse_expect_error_at(&source);
+        assert_eq!(message, "expected ']' at end of block list", "case {name}");
+        let offset = source
+            .find("label %b")
+            .unwrap_or_else(|| panic!("case {name}: second destination not in source"));
+        assert_eq!(
+            at,
+            line_and_column(source.as_bytes(), offset),
+            "case {name}: caret is not on the second destination"
+        );
+    }
+}
+
+/// A block operand whose name is already bound to a non-block local reaches
+/// `PerFunctionState::getVal`'s `checkValidVariableType` with
+/// `Ty->isLabelTy()`, which is `'%x' is not a basic block`.
+///
+/// The point of the case is *where* that arm lives: upstream has one `getVal`
+/// per spelling with `if (Ty->isLabelTy()) FwdVal = BasicBlock::Create(…)`
+/// inside it, and `getBB` is only `dyn_cast_or_null<BasicBlock>(getVal(Name,
+/// LabelTy, Loc))`. A separate block-minting routine leaves
+/// `parseTypeAndValue` at a `label` type unable to reach it.
+///
+/// **llvmkit-authored source**; `LLParser::PerFunctionState::getVal` and
+/// `LLParser::checkValidVariableType`.
+#[test]
+fn a_block_operand_bound_to_a_value_is_not_a_basic_block() {
+    const SRC: &str = "define void @f(i1 %c) {\n\
+                       entry:\n  \
+                       %x = add i32 0, 0\n  \
+                       br i1 %c, label %x, label %b\nb:\n  ret void\n}\n";
+
+    let (message, at) = parse_expect_error_at(SRC);
+    assert_eq!(message, "'%x' is not a basic block");
+    let offset = SRC.rfind("%x").expect("the use site is in the source");
+    assert_eq!(at, line_and_column(SRC.as_bytes(), offset));
+}
+
+/// Parse a vendored `test/Verifier` fixture, run `Module::verify_borrowed`
+/// over it, and run the fixture's own `CHECK` block against the failure
+/// message.
+///
+/// Upstream's `RUN` line for each caller is `not llvm-as … | FileCheck %s`,
+/// whose output is whichever layer rejected — parser or verifier. This helper
+/// insists on the *verifier*, because that is the layer the fixture's `CHECK`
+/// text comes from (`llvm/lib/IR/Verifier.cpp`); a parse-time rejection here
+/// would be a divergence, not a pass. `PhiGrouping.ll` and `AmbiguousPhi.ll`
+/// are exactly that, which is why they have tests of their own below rather
+/// than calling this.
+fn assert_verifier_reports_fixture_checks(fixture: &str) {
+    let message = parser::parse_assembly(fixture, |module, _parsed| module.verify_borrowed())
+        .expect("the fixture parses; upstream rejects it in the verifier")
+        .expect_err("upstream's RUN line is `not llvm-as`");
+    let llvmkit_ir::IrError::VerifierFailure { message, .. } = message else {
+        panic!("expected a verifier failure, got {message:?}");
+    };
+    support::check_directives(&message, &fixture_checks(fixture));
+}
+
+/// The `; CHECK:` directives of a vendored fixture, in order.
+fn fixture_checks(fixture: &str) -> Vec<support::Check<'_>> {
+    let checks: Vec<support::Check<'_>> = fixture
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("; CHECK:"))
+        .map(|needle| support::Check::Line(needle.trim()))
+        .collect();
+    assert!(
+        !checks.is_empty(),
+        "fixture carries no `; CHECK:` directive"
+    );
+    checks
+}
+
+/// `test/Verifier/SelfReferential.ll`, vendored verbatim and driven by its own
+/// `CHECK` line. Pins `llvm/lib/IR/Verifier.cpp::Verifier::visitInstruction`'s
+/// `Only PHI nodes may reference their own value!`.
+///
+/// The `CHECK` line is matchable only because the rule now carries upstream's
+/// `Check` literal in `IrError::VerifierFailure`'s `message`; before that it
+/// read `non-phi instruction references its own value` and this fixture could
+/// not be ported by its own text.
+#[test]
+fn upstream_self_referential_fixture_message_matches() {
+    assert_verifier_reports_fixture_checks(include_str!(
+        "fixtures/upstream/Verifier/SelfReferential.ll"
+    ));
+}
+
+/// `test/Verifier/PhiGrouping.ll`, vendored verbatim. **Blocked port**, and
+/// the blocker is asserted rather than skipped: `docs/divergences.md` entry 26
+/// — `parse_basic_block`'s `seen_non_phi` guard rejects a misplaced `phi` at
+/// *parse* time, so `Verifier::visitPHINode`'s `PHI nodes not grouped at top
+/// of basic block!` is never reached on this input.
+///
+/// llvmkit's verifier does carry that rule, and its message is asserted
+/// against this fixture's `CHECK` text by
+/// `crates/llvmkit-ir/src/verifier.rs::phi_not_at_top`, which reaches
+/// `VerifierRule::PhiNotAtTop` through the arena rather than the parser. When
+/// entry 26 closes, delete this test and call
+/// [`assert_verifier_reports_fixture_checks`] on the fixture instead.
+#[test]
+fn upstream_phi_grouping_fixture_is_rejected_at_parse_time() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/PhiGrouping.ll");
+    assert_eq!(
+        parse_expect_error(FIXTURE),
+        "expected phi must be grouped at the top of its basic block"
+    );
+}
+
+/// `test/Verifier/AmbiguousPhi.ll`, vendored verbatim. **Blocked port**, and
+/// the blocker is asserted rather than skipped: `docs/divergences.md` entry
+/// 130 — `PhiInst::add_incoming` refuses a second, differing entry for a block
+/// at the *builder* call site, so the parser reports
+/// `IrError::AmbiguousPhiIncoming` and
+/// `Verifier::visitBasicBlock`'s `PHI node has multiple entries for the same
+/// basic block with different incoming values!` is never reached.
+///
+/// The block *name* is no longer part of the divergence: the message names
+/// `%0`, the `SlotTracker` number `AsmWriter` gives the fixture's implicit
+/// entry block and the number the fixture's own `phi` operands are written
+/// with. Asserted here rather than left loose because the previous spelling
+/// was `%4`, an internal arena index that appeared nowhere in the source and
+/// nowhere in printed IR.
+///
+/// The verifier rule the fixture is really about, `VerifierRule::AmbiguousPhi`,
+/// is asserted against this fixture's `CHECK` text by
+/// `crates/llvmkit-ir/src/verifier.rs::ambiguous_phi_duplicate_predecessor`,
+/// which reaches it through the arena rather than the parser.
+#[test]
+fn upstream_ambiguous_phi_fixture_is_rejected_by_the_builder() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/AmbiguousPhi.ll");
+    let message = parse_expect_error(FIXTURE);
+    assert!(
+        message.contains("phi already has an entry for block %0 with a different value"),
+        "{message:?}"
+    );
 }

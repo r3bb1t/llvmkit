@@ -725,9 +725,11 @@ fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
 /// static half is covered by
 /// `def_float_var_rejects_forged_static_kind_handle` (`src/ssa_builder.rs`).
 ///
-/// Stays `TypeMismatch` where the int twin now reports widths:
-/// `TypeKindLabel` has a distinct variant per float kind, so these labels
-/// already name both sides precisely (`Type::require_match`).
+/// `Type::require_match` is an identity check, so it reports both spellings.
+/// `TypeKindLabel` did name both sides precisely *here* — it has a distinct
+/// variant per float kind — but the same routine is reached with two structs
+/// or two arrays, where it did not, so the variant is chosen by the question
+/// the routine asks rather than by the kinds a given caller happens to pass.
 #[test]
 fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-dyn-float-wrong-kind")?;
@@ -744,9 +746,13 @@ fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
     b.switch_to_block(entry)?;
     let wrong_kind_const = double_dyn_ty.const_from_bits(0);
     match b.def_float_var(x, wrong_kind_const) {
-        Err(IrError::TypeMismatch { .. }) => Ok(()),
-        Ok(()) => panic!("expected TypeMismatch, got Ok"),
-        Err(other) => panic!("expected TypeMismatch, got {other:?}"),
+        Err(IrError::TypeIdentityMismatch { expected, got }) => {
+            assert_eq!(expected.spelling(), "half");
+            assert_eq!(got.spelling(), "double");
+            Ok(())
+        }
+        Ok(()) => panic!("expected TypeIdentityMismatch, got Ok"),
+        Err(other) => panic!("expected TypeIdentityMismatch, got {other:?}"),
     }
 }
 

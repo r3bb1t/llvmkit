@@ -183,13 +183,7 @@ fn a_debug_record_value_operand_goes_through_parse_metadata() {
 /// offset — the same "text alone cannot see the anchor" guard
 /// `parser_module_level.rs` spells with line and column.
 fn reported_offset(err: &ParseError) -> usize {
-    usize::try_from(
-        err.loc()
-            .expect("a rejection reports a location")
-            .span
-            .start,
-    )
-    .expect("span start fits in usize")
+    usize::try_from(err.loc().start).expect("span start fits in usize")
 }
 
 /// Regression (broad-review Critical): an align-less alloca with attached
@@ -249,7 +243,7 @@ fn dilocation_rejects_a_field_its_class_does_not_declare() {
         matches!(
             &err,
             ParseError::InvalidMetadataField { kind, field, .. }
-                if *kind == "DILocation" && field == "bad"
+                if kind.name() == "DILocation" && field == "bad"
         ),
         "expected invalid-field error, got: {err:?}"
     );
@@ -278,7 +272,7 @@ fn dilocation_rejects_a_field_specified_twice() {
         matches!(
             &err,
             ParseError::DuplicateMetadataField { kind, field, .. }
-                if *kind == "DILocation" && field == "line"
+                if kind.name() == "DILocation" && field.name() == "line"
         ),
         "expected duplicate-field error, got: {err:?}"
     );
@@ -355,7 +349,7 @@ fn required_specialized_metadata_fields_are_enforced() {
             matches!(
                 &err,
                 ParseError::MissingRequiredMetadataField { kind: k, field: f, .. }
-                    if *k == kind && *f == field
+                    if k.name() == kind && f.name() == field
             ),
             "expected missing required field '{field}' for !{kind}, got: {err:?}"
         );
@@ -421,20 +415,210 @@ fn required_fields_are_a_subset_of_accepted_fields() {
     }
 }
 
-/// Ports `test/Assembler/debug-info.ll`'s `DISubroutineType` flags case, whose
-/// `CHECK-NEXT` line pins the round-tripped text as byte-identical to the
-/// input: `!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types:
-/// !25)`. `AsmWriter.cpp::printDIFlags` joins with `ListSeparator(" | ")`, so
-/// the joined source text llvmkit stores prints back unchanged.
+/// Ports `test/Assembler/debug-info.ll`'s three `!DISubroutineType` lines
+/// (`!28`, `!29`, `!30`) against the two `CHECK-NEXT` lines that answer them:
+///
+/// ```text
+/// ; CHECK-NEXT: !26 = !DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !25)
+/// ; CHECK-NEXT: !27 = !DISubroutineType(types: !25)
+/// ```
+///
+/// Two `Check`s, not one. The disjunction re-emerges through
+/// `MDFieldPrinter::printDIFlags` — `DINode::splitFlags` plus
+/// `getFlagString`, joined by `ListSeparator(" | ")`. And `flags: 0` prints
+/// **nothing at all**, because `printDIFlags` opens `if (!Flags) return;`
+/// before it writes the field name — which is why upstream's three input nodes
+/// come back as two, `!29` and `!30` being identical once printed.
 #[test]
 fn debug_info_flag_disjunction_round_trips() {
     let text = parse_and_render(
-        "!0 = !{}\n!1 = !DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)\n",
+        "!0 = !{}\n\
+         !1 = !DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)\n\
+         !2 = !DISubroutineType(flags: 0, types: !0)\n\
+         !3 = !DISubroutineType(types: !0)\n",
     );
     assert!(
         text.contains("!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)"),
         "output:\n{text}"
     );
+    assert!(
+        !text.contains("flags: 0"),
+        "a zero `flags:` field prints nothing at all:\n{text}"
+    );
+    assert_eq!(
+        text.matches("!DISubroutineType(types: !0)").count(),
+        2,
+        "`flags: 0` and an omitted `flags:` print the same text:\n{text}"
+    );
+}
+
+/// `LLParser::parseMDField(DIFlagField&)`'s `parseFlag` accepts an unsigned
+/// `lltok::APSInt` term anywhere in the `|` chain — it is the first arm, ahead
+/// of the `lltok::DIFlag` one — and ORs it into the same bitfield. So all four
+/// spellings below are one constant, and
+/// `MDFieldPrinter::printDIFlags` prints the one canonical form for it.
+///
+/// `DIFlagPublic` is `0x3` and `DIFlagStaticMember` is `0x1000`, from
+/// `DebugInfoFlags.def`; the mixed forms are those two numbers written out.
+///
+/// **No upstream `.ll` fixture pins a mixed numeric/keyword term.** Searched at
+/// `llvmorg-22.1.4` with `grep -rn -a --include=*.ll -E 'flags: [0-9]+ \||flags:
+/// [A-Za-z]+ \| [0-9]' orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` — the
+/// only numeric `flags:` hits are `!DISubroutineType(flags: 0, …)` in
+/// `test/Assembler/debug-info.ll` (covered above) and the `^N = flags: <n>`
+/// lines of the module summary index, which are a different grammar. The
+/// source is therefore `parseFlag` itself.
+#[test]
+fn debug_info_flags_accept_numeric_terms_in_any_position() {
+    for spelling in [
+        "DIFlagPublic | DIFlagStaticMember",
+        "4099",
+        "3 | DIFlagStaticMember",
+        "DIFlagPublic | 4096",
+    ] {
+        let text = parse_and_render(&format!(
+            "!0 = !{{}}\n!1 = !DISubroutineType(flags: {spelling}, types: !0)\n"
+        ));
+        assert!(
+            text.contains("!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)"),
+            "`flags: {spelling}` printed:\n{text}"
+        );
+    }
+}
+
+/// `DINode::splitFlags` (`lib/IR/DebugInfoMetadata.cpp`) is why the printed
+/// form is canonical rather than an echo. Its first block carries upstream's
+/// own comment — "so that, for example, we emit `DIFlagPublic` and not
+/// `DIFlagPrivate | DIFlagProtected`" — and the whole routine then walks
+/// `HANDLE_DI_FLAG` in `.def` order, so a written order is not preserved and a
+/// bit written twice appears once. The trailing `Extra` is what
+/// `printDIFlags` emits for the bits no row names.
+///
+/// **No upstream `.ll` fixture pins any of these**, because they are all
+/// non-canonical *inputs* and every checked-in fixture is already canonical:
+/// the `grep` in [`debug_info_flags_accept_numeric_terms_in_any_position`]
+/// finds no numeric term to combine, and
+/// `grep -rn -a --include=*.ll 'DIFlagProtected | DIFlagPrivate'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` has no matches. The source
+/// is `splitFlags` and `printDIFlags` themselves.
+#[test]
+fn debug_info_flags_print_canonically_not_as_written() {
+    // The accessibility triple collapses to the composite spelling.
+    let cases = [
+        ("DIFlagProtected | DIFlagPrivate", "DIFlagPublic"),
+        // Written order does not survive: `.def` order is bit order.
+        (
+            "DIFlagStaticMember | DIFlagPublic",
+            "DIFlagPublic | DIFlagStaticMember",
+        ),
+        // A duplicate term is one bit.
+        ("DIFlagVector | DIFlagVector", "DIFlagVector"),
+        // `FlagPtrToMemberRep`'s triple collapses the same way the
+        // accessibility one does.
+        (
+            "DIFlagSingleInheritance | DIFlagMultipleInheritance",
+            "DIFlagVirtualInheritance",
+        ),
+        // An unnamed bit is the trailing number `printDIFlags` appends.
+        ("DIFlagVector | 2097152", "DIFlagVector | 2097152"),
+        // A wholly unnamed bitfield prints as the bare number, which is the
+        // `SplitFlags.empty()` half of the `if (Extra || SplitFlags.empty())`.
+        ("2097152", "2097152"),
+    ];
+    for (written, printed) in cases {
+        let text = parse_and_render(&format!(
+            "!0 = !{{}}\n!1 = !DISubroutineType(flags: {written}, types: !0)\n"
+        ));
+        assert!(
+            text.contains(&format!("!DISubroutineType(flags: {printed}, types: !0)")),
+            "`flags: {written}` should print `flags: {printed}`:\n{text}"
+        );
+    }
+}
+
+/// `MDFieldPrinter::printDISPFlags` differs from its `printDIFlags` twin in one
+/// statement, and carries its own comment for it: "Always print this field,
+/// because no flags in the IR at all will be interpreted as old-style
+/// isDefinition: true." So a zero `spFlags:` prints `spFlags: 0` where a zero
+/// `flags:` prints nothing.
+///
+/// Ports `test/Assembler/disubprogram.ll`'s
+/// `; CHECK: !9 = distinct !DISubprogram(scope: null, spFlags: 0)`.
+#[test]
+fn disubprogram_zero_sp_flags_prints_zero() {
+    let text = parse_and_render("!0 = distinct !DISubprogram(scope: null, spFlags: 0)\n");
+    assert!(
+        text.contains("distinct !DISubprogram(scope: null, spFlags: 0)"),
+        "output:\n{text}"
+    );
+}
+
+/// `DINode::getFlag` and `DISubprogram::getFlag` are `StringSwitch`es built by
+/// including `DebugInfoFlags.def` **without** `DI_FLAG_LARGEST_NEEDED` /
+/// `DISP_FLAG_LARGEST_NEEDED` — only `DebugInfoMetadata.h` defines those, to
+/// bound the bitmask enums — so neither `DIFlagLargest` nor `DISPFlagLargest`
+/// is a spelling either routine matches. Both fall to `.Default(FlagZero)`,
+/// and `parseFlag`'s `if (!Val)` then rejects them, exactly as it rejects
+/// `DIFlagZero` (which the switch *does* carry, at value zero) and an
+/// invented spelling.
+///
+/// `LLLexer::LexIdentifier` returns `lltok::DIFlag` for any word starting
+/// `DIFlag`, so all four reach `parseFlag` as flag tokens rather than as
+/// unknown keywords.
+///
+/// **No upstream `.ll` fixture pins these.** `test/Assembler/invalid-diflag-bad.ll`
+/// is the family's only negative and pins an invented spelling; searched at
+/// `llvmorg-22.1.4` with `grep -rn -a --include=*.ll 'DIFlagLargest\|DIFlagZero\|DISPFlagLargest'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` — no matches. The source is
+/// `getFlag`'s two include sites.
+#[test]
+fn debug_info_flag_names_the_string_switch_lacks_are_rejected() {
+    for (field, spelling, message) in [
+        ("flags", "DIFlagLargest", "invalid debug info flag"),
+        ("flags", "DIFlagZero", "invalid debug info flag"),
+        (
+            "spFlags",
+            "DISPFlagLargest",
+            "invalid subprogram debug info flag",
+        ),
+        (
+            "spFlags",
+            "DISPFlagZero",
+            "invalid subprogram debug info flag",
+        ),
+    ] {
+        let source = format!("!0 = distinct !DISubprogram(scope: null, {field}: {spelling})\n");
+        let error = parse_err(&source).to_string();
+        assert_eq!(
+            error,
+            format!("{message} '{spelling}'"),
+            "`{field}: {spelling}`"
+        );
+    }
+}
+
+/// `parseFlag`'s first arm is `Lex.getKind() == lltok::APSInt &&
+/// !Lex.getAPSIntVal().isSigned()`. A **signed** literal fails that guard and
+/// falls into the second, which demands a `lltok::DIFlag` and answers
+/// `expected debug info flag` — the same message the `DISPFlagField` overload
+/// gives, which does *not* say "subprogram".
+///
+/// No upstream `.ll` fixture writes a negative `flags:`; searched at
+/// `llvmorg-22.1.4` with `grep -rn -a --include=*.ll 'flags: -'
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/` — no matches. The source is
+/// the guard.
+#[test]
+fn debug_info_flags_reject_a_signed_numeric_term() {
+    for field in ["flags", "spFlags"] {
+        let error = parse_err(&format!(
+            "!0 = distinct !DISubprogram(scope: null, {field}: -1)\n"
+        ))
+        .to_string();
+        assert!(
+            error.contains("expected debug info flag"),
+            "`{field}: -1` gave: {error}"
+        );
+    }
 }
 
 /// Ports `test/Assembler/diexpression.ll`, whose `CHECK-SAME` lines are
@@ -467,12 +651,9 @@ fn diexpression_forms_round_trip() {
 }
 
 /// Ports `test/Assembler/invalid-diexpression-large.ll`: an element of exactly
-/// `UINT64_MAX` is accepted (`CHECK-NOT: error:`) and one above it is not.
-///
-/// Same logic as upstream, different diagnostic: upstream reports "element too
-/// large, limit is 18446744073709551615" from `parseDIExpressionBody`, while
-/// llvmkit reports the structured `Expected` error its parser uses throughout,
-/// so this asserts on the accept/reject behaviour rather than on message text.
+/// `UINT64_MAX` is accepted (`CHECK-NOT: error:`) and one above it is not,
+/// with `parseDIExpressionBody`'s own
+/// `CHECK: … error: element too large, limit is 18446744073709551615`.
 #[test]
 fn diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected() {
     let text = parse_and_render("!named = !{!0}\n!0 = !DIExpression(18446744073709551615)\n");
@@ -480,7 +661,10 @@ fn diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected() {
         text.contains("!DIExpression(18446744073709551615)"),
         "output:\n{text}"
     );
-    let _ = parse_err("!0 = !DIExpression(18446744073709551616)\n");
+    assert_eq!(
+        parse_err("!0 = !DIExpression(18446744073709551616)\n").to_string(),
+        "element too large, limit is 18446744073709551615"
+    );
 }
 
 /// The 14 specialized classes added on 2026-08-07, closing the modelled set to
@@ -690,7 +874,7 @@ fn keyword_families_reject_a_spelling_upstream_does_not_know() {
             matches!(
                 &err,
                 ParseError::InvalidMetadataFieldValue { what: w, value: v, .. }
-                    if *w == what && v == value
+                    if w.to_string() == what && v == value
             ),
             "expected invalid {what} '{value}', got: {err:?}"
         );
@@ -736,7 +920,7 @@ fn unsigned_metadata_fields_are_range_checked() {
         matches!(
             &err,
             ParseError::MetadataFieldValueTooLarge { field, limit, .. }
-                if field == "column" && *limit == u64::from(u16::MAX)
+                if field.name() == "column" && *limit == u64::from(u16::MAX)
         ),
         "expected column out of range, got: {err:?}"
     );
@@ -758,7 +942,7 @@ fn a_non_nullable_metadata_field_rejects_null() {
     assert!(
         matches!(
             &err,
-            ParseError::MetadataFieldCannotBeNull { field, .. } if field == "scope"
+            ParseError::MetadataFieldCannotBeNull { field, .. } if field.name() == "scope"
         ),
         "expected scope-cannot-be-null, got: {err:?}"
     );
@@ -773,7 +957,7 @@ fn a_non_empty_string_field_rejects_the_empty_string() {
     assert!(
         matches!(
             &err,
-            ParseError::MetadataFieldCannotBeEmpty { field, .. } if field == "name"
+            ParseError::MetadataFieldCannotBeEmpty { field, .. } if field.name() == "name"
         ),
         "expected name-cannot-be-empty, got: {err:?}"
     );
@@ -857,6 +1041,121 @@ fn dwarf_kind_families_reject_a_word_that_is_no_keyword() {
     ] {
         assert_eq!(parse_err(src).to_string(), expected, "for {src:?}");
     }
+}
+
+/// The rest of what each keyword family's `parseMDField` overload refuses.
+/// Every one opens
+///
+/// ```text
+/// if (Lex.getKind() == lltok::APSInt)
+///   return parseMDField(Loc, Name, static_cast<MDUnsignedField &>(Result));
+/// if (Lex.getKind() != lltok::X)
+///   return tokError("expected <family>");
+/// ```
+///
+/// so the accepted set is exactly *an integer within the family's `Max`* plus
+/// *the family's own keyword token* — and `null`, a string, a `!`-reference
+/// and a keyword from a **sibling** family are all the `expected …`, not
+/// values to be validated afterwards. llvmkit parsed whatever token was there
+/// and validated it afterwards, so all four round-tripped
+/// — recorded in `docs/divergences.md` under the metadata-field acceptance
+/// rule.
+///
+/// The sibling-keyword and string cases are pinned by upstream fixtures, both
+/// corpus rows: `test/Assembler/dicompileunit-invalid-language.ll`'s
+/// `invalid_dw_lang_2` / `invalid_dw_lname_2` parts, and
+/// `test/Assembler/invalid-generic-debug-node-tag-wrong-type.ll`. The `null`
+/// and `!`-reference cases below have no upstream `.ll` — a search of
+/// `llvm/test/Assembler` for the `expected …` texts of these families returns
+/// only those two files — so they are rule anchors against the overloads,
+/// with upstream's wording verbatim.
+#[test]
+fn a_kind_family_rejects_every_token_but_an_integer_and_its_own_keyword() {
+    for (src, expected) in [
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: null)\n",
+            "expected emission kind",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: \"x\")\n",
+            "expected emission kind",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: !0)\n",
+            "expected emission kind",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: null)\n",
+            "expected nameTable kind",
+        ),
+        // A keyword from a sibling family: the token is a `DwarfTag`, never an
+        // `EmissionKind`, so the `expected` arm fires and the `invalid emission
+        // kind '…'` arm beside it never sees a spelling it has no table for.
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: DW_TAG_class_type)\n",
+            "expected emission kind",
+        ),
+        // `ChecksumKindField` is the one family that is not an
+        // `MDUnsignedField`, so it has no integer spelling either.
+        (
+            "!0 = !DIFile(filename: \"a\", directory: \"b\", checksumkind: 1, checksum: \"x\")\n",
+            "expected metadata field value",
+        ),
+    ] {
+        assert_eq!(parse_err(src).to_string(), expected, "for {src:?}");
+    }
+}
+
+/// The `MDUnsignedField` base each keyword family but `ChecksumKindField`
+/// inherits, at its own `Max`: `if (U.ugt(Result.Max)) return tokError("value
+/// for '" + Name + "' too large, limit is " + Twine(Result.Max));`.
+///
+/// Three upstream fixtures pin this and are corpus rows —
+/// `invalid-dicompileunit-emissionkind-bad.ll` (`emissionKind`, limit 3),
+/// `invalid-dicompileunit-language-overflow.ll` (`language`, limit 65535) and
+/// `invalid-generic-debug-node-tag-overflow.ll` (`tag`, limit 65535). The
+/// families below have no fixture of their own; each limit is the `Max` its
+/// `XField` constructor passes in `LLParser.cpp`, and the value one under it
+/// must still be accepted.
+#[test]
+fn a_kind_family_range_checks_a_raw_encoding_against_its_own_max() {
+    for (src, expected) in [
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: 4)\n",
+            "value for 'nameTableKind' too large, limit is 3",
+        ),
+        (
+            "!0 = !DIFixedPointType(name: \"fx\", kind: 3)\n",
+            "value for 'kind' too large, limit is 2",
+        ),
+        (
+            "!0 = !DIBasicType(encoding: 256)\n",
+            "value for 'encoding' too large, limit is 255",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DISubprogram(scope: !0, virtuality: 3)\n",
+            "value for 'virtuality' too large, limit is 2",
+        ),
+        (
+            "!0 = !DISubroutineType(cc: 256, types: !1)\n!1 = !{}\n",
+            "value for 'cc' too large, limit is 255",
+        ),
+        (
+            "!0 = !DIMacro(type: 256, line: 1, name: \"x\")\n",
+            "value for 'type' too large, limit is 255",
+        ),
+    ] {
+        assert_eq!(parse_err(src).to_string(), expected, "for {src:?}");
+    }
+    // One under each limit still parses.
+    let text = parse_and_render(
+        "!named = !{!1, !2, !3}\n\
+!0 = !{}\n\
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: 3)\n\
+!2 = !DIFixedPointType(name: \"fx\", kind: 2)\n\
+!3 = !DIBasicType(encoding: 255)\n",
+    );
+    assert!(text.contains("!DIFixedPointType"), "output:\n{text}");
 }
 
 /// llvmkit-specific: no upstream counterpart, but it guards a bug this port

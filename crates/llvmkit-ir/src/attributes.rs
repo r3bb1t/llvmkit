@@ -9,8 +9,9 @@
 //! Type-state shape:
 //!
 //! - [`AttrKind`] - closed enum of every well-known LLVM attribute kind
-//!   (drawn from `Attributes.td`). Marked `#[non_exhaustive]` so future
-//!   additions are non-breaking.
+//!   (drawn from `Attributes.td`). Exhaustive, like every public enum here:
+//!   an LLVM bump that adds a kind is a breaking change that fails to compile
+//!   in every un-updated `match` rather than slipping through a wildcard.
 //! - [`Attribute`] - sum type where each variant carries the payload its
 //!   kind requires. `Attribute::Int` only ever carries an integer kind,
 //!   `Attribute::Type` only ever carries a type kind, etc. Wrong-shape
@@ -277,13 +278,33 @@ impl fmt::Display for MemoryEffects {
 /// Discriminator for attribute kinds. Mirrors the `def Foo : ...Attr<...>`
 /// declarations in `Attributes.td`.
 ///
-/// Marked `#[non_exhaustive]` so we can add LLVM additions without a
-/// breaking change. Variants are organised by payload category for
-/// readability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+/// Exhaustive: adding an LLVM attribute kind is a breaking change, and should
+/// be. A downstream `match` that dispatches on attribute kind wants to be told
+/// when the vocabulary grows, not to route the newcomer into a wildcard.
+///
+/// **Variant order is load-bearing, and `Ord` exposes it.** It is
+/// `Attribute::AttrKind`'s enum order — what `AttributeImpl::cmp` compares
+/// with `getKindAsEnum() < AI.getKindAsEnum()`, and therefore the order
+/// `AssemblyWriter` prints an attribute list in.
+/// `utils/TableGen/Basic/Attributes.cpp` builds it by walking `EnumAttr`,
+/// `TypeAttr`, `IntAttr`, `ConstantRangeAttr` and `ConstantRangeListAttr` in
+/// that order — its own comment says "Emit attribute enums in the same order
+/// llvm::Attribute::operator< expects" — and `getAllDerivedDefinitions` hands
+/// each class back sorted by *def name*.
+///
+/// So the sort key is the `Attributes.td` **def name**, not the `.ll` keyword
+/// and not the Rust spelling. `SExt` sorts before `SafeStack` because
+/// `'E' < 'a'`. The variants whose Rust spelling differs from the def name are
+/// `Sext`/`SExt`, `Zext`/`ZExt`, `SanitizeHwAddress`/`SanitizeHWAddress`,
+/// `StrictFp`/`StrictFP`, `NoFpClass`/`NoFPClass`, `UwTable`/`UWTable` and
+/// `VscaleRange`/`VScaleRange`; of those only `SExt` has a position that
+/// depends on the casing.
+/// `crates/llvmkit-asmparser/tests/attribute_td_drift.rs::a_function_attribute_list_prints_in_attributes_td_enum_order`
+/// reads the order back out of the vendored `.td`, so a hand-placed variant
+/// cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AttrKind {
-    // ---- Enum (flag) attributes ----
+    // ---- `EnumAttr` (flag) attributes ----
     AllocAlign,
     AllocatedPointer,
     AlwaysInline,
@@ -309,9 +330,8 @@ pub enum AttrKind {
     NoAlias,
     NoBuiltin,
     NoCallback,
-    NoCreateUndefOrPoison,
-    NoCapture,
     NoCfCheck,
+    NoCreateUndefOrPoison,
     NoDivergenceSource,
     NoDuplicate,
     NoExt,
@@ -340,6 +360,7 @@ pub enum AttrKind {
     ReadOnly,
     Returned,
     ReturnsTwice,
+    /// `SExt` upstream, which is why it sorts before `SafeStack`.
     Sext,
     SafeStack,
     SanitizeAddress,
@@ -368,28 +389,32 @@ pub enum AttrKind {
     WriteOnly,
     Zext,
 
-    // ---- Integer-valued attributes ----
-    Alignment,
-    AllocKind,
-    Captures,
-    AllocSize,
-    Dereferenceable,
-    DereferenceableOrNull,
-    StackAlignment,
-    UwTable,
-    VscaleRange,
-    Range,
-    Memory,
-    NoFpClass,
-    Initializes,
-
-    // ---- Type-valued attributes ----
+    // ---- `TypeAttr` (type-valued) attributes ----
     ByRef,
     ByVal,
     ElementType,
     InAlloca,
     Preallocated,
     StructRet,
+
+    // ---- `IntAttr` (integer-valued) attributes ----
+    Alignment,
+    AllocKind,
+    AllocSize,
+    Captures,
+    Dereferenceable,
+    DereferenceableOrNull,
+    Memory,
+    NoFpClass,
+    StackAlignment,
+    UwTable,
+    VscaleRange,
+
+    // ---- `ConstantRangeAttr` ----
+    Range,
+
+    // ---- `ConstantRangeListAttr` ----
+    Initializes,
 }
 
 /// Where `Attributes.td` declares an attribute may be written. Mirrors the
@@ -465,15 +490,14 @@ impl AttrKind {
             | Self::Writable
             | Self::WriteOnly => at(false, true, false),
 
-            // LLVM 22 has no `nocapture` def: it was replaced by
-            // `captures(none)`, which is `[ParamAttr]`. llvmkit still spells
-            // the parsed result `NoCapture`, so it inherits that position.
-            Self::NoCapture => at(false, true, false),
-
-            // `[FnAttr]` — everything else. `AttrKind` is `#[non_exhaustive]`,
-            // so a catch-all is unavoidable; what keeps it from silently
-            // guessing wrong for a future variant is `attribute_td_drift.rs`,
-            // which checks every position in this table against the `.td`.
+            // `[FnAttr]` — everything else. This catch-all is a *default*, not
+            // a forced arm: `AttrKind` is exhaustive, so every remaining
+            // variant could be named. It stays because `[FnAttr]` genuinely is
+            // the default position in `Attributes.td` and naming ~200 variants
+            // to say so would obscure the three lists above it. What keeps it
+            // from silently guessing wrong for a future variant is
+            // `attribute_td_drift.rs`, which checks every position in this
+            // table against the `.td`.
             _ => at(true, false, false),
         }
     }
@@ -527,7 +551,6 @@ impl AttrKind {
             Self::NoBuiltin => "nobuiltin",
             Self::NoCallback => "nocallback",
             Self::NoCreateUndefOrPoison => "nocreateundeforpoison",
-            Self::NoCapture => "nocapture",
             Self::NoCfCheck => "nocf_check",
             Self::NoDivergenceSource => "nodivergencesource",
             Self::NoDuplicate => "noduplicate",
@@ -697,9 +720,9 @@ impl fmt::Display for AttrKind {
 /// here — they are already typed via [`DenormalMode`](crate::DenormalMode)
 /// readers.
 ///
-/// Marked `#[non_exhaustive]` so future upstream additions are non-breaking.
+/// Exhaustive: a future upstream addition is a breaking change that every
+/// un-updated `match` reports at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum StrBoolAttrKind {
     /// `"marked_for_windows_hot_patching"` (`MarkedForWindowsSecureHotPatching`).
     MarkedForWindowsHotPatching,
@@ -1644,6 +1667,48 @@ impl AttributeStored {
             Self::String { .. } => None,
         }
     }
+
+    /// The key of a string attribute — `Attribute::getKindAsString` — or
+    /// `None` for every enum-kinded form.
+    fn string_key(&self) -> Option<&str> {
+        match self {
+            Self::String { key, .. } => Some(key.as_str()),
+            _ => None,
+        }
+    }
+
+    /// `AttributeComparator` (`lib/IR/Attributes.cpp`): "enum-kinded
+    /// attributes first, sorted relative to their `AttrKind` enum value, then
+    /// strings, sorted by key".
+    ///
+    /// Upstream writes it as three `operator()` overloads because
+    /// `addAttributeImpl` is templated and calls `lower_bound` with a bare
+    /// `Attribute::AttrKind` or a bare `StringRef`. All three read only the
+    /// kind (or the key) of the element and of the sought value — the
+    /// two-`Attribute` overload never looks at an attribute's *payload* — so
+    /// one predicate over two `AttributeStored`s computes exactly what each of
+    /// them does, and `slice::partition_point` takes the whole sought
+    /// attribute where `lower_bound` takes its kind.
+    fn precedes(&self, other: &Self) -> bool {
+        match (self.kind(), other.kind()) {
+            // `return A0.getKindAsEnum() < A1.getKindAsEnum();`
+            (Some(a), Some(b)) => a < b,
+            // `if (A1IsString) return true;` — an enum kind precedes a string.
+            (Some(_), None) => true,
+            // `if (A0IsString) { … else return false; }` — a string never
+            // precedes an enum kind.
+            (None, Some(_)) => false,
+            // `return A0.getKindAsString() < A1.getKindAsString();`
+            (None, None) => self.string_key() < other.string_key(),
+        }
+    }
+
+    /// `It->hasAttribute(Kind)`, as `addAttributeImpl` asks it of the
+    /// `lower_bound` result: equivalence under [`Self::precedes`], which is
+    /// kind equality for enum attributes and key equality for string ones.
+    fn same_slot_as(&self, other: &Self) -> bool {
+        !self.precedes(other) && !other.precedes(self)
+    }
 }
 impl fmt::Display for AttributeStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1694,18 +1759,27 @@ impl AttributeStorage {
     }
 
     /// Insert `attr` at `index`, **replacing** any attribute already stored
-    /// there with the same kind (or, for a string attribute, the same key).
+    /// there with the same kind (or, for a string attribute, the same key),
+    /// and keeping the set sorted by `AttributeComparator`'s order.
     ///
     /// Ports `addAttributeImpl` (`lib/IR/Attributes.cpp`), which every
-    /// `AttrBuilder::addAttribute` overload goes through: `lower_bound` for
-    /// the slot, then `std::swap(*It, Attr)` when one of that kind is already
-    /// there and `Attrs.insert(It, Attr)` otherwise. An `AttrBuilder` can
-    /// never hold two attributes of one kind, so `align(4)` followed by
-    /// `align(8)` leaves only `align(8)`.
+    /// `AttrBuilder::addAttribute` overload goes through:
     ///
-    /// One residual difference from that routine: upstream's `lower_bound`
-    /// keeps `Attrs` sorted by `AttributeComparator`, where a new attribute
-    /// lands at the end here. See `docs/divergences.md`.
+    /// ```text
+    /// auto It = lower_bound(Attrs, Kind, AttributeComparator());
+    /// if (It != Attrs.end() && It->hasAttribute(Kind))
+    ///   std::swap(*It, Attr);
+    /// else
+    ///   Attrs.insert(It, Attr);
+    /// ```
+    ///
+    /// An `AttrBuilder` can never hold two attributes of one kind, so
+    /// `align(4)` followed by `align(8)` leaves only `align(8)`; and because
+    /// the vector is only ever grown through this routine, it is sorted at
+    /// every point — which is what `AttributeSetNode::getSorted`'s
+    /// `assert(llvm::is_sorted(SortedAttrs))` relies on and what
+    /// `AssemblyWriter` prints. `declare void @f() "k"="1" "j"="2"` therefore
+    /// comes back with `"j"` first.
     pub fn add<B: ModuleBrand>(&mut self, index: AttrIndex, attr: Attribute<'_, B>) {
         self.add_stored(index, AttributeStored::from_attribute(attr));
     }
@@ -1716,20 +1790,14 @@ impl AttributeStorage {
             return;
         };
         let set = &mut self.entries[pos].1;
-        // `It->hasAttribute(Kind)` — an enum-kinded attribute matches by kind,
-        // a string attribute by key, and the two families never match each
-        // other because `kind()` answers `None` for a string attribute.
-        let same_slot = set.iter().position(|existing| match (&stored, existing) {
-            (AttributeStored::String { key: new_key, .. }, AttributeStored::String { key, .. }) => {
-                new_key == key
-            }
-            _ => stored.kind().is_some() && stored.kind() == existing.kind(),
-        });
-        match same_slot {
-            // `std::swap(*It, Attr)`.
-            Some(slot) => set[slot] = stored,
-            // `Attrs.insert(It, Attr)`.
-            None => set.push(stored),
+        // `auto It = lower_bound(Attrs, Kind, AttributeComparator());`
+        let it = set.partition_point(|existing| existing.precedes(&stored));
+        // `if (It != Attrs.end() && It->hasAttribute(Kind))`
+        match set.get(it) {
+            // `std::swap(*It, Attr);`
+            Some(existing) if existing.same_slot_as(&stored) => set[it] = stored,
+            // `Attrs.insert(It, Attr);`
+            _ => set.insert(it, stored),
         }
     }
 
@@ -1752,6 +1820,26 @@ impl AttributeStorage {
             .iter()
             .find_map(|attr| match attr {
                 AttributeStored::NoFpClass(mask) => Some(*mask),
+                _ => None,
+            })
+    }
+
+    /// The `vscale_range` pair recorded at `index`, if one is.
+    ///
+    /// Ports the `Attribute::getVScaleRangeMin` / `getVScaleRangeMax` pair
+    /// that `llvm::getVScaleRange` reads off `getFnAttribute`. Answers the
+    /// pair itself rather than the stored attribute, so the crate-private
+    /// storage type stays private — the same shape as [`Self::no_fp_class`].
+    /// `None` for "no attribute here"; the inner `None` is upstream's
+    /// `std::optional<unsigned>` "unbounded" max.
+    pub fn vscale_range(&self, index: AttrIndex) -> Option<(u32, Option<u32>)> {
+        self.entries
+            .iter()
+            .find(|(stored_index, _)| *stored_index == index)?
+            .1
+            .iter()
+            .find_map(|attr| match attr {
+                AttributeStored::VScaleRange { min, max } => Some((*min, *max)),
                 _ => None,
             })
     }
@@ -1846,6 +1934,20 @@ impl AttributeStorage {
     pub fn int_value(&self, index: AttrIndex, kind: AttrKind) -> Option<u64> {
         self.get(index)?.iter().find_map(|attr| match attr {
             AttributeStored::Int(k, v) if *k == kind => Some(*v),
+            _ => None,
+        })
+    }
+
+    /// The type payload recorded at `index` for a type-flavoured `kind`, if
+    /// one is.
+    ///
+    /// Ports `AttributeList::getParamElementType` — the spelling
+    /// `Verifier::verifyInlineAsmCall` uses to ask whether a call argument
+    /// carries `elementtype`, where its sibling arm asks
+    /// `paramHasAttr(ArgNo, Attribute::ElementType)` ([`Self::has_kind`]).
+    pub(crate) fn type_value(&self, index: AttrIndex, kind: AttrKind) -> Option<TypeSlot> {
+        self.get(index)?.iter().find_map(|attr| match attr {
+            AttributeStored::Type(k, t) if *k == kind => Some(*t),
             _ => None,
         })
     }
@@ -1982,10 +2084,7 @@ mod tests {
     fn attribute_list_indexed_storage() {
         let mut l = TestAttributeList::<'_>::new();
         l.add(AttrIndex::Function, TestAttribute::Enum(AttrKind::NoReturn));
-        l.add(
-            AttrIndex::Param(0),
-            TestAttribute::Enum(AttrKind::NoCapture),
-        );
+        l.add(AttrIndex::Param(0), TestAttribute::Enum(AttrKind::NoAlias));
         assert!(
             l.get(AttrIndex::Function)
                 .unwrap()
@@ -1994,7 +2093,7 @@ mod tests {
         assert!(
             l.get(AttrIndex::Param(0))
                 .unwrap()
-                .has_kind(AttrKind::NoCapture)
+                .has_kind(AttrKind::NoAlias)
         );
         assert!(l.get(AttrIndex::Param(1)).is_none());
     }

@@ -77,8 +77,8 @@ use llvmkit_ir::module_summary_index::{
 
 use super::numbered_values::AddError;
 use super::numbered_values::NumberedValues;
-use super::parse_error::{DiagLoc, ParseError, ParseResult};
-use super::parse_error::{SymbolId, SymbolKind};
+use super::parse_error::{MetadataKeywordFamily, SymbolId, SymbolKind};
+use super::parse_error::{ParseError, ParseResult};
 use super::slot_mapping::{GlobalRef, SlotMapping};
 
 /// Unwrap an `IrResult` from a metadata API the parser drives against **its own**
@@ -273,7 +273,6 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// Global-object attachments are deliberately not recorded — upstream
     /// pushes only from the instruction routine.
     insts_with_tbaa_tag: Vec<llvmkit_ir::InstructionView<'ctx, B>>,
-    forward_function_decls: HashMap<String, Span>,
     /// `@name` referenced before it was defined, holding the placeholder
     /// minted at the first use. Mirrors `LLParser::ForwardRefVals`; ordered
     /// because `validateEndOfModule` reports `begin()`.
@@ -675,8 +674,9 @@ impl<'ctx, B: ModuleBrand> ParsedCallee<'ctx, B> {
     /// through its out-parameter. Upstream's switch over `ValID::Kind` ends in
     /// a single erased value and every call/invoke/callbr construction site
     /// downstream sees only that; llvmkit keeps the variants because
-    /// `parse_callbr` still needs the directness distinction
-    /// (`docs/divergences.md` entry 27), so the collapse is spelled here.
+    /// `parse_invoke` and `parse_callbr` each still reach a *different*
+    /// builder entry point per callee shape (`docs/future-work.md`), so the
+    /// collapse is spelled here.
     fn as_erased(&self) -> llvmkit_ir::Value<'ctx, B> {
         match self {
             ParsedCallee::Function(f) => IsValue::as_erased(*f),
@@ -748,6 +748,25 @@ impl AttrListContext {
 struct ParsedApsInt {
     value: ApInt,
     signedness: Signedness,
+}
+
+/// The signedness `LLLexer` stamps on an integer token's `APSInt`, and what
+/// `Lex.getAPSIntVal().isSigned()` reads back off it.
+///
+/// Two upstream sites decide it between them. `LLLexer::lexIdentifier`'s
+/// `[us]0x[0-9A-Fa-f]+` block passes `TokStart[0] == 'u'` as `APSInt`'s
+/// `isUnsigned` flag, so `u0x…` is unsigned and `s0x…` signed; every other
+/// integer spelling reaches `APSInt::APSInt(StringRef)`, which is signed
+/// exactly when `Str[0] == '-'`.
+fn int_lit_signedness(lit: IntLit<'_>) -> Signedness {
+    match lit.base {
+        NumBase::HexSigned => Signedness::Signed,
+        NumBase::HexUnsigned => Signedness::Unsigned,
+        NumBase::Dec => match lit.sign {
+            Sign::Neg => Signedness::Signed,
+            Sign::Pos => Signedness::Unsigned,
+        },
+    }
 }
 
 impl ParsedApsInt {
@@ -923,7 +942,7 @@ fn reject_named_void(lhs: &LocalLhs, loc: Span) -> ParseResult<()> {
         LocalLhs::None => Ok(()),
         LocalLhs::Named(_) | LocalLhs::Numbered(_) => Err(ParseError::Message {
             message: "instructions returning void cannot have a name".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }),
     }
 }
@@ -952,28 +971,10 @@ fn check_value_id(
         return Err(ParseError::Message {
             message: format!("{kind} expected to be numbered '{prefix}{next_id}' or greater")
                 .into(),
-            loc: DiagLoc::span(loc),
+            loc,
         });
     }
     Ok(())
-}
-
-fn is_int_or_int_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
-    match AnyTypeEnum::from(ty) {
-        AnyTypeEnum::Int(_) => true,
-        AnyTypeEnum::Vector(v) => v.element().is_integer(),
-        _ => false,
-    }
-}
-
-/// Whether `ty` is what `isa<FPMathOperator>` accepts: a floating-point scalar
-/// or a vector of them.
-fn is_fp_or_fp_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
-    match AnyTypeEnum::from(ty) {
-        AnyTypeEnum::Float(_) => true,
-        AnyTypeEnum::Vector(v) => v.element().is_floating_point(),
-        _ => false,
-    }
 }
 
 /// Mirrors `AtomicCmpXchgInst::isValidSuccessOrdering`.
@@ -1010,14 +1011,6 @@ fn atomicrmw_op_is_floating_point(op: AtomicRmwBinOp) -> bool {
     )
 }
 
-fn is_ptr_or_ptr_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
-    match AnyTypeEnum::from(ty) {
-        AnyTypeEnum::Pointer(_) => true,
-        AnyTypeEnum::Vector(v) => v.element().is_pointer(),
-        _ => false,
-    }
-}
-
 fn vector_shape_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<(u32, bool)> {
     match AnyTypeEnum::from(ty) {
         AnyTypeEnum::Vector(v) => Some((v.min_len(), v.is_scalable())),
@@ -1027,20 +1020,7 @@ fn vector_shape_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<(
 #[derive(Debug, Clone)]
 struct ParsedGepConstantExprFlags {
     no_wrap: GepNoWrapFlags,
-    in_range: Option<(ParsedInRangeBound, ParsedInRangeBound)>,
-}
-
-#[derive(Debug, Clone)]
-enum ParsedInRangeBound {
-    SignedMagnitude {
-        negative: bool,
-        magnitude_words: Box<[u64]>,
-    },
-    HexApsInt {
-        signed: bool,
-        words: Box<[u64]>,
-        bit_width: u32,
-    },
+    in_range: Option<(ParsedApsInt, ParsedApsInt)>,
 }
 
 /// `GV->getValueType()->isFunctionTy()` for whichever global kind `r` names.
@@ -1069,234 +1049,17 @@ fn pointer_address_space_or_vector_element<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn inrange_bound_to_apint_words(bound: &ParsedInRangeBound, bit_width: u32) -> Box<[u64]> {
-    match bound {
-        ParsedInRangeBound::SignedMagnitude {
-            negative,
-            magnitude_words,
-        } => signed_magnitude_to_apint_words(*negative, magnitude_words, bit_width),
-        ParsedInRangeBound::HexApsInt {
-            signed,
-            words,
-            bit_width: source_bit_width,
-        } => apsint_to_apint_words(*signed, words, *source_bit_width, bit_width),
-    }
-}
-
-fn signed_magnitude_to_apint_words(
-    negative: bool,
-    magnitude_words: &[u64],
-    bit_width: u32,
-) -> Box<[u64]> {
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    let mut words = vec![0; word_count];
-    let copy_count = words.len().min(magnitude_words.len());
-    words[..copy_count].copy_from_slice(&magnitude_words[..copy_count]);
-    mask_apint_top_word(&mut words, bit_width);
-    if negative {
-        negate_apint_words(&mut words, bit_width);
-    }
-    words.into_boxed_slice()
-}
-
-fn apsint_to_apint_words(
-    signed: bool,
-    source_words: &[u64],
-    source_bit_width: u32,
-    bit_width: u32,
-) -> Box<[u64]> {
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    let negative = signed && apint_sign_bit(source_words, source_bit_width);
-    let fill = if negative { u64::MAX } else { 0 };
-    let mut words = vec![fill; word_count];
-    let copy_count = words.len().min(source_words.len());
-    words[..copy_count].copy_from_slice(&source_words[..copy_count]);
-    if negative && source_bit_width < bit_width {
-        sign_extend_apint_words(&mut words, source_bit_width);
-    }
-    mask_apint_top_word(&mut words, bit_width);
-    words.into_boxed_slice()
-}
-
-fn sign_extend_apint_words(words: &mut [u64], source_bit_width: u32) {
-    let start_word = usize::try_from(source_bit_width / 64).unwrap_or(usize::MAX);
-    if start_word >= words.len() {
-        return;
-    }
-    let start_bit = source_bit_width % 64;
-    if start_bit == 0 {
-        for word in &mut words[start_word..] {
-            *word = u64::MAX;
-        }
-    } else {
-        words[start_word] |= u64::MAX << start_bit;
-        for word in &mut words[start_word + 1..] {
-            *word = u64::MAX;
-        }
-    }
-}
-
-fn negate_apint_words(words: &mut [u64], bit_width: u32) {
-    for word in words.iter_mut() {
-        *word = !*word;
-    }
-    mask_apint_top_word(words, bit_width);
-    let mut carry = true;
-    for word in words.iter_mut() {
-        if !carry {
-            break;
-        }
-        let (next, overflowed) = word.overflowing_add(1);
-        *word = next;
-        carry = overflowed;
-    }
-    mask_apint_top_word(words, bit_width);
-}
-
-fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
-    let top_bits = bit_width % 64;
-    if top_bits != 0
-        && let Some(top) = words.last_mut()
-    {
-        *top &= (1u64 << top_bits) - 1;
-    }
-}
-
-fn constant_expr_inrange_is_non_empty(range: &ConstantExprInRange) -> bool {
-    signed_apint_cmp(range.start(), range.end(), range.bit_width()).is_lt()
-}
-
-fn signed_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
-    let lhs_negative = apint_sign_bit(lhs, bit_width);
-    let rhs_negative = apint_sign_bit(rhs, bit_width);
-    match (lhs_negative, rhs_negative) {
-        (true, false) => core::cmp::Ordering::Less,
-        (false, true) => core::cmp::Ordering::Greater,
-        _ => unsigned_apint_cmp(lhs, rhs, bit_width),
-    }
-}
-
-fn apint_sign_bit(words: &[u64], bit_width: u32) -> bool {
-    if bit_width == 0 {
-        return false;
-    }
-    let bit_index = bit_width - 1;
-    let word_index = usize::try_from(bit_index / 64).unwrap_or(usize::MAX);
-    let bit_in_word = bit_index % 64;
-    words
-        .get(word_index)
-        .is_some_and(|word| ((word >> bit_in_word) & 1) != 0)
-}
-
-fn unsigned_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    for idx in (0..word_count).rev() {
-        let lhs_word = apint_word(lhs, idx, bit_width);
-        let rhs_word = apint_word(rhs, idx, bit_width);
-        match lhs_word.cmp(&rhs_word) {
-            core::cmp::Ordering::Equal => {}
-            ordering => return ordering,
-        }
-    }
-    core::cmp::Ordering::Equal
-}
-
-fn decimal_digits_to_words(digits: &str) -> Option<Box<[u64]>> {
-    let mut words = vec![0u64];
-    for byte in digits.bytes() {
-        if !byte.is_ascii_digit() {
-            return None;
-        }
-        mul_add_words(&mut words, 10, u64::from(byte - b'0'));
-    }
-    while words.len() > 1 && words.last().copied() == Some(0) {
-        words.pop();
-    }
-    Some(words.into_boxed_slice())
-}
-
-fn hex_digits_to_words(digits: &str) -> Option<Box<[u64]>> {
-    let mut words = vec![0u64];
-    for byte in digits.bytes() {
-        let digit = match byte {
-            b'0'..=b'9' => byte - b'0',
-            b'a'..=b'f' => byte - b'a' + 10,
-            b'A'..=b'F' => byte - b'A' + 10,
-            _ => return None,
-        };
-        mul_add_words(&mut words, 16, u64::from(digit));
-    }
-    while words.len() > 1 && words.last().copied() == Some(0) {
-        words.pop();
-    }
-    Some(words.into_boxed_slice())
-}
-
-fn hex_apsint_bit_width(digits: &str, words: &[u64]) -> Option<u32> {
-    let syntactic_bits = u32::try_from(digits.len()).ok()?.checked_mul(4)?;
-    let active_bits = apint_active_bits(words)?;
-    if active_bits > 0 && active_bits < syntactic_bits {
-        Some(active_bits)
-    } else {
-        Some(syntactic_bits)
-    }
-}
-
-fn apint_active_bits(words: &[u64]) -> Option<u32> {
-    for (idx, word) in words.iter().enumerate().rev() {
-        if *word != 0 {
-            let word_base = u32::try_from(idx).ok()?.checked_mul(64)?;
-            return word_base.checked_add(64 - word.leading_zeros());
-        }
-    }
-    Some(0)
-}
-
-fn mul_add_words(words: &mut Vec<u64>, multiplier: u64, addend: u64) {
-    let mut carry = u128::from(addend);
-    for word in words.iter_mut() {
-        let value = u128::from(*word) * u128::from(multiplier) + carry;
-        *word = low_u64(value);
-        carry = value >> 64;
-    }
-    while carry != 0 {
-        words.push(low_u64(carry));
-        carry >>= 64;
-    }
-}
-
-fn low_u64(value: u128) -> u64 {
-    let bytes = value.to_le_bytes();
-    u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ])
-}
-
-fn apint_word(words: &[u64], idx: usize, bit_width: u32) -> u64 {
-    let mut word = words.get(idx).copied().unwrap_or(0);
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    if word_count != 0 && idx + 1 == word_count {
-        let top_bits = bit_width % 64;
-        if top_bits != 0 {
-            word &= (1u64 << top_bits) - 1;
-        }
-    }
-    word
-}
-
+/// `ExtractElementInst::isValidOperands(Val, Index)` — the operand guard only;
+/// the result type is the vector's element type and is derived, not demanded.
 fn is_valid_extractelement<'ctx, B: ModuleBrand + 'ctx>(
-    result_ty: Type<'ctx, B>,
     vector_ty: Type<'ctx, B>,
     index_ty: Type<'ctx, B>,
 ) -> bool {
-    let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector_ty) else {
-        return false;
-    };
-    vector_ty.element() == result_ty && index_ty.is_integer()
+    vector_ty.is_vector() && index_ty.is_integer()
 }
 
+/// `InsertElementInst::isValidOperands(Vec, Elt, Index)`.
 fn is_valid_insertelement<'ctx, B: ModuleBrand + 'ctx>(
-    result_ty: Type<'ctx, B>,
     vector_ty: Type<'ctx, B>,
     value_ty: Type<'ctx, B>,
     index_ty: Type<'ctx, B>,
@@ -1304,11 +1067,19 @@ fn is_valid_insertelement<'ctx, B: ModuleBrand + 'ctx>(
     let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector_ty) else {
         return false;
     };
-    vector_ty.as_type() == result_ty && vector_ty.element() == value_ty && index_ty.is_integer()
+    vector_ty.element() == value_ty && index_ty.is_integer()
 }
 
+/// `ShuffleVectorInst::isValidOperands(V1, V2, Mask)`, the `Value *Mask`
+/// overload: `V1` and `V2` are vectors of the same type, and the mask is a
+/// vector of `i32` of the same kind — fixed against fixed, scalable against
+/// scalable.
+///
+/// The mask's *element range* half (`CI->uge(V1Size * 2)`) is not repeated
+/// here: `validate_constant_expr_data`'s `ShuffleVector` arm runs it through
+/// `valid_shufflevector_mask_constant`, and `build_constant_expr` renders that
+/// rejection as this same `invalid operands to shufflevector`.
 fn is_valid_shufflevector<'ctx, B: ModuleBrand + 'ctx>(
-    result_ty: Type<'ctx, B>,
     lhs_ty: Type<'ctx, B>,
     rhs_ty: Type<'ctx, B>,
     mask_ty: Type<'ctx, B>,
@@ -1322,16 +1093,11 @@ fn is_valid_shufflevector<'ctx, B: ModuleBrand + 'ctx>(
     let AnyTypeEnum::Vector(mask_ty) = AnyTypeEnum::from(mask_ty) else {
         return false;
     };
-    let AnyTypeEnum::Vector(result_ty) = AnyTypeEnum::from(result_ty) else {
-        return false;
-    };
     lhs_ty.element() == rhs_ty.element()
         && lhs_ty.min_len() == rhs_ty.min_len()
         && lhs_ty.is_scalable() == rhs_ty.is_scalable()
         && matches!(mask_ty.element().kind(), TypeKind::Integer { bits: 32 })
-        && result_ty.element() == lhs_ty.element()
-        && result_ty.min_len() == mask_ty.min_len()
-        && result_ty.is_scalable() == mask_ty.is_scalable()
+        && mask_ty.is_scalable() == lhs_ty.is_scalable()
 }
 
 #[derive(Clone, Copy)]
@@ -1350,7 +1116,7 @@ fn map_lex_error(e: LexError) -> ParseError {
             ParseError::IntegerWidthOutOfRange {
                 width,
                 max,
-                loc: DiagLoc::span(span),
+                loc: span,
             }
         }
         other => ParseError::Lex(other),
@@ -1382,7 +1148,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             deferred_alias_targets: Vec::new(),
             deferred_intrinsic_attribute_checks: Vec::new(),
             insts_with_tbaa_tag: Vec::new(),
-            forward_function_decls: HashMap::new(),
             forward_ref_comdats: BTreeMap::new(),
             forward_ref_globals: BTreeMap::new(),
             forward_ref_global_ids: BTreeMap::new(),
@@ -1527,7 +1292,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // and `parseOrdering`.
                 return Err(ParseError::Message {
                     message: "Metadata id is already used".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 });
             }
             // The id was reserved by *this* module (`resolve_md_slot` ->
@@ -1659,7 +1424,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // own: its `NoCFIValue` wraps the placeholder directly and re-interns
         // itself when the sweep above RAUWs it.
         self.resolve_pending_no_cfi()?;
-        self.validate_forward_function_decls(config.allow_incomplete_ir)?;
         // `if (!ForwardRefMDNodes.empty())` — metadata is the *last* of the
         // leftovers, after every value one.
         for (slot, entry) in &self.metadata_slots {
@@ -1667,7 +1431,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 return Err(ParseError::UndefinedSymbol {
                     kind: SymbolKind::Metadata,
                     id: SymbolId::Numbered(*slot),
-                    loc: DiagLoc::span(entry.first_ref),
+                    loc: entry.first_ref,
                 });
             }
         }
@@ -1681,7 +1445,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `ForwardRefVals` sweep above reaches the same pair for an
         // undeclared one), `llvm::UpgradeDebugInfo`, `UpgradeModuleFlags`,
         // `UpgradeNVVMAnnotations`, `UpgradeSectionAttributes` and
-        // `copyModuleAttrToFunctions`. Three of them are ported; the six that
+        // `copyModuleAttrToFunctions`. Four of them are ported; the five that
         // are not are recorded in `docs/future-work.md` with what each is
         // blocked on. The ported ones sit at their own positions, so adding
         // the rest is insertion, not re-ordering.
@@ -1692,6 +1456,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // slot that `metadata_set` fills in place — so there is no step here.
         self.upgrade_tbaa_tags();
         llvmkit_ir::auto_upgrade::upgrade_module_flags(self.module);
+        llvmkit_ir::auto_upgrade::upgrade_nvvm_annotations(self.module);
         llvmkit_ir::auto_upgrade::upgrade_section_attributes(self.module);
 
         // `Run` is `parseTopLevelEntities() || validateEndOfModule(...) ||
@@ -1763,14 +1528,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::Message {
                 message: format!("unknown function '{name}' referenced by dso_local_equivalent")
                     .into(),
-                loc: DiagLoc::span(entry.loc),
+                loc: entry.loc,
             });
         };
         if !global_ref_value_type_is_function(global) {
             return Err(ParseError::Message {
                 message: "expected a function, alias to function, or ifunc in dso_local_equivalent"
                     .into(),
-                loc: DiagLoc::span(entry.loc),
+                loc: entry.loc,
             });
         }
         let equivalent = self
@@ -1802,7 +1567,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         NameOrId::Name(name) => SymbolId::Named(name),
                         NameOrId::Id(id) => SymbolId::Numbered(id),
                     },
-                    loc: DiagLoc::span(item.loc),
+                    loc: item.loc,
                 });
             };
             let no_cfi = self
@@ -1844,7 +1609,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let Some(block) = state.defined_block(&item.label) else {
                 return Err(ParseError::Message {
                     message: "referenced value is not a basic block".into(),
-                    loc: DiagLoc::span(item.label_loc),
+                    loc: item.label_loc,
                 });
             };
             let block = state.value_as_block_view(block, item.label_loc)?;
@@ -1879,7 +1644,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             "constant expression type mismatch: got type '{got}' but expected '{expected}'"
                         )
                         .into(),
-                        loc: DiagLoc::span(item.value_loc),
+                        loc: item.value_loc,
                     },
                     DeferredBlockAddressFunction::Forward(_) => ParseError::DefinedWithWrongType {
                         name: match &item.label {
@@ -1888,7 +1653,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         },
                         defined: got.to_string(),
                         expected: expected.to_string(),
-                        loc: DiagLoc::span(item.label_loc),
+                        loc: item.label_loc,
                     },
                 });
             }
@@ -1907,7 +1672,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(item) = self.deferred_block_addresses.first() {
             return Err(ParseError::Expected {
                 expected: "function name in blockaddress".into(),
-                loc: DiagLoc::span(item.function_loc),
+                loc: item.function_loc,
             });
         }
         Ok(())
@@ -1922,7 +1687,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
                         kind,
                         id,
-                        loc: DiagLoc::span(item.loc),
+                        loc: item.loc,
                     },
                     other => other,
                 })?;
@@ -1947,7 +1712,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
                         kind,
                         id,
-                        loc: DiagLoc::span(item.loc),
+                        loc: item.loc,
                     },
                     other => other,
                 })?;
@@ -2028,62 +1793,228 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `@`-reference is a `use of undefined **value**`, where a *redefinition*
     /// of the same namespace says `global`.
     fn resolve_forward_ref_globals(&mut self, allow_incomplete_ir: bool) -> ParseResult<()> {
+        // `for (const auto &[Name, Info] : make_early_inc_range(ForwardRefVals))`
+        //
+        // Every definition site erases its own entry before this runs —
+        // `parseGlobal` and `parseAliasOrIFunc` through
+        // [`Self::claim_global_forward_ref`], `parseFunctionHeader` through
+        // [`Self::claim_function_forward_ref`] — so an entry that is still
+        // here names something the module never defined. That is why the loop
+        // never looks a name up: upstream's does not either.
+        //
+        // The loop runs to the end before anything is reported. The
+        // `use of undefined value` below is `ForwardRefVals.begin()` *after*
+        // it, so an intrinsic offender late in key order still preempts an
+        // ordinary leftover early in it.
         let named = core::mem::take(&mut self.forward_ref_globals);
+        let mut leftovers: BTreeMap<String, ForwardRef<'ctx, B>> = BTreeMap::new();
         for (name, entry) in named {
-            let target = match self.resolve_global_name_as_ref(name.clone()) {
-                Ok(target) => target,
-                // `if (!AllowIncompleteIR) continue;` — with the option on, a
-                // leftover that is *not* an intrinsic gets a declaration
-                // synthesised for it instead of ending the parse. Names under
-                // `llvm.` never reach the option upstream: the intrinsic
-                // auto-declaration branch above it has already `continue`d.
-                Err(_) if allow_incomplete_ir && !name.starts_with("llvm.") => {
-                    let placeholder = entry.placeholder.as_value();
-                    self.declare_incomplete_forward_ref(&name, placeholder, entry.loc)?
-                }
-                Err(_) => {
-                    return Err(ParseError::UndefinedSymbol {
-                        kind: SymbolKind::GlobalValue,
-                        id: SymbolId::Named(name),
-                        loc: DiagLoc::span(entry.loc),
-                    });
-                }
-            };
+            // `if (StringRef(Name).starts_with("llvm."))`
+            if name.starts_with("llvm.") {
+                self.reject_intrinsic_non_callee(&entry)?;
+                // Every use is a callee use, which is where upstream
+                // auto-declares the intrinsic from the call site's
+                // `FunctionType` and then erases the entry. llvmkit
+                // auto-declares at the call site instead
+                // (`resolve_direct_callee`'s `IntrinsicNameResolution::Known`
+                // arm), so no `llvm.` name reaches `global_forward_ref` from
+                // callee position and there is no declaration here to point
+                // the placeholder at — the entry stays a leftover rather than
+                // being dropped with its uses still dangling
+                // (recorded in `docs/divergences.md`, under the
+                // auto-declaration site).
+                leftovers.insert(name, entry);
+                continue;
+            }
+            // `if (!AllowIncompleteIR) continue;` — with the option on, a
+            // leftover that is *not* an intrinsic gets a declaration
+            // synthesised for it instead of ending the parse.
+            if !allow_incomplete_ir {
+                leftovers.insert(name, entry);
+                continue;
+            }
+            let placeholder = entry.placeholder.as_value();
+            let target = self.declare_incomplete_forward_ref(&name, placeholder, entry.loc)?;
             let target = self.global_ref_to_constant(target);
-            Self::resolve_global_forward_ref(entry, target)?;
+            Self::rauw_forward_ref(entry, target)?;
         }
+        // `if (!ForwardRefVals.empty()) return error(begin()->second.second,
+        //    "use of undefined value '@" + begin()->first + "'");`
+        if let Some((name, entry)) = leftovers.into_iter().next() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: SymbolKind::GlobalValue,
+                id: SymbolId::Named(name),
+                loc: entry.loc,
+            });
+        }
+        // `if (!ForwardRefValIDs.empty()) return error(begin()->second.second,
+        //    "use of undefined value '@" + Twine(begin()->first) + "'");` —
+        // numbers carry no `llvm.` prefix and no `AllowIncompleteIR` arm, so
+        // the numbered map has only the leftover report.
         let numbered = core::mem::take(&mut self.forward_ref_global_ids);
-        for (id, entry) in numbered {
-            let Some(target) = self.numbered_globals.get(id).copied() else {
-                return Err(ParseError::UndefinedSymbol {
-                    kind: SymbolKind::GlobalValue,
-                    id: SymbolId::Numbered(id),
-                    loc: DiagLoc::span(entry.loc),
-                });
-            };
-            let target = self.global_ref_to_constant(target);
-            Self::resolve_global_forward_ref(entry, target)?;
+        if let Some((id, entry)) = numbered.into_iter().next() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: SymbolKind::GlobalValue,
+                id: SymbolId::Numbered(id),
+                loc: entry.loc,
+            });
         }
         Ok(())
     }
 
-    fn resolve_global_forward_ref(
+    /// `parseGlobal`'s and `parseAliasOrIFunc`'s shared forward-reference
+    /// block, which the two spell identically:
+    ///
+    /// ```text
+    /// GlobalValue *GVal = nullptr;
+    /// if (!Name.empty()) {
+    ///   auto I = ForwardRefVals.find(Name);
+    ///   if (I != ForwardRefVals.end()) {
+    ///     GVal = I->second.first;
+    ///     ForwardRefVals.erase(I);
+    ///   } else if (M->getNamedValue(Name)) {
+    ///     return error(NameLoc, "redefinition of global '@" + Name + "'");
+    ///   }
+    /// } else {
+    ///   auto I = ForwardRefValIDs.find(NameID);
+    ///   if (I != ForwardRefValIDs.end()) {
+    ///     GVal = I->second.first;
+    ///     ForwardRefValIDs.erase(I);
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// The **erase** is the load-bearing half: without it a name that was
+    /// forward-referenced once could be defined any number of times, because
+    /// the guard would keep seeing the map entry and skipping the
+    /// redefinition check. `M->getNamedValue` is the whole symbol table, not
+    /// the globals alone, so a `declare` and a `@g = global` under one name
+    /// collide here rather than in the builder.
+    ///
+    /// The numbered arm has no redefinition check upstream, and none here:
+    /// a repeated `@N` is caught by `NumberedValues::add` instead.
+    fn claim_global_forward_ref(
+        &mut self,
+        name_id: &NameOrId,
+        name_loc: Span,
+    ) -> ParseResult<Option<ForwardRef<'ctx, B>>> {
+        match name_id {
+            NameOrId::Name(name) if !name.is_empty() => {
+                if let Some(entry) = self.forward_ref_globals.remove(name.as_str()) {
+                    return Ok(Some(entry));
+                }
+                if self.global_symbol_lookup(name).is_some() {
+                    return Err(ParseError::Redefinition {
+                        kind: SymbolKind::Global,
+                        id: SymbolId::Named(name.clone()),
+                        loc: name_loc,
+                    });
+                }
+                Ok(None)
+            }
+            // `@""` is a name syntactically present but semantically missing.
+            // Upstream reaches the numbered arm for it and replaces
+            // `NameID == (unsigned)-1` with `NumberedVals.getNext()`; llvmkit
+            // carries it as an empty `NameOrId::Name` that takes no number at
+            // all — the gap catalogued as **G15** in
+            // `docs/fixture-coverage.md`, not introduced here.
+            NameOrId::Name(_) => Ok(None),
+            NameOrId::Id(id) => Ok(self.forward_ref_global_ids.remove(id)),
+        }
+    }
+
+    /// The `if (GVal) { … }` tail `parseAliasOrIFunc` runs **after** its
+    /// property loop: `if (GVal->getType() != GV->getType()) return
+    /// error(ExplicitTypeLoc, "forward reference and definition of alias have
+    /// different types"); GVal->replaceAllUsesWith(GV);
+    /// GVal->eraseFromParent();`.
+    ///
+    /// One message serves both spellings — upstream words the ifunc case
+    /// "alias" too. `GV->getType()` is `PointerType::get(C, AddrSpace)` with
+    /// `AddrSpace` taken off the *aliasee's* pointer type, which is what
+    /// `target_ty` is.
+    fn resolve_alias_forward_ref(
+        forward_ref: Option<ForwardRef<'ctx, B>>,
+        definition: llvmkit_ir::Constant<'ctx, B>,
+        target_ty: Type<'ctx, B>,
+        explicit_type_loc: Span,
+    ) -> ParseResult<()> {
+        let Some(entry) = forward_ref else {
+            return Ok(());
+        };
+        if entry.placeholder.ty() != target_ty {
+            return Err(ParseError::Message {
+                message: "forward reference and definition of alias have different types".into(),
+                loc: explicit_type_loc,
+            });
+        }
+        Self::rauw_forward_ref(entry, definition)
+    }
+
+    /// `GVal->replaceAllUsesWith(GV); GVal->eraseFromParent();` — the half of
+    /// every forward-reference block that carries no diagnostic. The erase is
+    /// implicit: nothing holds the placeholder once its uses are rewritten.
+    fn rauw_forward_ref(
         entry: ForwardRef<'ctx, B>,
         target: llvmkit_ir::Constant<'ctx, B>,
     ) -> ParseResult<()> {
-        if entry.placeholder.ty() != target.ty() {
-            return Err(ParseError::Message {
-                message: "forward reference and definition of global have different types".into(),
-                loc: DiagLoc::span(entry.loc),
-            });
-        }
         entry
             .placeholder
             .replace_all_uses_with(target.as_erased())
             .map_err(|e| ParseError::Message {
                 message: format!("cannot resolve forward reference: {e}").into(),
-                loc: DiagLoc::span(entry.loc),
+                loc: entry.loc,
             })
+    }
+
+    /// The guard that opens `validateEndOfModule`'s intrinsic branch:
+    ///
+    /// ```text
+    /// for (Use &U : make_early_inc_range(Info.first->uses())) {
+    ///   auto *CB = dyn_cast<CallBase>(U.getUser());
+    ///   if (!CB || !CB->isCallee(&U))
+    ///     return error(Info.second, "intrinsic can only be used as callee");
+    /// ```
+    ///
+    /// It runs on a `ForwardRefVals` entry, so it is reached only for a
+    /// `llvm.`-prefixed name the module never defined — a name a later
+    /// `declare` / `define` claimed has already left the map through
+    /// [`Self::claim_function_forward_ref`], and one an earlier one defined
+    /// never entered it. The diagnostic is anchored at `Info.second`, the
+    /// location of the *first* reference, which is what the entry's `loc`
+    /// holds.
+    ///
+    /// Two spellings differ from upstream's `Use` walk, both forced by
+    /// llvmkit's use list:
+    ///
+    /// * [`Value::users`](llvmkit_ir::Value::users) yields only the
+    ///   instruction edges, so a constant-expression or global-field edge —
+    ///   a `User` upstream that is not a `CallBase` — is counted through
+    ///   [`Value::num_uses`](llvmkit_ir::Value::num_uses) instead, exactly as
+    ///   [`Self::common_call_site_function_type`] counts it. That count also
+    ///   includes the metadata and debug-record edges upstream models as no
+    ///   `Use` at all (`docs/divergences.md` D5).
+    /// * A placeholder with *no* edges at all is llvmkit's `no_cfi` spelling:
+    ///   [`Self::parse_no_cfi_constant`] registers the referent in
+    ///   `forward_ref_globals` and then builds the `NoCFIValue` over a
+    ///   second, separate stand-in. Upstream has one placeholder, and the
+    ///   `NoCFIValue` wrapping it is a non-`CallBase` user — an offender —
+    ///   so the empty edge list is treated as one here.
+    fn reject_intrinsic_non_callee(&self, entry: &ForwardRef<'ctx, B>) -> ParseResult<()> {
+        let placeholder = entry.placeholder.as_value();
+        let users: Vec<_> = placeholder.users().collect();
+        let only_callee_uses = !users.is_empty()
+            && users.len() == placeholder.num_uses()
+            && users
+                .iter()
+                .all(|user| Self::callee_function_type(user, placeholder).is_some());
+        if only_callee_uses {
+            return Ok(());
+        }
+        Err(ParseError::Message {
+            message: "intrinsic can only be used as callee".into(),
+            loc: entry.loc,
+        })
     }
 
     /// Synthesise a declaration for a `@name` that was never defined, under
@@ -2105,7 +2036,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .add_function_dyn(name, signature, Linkage::External)
                     .map_err(|e| ParseError::Message {
                         message: format!("cannot declare incomplete forward reference: {e}").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     })?;
                 Ok(GlobalRef::Function(self.module.view(id)))
             }
@@ -2117,7 +2048,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .add_external_global(name, self.module.i8_type().as_type())
                     .map_err(|e| ParseError::Message {
                         message: format!("cannot declare incomplete forward reference: {e}").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     })?;
                 Ok(GlobalRef::Variable(self.module.view(id)))
             }
@@ -2193,7 +2124,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !ty.is_pointer() {
             return Err(ParseError::Message {
                 message: "global variable reference must have pointer type".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         // `getGlobalVal`'s `ForwardRefVals` / `ForwardRefValIDs` hit is the
@@ -2222,7 +2153,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .forward_ref_value_placeholder(ty)
                 .map_err(|e| ParseError::Message {
                     message: format!("cannot create forward reference: {e}").into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })?;
         let constant = placeholder.as_constant();
         let entry = ForwardRef { placeholder, loc };
@@ -2240,38 +2171,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(constant)
     }
 
-    /// The half of upstream's `ForwardRefVals` sweep that llvmkit keeps in a
-    /// map of its own: a `@name` that was only ever seen as the *callee* of a
-    /// direct call.
-    ///
-    /// Upstream has no such map — `getGlobalVal` mints one placeholder for
-    /// every spelling of a forward reference — whereas llvmkit's
-    /// `parse_direct_callee` builds a real `declare` at the first call site's
-    /// signature and remembers the name here so a later `define` / `declare`
-    /// can claim it. Under `-allow-incomplete-ir` that declaration is exactly
-    /// what upstream would have synthesised for a name whose call sites all
-    /// agree, so the entries are simply retired.
-    ///
-    /// **Divergence:** for a name whose call sites *disagree*, upstream's
-    /// `GetCommonFunctionType` answers null and it emits an `i8` global
-    /// instead. llvmkit has already built the function by then and has no way
-    /// to unbuild it, so the first call site's signature survives
-    /// (`docs/divergences.md` entry 15).
-    fn validate_forward_function_decls(&mut self, allow_incomplete_ir: bool) -> ParseResult<()> {
-        if allow_incomplete_ir {
-            self.forward_function_decls.clear();
-            return Ok(());
-        }
-        if let Some((name, loc)) = self.forward_function_decls.iter().next() {
-            return Err(ParseError::UndefinedSymbol {
-                kind: SymbolKind::Global,
-                id: SymbolId::Named(name.clone()),
-                loc: DiagLoc::span(*loc),
-            });
-        }
-        Ok(())
-    }
-
     fn intrinsic_parse_error(&self, loc: Span, err: IrError) -> ParseError {
         let expected = match err {
             IrError::UnknownIntrinsic { .. } => "unknown intrinsic",
@@ -2281,21 +2180,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         ParseError::Expected {
             expected: expected.into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
     fn intrinsic_modifier_error(&self, loc: Span) -> ParseError {
         ParseError::Expected {
             expected: "intrinsic declaration modifier".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
     fn intrinsic_attribute_error(&self, loc: Span) -> ParseError {
         ParseError::Expected {
             expected: "intrinsic declaration attribute mismatch".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -2395,7 +2294,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             Err(ParseError::Expected {
                 expected: "end of string".into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })
         }
     }
@@ -2406,7 +2305,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let consumed = self.loc().start.saturating_sub(start);
         let consumed = usize::try_from(consumed).map_err(|_| ParseError::Expected {
             expected: "type byte count fits in usize".into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: self.loc(),
         })?;
         Ok((ty, consumed))
     }
@@ -2465,7 +2364,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             | ValIdKind::Value(_) => {
                 return Err(ParseError::Message {
                     message: "expected a constant value".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 });
             }
         };
@@ -2524,14 +2423,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn expect_primitive(&mut self, p: PrimitiveTy, expected: &'static str) -> ParseResult<Span> {
-        if matches!(self.peek(), Token::PrimitiveType(got) if *got == p) {
-            self.bump()
-        } else {
-            Err(self.expected(expected))
-        }
-    }
-
     fn token_error(&self, expected: impl Into<Cow<'static, str>>) -> ParseError {
         self.expected(expected)
     }
@@ -2539,7 +2430,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn expected(&self, expected: impl Into<Cow<'static, str>>) -> ParseError {
         ParseError::Expected {
             expected: expected.into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: self.loc(),
         }
     }
 
@@ -2558,7 +2449,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn message_at(&self, loc: Span, message: impl Into<Cow<'static, str>>) -> ParseError {
         ParseError::Message {
             message: message.into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -2567,7 +2458,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn expected_at(&self, loc: Span, expected: impl Into<Cow<'static, str>>) -> ParseError {
         ParseError::Expected {
             expected: expected.into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -2625,7 +2516,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         None => {
                             return Err(ParseError::Message {
                                 message: format!("invalid symbolic addrspace '{name}'").into(),
-                                loc: DiagLoc::span(self.loc()),
+                                loc: self.loc(),
                             });
                         }
                     },
@@ -2661,30 +2552,41 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `Lex.getKind() != lltok::APSInt || Lex.getAPSIntVal().isSigned()` — the
+    /// guard `parseUInt32` and `parseUInt64` share, answered **without**
+    /// consuming the token.
+    ///
+    /// The token has to survive the answer: upstream's `Lex.Lex()` comes after
+    /// `parseUInt32`'s range check, so `expected 32-bit integer (too large)`
+    /// is a `tokError` on the integer itself. The base and the digit count are
+    /// never inspected — only the token kind and the signedness are.
+    fn peek_unsigned_apsint(&self) -> Option<IntLit<'src>> {
+        match self.peek() {
+            Token::IntegerLit(lit) if int_lit_signedness(*lit) == Signedness::Unsigned => {
+                Some(*lit)
+            }
+            _ => None,
+        }
+    }
+
     /// Mirrors `LLParser::parseUInt32`, including its second message: a value
     /// that does not round-trip through `unsigned` is
     /// `expected 32-bit integer (too large)`, which is why
     /// `attributes #0 = { align = 4294967296 }` fails where the inline
     /// `align 4294967296` succeeds.
     fn parse_uint32(&mut self) -> ParseResult<u32> {
-        // Upstream reads the token as an unsigned APSInt first and only then
-        // asks whether it fits, so "not an integer" and "too large" are
-        // separate messages. Parsing straight into a `u32` would collapse them.
-        let digits = match self.peek() {
-            Token::IntegerLit(IntLit {
-                sign: Sign::Pos,
-                base: NumBase::Dec,
-                digits,
-            }) => *digits,
-            _ => return Err(self.expected("integer")),
+        let Some(lit) = self.peek_unsigned_apsint() else {
+            return Err(self.expected("integer"));
         };
-        let Ok(value) = digits.parse::<u64>() else {
-            // `getLimitedValue(0xFFFFFFFFULL + 1)` saturates rather than
-            // failing, so a literal too wide even for 64 bits still reaches
-            // the range check below.
-            return Err(self.expected("32-bit integer (too large)"));
-        };
-        let Ok(value) = u32::try_from(value) else {
+        // `getLimitedValue(0xFFFFFFFFULL + 1)` saturates rather than failing,
+        // so a literal too wide even for 64 bits still reaches the range check
+        // below and answers `expected 32-bit integer (too large)` rather than
+        // `expected integer`.
+        let value64 = self
+            .apsint_from_int_lit(lit)?
+            .value
+            .limited_value(0xFFFF_FFFF_u64 + 1);
+        let Ok(value) = u32::try_from(value64) else {
             return Err(self.expected("32-bit integer (too large)"));
         };
         self.bump()?;
@@ -2694,22 +2596,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Mirrors `LLParser::parseUInt64`. Its one message is `expected integer`
     /// at every one of upstream's call sites, so this takes no label; the
     /// bespoke per-site wordings llvmkit used to pass were all divergences.
+    ///
+    /// `getLimitedValue()`'s default limit is `UINT64_MAX`, so a literal wider
+    /// than 64 bits **saturates** instead of failing — `align 99999…9` reaches
+    /// `parseOptionalAlignment`'s `alignment is not a power of two` rather
+    /// than being refused as a non-integer.
     fn parse_uint64(&mut self) -> ParseResult<u64> {
-        let n = match self.peek() {
-            Token::IntegerLit(IntLit {
-                sign: Sign::Pos,
-                base: NumBase::Dec,
-                digits,
-            }) => digits.parse::<u64>().ok(),
-            _ => None,
+        let Some(lit) = self.peek_unsigned_apsint() else {
+            return Err(self.expected("integer"));
         };
-        match n {
-            Some(n) => {
-                self.bump()?;
-                Ok(n)
-            }
-            None => Err(self.expected("integer")),
-        }
+        let value = self.apsint_from_int_lit(lit)?.value.limited_value(u64::MAX);
+        self.bump()?;
+        Ok(value)
     }
 
     /// Read one integer-literal token into the `APSInt` the lexer would have
@@ -2732,25 +2630,31 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::IntegerLit(lit) => *lit,
             _ => return Err(self.expected("integer literal")),
         };
-        let parsed = match lit.base {
+        let parsed = self.apsint_from_int_lit(lit)?;
+        self.bump()?;
+        Ok(parsed)
+    }
+
+    /// The value half of [`Self::parse_int_literal`], **without** the
+    /// `Lex.Lex()`. It stands where `LLLexer` builds `APSIntVal`, so the
+    /// routines that read a token twice — `parseUInt32` inspecting the value
+    /// and then reporting on the still-current token — have somewhere to ask.
+    fn apsint_from_int_lit(&self, lit: IntLit<'_>) -> ParseResult<ParsedApsInt> {
+        let signedness = int_lit_signedness(lit);
+        Ok(match lit.base {
             NumBase::Dec => {
                 let scratch_width = decimal_scratch_bits(lit.digits);
                 let magnitude = ApInt::from_string(scratch_width, lit.digits, 10)
                     .map_err(|_| self.expected("valid integer literal"))?;
-                if matches!(lit.sign, Sign::Neg) {
+                let value = if matches!(lit.sign, Sign::Neg) {
                     let value = magnitude.negate();
                     let minimum = value.significant_bits().max(1);
-                    ParsedApsInt {
-                        value: value.trunc(minimum).unwrap_or(value),
-                        signedness: Signedness::Signed,
-                    }
+                    value.trunc(minimum).unwrap_or(value)
                 } else {
                     let active = magnitude.active_bits().max(1);
-                    ParsedApsInt {
-                        value: magnitude.trunc(active).unwrap_or(magnitude),
-                        signedness: Signedness::Unsigned,
-                    }
-                }
+                    magnitude.trunc(active).unwrap_or(magnitude)
+                };
+                ParsedApsInt { value, signedness }
             }
             NumBase::HexSigned | NumBase::HexUnsigned => {
                 let digit_width = u32::try_from(lit.digits.len())
@@ -2764,16 +2668,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 } else {
                     value
                 };
-                let signedness = if matches!(lit.base, NumBase::HexSigned) {
-                    Signedness::Signed
-                } else {
-                    Signedness::Unsigned
-                };
                 ParsedApsInt { value, signedness }
             }
-        };
-        self.bump()?;
-        Ok(parsed)
+        })
     }
 
     // ── Instruction modifier parsing ──────────────────────────────────────
@@ -2952,13 +2849,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if visibility != Visibility::Default {
             return Err(ParseError::Message {
                 message: "symbol with local linkage must have default visibility".into(),
-                loc: DiagLoc::span(name_loc),
+                loc: name_loc,
             });
         }
         if dll_storage_class != DllStorageClass::Default {
             return Err(ParseError::Message {
                 message: "symbol with local linkage cannot have a DLL storage class".into(),
-                loc: DiagLoc::span(name_loc),
+                loc: name_loc,
             });
         }
         Ok(())
@@ -3167,15 +3064,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// the diagnostic falls back to the current token.
     fn set_data_layout(&mut self, layout: &str, layout_loc: Option<Span>) -> ParseResult<()> {
         let loc = layout_loc.unwrap_or_else(|| self.loc());
-        let parsed = DataLayout::parse(layout).map_err(|e| match e {
-            IrError::InvalidDataLayout { reason } => ParseError::Expected {
-                expected: format!("valid datalayout: {reason}").into(),
-                loc: DiagLoc::span(loc),
-            },
-            other => ParseError::Expected {
-                expected: format!("valid datalayout: {other}").into(),
-                loc: DiagLoc::span(loc),
-            },
+        let parsed = DataLayout::parse(layout).map_err(|e| ParseError::Expected {
+            expected: format!("valid datalayout: {}", e.reason).into(),
+            loc,
         })?;
         self.module.set_data_layout(parsed);
         Ok(())
@@ -4243,9 +4134,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Mirrors `LLParser::parseOptionalRefs`, which sorts the references so
     /// that the read-only and write-only ones sit at the end — the order
     /// `FunctionSummary::specialRefCounts` and the printer both rely on.
-    /// Upstream's sort is `llvm::sort`, which is unstable and is deliberately
-    /// shuffled first under expensive checks; llvmkit sorts stably, so ties
-    /// keep source order rather than an unspecified one.
+    ///
+    /// Upstream's sort is the comparator overload of `llvm::sort`, i.e.
+    /// `std::sort` preceded by `detail::presortShuffle` under
+    /// `EXPENSIVE_CHECKS`, so **ties are left unspecified**: two references of
+    /// one access class may come out in either order. `sort_by_key` is Rust's
+    /// stable sort, so llvmkit pins source order — which is one of the orders
+    /// `llvm::sort` may produce, not a different one. This is a deliberate
+    /// refinement of an unspecified contract, not a divergence from a
+    /// specified one — and a ported fixture *does* depend on the permutation:
+    /// `test/Assembler/thinlto-vtable-summary.ll`'s `RUN` line is a `diff` of
+    /// the `^`-lines before and after a `llvm-as | llvm-dis` round-trip, over
+    /// a summary carrying `refs: (^3, ^1)` and `refs: (^1, ^5)`, both ties.
+    /// Source order is the only permutation that survives that `diff`, so
+    /// `sort_unstable_by_key` here would be a regression rather than a
+    /// closer port.
+    ///
+    /// Both ends order the classes themselves identically: upstream's
+    /// `ValueInfo::getAccessSpecifier` yields `0 < ReadOnly < WriteOnly` from
+    /// `{HaveGV = 1, ReadOnly = 2, WriteOnly = 4}`, and llvmkit's derived `Ord`
+    /// on `AccessSpecifier { None, ReadOnly, WriteOnly }` yields the same
+    /// sequence.
     fn parse_optional_refs(&mut self) -> ParseResult<Vec<ValueReference>> {
         self.expect_keyword(Keyword::Refs, "'refs' here")?;
         self.expect_punct(PunctKind::Colon, "':' in refs")?;
@@ -5302,7 +5211,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::Type,
                 id: SymbolId::Numbered(*id),
-                loc: DiagLoc::span(*loc),
+                loc: *loc,
             });
         }
         let mut named: Vec<(&String, Span)> = self
@@ -5314,7 +5223,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some((name, loc)) = named.first() {
             return Err(ParseError::Message {
                 message: format!("use of undefined type named '{name}'").into(),
-                loc: DiagLoc::span(*loc),
+                loc: *loc,
             });
         }
         Ok(())
@@ -5328,7 +5237,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::Comdat,
                 id: SymbolId::Named(name.clone()),
-                loc: DiagLoc::span(*loc),
+                loc: *loc,
             });
         }
         Ok(())
@@ -5379,7 +5288,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::Redefinition {
                 kind: SymbolKind::Comdat,
                 id: SymbolId::Named(name),
-                loc: DiagLoc::span(name_loc),
+                loc: name_loc,
             });
         }
         let comdat = self.module.get_or_insert_comdat(&name);
@@ -6025,32 +5934,36 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let mut fields: Vec<llvmkit_ir::metadata::MetadataField<B>> = Vec::new();
         if !matches!(self.peek(), Token::RParen) {
             loop {
-                let field_loc = DiagLoc::span(self.loc());
+                let field_loc = self.loc();
                 let field_name = match self.peek() {
                     Token::LabelStr(bytes) => std::str::from_utf8(bytes.as_ref())
                         .map_err(|_| self.expected("valid UTF-8 metadata field name"))?
                         .to_owned(),
                     _ => return Err(self.expected("field label here")),
                 };
-                if !kind.accepts_field(&field_name) {
+                // One lookup drives both arms. Upstream asks once too:
+                // `PARSE_MD_FIELD` matches the name and *then* `parseMDField`
+                // runs its `Result.Seen` guard, so the duplicate diagnostic
+                // renders the macro literal `#NAME` — never `Lex.getStrVal()`.
+                // Asking `accepts_field` and then `field` was the same question
+                // twice, and the `unreachable!` between them existed only to
+                // paper over the two answers agreeing.
+                let Some(declared) = kind.field(&field_name) else {
                     return Err(ParseError::InvalidMetadataField {
-                        kind: kind.name(),
+                        kind,
                         field: field_name,
                         loc: field_loc,
                     });
-                }
+                };
                 if fields.iter().any(|f| f.name() == field_name) {
                     return Err(ParseError::DuplicateMetadataField {
-                        kind: kind.name(),
-                        field: field_name,
+                        kind,
+                        field: declared,
                         loc: field_loc,
                     });
                 }
-                let declared = kind
-                    .field(&field_name)
-                    .unwrap_or_else(|| unreachable!("accepts_field just matched {field_name}"));
                 self.bump()?;
-                let value_loc = DiagLoc::span(self.loc());
+                let value_loc = self.loc();
                 let value = self.parse_metadata_field_value(declared.kind())?;
                 self.check_metadata_field_value(declared, &value, value_loc)?;
                 fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
@@ -6059,13 +5972,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         }
-        let closing_loc = DiagLoc::span(self.loc());
+        let closing_loc = self.loc();
         self.expect_punct(PunctKind::RParen, "')' here")?;
         for required in kind.required_fields() {
             if !fields.iter().any(|f| f.name() == required.name()) {
                 return Err(ParseError::MissingRequiredMetadataField {
-                    kind: kind.name(),
-                    field: required.name(),
+                    kind,
+                    field: required,
                     loc: closing_loc,
                 });
             }
@@ -6089,11 +6002,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ///
     /// Upstream maps each `DW_OP_*` / `DW_ATE_*` through
     /// `dwarf::getOperationEncoding` / `getAttributeEncoding` and stores a
-    /// `uint64_t`. llvmkit stores the written spelling — the `Dwarf.def` tables
-    /// are unmodelled (`docs/future-work.md`) and `AsmWriter.cpp`'s
-    /// `writeDIExpression` prints a known op back by name regardless — so an
-    /// operation llvmkit does not recognise round-trips rather than being
-    /// rejected. That is the one deliberate divergence here.
+    /// `uint64_t`. llvmkit stores the written spelling and recovers the
+    /// encoding on demand (`DwarfExpressionOperand::element`), because
+    /// `llvmkit_ir::dwarf` is a drift-locked transcription of the same
+    /// `Dwarf.def` tables. A spelling those tables do not carry is **rejected**
+    /// here, by name, exactly as upstream rejects it — see the two arms below.
+    ///
+    /// (This comment used to say the `Dwarf.def` tables were unmodelled and
+    /// that an unrecognised operation round-tripped rather than being
+    /// rejected. Both halves were false, the second contradicted by the code
+    /// sixteen lines below it.)
+    ///
+    /// What the spelling model still costs is *normalisation*: a numerically
+    /// written element prints back as a number where `llvm-dis` prints the
+    /// operation name that value encodes.
     fn parse_di_expression_body(
         &mut self,
         distinct: bool,
@@ -6113,9 +6035,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         let name = (*s).to_owned();
                         if llvmkit_ir::dwarf::operation_encoding(&name).is_none() {
                             return Err(ParseError::InvalidMetadataFieldValue {
-                                what: "DWARF op",
+                                what: MetadataKeywordFamily::DwarfOp,
                                 value: name,
-                                loc: DiagLoc::span(self.loc()),
+                                loc: self.loc(),
                             });
                         }
                         self.bump()?;
@@ -6125,9 +6047,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         let name = (*s).to_owned();
                         if llvmkit_ir::dwarf::attribute_encoding(&name).is_none() {
                             return Err(ParseError::InvalidMetadataFieldValue {
-                                what: "DWARF attribute encoding",
+                                what: MetadataKeywordFamily::DwarfAttributeEncoding,
                                 value: name,
-                                loc: DiagLoc::span(self.loc()),
+                                loc: self.loc(),
                             });
                         }
                         self.bump()?;
@@ -6265,16 +6187,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // just as `isDefinition: true` does — and `spFlags:`, when given,
             // is what `toSPFlags` is skipped in favour of.
             Kind::DiSubprogram => {
-                // `DISPFlagDefinition` is looked up rather than spelled as a
-                // literal so the bit stays tied to the vendored table.
-                let definition_bit = llvmkit_ir::dwarf::disp_flag("DISPFlagDefinition")
-                    .unwrap_or_else(|| unreachable!("DISPFlagDefinition is in the DISPFlag table"));
                 let is_definition = match value("spFlags") {
-                    Some(llvmkit_ir::metadata::MetadataFieldValue::Enum(flags)) => flags
-                        .split('|')
-                        .any(|flag| flag.trim() == "DISPFlagDefinition"),
-                    Some(llvmkit_ir::metadata::MetadataFieldValue::Integer(bits)) => {
-                        bits & i128::from(definition_bit) != 0
+                    Some(llvmkit_ir::metadata::MetadataFieldValue::DispFlags(flags)) => {
+                        flags.contains(llvmkit_ir::metadata::DispFlags::definition())
                     }
                     _ => matches!(
                         value("isDefinition"),
@@ -6297,57 +6212,74 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &self,
         field: llvmkit_ir::metadata::SpecializedMetadataField,
         value: &MetadataFieldValue<B>,
-        loc: DiagLoc,
+        value_loc: Span,
     ) -> ParseResult<()> {
         use llvmkit_ir::dwarf;
         use llvmkit_ir::metadata::{MetadataFieldKind, MetadataFieldValue};
 
-        let name = field.name();
+        // Every `parseMDField` overload opens with its token-kind check and
+        // reports through `tokError`, i.e. at the value token — which llvmkit
+        // has already consumed by the time this runs, so `self.loc()` would
+        // name the token *after* it. `arg: -1` is the case with a vendored
+        // pin: `test/Assembler/invalid-dilocalvariable-arg-negative.ll` puts
+        // `expected unsigned integer` on the `-`, not on the `)` behind it.
+        let loc = value_loc;
 
-        // A keyword family: reject a spelling its table does not contain, and
-        // let a raw unsigned encoding through as upstream's overloads do.
-        let keyword = |what: &'static str, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
-            match value {
-                MetadataFieldValue::Enum(spelling) => {
-                    if lookup(spelling).is_none() {
-                        return Err(ParseError::InvalidMetadataFieldValue {
-                            what,
-                            value: spelling.clone(),
-                            loc,
-                        });
-                    }
-                    Ok(())
-                }
-                _ => Ok(()),
+        // The `MDUnsignedField` base every keyword family but
+        // `ChecksumKindField` inherits: `if (Lex.getKind() != lltok::APSInt ||
+        // Lex.getAPSIntVal().isSigned()) return tokError("expected unsigned
+        // integer"); if (U.ugt(Result.Max)) return tokError("value for '" +
+        // Name + "' too large, limit is " + Twine(Result.Max));`. The token
+        // half is `parse_metadata_field_value`'s; only the value half is left
+        // once the integer exists.
+        let unsigned_in_range = |parsed: &i128, max: u64| -> ParseResult<()> {
+            if *parsed < 0 {
+                return Err(self.expected_at(value_loc, "unsigned integer"));
             }
-        };
-
-        // `DIFlag*` / `DISPFlag*` accept a `|`-joined disjunction; every term
-        // must resolve, which is what upstream's per-term loop enforces.
-        let flags = |what: &'static str, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
-            let MetadataFieldValue::Enum(spelling) = value else {
-                return Ok(());
-            };
-            for term in spelling.split('|') {
-                let term = term.trim();
-                if !term.is_empty() && lookup(term).is_none() {
-                    return Err(ParseError::InvalidMetadataFieldValue {
-                        what,
-                        value: term.to_owned(),
-                        loc,
-                    });
-                }
+            if u128::try_from(*parsed).is_ok_and(|v| v > u128::from(max)) {
+                return Err(ParseError::MetadataFieldValueTooLarge {
+                    field,
+                    limit: max,
+                    loc,
+                });
             }
             Ok(())
         };
 
+        // A keyword family: reject a spelling its table does not contain, and
+        // range-check a raw encoding against the family's own `Max`.
+        let keyword =
+            |what: MetadataKeywordFamily, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
+                match value {
+                    MetadataFieldValue::Enum(spelling) => {
+                        if lookup(spelling).is_none() {
+                            return Err(ParseError::InvalidMetadataFieldValue {
+                                what,
+                                value: spelling.clone(),
+                                loc,
+                            });
+                        }
+                        Ok(())
+                    }
+                    MetadataFieldValue::Integer(parsed) => {
+                        match metadata_keyword_field_max(field.kind()) {
+                            Some(max) => unsigned_in_range(parsed, max),
+                            // `ChecksumKindField` is not an `MDUnsignedField`, so it
+                            // has no integer spelling at all — and none reaches here,
+                            // since `parse_metadata_field_value` refuses the token.
+                            None => Ok(()),
+                        }
+                    }
+                    // `parse_metadata_field_value` admits nothing else for these
+                    // families.
+                    _ => Ok(()),
+                }
+            };
+
         match field.kind() {
             MetadataFieldKind::Metadata { allow_null } => {
                 if !allow_null && matches!(value, MetadataFieldValue::Null) {
-                    return Err(ParseError::MetadataFieldCannotBeNull {
-                        field: name.to_owned(),
-                        loc,
-                    });
+                    return Err(ParseError::MetadataFieldCannotBeNull { field, loc });
                 }
                 Ok(())
             }
@@ -6355,10 +6287,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if empty_is_error
                     && matches!(value, MetadataFieldValue::String(text) if text.is_empty())
                 {
-                    return Err(ParseError::MetadataFieldCannotBeEmpty {
-                        field: name.to_owned(),
-                        loc,
-                    });
+                    return Err(ParseError::MetadataFieldCannotBeEmpty { field, loc });
                 }
                 Ok(())
             }
@@ -6367,11 +6296,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Ok(());
                 };
                 if *parsed < 0 {
-                    return Err(self.expected("unsigned integer"));
+                    return Err(self.expected_at(value_loc, "unsigned integer"));
                 }
                 if u128::try_from(*parsed).is_ok_and(|v| v > u128::from(max)) {
                     return Err(ParseError::MetadataFieldValueTooLarge {
-                        field: name.to_owned(),
+                        field,
                         limit: max,
                         loc,
                     });
@@ -6382,18 +6311,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let MetadataFieldValue::Integer(parsed) = value else {
                     // `parseMDField(MDSignedField&)` opens by demanding an
                     // `APSInt`; anything else never reaches the range checks.
-                    return Err(self.expected("signed integer"));
+                    return Err(self.expected_at(value_loc, "signed integer"));
                 };
                 if *parsed < i128::from(min) {
                     return Err(ParseError::MetadataFieldValueTooSmall {
-                        field: name.to_owned(),
+                        field,
                         limit: min,
                         loc,
                     });
                 }
                 if *parsed > i128::from(max) {
                     return Err(ParseError::MetadataFieldValueTooLarge {
-                        field: name.to_owned(),
+                        field,
                         limit: max.unsigned_abs(),
                         loc,
                     });
@@ -6404,48 +6333,70 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if matches!(value, MetadataFieldValue::Bool(_)) {
                     Ok(())
                 } else {
-                    Err(self.expected("'true' or 'false'"))
+                    Err(self.expected_at(value_loc, "'true' or 'false'"))
                 }
             }
-            MetadataFieldKind::DwarfTag => keyword("DWARF tag", dwarf::tag),
-            MetadataFieldKind::DwarfAttEncoding => {
-                keyword("DWARF type attribute encoding", dwarf::attribute_encoding)
+            MetadataFieldKind::DwarfTag => keyword(MetadataKeywordFamily::DwarfTag, dwarf::tag),
+            MetadataFieldKind::DwarfAttEncoding => keyword(
+                MetadataKeywordFamily::DwarfTypeAttributeEncoding,
+                dwarf::attribute_encoding,
+            ),
+            MetadataFieldKind::DwarfVirtuality => keyword(
+                MetadataKeywordFamily::DwarfVirtualityCode,
+                dwarf::virtuality,
+            ),
+            MetadataFieldKind::DwarfLang => {
+                keyword(MetadataKeywordFamily::DwarfLanguage, dwarf::language)
             }
-            MetadataFieldKind::DwarfVirtuality => {
-                keyword("DWARF virtuality code", dwarf::virtuality)
+            MetadataFieldKind::DwarfSourceLangName => keyword(
+                MetadataKeywordFamily::DwarfSourceLanguageName,
+                dwarf::source_language_name,
+            ),
+            MetadataFieldKind::DwarfCc => keyword(
+                MetadataKeywordFamily::DwarfCallingConvention,
+                dwarf::calling_convention,
+            ),
+            MetadataFieldKind::DwarfMacinfoType => {
+                keyword(MetadataKeywordFamily::DwarfMacinfoType, dwarf::macinfo)
             }
-            MetadataFieldKind::DwarfLang => keyword("DWARF language", dwarf::language),
-            MetadataFieldKind::DwarfSourceLangName => {
-                keyword("DWARF source language name", dwarf::source_language_name)
+            // Both flag families are validated term by term as they are
+            // parsed, where `parseMDField`'s `parseFlag` validates them, so
+            // there is nothing left to check once the bitfield exists.
+            MetadataFieldKind::DiFlags | MetadataFieldKind::DispFlags => Ok(()),
+            MetadataFieldKind::EmissionKind => {
+                keyword(MetadataKeywordFamily::EmissionKind, emission_kind)
             }
-            MetadataFieldKind::DwarfCc => {
-                keyword("DWARF calling convention", dwarf::calling_convention)
+            MetadataFieldKind::NameTableKind => {
+                keyword(MetadataKeywordFamily::NameTableKind, name_table_kind)
             }
-            MetadataFieldKind::DwarfMacinfoType => keyword("DWARF macinfo type", dwarf::macinfo),
-            MetadataFieldKind::DiFlags => flags("debug info flag", dwarf::di_flag),
-            MetadataFieldKind::DispFlags => flags("subprogram debug info flag", dwarf::disp_flag),
-            MetadataFieldKind::EmissionKind => keyword("emission kind", emission_kind),
-            MetadataFieldKind::NameTableKind => keyword("nameTable kind", name_table_kind),
-            MetadataFieldKind::ChecksumKind => keyword("checksum kind", checksum_kind),
-            MetadataFieldKind::FixedPointKind => keyword("fixed-point kind", fixed_point_kind),
+            MetadataFieldKind::ChecksumKind => {
+                keyword(MetadataKeywordFamily::ChecksumKind, checksum_kind)
+            }
+            MetadataFieldKind::FixedPointKind => {
+                keyword(MetadataKeywordFamily::FixedPointKind, fixed_point_kind)
+            }
             // `parseMDField(DwarfEnumKindField&)` splits its rejection in two:
             // a token that is neither an integer nor a `DW_APPLE_ENUM_KIND_*`
             // keyword is `expected DWARF enum kind code`, while a keyword the
             // table does not carry is `invalid DWARF enum kind code '...'`.
             MetadataFieldKind::DwarfEnumKind => match value {
-                MetadataFieldValue::Integer(_) => Ok(()),
+                MetadataFieldValue::Integer(parsed) => unsigned_in_range(
+                    parsed,
+                    metadata_keyword_field_max(MetadataFieldKind::DwarfEnumKind)
+                        .unwrap_or(u64::MAX),
+                ),
                 MetadataFieldValue::Enum(spelling) => {
                     if llvmkit_ir::dwarf::apple_enum_kind(spelling).is_some() {
                         Ok(())
                     } else {
                         Err(ParseError::InvalidMetadataFieldValue {
-                            what: "DWARF enum kind code",
+                            what: MetadataKeywordFamily::DwarfEnumKindCode,
                             value: spelling.clone(),
                             loc,
                         })
                     }
                 }
-                _ => Err(self.expected("DWARF enum kind code")),
+                _ => Err(self.expected_at(value_loc, "DWARF enum kind code")),
             },
             MetadataFieldKind::ApsInt
             | MetadataFieldKind::MetadataList
@@ -6468,7 +6419,56 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         declared: llvmkit_ir::metadata::MetadataFieldKind,
     ) -> ParseResult<MetadataFieldValue<B>> {
-        use llvmkit_ir::metadata::MetadataFieldValue;
+        use llvmkit_ir::metadata::{MetadataFieldKind, MetadataFieldValue};
+        // The two flag families are dispatched on the *declared* kind rather
+        // than on the token, because upstream's `parseMDField(DIFlagField&)`
+        // and its `DISPFlagField` twin are separate overloads with their own
+        // grammar — a `do { parseFlag } while (EatIfPresent(lltok::bar))` loop
+        // over terms that may be a flag keyword *or* an unsigned integer.
+        // Reading them off the token, as every other field here is read, is
+        // what made `flags: 4 | DIFlagPublic` unparseable.
+        match declared {
+            MetadataFieldKind::DiFlags => {
+                return self.parse_di_flag_field();
+            }
+            MetadataFieldKind::DispFlags => {
+                return self.parse_disp_flag_field();
+            }
+            _ => {}
+        }
+        // The twelve keyword families, each of whose `parseMDField` overload
+        // is shaped
+        //
+        // ```text
+        // if (Lex.getKind() == lltok::APSInt)
+        //   return parseMDField(Loc, Name, static_cast<MDUnsignedField &>(Result));
+        // if (Lex.getKind() != lltok::X)
+        //   return tokError("expected <family>");
+        // ```
+        //
+        // so an integer is read through the `MDUnsignedField` base, the
+        // family's **own** keyword token is read, and everything else —
+        // `null`, a string, a `!`-reference, or a keyword belonging to a
+        // sibling family — stops at the `expected`. Reading the value off
+        // whatever token was there and validating it afterwards let all of
+        // those through — recorded in `docs/divergences.md` under the
+        // metadata-field acceptance rule.
+        if is_metadata_keyword_field(declared) {
+            if metadata_keyword_field_max(declared).is_some()
+                && matches!(self.peek(), Token::IntegerLit(_))
+            {
+                let parsed = self.parse_int_literal()?;
+                let value = parsed_apsint_to_i128(&parsed)
+                    .ok_or_else(|| self.expected("metadata integer literal in i128 range"))?;
+                return Ok(MetadataFieldValue::Integer(value));
+            }
+            let Some(spelling) = metadata_field_keyword_spelling(self.peek(), declared) else {
+                return Err(self.expected(expected_for_metadata_field_kind(declared)));
+            };
+            let spelling = spelling.to_owned();
+            self.bump()?;
+            return Ok(MetadataFieldValue::Enum(spelling));
+        }
         match self.peek() {
             Token::Kw(Keyword::Null) => {
                 self.bump()?;
@@ -6550,31 +6550,94 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 Ok(MetadataFieldValue::Enum(value))
             }
-            // `flags:` and `spFlags:` take a `|`-joined disjunction, which
-            // upstream reads with a repeated `lltok::bar` loop in
-            // `LLParser::parseMDField` for `MDFieldImpl<DIFlags>` /
-            // `<DISPFlags>`. Kept here as the joined source text rather than a
-            // bitmask: modelling `DINode::DIFlags` / `DISubprogram::DISPFlags`
-            // as bitflags is deferred (see `docs/future-work.md`), and the
-            // joined form is byte-for-byte what `AsmWriter.cpp`'s
-            // `printDIFlags` emits, whose separator is `ListSeparator(" | ")`.
-            Token::DiFlag(s) | Token::DiSpFlag(s) => {
-                let mut value = (*s).to_owned();
-                self.bump()?;
-                while matches!(self.peek(), Token::Bar) {
-                    self.bump()?;
-                    let next = match self.peek() {
-                        Token::DiFlag(s) | Token::DiSpFlag(s) => (*s).to_owned(),
-                        _ => return Err(self.expected("debug info flag after '|'")),
-                    };
-                    self.bump()?;
-                    value.push_str(" | ");
-                    value.push_str(&next);
-                }
-                Ok(MetadataFieldValue::Enum(value))
-            }
             _ => Err(self.expected(expected_for_metadata_field_kind(declared))),
         }
+    }
+
+    /// `parseMDField(LocTy Loc, StringRef Name, DIFlagField &Result)`
+    /// (`LLParser.cpp`): `do { parseFlag } while (EatIfPresent(lltok::bar))`,
+    /// OR-ing the terms into one `DINode::DIFlags`.
+    fn parse_di_flag_field(&mut self) -> ParseResult<MetadataFieldValue<B>> {
+        use llvmkit_ir::metadata::{DiFlags, MetadataFieldValue};
+        // `DINode::DIFlags Combined = DINode::FlagZero;`
+        let mut combined = DiFlags::ZERO;
+        loop {
+            combined = combined.union(self.parse_di_flag()?);
+            if !matches!(self.peek(), Token::Bar) {
+                break;
+            }
+            self.bump()?;
+        }
+        Ok(MetadataFieldValue::DiFlags(combined))
+    }
+
+    /// The `parseFlag` lambda inside `parseMDField(DIFlagField&)`. An unsigned
+    /// `lltok::APSInt` is read through `parseUInt32`; anything that is not a
+    /// `lltok::DIFlag` is `expected debug info flag`; a `DIFlag*` the table
+    /// does not carry comes back as `FlagZero` from `DINode::getFlag` and is
+    /// `invalid debug info flag '…'`.
+    ///
+    /// A *signed* integer term falls through the first arm to the second, so
+    /// `flags: -1` answers `expected debug info flag` rather than being
+    /// accepted as a bitfield.
+    fn parse_di_flag(&mut self) -> ParseResult<llvmkit_ir::metadata::DiFlags> {
+        use llvmkit_ir::metadata::DiFlags;
+        if self.peek_unsigned_apsint().is_some() {
+            return Ok(DiFlags::from_bits(self.parse_uint32()?));
+        }
+        let Token::DiFlag(spelling) = self.peek() else {
+            return Err(self.expected("debug info flag"));
+        };
+        let spelling = (*spelling).to_owned();
+        let value = DiFlags::get_flag(&spelling);
+        if value == DiFlags::ZERO {
+            return Err(ParseError::InvalidMetadataFieldValue {
+                what: MetadataKeywordFamily::DebugInfoFlag,
+                value: spelling,
+                loc: self.loc(),
+            });
+        }
+        self.bump()?;
+        Ok(value)
+    }
+
+    /// `parseMDField(LocTy Loc, StringRef Name, DISPFlagField &Result)`, the
+    /// twin of [`Self::parse_di_flag_field`].
+    fn parse_disp_flag_field(&mut self) -> ParseResult<MetadataFieldValue<B>> {
+        use llvmkit_ir::metadata::{DispFlags, MetadataFieldValue};
+        let mut combined = DispFlags::ZERO;
+        loop {
+            combined = combined.union(self.parse_disp_flag()?);
+            if !matches!(self.peek(), Token::Bar) {
+                break;
+            }
+            self.bump()?;
+        }
+        Ok(MetadataFieldValue::DispFlags(combined))
+    }
+
+    /// The `DISPFlagField` overload's `parseFlag`. Note that only the
+    /// *invalid* message names the subprogram family — the token-kind
+    /// rejection is `expected debug info flag` in both overloads.
+    fn parse_disp_flag(&mut self) -> ParseResult<llvmkit_ir::metadata::DispFlags> {
+        use llvmkit_ir::metadata::DispFlags;
+        if self.peek_unsigned_apsint().is_some() {
+            return Ok(DispFlags::from_bits(self.parse_uint32()?));
+        }
+        let Token::DiSpFlag(spelling) = self.peek() else {
+            return Err(self.expected("debug info flag"));
+        };
+        let spelling = (*spelling).to_owned();
+        let value = DispFlags::get_flag(&spelling);
+        if value == DispFlags::ZERO {
+            return Err(ParseError::InvalidMetadataFieldValue {
+                what: MetadataKeywordFamily::SubprogramDebugInfoFlag,
+                value: spelling,
+                loc: self.loc(),
+            });
+        }
+        self.bump()?;
+        Ok(value)
     }
 
     /// Consume a `!` token (Token::Exclaim). Helper for metadata parsing.
@@ -6777,7 +6840,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .last()
                 .ok_or_else(|| ParseError::Expected {
                     expected: "instruction after debug record".into(),
-                    loc: DiagLoc::span(self.loc()),
+                    loc: self.loc(),
                 })?;
             for record in pending_debug_records.drain(..) {
                 own_metadata(inst.push_debug_record(self.module, record));
@@ -6945,7 +7008,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let handle: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = StructType::try_from(ty)
             .map_err(|_| ParseError::Message {
                 message: "redefinition of type".into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
         self.module
             .set_struct_body_dyn(handle, elements, packed)
@@ -6954,11 +7017,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // straight to `tokError`, so it is printed verbatim.
                 IrError::RecursiveStructBody { .. } => ParseError::Message {
                     message: e.to_string().into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 },
                 other => ParseError::Expected {
                     expected: format!("valid struct body: {other}").into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 },
             })?;
         self.record_type_definition(name, slot, ty);
@@ -7101,7 +7164,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 _ => {
                     return Err(ParseError::Expected {
                         expected: "type".into(),
-                        loc: DiagLoc::span(type_loc),
+                        loc: type_loc,
                     });
                 }
             }
@@ -7138,7 +7201,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         // `parseType`'s `AllowVoid` guard, verbatim.
                         return Err(ParseError::Message {
                             message: "void type only allowed for function results".into(),
-                            loc: DiagLoc::span(type_loc),
+                            loc: type_loc,
                         });
                     }
                     return Ok(result);
@@ -7203,7 +7266,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ty.check_params().map_err(|e| match e {
             IrError::InvalidOperation { message } => ParseError::Message {
                 message: message.into(),
-                loc: DiagLoc::span(loc),
+                loc,
             },
             other => self.builder_err("target extension type", other),
         })?;
@@ -7326,7 +7389,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let ty = self.parse_type(false)?;
                 let slot = u32::try_from(args.len()).map_err(|_| ParseError::Expected {
                     expected: "parameter slot fits in u32".into(),
-                    loc: DiagLoc::span(type_loc),
+                    loc: type_loc,
                 })?;
                 let index = AttrIndex::Param(slot);
                 let parsed = self.parse_fn_attribute_value_pairs(
@@ -7451,7 +7514,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     // The bound the check actually applies — not a literal
                     // that can drift away from it, as `(1 << 24) - 1` had.
                     max: llvmkit_ir::MAX_INT_BITS,
-                    loc: DiagLoc::span(loc),
+                    loc,
                 }),
         }
     }
@@ -7637,6 +7700,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if ty.is_function() || !ty.is_valid_pointer_element() {
             return Err(self.message_at(type_loc, "invalid type for global variable"));
         }
+        // `GlobalValue *GVal = nullptr;` and the block that fills it: a
+        // forward reference to this name (or number) is claimed **here**, at
+        // the definition site, and its map entry erased. The erase is what
+        // makes the `else if (M->getNamedValue(Name))` arm a redefinition
+        // check rather than a false positive on a name that was only
+        // forward-referenced — and what makes a *second* definition of the
+        // same name reach it.
+        let forward_ref = self.claim_global_forward_ref(&name_id, decl_loc)?;
+        // `if (GVal) { if (GVal->getAddressSpace() != AddrSpace) return
+        //    error(TyLoc, "forward reference and definition of global have
+        //    different types"); GVal->replaceAllUsesWith(GV);
+        //    GVal->eraseFromParent(); }`
+        //
+        // Upstream runs the whole block between the property *assignments* and
+        // the property *loop*. llvmkit's builder wants every property before
+        // `build()`, so the halves are split around it: the comparison stays
+        // here, ahead of the loop, where its diagnostic order is upstream's,
+        // and the RAUW — which has no diagnostic — moves past the build, where
+        // there is a definition to point at. The comparison is on the address
+        // space, which for llvmkit is the whole of a pointer type's identity.
+        if let Some(entry) = &forward_ref
+            && entry.placeholder.ty() != self.module.ptr_type(address_space).as_type()
+        {
+            return Err(self.message_at(
+                type_loc,
+                "forward reference and definition of global have different types",
+            ));
+        }
         let mut section = None;
         let mut partition = None;
         let mut align = MaybeAlign::NONE;
@@ -7698,22 +7789,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             NameOrId::Name(n) => n.clone(),
             NameOrId::Id(_) => String::new(),
         };
-        // `else if (M->getNamedValue(Name))` — a name already in the module is
-        // a redefinition *unless* it is only there as a forward reference,
-        // which this definition satisfies. Without this, the collision reached
-        // the builder instead and surfaced as
-        // `expected valid global definition: a global named "g" already
-        // exists in this module`, so upstream's message was unreachable.
-        if !name_string.is_empty()
-            && !self.forward_ref_globals.contains_key(&name_string)
-            && self.module.global(&name_string).is_some()
-        {
-            return Err(ParseError::Redefinition {
-                kind: SymbolKind::Global,
-                id: SymbolId::Named(name_string),
-                loc: DiagLoc::span(decl_loc),
-            });
-        }
         let mut builder = self
             .module
             .global_builder(&name_string, ty)
@@ -7746,7 +7821,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let g = builder.build().map_err(|e| ParseError::Expected {
             expected: format!("valid global definition: {e}").into(),
-            loc: DiagLoc::span(decl_loc),
+            loc: decl_loc,
         })?;
         // The parser threads borrowing handles through its deferred-fixup and
         // slot-numbering tables, so resolve the freshly minted id once here.
@@ -7760,12 +7835,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         for (kind, id) in metadata {
             own_metadata(g.set_metadata(self.module, kind, id));
         }
+        // The `GVal->replaceAllUsesWith(GV); GVal->eraseFromParent();` half of
+        // the block above, run once the definition exists.
+        if let Some(entry) = forward_ref {
+            Self::rauw_forward_ref(entry, g.as_global_constant_ptr())?;
+        }
         if let NameOrId::Id(id) = name_id {
             self.numbered_globals
                 .add(id, GlobalRef::Variable(g))
                 .map_err(|source| ParseError::InvalidSlotId {
                     source,
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
         }
         Ok(())
@@ -7797,7 +7877,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if is_alias && !llvmkit_ir::global_alias::is_valid_alias_linkage(linkage) {
             return Err(ParseError::Message {
                 message: "invalid linkage type for alias".into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             });
         }
         // No ifunc counterpart: `parseAliasOrIFunc` guards `isValidLinkage`
@@ -7808,37 +7888,73 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // right.
         Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
 
+        // `LocTy ExplicitTypeLoc = Lex.getLoc();`, taken before the type is
+        // read — the anchor for `forward reference and definition of alias
+        // have different types`.
+        let explicit_type_loc = self.loc();
         let value_type = self.parse_type(false)?;
         self.expect_punct(PunctKind::Comma, "comma after alias or ifunc's type")?;
         // `AliaseeLoc`, captured before the aliasee is read — upstream anchors
         // both the pointer-type check and `invalid aliasee` here.
         let aliasee_loc = self.loc();
-        let target_ty = self.parse_type(false)?;
-        let target_loc = self.loc();
-        match target_ty.into_type_enum() {
-            AnyTypeEnum::Pointer(_) => {}
-            _ => {
-                return Err(
-                    self.message_at(aliasee_loc, "An alias or ifunc must have pointer type")
-                );
+        // `parseAliasOrIFunc`'s first-token branch. Four constant-expression
+        // keywords name an aliasee that types *itself* and go through a bare
+        // `parseValID` — upstream's comment: "The bitcast dest type is not
+        // present, it is implied by the dest type". Everything else is
+        // TYPE VALUE, read by `parseGlobalTypeAndValue`.
+        let self_typed_aliasee = matches!(
+            self.peek(),
+            Token::Instruction(
+                Opcode::BitCast | Opcode::GetElementPtr | Opcode::AddrSpaceCast | Opcode::IntToPtr
+            )
+        );
+        let (target, forward_target, target_loc) = if self_typed_aliasee {
+            let id = self.parse_val_id(None, None)?;
+            let loc = id.loc;
+            // `if (ID.Kind != ValID::t_Constant) return error(AliaseeLoc,
+            // "invalid aliasee");` — ported for the routine's shape, though it
+            // is defensive on both sides: each of the four `parseValID` arms
+            // this branch can reach ends in `ID.Kind = ValID::t_Constant`, so
+            // nothing upstream reaches the message either.
+            let ValIdKind::Constant(constant) = id.kind else {
+                return Err(self.message_at(aliasee_loc, "invalid aliasee"));
+            };
+            (constant, None, loc)
+        } else {
+            let written_ty = self.parse_type(false)?;
+            let loc = self.loc();
+            // A forward-referenced target becomes a null placeholder patched at
+            // end of module, exactly as `personality` already handles the same
+            // ordering problem.
+            match self.parse_alias_target(written_ty) {
+                Ok(c) => (c, None, loc),
+                Err(ParseError::UndefinedSymbol {
+                    id: SymbolId::Named(name),
+                    ..
+                }) => {
+                    let AnyTypeEnum::Pointer(pty) = written_ty.into_type_enum() else {
+                        return Err(self.expected("pointer type for alias or ifunc target"));
+                    };
+                    (pty.const_null().as_constant(), Some(name), loc)
+                }
+                Err(other) => return Err(other),
             }
-        }
-        // A forward-referenced target becomes a null placeholder patched at
-        // end of module, exactly as `personality` already handles the same
-        // ordering problem.
-        let (target, forward_target) = match self.parse_alias_target(target_ty) {
-            Ok(c) => (c, None),
-            Err(ParseError::UndefinedSymbol {
-                id: SymbolId::Named(name),
-                ..
-            }) => {
-                let AnyTypeEnum::Pointer(pty) = target_ty.into_type_enum() else {
-                    return Err(self.expected("pointer type for alias or ifunc target"));
-                };
-                (pty.const_null().as_constant(), Some(name))
-            }
-            Err(other) => return Err(other),
         };
+        // `Type *AliaseeType = Aliasee->getType(); auto *PTy =
+        // dyn_cast<PointerType>(AliaseeType);` — the check and the address
+        // space both come off the aliasee **value's** type, after it is read,
+        // never off a type written ahead of it.
+        let target_ty = target.ty();
+        if !matches!(target_ty.into_type_enum(), AnyTypeEnum::Pointer(_)) {
+            return Err(self.message_at(aliasee_loc, "An alias or ifunc must have pointer type"));
+        }
+        // `GlobalValue *GVal = nullptr;` and the block that fills it — the
+        // same claim `parseGlobal` makes, at the same point relative to the
+        // property loop: after the aliasee's address space is known and
+        // before the alias itself is created. The comparison this feeds is
+        // *not* here; upstream runs it after the property loop, and so does
+        // the tail below.
+        let forward_ref = self.claim_global_forward_ref(&name_id, decl_loc)?;
 
         let mut partition = None;
         let mut ifunc_metadata = Vec::new();
@@ -7880,9 +7996,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             let a = builder.build().map_err(|e| ParseError::Expected {
                 expected: format!("valid alias definition: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
             let a_view = self.module.view(a);
+            Self::resolve_alias_forward_ref(
+                forward_ref,
+                a_view.as_global_constant_ptr(),
+                target_ty,
+                explicit_type_loc,
+            )?;
             if let Some(name) = forward_target {
                 self.deferred_alias_targets.push(DeferredAliasTarget {
                     object: DeferredAliasObject::Alias(a_view),
@@ -7897,7 +8019,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .add(id, GlobalRef::Alias(a))
                     .map_err(|source| ParseError::InvalidSlotId {
                         source,
-                        loc: DiagLoc::span(decl_loc),
+                        loc: decl_loc,
                     })?;
             }
         } else {
@@ -7918,9 +8040,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             let i = builder.build().map_err(|e| ParseError::Expected {
                 expected: format!("valid ifunc definition: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
             let i_view = self.module.view(i);
+            Self::resolve_alias_forward_ref(
+                forward_ref,
+                i_view.as_global_constant_ptr(),
+                target_ty,
+                explicit_type_loc,
+            )?;
             for (kind, id) in ifunc_metadata {
                 own_metadata(i_view.set_metadata(self.module, kind, id));
             }
@@ -7938,7 +8066,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .add(id, GlobalRef::Ifunc(i))
                     .map_err(|source| ParseError::InvalidSlotId {
                         source,
-                        loc: DiagLoc::span(decl_loc),
+                        loc: decl_loc,
                     })?;
             }
         }
@@ -7963,7 +8091,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn unsupported_constant_value_form_at(&self, loc: Span) -> ParseError {
         ParseError::Expected {
             expected: "supported constant/value form".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -8002,7 +8130,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         ParseError::Message {
             message: format!("{opcode} constexprs are no longer supported").into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -8039,7 +8167,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let asm = self.parse_inline_asm()?;
                 return Err(ParseError::Message {
                     message: "invalid type for inline asm constraint string".into(),
-                    loc: DiagLoc::span(asm.loc),
+                    loc: asm.loc,
                 });
             }
             Token::Instruction(op) if !is_supported_constant_expr_opcode(*op) => {
@@ -8250,9 +8378,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::RParen, "')' in splat constant")?;
                 Ok(ValIdKind::ConstantSplat(scalar))
             }
+            // No `expected_ty` here, deliberately: upstream's constexpr arms
+            // are reached from `parseValID(ID, /*PFS=*/nullptr)` with no type
+            // in hand at all — that is how `parseAliasOrIFunc` reads a
+            // `bitcast` / `getelementptr` / `addrspacecast` / `inttoptr`
+            // aliasee. Demanding one made those four spellings unparseable.
             Token::Instruction(op) if is_supported_constant_expr_opcode(*op) => {
-                let ty = expected_ty.ok_or_else(|| self.unsupported_constant_value_form_at(loc))?;
-                self.parse_constant_expr(ty).map(ValIdKind::Constant)
+                self.parse_constant_expr().map(ValIdKind::Constant)
             }
             // `LLParser::parseValID`'s default arm.
             _ => Err(self.expected("value token")),
@@ -8317,7 +8449,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if value.semantics() != float_ty.semantics() {
             return Err(ParseError::Message {
                 message: format!("floating point constant does not have type '{ty}'").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         Ok(float_ty
@@ -8376,7 +8508,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         "element {index} of struct initializer doesn't match struct element type"
                     )
                     .into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 });
             }
         }
@@ -8405,12 +8537,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     "constant expression type mismatch: got type '{scalar_ty}' but expected '{element_ty}'"
                 )
                 .into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         let len = usize::try_from(vec_ty.min_len()).map_err(|_| ParseError::Expected {
             expected: "vector type for splat constant".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         })?;
         let elements = vec![scalar; len];
         vec_ty
@@ -8438,7 +8570,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AnyTypeEnum::Array(t) => {
                 let len = usize::try_from(t.len()).map_err(|_| ParseError::Expected {
                     expected: "array zeroinitializer length fits in usize".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })?;
                 let element = t.element();
                 let mut elements = Vec::with_capacity(len);
@@ -8452,7 +8584,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AnyTypeEnum::Vector(t) => {
                 let len = usize::try_from(t.min_len()).map_err(|_| ParseError::Expected {
                     expected: "vector zeroinitializer length fits in usize".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })?;
                 let element = t.element();
                 let mut elements = Vec::with_capacity(len);
@@ -8467,7 +8599,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if t.is_opaque() {
                     return Err(ParseError::Message {
                         message: "invalid type for null constant".into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     });
                 }
                 let mut elements = Vec::with_capacity(t.field_count());
@@ -8497,7 +8629,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
                 IrError::InvalidOperation { message } => ParseError::Message {
                     message: message.into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 },
                 other => self.builder_err_at(loc, "target extension none", other),
             }),
@@ -8539,14 +8671,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if what == "array" && !element_ty.is_first_class() {
             return Err(ParseError::Message {
                 message: format!("invalid array element type: {element_ty}").into(),
-                loc: DiagLoc::span(first_elt_loc),
+                loc: first_elt_loc,
             });
         }
         for (index, value) in values.iter().enumerate() {
             if value.ty() != element_ty {
                 return Err(ParseError::Message {
                     message: format!("{what} element #{index} is not of type '{element_ty}").into(),
-                    loc: DiagLoc::span(first_elt_loc),
+                    loc: first_elt_loc,
                 });
             }
         }
@@ -8576,7 +8708,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !ty.is_first_class() || ty.is_label() {
             return Err(ParseError::Message {
                 message: format!("invalid type for {what} constant").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         Ok(())
@@ -8602,7 +8734,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     "constant expression type mismatch: got type '{got}' but expected '{ty}'"
                 )
                 .into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         Ok(constant)
@@ -8719,7 +8851,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .const_ap_int(&bits)
                     .map_err(|e| ParseError::Expected {
                         expected: format!("valid integer constant: {e}").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     })?;
                 Ok(c.as_constant())
             }
@@ -8841,25 +8973,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         Err(ParseError::Message {
             message: "global variable reference must have pointer type".into(),
-            loc: DiagLoc::span(loc),
-        })
-    }
-
-    /// llvmkit's pre-emption of `validateEndOfModule`'s
-    /// `intrinsic can only be used as callee` sweep — see
-    /// `docs/divergences.md` entry 37. Kept where it was, after
-    /// [`Self::check_global_reference_pointer_type`], so upstream's own guard
-    /// still reports first.
-    fn reject_intrinsic_non_callee(&self, loc: Span, name: &str) -> ParseResult<()> {
-        if matches!(
-            resolve_intrinsic_name(name),
-            IntrinsicNameResolution::NonIntrinsic
-        ) {
-            return Ok(());
-        }
-        Err(ParseError::Message {
-            message: "intrinsic can only be used as callee".into(),
-            loc: DiagLoc::span(loc),
+            loc,
         })
     }
 
@@ -8917,7 +9031,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         self.check_global_reference_pointer_type(loc, ty)?;
-        self.reject_intrinsic_non_callee(loc, &name)?;
         if let Some(resolved) = self.global_symbol_lookup(&name) {
             self.check_resolved_global_type(loc, &format!("@{name}"), ty, resolved)?;
             return Ok(self.global_ref_to_value(resolved));
@@ -8948,7 +9061,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         self.check_global_reference_pointer_type(loc, ty)?;
-        self.reject_intrinsic_non_callee(loc, &name)?;
         if let Some(resolved) = self.global_symbol_lookup(&name) {
             self.check_resolved_global_type(loc, &format!("@{name}"), ty, resolved)?;
             return Ok(self.global_ref_to_constant(resolved));
@@ -9005,12 +9117,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(loc, "global value as a pointer", e))
     }
 
+    /// The same narrowing for the stand-in `global_forward_ref` mints. It
+    /// cannot fail — `global_forward_ref` refuses a non-pointer `ty` up front
+    /// and builds the placeholder *at* that type — and is spelled as a checked
+    /// conversion only because `PointerValue`'s unchecked constructor is
+    /// private to `llvmkit-ir`.
+    fn constant_as_pointer(
+        &self,
+        loc: Span,
+        c: llvmkit_ir::Constant<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, B>> {
+        llvmkit_ir::PointerValue::try_from(c.as_erased())
+            .map_err(|e| self.builder_err_at(loc, "forward-referenced callee as a pointer", e))
+    }
+
     fn resolve_global_name_as_ref(&self, name: String) -> ParseResult<GlobalRef<'ctx, B>> {
         self.global_symbol_lookup(&name)
             .ok_or_else(|| ParseError::UndefinedSymbol {
                 kind: SymbolKind::Global,
                 id: SymbolId::Named(name),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })
     }
 
@@ -9249,7 +9375,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(ParseError::Message {
                 message: "expected a function, alias to function, or ifunc in dso_local_equivalent"
                     .into(),
-                loc: DiagLoc::span(operand_loc),
+                loc: operand_loc,
             });
         }
         self.module
@@ -9379,7 +9505,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             })
     }
 
-    fn parse_constant_expr(&mut self, result_ty: Type<'ctx, B>) -> ParseResult<Constant<'ctx, B>> {
+    /// `LLParser::parseValID`'s constant-expression arms.
+    ///
+    /// **Self-typing, as upstream's are.** Every arm ends in a
+    /// `ConstantExpr::get*` call whose result type comes from what was written
+    /// — the destination type after `to`, the operands, the GEP's base and
+    /// indices — and never from a type demanded by the surrounding context.
+    /// That is what lets `parseAliasOrIFunc` read an aliasee with no type of
+    /// its own, and it is where the agreement check belongs: a constant
+    /// expression whose own type differs from the demanded one is
+    /// `convertValIDToValue`'s `constant expression type mismatch`, one layer
+    /// up, not a malformed-operands error down here.
+    fn parse_constant_expr(&mut self) -> ParseResult<Constant<'ctx, B>> {
+        // `parseValID` opens with `ID.Loc = Lex.getLoc();`, and every
+        // *semantic* rejection in these arms is an `error(ID.Loc, …)` rather
+        // than a `tokError` — so the caret sits on the opcode keyword, not on
+        // whatever token the parse has reached by then. Three arms below need
+        // it, and all three used to anchor at the current token: for
+        // `@g = global i64 ptrtoaddr (i32 1 to i64)` that was the token *after*
+        // the closing paren, i.e. end of file.
+        let id_loc = self.loc();
         let op = match self.peek() {
             Token::Instruction(op) => *op,
             _ => return Err(self.expected("constant expression opcode")),
@@ -9413,15 +9558,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let lhs = self.parse_global_type_and_value()?;
                 self.expect_punct(PunctKind::Comma, "comma in binary constantexpr")?;
                 let rhs = self.parse_global_type_and_value()?;
+                // Upstream runs the closing `parseToken` *before* both checks,
+                // in one `if (… || … || …)` chain, so a binary constantexpr
+                // that is both mistyped and unterminated is reported as
+                // unterminated.
+                self.expect_punct(PunctKind::RParen, "')' in binary constantexpr")?;
                 if lhs.ty() != rhs.ty() {
-                    return Err(self.message("operands of constexpr must have same type"));
-                }
-                if !is_int_or_int_vector_type(lhs.ty()) {
                     return Err(
-                        self.message("constexpr requires integer or integer vector operands")
+                        self.message_at(id_loc, "operands of constexpr must have same type")
                     );
                 }
-                self.expect_punct(PunctKind::RParen, "')' in binary constantexpr")?;
+                if !lhs.ty().is_int_or_int_vector() {
+                    return Err(self.message_at(
+                        id_loc,
+                        "constexpr requires integer or integer vector operands",
+                    ));
+                }
+                // `ConstantExpr::get(Opc, Val0, Val1, Flags)` — an integer
+                // binop's result type is its operands'.
+                let result_ty = lhs.ty();
                 self.build_constant_expr(result_ty, None, opcode, vec![lhs, rhs], flags)
             }
             ConstantExprOpcode::Trunc
@@ -9445,11 +9600,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             "invalid cast opcode for cast from '{src_ty}' to '{dst_ty}'"
                         )
                         .into(),
-                        loc: DiagLoc::span(self.loc()),
+                        loc: id_loc,
                     });
                 }
+                // `ConstantExpr::getCast(Opc, SrcVal, DestTy)` — upstream's own
+                // comment on the aliasee spelling of this arm is that the
+                // "dest type is not present, it is implied by the dest type",
+                // i.e. the type after `to` *is* the result type.
                 self.build_constant_expr(
-                    result_ty,
+                    dst_ty,
                     None,
                     opcode,
                     vec![operand],
@@ -9463,7 +9622,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::Comma, "comma after getelementptr's type")?;
                 let operands = self.parse_global_value_vector()?;
                 self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-                let flags =
+                let (flags, result_ty) =
                     self.validate_parsed_gep_constant_expr(source_ty, &operands, parsed_flags)?;
                 self.build_constant_expr(result_ty, Some(source_ty), opcode, operands, flags)
             }
@@ -9473,7 +9632,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::LParen, "'(' in constantexpr")?;
                 let operands = self.parse_global_value_vector()?;
                 self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-                self.validate_parsed_vector_constant_expr(opcode, result_ty, &operands)?;
+                let result_ty = self.validate_parsed_vector_constant_expr(opcode, &operands)?;
                 self.build_constant_expr(
                     result_ty,
                     None,
@@ -9531,6 +9690,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// The `inrange` half of the `getelementptr` arm: upstream widens both
     /// bounds to the base pointer's index width before comparing them, so a
     /// bound that only overflows at the narrower width is legal.
+    /// The `inrange` half of `LLParser::parseValID`'s `getelementptr` arm,
+    /// after both bounds have been lexed:
+    ///
+    /// ```text
+    /// InRangeStart = InRangeStart->extOrTrunc(IndexWidth);
+    /// InRangeEnd = InRangeEnd->extOrTrunc(IndexWidth);
+    /// if (InRangeStart->sge(*InRangeEnd))
+    ///   return error(..., "expected end to be larger than start");
+    /// ```
     fn gep_constant_expr_flags(
         &self,
         parsed: ParsedGepConstantExprFlags,
@@ -9540,10 +9708,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(ConstantExprFlags::gep(parsed.no_wrap));
         };
         let bit_width = self.module.data_layout().index_size_in_bits(address_space);
-        let start_words = inrange_bound_to_apint_words(&start, bit_width);
-        let end_words = inrange_bound_to_apint_words(&end, bit_width);
-        let in_range = ConstantExprInRange::new(start_words, end_words, bit_width);
-        if !constant_expr_inrange_is_non_empty(&in_range) {
+        let in_range = ConstantExprInRange::new(
+            start.extend_or_truncate(bit_width),
+            end.extend_or_truncate(bit_width),
+        );
+        if !in_range.is_non_empty() {
             return Err(self.expected("end to be larger than start"));
         }
         Ok(ConstantExprFlags::gep_with_in_range(
@@ -9552,38 +9721,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ))
     }
 
-    fn parse_inrange_bound(&mut self) -> ParseResult<ParsedInRangeBound> {
-        let bound = match self.peek() {
-            Token::IntegerLit(IntLit {
-                sign,
-                base: NumBase::Dec,
-                digits,
-            }) => {
-                let magnitude_words =
-                    decimal_digits_to_words(digits).ok_or_else(|| self.expected("integer"))?;
-                ParsedInRangeBound::SignedMagnitude {
-                    negative: matches!(sign, Sign::Neg),
-                    magnitude_words,
-                }
-            }
-            Token::IntegerLit(IntLit {
-                base: base @ (NumBase::HexSigned | NumBase::HexUnsigned),
-                digits,
-                ..
-            }) => {
-                let words = hex_digits_to_words(digits).ok_or_else(|| self.expected("integer"))?;
-                let bit_width =
-                    hex_apsint_bit_width(digits, &words).ok_or_else(|| self.expected("integer"))?;
-                ParsedInRangeBound::HexApsInt {
-                    signed: matches!(base, NumBase::HexSigned),
-                    words,
-                    bit_width,
-                }
-            }
-            _ => return Err(self.expected("integer")),
-        };
-        self.bump()?;
-        Ok(bound)
+    /// One `inrange` bound. Upstream reads it as `Lex.getAPSIntVal()`, the
+    /// single `APSInt` every integer token carries, so this is
+    /// [`Self::parse_int_literal`] and nothing else — the `[us]0x` active-bit
+    /// truncation and the signed/unsigned stamp are that one lexer rule's job.
+    fn parse_inrange_bound(&mut self) -> ParseResult<ParsedApsInt> {
+        match self.peek() {
+            Token::IntegerLit(_) => self.parse_int_literal(),
+            _ => Err(self.expected("integer")),
+        }
     }
 
     /// Everything `LLParser::parseValID`'s `getelementptr` arm does after the
@@ -9594,12 +9740,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// fires decides the message. `getelementptr({<vscale x 2 x i32>, i32},
     /// ptr @g, i32 0)` is both unsized and unsupported, and upstream reports
     /// it unsized.
+    /// The `Opc == Instruction::GetElementPtr` half of `parseValID`'s
+    /// `getelementptr` arm, up to and including the `inrange` bounds.
+    ///
+    /// Returns the flags **and** the result type
+    /// `ConstantExpr::getGetElementPtr` would give the expression:
+    /// `GetElementPtrInst::getGEPReturnType`'s answer, a `ptr` in the base's
+    /// address space, made a vector of the first vector shape found among the
+    /// base and then the indices.
     fn validate_parsed_gep_constant_expr(
         &self,
         source_ty: Type<'ctx, B>,
         operands: &[llvmkit_ir::Constant<'ctx, B>],
         parsed_flags: ParsedGepConstantExprFlags,
-    ) -> ParseResult<ConstantExprFlags> {
+    ) -> ParseResult<(ConstantExprFlags, Type<'ctx, B>)> {
         // Upstream's `Elts.size() == 0 || !isPtrOrPtrVectorTy()`; asking for
         // the address space answers both at once, and the `inrange` bounds
         // need it next anyway.
@@ -9614,7 +9768,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
         let mut gep_width = vector_shape_type(base.ty());
         for index in indices {
-            if !is_int_or_int_vector_type(index.ty()) {
+            if !index.ty().is_int_or_int_vector() {
                 return Err(self.message("getelementptr index must be an integer"));
             }
             if let Some(index_shape) = vector_shape_type(index.ty()) {
@@ -9642,43 +9796,83 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if llvmkit_ir::indexed_gep_type(source_ty, &index_values).is_none() {
             return Err(self.message("invalid getelementptr indices"));
         }
-        Ok(flags)
+        let scalar_ptr = self.module.ptr_type(address_space).as_type();
+        let result_ty = match gep_width {
+            None => scalar_ptr,
+            Some((lanes, true)) => self
+                .module
+                .scalable_vector_type(scalar_ptr, lanes)
+                .as_type(),
+            Some((lanes, false)) => self.module.vector_type(scalar_ptr, lanes).as_type(),
+        };
+        Ok((flags, result_ty))
     }
 
+    /// The three non-GEP arms of `parseValID`'s
+    /// `getelementptr`/`shufflevector`/`insertelement`/`extractelement` case,
+    /// each an `isValidOperands` guard followed by a `ConstantExpr::get*` whose
+    /// result type falls out of the operands. Returns that type.
     fn validate_parsed_vector_constant_expr(
         &self,
         opcode: ConstantExprOpcode,
-        result_ty: Type<'ctx, B>,
         operands: &[Constant<'ctx, B>],
-    ) -> ParseResult<()> {
+    ) -> ParseResult<Type<'ctx, B>> {
         match opcode {
             ConstantExprOpcode::ShuffleVector => {
                 let [lhs, rhs, mask] = operands else {
                     return Err(self.expected("three operands to shufflevector"));
                 };
-                if !is_valid_shufflevector(result_ty, lhs.ty(), rhs.ty(), mask.ty()) {
+                if !is_valid_shufflevector(lhs.ty(), rhs.ty(), mask.ty()) {
                     return Err(self.message("invalid operands to shufflevector"));
                 }
+                // `ConstantExpr::getShuffleVector`: `VectorType::get(EltTy,
+                // Mask.size(), TypeIsScalable)` — the element type and
+                // scalability from `V1`, the length from the mask.
+                let (AnyTypeEnum::Vector(lhs_ty), AnyTypeEnum::Vector(mask_ty)) =
+                    (AnyTypeEnum::from(lhs.ty()), AnyTypeEnum::from(mask.ty()))
+                else {
+                    return Err(self.message("invalid operands to shufflevector"));
+                };
+                let element = lhs_ty.element();
+                Ok(if lhs_ty.is_scalable() {
+                    self.module
+                        .scalable_vector_type(element, mask_ty.min_len())
+                        .as_type()
+                } else {
+                    self.module
+                        .vector_type(element, mask_ty.min_len())
+                        .as_type()
+                })
             }
             ConstantExprOpcode::ExtractElement => {
                 let [vector, index] = operands else {
                     return Err(self.expected("two operands to extractelement"));
                 };
-                if !is_valid_extractelement(result_ty, vector.ty(), index.ty()) {
+                if !is_valid_extractelement(vector.ty(), index.ty()) {
                     return Err(self.message("invalid extractelement operands"));
                 }
+                // `ConstantExpr::getExtractElement` types itself off the
+                // vector's element type.
+                let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector.ty()) else {
+                    return Err(self.message("invalid extractelement operands"));
+                };
+                Ok(vector_ty.element())
             }
             ConstantExprOpcode::InsertElement => {
                 let [vector, value, index] = operands else {
                     return Err(self.expected("three operands to insertelement"));
                 };
-                if !is_valid_insertelement(result_ty, vector.ty(), value.ty(), index.ty()) {
+                if !is_valid_insertelement(vector.ty(), value.ty(), index.ty()) {
                     return Err(self.message("invalid insertelement operands"));
                 }
+                // `ConstantExpr::getInsertElement` gives back the vector's own
+                // type.
+                Ok(vector.ty())
             }
-            _ => {}
+            _ => unreachable!(
+                "only shufflevector / extractelement / insertelement reach this helper"
+            ),
         }
-        Ok(())
     }
 
     fn build_constant_expr(
@@ -9710,12 +9904,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 {
                     ParseError::Message {
                         message: "invalid operands to shufflevector".into(),
-                        loc: DiagLoc::span(self.loc()),
+                        loc: self.loc(),
                     }
                 }
                 IrError::InvalidOperation { message } => ParseError::Expected {
                     expected: message.into(),
-                    loc: DiagLoc::span(self.loc()),
+                    loc: self.loc(),
                 },
                 other => self.builder_err("constant expression", other),
             })
@@ -9875,9 +10069,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// named value is `redefinition of function '@f'`.
     fn check_function_redefinition(&self, name: &str, loc: Span) -> ParseResult<()> {
         // An empty name is the `@N` / `@""` form, which upstream routes
-        // through `ForwardRefValIDs` instead; a name already registered as a
-        // forward reference is exactly the case that *may* be reused.
-        if name.is_empty() || self.forward_function_decls.contains_key(name) {
+        // through `ForwardRefValIDs` instead.
+        //
+        // The forward-reference case never reaches here at all: it is the
+        // `if (FRVI != ForwardRefVals.end())` arm of the same `else if` chain,
+        // handled by [`Self::claim_function_forward_ref`].
+        if name.is_empty() {
             return Ok(());
         }
         if self.module.function_dyn(name).is_some() {
@@ -9892,6 +10089,82 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
+    /// `parseFunctionHeader`'s `if (!FunctionName.empty()) { … } else { … }`
+    /// block: the `else if` chain that decides whether this header *claims* a
+    /// pending forward-reference placeholder, and rejects a name already
+    /// taken. Returns upstream's `GlobalValue *FwdFn` — the placeholder the
+    /// caller RAUWs once the fresh `Function` exists.
+    ///
+    /// Both branches compare `FwdFn->getType() != PFT`, which after opaque
+    /// pointers is nothing but the address space, and neither looks at the
+    /// signature: a call site's arguments never constrain the definition.
+    /// llvmkit used to *reuse* a function whose signature happened to match
+    /// and reject the header otherwise, because its forward-referenced callee
+    /// was a real `Function` built at the call site's type.
+    ///
+    /// The two messages differ in wording **and** in anchor: the named form is
+    /// `error(FRVI->second.second, …)`, on the reference that created the
+    /// placeholder, while the numbered form is `error(NameLoc, …)`, on the
+    /// header's own `@N`.
+    fn claim_function_forward_ref(
+        &mut self,
+        name: &str,
+        name_id: &NameOrId,
+        address_space: u32,
+        name_loc: Span,
+    ) -> ParseResult<Option<ForwardRef<'ctx, B>>> {
+        // `PointerType *PFT = PointerType::get(Context, AddrSpace);`
+        let pft = self.module.ptr_type(address_space).as_type();
+        if !name.is_empty() {
+            let Some(entry) = self.forward_ref_globals.remove(name) else {
+                // `else if ((Fn = M->getFunction(FunctionName)))` / `else if
+                // (M->getNamedValue(FunctionName))`.
+                self.check_function_redefinition(name, name_loc)?;
+                return Ok(None);
+            };
+            let placeholder_ty = entry.placeholder.ty();
+            if placeholder_ty != pft {
+                return Err(self.message_at(
+                    entry.loc,
+                    format!(
+                        "invalid forward reference to function '{name}' with wrong type: \
+                         expected '{pft}' but was '{placeholder_ty}'"
+                    ),
+                ));
+            }
+            return Ok(Some(entry));
+        }
+        // The `@N` half.
+        //
+        // **Divergence:** `@""` — a name syntactically present but semantically
+        // missing — reaches this branch upstream too, where `FunctionNumber ==
+        // (unsigned)-1` is replaced by `NumberedVals.getNext()` so the header
+        // claims that slot. llvmkit lexes `@""` as an empty `GlobalVar` and
+        // carries it as `NameOrId::Name("")`, which takes no number at all, so
+        // the arm below never fires for it. That is the *unnamed global takes
+        // no slot* gap, catalogued as **G15** in `docs/fixture-coverage.md`
+        // with `test/Assembler/skip-value-numbers-globals.ll` behind it; it is
+        // not introduced here, and an empty name reached
+        // `check_function_redefinition`'s own early return before.
+        let NameOrId::Id(id) = name_id else {
+            return Ok(None);
+        };
+        let Some(entry) = self.forward_ref_global_ids.remove(id) else {
+            return Ok(None);
+        };
+        let placeholder_ty = entry.placeholder.ty();
+        if placeholder_ty != pft {
+            return Err(self.message_at(
+                name_loc,
+                format!(
+                    "type of definition and forward reference of '@{id}' disagree: \
+                     expected '{pft}' but was '{placeholder_ty}'"
+                ),
+            ));
+        }
+        Ok(Some(entry))
+    }
+
     /// `parseFunctionHeader`'s "Verify that the linkage is ok" switch.
     ///
     /// Upstream runs it **after** the return type has parsed, and anchors it
@@ -9902,11 +10175,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         match linkage {
             Linkage::Appending | Linkage::Common => Err(ParseError::Message {
                 message: "invalid function linkage type".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             }),
             Linkage::ExternalWeak if is_define => Err(ParseError::Message {
                 message: "invalid linkage for function definition".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             }),
             Linkage::Private
             | Linkage::Internal
@@ -9919,7 +10192,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             {
                 Err(ParseError::Message {
                     message: "invalid linkage for function declaration".into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })
             }
             _ => Ok(()),
@@ -10025,15 +10298,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if storage.is_empty() {
             return Err(ParseError::Message {
                 message: "attribute group has no attributes".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         self.numbered_attr_groups
             .add(id, storage.clone())
-            .map_err(|source| ParseError::InvalidSlotId {
-                source,
-                loc: DiagLoc::span(loc),
-            })?;
+            .map_err(|source| ParseError::InvalidSlotId { source, loc })?;
         self.module.set_attribute_group(id, storage);
         Ok(())
     }
@@ -10060,7 +10330,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Keyword::Noinline => AttrKind::NoInline,
             Keyword::Writeonly => AttrKind::WriteOnly,
             Keyword::Returned => AttrKind::Returned,
-            Keyword::Nocapture => AttrKind::NoCapture,
             Keyword::Nofree => AttrKind::NoFree,
             Keyword::Writable => AttrKind::Writable,
             Keyword::Noreturn => AttrKind::NoReturn,
@@ -10131,78 +10400,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return None,
         })
     }
-    /// Every keyword `parse_fn_attribute_value_pairs` has an arm for.
+    /// `parseFunctionHeader`'s `parseFnAttributeValuePairs(FuncAttrs,
+    /// FwdRefAttrGrps, false, BuiltinLoc)` term: **one** call, entered
+    /// unconditionally, ended by `tokenToAttribute` answering
+    /// `Attribute::None` on the first token that is not an attribute.
     ///
-    /// Upstream needs no such predicate: `parseFunctionHeader` enters the
-    /// attribute list unconditionally and lets `tokenToAttribute` end it.
-    /// llvmkit gates the header path on a lookahead, which means a keyword
-    /// missing from *this* list is not rejected — the list is never entered,
-    /// and `define void @f() uwtable {` fails with `expected '{' to open
-    /// function body`. It has to name every keyword the loop's bespoke arms
-    /// match, because those never reach `attr_kind_for_keyword`.
-    fn keyword_starts_attribute(keyword: Keyword) -> bool {
-        if Self::attr_kind_for_keyword(keyword).is_some()
-            || Self::legacy_memory_effects(keyword).is_some()
-        {
-            return true;
-        }
-        matches!(
-            keyword,
-            Keyword::Align
-                | Keyword::Alignstack
-                | Keyword::Memory
-                | Keyword::Nofpclass
-                | Keyword::Uwtable
-                | Keyword::Dereferenceable
-                | Keyword::DereferenceableOrNull
-                | Keyword::Byval
-                | Keyword::Byref
-                | Keyword::Inalloca
-                | Keyword::Sret
-                | Keyword::Preallocated
-                | Keyword::Elementtype
-                | Keyword::Captures
-                | Keyword::Range
-                | Keyword::Initializes
-                | Keyword::Allocsize
-                | Keyword::VscaleRange
-                | Keyword::Allockind
-        )
-    }
-
-    fn is_attr_start(&self) -> bool {
-        match self.peek() {
-            Token::AttrGrpId(_) | Token::StringConstant(_) => true,
-            Token::Kw(keyword) => Self::keyword_starts_attribute(*keyword),
-            _ => false,
-        }
-    }
-
+    /// llvmkit used to gate this on `is_attr_start`, a hand-maintained second
+    /// copy of the loop's arm list, and to call the loop repeatedly until the
+    /// predicate went false. Both are gone: a keyword missing from a lookahead
+    /// is not rejected, it makes the whole list invisible — `define void @f()
+    /// uwtable {` failed with `expected '{' to open function body` for exactly
+    /// that reason — and a re-entered loop restarts
+    /// `parse_fn_attribute_value_pairs`'s `legacy_memory` accumulator, which
+    /// upstream intersects across the *whole* list.
+    ///
+    /// `align N` is parsed here as an `AttributeList` entry, exactly as
+    /// upstream does, and moved to the alignment field by
+    /// `parse_optional_function_suffix`. llvmkit used to exclude it from this
+    /// loop and leave it to the suffix, which is invisible while the suffix is
+    /// order-free but breaks `align 8 section "x"` once the clause chain is a
+    /// fixed sequence.
     fn parse_optional_function_header_attrs(
         &mut self,
         attrs: &mut AttributeStorage,
     ) -> ParseResult<ParsedAttrList> {
-        let mut builtin_loc = None;
-        let mut groups = Vec::new();
-        // `align N` is parsed here as an `AttributeList` entry, exactly as
-        // upstream does, and moved to the alignment field by
-        // `parse_optional_function_suffix`. llvmkit used to exclude it from
-        // this loop and leave it to the suffix, which is invisible while the
-        // suffix is order-free but breaks `align 8 section "x"` once the
-        // clause chain is a fixed sequence.
-        while self.is_attr_start() {
-            let parsed = self.parse_fn_attribute_value_pairs(
-                attrs,
-                AttrIndex::Function,
-                AttrListContext::FunctionHeader,
-            )?;
-            groups.extend(parsed.groups);
-            builtin_loc = builtin_loc.or(parsed.builtin_loc);
-        }
-        Ok(ParsedAttrList {
-            groups,
-            builtin_loc,
-        })
+        self.parse_fn_attribute_value_pairs(
+            attrs,
+            AttrIndex::Function,
+            AttrListContext::FunctionHeader,
+        )
     }
 
     /// The fixed clause chain `parseFunctionHeader` runs after the argument
@@ -10346,15 +10572,59 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     };
                     out.add(index, Attribute::<B>::string(key, value));
                 }
+                // `parseOptionalParamOrReturnAttrs`'s `if (Token ==
+                // lltok::kw_nocapture) { Lex.Lex();
+                // B.addCapturesAttr(CaptureInfo::none()); continue; }`, which
+                // sits between the string-attribute arm and `tokenToAttribute`.
+                // LLVM 22 has no `Attribute::NoCapture`: `nocapture` is spelled
+                // `captures(none)` in the IR and prints that way, which
+                // `test/Assembler/auto_upgrade_intrinsics.ll`'s
+                // `CHECK: declare void @llvm.lifetime.start.p0(ptr captures(none))`
+                // pins on `llvm-as | llvm-dis` output.
+                //
+                // The arm is `ParamOrReturn` only, exactly as upstream's is:
+                // `tokenToAttribute` has no `nocapture` case, so a `nocapture`
+                // in a function-attribute list or an attribute group is not an
+                // attribute at all and falls through to the loop's end / to
+                // `unterminated attribute group`.
+                //
+                // **One half of the arm is deliberately not ported.** Upstream
+                // `continue`s before the `canUseAsParamAttr` /
+                // `canUseAsRetAttr` checks, so its parser accepts `nocapture`
+                // on a *return* value and leaves the rejection to
+                // `Verifier::verifyFunctionAttrs` (`Attribute
+                // 'captures(none)' does not apply to function return values`).
+                // llvmkit has no `verifyFunctionAttrs` — `docs/divergences.md`
+                // entry 23 — so bypassing the position check here would trade
+                // a wrong-layer rejection for an accepts-invalid. The check
+                // stays; `Captures` is `[ParamAttr]` in `Attributes.td`, so the
+                // verdict matches and only the layer and the wording do not.
+                Token::Kw(Keyword::Nocapture) if context == AttrListContext::ParamOrReturn => {
+                    self.bump()?;
+                    let attr = Attribute::<B>::Captures(llvmkit_ir::CaptureInfo::none());
+                    self.check_attribute_position(index, &attr, attr_loc)?;
+                    out.add(index, attr);
+                }
                 Token::Kw(Keyword::Align) => {
                     // Inside a group the grammar is `align = N`, read with
-                    // `parseUInt32` and given **no** validation at all —
-                    // upstream reaches `Align(Value)`, whose rejections are
-                    // C++ asserts. llvmkit raises no runtime panics, so it
-                    // reuses `parseOptionalAlignment`'s wording for the two
-                    // values that would assert; recorded in
-                    // `docs/future-work.md` as a deliberate divergence in
-                    // *diagnostic presence*, never in accept/reject.
+                    // `parseUInt32` and given no `error()` at all: upstream's
+                    // `parseEnumAttribute` case `Attribute::Alignment` hands the
+                    // value straight to `Align(Value)`, whose `assert(Value >
+                    // 0)` / `assert(isPowerOf2_64(Value))` are the only
+                    // rejections, and `AttrBuilder::addAlignmentAttr` adds
+                    // `assert(*Align <= Value::MaximumAlignment)`.
+                    //
+                    // llvmkit raises no runtime panics in production paths, so
+                    // an assert is ported as a diagnostic, not as a crash:
+                    // `check_alignment_value` reuses `parseOptionalAlignment`'s
+                    // two `error()` texts for the same three values. Against an
+                    // assertions-enabled `llvm-as` that is the same accept /
+                    // reject set with a diagnostic instead of an abort; against
+                    // a release one, where the asserts are compiled out and
+                    // `align = 3` is silently rounded to 2 by `Log2_64`, it is
+                    // deliberate hardening. `docs/divergences.md` carried it
+                    // as a rejects-valid row until this comment said so; ids in
+                    // that file are re-used, so the row is named, not numbered.
                     let value = if context.in_attr_group() {
                         self.bump()?;
                         self.expect_punct(PunctKind::Equal, "'=' here")?;
@@ -10376,9 +10646,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.expect_punct(PunctKind::Equal, "'=' here")?;
                         let value_loc = self.loc();
                         let value = u64::from(self.parse_uint32()?);
-                        // Same treatment as `align =` above: upstream's
-                        // `MaybeAlign(unsigned)` asserts on a non-power-of-two.
-                        // A zero is well defined and adds no attribute.
+                        // The group spelling reaches `MaybeAlign(uint64_t)`,
+                        // whose `assert(Value == 0 || isPowerOf2_64(Value))`
+                        // makes zero *well defined*: it yields `nullopt` and
+                        // `addStackAlignmentAttr` returns without adding
+                        // anything. Upstream's `parseOptionalStackAlignment`,
+                        // reached only by the `alignstack(N)` spelling below,
+                        // is the one that rejects zero outright.
                         if value == 0 {
                             continue;
                         }
@@ -10389,15 +10663,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         }
                         value
                     } else {
-                        let value = self.parse_stack_alignment_value()?;
-                        if value == 0 {
-                            // `addStackAlignmentAttr(0)` builds a `MaybeAlign`
-                            // holding nothing, so no attribute is added — and
-                            // a group containing only it is empty.
-                            continue;
-                        }
-                        value
+                        // `parseOptionalStackAlignment` runs
+                        // `!isPowerOf2_32(Alignment)`, which is false for zero,
+                        // so the `alignstack(0)` spelling never reaches the
+                        // `MaybeAlign` arm above.
+                        self.parse_stack_alignment_value()?
                     };
+                    // `assert(*Align <= 0x100 && "Alignment too large.")` in
+                    // `AttrBuilder::addStackAlignmentAttr`, which both spellings
+                    // reach. Ported as a diagnostic for the reason given on the
+                    // `align` arm above, anchored — like every other position
+                    // diagnostic in this loop — at the attribute's own keyword;
+                    // the text is llvmkit's own, because upstream states this
+                    // one only as an assertion string.
+                    if value > 0x100 {
+                        return Err(self.message_at(attr_loc, "stack alignment is too large"));
+                    }
                     let attr = Attribute::<B>::int(AttrKind::StackAlignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
@@ -10879,7 +11160,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let Some(one) = llvmkit_ir::AllocFnKind::from_keyword(word) else {
                 return Err(ParseError::Message {
                     message: format!("unknown allockind {word}").into(),
-                    loc: DiagLoc::span(kind_loc),
+                    loc: kind_loc,
                 });
             };
             kind |= one;
@@ -11265,7 +11546,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             IntrinsicNameResolution::UnknownIntrinsic => {
                 return Err(ParseError::Expected {
                     expected: "unknown intrinsic".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 });
             }
             IntrinsicNameResolution::Known(_) => {
@@ -11317,20 +11598,46 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 {
                     return Err(self.intrinsic_attribute_error(decl_loc));
                 }
+                // `parseFunctionHeader`'s `GlobalValue *FwdFn = nullptr;`
+                // block. Upstream has **one** path here and an intrinsic
+                // takes it like anything else; llvmkit's intrinsic arm builds
+                // the declaration through
+                // `get_or_insert_intrinsic_declaration` rather than
+                // `Function::Create`, so the claim is spelled out here. The
+                // redefinition arms beside it upstream are deliberately not:
+                // llvmkit materialises a real `Function` for any call site
+                // that named this intrinsic, where upstream at this point
+                // still holds only a `ForwardRefVals` placeholder, so
+                // `M->getFunction(FunctionName)` answers for inputs upstream
+                // accepts. Without the claim the reference stayed in
+                // `forward_ref_globals` and `validateEndOfModule` reported a
+                // *declared* intrinsic as never declared.
+                let forward_ref = match &name_id {
+                    NameOrId::Name(n) if !n.is_empty() => {
+                        self.forward_ref_globals.remove(n.as_str())
+                    }
+                    NameOrId::Name(_) => None,
+                    NameOrId::Id(id) => self.forward_ref_global_ids.remove(id),
+                };
                 let f = self
                     .module
                     .get_or_insert_intrinsic_declaration(&descriptor)
                     .map_err(|e| self.intrinsic_parse_error(decl_loc, e))?;
                 let f = self.module.view(f);
+                // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn);
+                // FwdFn->eraseFromParent(); }`.
+                if let Some(entry) = forward_ref {
+                    Self::rauw_forward_ref(entry, f.as_global_constant_ptr())?;
+                }
                 for (slot, name) in param_names.into_iter().enumerate() {
                     if let Some(name) = name {
                         let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
                             expected: "parameter slot fits in u32".into(),
-                            loc: DiagLoc::span(decl_loc),
+                            loc: decl_loc,
                         })?;
                         let arg = f.param(slot).map_err(|e| ParseError::Expected {
                             expected: format!("function parameter slot {slot}: {e}").into(),
-                            loc: DiagLoc::span(decl_loc),
+                            loc: decl_loc,
                         })?;
                         arg.set_name(self.module, &name);
                     }
@@ -11338,68 +11645,40 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 return Ok(());
             }
         }
-        let existing_by_id = match &name_id {
-            NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
-                GlobalRef::Function(f) => Some(*f),
-                _ => None,
-            }),
-            NameOrId::Name(_) => None,
-        };
-        self.check_function_redefinition(&name, decl_loc)?;
-        let existing_by_name = (!name.is_empty())
-            .then(|| self.module.function_dyn(&name))
-            .flatten()
-            .map(|id| self.module.view(id));
-        let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
-            if existing.signature() != fn_ty || existing.basic_blocks().len() != 0 {
-                return Err(ParseError::Expected {
-                    expected: "forward function declaration with matching signature".into(),
-                    loc: DiagLoc::span(decl_loc),
-                });
-            }
-            existing.set_linkage(self.module, linkage);
-            existing.set_visibility(self.module, visibility);
-            existing.set_dll_storage_class(self.module, dll_storage_class);
-            existing.set_dso_locality(self.module, dso_locality);
-            existing.set_calling_conv(self.module, calling_conv);
-            existing.set_unnamed_addr(self.module, unnamed_addr);
-            existing.set_address_space(self.module, address_space);
-            if !name.is_empty() {
-                self.forward_function_decls.remove(&name);
-            }
-            existing.set_attributes(self.module, attrs);
-            existing
-        } else {
-            let f = self
-                .module
-                .add_function_dyn(&name, fn_ty, linkage)
-                .map_err(|e| ParseError::Expected {
-                    expected: format!("valid function declaration: {e}").into(),
-                    loc: DiagLoc::span(decl_loc),
+        let forward_ref =
+            self.claim_function_forward_ref(&name, &name_id, address_space, decl_loc)?;
+        // `Fn = Function::Create(FT, ExternalLinkage, AddrSpace, FunctionName,
+        // M);` — unconditional. A header never re-uses an existing `Function`;
+        // the only thing a pending forward reference contributes is the
+        // placeholder RAUW'd below.
+        let f = self
+            .module
+            .add_function_dyn(&name, fn_ty, linkage)
+            .map_err(|e| ParseError::Expected {
+                expected: format!("valid function declaration: {e}").into(),
+                loc: decl_loc,
+            })?;
+        let f = self.module.view(f);
+        f.set_visibility(self.module, visibility);
+        f.set_dll_storage_class(self.module, dll_storage_class);
+        f.set_dso_locality(self.module, dso_locality);
+        f.set_calling_conv(self.module, calling_conv);
+        f.set_unnamed_addr(self.module, unnamed_addr);
+        f.set_address_space(self.module, address_space);
+        f.set_attributes(self.module, attrs);
+        for (slot, name) in param_names.into_iter().enumerate() {
+            if let Some(name) = name {
+                let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
+                    expected: "parameter slot fits in u32".into(),
+                    loc: decl_loc,
                 })?;
-            let f = self.module.view(f);
-            f.set_visibility(self.module, visibility);
-            f.set_dll_storage_class(self.module, dll_storage_class);
-            f.set_dso_locality(self.module, dso_locality);
-            f.set_calling_conv(self.module, calling_conv);
-            f.set_unnamed_addr(self.module, unnamed_addr);
-            f.set_address_space(self.module, address_space);
-            f.set_attributes(self.module, attrs);
-            for (slot, name) in param_names.into_iter().enumerate() {
-                if let Some(name) = name {
-                    let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
-                        expected: "parameter slot fits in u32".into(),
-                        loc: DiagLoc::span(decl_loc),
-                    })?;
-                    let arg = f.param(slot).map_err(|e| ParseError::Expected {
-                        expected: format!("function parameter slot {slot}: {e}").into(),
-                        loc: DiagLoc::span(decl_loc),
-                    })?;
-                    arg.set_name(self.module, &name);
-                }
+                let arg = f.param(slot).map_err(|e| ParseError::Expected {
+                    expected: format!("function parameter slot {slot}: {e}").into(),
+                    loc: decl_loc,
+                })?;
+                arg.set_name(self.module, &name);
             }
-            f
-        };
+        }
         for group in suffix.attr_groups {
             f.add_function_attr_group(self.module, group);
         }
@@ -11453,6 +11732,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         }
+        // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn); FwdFn->eraseFromParent(); }`
+        // — the last statement of `parseFunctionHeader`'s common tail, after
+        // every setter and the argument-name loop, and before `parseDeclare`
+        // resumes with the attachments it read ahead of the header.
+        if let Some(entry) = forward_ref {
+            Self::rauw_forward_ref(entry, f.as_global_constant_ptr())?;
+        }
         // `parseDeclare` applies the attachments it read *before* the header,
         // in the order they were written. There is no trailing form: a
         // declaration's metadata comes first or not at all, so
@@ -11468,7 +11754,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .add(*id, GlobalRef::Function(f))
                 .map_err(|source| ParseError::InvalidSlotId {
                     source,
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
         }
         // `parseFunctionHeader`'s `if (IsDefine) return false;` tail: only a
@@ -11538,13 +11824,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             IntrinsicNameResolution::UnknownIntrinsic => {
                 return Err(ParseError::Expected {
                     expected: "unknown intrinsic".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 });
             }
             IntrinsicNameResolution::Known(_) => {
                 return Err(ParseError::Expected {
                     expected: "intrinsic functions should never be defined".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 });
             }
         }
@@ -11566,64 +11852,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let function_metadata = self.parse_optional_function_metadata()?;
 
         let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args);
-        let existing_by_id = match &name_id {
-            NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
-                GlobalRef::Function(f) => Some(*f),
-                _ => None,
-            }),
-            NameOrId::Name(_) => None,
-        };
-        self.check_function_redefinition(&name, decl_loc)?;
-        let existing_by_name = (!name.is_empty())
-            .then(|| self.module.function_dyn(&name))
-            .flatten()
-            .map(|id| self.module.view(id));
-        let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
-            if existing.signature() != fn_ty || existing.basic_blocks().any(|bb| !bb.is_empty()) {
-                return Err(ParseError::Expected {
-                    expected: "forward function definition with matching signature".into(),
-                    loc: DiagLoc::span(decl_loc),
-                });
-            }
-            existing.set_linkage(self.module, linkage);
-            existing.set_visibility(self.module, visibility);
-            existing.set_dll_storage_class(self.module, dll_storage_class);
-            existing.set_dso_locality(self.module, dso_locality);
-            existing.set_calling_conv(self.module, calling_conv);
-            existing.set_unnamed_addr(self.module, unnamed_addr);
-            existing.set_address_space(self.module, address_space);
-            existing.set_attributes(self.module, attrs);
-            if !name.is_empty() {
-                self.forward_function_decls.remove(&name);
-            }
-            existing
-        } else {
-            let f = self
-                .module
-                .add_function_dyn(&name, fn_ty, linkage)
-                .map_err(|e| ParseError::Expected {
-                    expected: format!("valid function definition: {e}").into(),
-                    loc: DiagLoc::span(decl_loc),
-                })?;
-            let f = self.module.view(f);
-            f.set_visibility(self.module, visibility);
-            f.set_dll_storage_class(self.module, dll_storage_class);
-            f.set_dso_locality(self.module, dso_locality);
-            f.set_calling_conv(self.module, calling_conv);
-            f.set_unnamed_addr(self.module, unnamed_addr);
-            f.set_address_space(self.module, address_space);
-            f.set_attributes(self.module, attrs);
-            f
-        };
+        let forward_ref =
+            self.claim_function_forward_ref(&name, &name_id, address_space, decl_loc)?;
+        // `Fn = Function::Create(FT, ExternalLinkage, AddrSpace, FunctionName,
+        // M);` — unconditional, exactly as in `parse_declare`; `IsDefine` does
+        // not reach this far into `parseFunctionHeader`.
+        let f = self
+            .module
+            .add_function_dyn(&name, fn_ty, linkage)
+            .map_err(|e| ParseError::Expected {
+                expected: format!("valid function definition: {e}").into(),
+                loc: decl_loc,
+            })?;
+        let f = self.module.view(f);
+        f.set_visibility(self.module, visibility);
+        f.set_dll_storage_class(self.module, dll_storage_class);
+        f.set_dso_locality(self.module, dso_locality);
+        f.set_calling_conv(self.module, calling_conv);
+        f.set_unnamed_addr(self.module, unnamed_addr);
+        f.set_address_space(self.module, address_space);
+        f.set_attributes(self.module, attrs);
         for (slot, p) in param_names.iter().enumerate() {
             if let Some(n) = p {
                 let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
                     expected: "parameter slot fits in u32".into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
                 let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
                     expected: format!("function parameter slot {slot}: {e}").into(),
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
                 arg.set_name(self.module, n);
             }
@@ -11681,6 +11938,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         }
+        // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn); FwdFn->eraseFromParent(); }`
+        // — the last statement of `parseFunctionHeader`'s common tail, so a
+        // recursive call in the body below sees the real `Function`, not the
+        // placeholder.
+        if let Some(entry) = forward_ref {
+            Self::rauw_forward_ref(entry, f.as_global_constant_ptr())?;
+        }
         // `parseDefine` reads the attachments *after* the header, through
         // `parseOptionalFunctionMetadata`, and before the body's `{`.
         for (kind, id) in function_metadata {
@@ -11693,7 +11957,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .add(id, GlobalRef::Function(f))
                 .map_err(|source| ParseError::InvalidSlotId {
                     source,
-                    loc: DiagLoc::span(decl_loc),
+                    loc: decl_loc,
                 })?;
         }
 
@@ -11709,11 +11973,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         for (slot, name) in param_names.into_iter().enumerate() {
             let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
                 expected: "parameter slot fits in u32".into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
             let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
                 expected: format!("function parameter slot {slot}: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+                loc: decl_loc,
             })?;
             let v = arg.as_erased();
             match name {
@@ -12309,7 +12573,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             let _ = b.ret_void().map_err(|e| ParseError::Expected {
                 expected: format!("valid ret void: {e}").into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })?;
             return Ok(());
         }
@@ -12323,7 +12587,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let _ = b.ret(v).map_err(|e| ParseError::Expected {
             expected: format!("valid ret: {e}").into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: self.loc(),
         })?;
         Ok(())
     }
@@ -12336,31 +12600,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `br`
-        if matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Label)) {
-            self.bump()?;
-            let target = self.parse_block_ref(state)?;
+        // `if (parseTypeAndValue(Op0, Loc, PFS)) return true;` — the
+        // unconditional form is *not* a `label` keyword lookahead upstream:
+        // the operand is read as a type-and-value like any other, and it is
+        // the `dyn_cast` below that decides which `br` this is.
+        let cond_loc = self.loc();
+        let (cond_ty, cond_v) = self.parse_type_and_value(state)?;
+        // `if (BasicBlock *BB = dyn_cast<BasicBlock>(Op0)) { Inst =
+        //  BranchInst::Create(BB); return false; }`
+        if let Some(target) = state.block_label_for_value(cond_v) {
             let _ = b.br(target).map_err(|e| ParseError::Expected {
                 expected: format!("valid br: {e}").into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })?;
             return Ok(());
         }
-        // Conditional: `i1 %cond, label %t, label %f`.
-        let cond_loc = self.loc();
-        let cond_ty = self.parse_type(false)?;
+        // `if (Op0->getType() != Type::getInt1Ty(Context)) return error(Loc,
+        //  "branch condition must have 'i1' type");` — after the block test,
+        // not before it, and after the operand has been read.
         if !matches!(
             cond_ty.into_type_enum(),
             AnyTypeEnum::Int(t) if t.bit_width() == 1
         ) {
             return Err(self.message_at(cond_loc, "branch condition must have 'i1' type"));
         }
-        let cond_v = self.parse_value(state, cond_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after branch condition")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for then-target")?;
-        let then_bb = self.parse_block_ref(state)?;
+        let then_bb = self.parse_type_and_basic_block(state)?;
         self.expect_punct(PunctKind::Comma, "',' after true destination")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for else-target")?;
-        let else_bb = self.parse_block_ref(state)?;
+        let else_bb = self.parse_type_and_basic_block(state)?;
         let cond_iv: IntValue<'ctx, IntDyn, B> = cond_v
             .try_into()
             .map_err(|_| self.expected("i1 condition"))?;
@@ -12371,7 +12638,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .cond_br(cond_i1, then_bb, else_bb)
             .map_err(|e| ParseError::Expected {
                 expected: format!("valid cond_br: {e}").into(),
-                loc: DiagLoc::span(self.loc()),
+                loc: self.loc(),
             })?;
         Ok(())
     }
@@ -12421,7 +12688,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `parseLogical`'s — the two differ only in wording, and upstream
         // routes `and` / `or` / `xor` through the second. Neither existed
         // here: a non-integer operand reached the builder.
-        if !is_int_or_int_vector_type(ty) {
+        if !ty.is_int_or_int_vector() {
             let message = if matches!(op, IntBinOp::And | IntBinOp::Or | IntBinOp::Xor) {
                 "instruction requires integer or integer vector operands"
             } else {
@@ -12436,7 +12703,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // convert. Upstream has one path for both (`LLParser::parseArithmetic`
         // hands the operands straight to `BinaryOperator::Create`); the split
         // here is llvmkit's typed-handle layer, not a grammar difference.
-        if is_vector_type(ty) {
+        if ty.is_vector() {
             let name = result_name.as_str();
             let flags = int_binop_flags(nuw, nsw, exact, disjoint_or);
             let v = b
@@ -12586,7 +12853,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `LLParser::parseCompare` accepts integers **and pointers** here
         // (`isIntOrIntVectorTy() || isPtrOrPtrVectorTy()`); `icmp eq ptr %a,
         // %b` is ordinary IR that a scalar-integer-only path rejected.
-        if !is_int_or_int_vector_type(ty) && !is_ptr_or_ptr_vector_type(ty) {
+        if !ty.is_int_or_int_vector() && !ty.is_ptr_or_ptr_vector() {
             return Err(self.message_at(operand_loc, "icmp requires integer operands"));
         }
 
@@ -12594,7 +12861,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // the result is `<N x i1>`, which no `IntValueId<bool, B>` describes.
         // Pointers take it for the same reason in the other direction —
         // `IntValue<IntDyn>` cannot name a `ptr`.
-        if is_vector_type(ty) || ty.is_pointer() {
+        if ty.is_vector() || ty.is_pointer() {
             let name = result_name.as_str();
             let flags = if samesign {
                 llvmkit_ir::instr_types::IcmpFlags::new().samesign()
@@ -12657,7 +12924,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // which describe a *scalar* width, so `<N x iM>` converts to neither.
         // Upstream has one path for both — `LLParser::parseCast` hands the
         // operand straight to `CastInst::Create`.
-        if is_vector_type(src_ty) || is_vector_type(dst_ty) {
+        if src_ty.is_vector() || dst_ty.is_vector() {
             let flags = IntCastFlags::new();
             let flags = if trunc_nuw { flags.nuw() } else { flags };
             let flags = if trunc_nsw { flags.nsw() } else { flags };
@@ -12843,7 +13110,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::Comma, "',' after compare value")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
         // `LLParser::parseCompare`'s `FCmp` arm.
-        if !is_fp_or_fp_vector_type(ty) {
+        if !ty.is_float_or_float_vector() {
             return Err(self.message_at(operand_loc, "fcmp requires floating point operands"));
         }
         // Erased: a vector compare has neither a typed float operand nor a
@@ -13223,7 +13490,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let elt_loc = self.loc();
             let idx_ty = self.parse_type(false)?;
             let idx_v = self.parse_value(state, idx_ty)?;
-            if !is_int_or_int_vector_type(idx_v.ty()) {
+            if !idx_v.ty().is_int_or_int_vector() {
                 return Err(self.message_at(elt_loc, "getelementptr index must be an integer"));
             }
             if let Some(index_shape) = vector_shape_type(idx_v.ty()) {
@@ -13327,7 +13594,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `if (!isa<FPMathOperator>(Inst))`, whose `Select` arm is
         // `FPMathOperator::isSupportedFloatingPointType(V->getType())` — wider
         // than `isFPOrFPVectorTy`, which is why this is not
-        // `is_fp_or_fp_vector_type`. The anchor is upstream's `Loc`, taken in
+        // `Type::is_float_or_float_vector`. The anchor is upstream's `Loc`, taken in
         // `parseInstruction` *before* the opcode keyword is eaten.
         if !fmf.is_empty() && !llvmkit_ir::is_supported_floating_point_type(true_ty) {
             return Err(self.message_at(
@@ -13572,7 +13839,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::Comma, "',' after extract value")?;
         let idx_ty = self.parse_type(false)?;
         let idx_v = self.parse_value(state, idx_ty)?;
-        if !is_vector_type(vec_ty) || !idx_ty.is_integer() {
+        if !vec_ty.is_vector() || !idx_ty.is_integer() {
             return Err(self.message_at(operand_loc, "invalid extractelement operands"));
         }
         let idx: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = idx_v
@@ -13951,9 +14218,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("block label in phi pair"))?;
                 self.bump()?;
-                if !state.defined_blocks.contains(&n) {
-                    state.block_refs.entry(n.clone()).or_insert(loc);
-                }
                 // A phi predecessor may already be terminated (the common
                 // merge-block case), so ensure the block through the
                 // state-agnostic label path, never the unterminated-only
@@ -14098,6 +14362,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // anything else is a bare *return* type and the signature is built
         // from the arguments — which is why the walk below only bites on the
         // explicit form.
+        //
+        // `FunctionType::get(RetType, ParamTypes, false)` — the variadic bit
+        // is hardcoded off. A musttail forwarding `...` is consumed by
+        // `parseParameterList` and contributes no `ParamInfo`, so it never
+        // reaches `ParamTypes`; threading `var_args` in here built a call-site
+        // type upstream never builds. `Verifier::verifyMustTailCall`'s
+        // `CallerTy->isVarArg() == CalleeTy->isVarArg()` is what then rejects
+        // the module.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
             _ => {
@@ -14106,7 +14378,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
-                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
+                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), false)
             }
         };
         // `CalleeID.StrVal` survives `convertValIDToValue` upstream because
@@ -14416,13 +14688,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // hoist is `check_resolved_global_type`, shared with
                 // `resolve_global_name_as_value`, llvmkit's port of the same
                 // routine for an ordinary operand.
+                let ptr_ty = self.module.ptr_type(callee_addr_space).as_type();
                 if let Some(resolved) = self.global_symbol_lookup(&name) {
-                    self.check_resolved_global_type(
-                        loc,
-                        &format!("@{name}"),
-                        self.module.ptr_type(callee_addr_space).as_type(),
-                        resolved,
-                    )?;
+                    self.check_resolved_global_type(loc, &format!("@{name}"), ptr_ty, resolved)?;
                     let GlobalRef::Function(f) = resolved else {
                         // A non-function `GlobalValue` callee stays the bare
                         // pointer `getGlobalVal` handed back: the call's own
@@ -14445,7 +14713,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         IntrinsicNameResolution::UnknownIntrinsic => {
                             return Err(ParseError::Expected {
                                 expected: "unknown intrinsic".into(),
-                                loc: DiagLoc::span(loc),
+                                loc,
                             });
                         }
                         IntrinsicNameResolution::Known(_) => {
@@ -14459,7 +14727,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             if f.signature() != parsed_fn_ty {
                                 return Err(ParseError::Expected {
                                     expected: "intrinsic signature mismatch".into(),
-                                    loc: DiagLoc::span(loc),
+                                    loc,
                                 });
                             }
                             let descriptor = self
@@ -14469,7 +14737,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             if f.intrinsic_descriptor() != Some(descriptor) {
                                 return Err(ParseError::Expected {
                                     expected: "intrinsic signature mismatch".into(),
-                                    loc: DiagLoc::span(loc),
+                                    loc,
                                 });
                             }
                         }
@@ -14495,32 +14763,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     IntrinsicNameResolution::UnknownIntrinsic => Err(ParseError::Expected {
                         expected: "unknown intrinsic".into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     }),
                     IntrinsicNameResolution::NonIntrinsic => {
-                        let f = self
-                            .module
-                            .add_function_dyn(&name, parsed_fn_ty, Linkage::External)
-                            .map_err(|e| ParseError::Expected {
-                                expected: format!("forward function declaration: {e}").into(),
-                                loc: DiagLoc::span(loc),
-                            })?;
-                        let f = self.module.view(f);
-                        // `createGlobalFwdRef(M, PTy)` mints the placeholder at
-                        // the *demanded* pointer type's address space, so a
-                        // later reference at a different one mismatches. Under
-                        // `target datalayout = "P42"` a `call void @f()` with no
-                        // `addrspace` keyword therefore forward-declares `@f` at
-                        // 42, not at 0.
+                        // `getGlobalVal`'s miss path, reached through the very
+                        // same `global_forward_ref` an ordinary `@`-operand
+                        // takes: `createGlobalFwdRef(M, PTy)` mints an
+                        // **untyped** stand-in — an `i8` `GlobalVariable` with
+                        // `ExternalWeakLinkage` whose only meaningful property
+                        // is `PTy->getAddressSpace()` — records it in
+                        // `ForwardRefVals`, and hands it back as a bare `ptr`.
                         //
-                        // llvmkit declares an unseen intrinsic here rather than
-                        // deferring to `validateEndOfModule`
-                        // (`docs/divergences.md` entry 37); that arm above uses
-                        // the same address space for the same reason — it is
-                        // standing in for `getGlobalVal`.
-                        f.set_address_space(self.module, callee_addr_space);
-                        self.forward_function_decls.entry(name).or_insert(loc);
-                        Ok(ParsedCallee::Function(f))
+                        // Nothing about the callee's eventual signature is
+                        // decided here: the call carries its own `FunctionType`
+                        // on the `CallBase`, and `parseFunctionHeader` RAUWs the
+                        // placeholder with the real `Function` when the
+                        // `declare` / `define` arrives. llvmkit used to mint a
+                        // real `Function` at the *call site's* signature
+                        // instead, which no later definition could re-type.
+                        //
+                        // The placeholder is minted at the *demanded* pointer
+                        // type's address space, so a later reference at a
+                        // different one mismatches. Under `target datalayout =
+                        // "P42"` a `call void @f()` with no `addrspace` keyword
+                        // therefore forward-references `@f` at 42, not at 0.
+                        let placeholder =
+                            self.global_forward_ref(Some(&name), None, ptr_ty, loc)?;
+                        Ok(ParsedCallee::Indirect(
+                            self.constant_as_pointer(loc, placeholder)?,
+                        ))
                     }
                 }
             }
@@ -14528,22 +14799,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `getGlobalVal(unsigned ID, Ty, Loc)` reads `NumberedVals`,
                 // which holds every `GlobalValue` kind, exactly as the named
                 // overload reads the symbol table.
-                let resolved = self.numbered_globals.get(id).copied().ok_or_else(|| {
-                    ParseError::UndefinedSymbol {
-                        kind: SymbolKind::Global,
-                        id: SymbolId::Numbered(id),
-                        loc: DiagLoc::span(loc),
-                    }
-                })?;
+                let ptr_ty = self.module.ptr_type(callee_addr_space).as_type();
+                let Some(resolved) = self.numbered_globals.get(id).copied() else {
+                    // …and, exactly as in the named overload, a miss is not an
+                    // error: `ForwardRefValIDs` gets a `createGlobalFwdRef`
+                    // placeholder that `parseFunctionHeader` RAUWs at the
+                    // definition. llvmkit used to answer `use of undefined
+                    // value` outright, so `call void @0()` above `define void
+                    // @0()` was rejected.
+                    let placeholder = self.global_forward_ref(None, Some(id), ptr_ty, loc)?;
+                    return Ok(ParsedCallee::Indirect(
+                        self.constant_as_pointer(loc, placeholder)?,
+                    ));
+                };
                 // `checkValidVariableType(Loc, "@" + Twine(ID), Ty, Val)`. See
                 // the named arm above for why this reduces to an address-space
                 // comparison.
-                self.check_resolved_global_type(
-                    loc,
-                    &format!("@{id}"),
-                    self.module.ptr_type(callee_addr_space).as_type(),
-                    resolved,
-                )?;
+                self.check_resolved_global_type(loc, &format!("@{id}"), ptr_ty, resolved)?;
                 match resolved {
                     GlobalRef::Function(f) => Ok(ParsedCallee::Function(f)),
                     other => Ok(ParsedCallee::Indirect(
@@ -14557,7 +14829,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 llvmkit_ir::verify_inline_asm(parsed_fn_ty, &data.constraints).map_err(|e| {
                     ParseError::Message {
                         message: e.to_string().into(),
-                        loc: DiagLoc::span(data.loc),
+                        loc: data.loc,
                     }
                 })?;
                 self.module
@@ -14582,7 +14854,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let callee =
                     llvmkit_ir::PointerValue::try_from(v).map_err(|e| ParseError::Expected {
                         expected: format!("pointer callee: {e}").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     })?;
                 Ok(ParsedCallee::Indirect(callee))
             }
@@ -14646,11 +14918,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         self.bump()?; // eat `switch`
         let cond_loc = self.loc();
-        let cond_ty = self.parse_type(false)?;
-        let cond_v = self.parse_value(state, cond_ty)?;
+        let (cond_ty, cond_v) = self.parse_type_and_value(state)?;
         self.expect_punct(PunctKind::Comma, "',' after switch condition")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for switch default")?;
-        let default_bb = self.parse_block_ref(state)?;
+        let default_bb = self.parse_type_and_basic_block(state)?;
         // Case list: `[ ty N, label %bb, ... ]`. Upstream demands the `[`
         // *before* checking the condition's type, so a malformed table is
         // reported ahead of a bad condition.
@@ -14669,9 +14939,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 break;
             }
+            // `parseTypeAndValue(Constant, CondLoc, PFS) ||
+            //  parseToken(lltok::comma, "expected ',' after case value") ||
+            //  parseTypeAndBasicBlock(DestBB, PFS)` — the whole pair is read
+            // before either case-value rule is applied, so a malformed
+            // destination is reported ahead of a duplicate or non-constant
+            // case value. `CondLoc` is re-taken by `parseTypeAndValue`, which
+            // is what anchors both rules at the case value rather than at the
+            // condition.
             let case_loc = self.loc();
-            let case_ty = self.parse_type(false)?;
-            let case_v = self.parse_value(state, case_ty)?;
+            let (_, case_v) = self.parse_type_and_value(state)?;
+            self.expect_punct(PunctKind::Comma, "',' after case value")?;
+            let case_bb = self.parse_type_and_basic_block(state)?;
             if seen_cases.contains(&case_v) {
                 return Err(self.message_at(case_loc, "duplicate case value in switch"));
             }
@@ -14685,9 +14964,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let case_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = case_v
                 .try_into()
                 .map_err(|_| self.message_at(case_loc, "case value is not a constant integer"))?;
-            self.expect_punct(PunctKind::Comma, "',' after case value")?;
-            self.expect_primitive(PrimitiveTy::Label, "'label' for switch case destination")?;
-            let case_bb = self.parse_block_ref(state)?;
             sw = sw
                 .add_case(case_int, case_bb)
                 .map_err(|e| self.builder_err("switch.add_case", e))?;
@@ -14707,8 +14983,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         self.bump()?; // eat `indirectbr`
         let addr_loc = self.loc();
-        let addr_ty = self.parse_type(false)?;
-        let addr_v = self.parse_value(state, addr_ty)?;
+        let (_, addr_v) = self.parse_type_and_value(state)?;
         self.expect_punct(PunctKind::Comma, "',' after indirectbr address")?;
         // As in `parseSwitch`, the `[` is demanded before the address type is
         // checked.
@@ -14719,18 +14994,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let (_, mut ibr) = b
             .indirectbr(addr, "")
             .map_err(|e| self.builder_err("indirectbr", e))?;
-        loop {
-            if matches!(self.peek(), Token::RSquare) {
-                self.bump()?;
-                break;
-            }
-            self.expect_primitive(PrimitiveTy::Label, "'label' in indirectbr destination")?;
-            let dest_bb = self.parse_block_ref(state)?;
+        // `if (Lex.getKind() != lltok::rsquare) { parseTypeAndBasicBlock(…);
+        //  while (EatIfPresent(lltok::comma)) parseTypeAndBasicBlock(…); }`
+        // — the first iteration is unrolled, and the shape is observable: a
+        // trailing comma runs the loop body against the `]`, and a missing
+        // comma falls out of the loop into the `]` demand below. A single
+        // `while (peek != ']')` loop accepted `[label %a,]` and
+        // `[label %a label %b]`.
+        if !matches!(self.peek(), Token::RSquare) {
+            let dest_bb = self.parse_type_and_basic_block(state)?;
             ibr = ibr
                 .add_destination(dest_bb)
                 .map_err(|e| self.builder_err("indirectbr.add_destination", e))?;
-            let _ = self.eat_punct(PunctKind::Comma)?;
+            while self.eat_punct(PunctKind::Comma)? {
+                let dest_bb = self.parse_type_and_basic_block(state)?;
+                ibr = ibr
+                    .add_destination(dest_bb)
+                    .map_err(|e| self.builder_err("indirectbr.add_destination", e))?;
+            }
         }
+        self.expect_punct(PunctKind::RSquare, "']' at end of block list")?;
         let _ = ibr.finish();
         Ok(())
     }
@@ -14870,7 +15153,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 ));
             }
         } else if atomicrmw_op_is_floating_point(op) {
-            if !is_fp_or_fp_vector_type(val_ty) {
+            if !val_ty.is_float_or_float_vector() {
                 return Err(self.message_at(
                     val_loc,
                     format!("atomicrmw {op} operand must be a floating point type"),
@@ -15087,11 +15370,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.expect_keyword(Keyword::Caller, "'caller' in cleanupret")?;
             None
         } else {
-            self.expect_primitive(
-                PrimitiveTy::Label,
-                "'label' in cleanupret unwind destination",
-            )?;
-            Some(self.parse_block_ref(state)?)
+            Some(self.parse_type_and_basic_block(state)?)
         };
         let _ = match unwind_dest {
             Some(dest) => b.cleanup_ret(pad_v, dest, ""),
@@ -15115,8 +15394,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let token_ty = self.module.token_type().as_type();
         let pad_v = self.parse_value(state, token_ty)?;
         self.expect_keyword(Keyword::To, "'to' in catchret")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' in catchret destination")?;
-        let dest = self.parse_block_ref(state)?;
+        let dest = self.parse_type_and_basic_block(state)?;
         let _ = b
             .catch_ret(pad_v, dest, "")
             .map_err(|e| self.builder_err("catchret", e))?;
@@ -15144,8 +15422,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `parseToken` *after* the loop, so a trailing comma is rejected.
         let mut handlers: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         loop {
-            self.expect_primitive(PrimitiveTy::Label, "'label' in catchswitch handler")?;
-            let bb = self.parse_block_ref(state)?;
+            let bb = self.parse_type_and_basic_block(state)?;
             handlers.push(bb);
             if !self.eat_punct(PunctKind::Comma)? {
                 break;
@@ -15157,11 +15434,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.expect_keyword(Keyword::Caller, "'caller' in catchswitch")?;
             None
         } else {
-            self.expect_primitive(
-                PrimitiveTy::Label,
-                "'label' in catchswitch unwind destination",
-            )?;
-            Some(self.parse_block_ref(state)?)
+            Some(self.parse_type_and_basic_block(state)?)
         };
         let name = result_name.as_str();
         let (_, mut cs) = match (parent_pad, unwind_dest) {
@@ -15253,11 +15526,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .function_attr_groups(function_attr_groups.into_boxed_slice())
         .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in invoke")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for invoke normal destination")?;
-        let normal_bb = self.parse_block_ref(state)?;
+        let normal_bb = self.parse_type_and_basic_block(state)?;
         self.expect_keyword(Keyword::Unwind, "'unwind' in invoke")?;
-        self.expect_primitive(PrimitiveTy::Label, "'label' for invoke unwind destination")?;
-        let unwind_bb = self.parse_block_ref(state)?;
+        let unwind_bb = self.parse_type_and_basic_block(state)?;
         // Upstream `resolveFunctionType`: an explicitly written function
         // type IS the call-site type; otherwise infer from the arguments.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
@@ -15400,11 +15671,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .function_attr_groups(function_attr_groups.into_boxed_slice())
         .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in callbr")?;
-        self.expect_primitive(
-            PrimitiveTy::Label,
-            "'label' for callbr fallthrough destination",
-        )?;
-        let fallthrough = self.parse_block_ref(state)?;
+        let fallthrough = self.parse_type_and_basic_block(state)?;
         // Optional `[ label %ind1, ... ]`
         // The indirect-destination list is **mandatory**, and no comma
         // precedes it: `parseCallBr` ends its `||` chain with
@@ -15414,16 +15681,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // parsed.
         let mut indirect: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         self.expect_punct(PunctKind::LSquare, "'[' in callbr")?;
-        loop {
-            if matches!(self.peek(), Token::RSquare) {
-                self.bump()?;
-                break;
+        // `parseCallBr` unrolls the first iteration of its destination list
+        // exactly as `parseIndirectBr` does, and for the same observable
+        // reason: `[label %a,]` and `[label %a label %b]` are both rejected.
+        if !matches!(self.peek(), Token::RSquare) {
+            indirect.push(self.parse_type_and_basic_block(state)?);
+            while self.eat_punct(PunctKind::Comma)? {
+                indirect.push(self.parse_type_and_basic_block(state)?);
             }
-            self.expect_primitive(PrimitiveTy::Label, "'label' in callbr indirect target")?;
-            let bb = self.parse_block_ref(state)?;
-            indirect.push(bb);
-            let _ = self.eat_punct(PunctKind::Comma)?;
         }
+        self.expect_punct(PunctKind::RSquare, "']' at end of block list")?;
         // Upstream `resolveFunctionType`: an explicitly written function
         // type IS the call-site type; otherwise infer from the arguments.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
@@ -15466,14 +15733,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .attrs(call_attrs),
                 )
                 .map_err(|e| self.builder_err("callbr", e))?,
-            ParsedCallee::Indirect(_) => {
-                // A non-inline-asm callbr with an indirect callee is invalid
-                // IR upstream too (`Verifier::visitCallBrInst` requires a
-                // direct callee — "Callbr: indirect function / invalid
-                // signature"), so rejecting it at parse reaches the same
-                // verdict.
-                return Err(self.expected("direct function callee for callbr"));
-            }
+            // `parseCallBr` stores whatever `Value *` its callee resolved to,
+            // exactly as `parseCall` does; a non-function operand — a function
+            // pointer, or a `@name` still standing on its forward-reference
+            // placeholder — is `Verifier::visitCallBrInst`'s to reject
+            // ("Callbr: indirect function / invalid signature"), not the
+            // parser's. llvmkit used to reject it here because its callbr
+            // builder had no indirect form.
+            ParsedCallee::Indirect(callee_ptr) => b
+                .indirect_callbr_with_config(
+                    callee_ptr,
+                    parsed_fn_ty,
+                    args,
+                    fallthrough,
+                    indirect,
+                    llvmkit_ir::CallSiteConfig::new(name)
+                        .calling_conv(calling_conv)
+                        .attrs(call_attrs),
+                )
+                .map_err(|e| self.builder_err("callbr", e))?,
         };
         let ret_is_void = matches!(
             parsed_fn_ty.return_type().into_type_enum(),
@@ -15548,43 +15826,56 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn builder_err_at(&self, loc: Span, label: &str, e: IrError) -> ParseError {
         ParseError::Expected {
             expected: format!("{label}: {e}").into(),
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
     fn builder_err(&self, label: &str, e: IrError) -> ParseError {
         ParseError::Expected {
             expected: format!("valid {label}: {e}").into(),
-            loc: DiagLoc::span(self.loc()),
+            loc: self.loc(),
         }
     }
 
-    /// Parse a `label %name` / `label %N` operand. Forward references create
-    /// an empty block, but existing references return label identity only so
-    /// branches may target already-terminated blocks.
-    fn parse_block_ref(
+    /// Mirrors `LLParser::parseTypeAndValue` — `parseType(Ty) ||
+    /// parseValue(Ty, V, PFS)`. The type is handed back alongside the value
+    /// because two of upstream's callers (`parseBr`, `parseSwitch`) test it
+    /// after the fact.
+    fn parse_type_and_value(
         &mut self,
-        state: &mut PerFunctionState<'ctx, B>,
+        state: &PerFunctionState<'ctx, B>,
+    ) -> ParseResult<(Type<'ctx, B>, llvmkit_ir::Value<'ctx, B>)> {
+        let ty = self.parse_type(false)?;
+        let value = self.parse_value(state, ty)?;
+        Ok((ty, value))
+    }
+
+    /// Mirrors `LLParser::parseTypeAndBasicBlock`, the one routine every
+    /// terminator's block operand goes through.
+    ///
+    /// It is `parseTypeAndValue` plus an `isa<BasicBlock>` guard, so the token
+    /// that is *not* a `label` decides the message: one that cannot begin a
+    /// type gives `parseType`'s `expected type`, and a well-formed
+    /// type-and-value that is not a block gives `expected a basic block`
+    /// anchored at the **start of the type** — which is why `Loc` is taken
+    /// before the type is read and not re-taken afterwards.
+    ///
+    /// Upstream's second overload (`parseTypeAndBasicBlock(BB, PFS)`) only
+    /// discards the out-parameter `Loc`; every in-tree caller of the
+    /// three-argument form discards it too, so there is one routine here.
+    fn parse_type_and_basic_block(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
+        // `Loc = Lex.getLoc();`
         let loc = self.loc();
-        match self.peek() {
-            Token::LocalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected("block label name"))?;
-                self.bump()?;
-                if !state.defined_blocks.contains(&name) {
-                    state.block_refs.entry(name.clone()).or_insert(loc);
-                }
-                state.ensure_block_label(self.module, &name, loc)
-            }
-            Token::LocalVarId(id) => {
-                let id = *id;
-                self.bump()?;
-                state.get_or_create_numbered_block_label(self.module, id, loc)
-            }
-            _ => Err(self.expected("block label after 'label'")),
-        }
+        // `if (parseTypeAndValue(V, PFS)) return true;`
+        let (_, value) = self.parse_type_and_value(state)?;
+        // `if (!isa<BasicBlock>(V)) return error(Loc, "expected a basic
+        //  block"); BB = cast<BasicBlock>(V);`
+        state
+            .block_label_for_value(value)
+            .ok_or_else(|| self.message_at(loc, "expected a basic block"))
     }
 
     /// Parse a value of the given type. Accepts local SSA references,
@@ -15786,14 +16077,14 @@ fn check_valid_variable_type<'ctx, B: ModuleBrand + 'ctx>(
     if ty.is_label() {
         return Err(ParseError::NotABasicBlock {
             name: name.to_owned(),
-            loc: DiagLoc::span(loc),
+            loc,
         });
     }
     Err(ParseError::DefinedWithWrongType {
         name: name.to_owned(),
         defined: value_ty.to_string(),
         expected: ty.to_string(),
-        loc: DiagLoc::span(loc),
+        loc,
     })
 }
 
@@ -15811,13 +16102,18 @@ struct PerFunctionState<'ctx, B: ModuleBrand> {
     /// `label` to the named basic-block identity. Created on first reference
     /// to support `br label %later` forward references; re-materialize a
     /// linear insertion handle only at the construction use site.
-    blocks: std::collections::HashMap<String, llvmkit_ir::Value<'ctx, B>>,
-    block_refs: std::collections::HashMap<String, Span>,
+    ///
+    /// `RefCell` for the reason [`Self::forward_ref_named`] carries one: a
+    /// block forward reference is minted by *reading* an operand, inside
+    /// `getVal`'s `Ty->isLabelTy()` arm, and every value-parsing path reaches
+    /// that through `&PerFunctionState`.
+    blocks: RefCell<std::collections::HashMap<String, llvmkit_ir::Value<'ctx, B>>>,
+    block_refs: RefCell<std::collections::HashMap<String, Span>>,
     defined_blocks: std::collections::HashSet<String>,
     /// `%N` block placeholder identities and definitions, keyed by the shared
     /// local numbered-value slot.
-    numbered_blocks: std::collections::HashMap<u32, llvmkit_ir::Value<'ctx, B>>,
-    numbered_block_refs: std::collections::HashMap<u32, Span>,
+    numbered_blocks: RefCell<std::collections::HashMap<u32, llvmkit_ir::Value<'ctx, B>>>,
+    numbered_block_refs: RefCell<std::collections::HashMap<u32, Span>>,
     defined_numbered_blocks: std::collections::HashSet<u32>,
     /// `%name` referenced before it was defined, holding the placeholder
     /// minted at the first use and that use's span. Mirrors
@@ -15851,11 +16147,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             local_named: std::collections::HashMap::new(),
             local_numbered: std::collections::HashMap::new(),
             next_unnamed_value_id: 0,
-            blocks,
-            block_refs: std::collections::HashMap::new(),
+            blocks: RefCell::new(blocks),
+            block_refs: RefCell::new(std::collections::HashMap::new()),
             defined_blocks: std::collections::HashSet::new(),
-            numbered_blocks: std::collections::HashMap::new(),
-            numbered_block_refs: std::collections::HashMap::new(),
+            numbered_blocks: RefCell::new(std::collections::HashMap::new()),
+            numbered_block_refs: RefCell::new(std::collections::HashMap::new()),
             defined_numbered_blocks: std::collections::HashSet::new(),
             forward_ref_named: RefCell::new(BTreeMap::new()),
             forward_ref_numbered: RefCell::new(BTreeMap::new()),
@@ -15869,7 +16165,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 id,
                 next: self.next_unnamed_value_id,
             },
-            loc: DiagLoc::span(loc),
+            loc,
         }
     }
 
@@ -15886,30 +16182,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// [`Self::get_basic_block_named`] overwrites with `unable to create
     /// block named '<n>'` when the same name is being *defined* as a label.
     fn get_val_as_block_named(
-        &mut self,
+        &self,
         module: &'ctx Module<B, Unverified>,
         name: &str,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        if let Some(value) = self.lookup_local(LocalRef::Named(name)) {
-            // `return P.checkValidVariableType(Loc, "%" + Name, Ty, Val);`
-            check_valid_variable_type(
-                loc,
-                &LocalRef::Named(name).display(),
-                module.label_type().as_type(),
-                value.ty(),
-            )?;
-            return Ok(value);
-        }
-        let bb = self.func.append_basic_block(module, name);
-        let value = bb.to_erased();
-        self.blocks.insert(name.to_owned(), value);
-        Ok(value)
+        self.get_val(
+            module,
+            LocalRef::Named(name),
+            module.label_type().as_type(),
+            loc,
+        )
     }
 
     /// Look up or lazily create the named basic block, as a label identity.
     fn ensure_block_label(
-        &mut self,
+        &self,
         module: &'ctx Module<B, Unverified>,
         name: &str,
         loc: Span,
@@ -15981,14 +16269,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .move_basic_block_to_end(module, block)
             .map_err(|e| ParseError::Expected {
                 expected: format!("valid basic block definition: {e}").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })?;
 
         // "Remove the block from forward ref sets."
         match defined_name {
             DefinedBlockName::Numbered(id) => {
                 // `ForwardRefValIDs.erase(NameID);`
-                self.numbered_block_refs.remove(&id);
+                self.numbered_block_refs.borrow_mut().remove(&id);
                 // `NumberedVals.add(NameID, BB);` — `add` also advances
                 // `NextUnusedID` to `ID + 1`; `checkValueID` has already
                 // proved `id >= next`, so `max` and `id + 1` agree.
@@ -16021,25 +16309,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// reference passes that guard and fails here instead, with
     /// `'%N' is not a basic block`.
     fn get_val_as_block_numbered(
-        &mut self,
+        &self,
         module: &'ctx Module<B, Unverified>,
         id: u32,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        if let Some(value) = self.lookup_local(LocalRef::Numbered(id)) {
-            // `return P.checkValidVariableType(Loc, "%" + Twine(ID), Ty, Val);`
-            check_valid_variable_type(
-                loc,
-                &LocalRef::Numbered(id).display(),
-                module.label_type().as_type(),
-                value.ty(),
-            )?;
-            return Ok(value);
-        }
-        let bb = self.func.append_basic_block(module, "");
-        let value = bb.to_erased();
-        self.numbered_blocks.insert(id, value);
-        Ok(value)
+        self.get_val(
+            module,
+            LocalRef::Numbered(id),
+            module.label_type().as_type(),
+            loc,
+        )
     }
 
     /// Mirrors `PerFunctionState::getBB(unsigned ID, LocTy)` together with
@@ -16056,7 +16336,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .get_val_as_block_numbered(module, id, loc)
             .map_err(|_| ParseError::Message {
                 message: format!("unable to create block numbered '{id}'").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })?;
         self.value_as_block(module, value, loc)
     }
@@ -16082,7 +16362,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .get_val_as_block_named(module, name, loc)
             .map_err(|_| ParseError::Message {
                 message: format!("unable to create block named '{name}'").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })?;
         self.value_as_block(module, value, loc)
     }
@@ -16098,7 +16378,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .basic_block_for_construction(module, value)
             .map_err(|_| ParseError::Expected {
                 expected: "referenced value is not an unterminated basic block".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })
     }
 
@@ -16113,14 +16393,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             BlockLabel::Named(name) => self
                 .defined_blocks
                 .contains(name)
-                .then(|| self.blocks.get(name).copied())
+                .then(|| self.blocks.borrow().get(name).copied())
                 .flatten(),
             BlockLabel::Numbered(id) => self
                 .defined_numbered_blocks
                 .contains(id)
-                .then(|| self.numbered_blocks.get(id).copied())
+                .then(|| self.numbered_blocks.borrow().get(id).copied())
                 .flatten(),
         }
+    }
+
+    /// `isa<BasicBlock>(V)`, as a projection rather than a predicate —
+    /// upstream spells the test and the narrowing as one `dyn_cast`
+    /// (`parseBr`) or as `isa` followed by `cast`
+    /// (`parseTypeAndBasicBlock`), and both need the block afterwards.
+    fn block_view_for_value(
+        &self,
+        value: llvmkit_ir::Value<'ctx, B>,
+    ) -> Option<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
+        self.func.basic_blocks().find(|bb| bb.to_erased() == value)
+    }
+
+    /// [`Self::block_view_for_value`] as a label id.
+    fn block_label_for_value(
+        &self,
+        value: llvmkit_ir::Value<'ctx, B>,
+    ) -> Option<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
+        self.block_view_for_value(value).map(|bb| bb.id())
     }
 
     fn value_as_block_view(
@@ -16128,12 +16427,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         value: llvmkit_ir::Value<'ctx, B>,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
-        self.func
-            .basic_blocks()
-            .find(|bb| bb.to_erased() == value)
+        self.block_view_for_value(value)
             .ok_or_else(|| ParseError::Message {
                 message: "referenced value is not a basic block".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })
     }
 
@@ -16156,9 +16453,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         // backward slot forward-declares a block that the later label header
         // then rejects.
         let value = self.get_val_as_block_numbered(module, id, loc)?;
-        let label = self.value_as_block_label(value, loc)?;
-        self.numbered_block_refs.entry(id).or_insert(loc);
-        Ok(label)
+        self.value_as_block_label(value, loc)
     }
 
     /// Resolve a phi-incoming predecessor block reference for an edge-add.
@@ -16169,7 +16464,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// returns a view rather than an [`Unterminated`] construction handle. The
     /// block was ensured to exist when the phi incoming pair was parsed
     /// (`parse_phi_label`). Only phi resolution uses this; branch/switch
-    /// targets go through `parse_block_ref`.
+    /// targets go through `parse_type_and_basic_block`.
     fn resolve_block_ref(
         &mut self,
         module: &'ctx Module<B, Unverified>,
@@ -16199,7 +16494,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .local_named
                 .get(name)
                 .copied()
-                .or_else(|| self.blocks.get(name).copied())
+                .or_else(|| self.blocks.borrow().get(name).copied())
                 .or_else(|| {
                     self.forward_ref_named
                         .borrow()
@@ -16210,7 +16505,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .local_numbered
                 .get(&id)
                 .copied()
-                .or_else(|| self.numbered_blocks.get(&id).copied())
+                .or_else(|| self.numbered_blocks.borrow().get(&id).copied())
                 .or_else(|| {
                     self.forward_ref_numbered
                         .borrow()
@@ -16224,6 +16519,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// placeholder when the name has not been defined yet. Mirrors
     /// `LLParser::PerFunctionState::getVal`: symbol table, then the
     /// forward-reference map, then a fresh sentinel of the demanded type.
+    ///
+    /// Both of upstream's placeholder arms live here —
+    /// `if (Ty->isLabelTy()) FwdVal = BasicBlock::Create(…); else FwdVal =
+    /// new Argument(Ty, Name);` — because upstream has one `getVal` per
+    /// spelling and `getBB` is `dyn_cast_or_null<BasicBlock>(getVal(Name,
+    /// LabelTy, Loc))`. Splitting the label arm into a second routine is what
+    /// made `parseTypeAndBasicBlock` unportable: `parseTypeAndValue` at a
+    /// `label` type has to reach the block-minting arm, and it reaches it
+    /// through `convertValIDToValue` -> `getVal`, not through `getBB`.
     fn get_val(
         &self,
         module: &'ctx Module<B, Unverified>,
@@ -16242,15 +16546,45 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         if !ty.is_first_class() {
             return Err(ParseError::Message {
                 message: "invalid use of a non-first-class type".into(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
+        }
+        // `if (Ty->isLabelTy()) FwdVal = BasicBlock::Create(F.getContext(),
+        //  Name, &F);` — the numbered overload passes `""` for the name.
+        // Upstream's `ForwardRefVals[Name] = std::make_pair(FwdVal, Loc);`
+        // then records it; llvmkit keeps blocks in tables of their own, so
+        // the identity and the reference span are recorded side by side and
+        // `finishFunction` merges them back with the value tables.
+        if ty.is_label() {
+            let name = match reference {
+                LocalRef::Named(name) => name,
+                LocalRef::Numbered(_) => "",
+            };
+            let value = self.func.append_basic_block(module, name).to_erased();
+            match reference {
+                LocalRef::Named(name) => {
+                    self.blocks.borrow_mut().insert(name.to_owned(), value);
+                    self.block_refs
+                        .borrow_mut()
+                        .entry(name.to_owned())
+                        .or_insert(loc);
+                }
+                LocalRef::Numbered(id) => {
+                    self.numbered_blocks.borrow_mut().insert(id, value);
+                    self.numbered_block_refs
+                        .borrow_mut()
+                        .entry(id)
+                        .or_insert(loc);
+                }
+            }
+            return Ok(value);
         }
         let placeholder =
             module
                 .forward_ref_value_placeholder(ty)
                 .map_err(|e| ParseError::Message {
                     message: format!("cannot create forward reference: {e}").into(),
-                    loc: DiagLoc::span(loc),
+                    loc,
                 })?;
         let value = placeholder.as_value();
         let entry = ForwardRef { placeholder, loc };
@@ -16280,7 +16614,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         if entry.placeholder.ty() != definition.ty() {
             return Err(ParseError::InstructionForwardReferencedWithType {
                 ty: entry.placeholder.ty().to_string(),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         entry
@@ -16288,7 +16622,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             .replace_all_uses_with(definition)
             .map_err(|e| ParseError::Message {
                 message: format!("cannot resolve forward reference: {e}").into(),
-                loc: DiagLoc::span(loc),
+                loc,
             })
     }
 
@@ -16316,7 +16650,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                     // upstream spells the name **without** a `%`.
                     return Err(ParseError::Message {
                         message: format!("multiple definition of local value named '{n}'").into(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     });
                 }
             }
@@ -16329,10 +16663,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 // A numbered slot already claimed by a forward-referenced
                 // *block* is upstream's `ForwardRefValIDs` hit with a `label`
                 // sentinel in it — one map there, so one diagnostic.
-                if let Some(block) = self.numbered_blocks.get(&id).copied() {
+                if let Some(block) = self.numbered_blocks.borrow().get(&id).copied() {
                     return Err(ParseError::InstructionForwardReferencedWithType {
                         ty: block.ty().to_string(),
-                        loc: DiagLoc::span(loc),
+                        loc,
                     });
                 }
                 let forward = self.forward_ref_numbered.borrow_mut().remove(&id);
@@ -16358,7 +16692,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         // as a label. Merging llvmkit's two tables here reproduces both the
         // wording and `begin()`'s choice of which name to name.
         let mut undefined_named: BTreeMap<String, Span> = BTreeMap::new();
-        for (name, loc) in &self.block_refs {
+        for (name, loc) in self.block_refs.borrow().iter() {
             if !self.defined_blocks.contains(name) {
                 undefined_named.insert(name.clone(), *loc);
             }
@@ -16370,11 +16704,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SYMBOL_KIND_LOCAL,
                 id: SymbolId::Named(name),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         let mut undefined_numbered: BTreeMap<u32, Span> = BTreeMap::new();
-        for (id, loc) in &self.numbered_block_refs {
+        for (id, loc) in self.numbered_block_refs.borrow().iter() {
             if !self.defined_numbered_blocks.contains(id) {
                 undefined_numbered.insert(*id, *loc);
             }
@@ -16386,7 +16720,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             return Err(ParseError::UndefinedSymbol {
                 kind: SYMBOL_KIND_LOCAL,
                 id: SymbolId::Numbered(id),
-                loc: DiagLoc::span(loc),
+                loc,
             });
         }
         // All blocks and edges now exist — every predecessor is known (the
@@ -16399,8 +16733,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .phi_locs
                 .iter()
                 .find(|(id, _)| *id == e.phi_id)
-                .map(|(_, span)| DiagLoc::span(*span))
-                .unwrap_or_else(|| DiagLoc::span(Span::default()));
+                .map(|(_, span)| *span)
+                .unwrap_or_else(Span::default);
             return Err(ParseError::Expected {
                 expected: e.message.into(),
                 loc,
@@ -16504,17 +16838,6 @@ impl IntBinOp {
     }
 }
 
-/// `true` for `<N x T>` and `<vscale x N x T>`.
-///
-/// The parser splits on this because llvmkit's typed integer handles carry a
-/// scalar width; upstream's `LLParser` has one path for both shapes.
-fn is_vector_type<B: llvmkit_ir::ModuleBrand>(ty: llvmkit_ir::Type<'_, B>) -> bool {
-    matches!(
-        ty.kind(),
-        llvmkit_ir::TypeKind::FixedVector | llvmkit_ir::TypeKind::ScalableVector
-    )
-}
-
 /// Collect the parsed flag keywords into the combined form the erased builder
 /// takes. The opcode decides which of them survive.
 fn int_binop_flags(nuw: bool, nsw: bool, exact: bool, disjoint: bool) -> llvmkit_ir::IntBinOpFlags {
@@ -16588,7 +16911,7 @@ type ParsedBlockBuilder<'m, 'ctx, B> = IrBuilder<'m, 'ctx, B, NoFolder, Position
 fn live_builder_error(loc: Span) -> ParseError {
     ParseError::Expected {
         expected: "live insertion builder before terminator".into(),
-        loc: DiagLoc::span(loc),
+        loc,
     }
 }
 
@@ -16726,7 +17049,10 @@ fn expected_for_metadata_field_kind(kind: llvmkit_ir::metadata::MetadataFieldKin
         MetadataFieldKind::DwarfMacinfoType => "DWARF macinfo type",
         MetadataFieldKind::DwarfEnumKind => "DWARF enum kind code",
         // Both flag overloads spell it the same way; only the *invalid*
-        // message distinguishes them.
+        // message distinguishes them. Unreachable through this table since the
+        // two overloads got their own routines — `parse_di_flag` and
+        // `parse_disp_flag` raise the message themselves, at the token — but
+        // kept so the mapping stays complete for the kind it names.
         MetadataFieldKind::DiFlags | MetadataFieldKind::DispFlags => "debug info flag",
         MetadataFieldKind::EmissionKind => "emission kind",
         MetadataFieldKind::NameTableKind => "nameTable kind",
@@ -16737,6 +17063,94 @@ fn expected_for_metadata_field_kind(kind: llvmkit_ir::metadata::MetadataFieldKin
         | MetadataFieldKind::SignedOrMetadata
         | MetadataFieldKind::UnsignedOrMetadata { .. }
         | MetadataFieldKind::ChecksumKind => "metadata field value",
+    }
+}
+
+/// Whether this field's `parseMDField` overload is one of the twelve typed on
+/// a single `lltok` keyword family — the overloads that open
+/// `if (Lex.getKind() != lltok::X) return tokError("expected …")`.
+fn is_metadata_keyword_field(kind: llvmkit_ir::metadata::MetadataFieldKind) -> bool {
+    use llvmkit_ir::metadata::MetadataFieldKind;
+    matches!(
+        kind,
+        MetadataFieldKind::DwarfTag
+            | MetadataFieldKind::DwarfAttEncoding
+            | MetadataFieldKind::DwarfVirtuality
+            | MetadataFieldKind::DwarfLang
+            | MetadataFieldKind::DwarfSourceLangName
+            | MetadataFieldKind::DwarfCc
+            | MetadataFieldKind::DwarfMacinfoType
+            | MetadataFieldKind::DwarfEnumKind
+            | MetadataFieldKind::EmissionKind
+            | MetadataFieldKind::NameTableKind
+            | MetadataFieldKind::FixedPointKind
+            | MetadataFieldKind::ChecksumKind
+    )
+}
+
+/// The `Max` each keyword family's `MDUnsignedField` base is constructed with
+/// in `LLParser.cpp` — `struct DwarfTagField : public MDUnsignedField {
+/// DwarfTagField() : MDUnsignedField(0, dwarf::DW_TAG_hi_user) {} };` and its
+/// ten siblings.
+///
+/// `None` for `ChecksumKindField`, the one family that is an
+/// `MDFieldImpl<DIFile::ChecksumKind>` rather than an `MDUnsignedField`: it
+/// has no integer spelling, and its overload rejects every token but
+/// `lltok::ChecksumKind`. `None` for every non-keyword kind too, so the
+/// answer doubles as "does this family accept an integer at all".
+fn metadata_keyword_field_max(kind: llvmkit_ir::metadata::MetadataFieldKind) -> Option<u64> {
+    use llvmkit_ir::metadata::MetadataFieldKind;
+    Some(match kind {
+        // `dwarf::DW_TAG_hi_user`
+        MetadataFieldKind::DwarfTag => 0xffff,
+        // `dwarf::DW_ATE_hi_user`
+        MetadataFieldKind::DwarfAttEncoding => 0xff,
+        // `dwarf::DW_VIRTUALITY_max`
+        MetadataFieldKind::DwarfVirtuality => 0x02,
+        // `dwarf::DW_LANG_hi_user`
+        MetadataFieldKind::DwarfLang => 0xffff,
+        // `UINT32_MAX`
+        MetadataFieldKind::DwarfSourceLangName => u64::from(u32::MAX),
+        // `dwarf::DW_CC_hi_user`
+        MetadataFieldKind::DwarfCc => 0xff,
+        // `dwarf::DW_MACINFO_vendor_ext`
+        MetadataFieldKind::DwarfMacinfoType => 0xff,
+        // `dwarf::DW_APPLE_ENUM_KIND_max`
+        MetadataFieldKind::DwarfEnumKind => 0x01,
+        // `DICompileUnit::LastEmissionKind` (`DebugDirectivesOnly`)
+        MetadataFieldKind::EmissionKind => 3,
+        // `DICompileUnit::DebugNameTableKind::LastDebugNameTableKind` (`Apple`)
+        MetadataFieldKind::NameTableKind => 3,
+        // `DIFixedPointType::LastFixedPointKind` (`FixedPointRational`)
+        MetadataFieldKind::FixedPointKind => 2,
+        _ => return None,
+    })
+}
+
+/// `Lex.getKind() != lltok::X` for the one `X` a keyword family's overload
+/// accepts, with `Lex.getStrVal()` when it matches. A keyword from a *sibling*
+/// family answers `None` here, which is what makes
+/// `emissionKind: DW_TAG_class_type` the family's `expected …` rather than an
+/// `invalid …` naming a spelling the field never had a table for.
+fn metadata_field_keyword_spelling<'src>(
+    token: &Token<'src>,
+    declared: llvmkit_ir::metadata::MetadataFieldKind,
+) -> Option<&'src str> {
+    use llvmkit_ir::metadata::MetadataFieldKind;
+    match (declared, token) {
+        (MetadataFieldKind::DwarfTag, Token::DwarfTag(s))
+        | (MetadataFieldKind::DwarfAttEncoding, Token::DwarfAttEncoding(s))
+        | (MetadataFieldKind::DwarfVirtuality, Token::DwarfVirtuality(s))
+        | (MetadataFieldKind::DwarfLang, Token::DwarfLang(s))
+        | (MetadataFieldKind::DwarfSourceLangName, Token::DwarfSourceLangName(s))
+        | (MetadataFieldKind::DwarfCc, Token::DwarfCc(s))
+        | (MetadataFieldKind::DwarfMacinfoType, Token::DwarfMacinfo(s))
+        | (MetadataFieldKind::DwarfEnumKind, Token::DwarfEnumKind(s))
+        | (MetadataFieldKind::EmissionKind, Token::EmissionKind(s))
+        | (MetadataFieldKind::NameTableKind, Token::NameTableKind(s))
+        | (MetadataFieldKind::FixedPointKind, Token::FixedPointKind(s))
+        | (MetadataFieldKind::ChecksumKind, Token::ChecksumKind(s)) => Some(s),
+        _ => None,
     }
 }
 
@@ -16757,8 +17171,8 @@ fn name_table_kind(spelling: &str) -> Option<u32> {
     match spelling {
         "Default" => Some(0),
         "GNU" => Some(1),
-        "Apple" => Some(2),
-        "None" => Some(3),
+        "None" => Some(2),
+        "Apple" => Some(3),
         _ => None,
     }
 }

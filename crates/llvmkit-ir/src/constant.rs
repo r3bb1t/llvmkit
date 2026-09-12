@@ -40,7 +40,9 @@ use crate::ap_int::ApInt;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeKind, TypeSlot};
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, sealed};
+use crate::value::{
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, ValueSlotAccess, sealed,
+};
 use crate::{DebugLoc, IrError, IrResult};
 
 /// Opcode carried by a parser-needed LLVM `ConstantExpr`.
@@ -127,46 +129,63 @@ impl OverflowingConstantExprFlags {
     }
 }
 
-/// APInt half-open range attached to a constant `getelementptr`.
+/// The half-open `inrange(start, end)` range attached to a constant
+/// `getelementptr`.
+///
+/// Mirrors the `InRangeStart` / `InRangeEnd` pair `LLParser::parseValID`'s
+/// `getelementptr` arm carries as two `APSInt`s and hands to
+/// `ConstantExpr::getGetElementPtr` as a `ConstantRange`, which holds two
+/// `APInt`s. Both bounds are already at the index width — upstream applies
+/// `extOrTrunc(IndexWidth)` before constructing the range, so the width is the
+/// bounds' own and is not stored separately.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstantExprInRange {
-    start: Box<[u64]>,
-    end: Box<[u64]>,
-    bit_width: u32,
+    start: ApInt,
+    end: ApInt,
 }
 
 impl ConstantExprInRange {
+    /// The range `[start, end)`. Both bounds must already be at the index
+    /// width; mismatched widths are widened to the larger, which is the only
+    /// answer that keeps [`Self::bit_width`] meaningful.
     #[inline]
-    pub fn new<Start, End>(start: Start, end: End, bit_width: u32) -> Self
-    where
-        Start: Into<Box<[u64]>>,
-        End: Into<Box<[u64]>>,
-    {
+    #[must_use]
+    pub fn new(start: ApInt, end: ApInt) -> Self {
+        let width = start.bit_width().max(end.bit_width());
         Self {
-            start: start.into(),
-            end: end.into(),
-            bit_width,
+            start: start.sext_or_trunc(width),
+            end: end.sext_or_trunc(width),
         }
     }
 
     #[inline]
-    pub fn start(&self) -> &[u64] {
+    pub fn start(&self) -> &ApInt {
         &self.start
     }
 
     #[inline]
-    pub fn end(&self) -> &[u64] {
+    pub fn end(&self) -> &ApInt {
         &self.end
     }
 
+    /// The shared width of the two bounds — upstream's
+    /// `ConstantRange::getBitWidth`.
     #[inline]
-    pub const fn bit_width(&self) -> u32 {
-        self.bit_width
+    pub fn bit_width(&self) -> u32 {
+        self.start.bit_width()
     }
 
+    /// `InRangeStart.slt(InRangeEnd)` — the negation of
+    /// `LLParser::parseValID`'s `if (InRangeStart.sge(InRangeEnd)) return
+    /// error(…, "expected end to be larger than start")`.
+    ///
+    /// Signed, as upstream spells it, and the *only* emptiness test in the
+    /// tree: the parser and `constants.rs` used to carry a hand-rolled
+    /// `signed_apint_cmp` apiece.
     #[inline]
-    pub(crate) fn into_parts(self) -> (Box<[u64]>, Box<[u64]>, u32) {
-        (self.start, self.end, self.bit_width)
+    #[must_use]
+    pub fn is_non_empty(&self) -> bool {
+        self.start.slt(&self.end)
     }
 }
 
@@ -208,6 +227,32 @@ impl ConstantGepFlags {
     pub(crate) fn into_parts(self) -> (GepNoWrapFlags, Option<ConstantExprInRange>) {
         (self.no_wrap, self.in_range)
     }
+}
+
+/// `isa<UndefValue>(C)` **minus** poison.
+///
+/// Upstream's `PoisonValue` derives from `UndefValue`, so a bare
+/// `isa<UndefValue>` there answers `true` for both. llvmkit splits the two so a
+/// port can say which it means; a caller mirroring upstream's `isa<UndefValue>`
+/// wants [`is_undef_or_poison`].
+pub(crate) fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    matches!(
+        &constant.as_erased().data().kind,
+        ValueKindData::Constant(ConstantData::Undef)
+    )
+}
+
+/// `isa<PoisonValue>(C)`.
+pub(crate) fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    matches!(
+        &constant.as_erased().data().kind,
+        ValueKindData::Constant(ConstantData::Poison)
+    )
+}
+
+/// Upstream's plain `isa<UndefValue>(C)`, which catches `poison` too.
+pub(crate) fn is_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    is_undef(constant) || is_poison(constant)
 }
 
 /// Optional optimization and predicate flags attached to a constant expression.
@@ -983,8 +1028,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
 /// constant handle, or a Rust scalar literal materialized through the
 /// module's context.
 ///
-/// The blanket impl accepts any [`IsConstant`] handle unchanged (its
-/// `module` argument is ignored). The scalar impls — one per exact Rust
+/// The blanket impl accepts any [`IsConstant`] handle unchanged, refusing
+/// one minted by a module other than `module` with
+/// [`IrError::ForeignValueId`]. The scalar impls — one per exact Rust
 /// width (`bool`, `i8`..=`i128`, `u8`..=`u128`, `f32`, `f64`) — build the
 /// matching IR constant through the module and erase it to [`Constant`].
 /// One literal maps to exactly one IR width, with no widening: `0i32` is
@@ -993,13 +1039,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
 /// [`IntoConstantFloat`].
 pub trait IntoConstantValue<'ctx, B: ModuleBrand> {
     /// Materialize `self` as an erased [`Constant`] owned by `module`.
-    fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B>;
+    ///
+    /// [`IrError::ForeignValueId`] when `self` is a constant handle another
+    /// module minted.
+    fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>>;
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B> for C {
     #[inline]
-    fn into_constant(self, _module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
-        self.as_constant()
+    fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
+        let constant = self.as_constant();
+        // Boundary: refuse a handle minted by another module.
+        constant.slot_in(module.id())?;
+        Ok(constant)
     }
 }
 
@@ -1007,16 +1059,16 @@ macro_rules! impl_into_constant_value_int {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
-            fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
+            fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
                 let ty = IntType::<$marker, B>::new(
                     module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
-                IntoConstantInt::into_constant_int(self, ty)
+                Ok(IntoConstantInt::into_constant_int(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
                     })
-                    .as_constant()
+                    .as_constant())
             }
         }
     };
@@ -1039,16 +1091,16 @@ macro_rules! impl_into_constant_value_float {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
-            fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
+            fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
                 let ty = FloatType::<$marker, B>::new(
                     module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
-                IntoConstantFloat::into_constant_float(self, ty)
+                Ok(IntoConstantFloat::into_constant_float(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
                     })
-                    .as_constant()
+                    .as_constant())
             }
         }
     };

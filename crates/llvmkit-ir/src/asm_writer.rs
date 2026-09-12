@@ -57,7 +57,7 @@ use super::metadata::{
     DebugMetadataOperand, DebugRecord, MetadataAttachmentSet, MetadataKind, MetadataSlot,
     MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
 };
-use super::module::{DynBrand, ModuleBrand, ModuleCore, ModuleView};
+use super::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef, ModuleView};
 use super::module_summary_index::{
     AliasSummary, ConstantVirtualCall, FunctionSummary, GlobalValueSummary, GlobalValueSummaryInfo,
     GlobalVariableSummary, Guid, Hotness, ModuleSummaryIndex, REGULAR_LTO_MODULE_NAME,
@@ -66,8 +66,8 @@ use super::module_summary_index::{
     WholeProgramDevirtResolution,
 };
 use super::sync_scope::SyncScope;
-use super::r#type::{StructBody, Type, TypeData, TypeSlot};
-use super::value::{IsValue, Value, ValueKindData, ValueSlot};
+use super::r#type::{StructBody, Type, TypeData, TypeSlot, TypeSlotAccess};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::{ApInt, AttrIndex, Signedness};
 
 /// What `AsmWriter.cpp` prints where a value has no slot: `Out << "<badref>"`.
@@ -114,19 +114,19 @@ impl SlotTracker {
 
         for arg in f.params() {
             if arg.name().is_none() {
-                local.insert(IsValue::slot(arg), next);
+                local.insert(arg.slot_trusting_same_module(), next);
                 next += 1;
             }
         }
 
         for bb in f.basic_blocks() {
             if bb.name().is_none() {
-                blocks.insert(bb.slot(), next);
+                blocks.insert(bb.to_erased().slot_trusting_same_module(), next);
                 next += 1;
             }
             for inst in bb.instructions() {
                 if produces_named_result(&inst) && inst.name().is_none() {
-                    local.insert(inst.slot(), next);
+                    local.insert(inst.to_erased().slot_trusting_same_module(), next);
                     next += 1;
                 }
             }
@@ -142,6 +142,48 @@ impl SlotTracker {
     pub(super) fn block(&self, id: ValueSlot) -> Option<u32> {
         self.blocks.get(&id).copied()
     }
+}
+
+/// The text `AsmWriter` prints after the `%` for `id` inside `f`: its written
+/// name, or the [`SlotTracker`] number an unnamed value or block is given.
+///
+/// Mirrors how `Verifier::CheckFailed` renders a `Value` — through
+/// `WriteAsOperand`, which asks the module's `SlotTracker` for the number and
+/// so always names something the reader can find in the printed IR.
+pub(super) fn slot_label<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>, id: ValueSlot) -> String {
+    let module = f.module();
+    if let Some(name) = module.context().value_data(id).name.borrow().as_ref() {
+        return name.clone();
+    }
+    let slots = SlotTracker::for_function(f);
+    match slots.local(id).or_else(|| slots.block(id)) {
+        Some(number) => number.to_string(),
+        // `AsmWriter`'s own spelling for a value it cannot number.
+        None => BAD_REF.to_owned(),
+    }
+}
+
+/// [`slot_label`] for a *block* reached without its owning function in hand.
+///
+/// The diagnostics that need this — the phi edge-add paths and
+/// [`crate::phi_check::render_phi_violation`] — hold only the block's arena
+/// slot, so the owning function is recovered from the block itself. A block
+/// with no parent has no `SlotTracker` to ask and gets upstream's `<badref>`,
+/// the same answer `slot_label` gives a value its function cannot number.
+pub(super) fn block_slot_label<B: ModuleBrand>(module: ModuleRef<'_, B>, id: ValueSlot) -> String {
+    if let Some(name) = module.value_data(id).name.borrow().as_ref() {
+        return name.clone();
+    }
+    let ValueKindData::BasicBlock(data) = &module.value_data(id).kind else {
+        return BAD_REF.to_owned();
+    };
+    let Some(parent_id) = *data.parent.borrow() else {
+        return BAD_REF.to_owned();
+    };
+    slot_label(
+        FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, module),
+        id,
+    )
 }
 
 /// `true` if `inst` produces a result that gets a textual name (or
@@ -242,14 +284,14 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
         // the failure spelling carries **no** sigil, in either arm.
         ValueKindData::BasicBlock(_) => match v.name() {
             Some(n) => fmt_llvm_name(f, "%", &n),
-            None => match slots.and_then(|s| s.block(v.id)) {
+            None => match slots.and_then(|s| s.block(v.slot_trusting_same_module())) {
                 Some(slot) => write!(f, "%{slot}"),
                 None => f.write_str(BAD_REF),
             },
         },
         ValueKindData::Argument { .. } | ValueKindData::Instruction(_) => match v.name() {
             Some(n) => fmt_llvm_name(f, "%", &n),
-            None => match slots.and_then(|s| s.local(v.id)) {
+            None => match slots.and_then(|s| s.local(v.slot_trusting_same_module())) {
                 Some(slot) => write!(f, "%{slot}"),
                 None => f.write_str(BAD_REF),
             },
@@ -413,25 +455,33 @@ fn order_module(m: &ModuleCore) -> OrderMap {
 
     for global in m.iter_globals::<DynBrand>() {
         if let Some(initializer) = global.initializer()
-            && !is_global_value(&m.context().value_data(initializer.as_erased().slot()).kind)
+            && !is_global_value(
+                &m.context()
+                    .value_data(initializer.as_erased().slot_trusting_same_module())
+                    .kind,
+            )
         {
-            order_value(m, initializer.as_erased().slot(), &mut om);
+            order_value(
+                m,
+                initializer.as_erased().slot_trusting_same_module(),
+                &mut om,
+            );
         }
-        order_value(m, global.as_erased().slot(), &mut om);
+        order_value(m, global.as_erased().slot_trusting_same_module(), &mut om);
     }
     for alias in m.iter_aliases::<DynBrand>() {
-        let aliasee = alias.aliasee().as_erased().slot();
+        let aliasee = alias.aliasee().as_erased().slot_trusting_same_module();
         if !is_global_value(&m.context().value_data(aliasee).kind) {
             order_value(m, aliasee, &mut om);
         }
-        order_value(m, alias.as_erased().slot(), &mut om);
+        order_value(m, alias.as_erased().slot_trusting_same_module(), &mut om);
     }
     for ifunc in m.iter_ifuncs::<DynBrand>() {
-        let resolver = ifunc.resolver().as_erased().slot();
+        let resolver = ifunc.resolver().as_erased().slot_trusting_same_module();
         if !is_global_value(&m.context().value_data(resolver).kind) {
             order_value(m, resolver, &mut om);
         }
-        order_value(m, ifunc.as_erased().slot(), &mut om);
+        order_value(m, ifunc.as_erased().slot_trusting_same_module(), &mut om);
     }
 
     for function in m.iter_functions::<DynBrand>() {
@@ -439,26 +489,32 @@ fn order_module(m: &ModuleCore) -> OrderMap {
         // operands are personality, prefix and prologue, in that order
         // (`Function::setHungOffOperand<0..2>`).
         let operands = [
-            function.personality_fn().map(|v| v.as_erased().slot()),
-            function.prefix_data().map(|v| v.as_erased().slot()),
-            function.prologue_data().map(|v| v.as_erased().slot()),
+            function
+                .personality_fn()
+                .map(|v| v.as_erased().slot_trusting_same_module()),
+            function
+                .prefix_data()
+                .map(|v| v.as_erased().slot_trusting_same_module()),
+            function
+                .prologue_data()
+                .map(|v| v.as_erased().slot_trusting_same_module()),
         ];
         for operand in operands.into_iter().flatten() {
             if !is_global_value(&m.context().value_data(operand).kind) {
                 order_value(m, operand, &mut om);
             }
         }
-        order_value(m, function.as_erased().slot(), &mut om);
+        order_value(m, function.as_erased().slot_trusting_same_module(), &mut om);
         // `F.isDeclaration()` — llvmkit spells it as an empty block list, the
         // same test `printFunction` uses to choose `declare` over `define`.
         if function.basic_blocks().count() == 0 {
             continue;
         }
         for argument in function.params() {
-            order_value(m, IsValue::slot(argument), &mut om);
+            order_value(m, argument.slot_trusting_same_module(), &mut om);
         }
         for block in function.basic_blocks() {
-            order_value(m, block.slot(), &mut om);
+            order_value(m, block.to_erased().slot_trusting_same_module(), &mut om);
             for instruction in block.instructions() {
                 // Debug records sit outside the `Value` hierarchy, so any
                 // constant they name is reachable only through them —
@@ -477,7 +533,11 @@ fn order_module(m: &ModuleCore) -> OrderMap {
                         order_value(m, operand, &mut om);
                     }
                 }
-                order_value(m, instruction.slot(), &mut om);
+                order_value(
+                    m,
+                    instruction.to_erased().slot_trusting_same_module(),
+                    &mut om,
+                );
             }
         }
     }
@@ -901,11 +961,9 @@ fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx>(
                 write!(f, " {}", no_wrap)?;
             }
             if let Some(in_range) = flags.in_range() {
-                f.write_str(" inrange(")?;
-                fmt_apint_signed(f, in_range.start(), in_range.bit_width())?;
-                f.write_str(", ")?;
-                fmt_apint_signed(f, in_range.end(), in_range.bit_width())?;
-                f.write_str(")")?;
+                // `impl Display for ApInt` is the signed-decimal form
+                // `AsmWriter` prints for both bounds.
+                write!(f, " inrange({}, {})", in_range.start(), in_range.end())?;
             }
         }
     }
@@ -1296,7 +1354,7 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
 ) -> fmt::Result {
     match v.name() {
         Some(name) => fmt_llvm_name(f, "@", &name),
-        None => match module_global_slot(v.module().core_ref(), v.id) {
+        None => match module_global_slot(v.module().core_ref(), v.slot_trusting_same_module()) {
             Some(slot) => write!(f, "@{slot}"),
             // `writeAsOperandInternal`'s `Prefix = '@'` branch reaches the
             // same unsigilled `<badref>`.
@@ -1309,7 +1367,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<DynBrand>() {
         if global.as_erased().name().is_none() {
-            if global.slot() == id {
+            if global.slot_trusting_same_module() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -1317,7 +1375,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for alias in module.iter_aliases::<DynBrand>() {
         if alias.as_erased().name().is_none() {
-            if alias.slot() == id {
+            if alias.slot_trusting_same_module() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -1325,7 +1383,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for ifunc in module.iter_ifuncs::<DynBrand>() {
         if ifunc.as_erased().name().is_none() {
-            if ifunc.slot() == id {
+            if ifunc.slot_trusting_same_module() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -1333,7 +1391,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for function in module.iter_functions::<DynBrand>() {
         if function.as_erased().name().is_none() {
-            if function.slot() == id {
+            if function.slot_trusting_same_module() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -1418,7 +1476,9 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
 /// scalable vector constant with an element list cannot exist there. llvmkit
 /// builds one deliberately — it is how a scalable splat is represented, see
 /// `constant_fold::vector_splat_constant` — which is why the printer has to
-/// know the difference.
+/// know the difference. `VectorType::const_vector` requires a scalable
+/// constant's lanes to agree, so every scalable aggregate that reaches here
+/// takes this arm and the element-list fallback below is fixed-width only.
 fn prints_as_splat<B: ModuleBrand>(module: &ModuleCore, ty: Type<'_, B>, splat: ValueSlot) -> bool {
     match ty.data() {
         TypeData::FixedVector { .. } => is_int_or_fp_splat_value(module, splat),
@@ -1457,15 +1517,12 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
         fmt_operand(f, value, None)?;
         return f.write_str(")");
     }
-    // The element-list fallback. A *scalable* vector reaches it only when its
-    // lanes disagree, and that shape has no LLVM spelling at all — so what is
-    // printed here is invalid IR whatever it says. It is printed losslessly
-    // rather than collapsed to a `splat (…)` of the first lane, because
-    // claiming a splat the constant is not would corrupt silently where this
-    // merely fails to re-parse. The real answer is to stop the constant being
-    // constructible; `VectorType::const_vector` deliberately does not require
-    // uniformity today and two tests depend on that, so it is a representation
-    // decision rather than a printer one. See `docs/future-work.md`.
+    // The element-list fallback, which no *scalable* vector reaches: a shape
+    // with no LLVM spelling would be printed here, and the answer was to stop
+    // the constant being constructible rather than to invent a spelling for
+    // it. `VectorType::const_vector` requires a scalable constant's lanes to
+    // agree — it is llvmkit's `ConstantVector::getSplat` — so a scalable
+    // aggregate is always a splat and always took the arm above.
     let (open, close) = match ty.data() {
         TypeData::Array { .. } => ("[", "]"),
         TypeData::Struct(s) => {
@@ -1511,7 +1568,7 @@ pub(super) fn fmt_instruction(
             }
             // `if (SlotNum == -1) Out << "<badref> = "; else Out << '%' <<
             //  SlotNum << " = ";`
-            None => match slots.local(inst.slot()) {
+            None => match slots.local(inst.to_erased().slot_trusting_same_module()) {
                 Some(slot) => write!(f, "%{slot} = ")?,
                 None => write!(f, "{BAD_REF} = ")?,
             },
@@ -3193,7 +3250,7 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
         fmt_llvm_name_without_prefix(&mut label, name)?;
         label.push(':');
     } else if !is_entry_block {
-        match slots.block(bb.slot()) {
+        match slots.block(bb.to_erased().slot_trusting_same_module()) {
             Some(slot) => write!(label, "{slot}:")?,
             None => {
                 label.push_str(BAD_REF);
@@ -3226,7 +3283,11 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
                 }
                 // Every basic block carries the module's label type, so the
                 // erased block's own type slot is the predecessor's too.
-                let predecessor_value = Value::from_parts(predecessor, erased.module, erased.ty);
+                let predecessor_value = Value::from_parts(
+                    predecessor,
+                    erased.module,
+                    erased.ty().slot_trusting_same_module(),
+                );
                 fmt_operand_ref(f, predecessor_value, Some(slots))?;
             }
         }
@@ -3344,7 +3405,7 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
         f.write_str(" ")?;
         match arg.name() {
             Some(n) => fmt_llvm_name(f, "%", &n)?,
-            None => match slots.local(IsValue::slot(arg)) {
+            None => match slots.local(arg.slot_trusting_same_module()) {
                 Some(slot) => write!(f, "%{slot}")?,
                 None => f.write_str("%<unnumbered>")?,
             },
@@ -3661,7 +3722,7 @@ pub(super) fn fmt_module_with_options(
             func,
             use_lists
                 .as_ref()
-                .and_then(|lists| lists.get(&Some(func.as_erased().slot()))),
+                .and_then(|lists| lists.get(&Some(func.as_erased().slot_trusting_same_module()))),
         )?;
     }
     // Module-level use-lists sit between the functions and the attribute
@@ -3841,14 +3902,34 @@ fn fmt_specialized_metadata_node(
     slots: &[Option<usize>],
     value_slots: Option<&SlotTracker>,
 ) -> fmt::Result {
-    use super::metadata::MetadataFieldValue;
+    use super::metadata::{DiFlags, DispFlags, MetadataFieldValue};
     if node.is_distinct() {
         f.write_str("distinct ")?;
     }
     write!(f, "!{}(", node.kind().name())?;
     // `DIExpression` prints a positional element list, not `name: value` pairs.
-    // Mirrors `AsmWriter.cpp::writeDIExpression`.
+    // Mirrors `AsmWriter.cpp::writeDIExpression`, including its branch on
+    // `N->isValid()`: a valid expression prints operation names, an invalid one
+    // falls through to printing the raw `uint64_t` elements.
     if let super::metadata::SpecializedMetadataBody::Expression(operands) = node.body() {
+        let elements = super::metadata::expression_elements(operands);
+        let valid = elements
+            .as_deref()
+            .is_some_and(super::metadata::expression_is_valid);
+        if !valid && let Some(elements) = elements {
+            // `for (const auto &I : N->getElements()) Out << FS << I;`
+            for (i, element) in elements.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{element}")?;
+            }
+            return f.write_str(")");
+        }
+        // An operand whose spelling no `Dwarf.def` table carries has no
+        // `uint64_t` to print at all, so the raw branch is unreachable for it
+        // and the spelling is written back instead. Only the IR API can build
+        // one; the parser rejects the spelling.
         for (i, operand) in operands.iter().enumerate() {
             if i > 0 {
                 f.write_str(", ")?;
@@ -3860,10 +3941,19 @@ fn fmt_specialized_metadata_node(
         }
         return f.write_str(")");
     }
-    for (i, field) in node.fields().iter().enumerate() {
-        if i > 0 {
+    let mut written = 0_usize;
+    for field in node.fields() {
+        // `MDFieldPrinter::printDIFlags` opens `if (!Flags) return;`, so a
+        // zero `flags:` prints nothing at all — not even its name — and does
+        // not advance `FS`, the `ListSeparator` that puts the `, ` in. Every
+        // other field printer emits unconditionally once it is here.
+        if matches!(field.value(), MetadataFieldValue::DiFlags(flags) if *flags == DiFlags::ZERO) {
+            continue;
+        }
+        if written > 0 {
             f.write_str(", ")?;
         }
+        written += 1;
         write!(f, "{}: ", field.name())?;
         match field.value() {
             MetadataFieldValue::Null => f.write_str("null")?,
@@ -3875,6 +3965,33 @@ fn fmt_specialized_metadata_node(
                 f.write_str("\"")?;
             }
             MetadataFieldValue::Enum(s) => f.write_str(s)?,
+            MetadataFieldValue::DiFlags(flags) => {
+                let mut split = Vec::new();
+                let extra = flags.split_flags(&mut split);
+                fmt_split_flags(
+                    f,
+                    split.iter().map(|flag| (flag.flag_string(), flag.bits())),
+                    extra.bits(),
+                )?;
+            }
+            // `printDISPFlags` differs from its twin in one statement, with
+            // its own comment: "Always print this field, because no flags in
+            // the IR at all will be interpreted as old-style isDefinition:
+            // true." So a zero `spFlags:` prints `0` where a zero `flags:`
+            // prints nothing.
+            MetadataFieldValue::DispFlags(flags) => {
+                if *flags == DispFlags::ZERO {
+                    f.write_str("0")?;
+                } else {
+                    let mut split = Vec::new();
+                    let extra = flags.split_flags(&mut split);
+                    fmt_split_flags(
+                        f,
+                        split.iter().map(|flag| (flag.flag_string(), flag.bits())),
+                        extra.bits(),
+                    )?;
+                }
+            }
             MetadataFieldValue::Metadata(md) => {
                 fmt_metadata_operand(f, md.slot(), module, store, slots, value_slots)?
             }
@@ -3891,6 +4008,44 @@ fn fmt_specialized_metadata_node(
         }
     }
     f.write_str(")")
+}
+
+/// The shared tail of `MDFieldPrinter::printDIFlags` and `printDISPFlags`:
+/// write each split component through `getFlagString`, `" | "`-separated, and
+/// append the unrecognised remainder as a number.
+///
+/// `if (Extra || SplitFlags.empty()) Out << FlagsFS << Extra;` — so an
+/// all-unknown bitfield prints as the bare number, a partially-known one puts
+/// the remainder last, and a fully-known one prints no number. Upstream
+/// asserts each component has a spelling (`assert(!StringF.empty())`); a
+/// component with none can only come from a table row `splitFlags` walks and
+/// `getFlagString` lacks, which the `.def` cannot produce, so llvmkit folds it
+/// back into the remainder rather than panicking.
+fn fmt_split_flags<I>(f: &mut fmt::Formatter<'_>, split: I, mut extra: u32) -> fmt::Result
+where
+    I: IntoIterator<Item = (Option<&'static str>, u32)>,
+{
+    let mut first = true;
+    let mut named = 0_usize;
+    for (spelling, bits) in split {
+        let Some(spelling) = spelling else {
+            extra |= bits;
+            continue;
+        };
+        if !first {
+            f.write_str(" | ")?;
+        }
+        first = false;
+        named += 1;
+        f.write_str(spelling)?;
+    }
+    if extra != 0 || named == 0 {
+        if !first {
+            f.write_str(" | ")?;
+        }
+        write!(f, "{extra}")?;
+    }
+    Ok(())
 }
 
 /// Mirrors `AssemblyWriter::printMetadataAttachments`, whose `Separator`
@@ -4106,6 +4261,40 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     )
 }
 
+/// `writeOperand(Aliasee, !isa<ConstantExpr>(Aliasee))` — the one operand in
+/// the whole writer whose leading type is conditional.
+///
+/// `printAlias` and `printIFunc` suppress it for a constant *expression*
+/// because that is the spelling `LLParser::parseAliasOrIFunc` reads back: its
+/// `bitcast` / `getelementptr` / `addrspacecast` / `inttoptr` branch takes a
+/// bare `parseValID`, where "the bitcast dest type is not present, it is
+/// implied by the dest type".
+///
+/// `GepOffset` / `SymbolDelta` / `SymbolDeltaPlus` are llvmkit's compact
+/// spellings of a `getelementptr` / `sub` / `add` constant expression and print
+/// as one, so they answer to the same rule. `blockaddress`,
+/// `dso_local_equivalent`, `no_cfi` and `ptrauth` are separate `Constant`
+/// subclasses upstream, not `ConstantExpr`s, and keep their type.
+fn fmt_aliasee<'ctx, B: ModuleBrand + 'ctx>(
+    f: &mut fmt::Formatter<'_>,
+    aliasee: Value<'ctx, B>,
+) -> fmt::Result {
+    let is_constant_expr = matches!(
+        &aliasee.data().kind,
+        ValueKindData::Constant(
+            ConstantData::Expr(_)
+                | ConstantData::GepOffset { .. }
+                | ConstantData::SymbolDelta { .. }
+                | ConstantData::SymbolDeltaPlus { .. }
+        )
+    );
+    if is_constant_expr {
+        fmt_operand_ref(f, aliasee, None)
+    } else {
+        fmt_operand(f, aliasee, None)
+    }
+}
+
 pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     a: GlobalAlias<'ctx, B>,
@@ -4139,7 +4328,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("alias ")?;
     write!(f, "{}, ", a.value_type())?;
-    fmt_operand(f, a.aliasee().as_erased(), None)?;
+    fmt_aliasee(f, a.aliasee().as_erased())?;
     if let Some(partition) = a.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;
@@ -4184,7 +4373,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("ifunc ")?;
     write!(f, "{}, ", i.value_type())?;
-    fmt_operand(f, i.resolver().as_erased(), None)?;
+    fmt_aliasee(f, i.resolver().as_erased())?;
     if let Some(partition) = i.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;

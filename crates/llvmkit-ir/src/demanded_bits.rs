@@ -19,8 +19,8 @@ use super::module::{DynBrand, ModuleBrand, ModuleRef};
 use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
-use super::r#type::{Type, TypeKind};
-use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueUse};
+use super::r#type::{Type, TypeKind, TypeSlotAccess};
+use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse};
 use super::value_id::IntValueId;
 use super::value_tracking::{ValueTrackingQuery, compute_known_bits, value_from_slot};
 use super::{ApInt, IrError, IrResult, KnownBits};
@@ -122,6 +122,26 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     })
 }
 
+/// Known bits of a binary operator's two operands.
+///
+/// A named pair rather than `(KnownBits, KnownBits)`, for the same reason as
+/// `value_tracking`'s `BinaryOperands`: both halves are the same type, so a
+/// transposed destructuring type-checks and feeds the left operand's bits in
+/// as the right's, silently producing a wrong liveness mask.
+struct OperandKnownBits {
+    lhs: KnownBits,
+    rhs: KnownBits,
+}
+
+/// The proven range of a shift amount, in bits.
+///
+/// `(u32, u32)` was transposable at all three call sites; swapping the two
+/// compiles and inverts the range.
+struct ShiftRange {
+    min: u32,
+    max: u32,
+}
+
 /// Cached demanded-bits result for one function.
 #[derive(Debug)]
 pub struct DemandedBits {
@@ -147,7 +167,9 @@ impl DemandedBits {
 
     /// Return the bits demanded from an instruction value.
     pub fn demanded_bits<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> ApInt {
-        if let Some(bits) = self.alive_bits.get(&value.slot()) {
+        // boundary (F2): Task 27
+        // A caller's value looked up in a result computed for one function.
+        if let Some(bits) = self.alive_bits.get(&value.slot_trusting_same_module()) {
             return bits.clone();
         }
         ApInt::low_bits_set(
@@ -168,7 +190,11 @@ impl DemandedBits {
                 message: "operand index out of range",
             });
         };
-        if let Some(bits) = self.operand_bits.get(&(user.slot(), operand_index)) {
+        // boundary (F2): Task 27
+        if let Some(bits) = self
+            .operand_bits
+            .get(&(user.slot_trusting_same_module(), operand_index))
+        {
             return Ok(bits.clone());
         }
         let operand = value_from_slot(user, operand_id);
@@ -187,9 +213,13 @@ impl DemandedBits {
 
     /// Return true if `value` was unreachable from any live root during analysis.
     pub fn is_instruction_dead<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> bool {
-        !self.visited_non_integer.contains(&value.slot())
-            && !self.alive_bits.contains_key(&value.slot())
-            && !self.always_live.contains(&value.slot())
+        {
+            // boundary (F2): Task 27
+            let slot = value.slot_trusting_same_module();
+            !self.visited_non_integer.contains(&slot)
+                && !self.alive_bits.contains_key(&slot)
+                && !self.always_live.contains(&slot)
+        }
     }
 
     /// Return true if operand `operand_index` of instruction `user` has no demanded bits.
@@ -208,19 +238,18 @@ impl DemandedBits {
         if int_scalar_bit_width(operand.ty()).is_none() {
             return Ok(false);
         }
-        if self.always_live.contains(&user.slot()) {
+        // boundary (F2): Task 27
+        let user_slot = user.slot_trusting_same_module();
+        if self.always_live.contains(&user_slot) {
             return Ok(false);
         }
         if self.is_instruction_dead(user) {
             return Ok(true);
         }
-        if self.dead_uses.contains(&(user.slot(), operand_index)) {
+        if self.dead_uses.contains(&(user_slot, operand_index)) {
             return Ok(true);
         }
-        Ok(self
-            .alive_bits
-            .get(&user.slot())
-            .is_some_and(ApInt::is_zero))
+        Ok(self.alive_bits.get(&user_slot).is_some_and(ApInt::is_zero))
     }
 
     /// Compute alive bits of one addition operand from alive output and known operands.
@@ -262,12 +291,16 @@ impl DemandedBits {
                 if !is_always_live(data) {
                     continue;
                 }
-                self.always_live.insert(value.slot());
+                self.always_live.insert(value.slot_trusting_same_module());
                 if let Some(width) = int_scalar_bit_width(value.ty()) {
                     self.alive_bits
-                        .entry(value.slot())
+                        .entry(value.slot_trusting_same_module())
                         .or_insert_with(|| ApInt::zero(width));
-                    enqueue(value.slot(), &mut worklist, &mut queued);
+                    enqueue(
+                        value.slot_trusting_same_module(),
+                        &mut worklist,
+                        &mut queued,
+                    );
                     continue;
                 }
                 for operand_id in data.kind.operand_ids() {
@@ -343,7 +376,18 @@ impl DemandedBits {
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<ApInt> {
-        let width = int_scalar_bit_width(operand.ty()).unwrap_or(0);
+        // A non-integer operand has no bits to demand, and the caller
+        // (`operand_demanded_bits`) already answers those from
+        // `value_scalar_size_in_bits` before reaching here. Substituting a
+        // width of `0` built an `ApInt` on which `is_all_ones` and `is_zero`
+        // are both vacuously true -- the same shape that made `is_known_zero`
+        // report a float as known-zero -- so refuse instead of inventing a
+        // mask that every predicate agrees with.
+        let Some(width) = int_scalar_bit_width(operand.ty()) else {
+            return Err(IrError::NotIntOrPointerType {
+                kind: operand.ty().kind_label(),
+            });
+        };
         let all = ApInt::low_bits_set(width, u32::MAX);
         let ValueKindData::Instruction(data) = &user.data().kind else {
             return Ok(all);
@@ -353,7 +397,7 @@ impl DemandedBits {
                 if alive_out.is_mask() {
                     alive_out.clone()
                 } else {
-                    let (lhs, rhs) = self.known_binary_operands(user, bin)?;
+                    let OperandKnownBits { lhs, rhs } = self.known_binary_operands(user, bin)?;
                     Self::determine_live_operand_bits_add(operand_index, alive_out, &lhs, &rhs)
                 }
             }
@@ -361,7 +405,7 @@ impl DemandedBits {
                 if alive_out.is_mask() {
                     alive_out.clone()
                 } else {
-                    let (lhs, rhs) = self.known_binary_operands(user, bin)?;
+                    let OperandKnownBits { lhs, rhs } = self.known_binary_operands(user, bin)?;
                     Self::determine_live_operand_bits_sub(operand_index, alive_out, &lhs, &rhs)
                 }
             }
@@ -454,11 +498,11 @@ impl DemandedBits {
         &self,
         user: Value<'ctx, B>,
         bin: &BinaryOpData,
-    ) -> IrResult<(KnownBits, KnownBits)> {
+    ) -> IrResult<OperandKnownBits> {
         let query = ValueTrackingQuery::new(&self.data_layout);
         let lhs = compute_known_bits(value_from_slot(user, bin.lhs.get()), &query)?;
         let rhs = compute_known_bits(value_from_slot(user, bin.rhs.get()), &query)?;
-        Ok((lhs, rhs))
+        Ok(OperandKnownBits { lhs, rhs })
     }
 
     fn known_shift_range<'ctx, B: ModuleBrand + 'ctx>(
@@ -466,14 +510,14 @@ impl DemandedBits {
         user: Value<'ctx, B>,
         bin: &BinaryOpData,
         width: u32,
-    ) -> IrResult<(u32, u32)> {
+    ) -> IrResult<ShiftRange> {
         let rhs = value_from_slot(user, bin.rhs.get());
         let query = ValueTrackingQuery::new(&self.data_layout);
         let known = compute_known_bits(rhs, &query)?;
         let limit = u64::from(width.saturating_sub(1));
         let min = u32::try_from(known.min_value().limited_value(limit)).unwrap_or(width);
         let max = u32::try_from(known.max_value().limited_value(limit)).unwrap_or(width);
-        Ok((min, max))
+        Ok(ShiftRange { min, max })
     }
 
     fn shift_left_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
@@ -501,7 +545,7 @@ impl DemandedBits {
             }
             Ok(bits)
         } else {
-            let (min, max) = self.known_shift_range(user, bin, width)?;
+            let ShiftRange { min, max } = self.known_shift_range(user, bin, width)?;
             let mut bits = shifted_range_bits(alive_out, min, max, false);
             if bin.no_signed_wrap {
                 bits = bits.bitor(&ApInt::high_bits_set(width, max.saturating_add(1)));
@@ -535,7 +579,7 @@ impl DemandedBits {
             }
             Ok(bits)
         } else {
-            let (min, max) = self.known_shift_range(user, bin, width)?;
+            let ShiftRange { min, max } = self.known_shift_range(user, bin, width)?;
             let mut bits = shifted_range_bits(alive_out, min, max, true);
             if bin.is_exact {
                 bits = bits.bitor(&ApInt::low_bits_set(width, max));
@@ -570,7 +614,7 @@ impl DemandedBits {
             }
             Ok(bits)
         } else {
-            let (min, max) = self.known_shift_range(user, bin, width)?;
+            let ShiftRange { min, max } = self.known_shift_range(user, bin, width)?;
             let mut bits = shifted_range_bits(alive_out, min, max, true);
             if max != 0 && alive_out.intersects(&ApInt::high_bits_set(width, max)) {
                 bits = bits.bitor(&ApInt::sign_mask(width));
@@ -697,7 +741,7 @@ impl DemandedBits {
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<ApInt> {
-        let (lhs, rhs) = self.known_binary_operands(user, bin)?;
+        let OperandKnownBits { lhs, rhs } = self.known_binary_operands(user, bin)?;
         let bits = if operand_index == 0 {
             alive_out.bitand(&rhs.zero_mask().not())
         } else {
@@ -714,7 +758,7 @@ impl DemandedBits {
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<ApInt> {
-        let (lhs, rhs) = self.known_binary_operands(user, bin)?;
+        let OperandKnownBits { lhs, rhs } = self.known_binary_operands(user, bin)?;
         let bits = if operand_index == 0 {
             alive_out.bitand(&rhs.one_mask().not())
         } else {
@@ -977,12 +1021,12 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
                 continue;
             }
             if demanded.is_instruction_dead(value) {
-                dead_to_erase.push(value.slot());
+                dead_to_erase.push(value.slot_trusting_same_module());
                 continue;
             }
             let simplified = simplify_demanded_bits(value, &demanded, &query)?;
             if let Some(replacement) = simplified.replacement() {
-                let id = value.slot();
+                let id = value.slot_trusting_same_module();
                 drop_zext_nneg_for_replaced_uses(value);
                 // The result carries a storable id; view it for the RAUW, which
                 // takes an ephemeral handle.
@@ -993,7 +1037,7 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(true);
             }
             if let Some(replacement) = demanded_value_replacement(value, &demanded, &query)? {
-                let id = value.slot();
+                let id = value.slot_trusting_same_module();
                 drop_zext_nneg_for_replaced_uses(value);
                 inst.replace_all_uses_with(module_token, replacement)?;
                 let erased =
@@ -1133,12 +1177,12 @@ fn drop_zext_nneg_for_replaced_uses_recursive<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     visited: &mut HashSet<ValueSlot>,
 ) {
-    if !visited.insert(value.slot()) {
+    if !visited.insert(value.slot_trusting_same_module()) {
         return;
     }
     for user in value.users() {
         let user = user.to_erased();
-        drop_zext_nneg_for_replaced_operand(user, value.slot());
+        drop_zext_nneg_for_replaced_operand(user, value.slot_trusting_same_module());
         drop_zext_nneg_for_replaced_uses_recursive(user, visited);
     }
 }
@@ -1245,22 +1289,22 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     replacement: Value<'ctx, B>,
 ) -> IrResult<bool> {
     let old_id = operand.get();
-    let new_id = replacement.slot();
+    let new_id = replacement.slot_trusting_same_module();
     if old_id == new_id {
         return Ok(false);
     }
     let old = value_from_slot(user, old_id);
-    if old.ty().id() != replacement.ty().id() {
-        return Err(IrError::TypeMismatch {
-            expected: old.ty().kind_label(),
-            got: replacement.ty().kind_label(),
+    if old.ty().slot_trusting_same_module() != replacement.ty().slot_trusting_same_module() {
+        return Err(IrError::TypeIdentityMismatch {
+            expected: old.ty().rendered(),
+            got: replacement.ty().rendered(),
         });
     }
     drop_zext_nneg_for_replaced_operand(user, old_id);
     drop_zext_nneg_for_replaced_uses(user);
     operand.set(new_id);
     let module = user.module().core_ref();
-    let edge = ValueUse::Instruction(user.slot());
+    let edge = ValueUse::Instruction(user.slot_trusting_same_module());
     let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
     if let Some(pos) = old_uses.iter().position(|candidate| *candidate == edge) {
         old_uses.remove(pos);
@@ -1398,5 +1442,8 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
-    Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
+    Type::new(
+        ty.slot_trusting_same_module(),
+        ModuleRef::new(ty.module().core_ref()),
+    )
 }

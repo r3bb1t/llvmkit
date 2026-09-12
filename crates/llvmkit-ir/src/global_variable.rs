@@ -21,10 +21,11 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeSlot};
+use super::r#type::{Type, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot,
+    ValueSlotAccess, sealed,
 };
 use super::value_id::GlobalId;
 use crate::Branded;
@@ -380,24 +381,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         })
     }
 
-    /// Set the initializer. Mirrors
-    /// `GlobalVariable::setInitializer`. Errors with
-    /// [`IrError::TypeMismatch`] when the initializer's type does not
-    /// match the global's value type. Module provenance is enforced by `B`.
+    /// Set the initializer. Mirrors `GlobalVariable::setInitializer`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] when `init` was minted by
+    /// another module, and with [`IrError::TypeIdentityMismatch`] when its
+    /// type is not the global's value type; either way the existing
+    /// initializer stays. The brand `B` keeps out, at compile time, a constant
+    /// from a module with a *different* brand; two modules that share a brand
+    /// (`DynBrand`, or a re-issued named brand) are told apart only by the
+    /// module tag, which is checked first.
     pub fn set_initializer<C>(self, _module: &'ctx Module<B, Unverified>, init: C) -> IrResult<()>
     where
         C: IsConstant<'ctx, B>,
     {
         let constant = init.as_constant();
-        if constant.ty != self.data().value_type {
+        // Admitted before the type comparison below, which reads the
+        // constant's type slot against this module's arena.
+        let initializer = constant.slot_in(self.module.id())?;
+        if constant.ty().slot_trusting_same_module() != self.data().value_type {
             let value_ty = self.value_type();
-            return Err(IrError::TypeMismatch {
-                expected: value_ty.kind_label(),
-                got: constant.ty().kind_label(),
+            return Err(IrError::TypeIdentityMismatch {
+                expected: value_ty.rendered(),
+                got: constant.ty().rendered(),
             });
         }
-        self.retarget_initializer_use(Some(constant.id));
-        self.data().initializer.set(Some(constant.id));
+        self.retarget_initializer_use(Some(initializer));
+        self.data().initializer.set(Some(initializer));
         Ok(())
     }
 
@@ -763,11 +772,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ct
 pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    value_type: TypeSlot,
+    /// Kept as the caller's handle, not its slot: `build` admits it through
+    /// the checked door, and only then does its slot enter this module.
+    value_type: Type<'ctx, B>,
     address_space: u32,
     is_constant: bool,
     externally_initialized: bool,
-    initializer: Option<ValueSlot>,
+    /// Kept as the caller's handle for the same reason.
+    initializer: Option<Constant<'ctx, B>>,
     linkage: Linkage,
     dso_locality: DsoLocality,
     visibility: Visibility,
@@ -789,7 +801,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         Self {
             module: module.into(),
             name: name.into(),
-            value_type: value_type.id(),
+            value_type,
             address_space: 0,
             is_constant: false,
             externally_initialized: false,
@@ -911,13 +923,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Attach an initializer.
     ///
-    /// The builder records the constant's id; callers are responsible for
-    /// supplying an initializer whose type matches the global's value type
-    /// (the higher-level `Module::add_global` derives the value type from
-    /// the initializer, so they always agree by construction).
+    /// The builder keeps the constant's handle, which [`build`](Self::build)
+    /// checks belongs to this module. Callers are responsible for supplying
+    /// an initializer whose type matches the global's value type (the
+    /// higher-level `Module::add_global` derives the value type from the
+    /// initializer, so they always agree by construction).
     pub fn initializer<C: IsConstant<'ctx, B>>(mut self, init: C) -> Self {
-        let constant = init.as_constant();
-        self.initializer = Some(constant.id);
+        self.initializer = Some(init.as_constant());
         self
     }
 
@@ -925,24 +937,43 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     /// the second `GlobalVariable::GlobalVariable(Module &M, ...)` ctor.
     /// Resolve the id back into a borrowing [`GlobalVariable`] with
     /// [`Module::view`](crate::Module::view).
+    ///
+    /// Errors with [`IrError::ForeignType`] when the value type, and with
+    /// [`IrError::ForeignValueId`] when the initializer, was minted by another
+    /// module sharing this brand; nothing is installed.
     pub fn build(self) -> IrResult<GlobalId<B>> {
-        self.module
+        // Each handle's slot names a different type or value — or nothing — in
+        // another module's arena, so both are admitted before anything is
+        // installed.
+        let owner = self.module.id();
+        let value_type = self.value_type.slot_in(owner)?;
+        let initializer = self
+            .initializer
+            .map(|constant| constant.slot_in(owner))
+            .transpose()?;
+        let module = self.module;
+        let (name, data, address_space) = self.into_data(value_type, initializer);
+        module
             .module()
-            .install_global_variable::<B>(self)
+            .install_global_variable::<B>(name, data, address_space)
             .map(|g| g.id())
     }
 
-    pub(super) fn into_data(
+    /// Lower the builder to its storage payload, holding the slots `build`
+    /// admitted rather than anything read off the handles again.
+    fn into_data(
         self,
-    ) -> (String, GlobalVariableData, Option<ValueSlot>, u32, TypeSlot) {
+        value_type: TypeSlot,
+        initializer: Option<ValueSlot>,
+    ) -> (String, GlobalVariableData, u32) {
         let GlobalBuilder {
             module: _,
             name,
-            value_type,
+            value_type: _,
             address_space,
             is_constant,
             externally_initialized,
-            initializer,
+            initializer: _,
             linkage,
             dso_locality,
             visibility,
@@ -975,6 +1006,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             sanitizer_metadata: Cell::new(None),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
         };
-        (name, data, initializer, address_space, value_type)
+        (name, data, address_space)
     }
 }

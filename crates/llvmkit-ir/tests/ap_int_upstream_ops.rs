@@ -865,6 +865,29 @@ fn fshr() {
     );
 }
 
+/// Port of `TEST(APIntTest, clmul)`.
+#[test]
+fn carryless_mul() {
+    let clmul = |a: &ApInt, b: &ApInt| a.carryless_mul(b).expect("equal widths");
+
+    assert_eq!(zext(&clmul(&unsigned(4, 1), &unsigned(4, 2))), 2);
+    assert_eq!(zext(&clmul(&unsigned(4, 5), &unsigned(4, 6))), 14);
+    assert_eq!(sext(&clmul(&signed(4, -4), &unsigned(4, 2))), -8);
+    assert_eq!(sext(&clmul(&signed(4, -4), &signed(4, -5))), 4);
+    assert_eq!(zext(&clmul(&unsigned(8, 0), &unsigned(8, 255))), 0);
+    assert_eq!(zext(&clmul(&unsigned(8, 15), &unsigned(8, 15))), 85);
+    assert_eq!(zext(&clmul(&unsigned(8, 1), &unsigned(8, 2))), 2);
+    assert_eq!(
+        sext(&clmul(
+            &signed(64, 0),
+            &signed(64, 9_223_372_036_854_775_807)
+        )),
+        0
+    );
+    assert_eq!(sext(&clmul(&signed(64, 1), &signed(64, 2))), 2);
+    assert_eq!(sext(&clmul(&signed(16, -2), &signed(16, -1))), -21846);
+}
+
 /// Port of `TEST(APIntTest, clmulr)`.
 #[test]
 fn carryless_mul_reversed() {

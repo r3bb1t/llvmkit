@@ -196,11 +196,11 @@ impl<B: ModuleBrand> core::fmt::Debug for MetadataId<B> {
 /// The fixed variants mirror the `LLVM_FIXED_MD_KIND` entries of
 /// `llvm/include/llvm/IR/FixedMetadataKinds.def` (which
 /// `LLVMContext::LLVMContext` includes to register the fixed kinds), listed
-/// here in the `.def`'s own order. Marked `#[non_exhaustive]` so future
-/// upstream additions are non-breaking; [`Custom`](Self::Custom) carries the
-/// open remainder of the namespace.
+/// here in the `.def`'s own order. The enum is exhaustive, so a future
+/// upstream addition is a breaking change every un-updated `match` reports;
+/// [`Custom`](Self::Custom) carries the open remainder of the namespace, which
+/// is where genuinely unbounded kinds belong.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum MetadataAttachmentKind {
     Dbg,
     Tbaa,
@@ -427,7 +427,7 @@ impl MetadataAttachmentKind {
 /// `LineField` is `MDUnsignedField(0, UINT32_MAX)`, `ColumnField` is
 /// `(0, UINT16_MAX)`, and a bare `MDUnsignedField` may narrow further.
 ///
-/// Deliberately **not** `#[non_exhaustive]`, unlike most enums here. The parser
+/// Exhaustive, and this type is why the rule is worth having. The parser
 /// matches on this to pick a validation, and a catch-all arm would mean a field
 /// kind added by a future LLVM bump silently parsed *unchecked* — which is the
 /// exact divergence class this type exists to close. Exhaustiveness makes that
@@ -1993,6 +1993,189 @@ impl SpecializedMetadataKind {
 }
 
 // --------------------------------------------------------------------------
+// Debug-info flag bitfields
+// --------------------------------------------------------------------------
+
+/// The bit a `DIFlag*` / `DISPFlag*` spelling names, or `FlagZero` when the
+/// table does not carry it — `StringSwitch<…>(Flag).Case(…).Default(FlagZero)`
+/// under both `DINode::getFlag` and `DISubprogram::getFlag`.
+fn flag_bit(lookup: fn(&str) -> Option<u32>, spelling: &str) -> u32 {
+    lookup(spelling).unwrap_or(0)
+}
+
+/// `DINode::DIFlags` (`include/llvm/IR/DebugInfoMetadata.h`) — the `flags:`
+/// field of a specialized `DI*` node, as one bitfield rather than the source
+/// text that produced it.
+///
+/// The three routines below are `DINode::getFlag`, `DINode::getFlagString` and
+/// `DINode::splitFlags` (`lib/IR/DebugInfoMetadata.cpp`); between them they are
+/// why `flags: 4 | DIFlagPublic` and `flags: DIFlagProtected | DIFlagPrivate`
+/// are read as bit sets and printed back canonically instead of echoed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct DiFlags(u32);
+
+impl DiFlags {
+    /// `DINode::FlagZero`.
+    pub const ZERO: Self = Self(0);
+
+    /// The raw bitfield.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Wrap a raw bitfield. The unsigned integer term `parseMDField`'s
+    /// `parseFlag` accepts arrives this way.
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    /// Whether every bit of `other` is set. Upstream spells this
+    /// `(Flags & Other) == Other`.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// `Flags |= Val`, the accumulator of `parseMDField`'s `do`/`while` loop.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Mirrors `DINode::getFlag`: the flag a `DIFlag*` spelling names, or
+    /// [`Self::ZERO`] for one the table does not carry. Callers reject a zero
+    /// result, which is how `DIFlagZero` itself is refused upstream.
+    pub fn get_flag(spelling: &str) -> Self {
+        Self(flag_bit(crate::dwarf::di_flag, spelling))
+    }
+
+    /// Mirrors `DINode::getFlagString`, whose empty `StringRef` is [`None`]
+    /// here.
+    pub fn flag_string(self) -> Option<&'static str> {
+        crate::dwarf::di_flag_string(self.0)
+    }
+
+    /// Mirrors `DINode::splitFlags`: push each component onto `split` and
+    /// return the unrecognised remainder, which the printer emits as a
+    /// trailing number.
+    ///
+    /// The two composite fields come first and in upstream's order, with
+    /// upstream's own comment for the first: emit `DIFlagPublic` and not
+    /// `DIFlagPrivate | DIFlagProtected`.
+    pub fn split_flags(mut self, split: &mut Vec<Self>) -> Self {
+        let bit = |name: &str| Self(flag_bit(crate::dwarf::di_flag, name));
+        let accessibility = bit("DIFlagPrivate")
+            .union(bit("DIFlagProtected"))
+            .union(bit("DIFlagPublic"));
+        let ptr_to_member_rep = bit("DIFlagSingleInheritance")
+            .union(bit("DIFlagMultipleInheritance"))
+            .union(bit("DIFlagVirtualInheritance"));
+        let indirect_virtual_base = bit("DIFlagIndirectVirtualBase");
+
+        let a = self.0 & accessibility.0;
+        if a != 0 {
+            if a == bit("DIFlagPrivate").0 {
+                split.push(bit("DIFlagPrivate"));
+            } else if a == bit("DIFlagProtected").0 {
+                split.push(bit("DIFlagProtected"));
+            } else {
+                split.push(bit("DIFlagPublic"));
+            }
+            self.0 &= !a;
+        }
+        let r = self.0 & ptr_to_member_rep.0;
+        if r != 0 {
+            if r == bit("DIFlagSingleInheritance").0 {
+                split.push(bit("DIFlagSingleInheritance"));
+            } else if r == bit("DIFlagMultipleInheritance").0 {
+                split.push(bit("DIFlagMultipleInheritance"));
+            } else {
+                split.push(bit("DIFlagVirtualInheritance"));
+            }
+            self.0 &= !r;
+        }
+        if self.contains(indirect_virtual_base) {
+            self.0 &= !indirect_virtual_base.0;
+            split.push(indirect_virtual_base);
+        }
+        // `#define HANDLE_DI_FLAG(ID, NAME) if (DIFlags Bit = Flags & Flag##NAME)
+        //  { SplitFlags.push_back(Bit); Flags &= ~Bit; }` over the whole `.def`,
+        // in its order — which is this table's order.
+        for &(_, value) in crate::dwarf::DI_FLAGS {
+            let bit = self.0 & value;
+            if bit != 0 {
+                split.push(Self(bit));
+                self.0 &= !bit;
+            }
+        }
+        self
+    }
+}
+
+/// `DISubprogram::DISPFlags` (`include/llvm/IR/DebugInfoMetadata.h`) — the
+/// `spFlags:` field of `!DISubprogram`, as one bitfield.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct DispFlags(u32);
+
+impl DispFlags {
+    /// `DISubprogram::SPFlagZero`.
+    pub const ZERO: Self = Self(0);
+
+    /// The raw bitfield.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Wrap a raw bitfield.
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    /// Whether every bit of `other` is set.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// `Flags |= Val`.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// `DISubprogram::SPFlagDefinition`, the one bit a caller outside this
+    /// module asks about: `parseDISubprogram`'s `IsDefinition` guard reads the
+    /// computed `SPFlags`, not the `isDefinition:` field.
+    pub fn definition() -> Self {
+        Self(flag_bit(crate::dwarf::disp_flag, "DISPFlagDefinition"))
+    }
+
+    /// Mirrors `DISubprogram::getFlag`.
+    pub fn get_flag(spelling: &str) -> Self {
+        Self(flag_bit(crate::dwarf::disp_flag, spelling))
+    }
+
+    /// Mirrors `DISubprogram::getFlagString`. Its `case SPFlagVirtuality:
+    /// return "";` arm — added to appease a warning, for a value no
+    /// `HANDLE_DISP_FLAG` row carries — falls out of the table lookup as
+    /// [`None`].
+    pub fn flag_string(self) -> Option<&'static str> {
+        crate::dwarf::disp_flag_string(self.0)
+    }
+
+    /// Mirrors `DISubprogram::splitFlags`, which is the bare `HANDLE_DISP_FLAG`
+    /// loop: upstream's comment notes that the only multi-bit field is
+    /// virtuality and all its values are single-bit, so the right behaviour
+    /// falls out with no special case.
+    pub fn split_flags(mut self, split: &mut Vec<Self>) -> Self {
+        for &(_, value) in crate::dwarf::DISP_FLAGS {
+            let bit = self.0 & value;
+            if bit != 0 {
+                split.push(Self(bit));
+                self.0 &= !bit;
+            }
+        }
+        self
+    }
+}
+
+// --------------------------------------------------------------------------
 // Specialized `DI*` node fields
 // --------------------------------------------------------------------------
 
@@ -2005,6 +2188,12 @@ pub enum MetadataFieldValue<B: ModuleBrand> {
     Integer(i128),
     String(String),
     Enum(String),
+    /// A `flags:` bitfield. Its terms are OR-ed at parse time, exactly as
+    /// `parseMDField(DIFlagField&)`'s `do`/`while` loop does, so the written
+    /// order, duplicates and alias spellings do not survive into storage.
+    DiFlags(DiFlags),
+    /// A `spFlags:` bitfield, the `DISPFlagField` twin.
+    DispFlags(DispFlags),
     Metadata(MetadataId<B>),
     MetadataList(Vec<MetadataId<B>>),
 }
@@ -2019,6 +2208,8 @@ impl<B: ModuleBrand> MetadataFieldValue<B> {
             Self::Integer(i) => MetadataFieldValue::Integer(i),
             Self::String(s) => MetadataFieldValue::String(s),
             Self::Enum(s) => MetadataFieldValue::Enum(s),
+            Self::DiFlags(f) => MetadataFieldValue::DiFlags(f),
+            Self::DispFlags(f) => MetadataFieldValue::DispFlags(f),
             Self::Metadata(id) => MetadataFieldValue::Metadata(id.into_stored(owner)?),
             Self::MetadataList(ids) => MetadataFieldValue::MetadataList(
                 ids.into_iter()
@@ -2036,6 +2227,8 @@ impl<B: ModuleBrand> MetadataFieldValue<B> {
             MetadataFieldValue::Integer(i) => Self::Integer(*i),
             MetadataFieldValue::String(s) => Self::String(s.clone()),
             MetadataFieldValue::Enum(s) => Self::Enum(s.clone()),
+            MetadataFieldValue::DiFlags(f) => Self::DiFlags(*f),
+            MetadataFieldValue::DispFlags(f) => Self::DispFlags(*f),
             MetadataFieldValue::Metadata(id) => Self::Metadata(MetadataId::from_stored(*id)),
             MetadataFieldValue::MetadataList(ids) => Self::MetadataList(
                 ids.iter()
@@ -2093,11 +2286,15 @@ impl<B: ModuleBrand> MetadataField<B> {
 /// Upstream stores these as `uint64_t` encodings — `DIExpression`'s `Elements`,
 /// filled by `LLParser::parseDIExpressionBody` (`LLParser.cpp`) through
 /// `dwarf::getOperationEncoding` / `getAttributeEncoding`. llvmkit keeps the
-/// **source spelling** instead: the `Dwarf.def` tables are not modelled yet
-/// (see `docs/future-work.md`), and `AsmWriter.cpp`'s `writeDIExpression`
-/// prints a known operation back by name anyway, so the written form is what
-/// round-trips. An unrecognised `DW_OP_*` is therefore accepted here where
-/// upstream rejects it — recorded as the remaining half of that gap.
+/// **source spelling** instead, and recovers the encoding on demand through
+/// [`Self::element`]: [`crate::dwarf`] is a drift-locked transcription of
+/// `Dwarf.def`, so that mapping is total for every spelling the parser
+/// accepts — it rejects one the tables do not carry, exactly as upstream does.
+///
+/// What the spelling model still costs is *normalisation*: a numerically
+/// written element such as `!DIExpression(15)` stays a [`Self::Literal`] and
+/// prints back as `15`, where `llvm-dis` prints the operation name that value
+/// encodes. That direction is a separate recorded difference.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DwarfExpressionOperand {
     /// A `DW_OP_*` or `DW_ATE_*` keyword, kept as written.
@@ -2105,6 +2302,197 @@ pub enum DwarfExpressionOperand {
     /// A literal unsigned element. Upstream rejects a signed or `> u64::MAX`
     /// element in `parseDIExpressionBody`; so does the parser here.
     Literal(u64),
+}
+
+impl DwarfExpressionOperand {
+    /// The `uint64_t` this operand contributes to upstream's
+    /// `DIExpression::Elements`.
+    ///
+    /// `None` only for an [`Self::Operation`] spelling neither
+    /// [`crate::dwarf::operation_encoding`] nor
+    /// [`crate::dwarf::attribute_encoding`] carries — unreachable from the
+    /// parser, which rejects such a spelling, and reachable only by building
+    /// the node through the IR API.
+    pub fn element(&self) -> Option<u64> {
+        match self {
+            Self::Literal(value) => Some(*value),
+            Self::Operation(name) => crate::dwarf::operation_encoding(name)
+                .or_else(|| crate::dwarf::attribute_encoding(name))
+                .map(u64::from),
+        }
+    }
+}
+
+/// The `uint64_t` element list an operand list stands for — upstream's
+/// `DIExpression::getElements()`.
+///
+/// `None` when any operand fails [`DwarfExpressionOperand::element`].
+pub fn expression_elements(operands: &[DwarfExpressionOperand]) -> Option<Vec<u64>> {
+    operands
+        .iter()
+        .map(DwarfExpressionOperand::element)
+        .collect()
+}
+
+/// The canonical `DW_OP_*` spelling for an element, if it is one.
+///
+/// llvmkit's `Dwarf.def` transcription is a name/encoding *table* rather than
+/// a set of named C++ constants, so the ports below switch on the spelling
+/// where upstream switches on `dwarf::DW_OP_*`. The two are the same set: the
+/// table is the `.def` file, and `dwarf_def_drift.rs` keeps it so.
+fn expression_operation_name(element: u64) -> Option<&'static str> {
+    u32::try_from(element)
+        .ok()
+        .and_then(crate::dwarf::operation_encoding_string)
+}
+
+/// `name` is `DW_OP_reg0` … `DW_OP_reg31` — upstream's
+/// `Op >= dwarf::DW_OP_reg0 && Op <= dwarf::DW_OP_reg31`. `DW_OP_regx` sits
+/// outside that range upstream, and its `x` suffix is what excludes it here.
+fn is_numbered_register_operation(name: &str) -> bool {
+    numbered_operation_suffix(name, "DW_OP_reg").is_some_and(|number| number <= 31)
+}
+
+/// `name` is `DW_OP_breg0` … `DW_OP_breg31`, upstream's second range.
+/// `DW_OP_bregx` is likewise excluded.
+fn is_numbered_base_register_operation(name: &str) -> bool {
+    numbered_operation_suffix(name, "DW_OP_breg").is_some_and(|number| number <= 31)
+}
+
+fn numbered_operation_suffix(name: &str, prefix: &str) -> Option<u32> {
+    name.strip_prefix(prefix)?.parse::<u32>().ok()
+}
+
+/// The number of elements one expression operand occupies — the operation
+/// itself plus its arguments.
+///
+/// Ports `DIExpression::ExprOperand::getSize` (`DebugInfoMetadata.cpp`).
+pub fn expression_operand_size(element: u64) -> usize {
+    let Some(name) = expression_operation_name(element) else {
+        return 1;
+    };
+    if is_numbered_base_register_operation(name) {
+        return 2;
+    }
+    match name {
+        "DW_OP_LLVM_convert"
+        | "DW_OP_LLVM_fragment"
+        | "DW_OP_LLVM_extract_bits_sext"
+        | "DW_OP_LLVM_extract_bits_zext"
+        | "DW_OP_bregx" => 3,
+        "DW_OP_constu"
+        | "DW_OP_consts"
+        | "DW_OP_deref_size"
+        | "DW_OP_plus_uconst"
+        | "DW_OP_LLVM_tag_offset"
+        | "DW_OP_LLVM_entry_value"
+        | "DW_OP_LLVM_arg"
+        | "DW_OP_regx" => 2,
+        _ => 1,
+    }
+}
+
+/// Whether an element list is a well-formed `DIExpression` body.
+///
+/// Ports `DIExpression::isValid` (`DebugInfoMetadata.cpp`) element for
+/// element: upstream walks `expr_op_begin()` … `expr_op_end()` over a
+/// `uint64_t` array, and this walks the same array by index, so upstream's
+/// `I->get() + I->getSize()` reads here as `index + size`.
+pub fn expression_is_valid(elements: &[u64]) -> bool {
+    let mut index = 0;
+    while index < elements.len() {
+        let operation = elements[index];
+        let size = expression_operand_size(operation);
+        // Check that there is space for the operand.
+        if index + size > elements.len() {
+            return false;
+        }
+
+        let name = expression_operation_name(operation);
+        if name.is_some_and(|name| {
+            is_numbered_register_operation(name) || is_numbered_base_register_operation(name)
+        }) {
+            return true;
+        }
+
+        // Check that the operand is valid.
+        match name {
+            // A fragment operator must appear at the end.
+            Some("DW_OP_LLVM_fragment") => return index + size == elements.len(),
+            // Must be the last one or followed by a DW_OP_LLVM_fragment.
+            Some("DW_OP_stack_value") => {
+                if index + size != elements.len()
+                    && expression_operation_name(elements[index + size])
+                        != Some("DW_OP_LLVM_fragment")
+                {
+                    return false;
+                }
+            }
+            // Must be more than one implicit element on the stack.
+            Some("DW_OP_swap") => {
+                if elements.len() == 1 {
+                    return false;
+                }
+            }
+            // An entry value operator must appear at the beginning or
+            // immediately following `DW_OP_LLVM_arg 0`, and the number of
+            // operations it covers can currently only be 1, because only
+            // entry values of a simple register location are supported.
+            Some("DW_OP_LLVM_entry_value") => {
+                let mut first = 0;
+                if expression_operation_name(elements[0]) == Some("DW_OP_LLVM_arg")
+                    && elements.get(1) == Some(&0)
+                {
+                    first = expression_operand_size(elements[0]);
+                }
+                return index == first && elements[index + 1] == 1;
+            }
+            Some(
+                "DW_OP_LLVM_implicit_pointer"
+                | "DW_OP_LLVM_convert"
+                | "DW_OP_LLVM_arg"
+                | "DW_OP_LLVM_tag_offset"
+                | "DW_OP_LLVM_extract_bits_sext"
+                | "DW_OP_LLVM_extract_bits_zext"
+                | "DW_OP_constu"
+                | "DW_OP_plus_uconst"
+                | "DW_OP_plus"
+                | "DW_OP_minus"
+                | "DW_OP_mul"
+                | "DW_OP_div"
+                | "DW_OP_mod"
+                | "DW_OP_or"
+                | "DW_OP_and"
+                | "DW_OP_xor"
+                | "DW_OP_shl"
+                | "DW_OP_shr"
+                | "DW_OP_shra"
+                | "DW_OP_deref"
+                | "DW_OP_deref_size"
+                | "DW_OP_xderef"
+                | "DW_OP_lit0"
+                | "DW_OP_not"
+                | "DW_OP_dup"
+                | "DW_OP_regx"
+                | "DW_OP_bregx"
+                | "DW_OP_push_object_address"
+                | "DW_OP_over"
+                | "DW_OP_rot"
+                | "DW_OP_consts"
+                | "DW_OP_eq"
+                | "DW_OP_ne"
+                | "DW_OP_gt"
+                | "DW_OP_ge"
+                | "DW_OP_lt"
+                | "DW_OP_le"
+                | "DW_OP_neg"
+                | "DW_OP_abs",
+            ) => {}
+            _ => return false,
+        }
+        index += size;
+    }
+    true
 }
 
 /// The body of a specialized `DI*` node.

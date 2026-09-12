@@ -1,0 +1,18 @@
+error[E0277]: `?` couldn't convert the error to `ParseError`
+  --> tests/compile_fail/parse_error_is_not_an_io_error.rs:16:41
+   |
+15 | fn reads_a_file() -> ParseResult<Vec<u8>> {
+   |                      -------------------- expected `ParseError` because of this
+16 |     let bytes = std::fs::read("some.ll")?;
+   |                 ------------------------^ the trait `std::convert::From<std::io::Error>` is not implemented for `ParseError`
+   |                 |
+   |                 this can't be annotated with `?` because it has type `Result<_, std::io::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+help: the trait `From<std::io::Error>` is not implemented for `ParseError`
+      but trait `From<LexError>` is implemented for it
+  --> src/parse_error.rs
+   |
+   |     Lex(#[from] LexError),
+   |           ^^^^
+   = help: for that trait implementation, expected `LexError`, found `std::io::Error`

@@ -164,7 +164,6 @@ impl<B: ModuleBrand> core::fmt::Debug for NamedMetadataId<B> {
 /// `llvm.global_dtors` are deliberately absent: upstream models those as
 /// global **variables** with appending linkage, not named metadata, so they
 /// are not members of this namespace.
-#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NamedMetadataName {
     /// `llvm.module.flags`
@@ -319,6 +318,17 @@ impl<B: ModuleBrand> NamedMetadataNode<B> {
     /// Append an operand.
     pub fn add_operand(&mut self, op: MetadataId<B>) {
         self.operands.push(op);
+    }
+
+    /// Drop every operand, keeping the node (and its name) in place. Mirrors
+    /// `NamedMDNode::clearOperands` (`llvm/include/llvm/IR/Metadata.h`).
+    ///
+    /// Upstream is `getNMDOps(Operands).clear()` over a
+    /// `SmallVector<TrackingMDRef>`, so clearing also drops each operand's
+    /// tracking reference. llvmkit's operands are arena ids that track
+    /// nothing, so the `Vec` truncation is the whole of it.
+    pub fn clear_operands(&mut self) {
+        self.operands.clear();
     }
 
     /// All operands in insertion order.

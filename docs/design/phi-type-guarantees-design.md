@@ -90,7 +90,7 @@ Doctrine: unrepresentable > witnessed > tested, never trusted.
 
 - Parser accepts any first-class phi result type (fixes the rejection of valid LLVM IR in `ll_parser.rs::parse_phi`), routed through an internal erased `phi_dyn(ty)` + the (now-checked) internal add path. `OtherPhiInst` stays read-only classification; no new typed handle family (YAGNI). Round-trip tests: parse → print → parse for vector + aggregate phis.
 
-> **Shipped as** designed, plus two verifier backstops the slice did not anticipate: `VerifierRule::PhiInvalidResultType` (a phi whose result is not a first-class data type — mirrors what the parser now enforces) and `VerifierRule::PhiEmptyInReachableBlock` (a zero-incoming phi in a block reachable from entry, gated on `DominatorTree::is_reachable_from_entry`; the shared incoming-count guard misses it on the `0 == 0` gap, and such a phi is un-round-trippable because upstream's `LLParser::parsePHI` rejects a bracket-less `%p = phi i32`).
+> **Shipped as** designed, plus two verifier backstops the slice did not anticipate: `VerifierRule::PhiInvalidResultType` (a phi whose result is not a first-class data type — mirrors what the parser now enforces) and `VerifierRule::PhiEmptyInReachableBlock` (a zero-incoming phi in a block reachable from entry). **The second has since been withdrawn**: its premise, that a bracket-less `%p = phi i32` has no legal textual form, was false — `AsmWriter` prints it and both `LLParser::parsePHI` and `parse_phi` read it back, as `test/Assembler/zero-input-phi.ll` round-trips through `llvm-as | llvm-dis`. It rejected IR LLVM accepts, so `check_phi_incoming`'s `numIncoming == numPreds` — `Verifier::visitBasicBlock`'s own guard — is once again the only rule on a phi's length.
 
 ---
 

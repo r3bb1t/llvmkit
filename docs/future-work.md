@@ -141,10 +141,11 @@ lists and the derivation command all live there.
 The gaps with the most fixtures behind them, and why each is worth pulling out:
 
 - **G18** — a check upstream's `llvm-as` performs at parse or verify time
-  that llvmkit does not: `MDField` range bounds (`count`, `lowerBound`,
-  `emissionKind`, `language`, `tag`), attribute applicability (`align` on a
+  that llvmkit does not: the `MDSignedOrMDField` / `MDUnsignedOrMDField` range
+  bounds (`count`, `lowerBound`), attribute applicability (`align` on a
   function, `byval` on an unsized type, `captures(none)` on a non-pointer), and
-  target-extension-type legality.
+  target-extension-type legality. The keyword families' bounds
+  (`emissionKind`, `language`, `tag`) used to be listed here and are done.
 - **G17** — diagnostic text that differs from upstream's. Most of it is one
   wording bug: a complete upstream message routed through llvmkit's
   `expected …` wrapper (`expected
@@ -171,7 +172,46 @@ entry deliberately carries **no figure** — three were written and all three we
 wrong, because the prose naming the phantom paths is itself counted by any sweep
 that looks for them — so no figure is repeated here either.
 
-## AutoUpgrade — six of nine `validateEndOfModule` call sites still open (measured 2026-08-16, LLParser parity W13d)
+## `llvm/test/Verifier` — no corpus manifest, so nothing measures the drift (found 2026-08-27, divergence-closing wave 5)
+
+Every `VerifierRule` now carries upstream's `Check` literal at the head of
+`IrError::VerifierFailure`'s `message`, so a `llvm/test/Verifier/*.ll` fixture
+can be driven by its own `CHECK` lines — that was the point of closing the
+"verifier diagnostics are house-worded" divergence, and it is why
+`test/Verifier/SelfReferential.ll` is now a port rather than a paraphrase.
+
+What did **not** land with it is the gate: there is no `test/Verifier`
+counterpart to the manifest `crates/llvmkit-asmparser/tests/parser_corpus.rs`
+drives over `test/Assembler`. Each vendored `test/Verifier` fixture is
+`include_str!`ed by one hand-written test, so a rule whose literal drifts is
+caught only where a test happens to look, and a fixture nobody vendored is
+invisible. The absence of exactly this measurement is what let the whole
+verifier drift from `Verifier.cpp` unnoticed in the first place; a per-fixture
+test is a narrower answer than a manifest.
+
+Wanted, in this order:
+
+1. A `test/Verifier` classification the way
+   [`fixture-coverage.md`](fixture-coverage.md) classifies `test/Assembler` —
+   `ported` / `blocked` / `N/A`, each blocked row naming its gap. Derive it,
+   do not estimate it; the directory listing is the denominator.
+2. A manifest-driven runner over the vendored subset: parse, verify, and run
+   the fixture's own `CHECK` block through
+   `crates/llvmkit-asmparser/tests/support/mod.rs`'s FileCheck subset. The
+   per-fixture tests collapse into rows.
+3. A rule-coverage check: every `VerifierRule` variant either appears in the
+   manifest's expectations or carries a comment at its check site saying it has
+   no upstream `Check` literal to reproduce. Those comments exist today
+   (`check_freeze`, `check_va_arg`, `check_cmpxchg`, `check_switch`'s condition
+   arm, the arena-level result-type guards); nothing enforces that a *new* rule
+   writes one.
+
+Two fixtures are vendored and waiting on a divergence rather than on this work:
+`PhiGrouping.ll` (entry 26 — the parser pre-empts the rule) and
+`AmbiguousPhi.ll` (entry 130 — the builder does). Both assert their blocker
+today, so they fail the day it closes.
+
+## AutoUpgrade — five of nine `validateEndOfModule` call sites still open (measured 2026-08-29, divergence-closing W10)
 
 `crates/llvmkit-ir/src/auto_upgrade.rs` exists now and carries the
 target-independent, module-level half of `llvm/lib/IR/AutoUpgrade.cpp`. This
@@ -191,7 +231,7 @@ only the number is wrong. In call order:
 | 4 | `UpgradeCallsToIntrinsic` (per `Function`) | not ported |
 | 5 | `llvm::UpgradeDebugInfo` | not ported |
 | 6 | `UpgradeModuleFlags` | **ported (W13d)** |
-| 7 | `UpgradeNVVMAnnotations` | not ported |
+| 7 | `UpgradeNVVMAnnotations` | **ported (W10)** |
 | 8 | `UpgradeSectionAttributes` | **ported (W13d)** |
 | 9 | `copyModuleAttrToFunctions` | not ported |
 
@@ -252,13 +292,23 @@ exists. This is also why `ParserConfig::upgrade_debug_info` (W13c) still
 selects nothing: it is the flag on the call site that does not exist yet, and
 `docs/divergences.md` D11 counts it among the settings that read as inert.
 
-### 7 — `UpgradeNVVMAnnotations`
+### 7 — `UpgradeNVVMAnnotations` — closed (W10)
 
-Mechanically portable and target-independent in shape (it moves
-`!nvvm.annotations` entries onto function attributes), but it needs three
-things llvmkit has not got: `NamedMDNode::clearOperands` (the named-metadata
-node is append-only), `Function::addParamAttr` at a computed index from
-metadata, and `CallingConv::PTX_Kernel`. Not blocked on anything deep.
+Ported as `auto_upgrade::upgrade_nvvm_annotations` with
+`upgrade_single_nvvm_annotation`, `upgrade_nvvm_fn_vector_attr` and `is_xyz`,
+wired between `upgrade_module_flags` and `upgrade_section_attributes`.
+`test/CodeGen/NVPTX/upgrade-nvvm-annotations.ll` passes whole.
+
+This entry used to record three blockers — `NamedMDNode::clearOperands`,
+`Function::addParamAttr` at a computed index, and `CallingConv::PTX_Kernel`.
+**Two of the three were wrong**, which is the worked example of why a recorded
+reason is a hypothesis: `CallingConv::PTX_KERNEL` had been in
+`crates/llvmkit-ir/src/calling_conv.rs` since the table was written, and
+`addParamAttr` at a computed index is `FunctionValue::add_attribute` with
+`AttrIndex::Param`. Only `clearOperands` was genuinely absent. A primitive the
+record did *not* name was also needed and is now present:
+`mdconst::dyn_extract_or_null<GlobalValue>`, as
+`Module::metadata_constant_global_value`.
 
 ### 9 — `copyModuleAttrToFunctions`
 
@@ -286,10 +336,16 @@ only by target-specific legacy input keep `N/A(autoupgrade-milestone)`.
 `autoupgrade-wasm-intrinsics.ll`, `autoupgrade-invalid-mem-intrinsics.ll`,
 `autoupgrade-invalid-masked-align.ll`, `autoupgrade-invalid-name-mangling.ll`,
 `struct-ret-without-upgrade.ll` and `auto_upgrade_nvvm_intrinsics.ll` all need
-the intrinsic framework above; none was trimmed to fit. The three fixtures that
-*could* be ported whole were (`test/Bitcode/upgrade-module-flag.ll`,
-`upgrade-garbage-collection-for-{objc,swift}.ll`, `upgrade-section-name.ll`) —
-see `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs`.
+the intrinsic framework above; none was trimmed to fit. Note that
+`auto_upgrade_nvvm_intrinsics.ll` is about NVVM *intrinsics*, not
+`!nvvm.annotations`, so call site 7 closing does not unblock it. What has been
+ported so far, with each row's fidelity spelled out in `UPSTREAM.md`:
+`test/Bitcode/upgrade-module-flag.ll`,
+`upgrade-garbage-collection-for-objc.ll`, `upgrade-section-name.ll` and
+`test/CodeGen/NVPTX/upgrade-nvvm-annotations.ll` whole, plus
+`upgrade-garbage-collection-for-swift.ll`'s four `CHECK` lines (its
+typed-pointer function body is named by no `CHECK`) — see
+`crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs`.
 
 ## The gate is ~90% build, and trybuild builds `dev` whatever you ask for (measured 2026-08-16)
 
@@ -425,28 +481,6 @@ input at all. That is the module-summary analysis, not the parser, and llvmkit
 has neither. The other sixteen summary fixtures in `test/Assembler` are ported
 in `crates/llvmkit-asmparser/tests/parser_summary.rs`.
 
-## Parser — `parseUInt64` is narrower than upstream's in two ways (found 2026-08-15, LLParser parity W10)
-
-`LLParser::parseUInt64` accepts any `lltok::APSInt` whose value is *unsigned*
-and takes `APSInt::getLimitedValue()`, which **saturates** at `UINT64_MAX`.
-llvmkit's `parse_uint64` (`ll_parser.rs`) accepts only a positive **decimal**
-literal and fails outright when the digits do not fit in a `u64`. Two
-divergences follow:
-
-- `u0x10` is an unsigned APSInt upstream and is accepted wherever a `uint64` is
-  wanted; llvmkit answers `expected integer`.
-- a literal wider than 64 bits saturates upstream and is rejected here.
-
-`parse_uint32` has the same shape, though its saturation is unobservable: the
-`0xFFFFFFFF + 1` limit makes any oversized value fail the range check either
-way, which is what `align-param-attr-error2.ll` pins.
-
-Not fixed in W10 because it is a W5-owned routine with 25 call sites, no
-fixture in `test/Assembler` reaches either case, and the honest fix reads the
-token through `parse_int_literal` — the APSInt token model — which changes
-where the diagnostic's span comes from. It is recorded rather than smuggled
-into the summary-index wave.
-
 ## llvmkit-ir — three copies of the aggregate index walk (found 2026-08-14, LLParser parity W9c)
 
 `ExtractValueInst::getIndexedType` now has a public port,
@@ -464,8 +498,18 @@ upstream predicate exactly — and the fix is the same: one port, three callers.
 The verifier's error-distinguishing variant needs a richer return type than
 `Option`, so the consolidation is not a pure deletion.
 
-Not urgent: all three currently agree. It is recorded because a predicate with
-three implementations is one diagnostic away from having three behaviours.
+**Now urgent, because the prediction came true (2026-08-29).** This entry used
+to close "Not urgent: all three currently agree. It is recorded because a
+predicate with three implementations is one diagnostic away from having three
+behaviours." They did not agree. `walk_aggregate_path` narrowed the array
+length to `u32` before comparing while the other two widen the index to `u64`,
+so `extractvalue [4294967296 x i8] %a, 4294967295` — which upstream accepts,
+since `Index >= AT->getNumElements()` promotes an `unsigned` index to a
+`uint64_t` count — parsed, built, and then failed verification with a wrong
+count as well as a wrong verdict. That is fixed, and
+`builder_aggregate_vector.rs::the_three_aggregate_index_walks_agree_at_the_u32_boundary`
+now pins the three against each other. The consolidation below is still open;
+the law is a guard, not a fix.
 
 ## Parser — `resolve_direct_callee` returns a three-way sum where `convertValIDToValue` returns one `Value *` (found 2026-08-21, divergence-closing task 6)
 
@@ -479,9 +523,7 @@ llvmkit's `resolve_direct_callee` returns `ParsedCallee::{Function, InlineAsm,
 Indirect}` and hands the fork to its caller. `parse_call` no longer forks — it
 calls `ParsedCallee::as_erased` and then one `IrBuilder::call_erased` — but
 `parse_invoke` and `parse_callbr` still `match` on the variant and dispatch
-per callee shape — to a separate builder entry point each, except
-`parse_callbr`'s `Indirect` arm, which calls no builder at all and rejects
-(entry 27).
+per callee shape, to a separate builder entry point each.
 
 The remaining fork has no observable behaviour of its own, so it is recorded
 here rather than in [`divergences.md`](divergences.md): every builder entry
@@ -496,11 +538,14 @@ into the one arm that used it.
 remaining `match`es. `ParsedCallee::as_erased` is the transitional shim and
 goes with it.
 
-**Why it is deferred:** `parse_callbr` needs the directness distinction to keep
-[`divergences.md`](divergences.md) entry 27's deliberate parse-time rejection
-of an indirect `callbr`. Collapsing `ParsedCallee` to a bare `Value` therefore
-requires closing entry 27 first — giving the callbr builder an indirect-callee
-form and moving the rejection into the verifier.
+**Why it is deferred:** the blocker named here — `parse_callbr` needing the
+directness distinction to keep a parse-time rejection of an indirect `callbr`
+— is gone: `IrBuilder::indirect_callbr_with_config` landed in W8 and the
+rejection moved to `Verifier::visitCallBrInst` where upstream has it. What is
+left is the mechanical half: each of the two remaining `match`es reaches three
+*different* builder entry points, and collapsing them means routing `invoke`
+and `callbr` through one erased-callee constructor apiece, the way
+`call_erased` already serves `parse_call`. That is its own commit.
 
 ## IR builder — three call-site builders accept a `call_site_type` override and ignore it (found 2026-08-21, divergence-closing task 6)
 
@@ -528,73 +573,6 @@ with `asm.function_type()` as the fallback for the two inline-asm forms.
 **Why it is deferred:** that is a behaviour change for any caller that was
 setting the field, on three entry points unrelated to the `call` construction
 the same commit rewrote. It wants its own commit rather than a rider.
-
-## Parser — a forward-referenced function is a *typed* `Function`, so a later definition may not change its signature (found 2026-08-14, LLParser parity W8)
-
-`declare`/`define` reuse a function that a call already forward-referenced,
-and reject the reuse when the signatures disagree:
-
-```
-forward function declaration with matching signature
-forward function definition with matching signature
-```
-
-Neither text is upstream's, and neither *rule* is upstream's either.
-`LLParser::getGlobalVal` mints an untyped placeholder — a `ptr`-typed
-`GlobalVariable` — so `parseFunctionHeader` compares only
-`FwdFn->getType() != PFT`, which after opaque pointers is nothing but the
-**address space**. The signature is not checked there at all; a call whose
-arguments disagree with the eventual definition is accepted by the parser and
-rejected by the Verifier (`Call parameter type does not match function
-signature!`).
-
-llvmkit cannot do that yet. `parse_direct_callee`'s forward-reference arm
-calls `Module::add_function_dyn` with the *call site's* signature, so the
-placeholder is a real `Function` with a real `FunctionType` — and there is no
-way to give it a different signature later. The check is therefore
-load-bearing for the representation, not merely for the diagnostic: dropping
-it would leave a call wired to a function whose type it does not match.
-
-Closing it needs the same shape W2 gave value forward references — an untyped
-placeholder plus RAUW at the definition — applied to the *callee* position, so
-that `parseFunctionHeader` can create a fresh `Function` and re-point the call.
-It also unblocks the three per-site texts W2.5 carried:
-`invalid forward reference to function '<n>' with wrong type: expected 'T' but
-was 'U'` (pinned by `test/Assembler/opaque-ptr-invalid-forward-ref.ll`, whose
-fixture is vendored and waiting), `type of definition and forward reference of
-'@N' disagree`, and the global/alias twins — all of which compare types at the
-*definition site*, where llvmkit still resolves in one end-of-module sweep.
-
-The two redefinition texts landed in W8 part 2 (`invalid redefinition of
-function 'f'`, `redefinition of function '@f'`); this is the remainder.
-
-## Parser — a self-typed aliasee does not parse, because constant expressions are type-directed (found 2026-08-13, LLParser parity W7)
-
-`@a = alias i32, bitcast (ptr @g to ptr)` does not parse, and neither do the
-`getelementptr`, `addrspacecast` or `inttoptr` spellings.
-
-`LLParser::parseAliasOrIFunc` branches on the aliasee's **first token**: those
-four keywords go through a bare `parseValID` — its comment says "the bitcast
-dest type is not present, it is implied by the dest type" — and anything else
-goes through `parseGlobalTypeAndValue`, which is TYPE VALUE. The result must
-be `ValID::t_Constant` or the diagnostic is `invalid aliasee`, and the pointer
-check then runs on the **aliasee value's** type, with the address space taken
-from it.
-
-An attempt to wire this up (reverted) got as far as the branch and the
-value-typed pointer check, then hit the real blocker:
-`Parser::parse_constant_expr` takes a `result_ty` and llvmkit has no entry
-point for a constant expression that types *itself*. Every constexpr arm is
-reached with the demanded type already in hand.
-
-This is W4's type-agnostic `ValID` refactor, applied one level down to
-constant expressions — the same shape, the same reason (a parser that reads
-the answer off the type it is meant to be checking), and the same likely
-payoff of turning up value bugs rather than just missing diagnostics. It is a
-wave-sized piece, not an alias fix, so it wants its own slot rather than
-being smuggled into W7.
-
-Blocked behind it: `invalid aliasee`, which is only reachable on that route.
 
 ## An upstream calling-convention bug, reproduced (found 2026-08-13, LLParser parity W6)
 
@@ -685,75 +663,6 @@ Land it with the `validateEndOfModule` group-merge work (W13) rather than
 alone: the merge is what decides which attributes survive into the printed
 group, so doing the writer first would pin output the merge then changes.
 
-## Parser — the attribute-list lookahead has to be kept in sync by hand (found 2026-08-13, LLParser parity W5)
-
-`Parser::keyword_starts_attribute` (`ll_parser.rs`) exists only because
-llvmkit gates the *function-header* attribute list behind a lookahead, where
-upstream's `parseFunctionHeader` enters `parseFnAttributeValuePairs`
-unconditionally and lets `tokenToAttribute` end it.
-
-The gate is a second copy of the loop's arm list, and it was already wrong:
-`uwtable`, `allocsize`, `vscale_range`, `allockind`, `nofpclass`,
-`dereferenceable`, `captures`, `range`, `initializes` and the six type
-attributes were all missing from it, so `define void @f() uwtable {` — plain
-`clang` output — did not parse at all. Not "was rejected": the list was never
-entered, and the failure surfaced as `expected '{' to open function body`.
-Every existing test for those attributes used the `attributes #N = { … }`
-form, which enters the loop directly, so nothing caught it.
-
-`argument_carrying_attributes_parse_on_a_function_header` now covers the
-header path, but the structural fix is to delete the lookahead: enter the
-loop unconditionally and let the `_ => break` arm end it, exactly as upstream
-does. That needs `parse_optional_function_suffix`'s `align`-is-not-an-
-attribute carve-out to survive, which is why it was not done in W5.
-
-## `ConstantRangeList` — three set operations not ported (decided 2026-08-12, LLParser parity W5)
-
-`crates/llvmkit-ir/src/constant_range_list.rs` ports
-`llvm/include/llvm/IR/ConstantRangeList.h` as far as the `.ll` surface needs
-and one step further: `isOrderedRanges`, `getConstantRangeList`, `print`, and
-`insert` (with its `int64_t` overload), the last of which the parser never
-calls but the upstream unit tests pin.
-
-**Not ported: `subtract`, `unionWith`, `intersectWith`.** They have no
-consumer anywhere in llvmkit — upstream's callers are Attributor- and
-`MemoryLocation`-style passes this tree has not ported — so porting them would
-add public API with no in-tree user and no way to be sure it stays right.
-Three of the six `unittests/IR/ConstantRangeListTest.cpp` cases (`Subtract`,
-`Union`, `Intersect`) are therefore not portable yet; the other three
-(`Basics`, `getConstantRangeList`, `Insert`) are ported verbatim. Land the
-three methods together with their first real caller, and take the three tests
-in the same commit.
-
-One upstream detail to carry forward if they are ported: `insert`'s no-op
-check uses `ConstantRange::contains`, which compares **unsigned**, while every
-other comparison in the class is signed. `subtract` carries the comment saying
-signed checking is what is wanted. llvmkit reproduces the inconsistency rather
-than correcting it (behaviour is upstream's), and a `subtract` port must be
-read against that comment, not against `insert`.
-
-## Parser — the `inrange` bounds have a second, parallel APSInt reader (found 2026-08-12, LLParser parity W5)
-
-`Parser::parse_inrange_bound` (`ll_parser.rs`) and its helpers
-(`ParsedInRangeBound`, `inrange_bound_to_apint_words`,
-`signed_magnitude_to_apint_words`, `apsint_to_apint_words`,
-`hex_apsint_bit_width`, `decimal_digits_to_words`, `hex_digits_to_words`)
-implement the same `LLLexer` APSInt semantics that `Parser::parse_int_literal`
-now implements — the `[us]0x` active-bit truncation and the signed widening.
-Both are currently *correct*: the `inrange` path was written with the
-truncation and is pinned by
-`parser_constants.rs::constant_expr_gep_inrange_signed_hex_active_bits_are_preserved`,
-and `parse_int_literal` gained it in W5 when the `initializes` bounds needed
-it.
-
-Two implementations of one lexer rule is the shape this program keeps finding
-bugs in (three private copies of the scalable-vector walk in W4.5, none
-matching `Type::isScalableTy`). Collapse `parse_inrange_bound` onto
-`parse_int_literal` + `ParsedApsInt::extend_or_truncate`; the only real work
-is that `ConstantExprInRange::new` takes `Box<[u64]>` rather than an `ApInt`.
-Not done in W5 because it is on the GEP constant-expression path, not the
-attribute path — it belongs with W9a.
-
 ## Parser — a misplaced `phi` is rejected at parse time, not by the verifier (found 2026-08-08, LLParser parity W1)
 
 `LLParser` accepts a `phi` written after a non-phi instruction and lets
@@ -778,6 +687,13 @@ head-phi design (block parameters are operandless head-phis, per
 `IrBuilder::append_block_with_params`), so it wants deciding alongside that
 model rather than as a parser patch. `insert_instruction_at_phi_head` is the
 only phi insertion path today.
+
+The fixture is now vendored — `PhiGrouping.ll`, under
+`crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/` — and
+`upstream_phi_grouping_fixture_is_rejected_at_parse_time` asserts the parse
+diagnostic above, so this item's closure is what makes that test fail and get
+replaced by the real port. `VerifierRule::PhiNotAtTop` itself now renders
+upstream's literal; that half is closed.
 
 ## ~~Parser — `syncscope("system")` collapsed to the default scope~~ (decided and fixed 2026-08-06, W8)
 
@@ -805,11 +721,10 @@ trips parse → verify → print → re-parse; the fixture that used to pin the 
 output is re-aimed at the fix. The original analysis follows, since the
 mechanism is worth keeping.
 
-A **non-uniform** scalable aggregate still reaches the element-list fallback and
-still prints text LLVM would reject — but that constant should not exist at
-all, and making it unconstructible is the open policy question recorded below,
-not a printer decision. Printing it losslessly beats collapsing it to a
-`splat (…)` it is not.
+~~A **non-uniform** scalable aggregate still reaches the element-list fallback
+and still prints text LLVM would reject~~ — **closed 2026-08-29**: it is now
+unconstructible, which is the answer the policy question below settled on. The
+element-list fallback is fixed-width only.
 
 ---
 
@@ -873,24 +788,38 @@ representation. `constant_fold_extract_element_instruction` deliberately skips
 the out-of-range→poison rule for a scalable operand, which would assert
 `vscale == 1`, and answers "don't know" instead.
 
-### Open policy question: llvmkit permits a scalable constant LLVM cannot express
+### ~~Open policy question: llvmkit permits a scalable constant LLVM cannot express~~ (decided 2026-08-29)
 
-`VectorType::const_vector` skips its element-count check for scalable types —
-correctly, since the count carries no meaning there — but nothing requires the
-lanes to *agree*. So a non-uniform scalable constant is constructible, and the
-parser reaches it: `@g = global <vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7>`
-parses today. LLVM cannot express that constant at all (`ConstantVector::get`
-takes a fixed count), so it has no rule against it either.
+**Decided: uniformity is required.** `VectorType::const_vector` now demands
+exactly `min_len` lanes and demands that they agree when the type is scalable,
+which makes it llvmkit's spelling of `ConstantVector::getSplat(ElementCount, V)`
+— the only constructor upstream has for a scalable vector constant. The
+element-count skip was not "correct because the count carries no meaning": it
+let `<vscale x 4 x i32>` hold a two-element list.
 
-Requiring uniformity was tried and **reverted**: two deliberate tests depend on
-the permissive behaviour as their *premise* —
-`scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts` and
-`scalable_vector_fsub_negative_zero_pattern_controls_undef_fold`, both in
-`crates/llvmkit-ir/tests/constant_fold.rs`, construct non-uniform scalable
-vectors to check that the folder declines. So this is a representation-policy
-decision, not an oversight to patch: either those tests' premise becomes
-unconstructible (and the tests unnecessary), or llvmkit keeps accepting a
-constant that has no LLVM spelling. **Decide before changing anything here.**
+Two claims in the original entry were wrong, and both were load-bearing.
+
+- **"the parser reaches it: `@g = global <vscale x 4 x i32> <i32 7, i32 8, i32
+  7, i32 7>` parses today"** — it does not, and did not. `LLParser`'s `<…>` arm
+  builds a *fixed* vector (`ConstantVector::get` → `FixedVectorType::get`) and
+  `convertValIDToValue`'s `t_Constant` arm then compares types exactly;
+  llvmkit's parser mirrors both, so that text answers `constant expression type
+  mismatch`. The builder was the only entry point, which is why the fix is
+  builder-side. [[verify-recorded-premises]]
+- **"two deliberate tests depend on the permissive behaviour"** — three did. The
+  third, `constant_folder_builder.rs::constant_folder_scalable_shuffle_builds_scalable_mask_expr`,
+  did more than depend on it: its assertion pinned the invalid printed text
+  `<vscale x 2 x i32> <i32 1, i32 2>` as expected output. A test written against
+  the defect is what "requiring uniformity was tried and reverted" actually
+  measured.
+
+Of the three, one lost its premise entirely and is gone
+(`scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts`), one kept the
+splat halves of its case
+(`scalable_vector_fsub_negative_zero_pattern_controls_undef_fold`), and the
+shuffle one took splat operands. `builder_aggregate_vector.rs::scalable_const_vector_admits_only_a_splat`
+is the rule's own test, and asserts the printed form as well as the rejection —
+the printer is what the rule exists to protect.
 
 ## ~~Parser — deferred alias/ifunc targets~~ (found and fixed 2026-07-31)
 
@@ -953,6 +882,13 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 | `binaryOpsWithRawIntegers` | Upstream's scalar *arithmetic* overloads (`APInt + uint64_t`). llvmkit deliberately requires both operands to name a width; the comparison half of that story is covered by `unsigned_cmp_u64` / `signed_cmp_i64`. |
 | `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
 | `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
+
+What is **not yet** ported from `APFloatTest.cpp`, and is ordinary pending work
+rather than a scope decision:
+
+| Family | Status |
+|---|---|
+| `fromHexadecimalString`, `fromStringSpecials` | Unported. `crates/llvmkit-ir/tests/ap_float_from_string.rs` covers the same rules with llvmkit-chosen boundary spellings and says so — it is marked `llvmkit-specific subset` in `UPSTREAM.md`, not a port. Its header used to claim this backlog entry existed; it did not until now. `TEST(APFloatTest, makeNaN)`, the third fixture that header named, **is** ported (`ap_float_upstream_predicates.rs::make_nan`). |
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
@@ -1163,8 +1099,12 @@ of a claim nobody checked. They are now ports; `UPSTREAM.md` records which case
 each one takes. Two hand-written tests were deleted rather than kept, their
 coverage being subsumed by the real ports.
 
-`nofpclass` on a parameter or call return is still unmodeled, which is why two of
-`SqrtNszSignBit`'s four blocks are not ported.
+All four of `SqrtNszSignBit`'s blocks are ported. This paragraph used to say
+`nofpclass` on a parameter or call return was unmodeled and that two of the four
+were therefore unportable; that had been false since `no_fp_class_of` landed
+(`known_fp_class.rs`, porting `CallBase::getRetNoFPClass` and
+`Argument::getNoFPClass`), and the stale sentence outlived the work by weeks
+because nothing re-derives a blocker before it is used to schedule.
 
 ### Order for the remaining 8 (recorded 2026-08-04)
 
@@ -1199,14 +1139,16 @@ coverage being subsumed by the real ports.
 2. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
    upstream takes an `MDNode` where llvmkit's helper is value-shaped, so the
    public parameter is a real design decision.
-3. **Sibling and blocked (2).** `matchSimpleBinaryIntrinsicRecurrence` needs
+3. **Sibling (1).** `matchSimpleBinaryIntrinsicRecurrence` needs
    `match_simple_recurrence` generalised over the intrinsic-call form, so that
-   its `II == I` identity check has something to bind. `getVScaleRange` stays
-   recorded: upstream reads a packed `(min, max)` out of one attribute, and
-   `vscale_range` is on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list with a
-   single-`u64` payload — so the parser cannot even produce a function carrying
-   one, and porting it would mean inventing the max half. It unblocks when the
-   *attribute* is modeled, which is an attribute-layer task, not this one.
+   its `II == I` identity check has something to bind. (`getVScaleRange` used
+   to be listed here as *blocked* on the `vscale_range` attribute — a packed
+   `(min, max)` against a "single-`u64` payload", with the attribute on
+   `attribute_td_drift.rs`'s `NOT_YET_MODELED` list and unproducible by the
+   parser. All three clauses were false: the list is empty, the payload is
+   `Attribute::VScaleRange { min: u32, max: Option<u32> }`, and
+   `parser_attribute_matrix.rs` round-trips `vscale_range(1, 16)`. It is ported
+   as `value_tracking::get_vscale_range`.)
 4. **`analyzeKnownFPClassFromSelect` (1)** never closes: there is no upstream
    definition to port. It is recorded, not scheduled.
 
@@ -1294,14 +1236,20 @@ Two things tranche 6 turned up that are worth carrying forward:
 
 ### Found while porting tranche 5
 
-- **`CallBase::getReturnedArgOperand` reads the callee's parameter attributes,
-  not just the call site's.** `declare ptr @f(ptr returned)` puts `returned` on
-  the *declaration*; a call that does not repeat it still returns its argument.
-  `pointer_analysis.rs` ports both halves — an upstream fixture caught the
-  missing one — but `value_tracking.rs`'s own `returned_arg_operand` still
-  reads only what its caller hands it, which is the call site's `arg_attrs`.
-  Same shortfall, different function; closing it would sharpen the `returned`
-  arm of `call_known_bits`.
+- **`CallBase::getReturnedArgOperand` had two llvmkit readers and each was
+  wrong where the other was right.** *Closed 2026-08-29.* This entry used to
+  say `pointer_analysis.rs` "ports both halves" and only `value_tracking.rs`
+  fell short. Half of that was true and half was not. `value_tracking.rs` had
+  no callee leg, so `declare ptr @f(ptr returned)` — `returned` on the
+  *declaration*, not repeated at the call — was missed. `pointer_analysis.rs`
+  had the callee leg but read the **call site's** per-argument storage with the
+  *function*'s key (`AttrIndex::Param(index)` where a call site files every
+  argument at `Param(0)`), so it saw a call-site `returned` only on parameter
+  0. Both readers are now the single
+  `value_tracking.rs::returned_arg_operand`, taking the call value and porting
+  `getArgOperandWithAttribute`'s two legs in order. The lesson worth keeping:
+  the two attribute storages are keyed differently, and reading either with the
+  other's key answers `None` in silence.
 - **Constant uniquing does work that upstream's pointer identity does for
   free.** `isBytewiseValue` compares against a single `UndefValue::get(i8)`
   sentinel by pointer, which works because LLVM uniques constants. llvmkit
@@ -1438,7 +1386,7 @@ sequenced:
    | 3d-iv ✅ | 8 | **done 2026-08-02**: the saturating family. Six share one frame (`saturating_pairwise`); `smul_sat` needs all four corners and `sshl_sat` picks its shift by endpoint sign. |
    | 3d-v ✅ | 3 | **done 2026-08-02**: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
    | 3d-vi ✅ | 8 | **done 2026-08-02**: `binary_op`, `overflowing_binary_op`, `intrinsic`, `is_intrinsic_supported`, `add_with_no_wrap`, `sub_with_no_wrap`, `multiply_with_no_wrap`, `smul_fast`. **`shlWithNoWrap` is not ported** — it is three helper functions (`computeShlNUW`, `computeShlNSWWithNNegLHS`, `computeShlNSWWithNegLHS`) plus a dispatcher, and no llvmkit caller needs it yet; `overflowing_binary_op` sends `shl` to the plain `shl`, which is sound and only weaker. |
-   | ~~**3e**~~ ✅ | 8 | **done 2026-08-02**: `compute_constant_range`, `compute_constant_range_including_known_bits`, and all six `compute_overflow_for_*`. Also added the five `ConstantRange` overflow predicates (`unsigned_add_may_overflow` and siblings) that an earlier count missed — the real public surface is **83**, not 78; those five span two lines in the header and the extraction grep skipped them. **`getVScaleRange` is not ported**: it reads `vscale_range`'s packed `(min, max)` pair, and that attribute is already on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list with a single-`u64` payload here. Porting it would mean inventing the second half. |
+   | ~~**3e**~~ ✅ | 8 | **done 2026-08-02**: `compute_constant_range`, `compute_constant_range_including_known_bits`, and all six `compute_overflow_for_*`. Also added the five `ConstantRange` overflow predicates (`unsigned_add_may_overflow` and siblings) that an earlier count missed — the real public surface is **83**, not 78; those five span two lines in the header and the extraction grep skipped them. `getVScaleRange` was recorded here as unported and blocked on `vscale_range`'s "packed `(min, max)` pair" against a "single-`u64` payload" on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list; every clause of that was already false when written, and it is now ported as `value_tracking::get_vscale_range`. |
 
    `ConstantRangeTest.cpp` (~2800 lines) is the test source throughout; its
    exhaustive-over-4-bit-ranges harness ports directly and is the right
@@ -1672,21 +1620,24 @@ says that too rather than inventing one.
   the operands were still unvalidated names when W11 opened them. Recorded
   here because a false "closed" is worse than an open item.
   [[verify-recorded-premises]]
-- **`DIFlags` / `DISPFlags` are not bitflags.** Upstream spells them as two
-  `uint32_t` bitfields with `getFlag` / `getFlagString` / `splitFlags`
-  (`DINode::DIFlags` and `DISubprogram::DISPFlags`, `DebugInfoMetadata.h`);
-  llvmkit keeps the written disjunction as one `Enum(String)` field value, so
-  `DIFlagPublic | DIFlagPrototyped` round-trips as text without ever becoming a
-  set. Same milestone as the DWARF tables, and the same reason — the bitflag
-  type is only worth its keep once something reads it.
+- ~~**`DIFlags` / `DISPFlags` are not bitflags.**~~ **Closed 2026-08-29
+  (divergence-closing W9).** `metadata::DiFlags` and `metadata::DispFlags` are
+  the two `u32` bitfields, carrying ports of `DINode::getFlag` /
+  `getFlagString` / `splitFlags` and their `DISubprogram` twins;
+  `MetadataFieldValue` grew a variant for each, `parseMDField`'s two typed
+  overloads are ported as `parse_di_flag_field` / `parse_disp_flag_field`, and
+  the printer emits through `splitFlags` the way `MDFieldPrinter::printDIFlags`
+  and `printDISPFlags` do.
 
-  The *parsing* half landed 2026-08-07: `ll_parser.rs` reads the `|`-joined
-  form (upstream's repeated `lltok::bar` loop for `MDFieldImpl<DIFlags>` /
-  `<DISPFlags>`) and stores the joined source text, which is byte-for-byte what
-  `AsmWriter.cpp`'s `printDIFlags` emits — its separator is
-  `ListSeparator(" | ")`. Before that, `flags: DIFlagPublic | DIFlagStaticMember`
-  did not parse at all, which is what blocked porting
-  `test/Assembler/invalid-disubroutinetype-missing-types.ll` verbatim.
+  What that reasoning had missed, and what the joined-source-text
+  representation could not express: `parseFlag`'s **first** arm is an unsigned
+  `lltok::APSInt`, so `flags: 4 | DIFlagPublic` is legal upstream and was
+  rejected here; and `printDIFlags` re-derives the printed form rather than
+  echoing it, so a written order, a duplicate term, an alias spelling and a
+  zero field were all wrong on output. The recorded reason — that the bitflag
+  type is only worth its keep once something reads it — was true of storage and
+  false of the parser and the printer, both of which already read it.
+  [[verify-recorded-premises]]
 - **`MetadataField::name` is a `String` — validated, but still stringly typed.**
   ~~Nothing validates it~~ — **the divergence half is closed (2026-08-07).**
   `SpecializedMetadataKind::fields` / `required_fields` port each class's
@@ -1746,10 +1697,14 @@ says that too rather than inventing one.
   `InlineAsm::verify`; `ConstraintInfo` carries the typed records, all nine
   `verify` messages are reachable from the parser, and the `!`-counting
   heuristic behind `label_constraint_count` is gone along with the
-  `arg_constraints`-hardcoded-to-`0` summary struct. What is *not* ported: the
-  per-operand `elementtype` half of `Verifier::verifyInlineAsmCall`, because
-  the call surface cannot spell per-operand `elementtype` attributes yet, and
-  the `Flag` / `ConstraintCode` bit encodings, which are backend
+  `arg_constraints`-hardcoded-to-`0` summary struct. The per-operand
+  `elementtype` half of `Verifier::verifyInlineAsmCall` followed on
+  **2026-08-27** (`ConstraintInfo::has_arg` plus the three `Check`s, driven by
+  `test/Verifier/inline-asm-indirect-operand.ll`); the reason recorded here for
+  deferring it — "the call surface cannot spell per-operand `elementtype`
+  attributes yet" — was already stale when written, since the parser stores
+  per-argument attribute lists and the AsmWriter prints them back. What is
+  *not* ported: the `Flag` / `ConstraintCode` bit encodings, which are backend
   serialization and out of scope.
 
 ## Killer-feature designs (deferred)
@@ -2182,12 +2137,6 @@ unordered-atomic-load DCE + trivially-dead InstSimplify erase, and the
 folder-bypass item was already fixed on dev (`b06413e`). The items below remain
 deliberately deferred; each cites its upstream anchor.
 
-- **Indirect `callbr`** -- `callbr void %fp(...)` is invalid IR upstream
-  (`Verifier::visitCallBrInst` requires a direct callee for non-asm callbr:
-  "Callbr: indirect function / invalid signature"), so llvmkit rejects it at
-  parse, which reaches the same verdict. A stricter port would accept it at
-  parse and reject in the verifier. (Indirect *invoke* is now supported -- it
-  is valid IR.)
 - **DCE removable calls / allocs** -- llvmkit still keeps `willReturn`+readnone
   calls, removable allocation-function calls, `free(null)`, and lifetime-only
   allocas that upstream `wouldInstructionBeTriviallyDead`
@@ -2196,13 +2145,12 @@ deliberately deferred; each cites its upstream anchor.
   if wrong), so the current DCE stays conservative-but-safe. `Value::has_uses`
   also counts debug-record uses upstream ignores (upstream salvages debug info
   instead). (Unordered atomic loads are now removed.)
-- **InstSimplify unreachable-block skip** -- the pass still folds in
-  unreachable blocks that upstream skips (`runImpl` in
-  `InstSimplifyPass.cpp`, via `DT->isReachableFromEntry`), a
-  textual-only divergence in dead code; needs reachability (a dominator tree)
-  threaded into the pass. No InstSimplify tests cover freeze folds or
-  unreachable-block behavior yet (the latter blocked on this skip). (The
-  erase-only-when-trivially-dead behavior is now matched.)
+- **InstSimplify freeze folds** -- no InstSimplify test covers a `freeze`
+  fold yet. (The unreachable-block skip that used to be named here is closed:
+  the pass declares `DominatorTreeAnalysis` and carries `runImpl`'s
+  `if (!SQ.DT->isReachableFromEntry(&BB)) continue;`, pinned by
+  `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_leaves_unreachable_blocks_alone`.
+  The erase-only-when-trivially-dead behavior was already matched.)
 - **Deeper `swifterror` dataflow verification** -- the swifterror alloca
   support verifies the parse-level constraints (pointer type, non-array); the
   full `Verifier` use-site rules (swifterror values may only flow through
@@ -2380,13 +2328,18 @@ whose very method set encodes the legal edits, so a structurally-invalid edge
 edit is a *compile* error rather than a runtime rejection), the verifier
 phi-result-type rule (`VerifierRule::PhiInvalidResultType`, defense in depth —
 `check_phi` rejects a phi whose result is not a first-class data type, matching
-the parser), and the zero-incoming-phi verifier backstop
-(`VerifierRule::PhiEmptyInReachableBlock` — `check_phi` now rejects a phi that
-carries no incomings in a block reachable from entry, gated on
-`DominatorTree::is_reachable_from_entry`; such a phi is un-round-trippable
-because `LLParser::parsePHI` rejects a bracket-less `%p = phi i32`, and the
-shared `check_phi_incoming` count guard would otherwise miss it on the `0 == 0`
-gap LLVM's `visitPHINode` shares) have all shipped.
+the parser) have all shipped.
+
+One more shipped alongside them and has since been **withdrawn**: a
+zero-incoming-phi verifier backstop (`VerifierRule::PhiEmptyInReachableBlock`),
+justified on the ground that a bracket-less `%p = phi i32` has no legal textual
+form. It has one — `AsmWriter`'s phi arm prints the type and then an empty
+`ListSeparator` loop, `LLParser::parsePHI` and llvmkit's `parse_phi` both stop
+their pair loop at the first token that is not `[`, and
+`test/Assembler/zero-input-phi.ll` round-trips exactly that through
+`llvm-as | llvm-dis`. The rule rejected IR LLVM accepts, so it is gone;
+`check_phi_incoming`'s `numIncoming == numPreds` guard — upstream's own, from
+`Verifier::visitBasicBlock` — is the only length rule again.
 
 The former follow-up here — **edge ops on `invoke`/`callbr`** — has also
 shipped: the `invoke` (`normal_dest`/`unwind_dest`) and `callbr`
@@ -2481,6 +2434,44 @@ than pending:
   Until then the rule stays a `Module::verify()` check — see the "br
   target is not a basic block of the parent function" family in `verifier.rs`.
   Revisit only as its own opt-in cycle if a concrete authoring need appears.
+
+  **The id-first revival shape, sketched 2026-09-04.** Asked for again in a
+  later session; recorded here so the next one starts from a concrete proposal
+  rather than re-deriving it. The generative-lifetime form is dead — it needs a
+  closure scope, and 0.0.4 deleted the closure-scoped module constructor. The
+  id-first form is a **brand type**, exactly like `ModuleBrand`, defaulted so
+  every existing site is unchanged:
+
+  ```rust
+  pub trait FnBrand: 'static {}
+  pub struct FnErased;                         // the default
+  pub struct FunctionValue<'ctx, R, B, F: FnBrand = FnErased> { … }
+  pub struct BlockId<R, B, Params = BlockParamsDyn, F: FnBrand = FnErased> { … }
+
+  pub fn br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+  where T: IntoBasicBlockLabel<'ctx, R, B, F>;   // pinned to the builder's function
+  ```
+
+  Opting in declares a bare unit struct per function, and a label minted in one
+  function's body then stops being the right *type* to branch to from another's
+  — LLVM's "Referring to a basic block in another function!" becomes a compile
+  error rather than a verifier finding.
+
+  **Costs, measured at `d0f24b7`.** `grep -rn 'BlockId<' --include=*.rs crates/
+  llvmkit/` gives 157 sites, 111 of them in `src/`. The default absorbs most,
+  but `Params` is *already* defaulted, so any signature spelling `Params`
+  explicitly must now also spell `F` — those are the ones that break. `BlockId`
+  would carry four type parameters; note the `Branded` derive exists precisely
+  because a std `derive` on a brand-generic type reintroduces bounds and blames
+  the use site, and a fourth marker is where that gets uncomfortable.
+
+  **What has and has not expired.** Two of the three original deferral reasons
+  have: the closure-scoped constructor it would have reintroduced is gone, and
+  block targets became storable ids. The load-bearing one has **not** — the
+  primary consumer recovers control flow at runtime rather than authoring it
+  statically, so a compile-time function identity fights its model. Opt-in by
+  default softens that, since such a consumer simply never names a brand, but it
+  does not remove it. **Do not revive this without a consumer that wants it.**
 - **Whole-graph verifier territory** — phi-incoming completeness against the
   final predecessor set for builder-constructed IR, and dominance, are permanent
   residents of `Module::verify()` (defense in depth). These are whole-graph facts
@@ -2710,14 +2701,37 @@ matcher — the one this item already records above, which exists precisely
 because of these spellings — returns a much larger population. The narrow regex
 made a large backlog look finished. Use the recorded matcher, with `-a`.
 
-**Still open, unchanged by this round:**
+**Landed 2026-08-29 (divergence-closing wave 12): the `loc=` retrofit, over the
+whole corpus.** Every `status=reject` row carrying an `error=` pin was swept:
+its checked-in fixture was searched for a line holding the pin *and* a column,
+in any of upstream's spellings (`[[@LINE+N]]:C:`, `[[#@LINE-N]]:C:`, a bare
+`:L:C: error:`), and where the fixture pins one the row now pins it too. Two
+things had to be fixed for the sweep to be trustworthy at all, and both are
+findings the old oracle could not see:
+
+- The corpus' `split-file` parts were not what `split-file` writes, so the line
+  numbers a `[[#@LINE-1]]` resolves against were wrong for thirty of them. That
+  is fixed and now guarded — see
+  `parser_corpus.rs::split_file_parts_are_what_split_file_emits`.
+- Nine rows disagreed with their fixture's column, in two clusters, and both
+  were llvmkit defects rather than pin defects: `parseValID`'s constant-expr
+  arms reported at the current token instead of `ID.Loc` (`invalid cast opcode
+  for cast from …` landed at end of file), and `check_metadata_field_value`
+  reported at the token *after* the value it rejected (`arg: -1` put `expected
+  unsigned integer` on the `)`). Both are fixed; the rows pin the columns now.
+
+The population is not written here — derive it with the matcher this item
+records, over `parser_corpus_manifest.txt` at whatever commit you are asking
+about.
+
+**Still open:**
 
 - **`contains` rather than equality**, everywhere. None of the three tiers above
   switched. The location half and the containment half are separate weaknesses;
-  only the first moved, and only for the rows named above.
-- **`loc=` for the rest of the corpus.** Most reject rows whose fixture carries
-  a column still pin text alone. That is the retrofit the `loc=` bullet
-  describes and it was deliberately not attempted here.
+  only the first has moved.
+- **Reject rows whose fixture pins no column at all** get no location oracle.
+  Pinning those would bless llvmkit's own output as ground truth, which is the
+  failure this file exists to prevent, so they stay on text alone.
 - **Diagnostics with no vendored fixture get no location oracle from this
   harness at all.** `getGlobalVal`'s `"@" + Name` / `"@" + Twine(ID)` spellings
   are exactly that case — the vendored tree pins the `%`-spelling only — so
@@ -2825,3 +2839,212 @@ grep '^| `' UPSTREAM.md | grep -v verify-uselistorder | grep -cF -f ul.txt   # 2
 grep '^| `' UPSTREAM.md | grep -v verify-uselistorder |
   grep -oF -f ul.txt | sort -u | wc -l                                      # 47
 ```
+
+## `IrResult` over-declaration — the sites left after the intrinsic-mismatch fix (found 2026-09-04, `ParseError` surface narrowing task 7)
+
+Task 7 asked, of every `IrResult`-returning function the parser consumes: does its
+declared error type claim more outcomes than its body can produce, and — the
+decisive question — has any consumer already written a catch-all arm that
+renormalises the excess into a lie? One duplication met that bar and was fixed
+in the same commit as this entry: `crates/llvmkit-ir/src/intrinsics.rs` spelled
+"this call site's intrinsic id/name doesn't match its signature" two ways —
+`IrError::InvalidOperation { message: "intrinsic signature mismatch" }` from
+callers with no id in scope, and `IrError::IntrinsicSignatureMismatch { name }`
+from callers that had one — and three consumers
+(`Verifier::verify_intrinsic_function`'s two `map_err` blocks in
+`verifier.rs`, and `intrinsic_parse_error` in `ll_parser.rs`) existed to
+renormalise the first back into the second. `descriptor_for_name`,
+`IntrinsicDescriptor::function_type_ref` and `IntrinsicDescriptor::declaration_attributes`
+now normalise every internal failure to `IntrinsicSignatureMismatch` at their
+own id/name-bearing boundary (mirroring the pattern `IntrinsicDescriptor::new`
+already used for its own overload-validation arm), so both `verifier.rs`
+catch-alls are provably dead and were deleted. `ll_parser.rs`'s
+`intrinsic_parse_error` was **not** touched — see below.
+
+The brief's own Step 1 recipe (`grep "IrResult<" | grep "pub fn"`, both on one
+line) was re-run and confirmed to be the wrong denominator the supplement said
+it was: it requires `pub fn` and `IrResult<` on the *same* source line, so it
+misses every multi-line signature. Measured at this commit:
+
+```bash
+grep -rn "IrResult<" crates/llvmkit-ir/src/ --include=*.rs | grep "pub fn" | wc -l   # 139
+# functions whose `pub`/`pub(crate) fn` and `-> IrResult<` are on different
+# lines, i.e. invisible to the recipe above, per source file:
+for f in $(grep -rl "IrResult<" crates/llvmkit-ir/src/ --include=*.rs); do
+  perl -0777 -ne 'my @m = /pub(?:\(crate\))? fn \w+[^{;]*?\n[^{;]*?->\s*IrResult</gs;
+    print scalar(@m), " $ARGV\n" if @m' "$f"
+done | grep -v "^0 "
+# ir_builder.rs alone has 220 such signatures; module.rs 31; several other
+# files 1-35 each. The true count is several hundred, not 139, which is why
+# this entry does not attempt a full enumeration — see the supplement's own
+# framing, reproduced in the task-7 report.
+```
+
+Everything below is a **judgement, not a fix**: each was surfaced by the
+task's survey supplement, checked against its own dividing line (does a live
+consumer write a catch-all today, or does it propagate with `?`), and left
+alone because no consumer lies about it yet.
+
+- **`primitive_to_type` (`ll_parser.rs`) discarding `custom_width_int_type`'s
+  `IrError`.** Checked against `module.rs::Module::custom_width_int_type`: its
+  body has exactly one `Err` path, `IrError::InvalidIntegerWidth { bits }`,
+  guarded by `!(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits)`
+  (`crates/llvmkit-ir/src/module.rs`). `primitive_to_type`'s
+  `.map_err(|_| ParseError::IntegerWidthOutOfRange { .. })` therefore discards
+  *the only reachable variant*, not an invented one, and the target text
+  ("bitwidth for integer type out of range") is upstream's own
+  (`LLParser::parseType`'s integer-width diagnostic). Every other consumer of
+  `custom_width_int_type` propagates with `?` (`grep -rn
+  "custom_width_int_type(" crates/llvmkit-ir/src crates/llvmkit-asmparser/src`
+  — one discard site, the rest `?` or test `.expect`/`.is_err()`). Not a
+  defect; left as is. (The supplement suggested this exact site "was already
+  resolved in the DiagLoc task by proving the branch dead" — `git log --oneline
+  --all | grep -i diagloc` finds no such commit, and neither task-4 nor
+  task-5's reports mention `primitive_to_type` or `custom_width_int_type`, so
+  that provenance claim in the supplement could not be verified. The
+  conclusion — not a defect — was re-derived independently above, not taken on
+  the supplement's word.)
+
+- **`ll_parser.rs`'s `intrinsic_parse_error` fallback arm.** The supplement
+  named this a third "catch-all that becomes deletable" alongside the two in
+  `verifier.rs`. That overstates it: `intrinsic_parse_error` also adapts
+  `get_or_insert_intrinsic_declaration`'s failures, which can still legitimately
+  produce `IrError::InvalidOperation { message: "unnamed intrinsic overload
+  type requires unique module naming" }` (from `IntrinsicDescriptor::mangled_name`
+  / `append_mangled_type`, `crates/llvmkit-ir/src/intrinsics.rs`) or whatever
+  `Module::push_function` raises — reasons unrelated to the
+  `intrinsic_mismatch`/`intrinsic_mismatch_for_id` duplication this task fixed.
+  Its three named arms and its `_` fallback already render *identical* text
+  for the fixed duplication specifically (`IntrinsicSignatureMismatch` and `_`
+  both map to `"intrinsic signature mismatch"`, `crates/llvmkit-asmparser/src/ll_parser.rs`),
+  and `ParseError::Expected`'s `Display` is `"expected {expected}"` with no
+  name interpolation, so no observable text was ever at stake here regardless
+  of which `IrError` variant arrived. Left unchanged.
+
+- **`constraint_info` vs `verify_inline_asm` (`crates/llvmkit-ir/src/inline_asm.rs`).**
+  Not an `IrResult`/`IrError` case at all — `parse_constraints` returns a
+  dedicated `Result<Vec<ConstraintInfo>, ConstraintParseError>`, already the
+  narrow, purpose-built type this whole program is pushing every other site
+  toward. `constraint_info()`'s doc comment already states the rationale for
+  its `unwrap_or_default()` (mirrors `InlineAsm::ParseConstraints`'s own
+  empty-list failure signal), and `verify_inline_asm` explicitly checks
+  `parsed.is_empty() && !constraints.is_empty()` to catch the same condition
+  its own discarded `Err` arm would have. Two different questions ("what
+  parsed" vs "is this valid"), not two disagreeing answers to one question.
+  No fix needed.
+
+- **`pow2_ceil_align` / `const_align` (`crates/llvmkit-ir/src/data_layout.rs`).**
+  Not `IrResult` — `Align::new(v).unwrap_or(Align::ONE)` on an `Option`.
+  `pow2_ceil_align` computes `v` as the smallest power of two `>= bytes.max(1)`
+  by construction, so `Align::new(v)` cannot see a non-power-of-two input;
+  `const_align`'s `debug_assert!(is_power_of_two(n))` documents the same
+  precondition for its own (small, fixed) call sites. No consumer treats the
+  `unwrap_or` fallback as anything but dead code. Recorded, not fixed, because
+  fixing it would mean threading a `Result` through call sites that cannot
+  currently produce the error either.
+
+- **`append_decimal_zeros` (`crates/llvmkit-ir/src/ap_float.rs`).** Folds a
+  `TryReserveError` (genuine allocation failure) into the same `None` its
+  caller already uses for "this value doesn't decimal-format this way" —
+  observable only under real OOM, where "fall back to a different formatting
+  path" is a defensible degradation, not a silent lie about a *reachable*
+  condition. No live consumer treats the two causes differently. Left as is.
+
+- **`bits_used_in_words` — two definitions, two idioms
+  (`crates/llvmkit-ir/src/ap_int.rs` and `crates/llvmkit-ir/src/constants.rs`).**
+  Both compute the same quantity from a `&[u64]` word slice, and both guard
+  the same "value has more limbs than fit in a `u32` index" situation, which
+  is unreachable for any realistically-sized constant — but they resolve it
+  differently: `constants.rs` uses the sanctioned
+  `.unwrap_or_else(|_| unreachable!("limb count fits in u32 for any realistic
+  constant"))`, while `ap_int.rs` instead returns the sentinel `u32::MAX`, a
+  plausible-looking bit count rather than a proof the branch is dead. This is
+  the "prefer ADTs/named invariants over sentinels" pattern this program has
+  flagged before, and `ap_int.rs`'s copy should adopt `constants.rs`'s idiom —
+  but neither function is `IrResult`-returning or has a consumer catch-all (both
+  are private, `u32`-returning helpers), so it sits outside this task's
+  decisive test and is recorded rather than changed here.
+
+- **`into_slot_mapping` (`crates/llvmkit-asmparser/src/ll_parser.rs`).** Two
+  `let _ = numbered.add(slot, value);` calls discard a `Result<(),
+  numbered_values::AddError>`. `AddError::StaleId` fires only on a
+  non-ascending or duplicate slot; both call sites insert from a
+  `sort_by_key`-sorted, already-deduplicated (map-derived) sequence, so the
+  discard is safe by construction — but that construction is not written down
+  at either call site the way `constants.rs`'s `unreachable!` above states its
+  own. Recorded as a missing justifying comment, not a defect: no `AddError`
+  is ever observed by anyone today, so there is no consumer to lie to.
+
+- **`global_pointer_alignment` (`crates/llvmkit-ir/src/constant_fold.rs`).**
+  `Align::new(4).ok()` on a hardcoded literal — ceremony around an
+  infallible call, not a defect. No change.
+
+None of the above has a live consumer that renormalises its error into
+something else, so per this task's own test ("a function whose consumers all
+propagate with `?` has cost nothing yet") none is narrowed here. Re-derive
+before acting on any of these — several of the counts and dead-branch claims
+above superseded ones the supplement made without being able to verify them
+(see the `primitive_to_type` entry).
+
+## Two-or-more adjacent `bool` parameters: the sixteen left, and why
+
+The C-CUSTOM-TYPE sweep of 2026-09-05 converted three functions whose adjacent
+`bool`s were llvmkit's own shape. Sixteen were left, and this records why so the
+next sweep does not re-litigate them. Re-derive the full list with:
+
+```bash
+for f in crates/llvmkit-ir/src/*.rs crates/llvmkit-support/src/*.rs crates/llvmkit-asmparser/src/*.rs; do
+  awk -v F="$f" '
+    /(^|[^a-z_])fn [a-z_]+/ {buf=$0; cap=1; if (/\{[ ]*$/ || /;[ ]*$/) emit(); next}
+    cap {buf=buf" "$0; if (/\{[ ]*$/ || /;[ ]*$/) emit()}
+    function emit(  n,s) { cap=0; gsub(/[ \t]+/," ",buf)
+      s=substr(buf, index(buf,"(")); n=gsub(/: *bool/,"&",s)
+      if (n>=2) printf "%s:  %s\n", F, substr(buf,1,160) }' "$f"
+done
+```
+
+**A line-oriented pattern cannot find these.** An earlier draft of the task used
+`grep -rnE "bool,[[:space:]]*$" … -A1`, which returns **0** — these signatures
+wrap, so the two `bool`s never share a line. A command returning zero here reads
+as "there are none", which is how the count came to be recorded as two.
+
+**Converted** (llvmkit's own shape, unrelated axes or one concept):
+
+| function | became |
+|---|---|
+| `KnownFpClass::round_to_integral` | `RoundingIntrinsic` + `FloatUnitKind` |
+| `is_known_negation` | `NswRequirement` + `PoisonPolicy` |
+| `only_used_by_markers` | `AllowedMarkers { lifetime, droppable }` |
+
+**Left, and why.** Each mirrors an upstream signature parameter-for-parameter,
+and this repo ports the routine rather than only its outcome. A named type here
+is still only a *spelling* change and remains permissible — but these carry no
+call site that reads as an unlabelled literal run, which is the defect the rule
+exists to prevent:
+
+- `KnownBits::compute_for_add_carry_raw(lhs, rhs, carry_zero, carry_one)` and
+  `determine_live_operand_bits_add_carry(...)` — mirror
+  `KnownBits::computeForAddCarry(LHS, RHS, CarryZero, CarryOne)`. Both flags are
+  derived expressions at every call site, never literals.
+- `KnownBits::compute_for_add_sub_impl(add, nsw, nuw, lhs, rhs)` — mirrors
+  `computeForAddSub(bool Add, bool NSW, bool NUW, …)`. Three `bool`s, and the
+  upstream order is load-bearing for the port's readability against the C++.
+- `KnownBits::compute_for_sat_add_sub(add, signed, lhs, rhs)` — mirrors
+  `computeForSatAddSub`.
+- `KnownBits::compute_for_shl` / `compute_for_lshr` / `compute_for_ashr` —
+  `(nuw, nsw, shift_amount_non_zero)` and `(shift_amount_non_zero, exact)`
+  mirror the upstream shift transfer functions exactly.
+- The six `(nuw, nsw)` constructors — `constant.rs::new` / `::overflowing`, four
+  `instr_types.rs::from_parts` — **are** the no-wrap flag type's own
+  constructors. Wrapping a flags type's constructor in another flags type is
+  circular.
+- `attributes.rs::at(function, parameter, return_value)` — a private table
+  helper whose three `bool`s are the table's columns; the table reads as a
+  matrix and named arguments would obscure it.
+- `ll_parser.rs::int_binop_flags(nuw, nsw, exact, disjoint)` — builds
+  `IntBinOpFlags` from four parsed keyword presences, same circularity as above.
+
+**The trigger to revisit**: a call site appearing that passes two or more of
+these as bare literals. That is what made `round_to_integral(finite, false,
+true)` and `is_known_negation(x, y, false, true)` worth changing, and none of
+the sixteen has one today.

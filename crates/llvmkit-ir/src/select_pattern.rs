@@ -351,9 +351,12 @@ use crate::instr_types::CastOpcode;
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::int_width::IntDyn;
 use crate::module::{ModuleBrand, ModuleRef};
-use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::operator::is_supported_floating_point_type;
+use crate::r#type::TypeSlotAccess;
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{
-    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, is_known_negation, is_known_non_zero,
+    MAX_ANALYSIS_RECURSION_DEPTH, NswRequirement, PoisonPolicy, ValueTrackingQuery,
+    is_known_negation,
 };
 use crate::{ApFloat, IrResult};
 
@@ -386,12 +389,11 @@ pub struct SelectPatternMatch<'ctx, B: ModuleBrand> {
 /// select arms and reports which cast in [`SelectPatternMatch::cast`], where
 /// passing a null `CastOp` upstream disables that path.
 ///
-/// **Fast-math flags on the `select` are not read.** Upstream takes
-/// `SI->getFastMathFlags()` when the select is an `FPMathOperator`; llvmkit's
-/// `select` carries no flag word, so `nnan` / `nsz` written on the select
-/// cannot be consulted. Flags on the `fcmp` *are* read, which is where they
-/// normally sit. Some float patterns upstream accepts are therefore declined
-/// here — never the reverse.
+/// Fast-math flags written on the `select` itself are read, as upstream reads
+/// them: `isa<FPMathOperator>(SI) ? SI->getFastMathFlags() : FastMathFlags()`.
+/// `nsz` is the flag that only ever reaches the matcher this way or through the
+/// `fptosi`/`fptoui` cast path — `matchDecomposedSelectPattern` takes `nnan`
+/// from the `fcmp` but never `nsz`.
 pub fn match_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     look_through_cast: bool,
@@ -416,11 +418,20 @@ pub fn match_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
     let true_value = value_from_slot(value, select.true_val.get());
     let false_value = value_from_slot(value, select.false_val.get());
+    // `isa<FPMathOperator>(SI) ? SI->getFastMathFlags() : FastMathFlags()`.
+    // `FPMathOperator::classof`'s `Select` arm is
+    // `isSupportedFloatingPointType(V->getType())`, which is wider than
+    // `isFPOrFPVectorTy` — a homogeneous FP struct qualifies too.
+    let fast_math_flags = if is_supported_floating_point_type(value.ty()) {
+        select.fmf.get()
+    } else {
+        FastMathFlags::empty()
+    };
     match_decomposed_select_pattern(
         &condition,
         true_value,
         false_value,
-        FastMathFlags::empty(),
+        fast_math_flags,
         look_through_cast,
         query,
         depth,
@@ -463,7 +474,13 @@ pub fn match_decomposed_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // Deal with type mismatches.
-    if look_through_cast && compare_lhs.ty().id() != true_value.ty().id() {
+    // boundary (F2): Task 27
+    // The decomposed form takes the compare operands and the arms as separate
+    // caller values; their types are compared as if they shared an arena.
+    if look_through_cast
+        && compare_lhs.ty().slot_trusting_same_module()
+            != true_value.ty().slot_trusting_same_module()
+    {
         for (cast_side, other_side, cast_is_true_arm) in [
             (true_value, false_value, true),
             (false_value, true_value, false),
@@ -584,8 +601,8 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
         );
         if ((strict && has_mismatched_zeros) || non_strict)
             && !fast_math_flags.contains(FastMathFlags::NO_SIGNED_ZEROS)
-            && !is_known_non_zero(compare_lhs, query)?
-            && !is_known_non_zero(compare_rhs, query)?
+            && !is_known_non_zero_float(compare_lhs)
+            && !is_known_non_zero_float(compare_rhs)
         {
             return Ok(None);
         }
@@ -647,8 +664,13 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     // Upstream's call is `isKnownNegation(TrueVal, FalseVal)`, both defaults:
     // no `nsw` required, poison lanes allowed.
-    if is_known_negation(true_value, false_value, false, true)
-        && let Some(found) = match_abs(predicate, compare_lhs, compare_rhs, true_value, false_value)
+    if is_known_negation(
+        true_value,
+        false_value,
+        NswRequirement::NotRequired,
+        PoisonPolicy::Allow,
+    ) && let Some(found) =
+        match_abs(predicate, compare_lhs, compare_rhs, true_value, false_value)
     {
         return Ok(Some(found));
     }
@@ -670,8 +692,8 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // than `minnum`. Be conservative.
     if nan_behavior != SelectPatternNanBehavior::ReturnsAny
         || (!fast_math_flags.contains(FastMathFlags::NO_SIGNED_ZEROS)
-            && !is_known_non_zero(compare_lhs, query)?
-            && !is_known_non_zero(compare_rhs, query)?)
+            && !is_known_non_zero_float(compare_lhs)
+            && !is_known_non_zero_float(compare_rhs))
     {
         return Ok(None);
     }
@@ -1192,15 +1214,62 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx>(
         // Upstream's `ConstantDataVector` arm, plus its `ConstantAggregateZero`
         // arm: llvmkit stores both as an aggregate of element constants.
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            if !value.ty().is_vector() {
+            // Empty aggregates are excluded for the same reason as in
+            // `is_known_non_zero_float`: `all` over no elements is vacuously
+            // true, and upstream's `ConstantDataVector` always has at least
+            // one element, so answering "no lane is NaN" for a vector with no
+            // lanes is llvmkit inventing a fact.
+            if !value.ty().is_vector() || elements.is_empty() {
                 return false;
             }
             elements.iter().all(|element| {
-                let element = value_from_slot(value, *element);
-                matches!(
-                    &element.data().kind,
-                    ValueKindData::Constant(ConstantData::Float(_))
-                ) && float_constant(element).is_some_and(|constant| !constant.is_nan())
+                float_constant(value_from_slot(value, *element))
+                    .is_some_and(|constant| !constant.is_nan())
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Ports the file-local `static bool isKnownNonZero(const Value *V)`
+/// (`ValueTracking.cpp`) — the **one-argument** overload that sits beside
+/// `matchSelectPattern`, *not* `llvm::isKnownNonZero`, which is the known-bits
+/// walk.
+///
+/// Upstream carries both names in one file and tells them apart by arity: the
+/// float min/max arms write `isKnownNonZero(CmpLHS)` and reach this one, which
+/// reads float constants only and answers `false` for everything else — it
+/// never consults known bits. llvmkit called the known-bits routine here, which
+/// answered `false` for a non-zero float constant like `1.0` where upstream
+/// answers `true`, so a signed-zero guard declined matches upstream accepts.
+fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    match &value.data().kind {
+        ValueKindData::Constant(ConstantData::Float(_)) => {
+            float_constant(value).is_some_and(|constant| !constant.is_zero())
+        }
+        // Upstream's `ConstantDataVector` arm. llvmkit stores one as an
+        // aggregate of element constants, so upstream's
+        // `getElementType()->isFloatingPointTy()` guard becomes the per-element
+        // `Float` check, and its early `return false` on a zero element is the
+        // `all` below.
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            // An empty aggregate must not answer "every lane is non-zero" by
+            // vacuous truth. Upstream cannot reach that case -- a
+            // `ConstantDataVector` always has at least one element -- so the
+            // guard has no upstream counterpart and exists because llvmkit's
+            // `Aggregate` is the wider representation. Without it this repeats,
+            // one function over, the width-0 `is_all_ones` defect that made
+            // `is_known_zero` answer `true` for a float.
+            if !value.ty().is_vector() || elements.is_empty() {
+                return false;
+            }
+            // `float_constant` already answers `None` for any constant that is
+            // not a float, so it is the whole test -- upstream's
+            // `getElementType()->isFloatingPointTy()` guard and its
+            // `getElementAsAPFloat(I).isZero()` check in one.
+            elements.iter().all(|element| {
+                float_constant(value_from_slot(value, *element))
+                    .is_some_and(|constant| !constant.is_zero())
             })
         }
         _ => false,
@@ -1236,7 +1305,8 @@ fn is_negation_of<'ctx, B: ModuleBrand + 'ctx>(
         return false;
     };
     int_constant(value_from_slot(value, data.lhs.get())).is_some_and(|constant| constant.is_zero())
-        && data.rhs.get() == negated.slot()
+        // boundary (F2): Task 27
+        && data.rhs.get() == negated.slot_trusting_same_module()
 }
 
 /// Upstream's `m_CombineOr(m_Specific(CmpLHS), m_SExt(m_Specific(CmpLHS)))`:
@@ -1251,7 +1321,8 @@ fn is_compare_lhs_or_its_sext<'ctx, B: ModuleBrand + 'ctx>(
     matches!(
         instruction_kind(arm),
         Some(InstructionKindData::Cast(data))
-            if data.kind == CastOpcode::Sext && data.src.get() == compare_lhs.slot()
+            // boundary (F2): Task 27
+        if data.kind == CastOpcode::Sext && data.src.get() == compare_lhs.slot_trusting_same_module()
     )
 }
 
@@ -1461,12 +1532,16 @@ fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx>(
     let Some(InstructionKindData::Cast(cast)) = instruction_kind(first) else {
         return None;
     };
-    let source_ty = value_from_slot(first, cast.src.get()).ty().id();
+    let source_ty = value_from_slot(first, cast.src.get())
+        .ty()
+        .slot_trusting_same_module();
 
     // If both arms are the same cast from the same type, look through both.
     if let Some(InstructionKindData::Cast(other)) = instruction_kind(second) {
         let other_source = value_from_slot(second, other.src.get());
-        if cast.kind == other.kind && other_source.ty().id() == source_ty {
+        // boundary (F2): Task 27
+        // `first` and `second` may be the decomposed form's separate caller arms.
+        if cast.kind == other.kind && other_source.ty().slot_trusting_same_module() == source_ty {
             return Some((cast.kind, other_source));
         }
         return None;
@@ -1485,7 +1560,8 @@ fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx>(
         return None;
     };
     if !matches!(widened.kind, CastOpcode::Sext | CastOpcode::Zext)
-        || widened.src.get() != second.slot()
+        // boundary (F2): Task 27
+            || widened.src.get() != second.slot_trusting_same_module()
     {
         return None;
     }
@@ -1572,4 +1648,49 @@ fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
     let module = ModuleRef::<B>::new(anchor.module().core_ref());
     let data = module.value_data(slot);
     Value::from_parts(slot, module, data.ty)
+}
+
+/// Upstream provenance: these exercise the two file-local `static` helpers
+/// ported from `ValueTracking.cpp`, which no integration test can reach
+/// because both are private to this module.
+#[cfg(test)]
+mod tests {
+    use super::{is_known_non_nan, is_known_non_zero_float};
+    use crate::{FastMathFlags, IrError, module_new};
+
+    /// llvmkit-specific (**no upstream counterpart**, by construction):
+    /// upstream's `static bool isKnownNonZero(const Value *V)` and
+    /// `isKnownNonNaN(V, FMF)` read a `ConstantDataVector`, which always has at
+    /// least one element, so neither can reach an empty vector. llvmkit stores
+    /// a constant vector as an aggregate of element constants — the wider
+    /// representation — and `elements.iter().all(..)` over an empty aggregate
+    /// is vacuously `true`.
+    ///
+    /// Without the guard both helpers claim a fact about a vector with no
+    /// lanes: "every lane is non-zero" and "no lane is NaN". That is the same
+    /// shape as the zero-width `ApInt` whose `is_all_ones` made
+    /// `is_known_zero` answer `true` for a float.
+    ///
+    /// This lives here rather than in `tests/` deliberately: an integration
+    /// test routed through `is_known_non_zero` passes with the guard removed,
+    /// because the int-or-pointer guard rejects a `<0 x float>` before these
+    /// helpers are ever consulted. It would pin nothing.
+    #[test]
+    fn an_empty_float_vector_proves_nothing() -> Result<(), IrError> {
+        let m = module_new!("sp-empty-vec")?;
+        let empty = m
+            .vector_type(m.f32_type(), 0)
+            .const_vector(Vec::<crate::ConstantFloatValue<f32, _>>::new())?;
+        let value = empty.as_erased();
+
+        assert!(
+            !is_known_non_zero_float(value),
+            "an empty vector has no lane to be non-zero"
+        );
+        assert!(
+            !is_known_non_nan(value, FastMathFlags::empty()),
+            "an empty vector has no lane to be non-NaN"
+        );
+        Ok(())
+    }
 }

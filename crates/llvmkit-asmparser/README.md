@@ -29,11 +29,14 @@ Bitcode is out of scope for this crate today; see the workspace
 
 ## Parser usage
 
-Reach for the closure-free entry points. `parse_branded::<B>`, `parse_dynamic`,
-`parse_file_branded::<B>`, and `parse_file_dynamic` mint the module for you and
-hand back the owned `Module<B, Unverified>`; `parse_into` parses into a module
-you already own and returns it. On failure the module is dropped along with
-whatever was parsed into it, so a half-built module never escapes.
+Reach for the closure-free entry points. `parse_dynamic` mints the module for
+you and hands back the owned `Module<DynBrand, Unverified>`; `parse_into`
+parses into a module you already own — a branded one included
+(`Module::branded::<B, _>(name)?`) — and returns it. On failure the module is
+dropped along with whatever was parsed into it, so a half-built module never
+escapes. The parser takes `&[u8]`, not a path: reading a file is the caller's
+job, the same split upstream draws between `lib/AsmParser` and Support's
+`MemoryBuffer::getFileOrSTDIN`.
 
 ```rust
 use llvmkit_asmparser::parse_dynamic;
@@ -43,17 +46,19 @@ let m = m.verify()?;
 assert!(m.to_string().contains("define void @f()"));
 ```
 
-The `parse_assembly` / `parse_assembly_file` / `parse_assembly_with_context`
+The `parse_assembly` / `parse_assembly_with_name` / `parse_assembly_with_context`
 family still takes a closure. That is not a brand restriction: the
 `ParsedModule` by-product holds borrowing handles into the module (slot
 mapping, summary index), so returning both would be a self-reference. Use these
 when you need the slot mapping; use the closure-free forms otherwise.
 `parse_assembly` takes `impl AsRef<[u8]>`, so a `&str` source goes straight in —
 the separate `parse_assembly_string` it used to need is gone.
+`parse_assembly_with_name` is the same closure form under a caller-supplied
+module name, in place of `parse_assembly`'s fixed `"<string>"`.
 
 Also public: `parse_type` / `parse_type_at_beginning` / `parse_constant_value`
 for single fragments (each with a `_with_slots` twin that threads a
-`SlotMapping`), and `parse_summary_index_assembly*` for a standalone summary
+`SlotMapping`), and `parse_summary_index_assembly` for a standalone summary
 index.
 
 Every form that reads a whole module has a `_with_config` twin taking a
@@ -87,13 +92,20 @@ while let Some(tok) = lex.next() {
 }
 ```
 
-For a `Read`-based entry point, use the `read_to_owned` helper:
+From a `Read` source, drain it yourself — this crate performs no I/O and ships
+no helper for it, matching upstream, where the parser takes a `MemoryBufferRef`
+and the file read lives in Support:
 
 ```rust
-use llvmkit_asmparser::{ll_lexer::Lexer, read_to_owned};
-use std::fs::File;
+use llvmkit_asmparser::ll_lexer::Lexer;
+use std::io::Read;
 
-let bytes = read_to_owned(File::open("foo.ll")?)?;
+let mut bytes = Vec::new();
+std::fs::File::open("foo.ll")?.read_to_end(&mut bytes)?;
+let lex = Lexer::new(&bytes);
+
+// From a path, that whole dance is one call:
+let bytes = std::fs::read("foo.ll")?;
 let lex   = Lexer::new(&bytes);
 ```
 

@@ -14,7 +14,8 @@
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     DomConditionCache, DominatorTree, DynBrand, FpClassTest, FunctionView, InstructionView, Module,
-    Unverified, Value, ValueTrackingQuery, compute_known_fp_class, compute_known_fp_class_all,
+    Unverified, Value, ValueTrackingQuery, can_ignore_sign_bit_of_nan, can_ignore_sign_bit_of_zero,
+    compute_known_fp_class, compute_known_fp_class_all,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -546,14 +547,13 @@ if.end:
 
 /// `nsz` on a `sqrt` call is read through upstream's `Q.IIQ`, so a query told to
 /// ignore instruction flags must not see it — and the negative zero the flag
-/// would have excluded comes back.
+/// would have excluded comes back. `nofpclass(nan)` on the argument is read
+/// instead through `Argument::getNoFPClass`, which no query setting hides, so
+/// the `%A3` / `%A4` pair below shows the two inputs behaving differently.
 ///
-/// Ports the `%A` and `%A2` blocks of
-/// `ComputeKnownFPClassTest.SqrtNszSignBit`
-/// (`llvm/unittests/Analysis/ValueTrackingTest.cpp`), with upstream's own two
-/// masks. Its `%A3`/`%A4` blocks are **not** ported: they need a
-/// `nofpclass(nan)` parameter attribute, which llvmkit does not model —
-/// recorded in `docs/future-work.md`.
+/// Ports all four blocks of `ComputeKnownFPClassTest.SqrtNszSignBit`
+/// (`llvm/unittests/Analysis/ValueTrackingTest.cpp`), with upstream's own
+/// masks and its `std::nullopt` sign bit throughout.
 ///
 /// The masks being exact also pins the denormal mode: it comes from
 /// `Function::getDenormalMode`, and a function carrying no `denormal-fp-math`
@@ -564,9 +564,11 @@ fn sqrt_nsz_is_hidden_from_a_query_that_ignores_instruction_flags() {
         r"
 declare float @llvm.sqrt.f32(float)
 
-define float @test(float %arg) {
+define float @test(float %arg, float nofpclass(nan) %arg.nnan) {
   %A = call float @llvm.sqrt.f32(float %arg)
   %A2 = call nsz float @llvm.sqrt.f32(float %arg)
+  %A3 = call float @llvm.sqrt.f32(float %arg.nnan)
+  %A4 = call nsz float @llvm.sqrt.f32(float %arg.nnan)
   ret float %A
 }
 ",
@@ -581,6 +583,17 @@ define float @test(float %arg) {
         .union(FpClassTest::POSITIVE_NORMAL)
         .union(FpClassTest::POSITIVE_ZERO)
         .union(FpClassTest::NAN);
+    // `sqrt` of a non-NaN argument can still be NaN — for a negative input —
+    // but only a *quiet* one, so upstream's `%A3`/`%A4` masks narrow `fcNan`
+    // to `fcQNan`.
+    let no_nan_sqrt_mask = FpClassTest::POSITIVE_INFINITY
+        .union(FpClassTest::POSITIVE_NORMAL)
+        .union(FpClassTest::ZERO)
+        .union(FpClassTest::QUIET_NAN);
+    let nsz_no_nan_sqrt_mask = FpClassTest::POSITIVE_INFINITY
+        .union(FpClassTest::POSITIVE_NORMAL)
+        .union(FpClassTest::POSITIVE_ZERO)
+        .union(FpClassTest::QUIET_NAN);
 
     let with_flags: ValueTrackingQuery<'_, '_, DynBrand> =
         ValueTrackingQuery::new(&data_layout).with_instruction_info();
@@ -603,6 +616,27 @@ define float @test(float %arg) {
     assert_eq!(known.sign_bit(), None);
     let known = compute_known_fp_class_all(nsz, &without_flags);
     assert_eq!(known.classes(), sqrt_mask);
+    assert_eq!(known.sign_bit(), None);
+
+    // `nofpclass(nan)` is a *parameter attribute*, not an instruction flag, so
+    // it survives `without_instruction_info` where `nsz` does not. Upstream
+    // asserts the same mask for both settings here.
+    let no_nan = named(&module, "A3");
+    let known = compute_known_fp_class_all(no_nan, &with_flags);
+    assert_eq!(known.classes(), no_nan_sqrt_mask);
+    assert_eq!(known.sign_bit(), None);
+    let known = compute_known_fp_class_all(no_nan, &without_flags);
+    assert_eq!(known.classes(), no_nan_sqrt_mask);
+    assert_eq!(known.sign_bit(), None);
+
+    // Both together: the attribute holds under either setting, the flag does
+    // not, so only the with-flags read loses the negative zero.
+    let nsz_no_nan = named(&module, "A4");
+    let known = compute_known_fp_class_all(nsz_no_nan, &with_flags);
+    assert_eq!(known.classes(), nsz_no_nan_sqrt_mask);
+    assert_eq!(known.sign_bit(), None);
+    let known = compute_known_fp_class_all(nsz_no_nan, &without_flags);
+    assert_eq!(known.classes(), no_nan_sqrt_mask);
     assert_eq!(known.sign_bit(), None);
 }
 
@@ -679,4 +713,80 @@ define void @f(i32 %x) {
         compute_known_fp_class_all(named(&module, "f1"), &query).sign_bit(),
         None
     );
+}
+
+/// `canIgnoreSignBitOfNaN`'s `case Instruction::Ret:` — the arm that reads the
+/// enclosing function's `nofpclass` return attribute.
+///
+/// **No upstream unit test.** `canIgnoreSignBitOfNaN` has no
+/// `ValueTrackingTest` case (`grep -rn canIgnoreSignBitOfNaN
+/// orig_cpp/.../llvm/unittests/` finds nothing); LLVM reaches it through
+/// InstCombine `.ll` regression tests of a pass llvmkit does not have. The
+/// oracle is the arm itself, quoted at the port site:
+/// `return User->getFunction()->getAttributes().getRetNoFPClass() &
+/// FPClassTest::fcNan;` — so the mask must contain `fcNan` specifically, and a
+/// `nofpclass` naming some other class answers `false`.
+///
+/// This arm was unported, behind a `known_fp_class.rs` comment claiming
+/// `nofpclass` was unmodeled. That premise had been false since
+/// `no_fp_class_of` landed, and it was standing in four places; this was the
+/// one where it hid missing behaviour rather than merely misdescribing working
+/// code.
+#[test]
+fn a_ret_can_ignore_the_sign_of_a_nan_when_the_function_returns_nofpclass_nan() {
+    let module = parse(
+        r"
+define nofpclass(nan) float @ret_nnan(float %x) {
+  ret float %x
+}
+
+define nofpclass(inf) float @ret_ninf(float %x) {
+  ret float %x
+}
+
+define float @ret_plain(float %x) {
+  ret float %x
+}
+",
+    );
+
+    // The `ret`'s only operand edge, per function.
+    let ret_use = |function_name: &str| {
+        let view = module.as_view();
+        let function = view
+            .functions()
+            .find(|f| f.name() == function_name)
+            .unwrap_or_else(|| panic!("fixture defines @{function_name}"));
+        let terminator = function
+            .basic_blocks()
+            .flat_map(|block| block.instructions())
+            .next_back()
+            .expect("the function has a terminator");
+        <InstructionView<'_, DynBrand> as llvmkit_ir::User<'_, DynBrand>>::operand_use(
+            terminator, 0,
+        )
+        .expect("`ret` has one operand")
+    };
+
+    assert!(
+        can_ignore_sign_bit_of_nan(ret_use("ret_nnan")),
+        "nofpclass(nan) on the return makes the NaN sign unobservable"
+    );
+    assert!(
+        !can_ignore_sign_bit_of_nan(ret_use("ret_ninf")),
+        "the mask is tested against fcNan, not merely for being non-empty"
+    );
+    assert!(
+        !can_ignore_sign_bit_of_nan(ret_use("ret_plain")),
+        "no return attribute means the sign is observable"
+    );
+
+    // `canIgnoreSignBitOfZero` has no `Ret` arm at all, so it answers `false`
+    // for all three — including the `nofpclass(nan)` one.
+    for name in ["ret_nnan", "ret_ninf", "ret_plain"] {
+        assert!(
+            !can_ignore_sign_bit_of_zero(ret_use(name)),
+            "canIgnoreSignBitOfZero has no Ret arm ({name})"
+        );
+    }
 }

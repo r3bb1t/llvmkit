@@ -16,11 +16,7 @@ pub mod support;
 /// `<stdin>:LINE:COL:`. Comparing only `ParseError`'s rendered text leaves a
 /// diagnostic free to carry upstream's exact message from the wrong token.
 fn reported_line_and_column(source: &[u8], err: &ParseError) -> (u32, u32) {
-    let start = err
-        .loc()
-        .expect("a rejected fixture reports a location")
-        .span
-        .start;
+    let start = err.loc().start;
     support::line_and_column(source, usize::try_from(start).unwrap_or(usize::MAX))
 }
 
@@ -806,6 +802,54 @@ fn void_in_value_position_is_rejected() {
     );
 }
 
+/// **No upstream `.ll` counterpart** — the vendored tree pins this message only
+/// from `byval(void)` (`test/Assembler/invalid-byval-type2.ll`, in the corpus),
+/// never from an argument's own type. The *rule* is upstream's, and this is the
+/// oracle for a claim `docs/divergences.md` had been carrying on a doc comment
+/// alone: `LLParser::parseArgumentList`'s `argument can not have void type` is
+/// **dead**. Its guard reads `if (parseType(ArgTy) || …)` and
+/// `parseType(Type *&, bool AllowVoid = false)` (`LLParser.h`) already refuses
+/// a literal `void` with `void type only allowed for function results`, at the
+/// type token, before `ArgTy->isVoidTy()` is ever asked.
+///
+/// All three of `parseArgumentList`'s callers are exercised, because a
+/// divergence could reach any one of them: `parseFunctionType`,
+/// `parseDeclare`'s header and `parseDefine`'s. If llvmkit ever grows a path
+/// that answers `argument can not have void type` here, this turns red.
+#[test]
+fn a_void_argument_is_refused_by_parse_type_not_by_the_dead_guard() {
+    for (source, void_at) in [
+        // `parseFunctionType`, reached through a type definition.
+        ("%t = type void (void)\n", "void)"),
+        // `parseFunctionHeader` from `parseDeclare`.
+        ("declare void @f(void)\n", "void)"),
+        // `parseFunctionHeader` from `parseDefine`.
+        (
+            "define void @f(void %x) {\nentry:\n  ret void\n}\n",
+            "void %x",
+        ),
+    ] {
+        let module = llvmkit_ir::Module::dynamic("void_argument");
+        let error = Parser::new(source.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("upstream runs `not llvm-as` on a void argument");
+        assert_eq!(
+            error.to_string(),
+            "void type only allowed for function results",
+            "for {source:?}"
+        );
+        assert_eq!(
+            reported_line_and_column(source.as_bytes(), &error),
+            support::line_and_column(
+                source.as_bytes(),
+                source.find(void_at).expect("the source spells this token"),
+            ),
+            "the caret belongs on the argument's own `void`, for {source:?}"
+        );
+    }
+}
+
 /// Mirrors `LLParser::parseTopLevelEntities`'s default arm: any unknown
 /// leading token is reported as a typed `top-level entity` error.
 #[test]
@@ -1440,6 +1484,84 @@ fn end_of_module_checks_run_in_upstream_order() {
         )),
         "use of undefined comdat '$never_defined'"
     );
+
+    // An undefined comdat (6) beats the `ForwardRefVals` loop's intrinsic
+    // branch (7). llvmkit used to raise `intrinsic can only be used as callee`
+    // during `parseTopLevelEntities`, ahead of every step here, so this pair
+    // reported the intrinsic.
+    assert_eq!(
+        header_err(concat!(
+            "@c = global i32 0, comdat($never_defined)\n",
+            "@g = global ptr @llvm.umax\n",
+        )),
+        "use of undefined comdat '$never_defined'"
+    );
+
+    // The intrinsic branch (7) beats an undefined metadata node (8).
+    assert_eq!(
+        header_err(concat!("@g = global ptr @llvm.umax\n", "!named = !{!7}\n",)),
+        "intrinsic can only be used as callee"
+    );
+
+    // Within step 7, upstream's loop walks **every** `ForwardRefVals` entry
+    // before the `use of undefined value` report, which reads
+    // `ForwardRefVals.begin()` afterwards. So an intrinsic offender later in
+    // key order still preempts an ordinary leftover earlier in it —
+    // `aaa_undefined` sorts before `llvm.umax`.
+    assert_eq!(
+        header_err(concat!(
+            "@a = global ptr @aaa_undefined\n",
+            "@b = global ptr @llvm.umax\n",
+        )),
+        "intrinsic can only be used as callee"
+    );
+}
+
+/// `LLParser::parseGlobal` and `LLParser::parseAliasOrIFunc` each claim a
+/// forward reference to their own name **at the definition site**, with the
+/// same three-branch block: take the `ForwardRefVals` entry and erase it, else
+/// report `redefinition of global '@N'` if `M->getNamedValue(Name)` answers,
+/// else nothing. The comparison that follows is anchored at the *definition's*
+/// type — `TyLoc` for a global, `ExplicitTypeLoc` for an alias — not at the
+/// reference.
+///
+/// **No upstream `.ll` pins the alias twin**: a search of `llvm/test` for
+/// `of alias have different types` returns nothing, and `alias-redefinition.ll`
+/// (a corpus row) pins only the redefinition half. The global twin *is*
+/// pinned, by `test/Assembler/opaque-ptr-invalid-forward-ref-2.ll`, also a
+/// corpus row. This is therefore a rule anchor against the two routines for
+/// the parts no fixture reaches — the erase, and the alias wording.
+#[test]
+fn a_definition_claims_its_own_forward_reference() {
+    // The erase: without it the `M->getNamedValue` guard keeps seeing the map
+    // entry, and every later definition of a once-forward-referenced name
+    // slips past the redefinition check into the builder.
+    assert_eq!(
+        header_err(concat!(
+            "@r = global ptr @g\n",
+            "@g = global i32 0\n",
+            "@g = global i32 1\n",
+        )),
+        "redefinition of global '@g'"
+    );
+
+    // `M->getNamedValue` is the whole symbol table, so a `declare` and a
+    // global under one name collide here rather than in the builder.
+    assert_eq!(
+        header_err(concat!("declare void @f()\n", "@f = global i32 0\n")),
+        "redefinition of global '@f'"
+    );
+
+    // The alias twin of `forward reference and definition of global have
+    // different types`, worded "alias" by upstream for the ifunc spelling too.
+    assert_eq!(
+        header_err(concat!(
+            "@r = global ptr addrspace(1) @a\n",
+            "@a = alias i32, ptr @g\n",
+            "@g = global i32 0\n",
+        )),
+        "forward reference and definition of alias have different types"
+    );
 }
 
 /// Mirrors the module-asm arm of `AssemblyWriter::printModule`, which opens
@@ -1509,6 +1631,91 @@ $b = comdat largest\n\
 \n\
 @g = global i32 0, comdat($a)\n\
 @h = global i32 0, comdat($b)\n",
+        "got:\n{printed}"
+    );
+}
+
+/// Ports `test/Assembler/addrspacecast-alias.ll` whole, including its single
+/// `CHECK` line — its `RUN` is `llvm-as < %s | llvm-dis | FileCheck %s`, so the
+/// printed bytes are the assertion.
+///
+/// Two halves of `parseAliasOrIFunc` meet here. Reading: an aliasee opening
+/// with `bitcast` / `getelementptr` / `addrspacecast` / `inttoptr` goes through
+/// a bare `parseValID` and types *itself* — "the bitcast dest type is not
+/// present, it is implied by the dest type" — so no type precedes it. Printing:
+/// `AssemblyWriter::printAlias` does `writeOperand(Aliasee,
+/// !isa<ConstantExpr>(Aliasee))`, suppressing the leading type for exactly that
+/// spelling, which is what makes the two halves round-trip.
+#[test]
+fn a_self_typed_addrspacecast_aliasee_round_trips() {
+    let m = module_new!("addrspacecast_alias").expect("fresh module");
+    parse_into(
+        "@i = internal addrspace(1) global i8 42\n\
+@ia = internal alias ptr addrspace(2), addrspacecast (ptr addrspace(1) @i to ptr addrspace(3))\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert!(
+        printed.contains(
+            "@ia = internal alias ptr addrspace(2), addrspacecast (ptr addrspace(1) @i to ptr addrspace(3))"
+        ),
+        "got:\n{printed}"
+    );
+}
+
+/// Ports the alias half of `test/Assembler/alias-use-list-order.ll`, whose
+/// `RUN` line is `verify-uselistorder`.
+///
+/// Its `@alias.ref3` / `@alias.ref4` are self-typed `getelementptr` aliasees,
+/// and its `@alias.ref1` / `@alias.ref2` embed a **forward reference to an
+/// alias** inside a constant expression. The second half is the one that took
+/// a second fix: resolving that forward reference RAUWs the placeholder inside
+/// a uniqued constant, and llvmkit's guard there asked
+/// `ValueKindData::Constant(_)` where upstream asks `isa<Constant>` — under
+/// which every `GlobalValue`, alias included, qualifies.
+#[test]
+fn an_alias_forward_referenced_from_a_constant_expression_resolves() {
+    let m = module_new!("alias_use_list_order").expect("fresh module");
+    parse_into(
+        "@global = global i32 0\n\
+@alias.ref1 = global ptr getelementptr inbounds (i32, ptr @alias, i64 1)\n\
+@alias.ref2 = global ptr getelementptr inbounds (i32, ptr @alias, i64 1)\n\
+@alias = alias i32, ptr @global\n\
+@alias.ref3 = alias i32, getelementptr inbounds (i32, ptr @alias, i64 1)\n\
+@alias.ref4 = alias i32, getelementptr inbounds (i32, ptr @alias, i64 1)\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert!(
+        printed
+            .contains("@alias.ref3 = alias i32, getelementptr inbounds (i32, ptr @alias, i64 1)"),
+        "got:\n{printed}"
+    );
+    assert!(
+        printed
+            .contains("@alias.ref1 = global ptr getelementptr inbounds (i32, ptr @alias, i64 1)"),
+        "got:\n{printed}"
+    );
+}
+
+/// `LLParser::parseAliasOrIFunc` takes the pointer check and the address space
+/// off the aliasee **value's** type, after the aliasee is read — never off a
+/// type written ahead of it. An `ifunc` reaches the same branch as an alias.
+///
+/// No upstream fixture writes a self-typed resolver — `grep -ranE
+/// '=[^=]*ifunc .*,\s*(bitcast|getelementptr|addrspacecast|inttoptr)'` over
+/// `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/Assembler` matches nothing,
+/// and the closest, `ifunc-program-addrspace.ll`'s
+/// `ifunc void (), ptr addrspacecast (…)`, opens on `ptr` and so takes the
+/// TYPE VALUE branch. The oracle is the routine: its branch is on the first
+/// token alone and says nothing about `IsAlias`.
+#[test]
+fn a_self_typed_ifunc_resolver_parses() {
+    let m = module_new!("ifunc_self_typed_resolver").expect("fresh module");
+    parse_into("@h = ifunc i32 (), inttoptr (i64 42 to ptr)\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@h = ifunc i32 (), inttoptr (i64 42 to ptr)"),
         "got:\n{printed}"
     );
 }

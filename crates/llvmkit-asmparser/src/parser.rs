@@ -5,21 +5,37 @@
 //! one-shot parsing, while [`crate::ll_parser::Parser`] keeps the recursive
 //! descent state private to the parsing operation.
 
-use std::fs::read as read_file;
-use std::path::Path;
-
-use llvmkit_ir::{Constant, DynBrand, IrError, Module, ModuleBrand, Type, Unverified};
+use llvmkit_ir::{Constant, DynBrand, Module, ModuleBrand, Type, Unverified};
 
 use super::asm_parser_context::AsmParserContext;
 use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
 
 use super::ll_parser::{ParsedModule, Parser};
-use super::parse_error::{ParseError, ParseResult};
+use super::parse_error::ParseResult;
 use super::slot_mapping::SlotMapping;
 
 // --------------------------------------------------------------------------
 // Parser configuration
 // --------------------------------------------------------------------------
+
+/// The module identifier given to a module parsed from a string.
+///
+/// Mirrors `Parser.cpp::parseAssemblyString`, which builds
+/// `MemoryBufferRef F(AsmString, "<string>")` — there is no filename to take
+/// an identifier from, so upstream supplies this one, and
+/// `AssemblyWriter::printModule` prints it verbatim as the `; ModuleID`
+/// comment.
+///
+/// Named once rather than spelled at each entry point. Five entry points
+/// carried this default independently, all reading `"asm"`, and they were
+/// found and corrected together only because someone counted them; a sixth
+/// added later would otherwise pick its own.
+///
+/// Two nearby sites deliberately do **not** use it, for different reasons:
+/// [`parse_assembly_with_name`] takes the identifier from its caller, and
+/// [`parse_summary_index_assembly`] keeps `"summary"` because upstream builds
+/// no `Module` there at all.
+const DEFAULT_MODULE_NAME: &str = "<string>";
 
 /// Override for a module's data layout string.
 ///
@@ -86,6 +102,10 @@ pub struct ParserConfig<'cfg> {
     pub upgrade_debug_info: bool,
     /// Replace the file's `target datalayout` string. `None` is upstream's
     /// default argument, the callback that always answers `std::nullopt`.
+    /// Upstream's real callers of a non-default callback are `llvm-link` and
+    /// the ThinLTO importers, both of which reach it through
+    /// `parseAssemblyFileWithIndex` — a file-reading entry point, since
+    /// llvmkit's parser reads no files itself.
     pub data_layout_callback: Option<DataLayoutCallback<'cfg>>,
 }
 
@@ -166,7 +186,7 @@ impl core::fmt::Debug for ParserConfig<'_> {
 ///
 /// # Errors
 ///
-/// Any [`ParseError`] the source provokes. On failure the module is dropped
+/// Any [`crate::parse_error::ParseError`] the source provokes. On failure the module is dropped
 /// along with whatever was parsed into it, so a half-built module never
 /// escapes.
 pub fn parse_into<B, S>(module: Module<B, Unverified>, src: S) -> ParseResult<Module<B, Unverified>>
@@ -186,7 +206,7 @@ where
 ///
 /// # Errors
 ///
-/// Any [`ParseError`] the source provokes. On failure the module is dropped
+/// Any [`crate::parse_error::ParseError`] the source provokes. On failure the module is dropped
 /// along with whatever was parsed into it.
 pub fn parse_into_with_config<B, S>(
     module: Module<B, Unverified>,
@@ -203,53 +223,13 @@ where
     Ok(module)
 }
 
-/// Parse a complete textual IR module under the **named** brand `B`, returning
-/// the owned module.
-///
-/// ```
-/// use llvmkit_asmparser::parse_branded;
-/// use llvmkit_ir::ModuleBrand;
-///
-/// struct Lifted;
-/// impl ModuleBrand for Lifted {}
-///
-/// let m = parse_branded::<Lifted, _>("define void @f() {\nentry:\n  ret void\n}\n")?;
-/// let m = m.verify()?;
-/// assert!(m.to_string().contains("define void @f()"));
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-///
-/// # Errors
-///
-/// [`ParseError::BrandInUse`] / [`ParseError::BrandRetired`] if `B` is not
-/// available, plus any [`ParseError`] the source provokes.
-pub fn parse_branded<B, S>(src: S) -> ParseResult<Module<B, Unverified>>
-where
-    B: ModuleBrand,
-    S: AsRef<[u8]>,
-{
-    parse_branded_with_config(src, &ParserConfig::DEFAULT)
-}
-
-/// [`parse_branded`] under an explicit [`ParserConfig`].
-///
-/// # Errors
-///
-/// [`ParseError::BrandInUse`] / [`ParseError::BrandRetired`] if `B` is not
-/// available, plus any [`ParseError`] the source provokes.
-pub fn parse_branded_with_config<B, S>(
-    src: S,
-    config: &ParserConfig<'_>,
-) -> ParseResult<Module<B, Unverified>>
-where
-    B: ModuleBrand,
-    S: AsRef<[u8]>,
-{
-    parse_into_with_config(branded_module::<B>("asm")?, src, config)
-}
-
 /// Parse a complete textual IR module under [`DynBrand`], returning the owned
 /// module.
+///
+/// Named `"<string>"`, matching `parseAssemblyString`'s `MemoryBufferRef
+/// F(AsmString, "<string>")`; use [`parse_into`] with
+/// [`Module::dynamic`](llvmkit_ir::Module::dynamic) to choose a different
+/// name.
 ///
 /// Infallible in the brand: `DynBrand` is registry-exempt, so this can be
 /// called any number of times concurrently and every result is a separate
@@ -291,7 +271,7 @@ where
 ///
 /// # Errors
 ///
-/// Any [`ParseError`] the source provokes.
+/// Any [`crate::parse_error::ParseError`] the source provokes.
 pub fn parse_dynamic_with_config<S>(
     src: S,
     config: &ParserConfig<'_>,
@@ -299,66 +279,7 @@ pub fn parse_dynamic_with_config<S>(
 where
     S: AsRef<[u8]>,
 {
-    parse_into_with_config(Module::dynamic("asm"), src, config)
-}
-
-/// Read and parse a file under the named brand `B`, returning the owned
-/// module. The module is named after the file.
-///
-/// # Errors
-///
-/// [`ParseError::Io`] if the file cannot be read,
-/// [`ParseError::BrandInUse`] / [`ParseError::BrandRetired`] if `B` is not
-/// available, plus any [`ParseError`] the source provokes.
-pub fn parse_file_branded<B, P>(path: P) -> ParseResult<Module<B, Unverified>>
-where
-    B: ModuleBrand,
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    let bytes = read_file(path)?;
-    parse_into(branded_module::<B>(module_name_for(path))?, bytes)
-}
-
-/// Read and parse a file under [`DynBrand`], returning the owned module. The
-/// module is named after the file.
-///
-/// # Errors
-///
-/// [`ParseError::Io`] if the file cannot be read, plus any [`ParseError`] the
-/// source provokes.
-pub fn parse_file_dynamic<P>(path: P) -> ParseResult<Module<DynBrand, Unverified>>
-where
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    let bytes = read_file(path)?;
-    parse_into(Module::dynamic(module_name_for(path)), bytes)
-}
-
-/// Claim brand `B`, translating the registry's refusal into a [`ParseError`].
-fn branded_module<B: ModuleBrand>(name: &str) -> ParseResult<Module<B, Unverified>> {
-    Module::branded::<B, _>(name).map_err(|err| match err {
-        IrError::BrandRetired { brand } => ParseError::BrandRetired { brand },
-        // `Module::branded` reports exactly `BrandInUse` or `BrandRetired`.
-        IrError::BrandInUse { brand } => ParseError::BrandInUse { brand },
-        // `IrError` is `#[non_exhaustive]`, so this arm exists for a variant
-        // the registry does not currently produce. It carries the message
-        // rather than panicking; `ErrorKind::Other` is the honest label for
-        // "not an I/O failure at all" until a variant is worth naming.
-        other => ParseError::Io {
-            kind: std::io::ErrorKind::Other,
-            message: other.to_string(),
-        },
-    })
-}
-
-/// Module name for a parsed file: the file name, or `"asm"` if the path has
-/// none (or one that is not UTF-8).
-fn module_name_for(path: &Path) -> &str {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("asm")
+    parse_into_with_config(Module::dynamic(DEFAULT_MODULE_NAME), src, config)
 }
 
 // --------------------------------------------------------------------------
@@ -368,9 +289,13 @@ fn module_name_for(path: &Path) -> &str {
 /// Parse a complete textual IR module and inspect it together with its
 /// [`ParsedModule`] slot mapping.
 ///
-/// Prefer [`parse_dynamic`] / [`parse_branded`] unless you need the slot
-/// tables: they return the module by value, so it can be verified, stored, and
-/// moved. This form exists because [`ParsedModule`] *borrows* the module it was
+/// Named `"<string>"`, matching `parseAssemblyString`'s `MemoryBufferRef
+/// F(AsmString, "<string>")`; use [`parse_assembly_with_name`] to choose a
+/// different name.
+///
+/// Prefer [`parse_dynamic`] unless you need the slot tables: it returns the
+/// module by value, so it can be verified, stored, and moved. This form
+/// exists because [`ParsedModule`] *borrows* the module it was
 /// parsed against, so the two cannot both be returned from one call — the
 /// closure is what provides a region for the by-product to borrow for.
 ///
@@ -385,7 +310,7 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    parse_assembly_with_name("asm", src, &ParserConfig::DEFAULT, f)
+    parse_assembly_with_name(DEFAULT_MODULE_NAME, src, &ParserConfig::DEFAULT, f)
 }
 
 /// [`parse_assembly`] under an explicit [`ParserConfig`].
@@ -398,10 +323,25 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    parse_assembly_with_name("asm", src, config, f)
+    parse_assembly_with_name(DEFAULT_MODULE_NAME, src, config, f)
 }
 
-fn parse_assembly_with_name<R, S, F>(
+/// Parse a complete textual IR module under a caller-supplied module name, and
+/// inspect it together with its [`ParsedModule`] slot mapping.
+///
+/// Mirrors `parseAssembly(MemoryBufferRef F, …)`, whose `F` carries the buffer
+/// identifier that becomes `M->getModuleIdentifier()`. llvmkit hangs the
+/// identifier on the [`Module`] instead, so the closure forms — which
+/// construct the module themselves — take it as a parameter here.
+/// [`parse_assembly`] and [`parse_assembly_with_config`] pass the fixed name
+/// `"<string>"`, matching `parseAssemblyString`'s `MemoryBufferRef
+/// F(AsmString, "<string>")`; this function publishes that parameter so a
+/// caller can pick a different name instead.
+///
+/// # Errors
+///
+/// Any [`crate::parse_error::ParseError`] the source provokes.
+pub fn parse_assembly_with_name<R, S, F>(
     name: &str,
     src: S,
     config: &ParserConfig<'_>,
@@ -414,34 +354,6 @@ where
     let module = Module::dynamic(name);
     let parsed = Parser::new(src.as_ref(), &module)?.parse_module_with_config(config)?;
     Ok(f(&module, parsed))
-}
-
-/// Read and parse a complete textual IR module under a fresh module brand.
-///
-/// The closure receives the module by reference; see [`parse_assembly`].
-pub fn parse_assembly_file<R, P, F>(path: P, f: F) -> ParseResult<R>
-where
-    P: AsRef<Path>,
-    F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
-{
-    parse_assembly_file_with_config(path, &ParserConfig::DEFAULT, f)
-}
-
-/// [`parse_assembly_file`] under an explicit [`ParserConfig`]. The file form is
-/// where upstream's data-layout callback is actually reached — `llvm-link` and
-/// the ThinLTO importers hand one to `parseAssemblyFileWithIndex`.
-pub fn parse_assembly_file_with_config<R, P, F>(
-    path: P,
-    config: &ParserConfig<'_>,
-    f: F,
-) -> ParseResult<R>
-where
-    P: AsRef<Path>,
-    F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
-{
-    let path = path.as_ref();
-    let bytes = read_file(path)?;
-    parse_assembly_with_name(module_name_for(path), bytes, config, f)
 }
 
 /// Parse a complete textual IR module *and* the module summary index its `^N`
@@ -465,8 +377,15 @@ where
 }
 
 /// [`parse_assembly_with_index`] under an explicit [`ParserConfig`]. Mirrors
-/// `parseAssemblyFileWithIndex` and its
-/// `…NoUpgradeDebugInfo` twin, which differ only in what they pass here.
+/// `parseAssemblyWithIndex(MemoryBufferRef F, …)`, the buffer-taking
+/// primitive `parseAssemblyFileWithIndex` and its `…NoUpgradeDebugInfo` twin
+/// wrap after reading a file; the two file-taking wrappers differ from each
+/// other only in what they pass through to it.
+///
+/// Its default module name is `"<string>"`, upstream's convention for a
+/// caller-supplied buffer with no name of its own — an inference rather than
+/// a direct port, since `parseAssemblyWithIndex` has no string-only overload
+/// to take the identifier from.
 pub fn parse_assembly_with_index_and_config<R, S, F>(
     src: S,
     config: &ParserConfig<'_>,
@@ -476,7 +395,7 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    let module = Module::dynamic("asm");
+    let module = Module::dynamic(DEFAULT_MODULE_NAME);
     let parsed =
         Parser::with_summary_index(src.as_ref(), &module)?.parse_module_with_config(config)?;
     Ok(f(&module, parsed))
@@ -494,15 +413,6 @@ pub fn parse_summary_index_assembly<S: AsRef<[u8]>>(src: S) -> ParseResult<Modul
     let module = Module::dynamic("summary");
     let parsed = Parser::summary_index_only(src.as_ref(), &module)?.parse_module()?;
     Ok(parsed.summary_index.unwrap_or_default())
-}
-
-/// Read and parse a textual LLVM module summary index.
-pub fn parse_summary_index_assembly_file<P>(path: P) -> ParseResult<ModuleSummaryIndex>
-where
-    P: AsRef<Path>,
-{
-    let bytes = read_file(path)?;
-    parse_summary_index_assembly(&bytes)
 }
 
 /// Parse a complete textual IR module and return source locations inside the closure.
@@ -540,7 +450,7 @@ where
         AsmParserContext<'ctx, DynBrand>,
     ) -> R,
 {
-    let module = Module::dynamic("asm");
+    let module = Module::dynamic(DEFAULT_MODULE_NAME);
     let mut parsed =
         Parser::with_context(src.as_ref(), &module)?.parse_module_with_config(config)?;
     // `Parser::with_context` installs the registry, so `parse_module` always
