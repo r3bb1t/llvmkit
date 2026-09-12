@@ -133,6 +133,18 @@ cut, entries accumulate under **Unreleased**.
   `position_past_allocas`) still cannot refuse a block or instruction of
   another module; the reads they lead to are marked for the task that makes
   them fallible.
+- **Fixed (llvmkit-ir):** `SsaState::for_function` and
+  `SsaBuilder::for_function` / `with_folder_for_function` took the function
+  on trust: a function of another module was accepted, and a state opened
+  in one module could drive a builder over another whose function happened
+  to share the slot, because the state kept only that slot. Both now admit
+  the function through the checked door (`ForeignValueId`), and the state
+  keeps its function as a `FunctionId`, so a builder whose function is not
+  the state's — module included — is refused with `SsaForeignFunction`.
+  `declare_int_var_dyn`, `declare_float_var_dyn`,
+  `declare_pointer_var_in_addrspace` and their poison twins are infallible
+  and cannot yet refuse a type of another module; they are marked for the
+  task that makes them fallible.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type

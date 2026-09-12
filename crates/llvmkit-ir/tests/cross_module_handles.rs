@@ -22,8 +22,8 @@
 use llvmkit_ir::{
     Align, BasicBlock, CallSiteConfig, CastOpcode, Dyn, DynBrand, FloatDyn, FloatValue,
     GepNoWrapFlags, InlineAsmOptions, IntCastFlags, IntDyn, IntValue, IrBuilder, IrError, IrStruct,
-    Linkage, Module, PointerValue, Positioned, TailCallKind, TruncFlags, UiToFpFlags, Unterminated,
-    Value, ZextFlags,
+    Linkage, Module, PointerValue, Positioned, SsaBuilder, SsaState, TailCallKind, TruncFlags,
+    UiToFpFlags, Unterminated, Value, ZextFlags,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -1630,5 +1630,65 @@ fn append_block_with_params_rejects_a_function_or_type_from_another_module() {
         format!("{foreign}"),
         foreign_before,
         "a rejected block must not be appended to the other module either"
+    );
+}
+
+/// On-the-fly SSA construction refuses a function or a session state from
+/// another module: `SsaState::for_function` refuses a function of another
+/// module, and `SsaBuilder::for_function` refuses a function or a module
+/// other than the state's — including a state opened in another module whose
+/// function sits at the same slot, which the state's function id, module tag
+/// included, now tells apart.
+///
+/// No upstream counterpart: llvmkit's SSA builder follows
+/// `cranelift-frontend`'s `FunctionBuilder`; the nearest LLVM analogue,
+/// `SSAUpdater` (`Transforms/Utils/SSAUpdater.cpp`), works on `Value *`s.
+#[test]
+fn ssa_construction_rejects_a_function_or_state_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    // Declared in the same order in both modules, so `f` and `g` share a slot:
+    // only the module tag tells the two states apart.
+    let f = home
+        .add_typed_function::<(), (), _>("f", Linkage::External)
+        .expect("f")
+        .as_function();
+    let g = foreign
+        .add_typed_function::<(), (), _>("g", Linkage::External)
+        .expect("g")
+        .as_function();
+    let mut home_state = SsaState::for_function(&home, home.view(f)).expect("home state");
+    let mut foreign_state =
+        SsaState::for_function(&foreign, foreign.view(g)).expect("foreign state");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "SsaState::for_function",
+            IrError::ForeignValueId,
+            SsaState::for_function(&home, foreign.view(g)).map(|_| ()),
+        ),
+        (
+            "SsaBuilder::for_function function",
+            IrError::ForeignValueId,
+            SsaBuilder::for_function(&home, foreign.view(g), &mut home_state).map(|_| ()),
+        ),
+        (
+            "SsaBuilder::for_function module",
+            IrError::ForeignValueId,
+            SsaBuilder::for_function(&foreign, home.view(f), &mut home_state).map(|_| ()),
+        ),
+        (
+            "state from another module",
+            IrError::SsaForeignFunction,
+            SsaBuilder::for_function(&home, home.view(f), &mut foreign_state).map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected session must not mutate"
     );
 }

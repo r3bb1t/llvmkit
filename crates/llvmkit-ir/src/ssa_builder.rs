@@ -70,6 +70,8 @@ use super::ir_builder::{IntoReturnValue, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Invariant, Module, ModuleBrand, ModuleRef, Unverified};
 use super::r#type::TypeSlot;
+use super::r#type::TypeSlotAccess;
+use super::value::ValueSlotAccess;
 use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueSlot,
 };
@@ -382,8 +384,8 @@ struct VarData {
 /// bookkeeping plus the declared-variable table.
 ///
 /// **Owned, `Send`, `Clone`, lifetime-free.** It holds no borrow of the
-/// module and no linear IR capability — only `ValueSlot`s and the
-/// module brand `B` as a phantom tag — so it can live in a struct
+/// module and no linear IR capability — only `ValueSlot`s, its function's
+/// storable id and the module brand `B` as a phantom tag — so it can live in a struct
 /// field, cross a thread boundary alongside its [`Module`], and be
 /// *snapshotted and restored* around a speculative branch. (A real
 /// lifter saves its whole variable environment before a conditional and
@@ -422,9 +424,11 @@ struct VarData {
 #[derive(Branded)]
 #[branded(Debug, Clone)]
 pub struct SsaState<B: ModuleBrand> {
-    /// The function this state is authoring. Every builder minted from it
-    /// must name the same function ([`IrError::SsaForeignFunction`]).
-    function: ValueSlot,
+    /// The function this state is authoring, as its storable id. Every
+    /// builder minted from the state must name the same function, module tag
+    /// included, so a state opened in one module cannot drive a builder over
+    /// another ([`IrError::SsaForeignFunction`]).
+    function: crate::FunctionId<Dyn, B>,
     /// Identity every [`SsaBlock`] / variable handle this state's builders
     /// hand out is stamped with.
     id: SsaBuilderId,
@@ -469,6 +473,9 @@ pub struct SsaState<B: ModuleBrand> {
 impl<B: ModuleBrand> SsaState<B> {
     /// Begin on-the-fly SSA construction for `function`.
     ///
+    /// Errors with [`IrError::ForeignValueId`] if `function` belongs to a
+    /// module other than `module`.
+    ///
     /// Errors with [`IrError::SsaFunctionHasBlocks`] if `function`
     /// already has a body -- the layer must observe every CFG edge from
     /// birth, so grafting onto a partially-built function is rejected.
@@ -481,11 +488,13 @@ impl<B: ModuleBrand> SsaState<B> {
     where
         B: 'ctx,
     {
+        // Boundary: the caller's function must belong to `module`.
+        function.slot_in(module.id())?;
         if function.entry_block().is_some() {
             return Err(IrError::SsaFunctionHasBlocks);
         }
         Ok(Self {
-            function: function.slot(),
+            function: function.as_dyn().id(),
             id: SsaBuilderId(module.next_ssa_builder_id()),
             vars: Vec::new(),
             current_def: HashMap::new(),
@@ -590,7 +599,8 @@ impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker> SsaBuilder<'s, 'ctx, B, C
     ///
     /// `function` must be the one `state` was opened for
     /// ([`SsaState::for_function`]), otherwise
-    /// [`IrError::SsaForeignFunction`]. The builder starts unpositioned;
+    /// [`IrError::SsaForeignFunction`]; a `function` of a module other than
+    /// `module` is [`IrError::ForeignValueId`]. The builder starts unpositioned;
     /// call [`switch_to_block`](Self::switch_to_block) before emitting.
     pub fn for_function(
         module: &'ctx Module<B, Unverified>,
@@ -615,7 +625,11 @@ where
         state: &'s mut SsaState<B>,
         folder: F,
     ) -> IrResult<Self> {
-        if state.function != function.slot() {
+        // Boundary: the caller's function must belong to `module`; then it
+        // must be the state's own function, compared by id so the module tag
+        // takes part.
+        function.slot_in(module.id())?;
+        if state.function != function.as_dyn().id() {
             return Err(IrError::SsaForeignFunction);
         }
         Ok(SsaBuilder {
@@ -678,7 +692,7 @@ where
         &mut self,
         name: Name,
     ) -> IntVariable<W, B> {
-        let ty = W::ir_type(self.module_ref()).as_type().id();
+        let ty = W::ir_type(self.module_ref()).slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Int, false)
             .into()
     }
@@ -690,7 +704,7 @@ where
         &mut self,
         name: Name,
     ) -> IntVariable<W, B> {
-        let ty = W::ir_type(self.module_ref()).as_type().id();
+        let ty = W::ir_type(self.module_ref()).slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Int, true)
             .into()
     }
@@ -702,8 +716,16 @@ where
         ty: IntType<'ctx, super::int_width::IntDyn, B>,
         name: Name,
     ) -> IntVariable<super::int_width::IntDyn, B> {
-        self.declare_var_raw(ty.as_type().id(), name, VarCategory::Int, false)
-            .into()
+        // `ty` may belong to another module; this infallible entry cannot
+        // refuse it.
+        // boundary (F1): refused by Task 26
+        self.declare_var_raw(
+            ty.slot_trusting_same_module(),
+            name,
+            VarCategory::Int,
+            false,
+        )
+        .into()
     }
 
     /// Poison twin of [`Self::declare_int_var_dyn`].
@@ -712,7 +734,10 @@ where
         ty: IntType<'ctx, super::int_width::IntDyn, B>,
         name: Name,
     ) -> IntVariable<super::int_width::IntDyn, B> {
-        self.declare_var_raw(ty.as_type().id(), name, VarCategory::Int, true)
+        // `ty` may belong to another module; this infallible entry cannot
+        // refuse it.
+        // boundary (F1): refused by Task 26
+        self.declare_var_raw(ty.slot_trusting_same_module(), name, VarCategory::Int, true)
             .into()
     }
 
@@ -721,7 +746,7 @@ where
         &mut self,
         name: Name,
     ) -> FloatVariable<K, B> {
-        let ty = K::ir_type(self.module_ref()).as_type().id();
+        let ty = K::ir_type(self.module_ref()).slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Float, false)
             .into()
     }
@@ -731,7 +756,7 @@ where
         &mut self,
         name: Name,
     ) -> FloatVariable<K, B> {
-        let ty = K::ir_type(self.module_ref()).as_type().id();
+        let ty = K::ir_type(self.module_ref()).slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Float, true)
             .into()
     }
@@ -743,8 +768,16 @@ where
         ty: FloatType<'ctx, super::float_kind::FloatDyn, B>,
         name: Name,
     ) -> FloatVariable<super::float_kind::FloatDyn, B> {
-        self.declare_var_raw(ty.as_type().id(), name, VarCategory::Float, false)
-            .into()
+        // `ty` may belong to another module; this infallible entry cannot
+        // refuse it.
+        // boundary (F1): refused by Task 26
+        self.declare_var_raw(
+            ty.slot_trusting_same_module(),
+            name,
+            VarCategory::Float,
+            false,
+        )
+        .into()
     }
 
     /// Poison twin of [`Self::declare_float_var_dyn`].
@@ -753,14 +786,22 @@ where
         ty: FloatType<'ctx, super::float_kind::FloatDyn, B>,
         name: Name,
     ) -> FloatVariable<super::float_kind::FloatDyn, B> {
-        self.declare_var_raw(ty.as_type().id(), name, VarCategory::Float, true)
-            .into()
+        // `ty` may belong to another module; this infallible entry cannot
+        // refuse it.
+        // boundary (F1): refused by Task 26
+        self.declare_var_raw(
+            ty.slot_trusting_same_module(),
+            name,
+            VarCategory::Float,
+            true,
+        )
+        .into()
     }
 
     /// Declare a strict pointer variable in the default address space
     /// (addrspace 0).
     pub fn declare_pointer_var<Name: Into<String>>(&mut self, name: Name) -> PointerVariable<B> {
-        let ty = self.module.ptr_type(0).as_type().id();
+        let ty = self.module.ptr_type(0).slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Pointer, false)
             .into()
     }
@@ -770,7 +811,7 @@ where
         &mut self,
         name: Name,
     ) -> PointerVariable<B> {
-        let ty = self.module.ptr_type(0).as_type().id();
+        let ty = self.module.ptr_type(0).slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Pointer, true)
             .into()
     }
@@ -782,8 +823,16 @@ where
         ty: PointerType<'ctx, B>,
         name: Name,
     ) -> PointerVariable<B> {
-        self.declare_var_raw(ty.as_type().id(), name, VarCategory::Pointer, false)
-            .into()
+        // `ty` may belong to another module; this infallible entry cannot
+        // refuse it.
+        // boundary (F1): refused by Task 26
+        self.declare_var_raw(
+            ty.slot_trusting_same_module(),
+            name,
+            VarCategory::Pointer,
+            false,
+        )
+        .into()
     }
 
     /// Poison twin of [`Self::declare_pointer_var_in_addrspace`].
@@ -792,8 +841,16 @@ where
         ty: PointerType<'ctx, B>,
         name: Name,
     ) -> PointerVariable<B> {
-        self.declare_var_raw(ty.as_type().id(), name, VarCategory::Pointer, true)
-            .into()
+        // `ty` may belong to another module; this infallible entry cannot
+        // refuse it.
+        // boundary (F1): refused by Task 26
+        self.declare_var_raw(
+            ty.slot_trusting_same_module(),
+            name,
+            VarCategory::Pointer,
+            true,
+        )
+        .into()
     }
 
     /// Shared declare-slot helper: pushes a `VarData` and returns a
@@ -1052,7 +1109,7 @@ where
         let v = value.into_int_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.as_erased().ty())?;
         let block = self.current_block_id()?;
-        self.write_variable(var.index, block, v.slot());
+        self.write_variable(var.index, block, v.slot_trusting_same_module());
         Ok(())
     }
 
@@ -1092,7 +1149,7 @@ where
         let v = value.into_float_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id()?;
-        self.write_variable(var.index, block, v.slot());
+        self.write_variable(var.index, block, v.slot_trusting_same_module());
         Ok(())
     }
 
@@ -1134,7 +1191,7 @@ where
         let v = value.into_pointer_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id()?;
-        self.write_variable(var.index, block, v.slot());
+        self.write_variable(var.index, block, v.slot_trusting_same_module());
         Ok(())
     }
 
