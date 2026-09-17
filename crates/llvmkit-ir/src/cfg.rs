@@ -3,6 +3,7 @@
 //! enumeration over `BasicBlock` / terminator instruction structure.
 
 use crate::Branded;
+use core::cell::Cell;
 use core::iter::FusedIterator;
 use std::collections::HashMap;
 
@@ -270,7 +271,7 @@ pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueSlot> {
         InstructionKindData::Ret(_)
         | InstructionKindData::Resume(_)
         | InstructionKindData::Unreachable(_) => Vec::new(),
-        InstructionKindData::CleanupReturn(d) => d.unwind_dest.into_iter().collect(),
+        InstructionKindData::CleanupReturn(d) => d.unwind_dest.get().into_iter().collect(),
         InstructionKindData::Br(d) => branch_successor_ids(d),
         InstructionKindData::Switch(d) => {
             let mut ids = Vec::with_capacity(d.cases.borrow().len() + 1);
@@ -286,7 +287,7 @@ pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueSlot> {
             ids.extend(d.indirect_dests.iter().map(|target| target.get()));
             ids
         }
-        InstructionKindData::CatchReturn(d) => vec![d.target_bb],
+        InstructionKindData::CatchReturn(d) => vec![d.target_bb.get()],
         InstructionKindData::CatchSwitch(d) => {
             let handlers = d.handlers.borrow();
             let mut ids =
@@ -346,5 +347,167 @@ fn branch_successor_ids(d: &BranchInstData) -> Vec<ValueSlot> {
         BranchKind::Conditional {
             then_bb, else_bb, ..
         } => vec![*then_bb, *else_bb],
+    }
+}
+
+/// Port of `Instruction::replaceSuccessorWith` (`lib/IR/Instruction.cpp`): every
+/// successor slot of `kind` naming `old` names `new` instead. Upstream walks
+/// `getSuccessor(Idx)` over every index and calls `setSuccessor(Idx, NewBB)` on
+/// a match; the arms cover the same successor slots as [`kind_successor_ids`].
+///
+/// Upstream `setSuccessor` assigns through `Use::set`, which keeps both blocks'
+/// use lists current. llvmkit stores successors as plain slots, so the caller
+/// re-establishes both blocks' edges with [`sync_block_uses`].
+pub(super) fn replace_successor_with(kind: &InstructionKindData, old: ValueSlot, new: ValueSlot) {
+    let replace = |slot: &mut ValueSlot| {
+        if *slot == old {
+            *slot = new;
+        }
+    };
+    let replace_cell = |cell: &Cell<ValueSlot>| {
+        if cell.get() == old {
+            cell.set(new);
+        }
+    };
+    let replace_optional_cell = |cell: &Cell<Option<ValueSlot>>| {
+        if cell.get() == Some(old) {
+            cell.set(Some(new));
+        }
+    };
+    match kind {
+        InstructionKindData::Ret(_)
+        | InstructionKindData::Resume(_)
+        | InstructionKindData::Unreachable(_) => {}
+        InstructionKindData::CleanupReturn(d) => replace_optional_cell(&d.unwind_dest),
+        InstructionKindData::Br(d) => match &mut *d.kind.borrow_mut() {
+            BranchKind::Unconditional(target) => replace(target),
+            BranchKind::Conditional {
+                then_bb, else_bb, ..
+            } => {
+                replace(then_bb);
+                replace(else_bb);
+            }
+        },
+        InstructionKindData::Switch(d) => {
+            replace_cell(&d.default_bb);
+            for (_, target) in d.cases.borrow_mut().iter_mut() {
+                replace(target);
+            }
+        }
+        InstructionKindData::IndirectBr(d) => {
+            for target in d.destinations.borrow_mut().iter_mut() {
+                replace(target);
+            }
+        }
+        InstructionKindData::Invoke(d) => {
+            replace_cell(&d.normal_dest);
+            replace_cell(&d.unwind_dest);
+        }
+        InstructionKindData::CallBr(d) => {
+            replace_cell(&d.default_dest);
+            for target in &d.indirect_dests {
+                replace_cell(target);
+            }
+        }
+        InstructionKindData::CatchReturn(d) => replace_cell(&d.target_bb),
+        InstructionKindData::CatchSwitch(d) => {
+            for handler in d.handlers.borrow_mut().iter_mut() {
+                replace(handler);
+            }
+            replace_optional_cell(&d.unwind_dest);
+        }
+        InstructionKindData::Add(_)
+        | InstructionKindData::Sub(_)
+        | InstructionKindData::Mul(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
+        | InstructionKindData::Shl(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
+        | InstructionKindData::And(_)
+        | InstructionKindData::Or(_)
+        | InstructionKindData::Xor(_)
+        | InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
+        | InstructionKindData::Fcmp(_)
+        | InstructionKindData::Alloca(_)
+        | InstructionKindData::Load(_)
+        | InstructionKindData::Store(_)
+        | InstructionKindData::Gep(_)
+        | InstructionKindData::Call(_)
+        | InstructionKindData::Select(_)
+        | InstructionKindData::Cast(_)
+        | InstructionKindData::Icmp(_)
+        | InstructionKindData::Phi(_)
+        | InstructionKindData::Fneg(_)
+        | InstructionKindData::Freeze(_)
+        | InstructionKindData::VaArg(_)
+        | InstructionKindData::ExtractValue(_)
+        | InstructionKindData::InsertValue(_)
+        | InstructionKindData::ExtractElement(_)
+        | InstructionKindData::InsertElement(_)
+        | InstructionKindData::ShuffleVector(_)
+        | InstructionKindData::Fence(_)
+        | InstructionKindData::AtomicCmpXchg(_)
+        | InstructionKindData::AtomicRmw(_)
+        | InstructionKindData::LandingPad(_)
+        | InstructionKindData::CleanupPad(_)
+        | InstructionKindData::CatchPad(_) => {}
+    }
+}
+
+/// Restore `block`'s use-list edges from the terminator `terminator` after
+/// that terminator's successor slots have been edited.
+///
+/// Upstream needs no such routine: a terminator's successors *are* `Use`s,
+/// and `Use::set` unlinks from the old value's list and links into the new
+/// one's as part of the assignment, so `predecessors(BB)` — which reads
+/// `BB->user_begin()` — is never stale. llvmkit stores successors as plain
+/// slots and registers the use once at construction
+/// (`IrBuilder::append_instruction` extends its operand walk with
+/// `block_operand_ids`), so an edit has to re-establish the same invariant:
+/// one `ValueUse::Instruction(terminator)` entry per occurrence of the block
+/// among the terminator's successors.
+///
+/// Reconciling against the post-edit successor list rather than counting
+/// edits is what makes it correct for the many-edge slots — a `switch`
+/// redirect retargets *every* case naming the old block, and a `cond_br %c,
+/// X, X` registers two entries on `X` of which collapsing one arm must
+/// leave one. New entries go to the **head**, as `Use::set` does; which of
+/// several identical entries is dropped is unobservable.
+pub(super) fn sync_block_uses<'ctx, B: ModuleBrand + 'ctx>(
+    module: ModuleRef<'ctx, B>,
+    terminator: ValueSlot,
+    block: ValueSlot,
+) {
+    let wanted = match &module.value_data(terminator).kind {
+        ValueKindData::Instruction(data) => kind_successor_ids(&data.kind)
+            .iter()
+            .filter(|successor| **successor == block)
+            .count(),
+        _ => 0,
+    };
+    let mut uses = module.value_data(block).use_list.borrow_mut();
+    let edge = ValueUse::Instruction(terminator);
+    let have = uses.iter().filter(|entry| **entry == edge).count();
+    if have > wanted {
+        let mut surplus = have - wanted;
+        uses.retain(|entry| {
+            if surplus > 0 && *entry == edge {
+                surplus -= 1;
+                false
+            } else {
+                true
+            }
+        });
+    } else {
+        for _ in have..wanted {
+            uses.insert(0, edge);
+        }
     }
 }

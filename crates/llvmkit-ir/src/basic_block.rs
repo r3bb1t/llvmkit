@@ -20,14 +20,18 @@
 
 use super::asm_writer::SlotTracker;
 use super::block_params::{BlockParams, BlockParamsDyn};
-use super::block_state::{BlockTerminationState, Unterminated};
+use super::block_state::{BlockTerminationState, Terminated, Unterminated};
 use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
-use super::instruction::{InstructionKindData, InstructionView};
+use super::instruction::{InstructionKindData, InstructionView, absorb_debug_records};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
+use super::metadata::{
+    MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataId, MetadataKind,
+    SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
+};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{
@@ -1050,64 +1054,381 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         Ok(())
     }
 
-    /// Split this block at `before`: every instruction at `before` and
-    /// after is moved into a fresh block (named `name`) appended to the
-    /// parent function. The original block keeps the prefix; the caller
-    /// is responsible for adding a terminator that flows to the new
-    /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
+    /// The terminator's slot, or `None` when the block is empty or its last
+    /// instruction is not a terminator. Ports `BasicBlock::getTerminator`.
+    fn terminator_slot(&self) -> Option<ValueSlot> {
+        let last = *self.data().instructions.borrow().last()?;
+        match &self.module.value_data(last).kind {
+            ValueKindData::Instruction(data) if data.kind.is_terminator() => Some(last),
+            _ => None,
+        }
+    }
+
+    /// Ports `BasicBlock::getSinglePredecessor`: the predecessor when this block
+    /// has exactly one predecessor edge. Duplicate edges count, so a `switch`
+    /// reaching the block from two cases yields `None`, as upstream's
+    /// `pred_begin`/`pred_end` walk does.
+    fn single_predecessor(&self) -> Option<ValueSlot> {
+        match crate::cfg::block_predecessors(self.to_erased()).as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        }
+    }
+
+    /// Where `instruction` sits in this block's list. The split routines take
+    /// an [`InstructionView`], which can name an instruction of any block;
+    /// upstream takes an iterator into this block's own list, so it has no
+    /// counterpart to this refusal.
+    fn split_point_position(&self, instruction: ValueSlot) -> IrResult<usize> {
+        self.data()
+            .instructions
+            .borrow()
+            .iter()
+            .position(|id| *id == instruction)
+            .ok_or(IrError::InvalidOperation {
+                message: "split instruction is not in this block",
+            })
+    }
+
+    /// The parent function, and this block's position in its block list.
+    /// Upstream's `BasicBlock::Create` accepts a null parent and makes a
+    /// parentless block; llvmkit refuses to split an orphan instead.
+    fn parent_and_position(&self) -> IrResult<(FunctionValue<'ctx, R, B>, usize)> {
+        let parent_fn_id = self.parent_id().ok_or(IrError::InvalidOperation {
+            message: "cannot split an orphan basic block",
+        })?;
+        let parent_fn =
+            FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
+        let position = parent_fn
+            .data()
+            .basic_blocks
+            .borrow()
+            .iter()
+            .position(|id| *id == self.id)
+            .ok_or(IrError::InvalidOperation {
+                message: "block does not belong to function",
+            })?;
+        Ok((parent_fn, position))
+    }
+
+    /// Ports `BasicBlock::replacePhiUsesWith`: every incoming entry of this
+    /// block's leading phis that names `old` names `new` instead
+    /// (`PHINode::replaceIncomingBlockWith`). A phi's incoming blocks are not
+    /// `Use`s upstream or here, so no use list changes.
+    pub(crate) fn replace_phi_uses_with(&self, old: ValueSlot, new: ValueSlot) {
+        // N.B. This might not be a complete BasicBlock, so don't assume
+        // that it ends with a non-phi instruction.
+        for instruction in self.instruction_ids() {
+            let ValueKindData::Instruction(data) = &self.module.value_data(instruction).kind else {
+                break;
+            };
+            let InstructionKindData::Phi(phi) = &data.kind else {
+                break;
+            };
+            for incoming in phi.incoming.borrow_mut().iter_mut() {
+                if incoming.1 == old {
+                    incoming.1 = new;
+                }
+            }
+        }
+    }
+
+    /// Ports `BasicBlock::replaceSuccessorsPhiUsesWith(Old, New)`: the phi
+    /// rewrite, applied to each successor of this block's terminator,
+    /// duplicate edges included.
+    pub(crate) fn replace_successors_phi_uses_with(&self, old: ValueSlot, new: ValueSlot) {
+        let Some(terminator) = self.terminator_slot() else {
+            // Cope with being called on a BasicBlock that doesn't have a
+            // terminator yet.
+            return;
+        };
+        let ValueKindData::Instruction(data) = &self.module.value_data(terminator).kind else {
+            return;
+        };
+        for successor in crate::cfg::kind_successor_ids(&data.kind) {
+            BasicBlock::<'ctx, Dyn, Terminated, B>::from_parts(successor, self.module, self.ty)
+                .replace_phi_uses_with(old, new);
+        }
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
+    BasicBlock<'ctx, R, Terminated, B, Params>
+{
+    /// Split this block in two at `before` and return the new block.
     ///
-    /// Errors with [`IrError::ForeignValueId`] if `before` belongs to another
-    /// module, and with [`IrError::InvalidOperation`] if this block has no
-    /// parent function or `before` is not one of its instructions. Upstream
-    /// has no error path for any of them: it takes the split point as an
-    /// iterator into the block's own instruction list. Every refusal happens
-    /// before anything is read, appended or moved.
+    /// Ports `BasicBlock::splitBasicBlock` (`lib/IR/BasicBlock.cpp`) with
+    /// `Before = false`; [`split_before`](Self::split_before) is the
+    /// `Before = true` form. A block named `name` is created right after this
+    /// one, `before` and every instruction after it move into it, this block
+    /// gains `br label %name` carrying `before`'s location without its atom,
+    /// and the phis of the moved terminator's successors are rewritten to name
+    /// the new block. Both blocks end in a terminator afterwards.
+    ///
+    /// The debug records attached ahead of `before` stay in this block, ahead
+    /// of the new branch. `splitBasicBlock` splices from an iterator whose head
+    /// bit is clear, which leaves them behind for the branch to adopt.
+    ///
+    /// # Errors
+    ///
+    /// Every refusal happens before anything is created, moved or rewritten:
+    ///
+    /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
+    /// - [`IrError::InvalidOperation`] if this block has no terminator
+    ///   (upstream's `assert(getTerminator())`; a `Terminated` handle is not
+    ///   proof on its own, because [`FunctionValue::basic_blocks`] hands one
+    ///   out for every block), if `before` is not one of its instructions, or
+    ///   if this block has no parent function or is missing from its block
+    ///   list.
     pub fn split_at<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,
         before: &InstructionView<'ctx, B>,
         name: Name,
-    ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>>
+    ) -> IrResult<BasicBlock<'ctx, R, Terminated, B>>
     where
         Name: Into<String>,
     {
         // Boundary: the caller's split point, admitted before the block is
-        // read or a new block appended.
+        // read or a new block created.
         let split_id = before.slot_in(self.module.id())?;
+        // assert(getTerminator() && "Can't use splitBasicBlock on degenerate BB!");
+        if self.terminator_slot().is_none() {
+            return Err(IrError::InvalidOperation {
+                message: "Can't use splitBasicBlock on degenerate BB!",
+            });
+        }
+        // assert(I != InstList.end() && "Trying to get me to create degenerate
+        // basic block!"): an `InstructionView` always names an instruction.
+        let split_position = self.split_point_position(split_id)?;
+        let (parent_fn, this_position) = self.parent_and_position()?;
+        // DebugLoc Loc = I->getStableDebugLoc(); if (Loc) Loc = Loc->getWithoutAtom();
+        // Taken ahead of `BasicBlock::Create` rather than after it: building
+        // the atom-free location is this routine's one fallible step, and the
+        // two steps touch disjoint state.
+        let location = split_point_location(module_token, before)?;
         let module = module_token.core_ref();
-        let parent_fn_id = match self.parent_id() {
-            Some(id) => id,
-            None => {
-                return Err(IrError::InvalidOperation {
-                    message: "cannot split an orphan basic block",
-                });
-            }
-        };
-        let parent_fn =
-            FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
-        // Every refusal precedes the first mutation: find the split point
-        // before the new block is appended, so a split point outside this
-        // block leaves the function untouched.
-        let pos = self
+
+        // BasicBlock *New = BasicBlock::Create(getContext(), BBName, getParent(),
+        //                                      this->getNextNode());
+        let new_block = parent_fn.insert_basic_block_at_unchecked(this_position + 1, name);
+        let new_id = new_block.slot();
+
+        // New->splice(New->end(), this, I, end());
+        let suffix: Vec<ValueSlot> = self
             .data()
             .instructions
-            .borrow()
-            .iter()
-            .position(|id| *id == split_id)
-            .ok_or(IrError::InvalidOperation {
-                message: "split instruction is not in this block",
-            })?;
-        let new_block = parent_fn.append_basic_block(module_token, name);
-        let suffix: Vec<ValueSlot> = self.data().instructions.borrow_mut().split_off(pos);
-        let new_id = new_block.slot();
-        {
-            let mut dst = new_block.data().instructions.borrow_mut();
-            dst.extend(suffix.iter().copied());
-        }
+            .borrow_mut()
+            .split_off(split_position);
+        new_block
+            .data()
+            .instructions
+            .borrow_mut()
+            .extend(suffix.iter().copied());
         for id in &suffix {
             module.context().set_instruction_parent(*id, new_id);
         }
-        Ok(new_block)
+
+        // BranchInst *BI = BranchInst::Create(New, this);
+        let (_, branch) = IrBuilder::new_for::<R>(module_token)
+            .position_at_end(self.copy_handle().retag_termination::<Unterminated>())
+            .br_to_slot_unchecked(new_id);
+        // The splice left `I`'s records at this block's end, and inserting the
+        // branch there adopts them (`Instruction::insertBefore`).
+        absorb_debug_records(module, split_id, branch.slot());
+        // BI->setDebugLoc(Loc);
+        set_debug_location(self.module, branch.slot(), location);
+
+        // New->replaceSuccessorsPhiUsesWith(this, New);
+        new_block.replace_successors_phi_uses_with(self.id, new_id);
+        Ok(new_block.retag_termination::<Terminated>())
+    }
+
+    /// Split this block in two before `before` and return the new block, which
+    /// comes first.
+    ///
+    /// Ports `BasicBlock::splitBasicBlockBefore` (`lib/IR/BasicBlock.cpp`), the
+    /// `Before = true` form of `splitBasicBlock`. A block named `name` is
+    /// created right before this one and every instruction ahead of `before`
+    /// moves into it. Each predecessor's terminator is retargeted to it, this
+    /// block's phis name it in place of each predecessor, and it ends in a
+    /// branch to this block carrying `before`'s location without its atom. Both
+    /// blocks end in a terminator afterwards.
+    ///
+    /// The debug records attached ahead of `before` move into the new block,
+    /// ahead of its branch: the splice ends at `before` with its tail bit
+    /// clear, which carries them along for the branch to adopt.
+    ///
+    /// # Errors
+    ///
+    /// Every refusal happens before anything is created, moved or retargeted:
+    ///
+    /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
+    /// - [`IrError::InvalidOperation`] if this block has no terminator
+    ///   (upstream's `assert(getTerminator())`, which a `Terminated` handle does
+    ///   not prove on its own), if `before` is not one of its instructions, if
+    ///   `before` is a phi and this block does not have exactly one predecessor
+    ///   edge (upstream's `assert(!isa<PHINode>(*I) || getSinglePredecessor())`),
+    ///   or if this block has no parent function or is missing from its block
+    ///   list.
+    pub fn split_before<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        before: &InstructionView<'ctx, B>,
+        name: Name,
+    ) -> IrResult<BasicBlock<'ctx, R, Terminated, B>>
+    where
+        Name: Into<String>,
+    {
+        // Boundary: the caller's split point, admitted before the block is
+        // read or a new block created.
+        let split_id = before.slot_in(self.module.id())?;
+        // assert(getTerminator() && "Can't use splitBasicBlockBefore on degenerate BB!");
+        if self.terminator_slot().is_none() {
+            return Err(IrError::InvalidOperation {
+                message: "Can't use splitBasicBlockBefore on degenerate BB!",
+            });
+        }
+        // assert(I != InstList.end() && "Trying to get me to create degenerate
+        // basic block!"): an `InstructionView` always names an instruction.
+        let split_position = self.split_point_position(split_id)?;
+        // assert((!isa<PHINode>(*I) || getSinglePredecessor()) &&
+        //        "cannot split on multi incoming phis");
+        let split_point_is_phi = matches!(
+            &self.module.value_data(split_id).kind,
+            ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Phi(_))
+        );
+        if split_point_is_phi && self.single_predecessor().is_none() {
+            return Err(IrError::InvalidOperation {
+                message: "cannot split on multi incoming phis",
+            });
+        }
+        let (parent_fn, this_position) = self.parent_and_position()?;
+        // DebugLoc Loc = I->getDebugLoc(); if (Loc) Loc = Loc->getWithoutAtom();
+        // Taken ahead of `BasicBlock::Create`, for the reason `split_at` gives.
+        let location = split_point_location(module_token, before)?;
+        let module = module_token.core_ref();
+
+        // BasicBlock *New = BasicBlock::Create(getContext(), BBName, getParent(), this);
+        let new_block = parent_fn.insert_basic_block_at_unchecked(this_position, name);
+        let new_id = new_block.slot();
+
+        // New->splice(New->end(), this, begin(), I);
+        let prefix: Vec<ValueSlot> = self
+            .data()
+            .instructions
+            .borrow_mut()
+            .drain(..split_position)
+            .collect();
+        new_block
+            .data()
+            .instructions
+            .borrow_mut()
+            .extend(prefix.iter().copied());
+        for id in &prefix {
+            module.context().set_instruction_parent(*id, new_id);
+        }
+
+        // SmallVector<BasicBlock *, 4> Predecessors(predecessors(this));
+        let predecessors = crate::cfg::block_predecessors(self.to_erased());
+        for predecessor in predecessors {
+            // Instruction *TI = Pred->getTerminator();
+            let predecessor_block = BasicBlock::<'ctx, Dyn, Terminated, B>::from_parts(
+                predecessor,
+                self.module,
+                self.ty,
+            );
+            // A predecessor is found through a terminator that uses this block,
+            // so it has one unless instructions follow that terminator. Upstream
+            // would dereference a null `TI` there; llvmkit leaves such a
+            // malformed predecessor alone rather than crash.
+            let Some(terminator) = predecessor_block.terminator_slot() else {
+                continue;
+            };
+            // TI->replaceSuccessorWith(this, New);
+            if let ValueKindData::Instruction(data) = &self.module.value_data(terminator).kind {
+                crate::cfg::replace_successor_with(&data.kind, self.id, new_id);
+            }
+            crate::cfg::sync_block_uses(self.module, terminator, self.id);
+            crate::cfg::sync_block_uses(self.module, terminator, new_id);
+            // this->replacePhiUsesWith(Pred, New);
+            self.replace_phi_uses_with(predecessor, new_id);
+        }
+
+        // BranchInst *BI = BranchInst::Create(this, New);
+        let (_, branch) = IrBuilder::new_for::<R>(module_token)
+            .position_at_end(new_block)
+            .br_to_slot_unchecked(self.id);
+        // The splice moved `I`'s records to the new block's end, and inserting
+        // the branch there adopts them (`Instruction::insertBefore`).
+        absorb_debug_records(module, split_id, branch.slot());
+        // BI->setDebugLoc(Loc);
+        set_debug_location(self.module, branch.slot(), location);
+        Ok(BasicBlock::from_parts(new_id, self.module, self.ty))
+    }
+}
+
+/// `I->getStableDebugLoc()` followed by `Loc->getWithoutAtom()`, in stored form.
+///
+/// `Instruction::getStableDebugLoc` returns `getDebugLoc()`
+/// (`lib/IR/Instruction.cpp`), which llvmkit keeps as the `!dbg` attachment.
+/// `DILocation::getWithoutAtom` returns the location itself when its
+/// `atomGroup` and `atomRank` are both zero, and otherwise the uniqued location
+/// with the same `line`, `column`, `scope`, `inlinedAt` and `isImplicitCode`
+/// and no atom. A `!dbg` attachment that is not a `DILocation` node has no atom
+/// to drop and is kept as it is.
+fn split_point_location<'ctx, B: ModuleBrand + 'ctx>(
+    module_token: &'ctx Module<B, Unverified>,
+    split_point: &InstructionView<'ctx, B>,
+) -> IrResult<Option<MetadataId<StoredBrand>>> {
+    let Some(location) = split_point.metadata().get(&MetadataAttachmentKind::Dbg) else {
+        return Ok(None);
+    };
+    let location = match module_token.metadata_get(location) {
+        Some(MetadataKind::Specialized(node))
+            if node.kind() == SpecializedMetadataKind::DiLocation
+                && node.fields().iter().any(is_nonzero_atom_field) =>
+        {
+            let without_atom = node
+                .fields()
+                .iter()
+                .filter(|field| !is_atom_field(field))
+                .cloned();
+            module_token.metadata_specialized(
+                SpecializedMetadataNode::new(SpecializedMetadataKind::DiLocation)
+                    .with_fields(without_atom),
+            )?
+        }
+        _ => location,
+    };
+    location.into_stored(module_token.id()).map(Some)
+}
+
+/// Whether `field` is one of `DILocation`'s two atom fields.
+fn is_atom_field<B: ModuleBrand>(field: &MetadataField<B>) -> bool {
+    matches!(field.name(), "atomGroup" | "atomRank")
+}
+
+/// Whether `field` is an atom field holding a non-zero value, the condition
+/// under which `DILocation::getWithoutAtom` builds a new location.
+fn is_nonzero_atom_field<B: ModuleBrand>(field: &MetadataField<B>) -> bool {
+    is_atom_field(field) && !matches!(field.value(), MetadataFieldValue::Integer(0))
+}
+
+/// `BI->setDebugLoc(Loc)` on a branch created a moment earlier: the location
+/// becomes its `!dbg` attachment, and an empty `Loc` leaves none.
+fn set_debug_location<B: ModuleBrand>(
+    module: ModuleRef<'_, B>,
+    instruction: ValueSlot,
+    location: Option<MetadataId<StoredBrand>>,
+) {
+    let Some(location) = location else {
+        return;
+    };
+    if let ValueKindData::Instruction(data) = &module.value_data(instruction).kind {
+        data.metadata
+            .borrow_mut()
+            .insert(MetadataAttachmentKind::Dbg, location);
     }
 }
 

@@ -10,8 +10,8 @@
 
 use llvmkit_ir::{
     Analyses, BlockId, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass,
-    FunctionView, GlobalId, InsertPoint, IntPredicate, IntValue, IntValueId, IrBuilder, IrError,
-    IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, ValueCategoryLabel, ValueId, module_new,
+    FunctionView, GlobalId, IntPredicate, IntValue, IntValueId, IrBuilder, IrError, IrResult,
+    Linkage, Module, ModuleBrand, ReshapeCfg, ValueCategoryLabel, ValueId, module_new,
     run_function_pass,
 };
 
@@ -37,8 +37,9 @@ impl<B: ModuleBrand> FunctionPass<B> for SplitEntryPass {
             .function()
             .entry_block()
             .expect("definition has an entry block");
-        // Split before the terminator: `br next` (and the only edge into `next`)
-        // moves into a fresh block nothing reaches, so `next` becomes unreachable.
+        // Split at the terminator: `br next` (and the only edge into `next`)
+        // moves into `entry.split`, and `entry` gains a branch to it, so
+        // `entry.split` becomes `next`'s immediate dominator.
         let terminator = entry.instructions().last().expect("entry has a terminator");
         reshape.split_block(entry.id(), &terminator, "entry.split")?;
         Ok(reshape.done())
@@ -48,7 +49,8 @@ impl<B: ModuleBrand> FunctionPass<B> for SplitEntryPass {
 /// After a `ReshapeCfg` pass whose floor is `none()`, the dominator tree is
 /// nonetheless still cached — the driver *witnessed* it repair via the recorded
 /// `CfgUpdate`s and kept it — and the kept tree is the REPAIRED one (it reflects
-/// the edit: `next` is now unreachable), not a stale survivor.
+/// the edit: `entry.split`, which the edit created, dominates `next`), not a
+/// stale survivor.
 #[test]
 fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
     let m = module_new!("witnessed-preservation")?;
@@ -83,32 +85,32 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
     let dt = cached.expect("dominator tree was witnessed-preserved across the reshape");
 
     // And the kept tree is the REPAIRED one: it reflects the edited CFG, in
-    // which `next` is no longer reachable. A stale survivor would say true.
-    assert!(!dt.is_reachable_from_entry(next_label));
+    // which `entry.split` dominates `next`. A stale survivor has never seen
+    // `entry.split`.
+    let split = f_view
+        .basic_blocks()
+        .find(|block| block.name().as_deref() == Some("entry.split"))
+        .expect("the pass created entry.split")
+        .id();
+    assert!(dt.dominates_block(split, next_label));
     Ok(())
 }
 
 /// Package 4 / phi-guarantees wave 1, task 1: `split_block` must carry its own
 /// phi maintenance — the live bug this test exists to kill.
 ///
-/// `split_block` fires on `entry`, whose old terminator's successors (`[merge]`,
-/// captured *before* the split) are what the fix must rewrite. The pass splits
-/// at the terminator itself (same split point as
-/// `split_block_records_edge_decomposition` in `pass_context.rs`'s in-crate
-/// tests): `entry` keeps the `add` and loses its `br %merge` (moved wholesale
-/// into `entry.split`), so `entry` is left unterminated — `split_block`'s
-/// documented contract is that the caller wires a fresh terminator into the new
-/// block. This test does that through a public [`InsertPoint`] saved *before*
-/// the pass ran (while `entry` was genuinely open), then restored afterward —
-/// [`IrBuilder::restore_insert_point`] is the sanctioned way to reopen a block a
-/// structural edit left unterminated, since the pass-context API never hands out
-/// an `Unterminated` handle for a block it did not just create.
+/// `split_block` fires on `entry`, whose old terminator's successors (`[merge]`)
+/// are what the phi rewrite must reach. The pass splits at the terminator
+/// itself (same split point as `split_block_records_edge_decomposition` in
+/// `pass_context.rs`'s in-crate tests): `entry` keeps the `add`, its
+/// `br %merge` moves into `entry.split`, and `entry` gains `br %entry.split` —
+/// the shape `BasicBlock::splitBasicBlock` (`lib/IR/BasicBlock.cpp`) leaves.
 ///
-/// Before the phi fix, `merge`'s phi still names `entry` (no longer a
+/// Without the phi rewrite, `merge`'s phi still names `entry` (no longer a
 /// predecessor — only `entry.split` is), so `verify()` fails with
 /// `PhiPredecessorMismatch` ("phi incoming block %entry is not a predecessor").
-/// After the fix, the phi is rewritten in place to name `entry.split` and the
-/// module re-verifies clean.
+/// With it (`New->replaceSuccessorsPhiUsesWith(this, New)`), the phi names
+/// `entry.split` and the module re-verifies clean.
 #[test]
 fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
     let m = module_new!("split-phi")?;
@@ -127,9 +129,6 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
 
     // entry: %x = add %a, 1 ; br %merge(%x)
     let b = IrBuilder::new(&m).position_at_end(entry);
-    // Saved while `entry` is genuinely open (before-of-none == end of
-    // block) so the pass can reopen `entry` after the split empties it.
-    let ip = b.save_insert_point();
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 1_i32, "x")?;
     b.br_with_args(merge_label, &[m.view(x).as_erased()])?;
@@ -139,20 +138,13 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
     let p: IntValue<'_, i32, _> = merge_params[0].try_into()?;
     b2.ret(p)?;
 
-    /// Splits `entry` at its terminator, then reopens `entry` (through the
-    /// pre-saved `ip`) to wire a fresh `br %entry.split` terminator — the
-    /// caller-side half of `split_block`'s documented contract.
-    struct SplitAtAdd<'s, B: ModuleBrand + 's> {
-        ip: Option<InsertPoint<'s, Dyn, B>>,
-    }
+    /// Splits `entry` at its terminator.
+    struct SplitAtTerminator;
 
-    // The stash names the region its `InsertPoint` was minted at. `Self: 'm`
-    // on `FunctionPass::run` is what relates that region to the driver-chosen
-    // run region, so a stashing pass survives the higher-ranked `run`.
-    impl<'s, B: ModuleBrand> FunctionPass<B> for SplitAtAdd<'s, B> {
+    impl<B: ModuleBrand> FunctionPass<B> for SplitAtTerminator {
         type Access = ReshapeCfg;
         type Requires = ();
-        const NAME: &'static str = "split-at-add";
+        const NAME: &'static str = "split-at-terminator";
 
         fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
         where
@@ -168,23 +160,16 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
                 .instructions()
                 .last()
                 .expect("entry is terminated by the br");
-            let new_block = reshape.split_block(entry.id(), &terminator, "entry.split")?;
-            let ip = self
-                .ip
-                .take()
-                .expect("insert point stashed before the pass ran");
-            let b = reshape.builder_at(ip)?;
-            b.br(new_block.id())?;
+            reshape.split_block(entry.id(), &terminator, "entry.split")?;
             Ok(reshape.done())
         }
     }
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
-    let pass = SplitAtAdd { ip: Some(ip) };
-    let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let out = run_function_pass(SplitAtTerminator, verified, f, &mut analyses)?;
 
-    // THE assertion: the output must re-verify. Without the phi fix the
+    // THE assertion: the output must re-verify. Without the phi rewrite the
     // verifier fails: "phi incoming block %entry is not a predecessor".
     let reverified = out.verify().expect("split output must stay coherent");
     let printed = format!("{reverified}");
@@ -285,7 +270,7 @@ fn split_block_refuses_an_instruction_of_another_block_without_mutating() -> Res
 /// dominator tree, because `FnReshape::insert_phi` witnesses every incoming
 /// value's dominance over its edge through `analysis_repaired` before creating
 /// the phi. The incomings/labels are stashed at build time (arena ids are stable
-/// across `verify()`), mirroring how `SplitAtAdd` stashes its `InsertPoint`.
+/// across `verify()`).
 struct InsertMergePhi<B: ModuleBrand> {
     merge_name: &'static str,
     incomings: Vec<(ValueId<B>, BlockId<Dyn, B>)>,

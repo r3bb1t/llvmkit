@@ -347,6 +347,16 @@ ported so far, with each row's fidelity spelled out in `UPSTREAM.md`:
 typed-pointer function body is named by no `CHECK`) — see
 `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs`.
 
+One unit test waits on the same framework:
+`unittests/IR/BasicBlockDbgInfoTest.cpp`'s
+`TEST(BasicBlockDbgInfoTest, SplitBasicBlockBefore)` writes its record as
+`call void @llvm.dbg.declare(...)`, and only `UpgradeCallsToIntrinsic`
+(call site 4, reaching `upgradeDbgIntrinsicToDbgRecord` through
+`UpgradeIntrinsicCall`) turns that call into the record its
+`hasDbgRecords()` assertion reads. Until then
+`crates/llvmkit-asmparser/tests/basic_block_split.rs` carries a stand-in with
+the record written as `#dbg_declare`.
+
 ## The gate is ~90% build, and trybuild builds `dev` whatever you ask for (measured 2026-08-16)
 
 Two findings from one gate run, both measured rather than estimated. They

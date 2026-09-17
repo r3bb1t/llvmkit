@@ -19,6 +19,41 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — `split_at` is `splitBasicBlock`, and `split_before` is new *(breaking)*
+
+- **Breaking (llvmkit-ir):** `BasicBlock::split_at` claimed to mirror
+  `BasicBlock::splitBasicBlock` (`lib/IR/BasicBlock.cpp`) and differed from it
+  in four ways. It now ports that routine. The new block is placed right after
+  the original rather than at the end of the function. The original gains
+  `br label %new`, carrying the split point's location without its
+  `atomGroup`/`atomRank` (`DILocation::getWithoutAtom`); the caller no longer
+  adds that branch. The debug records ahead of the split point stay in the
+  original block, ahead of the new branch, rather than moving with the split
+  point. The phis of the moved terminator's successors are rewritten to name
+  the new block. `split_at` is now callable only on a `Terminated` handle and
+  returns the new block as `Terminated`. A block with no terminator is refused
+  with `InvalidOperation` ("Can't use splitBasicBlock on degenerate BB!")
+  before anything changes, where upstream asserts.
+- **Added (llvmkit-ir):** `BasicBlock::split_before`, a port of
+  `BasicBlock::splitBasicBlockBefore`. The new block is placed right before the
+  original and takes the instructions ahead of the split point; every
+  predecessor's terminator is retargeted to it, the original's phis name it,
+  and it ends in a branch to the original that carries the split point's
+  location without its atom and the records that were ahead of the split
+  point. Splitting at a phi when the block does not have exactly one
+  predecessor edge is refused with `InvalidOperation` ("cannot split on multi
+  incoming phis") where upstream asserts.
+- **Breaking (llvmkit-ir):** `FnReshape::split_block` returns the new block's
+  `BlockId` rather than an `Unterminated` handle — after the split the new
+  block owes no terminator — and its CFG-update log records the
+  `block → new block` edge the split now inserts.
+- **Tests:** `BasicBlockDbgInfoTest.DropSourceAtomOnSplit` and
+  `BasicBlockUtilsTest.splitBasicBlockBefore_ex1` / `_ex2` are ported
+  (`crates/llvmkit-asmparser/tests/basic_block_split.rs`).
+  `BasicBlockDbgInfoTest.SplitBasicBlockBefore` is blocked on the unported
+  AutoUpgrade intrinsic framework and has a stand-in; `docs/future-work.md`
+  records why.
+
 ### Fixed — a refused `split_at` no longer leaves an empty block behind
 
 - **Fixed (llvmkit-ir):** `BasicBlock::split_at` appended the new block to

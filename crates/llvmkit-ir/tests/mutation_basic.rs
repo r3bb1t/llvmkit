@@ -542,3 +542,84 @@ fn split_at_refuses_an_instruction_of_another_block_without_mutating() -> Result
     );
     Ok(())
 }
+
+/// `BasicBlock::splitBasicBlock` (`lib/IR/BasicBlock.cpp`) opens with
+/// `assert(getTerminator() && "Can't use splitBasicBlock on degenerate BB!")`.
+/// `split_at` is only callable on a `Terminated` handle, but that typestate is
+/// not proof on its own: `FunctionValue::basic_blocks` hands out `Terminated`
+/// views of every block. So the assert is also a runtime refusal, raised before
+/// anything is appended or moved.
+///
+/// llvmkit-specific: upstream crashes here rather than returning, so there is
+/// no upstream test to port; refusing is hardening, not a divergence.
+#[test]
+fn split_at_refuses_a_block_without_a_terminator_without_mutating() -> Result<(), IrError> {
+    let m = module_new!("split-at-degenerate-block")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let _x = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
+    let printed_before = format!("{m}");
+
+    let entry = m.view(f).basic_blocks().next().expect("entry was appended");
+    let x = entry.instructions().next().expect("entry holds %x");
+
+    let result = entry.split_at(&m, &x, "entry.split");
+    assert!(
+        matches!(
+            result,
+            Err(IrError::InvalidOperation {
+                message: "Can't use splitBasicBlock on degenerate BB!"
+            })
+        ),
+        "split_at must refuse a block without a terminator"
+    );
+    assert_eq!(
+        format!("{m}"),
+        printed_before,
+        "a refused split must not mutate the module"
+    );
+    Ok(())
+}
+
+/// `BasicBlock::splitBasicBlockBefore` (`lib/IR/BasicBlock.cpp`) opens with
+/// `assert(getTerminator() && "Can't use splitBasicBlockBefore on degenerate
+/// BB!")`. As for `split_at`, the `Terminated` handle `basic_blocks` hands out
+/// is no proof, so `split_before` refuses at run time before anything is
+/// created, moved or retargeted.
+///
+/// llvmkit-specific: upstream crashes here rather than returning, so there is
+/// no upstream test to port; refusing is hardening, not a divergence.
+#[test]
+fn split_before_refuses_a_block_without_a_terminator_without_mutating() -> Result<(), IrError> {
+    let m = module_new!("split-before-degenerate-block")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let _x = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
+    let printed_before = format!("{m}");
+
+    let entry = m.view(f).basic_blocks().next().expect("entry was appended");
+    let x = entry.instructions().next().expect("entry holds %x");
+
+    let result = entry.split_before(&m, &x, "entry.head");
+    assert!(
+        matches!(
+            result,
+            Err(IrError::InvalidOperation {
+                message: "Can't use splitBasicBlockBefore on degenerate BB!"
+            })
+        ),
+        "split_before must refuse a block without a terminator"
+    );
+    assert_eq!(
+        format!("{m}"),
+        printed_before,
+        "a refused split must not mutate the module"
+    );
+    Ok(())
+}

@@ -64,7 +64,7 @@ use super::analysis::{
     ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
 use super::basic_block::IntoBasicBlockLabel;
-use super::block_state::{Terminated, Unterminated};
+use super::block_state::Terminated;
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
@@ -1341,20 +1341,19 @@ where
         )))
     }
 
-    /// Split `block` before instruction `before`: `before` and everything after
-    /// it move into a fresh block (named `name`) appended to the function; the
-    /// original block keeps the prefix. The caller is responsible for adding a
-    /// terminator flowing to the new block. The genuine CFG operation that makes
-    /// this rung distinct from [`FnPatch`]; wired to [`BasicBlock::split_at`].
+    /// Split `block` in two at `before` and return the new block's id. The
+    /// genuine CFG operation that makes this rung distinct from [`FnPatch`];
+    /// wired to [`BasicBlock::split_at`], the port of
+    /// `BasicBlock::splitBasicBlock`: the new block is placed right after
+    /// `block`, `before` and everything after it move into it, `block` gains a
+    /// branch to it, and the phis of the moved terminator's successors name it.
     ///
     /// `block` is a storable [`BlockId`] — the same currency the `redirect_*`
     /// surface takes — resolved against this function's module before any arena
     /// work, so a foreign id is rejected with [`IrError::ForeignValueId`]. The
-    /// *return*, by contrast, is deliberately the linear
-    /// `BasicBlock<Unterminated>` and not a [`BlockId`]: the fresh block owes a
-    /// terminator, and that obligation is carried by a non-`Copy` handle. Ids
-    /// are `Copy`, so handing one back here would silently discard the
-    /// obligation. Take `.id()` off it once it is terminated.
+    /// return is an id as well: after the split both blocks end in a
+    /// terminator, so the new block owes nothing that a linear handle would
+    /// have to carry.
     ///
     /// Errors: [`IrError::ForeignValueId`] if `block` is not from this module;
     /// otherwise the errors of [`BasicBlock::split_at`].
@@ -1364,62 +1363,30 @@ where
         block: BlockId<Dyn, B>,
         before: &InstructionView<'m, B>,
         name: Name,
-    ) -> IrResult<BasicBlock<'m, Dyn, Unterminated, B>>
+    ) -> IrResult<BlockId<Dyn, B>>
     where
         Name: Into<String>,
     {
         // Capture the successors of `block`'s terminator *before* the split
-        // moves that terminator into the new block — afterwards `block` is
-        // unterminated and has none. The split's own effect on the CFG is
-        // purely this rewiring: each edge `block → s` becomes `new_block → s`
-        // (the caller wires the fresh `block → new_block` edge later, through
-        // its own terminator, so that edge is not this method's to record).
+        // moves that terminator into the new block. The split's effect on the
+        // CFG is exactly: each edge `block → s` becomes `new_block → s`, and
+        // the branch the split inserts adds `block → new_block`.
         let source = self.resolve_block(block)?.as_basic_block();
         let source_id = source.slot();
-        let module_ref = source.module_ref();
-        let label_ty = module_ref.module().label_type::<B>().as_type().id();
         let successors = crate::cfg::block_successors(&source);
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
         let new_id = new_block.slot();
 
-        // The terminator moved to `new_block`, so every edge that used to
-        // leave `block` now leaves `new_block`. Phis in the successors
-        // still name `block`; rewrite them here, as part of the mutation
-        // itself — the op carries its own phi maintenance, there is no
-        // separate fixup call to forget (mirrors what
-        // BasicBlock::replacePhiUsesWith does for upstream splitters).
+        let mut log = self.cfg_updates.borrow_mut();
         for succ in &successors {
-            let succ_block: BasicBlock<'m, Dyn, Terminated, B> =
-                BasicBlock::from_parts(succ.slot(), module_ref, label_ty);
-            for inst_id in succ_block.instruction_ids() {
-                let data = module_ref.value_data(inst_id);
-                let ValueKindData::Instruction(inst) = &data.kind else {
-                    continue;
-                };
-                let InstructionKindData::Phi(p) = &inst.kind else {
-                    // Phis are grouped at the block top; stop at the first
-                    // non-phi instead of scanning the whole block.
-                    break;
-                };
-                for pair in p.incoming.borrow_mut().iter_mut() {
-                    if pair.1 == source_id {
-                        pair.1 = new_id;
-                    }
-                }
-            }
+            let succ_id = succ.slot();
+            log.push(CfgUpdate::delete(source_id, succ_id));
+            log.push(CfgUpdate::insert(new_id, succ_id));
         }
-
-        if !successors.is_empty() {
-            let mut log = self.cfg_updates.borrow_mut();
-            for succ in &successors {
-                let succ_id = succ.slot();
-                log.push(CfgUpdate::delete(source_id, succ_id));
-                log.push(CfgUpdate::insert(new_id, succ_id));
-            }
-        }
+        log.push(CfgUpdate::insert(source_id, new_id));
         self.patch.dirty.set(true);
-        Ok(new_block)
+        Ok(new_block.id())
     }
 
     /// Drop `block`'s leading-phi incomings whose predecessor is `pred_id`,
@@ -1643,7 +1610,7 @@ where
             .iter()
             .filter(|succ| succ.slot() == target_id)
             .count();
-        self.sync_block_uses(&from_block, term_id, target_id);
+        crate::cfg::sync_block_uses(from_block.module_ref(), term_id, target_id);
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
 
         self.cfg_updates
@@ -1878,8 +1845,8 @@ where
             .iter()
             .filter(|succ| succ.slot() == old_id)
             .count();
-        self.sync_block_uses(&from_block, term_id, old_id);
-        self.sync_block_uses(&from_block, term_id, new_id);
+        crate::cfg::sync_block_uses(from_block.module_ref(), term_id, old_id);
+        crate::cfg::sync_block_uses(from_block.module_ref(), term_id, new_id);
         self.drop_incoming_from_pred(&old_block, from_id, surviving)?;
 
         let builder = IrBuilder::new(self.patch.module_mut());
@@ -1901,56 +1868,6 @@ where
         }
         self.patch.dirty.set(true);
         Ok(())
-    }
-
-    /// Restore `block_id`'s use-list edges from the terminator `term_id` after
-    /// that terminator's successor slots have been edited.
-    ///
-    /// Upstream needs no such routine: a terminator's successors *are* `Use`s,
-    /// and `Use::set` unlinks from the old value's list and links into the new
-    /// one's as part of the assignment, so `predecessors(BB)` — which reads
-    /// `BB->user_begin()` — is never stale. llvmkit stores successors as plain
-    /// slots and registers the use once at construction
-    /// (`IrBuilder::append_instruction` extends its operand walk with
-    /// `block_operand_ids`), so an edit here has to re-establish the same
-    /// invariant: one `ValueUse::Instruction(term_id)` entry per occurrence of
-    /// the block among the terminator's successors.
-    ///
-    /// Reconciling against the post-edit successor list rather than counting
-    /// edits is what makes it correct for the many-edge slots — a `switch`
-    /// redirect retargets *every* case naming the old block, and a `cond_br %c,
-    /// X, X` registers two entries on `X` of which collapsing one arm must
-    /// leave one. New entries go to the **head**, as `Use::set` does; which of
-    /// several identical entries is dropped is unobservable.
-    fn sync_block_uses(
-        &self,
-        from_block: &BasicBlock<'m, Dyn, Terminated, B>,
-        term_id: ValueSlot,
-        block_id: ValueSlot,
-    ) {
-        let wanted = crate::cfg::block_successors(from_block)
-            .iter()
-            .filter(|succ| succ.slot() == block_id)
-            .count();
-        let ctx = self.patch.module_mut().core_ref().context();
-        let mut uses = ctx.value_data(block_id).use_list.borrow_mut();
-        let edge = ValueUse::Instruction(term_id);
-        let have = uses.iter().filter(|e| **e == edge).count();
-        if have > wanted {
-            let mut surplus = have - wanted;
-            uses.retain(|e| {
-                if surplus > 0 && *e == edge {
-                    surplus -= 1;
-                    false
-                } else {
-                    true
-                }
-            });
-        } else {
-            for _ in have..wanted {
-                uses.insert(0, edge);
-            }
-        }
     }
 
     /// Read the current `default` destination id of the `switch` terminator
@@ -3774,9 +3691,8 @@ mod tests {
     /// `split_block` records its own CFG-edge decomposition as witnessed
     /// [`CfgUpdate`](crate::CfgUpdate)s: the split moves the block's terminator
     /// — and thus every out-edge — into the fresh block, so each `block → succ`
-    /// edge is logged as a delete paired with a `new_block → succ` insert. The
-    /// `block → new_block` edge is the caller's to wire (through a new
-    /// terminator), so it is deliberately absent from this method's log.
+    /// edge is logged as a delete paired with a `new_block → succ` insert, and
+    /// the branch the split inserts adds the `block → new_block` edge.
     /// llvmkit-specific witnessed-preservation plumbing (no upstream analog:
     /// LLVM's `DomTreeUpdater` is hand-fed its updates).
     #[test]
@@ -3813,8 +3729,8 @@ mod tests {
         // Nothing recorded before any structural edit.
         assert!(reshape.pending_cfg_updates().next().is_none());
 
-        // Split the entry before its terminator: `br next` (with its
-        // out-edge) moves into the fresh block.
+        // Split the entry at its terminator: `br next` (with its out-edge)
+        // moves into the fresh block, and entry gains a branch to it.
         let entry_view = function
             .entry_block()
             .expect("definition has an entry block");
@@ -3825,12 +3741,14 @@ mod tests {
         let new_block = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
         let new_id = new_block.slot();
 
-        // Exactly the rewiring: entry loses `→ next`, the new block gains it.
+        // Exactly the rewiring: entry loses `→ next`, the new block gains it,
+        // and entry gains `→ new block`.
         assert_eq!(
             reshape.pending_cfg_updates().collect::<Vec<_>>(),
             vec![
                 CfgUpdate::delete(entry_id, next_id),
                 CfgUpdate::insert(new_id, next_id),
+                CfgUpdate::insert(entry_id, new_id),
             ],
         );
         Ok(())
@@ -3838,11 +3756,11 @@ mod tests {
 
     /// [`super::FnReshape::analysis_repaired`] returns a CFG analysis rebuilt
     /// from the *current* (post-edit) CFG, not the stale cached one. Splitting
-    /// the entry before its terminator moves the `entry → next` edge into a
-    /// fresh block that nothing yet flows into, so `next` becomes unreachable —
-    /// a fact the pre-edit cached tree still records as reachable, and the
-    /// repaired tree correctly reflects. llvmkit-specific witnessed-preservation
-    /// plumbing (no upstream analog).
+    /// the entry at its terminator moves the `entry → next` edge into
+    /// `entry.split` and gives `entry` a branch to it, so `entry.split` now
+    /// dominates `next` — a block the pre-edit cached tree has never seen, and
+    /// the repaired tree correctly places. llvmkit-specific
+    /// witnessed-preservation plumbing (no upstream analog).
     #[test]
     fn analysis_repaired_reflects_the_edit() -> Result<(), IrError> {
         let m = crate::module_new!("reshape-repaired")?;
@@ -3883,12 +3801,13 @@ mod tests {
             .as_basic_block()
             .terminator()
             .expect("entry is terminated by the br");
-        let _new = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
+        let new_block = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
 
-        // The repaired tree recomputed from the current CFG, in which `next`
-        // is no longer reachable — proving it is not the stale cache.
+        // The repaired tree recomputed from the current CFG, in which
+        // `entry.split` dominates `next` — proving it is not the stale cache,
+        // which has never seen `entry.split`.
         let dt = reshape.analysis_repaired::<DominatorTreeAnalysis, _>();
-        assert!(!dt.is_reachable_from_entry(next_label));
+        assert!(dt.dominates_block(new_block, next_label));
         Ok(())
     }
 

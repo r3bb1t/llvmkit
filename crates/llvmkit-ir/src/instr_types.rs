@@ -3435,27 +3435,29 @@ impl core::hash::Hash for CatchPadInstData {
 #[derive(Debug, Clone)]
 pub(crate) struct CatchReturnInstData {
     pub(crate) catch_pad: Cell<ValueSlot>,
-    pub(crate) target_bb: ValueSlot,
+    /// A `Cell` so `Instruction::replaceSuccessorWith` can retarget it.
+    pub(crate) target_bb: Cell<ValueSlot>,
 }
 
 impl CatchReturnInstData {
     pub(crate) fn new(catch_pad: ValueSlot, target_bb: ValueSlot) -> Self {
         Self {
             catch_pad: Cell::new(catch_pad),
-            target_bb,
+            target_bb: Cell::new(target_bb),
         }
     }
 }
 impl PartialEq for CatchReturnInstData {
     fn eq(&self, other: &Self) -> bool {
-        self.catch_pad.get() == other.catch_pad.get() && self.target_bb == other.target_bb
+        self.catch_pad.get() == other.catch_pad.get()
+            && self.target_bb.get() == other.target_bb.get()
     }
 }
 impl Eq for CatchReturnInstData {}
 impl core::hash::Hash for CatchReturnInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.catch_pad.get().hash(h);
-        self.target_bb.hash(h);
+        self.target_bb.get().hash(h);
     }
 }
 
@@ -3465,27 +3467,29 @@ impl core::hash::Hash for CatchReturnInstData {
 #[derive(Debug, Clone)]
 pub(crate) struct CleanupReturnInstData {
     pub(crate) cleanup_pad: Cell<ValueSlot>,
-    pub(crate) unwind_dest: Option<ValueSlot>,
+    /// A `Cell` so `Instruction::replaceSuccessorWith` can retarget it.
+    pub(crate) unwind_dest: Cell<Option<ValueSlot>>,
 }
 
 impl CleanupReturnInstData {
     pub(crate) fn new(cleanup_pad: ValueSlot, unwind_dest: Option<ValueSlot>) -> Self {
         Self {
             cleanup_pad: Cell::new(cleanup_pad),
-            unwind_dest,
+            unwind_dest: Cell::new(unwind_dest),
         }
     }
 }
 impl PartialEq for CleanupReturnInstData {
     fn eq(&self, other: &Self) -> bool {
-        self.cleanup_pad.get() == other.cleanup_pad.get() && self.unwind_dest == other.unwind_dest
+        self.cleanup_pad.get() == other.cleanup_pad.get()
+            && self.unwind_dest.get() == other.unwind_dest.get()
     }
 }
 impl Eq for CleanupReturnInstData {}
 impl core::hash::Hash for CleanupReturnInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.cleanup_pad.get().hash(h);
-        self.unwind_dest.hash(h);
+        self.unwind_dest.get().hash(h);
     }
 }
 

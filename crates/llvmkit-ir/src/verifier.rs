@@ -5633,7 +5633,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         match &instruction.kind {
             InstructionKindData::Invoke(i) => Some(Some(i.unwind_dest.get())),
             InstructionKindData::CatchSwitch(s) => Some(s.unwind_dest.get()),
-            InstructionKindData::CleanupReturn(r) => Some(r.unwind_dest),
+            InstructionKindData::CleanupReturn(r) => Some(r.unwind_dest.get()),
             _ => None,
         }
     }
@@ -6346,7 +6346,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             "CleanupReturnInst needs to be provided a CleanupPad",
         )?;
         // `if (BasicBlock *UnwindDest = CRI.getUnwindDest()) { … }`
-        if let Some(unwind_dest) = d.unwind_dest {
+        if let Some(unwind_dest) = d.unwind_dest.get() {
             // `Check(I->isEHPad() && !isa<LandingPadInst>(I),
             //  "CleanupReturnInst must unwind to an EH block which is not a
             //  landingpad.", &CRI);`
@@ -6429,7 +6429,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 let unwind_dest: Option<ValueSlot> = match &user_instruction.kind {
                     // `if (auto *CRI = dyn_cast<CleanupReturnInst>(U))
                     //    UnwindDest = CRI->getUnwindDest();`
-                    InstructionKindData::CleanupReturn(cri) => cri.unwind_dest,
+                    InstructionKindData::CleanupReturn(cri) => cri.unwind_dest.get(),
                     // `else if (auto *CSI = dyn_cast<CatchSwitchInst>(U)) {
                     //    if (CSI->unwindsToCaller()) continue;
                     //    UnwindDest = CSI->getUnwindDest(); }`

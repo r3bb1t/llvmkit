@@ -3856,7 +3856,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
         Value::from_parts(id, self.module, data.ty)
     }
     pub fn target(self) -> BlockId<Dyn, B> {
-        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().target_bb)
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().target_bb.get())
     }
 }
 
@@ -3889,7 +3889,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
     }
     /// `None` represents `unwind to caller`.
     pub fn unwind_dest(self) -> Option<BlockId<Dyn, B>> {
-        let id = self.payload().unwind_dest?;
+        let id = self.payload().unwind_dest.get()?;
         Some(BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
 }
