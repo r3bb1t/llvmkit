@@ -19,6 +19,22 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — a block reached twice from one predecessor has no single predecessor
+
+- **Fixed (llvmkit-ir):** the helper that ported
+  `BasicBlock::getSinglePredecessor` counted distinct predecessor blocks —
+  `BasicBlock::getUniquePredecessor`'s rule — so a block reached twice from
+  one predecessor (`br i1 %c, label %b, label %b`, or a `switch` with two cases
+  into it) answered that predecessor where upstream answers none. It now
+  counts edges. `is_valid_assume_for_context` without a dominator tree no
+  longer applies an assume from such a predecessor, and
+  `will_not_free_between` no longer reasons across such an edge; both port
+  routines that call `getSinglePredecessor`, as does `getDomPredecessorCondition`,
+  whose answer the change cannot alter because it already refused a `br` with
+  equal arms and every other terminator. One edge-counting helper now serves
+  all three and `BasicBlock::split_before`
+  (`crates/llvmkit-asmparser/tests/assumptions.rs`).
+
 ### Changed — `split_at` is `splitBasicBlock`, and `split_before` is new *(breaking)*
 
 - **Breaking (llvmkit-ir):** `BasicBlock::split_at` claimed to mirror

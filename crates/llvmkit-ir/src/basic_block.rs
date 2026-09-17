@@ -1064,17 +1064,6 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         }
     }
 
-    /// Ports `BasicBlock::getSinglePredecessor`: the predecessor when this block
-    /// has exactly one predecessor edge. Duplicate edges count, so a `switch`
-    /// reaching the block from two cases yields `None`, as upstream's
-    /// `pred_begin`/`pred_end` walk does.
-    fn single_predecessor(&self) -> Option<ValueSlot> {
-        match crate::cfg::block_predecessors(self.to_erased()).as_slice() {
-            [only] => Some(*only),
-            _ => None,
-        }
-    }
-
     /// Where `instruction` sits in this block's list. The split routines take
     /// an [`InstructionView`], which can name an instruction of any block;
     /// upstream takes an iterator into this block's own list, so it has no
@@ -1298,7 +1287,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
             &self.module.value_data(split_id).kind,
             ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Phi(_))
         );
-        if split_point_is_phi && self.single_predecessor().is_none() {
+        if split_point_is_phi && crate::cfg::single_predecessor(self.to_erased()).is_none() {
             return Err(IrError::InvalidOperation {
                 message: "cannot split on multi incoming phis",
             });

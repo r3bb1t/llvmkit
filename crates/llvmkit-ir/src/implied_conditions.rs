@@ -22,7 +22,8 @@
 
 use crate::ApInt;
 use crate::ap_int::Signedness;
-use crate::assumptions::{single_predecessor, terminator_of_block};
+use crate::assumptions::terminator_of_block;
+use crate::cfg::single_predecessor;
 use crate::cmp_predicate::{CmpPredicate, IntPredicate, PredicateWithSameSign};
 use crate::constant::ConstantData;
 use crate::constant_range::ConstantRange;
@@ -817,7 +818,7 @@ fn dom_predecessor_condition<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Option<(Value<'ctx, B>, bool)> {
     let anchor = context.to_erased();
     let context_block = context.parent().slot();
-    let predecessor = single_predecessor(anchor, context_block)?;
+    let predecessor = single_predecessor(value_from_slot(anchor, context_block))?;
 
     let terminator = terminator_of_block(anchor, predecessor)?;
     let InstructionKindData::Br(data) = instruction_kind(terminator)? else {

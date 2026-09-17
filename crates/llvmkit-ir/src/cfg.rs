@@ -230,6 +230,21 @@ pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(
         .collect()
 }
 
+/// Ports `BasicBlock::getSinglePredecessor` (`lib/IR/BasicBlock.cpp`): the
+/// predecessor when `block` has exactly one predecessor edge. It counts edges,
+/// as upstream's `pred_begin`/`pred_end` walk does, so a block reached twice
+/// from one predecessor — a `switch` with two cases into it, or
+/// `br i1 %c, label %b, label %b` — has no single predecessor. Counting
+/// distinct predecessor blocks instead is `BasicBlock::getUniquePredecessor`.
+pub(super) fn single_predecessor<'ctx, B: ModuleBrand + 'ctx>(
+    block: Value<'ctx, B>,
+) -> Option<ValueSlot> {
+    match block_predecessors(block).as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
 pub(super) fn block_successors<'ctx, R, S, B>(
     block: &BasicBlock<'ctx, R, S, B>,
 ) -> Vec<BlockId<Dyn, B>>
