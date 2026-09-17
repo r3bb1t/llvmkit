@@ -959,7 +959,7 @@ fn may_throw<'ctx, B: ModuleBrand + 'ctx>(
             !call_site_has_fn_attr(anchor, data.callee.get(), &data.attrs, AttrKind::NoUnwind)
         }
         // `unwindsToCaller()` is "no unwind destination".
-        InstructionKindData::CleanupReturn(data) => data.unwind_dest.is_none(),
+        InstructionKindData::CleanupReturn(data) => data.unwind_dest.get().is_none(),
         InstructionKindData::CatchSwitch(data) => data.unwind_dest.get().is_none(),
         InstructionKindData::Resume(_) => true,
         InstructionKindData::Invoke(data) => {

@@ -1847,7 +1847,7 @@ mod tests {
     /// The dominator tree's [`CfgIncremental`] hook repairs the tree after a
     /// reshape edit (correct-by-recompute) and returns [`RepairOutcome::Repaired`]
     /// so the framework keeps it. Property: a stale cached tree, offered the
-    /// edits via `apply_updates`, answers reachability EXACTLY like a
+    /// edits via `apply_updates`, answers dominance EXACTLY like a
     /// from-scratch recompute of the edited CFG. llvmkit-specific
     /// witnessed-preservation plumbing (no upstream analog: LLVM hand-feeds
     /// `DomTreeUpdater` and trusts author-supplied edits).
@@ -1872,33 +1872,37 @@ mod tests {
 
         let function: FunctionView<'_, _> = m.view(f).into();
 
-        // Cache a dom tree while `next` is still reachable.
+        // Cache a dom tree before the edit: `entry` dominates `next`.
         let mut dt = DominatorTree::new(function.as_function());
         assert!(dt.is_reachable_from_entry(next_label));
 
-        // Edit the CFG: split the entry before its terminator, moving the
-        // `br next` (and the only edge into `next`) into a fresh block that
-        // nothing reaches — so `next` is now unreachable.
+        // Edit the CFG: split the entry at its terminator. The `br next` (and
+        // the edge into `next`) moves into `entry.split`, and `entry` gains a
+        // branch to it, so `entry.split` now dominates `next`.
         let entry_bb = function.entry_block().expect("definition").as_basic_block();
         let terminator = entry_bb.terminator().expect("terminated");
         let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
+        let new_label = new_bb.id();
         let updates = [
             CfgUpdate::delete(entry_id, next_id),
             CfgUpdate::insert(new_bb.slot(), next_id),
+            CfgUpdate::insert(entry_id, new_bb.slot()),
         ];
+        // The stale tree has never seen `entry.split`.
+        assert!(!dt.dominates_block(new_label, next_label));
 
         // Repairing the stale cached tree returns Repaired and yields the
-        // same answer as a fresh recompute: `next` unreachable.
+        // same answer as a fresh recompute: `entry.split` dominates `next`.
         assert_eq!(
             dt.apply_updates(&updates, function),
             RepairOutcome::Repaired
         );
         let fresh = DominatorTree::new(function.as_function());
         assert_eq!(
-            dt.is_reachable_from_entry(next_label),
-            fresh.is_reachable_from_entry(next_label)
+            dt.dominates_block(new_label, next_label),
+            fresh.dominates_block(new_label, next_label)
         );
-        assert!(!dt.is_reachable_from_entry(next_label));
+        assert!(dt.dominates_block(new_label, next_label));
         Ok(())
     }
 

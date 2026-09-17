@@ -762,3 +762,104 @@ define i32 @test(i32 %x) {attributes} {{
         &instruction(&module, "use")
     ));
 }
+
+/// Without a dominator tree, `isValidAssumeForContext` accepts an assume from
+/// another block only when that block is
+/// `CxtI->getParent()->getSinglePredecessor()`, or is the entry block.
+/// `BasicBlock::getSinglePredecessor` counts predecessor *edges*: a context
+/// block that the assume's block reaches twice, through
+/// `br i1 %cond, label %context, label %context`, has no single predecessor,
+/// so the assume does not apply. Reached once, it does. The assume sits outside
+/// the entry block so that the entry-block rule cannot answer instead.
+///
+/// llvmkit-specific: no upstream unit test calls `isValidAssumeForContext`, and
+/// no fixture under `llvm/test/Analysis/ValueTracking` reaches a block twice
+/// from one predecessor. llvmkit used to count distinct predecessor *blocks* —
+/// `BasicBlock::getUniquePredecessor`'s rule — and applied the assume.
+#[test]
+fn assumption_in_a_predecessor_reaching_the_context_twice_does_not_apply_without_a_tree() {
+    let source = |branch: &str| {
+        format!(
+            r"
+declare void @llvm.assume(i1)
+
+define i32 @test(i32 %a, i1 %cond) {{
+entry:
+  br label %assuming
+
+assuming:
+  %nonzero = icmp ne i32 %a, 0
+  call void @llvm.assume(i1 %nonzero)
+  {branch}
+
+context:
+  %use = add i32 %a, 1
+  ret i32 %use
+}}
+"
+        )
+    };
+
+    // One edge into `context`: `assuming` is its single predecessor.
+    let module = parse(&source("br label %context"));
+    assert!(is_valid_assume_for_context(
+        &assume(&module, 0),
+        &instruction(&module, "use"),
+        None,
+        false
+    ));
+
+    // Two edges from the same block: no single predecessor.
+    let module = parse(&source("br i1 %cond, label %context, label %context"));
+    assert!(!is_valid_assume_for_context(
+        &assume(&module, 0),
+        &instruction(&module, "use"),
+        None,
+        false
+    ));
+}
+
+/// `willNotFreeBetween` reasons about a context in another block only when
+/// `CtxBB->getSinglePredecessor() == AssumeBB`. A context block that the
+/// assume's block reaches twice has no single predecessor, so the answer is
+/// `false` even though nothing in between could free. Reached once, it is
+/// `true`.
+///
+/// llvmkit-specific, for the reasons
+/// [`assumption_in_a_predecessor_reaching_the_context_twice_does_not_apply_without_a_tree`]
+/// gives. `nosync` is on the function because the predicate requires it, as on
+/// `@test4` in `llvm/test/Analysis/ValueTracking/assume.ll`.
+#[test]
+fn will_not_free_between_needs_a_single_predecessor_edge() {
+    let source = |branch: &str| {
+        format!(
+            r"
+declare void @llvm.assume(i1)
+
+define i32 @test(i32 %x, i1 %cond) nosync {{
+entry:
+  call void @llvm.assume(i1 true)
+  {branch}
+
+context:
+  %use = add i32 %x, 0
+  ret i32 %use
+}}
+"
+        )
+    };
+
+    // One edge into `context`, and no call in between that could free.
+    let module = parse(&source("br label %context"));
+    assert!(will_not_free_between(
+        &assume(&module, 0),
+        &instruction(&module, "use")
+    ));
+
+    // Two edges from the same block: no single predecessor.
+    let module = parse(&source("br i1 %cond, label %context, label %context"));
+    assert!(!will_not_free_between(
+        &assume(&module, 0),
+        &instruction(&module, "use")
+    ));
+}

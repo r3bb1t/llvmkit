@@ -310,9 +310,9 @@ impl InstructionKindData {
                 v
             }
             // `CleanupReturnInst::init`: `[CleanupPad, UnwindBB?]`.
-            Self::CleanupReturn(r) => r.unwind_dest.into_iter().collect(),
+            Self::CleanupReturn(r) => r.unwind_dest.get().into_iter().collect(),
             // `CatchReturnInst::init`: `[CatchPad, BB]`.
-            Self::CatchReturn(r) => vec![r.target_bb],
+            Self::CatchReturn(r) => vec![r.target_bb.get()],
             // Matched exhaustively on purpose: a new terminator has to declare
             // whether it names blocks, rather than defaulting to "no".
             Self::Add(_)
@@ -1648,6 +1648,50 @@ fn register_debug_record_uses(
                 record: record_index,
             });
     });
+}
+
+/// Move every debug record attached ahead of `from` onto the end of the records
+/// attached ahead of `into`. Mirrors `DbgMarker::absorbDebugValues` with
+/// `InsertAtHead = false` (`lib/IR/DebugProgramInstruction.cpp`), the step
+/// `Instruction::adoptDbgRecords` takes when an instruction is inserted where
+/// records are waiting.
+///
+/// Upstream a record reaches the values it names through `ValueAsMetadata`, not
+/// through a `Use`, so moving it disturbs no use list. llvmkit registers each
+/// such value as a `ValueUse::DebugRecord { inst, record }` edge, so the edge is
+/// rewritten where it stands: removing and re-adding it would move it to the
+/// head of the list, a reordering upstream never makes.
+pub(super) fn absorb_debug_records(module: &ModuleCore, from: ValueSlot, into: ValueSlot) {
+    let context = module.context();
+    let ValueKindData::Instruction(from_data) = &context.value_data(from).kind else {
+        return;
+    };
+    let ValueKindData::Instruction(into_data) = &context.value_data(into).kind else {
+        return;
+    };
+    let moved = core::mem::take(&mut *from_data.debug_records.borrow_mut());
+    let mut records = into_data.debug_records.borrow_mut();
+    let offset = records.len();
+    for (index, record) in moved.iter().enumerate() {
+        let old_edge = ValueUse::DebugRecord {
+            inst: from,
+            record: index,
+        };
+        let new_edge = ValueUse::DebugRecord {
+            inst: into,
+            record: offset + index,
+        };
+        // A record may name one value twice (a `DIArgList`, or a
+        // `#dbg_assign` whose value is its address); each visit rewrites the
+        // next edge still carrying the old key.
+        record.for_each_value(|value_id| {
+            let mut uses = context.value_data(value_id).use_list.borrow_mut();
+            if let Some(edge) = uses.iter_mut().find(|edge| **edge == old_edge) {
+                *edge = new_edge;
+            }
+        });
+    }
+    records.extend(moved);
 }
 
 fn deregister_debug_record_uses(inst_id: ValueSlot, module: &ModuleCore) {

@@ -7677,13 +7677,27 @@ where
         T: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let target = target.into_basic_block_label(ModuleRef::new(self.module))?;
+        Ok(self.br_to_slot_unchecked(target.slot()))
+    }
+
+    /// Emit `br label %target` for a `target` slot the caller has already
+    /// admitted: a block of this builder's module whose phis, if it has any,
+    /// the caller keeps consistent itself.
+    ///
+    /// Crate-internal. [`br_seeded`](Self::br_seeded) reaches it after its
+    /// checks. [`BasicBlock::split_at`] reaches it with the block it has just
+    /// created, which has no phis, and [`BasicBlock::split_before`] with the
+    /// block it is splitting, whose phis it has already rewritten to name the
+    /// branch's block. Taking the slot rather than a label keeps both free of a
+    /// fallible conversion after their first mutation.
+    pub(crate) fn br_to_slot_unchecked(self, target: ValueSlot) -> TerminatedBlockInst<'ctx, R, B> {
         let payload = BranchInstData {
-            kind: core::cell::RefCell::new(BranchKind::Unconditional(target.slot())),
+            kind: core::cell::RefCell::new(BranchKind::Unconditional(target)),
         };
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
         let bb = self.into_insert_block();
-        Ok((bb.retag_termination::<Terminated>(), inst))
+        (bb.retag_termination::<Terminated>(), inst)
     }
 
     /// Produce `br i1 <cond>, label %then, label %else`. Mirrors

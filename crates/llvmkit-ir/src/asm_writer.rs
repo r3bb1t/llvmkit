@@ -2630,8 +2630,8 @@ fn fmt_catchret(
     let cp = Value::from_parts(cp_id, module, cp_data.ty);
     fmt_operand_ref(f, cp, Some(slots))?;
     f.write_str(" to ")?;
-    let bb_data = module.context().value_data(d.target_bb);
-    let bb = Value::from_parts(d.target_bb, module, bb_data.ty);
+    let bb_data = module.context().value_data(d.target_bb.get());
+    let bb = Value::from_parts(d.target_bb.get(), module, bb_data.ty);
     write!(f, "{} ", bb.ty())?;
     fmt_operand_ref(f, bb, Some(slots))
 }
@@ -2650,7 +2650,7 @@ fn fmt_cleanupret(
     let cp = Value::from_parts(cp_id, module, cp_data.ty);
     fmt_operand_ref(f, cp, Some(slots))?;
     f.write_str(" unwind ")?;
-    match d.unwind_dest {
+    match d.unwind_dest.get() {
         None => f.write_str("to caller"),
         Some(bb_id) => {
             let bb_data = module.context().value_data(bb_id);

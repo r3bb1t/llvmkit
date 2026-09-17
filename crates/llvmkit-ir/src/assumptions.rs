@@ -28,7 +28,6 @@ use core::iter::FusedIterator;
 
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlockData;
-use crate::cfg::kind_successor_ids;
 use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
 use crate::instr_types::{BinaryOpData, BranchKind, CallAttributeData, CastOpcode, SelectInstData};
@@ -345,7 +344,7 @@ pub fn is_valid_assume_for_context<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // No dominator tree, but these two shapes dominate trivially.
-    single_predecessor(anchor, context_block) == Some(assume_block)
+    crate::cfg::single_predecessor(value_from_slot(anchor, context_block)) == Some(assume_block)
         || is_entry_block(anchor, assume_block)
 }
 
@@ -377,7 +376,9 @@ pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     if assume_block != context_block {
-        if single_predecessor(anchor, context_block) != Some(assume_block) {
+        if crate::cfg::single_predecessor(value_from_slot(anchor, context_block))
+            != Some(assume_block)
+        {
             return false;
         }
         // The context block's leading half: everything before `context`.
@@ -782,37 +783,6 @@ fn block_instructions<'ctx, B: ModuleBrand + 'ctx>(
     block: ValueSlot,
 ) -> Vec<ValueSlot> {
     with_block_data(anchor, block, |data| data.instructions.borrow().clone()).unwrap_or_default()
-}
-
-/// The block's single predecessor, or `None` when it has zero or several.
-/// Ports `BasicBlock::getSinglePredecessor`.
-pub(crate) fn single_predecessor<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    block: ValueSlot,
-) -> Option<ValueSlot> {
-    let parent = with_block_data(anchor, block, |data| *data.parent.borrow())??;
-    let function = value_from_slot(anchor, parent);
-    let ValueKindData::Function(data) = &function.data().kind else {
-        return None;
-    };
-    let blocks = data.basic_blocks.borrow().clone();
-    let mut found = None;
-    for candidate in blocks {
-        let Some(terminator) = terminator_of_block(anchor, candidate) else {
-            continue;
-        };
-        let Some(kind) = instruction_kind(terminator) else {
-            continue;
-        };
-        if !kind_successor_ids(kind).contains(&block) {
-            continue;
-        }
-        if found.is_some_and(|previous| previous != candidate) {
-            return None;
-        }
-        found = Some(candidate);
-    }
-    found
 }
 
 /// Whether `block` is its function's entry block. Ports `BasicBlock::isEntryBlock`.

@@ -875,6 +875,27 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     where
         Name: Into<String>,
     {
+        let end = self.data().basic_blocks.borrow().len();
+        self.insert_basic_block_at_unchecked(end, name)
+    }
+
+    /// Create a fresh basic block at `index` in this function's block list,
+    /// ahead of the block currently there (or at the end when `index` is the
+    /// list's length). Mirrors `BasicBlock::Create(Context, Name, Parent,
+    /// InsertBefore)`: [`append_basic_block_unchecked`](Self::append_basic_block_unchecked)
+    /// is the `InsertBefore = nullptr` case.
+    ///
+    /// Crate-internal, with the same capability argument as
+    /// `append_basic_block_unchecked`. `index` must be at most the list's
+    /// length; the split routines compute it from the same list.
+    pub(crate) fn insert_basic_block_at_unchecked<Name>(
+        self,
+        index: usize,
+        name: Name,
+    ) -> BasicBlock<'ctx, R, Unterminated, B>
+    where
+        Name: Into<String>,
+    {
         let name = name.into();
         let label_ty = self.module.module().label_type::<B>().as_type().id();
         let bb_id = self.module.module().context().push_value(ValueData {
@@ -884,7 +905,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             kind: ValueKindData::BasicBlock(BasicBlockData::new(Some(self.id))),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
-        self.data().basic_blocks.borrow_mut().push(bb_id);
+        // `index` is at most the length: both callers read it off this list.
+        self.data().basic_blocks.borrow_mut().insert(index, bb_id);
         if !name.is_empty() {
             self.set_local_value_name(bb_id, Some(&name));
         }
