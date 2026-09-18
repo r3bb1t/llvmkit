@@ -873,7 +873,14 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     mask: &[ShuffleMaskElem],
     scalable: bool,
 ) -> IrResult<Constant<'ctx, B>> {
-    let i32_ty = IntType::<i32, B>::new(module.module().i32_type::<B>().as_type().id(), module);
+    let i32_ty = IntType::<i32, B>::new(
+        module
+            .module()
+            .i32_type::<B>()
+            .as_type()
+            .slot_trusting_same_module(),
+        module,
+    );
     let mut elements = Vec::with_capacity(mask.len());
     for element in mask {
         match *element {

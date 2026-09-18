@@ -1060,7 +1060,11 @@ macro_rules! impl_into_constant_value_int {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
                 let ty = IntType::<$marker, B>::new(
-                    module.module().$ty_method::<B>().as_type().id(),
+                    module
+                        .module()
+                        .$ty_method::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
                     module,
                 );
                 Ok(IntoConstantInt::into_constant_int(self, ty)
@@ -1092,7 +1096,11 @@ macro_rules! impl_into_constant_value_float {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
                 let ty = FloatType::<$marker, B>::new(
-                    module.module().$ty_method::<B>().as_type().id(),
+                    module
+                        .module()
+                        .$ty_method::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
                     module,
                 );
                 Ok(IntoConstantFloat::into_constant_float(self, ty)

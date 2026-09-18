@@ -731,8 +731,8 @@ fn the_three_aggregate_index_walks_agree_at_the_u32_boundary() -> Result<(), IrE
 
     // Walk 1, the public port the parser calls: in range, leaf is `i8`.
     assert_eq!(
-        llvmkit_ir::indexed_aggregate_type(arr_ty.as_type(), &[u32::MAX]).map(|t| t.id()),
-        Some(i8_ty.as_type().id()),
+        llvmkit_ir::indexed_aggregate_type(arr_ty.as_type(), &[u32::MAX]),
+        Some(i8_ty.as_type()),
         "indexed_aggregate_type must accept u32::MAX into a 2^32-element array"
     );
     // ...and out of range one past it, at the true 64-bit length.

@@ -7291,7 +7291,7 @@ mod tests {
         fabricate_instruction(
             m,
             bb_id,
-            m.void_type().as_type().id(),
+            m.void_type().as_type().slot_trusting_same_module(),
             InstructionKindData::Ret(ReturnOpData::new(None)),
         );
     }
@@ -7373,11 +7373,11 @@ mod tests {
         let i32_ty = m.i32_type().as_type();
         let ptr_ty = m.ptr_type(0).as_type();
         let (_, bb_id) = skeleton(&m, i32_ty, &[], "f");
-        let null_id = fab_null_ptr_id(&m, ptr_ty.id());
+        let null_id = fab_null_ptr_id(&m, ptr_ty.slot_trusting_same_module());
         fabricate_instruction(
             &m,
             bb_id,
-            m.void_type().as_type().id(),
+            m.void_type().as_type().slot_trusting_same_module(),
             InstructionKindData::Ret(ReturnOpData::new(Some(null_id))),
         );
         let err = m.verify_borrowed().unwrap_err();
@@ -7392,11 +7392,11 @@ mod tests {
         let void_ty = m.void_type().as_type();
         let i32_ty = m.i32_type().as_type();
         let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
-        let zero_id = fab_const_int_id(&m, i32_ty.id(), 0);
+        let zero_id = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 0);
         fabricate_instruction(
             &m,
             bb_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Ret(ReturnOpData::new(Some(zero_id))),
         );
         let err = m.verify_borrowed().unwrap_err();
@@ -7418,7 +7418,7 @@ mod tests {
         fabricate_instruction(
             &m,
             bb_id,
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Add(BinaryOpData::new(
                 ValueSlotAccess::slot_trusting_same_module(p0),
                 ValueSlotAccess::slot_trusting_same_module(p1),
@@ -7446,7 +7446,7 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Br(BranchInstData {
                 kind: core::cell::RefCell::new(BranchKind::Conditional {
                     cond: core::cell::Cell::new(ValueSlotAccess::slot_trusting_same_module(p0)),
@@ -7492,7 +7492,7 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Add(BinaryOpData::new(
                 ValueSlotAccess::slot_trusting_same_module(p0),
                 ValueSlotAccess::slot_trusting_same_module(p1),
@@ -7501,7 +7501,7 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(PhiData::new()),
         );
         append_ret_void(&m, entry_id);
@@ -7523,14 +7523,14 @@ mod tests {
         let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
         // Predict the next value-id by pushing a probe and reading
         // its arena index.
-        let probe = fab_const_int_id(&m, i32_ty.id(), 0);
+        let probe = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 0);
         let next_index = probe.arena_index() + 1;
         let next_id = ValueSlot::from_index(next_index);
         // Push an `add i32 next_id, probe` -- next_id IS this add's id.
         let pushed = fabricate_instruction(
             &m,
             bb_id,
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Add(BinaryOpData::new(next_id, probe)),
         );
         assert_eq!(pushed, next_id, "id prediction must match arena order");
@@ -7561,7 +7561,7 @@ mod tests {
             fabricate_instruction(
                 &m,
                 entry_id,
-                token_ty.id(),
+                token_ty.slot_trusting_same_module(),
                 InstructionKindData::Phi(PhiData::new()),
             );
             append_ret_void(&m, entry_id);
@@ -7575,7 +7575,7 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(PhiData::new()),
         );
         append_ret_void(&m, entry_id);
@@ -7605,7 +7605,7 @@ mod tests {
         fabricate_instruction(
             &m,
             dead_id,
-            tptr_ty.id(),
+            tptr_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(PhiData::new()),
         );
         append_ret_void(&m, dead_id);
@@ -7634,7 +7634,7 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Br(BranchInstData {
                 kind: core::cell::RefCell::new(BranchKind::Conditional {
                     cond: core::cell::Cell::new(cond_id),
@@ -7643,8 +7643,8 @@ mod tests {
                 }),
             }),
         );
-        let one = fab_const_int_id(&m, i32_ty.id(), 1);
-        let two = fab_const_int_id(&m, i32_ty.id(), 2);
+        let one = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 1);
+        let two = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 2);
         let phi = PhiData::new();
         phi.incoming
             .borrow_mut()
@@ -7655,7 +7655,7 @@ mod tests {
         fabricate_instruction(
             &m,
             target.slot_trusting_same_module(),
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(phi),
         );
         append_ret_void(&m, target.slot_trusting_same_module());
@@ -7680,7 +7680,7 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Br(BranchInstData {
                 kind: core::cell::RefCell::new(BranchKind::Unconditional(
                     target.slot_trusting_same_module(),
@@ -7688,7 +7688,7 @@ mod tests {
             }),
         );
         append_ret_void(&m, unrelated.slot_trusting_same_module());
-        let bogus = fab_const_int_id(&m, i32_ty.id(), 7);
+        let bogus = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 7);
         let phi = PhiData::new();
         phi.incoming.borrow_mut().push((
             core::cell::Cell::new(bogus),
@@ -7697,7 +7697,7 @@ mod tests {
         fabricate_instruction(
             &m,
             target.slot_trusting_same_module(),
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(phi),
         );
         append_ret_void(&m, target.slot_trusting_same_module());
@@ -7719,11 +7719,11 @@ mod tests {
             .add_function_dyn("callee", callee_fn_ty, Linkage::External)
             .unwrap();
         let cb = m.view(callee).append_basic_block(&m, "entry");
-        let zero = fab_const_int_id(&m, i32_ty.id(), 0);
+        let zero = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 0);
         fabricate_instruction(
             &m,
             cb.slot_trusting_same_module(),
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
         );
         // Caller: passes only ONE arg.
@@ -7736,10 +7736,10 @@ mod tests {
         fabricate_instruction(
             &m,
             entry.slot_trusting_same_module(),
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Call(CallInstData::new(
                 m.view(callee).slot_trusting_same_module(),
-                callee_fn_ty.as_type().id(),
+                callee_fn_ty.as_type().slot_trusting_same_module(),
                 [arg_id],
                 crate::CallingConv::default(),
                 crate::instr_types::TailCallKind::None,
@@ -7759,11 +7759,11 @@ mod tests {
         let i64_ty = m.i64_type().as_type();
         let ptr1_ty = m.ptr_type(1).as_type();
         let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "f");
-        let ptr = fab_null_ptr_id(&m, ptr1_ty.id());
+        let ptr = fab_null_ptr_id(&m, ptr1_ty.slot_trusting_same_module());
         fabricate_instruction(
             &m,
             bb_id,
-            i64_ty.id(),
+            i64_ty.slot_trusting_same_module(),
             InstructionKindData::Cast(CastOpData::new(CastOpcode::PtrToAddr, ptr)),
         );
         append_ret_void(&m, bb_id);

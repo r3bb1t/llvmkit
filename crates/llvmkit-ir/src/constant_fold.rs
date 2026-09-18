@@ -1467,7 +1467,11 @@ fn type_is_empty<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
 }
 
 fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
-    Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
+    // Internal: the brand changes, the module does not.
+    Type::new(
+        ty.slot_trusting_same_module(),
+        ModuleRef::new(ty.module().core_ref()),
+    )
 }
 
 /// Fold a `select` with constant condition/arms.
@@ -1772,7 +1776,7 @@ pub(crate) fn constant_fold_insert_element_instruction_trusting_same_module<
     let Some((element_ty, lanes, scalable)) = vector.ty().data().as_vector() else {
         return Ok(None);
     };
-    if value.ty().id() != element_ty {
+    if value.ty().slot_trusting_same_module() != element_ty {
         return Ok(None);
     }
     if is_undef_or_poison(index) {
@@ -2881,7 +2885,7 @@ fn bool_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
     };
     let module = ty.module();
     let bool_ty: IntType<'ctx, bool, B> = IntType::new(module.context().int_type(1), module);
-    if element_ty != bool_ty.as_type().id() {
+    if element_ty != bool_ty.as_type().slot_trusting_same_module() {
         return Ok(None);
     }
     let Ok(lane_count) = usize::try_from(lanes) else {

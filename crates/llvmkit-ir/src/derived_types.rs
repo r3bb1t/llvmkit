@@ -31,7 +31,7 @@ use core::iter::FusedIterator;
 
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::module::{ModuleBrand, ModuleRef};
-use super::r#type::{Type, TypeData, TypeKind, TypeSlot};
+use super::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
@@ -55,7 +55,7 @@ macro_rules! decl_type_handle {
         $(#[$attr])*
         #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
-            pub(super) id: TypeSlot,
+            id: TypeSlot,
             pub(super) module: ModuleRef<'ctx, B>,
         }
 
@@ -71,7 +71,7 @@ macro_rules! decl_type_handle {
             /// Widen to the erased [`Type`] handle.
             #[inline]
             pub fn as_type(self) -> Type<'ctx, B> {
-                Type { id: self.id, module: self.module }
+                Type::new(self.id, self.module)
             }
         }
 
@@ -98,7 +98,7 @@ macro_rules! decl_type_handle {
             fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
                 let pred: fn(&TypeData) -> bool = $pred;
                 if pred(t.data()) {
-                    Ok(Self { id: t.id(), module: t.module })
+                    Ok(Self { id: t.slot_trusting_same_module(), module: t.module })
                 } else {
                     Err(IrError::TypeMismatch {
                         expected: TypeKindLabel::$label,
@@ -140,7 +140,7 @@ decl_type_handle!(
 /// sites working. Array lengths are `u64` (mirroring
 /// `ArrayType::getNumElements`).
 pub struct ArrayType<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> {
-    pub(super) id: TypeSlot,
+    id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
@@ -192,10 +192,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
     /// Widen to the erased [`Type`] handle.
     #[inline]
     pub fn as_type(self) -> Type<'ctx, B> {
-        Type {
-            id: self.id,
-            module: self.module,
-        }
+        Type::new(self.id, self.module)
     }
 
     /// Erase both markers, producing the fully dynamic handle. Preserves the
@@ -245,7 +242,7 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for ArrayType<'ctx, ElemDyn, A
     fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
         if matches!(t.data(), TypeData::Array { .. }) {
             Ok(Self {
-                id: t.id(),
+                id: t.slot_trusting_same_module(),
                 module: t.module,
                 _e: PhantomData,
                 _l: PhantomData,
@@ -274,7 +271,7 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for ArrayType<'ctx, ElemDyn, A
 /// BodySet>`. The runtime-checked default keeps existing parsed-IR /
 /// literal-struct call sites working without churn.
 pub struct StructType<'ctx, Body: StructBodyState, B: ModuleBrand> {
-    pub(super) id: TypeSlot,
+    id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _b: core::marker::PhantomData<Body>,
 }
@@ -337,10 +334,7 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
     /// Widen to the erased [`Type`] handle.
     #[inline]
     pub fn as_type(self) -> Type<'ctx, B> {
-        Type {
-            id: self.id,
-            module: self.module,
-        }
+        Type::new(self.id, self.module)
     }
 }
 
@@ -375,7 +369,7 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for StructType<'ctx, StructBod
     fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
         if matches!(t.data(), TypeData::Struct(_)) {
             Ok(Self {
-                id: t.id(),
+                id: t.slot_trusting_same_module(),
                 module: t.module,
                 _b: core::marker::PhantomData,
             })
@@ -402,7 +396,7 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for StructType<'ctx, StructBod
 /// typed `<4 x i32>`, and builder call sites can reject a shape mismatch at
 /// compile time. Runtime-checked defaults keep existing call sites working.
 pub struct VectorType<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> {
-    pub(super) id: TypeSlot,
+    id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
@@ -454,10 +448,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
     /// Widen to the erased [`Type`] handle.
     #[inline]
     pub fn as_type(self) -> Type<'ctx, B> {
-        Type {
-            id: self.id,
-            module: self.module,
-        }
+        Type::new(self.id, self.module)
     }
 
     /// Erase both markers, producing the fully dynamic handle. Preserves the
@@ -510,7 +501,7 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for VectorType<'ctx, ElemDyn, 
             TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
         ) {
             Ok(Self {
-                id: t.id(),
+                id: t.slot_trusting_same_module(),
                 module: t.module,
                 _e: PhantomData,
                 _l: PhantomData,
@@ -566,7 +557,7 @@ decl_type_handle!(
 /// Use [`IntType<'ctx, IntDyn>`](IntDyn) when the width
 /// is only known at runtime (parsed `.ll`).
 pub struct IntType<'ctx, W: IntWidth, B: ModuleBrand> {
-    pub(super) id: TypeSlot,
+    id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _w: PhantomData<W>,
 }
@@ -619,10 +610,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> IntType<'ctx, W, B> {
     /// Widen to the erased [`Type`] handle.
     #[inline]
     pub fn as_type(self) -> Type<'ctx, B> {
-        Type {
-            id: self.id,
-            module: self.module,
-        }
+        Type::new(self.id, self.module)
     }
 
     /// Bit width of this integer type. For static widths this is
@@ -674,7 +662,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for IntType<'ctx, IntDy
     #[inline]
     fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
         if matches!(t.data(), TypeData::Integer { .. }) {
-            Ok(Self::new(t.id(), t.module()))
+            Ok(Self::new(t.slot_trusting_same_module(), t.module()))
         } else {
             Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Integer,
@@ -693,7 +681,7 @@ macro_rules! impl_int_type_static_try_from {
             fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
                 match t.data() {
                     TypeData::Integer { bits } if *bits == $bits => {
-                        Ok(Self::new(t.id(), t.module()))
+                        Ok(Self::new(t.slot_trusting_same_module(), t.module()))
                     }
                     TypeData::Integer { bits } => Err(IrError::OperandWidthMismatch {
                         lhs: $bits,
@@ -760,7 +748,7 @@ impl_int_type_static_to_dyn!(i128);
 /// Use [`FloatDyn`] when the kind is only known
 /// at runtime.
 pub struct FloatType<'ctx, K: FloatKind, B: ModuleBrand> {
-    pub(super) id: TypeSlot,
+    id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _k: PhantomData<K>,
 }
@@ -810,10 +798,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> FloatType<'ctx, K, B> {
     /// Widen to the erased [`Type`] handle.
     #[inline]
     pub fn as_type(self) -> Type<'ctx, B> {
-        Type {
-            id: self.id,
-            module: self.module,
-        }
+        Type::new(self.id, self.module)
     }
 
     /// Erase the kind marker, producing a [`FloatDyn`]-tagged handle.
@@ -860,7 +845,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for FloatType<'ctx, Flo
                 | TypeData::Fp128
                 | TypeData::PpcFp128
         ) {
-            Ok(Self::new(t.id(), t.module()))
+            Ok(Self::new(t.slot_trusting_same_module(), t.module()))
         } else {
             Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Float,
@@ -877,7 +862,7 @@ macro_rules! impl_float_type_static_try_from {
             type Error = IrError;
             fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
                 match t.data() {
-                    TypeData::$variant => Ok(Self::new(t.id(), t.module())),
+                    TypeData::$variant => Ok(Self::new(t.slot_trusting_same_module(), t.module())),
                     _ => Err(IrError::TypeMismatch {
                         expected: TypeKindLabel::$label,
                         got: t.kind_label(),
@@ -1315,29 +1300,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Type<'ctx, B>> for AnyTypeEnum<'ctx, B> {
     fn from(t: Type<'ctx, B>) -> Self {
         let m = t.module();
         match t.kind() {
-            TypeKind::Void => Self::Void(VoidType::new(t.id(), m)),
-            TypeKind::Integer { .. } => Self::Int(IntType::new(t.id(), m)),
+            TypeKind::Void => Self::Void(VoidType::new(t.slot_trusting_same_module(), m)),
+            TypeKind::Integer { .. } => Self::Int(IntType::new(t.slot_trusting_same_module(), m)),
             TypeKind::Half
             | TypeKind::Bfloat
             | TypeKind::Float
             | TypeKind::Double
             | TypeKind::X86Fp80
             | TypeKind::Fp128
-            | TypeKind::PpcFp128 => Self::Float(FloatType::new(t.id(), m)),
-            TypeKind::Pointer { .. } => Self::Pointer(PointerType::new(t.id(), m)),
-            TypeKind::Array => Self::Array(ArrayType::new(t.id(), m)),
-            TypeKind::Struct => Self::Struct(StructType::new(t.id(), m)),
-            TypeKind::FixedVector | TypeKind::ScalableVector => {
-                Self::Vector(VectorType::new(t.id(), m))
+            | TypeKind::PpcFp128 => Self::Float(FloatType::new(t.slot_trusting_same_module(), m)),
+            TypeKind::Pointer { .. } => {
+                Self::Pointer(PointerType::new(t.slot_trusting_same_module(), m))
             }
-            TypeKind::Function => Self::Function(FunctionType::new(t.id(), m)),
-            TypeKind::Label => Self::Label(LabelType::new(t.id(), m)),
-            TypeKind::Metadata => Self::Metadata(MetadataType::new(t.id(), m)),
-            TypeKind::Token => Self::Token(TokenType::new(t.id(), m)),
+            TypeKind::Array => Self::Array(ArrayType::new(t.slot_trusting_same_module(), m)),
+            TypeKind::Struct => Self::Struct(StructType::new(t.slot_trusting_same_module(), m)),
+            TypeKind::FixedVector | TypeKind::ScalableVector => {
+                Self::Vector(VectorType::new(t.slot_trusting_same_module(), m))
+            }
+            TypeKind::Function => {
+                Self::Function(FunctionType::new(t.slot_trusting_same_module(), m))
+            }
+            TypeKind::Label => Self::Label(LabelType::new(t.slot_trusting_same_module(), m)),
+            TypeKind::Metadata => {
+                Self::Metadata(MetadataType::new(t.slot_trusting_same_module(), m))
+            }
+            TypeKind::Token => Self::Token(TokenType::new(t.slot_trusting_same_module(), m)),
             TypeKind::X86Amx => Self::X86Amx(t),
             TypeKind::WasmExnRef => Self::WasmExnRef(t),
-            TypeKind::TargetExt => Self::TargetExt(TargetExtType::new(t.id(), m)),
-            TypeKind::TypedPointer => Self::Pointer(PointerType::new(t.id(), m)),
+            TypeKind::TargetExt => {
+                Self::TargetExt(TargetExtType::new(t.slot_trusting_same_module(), m))
+            }
+            TypeKind::TypedPointer => {
+                Self::Pointer(PointerType::new(t.slot_trusting_same_module(), m))
+            }
         }
     }
 }
@@ -1432,19 +1427,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for BasicTypeEnum<'ctx,
     fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
         let m = t.module();
         Ok(match t.kind() {
-            TypeKind::Integer { .. } => Self::Int(IntType::new(t.id(), m)),
+            TypeKind::Integer { .. } => Self::Int(IntType::new(t.slot_trusting_same_module(), m)),
             TypeKind::Half
             | TypeKind::Bfloat
             | TypeKind::Float
             | TypeKind::Double
             | TypeKind::X86Fp80
             | TypeKind::Fp128
-            | TypeKind::PpcFp128 => Self::Float(FloatType::new(t.id(), m)),
-            TypeKind::Pointer { .. } => Self::Pointer(PointerType::new(t.id(), m)),
-            TypeKind::Array => Self::Array(ArrayType::new(t.id(), m)),
-            TypeKind::Struct => Self::Struct(StructType::new(t.id(), m)),
+            | TypeKind::PpcFp128 => Self::Float(FloatType::new(t.slot_trusting_same_module(), m)),
+            TypeKind::Pointer { .. } => {
+                Self::Pointer(PointerType::new(t.slot_trusting_same_module(), m))
+            }
+            TypeKind::Array => Self::Array(ArrayType::new(t.slot_trusting_same_module(), m)),
+            TypeKind::Struct => Self::Struct(StructType::new(t.slot_trusting_same_module(), m)),
             TypeKind::FixedVector | TypeKind::ScalableVector => {
-                Self::Vector(VectorType::new(t.id(), m))
+                Self::Vector(VectorType::new(t.slot_trusting_same_module(), m))
             }
             _ => {
                 return Err(IrError::TypeMismatch {
@@ -1507,7 +1504,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for BasicMetadataTypeEn
     type Error = IrError;
     fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
         if t.is_metadata() {
-            return Ok(Self::Metadata(MetadataType::new(t.id(), t.module())));
+            return Ok(Self::Metadata(MetadataType::new(
+                t.slot_trusting_same_module(),
+                t.module(),
+            )));
         }
         BasicTypeEnum::try_from(t).map(Self::from)
     }
@@ -1557,8 +1557,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for AggregateType<'ctx,
     fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
         let m = t.module();
         match t.kind() {
-            TypeKind::Array => Ok(Self::Array(ArrayType::new(t.id(), m))),
-            TypeKind::Struct => Ok(Self::Struct(StructType::new(t.id(), m))),
+            TypeKind::Array => Ok(Self::Array(ArrayType::new(
+                t.slot_trusting_same_module(),
+                m,
+            ))),
+            TypeKind::Struct => Ok(Self::Struct(StructType::new(
+                t.slot_trusting_same_module(),
+                m,
+            ))),
             _ => Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Array,
                 got: t.kind_label(),

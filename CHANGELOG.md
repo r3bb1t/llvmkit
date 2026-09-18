@@ -279,6 +279,41 @@ cut, entries accumulate under **Unreleased**.
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type
   mismatch (`TypeMismatch`; the method returns `TypeIdentityMismatch`).
+- **Breaking (llvmkit-ir):** a type handle's bare slot has no public route
+  out either. `Type::id` is removed and `TypeSlot` is no longer exported;
+  compare and store `Type` handles, whose equality includes the module.
+  Inside the crate every type handle's `id` field is private to the file
+  that declares it, and a type slot leaves a handle only through
+  `TypeSlotAccess`'s two doors. The entry above said moving
+  `DominatorTreeBlock::dominator_block_id` onto the trait's private seal
+  took it off the public surface; it did not, because a bound on the public
+  trait brings the seal's methods into scope where the seal cannot be
+  named. The method now also takes a value only llvmkit can build. Two
+  compile-fail fixtures pin both routes
+  (`tests/compile_fail/handle_slot_accessors_removed.rs`,
+  `tests/compile_fail/dominator_block_slot_is_crate_only.rs`).
+- **Fixed (llvmkit-ir):** making the type fields private surfaced
+  fallible entries that read a caller's type by slot without comparing
+  modules: `set_struct_body` and `set_struct_body_dyn` (the struct and each
+  element), `add_function_dyn` (the signature),
+  `intrinsic_descriptor_from_signature` (the function type), and
+  `get_or_insert_intrinsic_declaration` / `_by_id` (the descriptor's
+  overload types). A type of another module sharing the brand was read as
+  whatever sat at its slot here. Each now returns `ForeignType` before
+  anything is read, set or declared. The infallible type constructors
+  (`typed_pointer_type`, `array_type`, `vector_type`,
+  `scalable_vector_type`, `struct_type` / `packed_struct_type`,
+  `function_type` / `variadic_function_type`, `target_ext_type`) and
+  `inline_asm` still cannot refuse a type of another module; they are
+  marked for the task that makes them fallible.
+- **Fixed (llvmkit-ir):** an `IrBuilder` took a custom folder's result on
+  trust. An `IrBuilderFolder` hook that returned a value of another module
+  sharing the brand had it handed back as the builder's result — through
+  the erased entries, the natively overridden typed hooks and typed
+  compares, and the default typed hooks' narrowing, whose type check
+  compared bare type slots, so a foreign `i32` at the home `i32`'s slot
+  matched. Each route now refuses the result with `ForeignValueId`, and the
+  type check refuses a type of another module with `ForeignType`.
 
 ### Changed — four llvmkit-bug sites get their own variants; alias and ifunc refuse a foreign constant *(breaking)*
 

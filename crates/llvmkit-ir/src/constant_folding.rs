@@ -558,13 +558,14 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
             if !changed {
                 return Ok(constant);
             }
-            let id = module
-                .context()
-                .intern_constant_aggregate(constant.ty().id(), folded_ids.into_boxed_slice());
+            let id = module.context().intern_constant_aggregate(
+                constant.ty().slot_trusting_same_module(),
+                folded_ids.into_boxed_slice(),
+            );
             Ok(Constant::from_parts(Value::from_parts(
                 id,
                 module,
-                constant.ty().id(),
+                constant.ty().slot_trusting_same_module(),
             )))
         }
         _ => Ok(constant),
@@ -1198,8 +1199,12 @@ fn strip_and_accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
                 let ptr_ty = current.ty();
                 let wrapped = module
                     .context()
-                    .intern_constant_global_value_ref(ptr_ty.id(), *base_id);
-                let base = Constant::from_parts(Value::from_parts(wrapped, module, ptr_ty.id()));
+                    .intern_constant_global_value_ref(ptr_ty.slot_trusting_same_module(), *base_id);
+                let base = Constant::from_parts(Value::from_parts(
+                    wrapped,
+                    module,
+                    ptr_ty.slot_trusting_same_module(),
+                ));
                 offset = offset.wrapping_add(&gep_offset_magnitude(*off, index_bits));
                 current = base;
             }
@@ -2112,8 +2117,12 @@ fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
             let ptr_ty = ptr.ty();
             let wrapped = module
                 .context()
-                .intern_constant_global_value_ref(ptr_ty.id(), *base_id);
-            let base = Constant::from_parts(Value::from_parts(wrapped, module, ptr_ty.id()));
+                .intern_constant_global_value_ref(ptr_ty.slot_trusting_same_module(), *base_id);
+            let base = Constant::from_parts(Value::from_parts(
+                wrapped,
+                module,
+                ptr_ty.slot_trusting_same_module(),
+            ));
             Some((base, gep_offset_magnitude(*off, index_bits)))
         }
         ValueKindData::Constant(ConstantData::Expr(expr))
@@ -2219,13 +2228,15 @@ fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
         && let Some(off) = offset.try_sext_i64()
     {
         let ptr_ty = ptr.ty();
-        let id = module
-            .context()
-            .intern_constant_gep_offset(ptr_ty.id(), *value, off);
+        let id = module.context().intern_constant_gep_offset(
+            ptr_ty.slot_trusting_same_module(),
+            *value,
+            off,
+        );
         return Ok(Some(Constant::from_parts(Value::from_parts(
             id,
             module,
-            ptr_ty.id(),
+            ptr_ty.slot_trusting_same_module(),
         ))));
     }
 
@@ -2363,11 +2374,13 @@ fn zero_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
     }
     if matches!(ty.data(), TypeData::Pointer { .. }) {
         let module = ty.module();
-        let id = module.context().intern_constant_null(ty.id());
+        let id = module
+            .context()
+            .intern_constant_null(ty.slot_trusting_same_module());
         return Ok(Some(Constant::from_parts(Value::from_parts(
             id,
             module,
-            ty.id(),
+            ty.slot_trusting_same_module(),
         ))));
     }
     Ok(None)
@@ -3110,7 +3123,10 @@ fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>
 }
 
 fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
-    Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
+    Type::new(
+        ty.slot_trusting_same_module(),
+        ModuleRef::new(ty.module().core_ref()),
+    )
 }
 
 fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, DynBrand> {
@@ -3118,7 +3134,7 @@ fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx
     Value::from_parts(
         value.slot_trusting_same_module(),
         ModuleView::new(value.module().core_ref()),
-        value.ty().id(),
+        value.ty().slot_trusting_same_module(),
     )
 }
 
@@ -3130,6 +3146,6 @@ fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
     Constant::from_parts(Value::from_parts(
         constant.slot_trusting_same_module(),
         module,
-        constant.ty().id(),
+        constant.ty().slot_trusting_same_module(),
     ))
 }

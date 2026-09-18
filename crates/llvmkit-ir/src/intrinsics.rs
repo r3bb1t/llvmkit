@@ -12,7 +12,7 @@ use crate::attributes::{
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
 use crate::module::{Module, ModuleBrand, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeSlot};
+use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
 
@@ -265,7 +265,7 @@ where
     let id = IntrinsicId::lookup(&function.name)?;
     let descriptor = descriptor_for_name(module, id, &function.name).ok()?;
     let expected = descriptor.function_type_ref(module).ok()?;
-    (expected.as_type().id() == function.signature).then_some(descriptor)
+    (expected.as_type().slot_trusting_same_module() == function.signature).then_some(descriptor)
 }
 
 pub(crate) fn semantic_for_callee<'ctx, B>(callee: Value<'ctx, B>) -> Option<IntrinsicSemantic>
@@ -646,7 +646,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
     pub(crate) fn to_function_data(&self) -> IntrinsicFunctionData {
         IntrinsicFunctionData {
             id: self.id,
-            overloads: self.overloads.iter().map(|ty| ty.id()).collect(),
+            // Internal: the one caller, `get_or_insert_intrinsic_declaration`,
+            // admitted every overload against the declaring module first.
+            overloads: self
+                .overloads
+                .iter()
+                .map(|ty| ty.slot_trusting_same_module())
+                .collect(),
         }
     }
 
@@ -1732,7 +1738,10 @@ where
         let Some(elements) = parse_mangled_type_sequence(module, body)? else {
             continue;
         };
-        let elements = elements.iter().map(|ty| ty.id()).collect::<Box<[_]>>();
+        let elements = elements
+            .iter()
+            .map(|ty| ty.slot_trusting_same_module())
+            .collect::<Box<[_]>>();
         return Ok(Some((
             Type::new(
                 module
@@ -2050,7 +2059,9 @@ where
         IitDescriptor::Struct { elements } => {
             let mut fields = Vec::with_capacity(elements);
             for _ in 0..elements {
-                fields.push(decode_fixed_type(module, descriptors, overloads)?.id());
+                fields.push(
+                    decode_fixed_type(module, descriptors, overloads)?.slot_trusting_same_module(),
+                );
             }
             Ok(Type::new(
                 module
@@ -2134,12 +2145,15 @@ where
     B: ModuleBrand + 'ctx,
     I: IntoIterator<Item = Type<'ctx, B>>,
 {
-    let param_ids: Vec<_> = params.into_iter().map(Type::id).collect();
-    let id =
-        module
-            .module()
-            .context()
-            .function_type(ret.id(), param_ids.into_boxed_slice(), is_var_arg);
+    let param_ids: Vec<_> = params
+        .into_iter()
+        .map(TypeSlotAccess::slot_trusting_same_module)
+        .collect();
+    let id = module.module().context().function_type(
+        ret.slot_trusting_same_module(),
+        param_ids.into_boxed_slice(),
+        is_var_arg,
+    );
     Ok(FunctionType::new(id, module))
 }
 
@@ -2155,7 +2169,7 @@ where
         module
             .module()
             .context()
-            .scalable_vector_type(elem.id(), min),
+            .scalable_vector_type(elem.slot_trusting_same_module(), min),
         module,
     )
 }
@@ -2164,7 +2178,13 @@ fn array_type<'ctx, B>(module: ModuleRef<'ctx, B>, elem: Type<'ctx, B>, n: u64) 
 where
     B: ModuleBrand + 'ctx,
 {
-    Type::new(module.module().context().array_type(elem.id(), n), module)
+    Type::new(
+        module
+            .module()
+            .context()
+            .array_type(elem.slot_trusting_same_module(), n),
+        module,
+    )
 }
 
 fn target_ext_type<'ctx, B, Types, Ints>(
@@ -2178,7 +2198,10 @@ where
     Types: IntoIterator<Item = Type<'ctx, B>>,
     Ints: IntoIterator<Item = u32>,
 {
-    let type_ids: Box<[_]> = type_params.into_iter().map(Type::id).collect();
+    let type_ids: Box<[_]> = type_params
+        .into_iter()
+        .map(TypeSlotAccess::slot_trusting_same_module)
+        .collect();
     let int_params: Box<[_]> = int_params.into_iter().collect();
     Type::new(
         module
@@ -2437,7 +2460,7 @@ where
     let id = module
         .module()
         .context()
-        .fixed_vector_type(elem.id(), lanes);
+        .fixed_vector_type(elem.slot_trusting_same_module(), lanes);
     Type::new(id, module)
 }
 

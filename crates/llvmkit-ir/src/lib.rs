@@ -365,7 +365,7 @@ pub use struct_schema::{
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
-pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind, TypeSlot};
+pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;

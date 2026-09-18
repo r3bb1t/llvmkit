@@ -2723,3 +2723,307 @@ fn must_trigger_ub_matches_a_known_poison_value_in_its_own_module_only() {
         "a divisor of another module is not this udiv's operand"
     );
 }
+
+use llvmkit_ir::{
+    BinaryOpcode, FastMathFlags, FloatKind, FloatType, IntBinOpFlags, IntPredicate, IntType,
+    IntWidth, IrBuilderFolder, OverflowFlags,
+};
+
+/// A folder whose erased hooks answer with a value another module minted.
+/// Its typed hooks keep the trait's defaults, which narrow that answer.
+struct ErasedAnswerFolder<'m> {
+    answer: Value<'m, DynBrand>,
+}
+
+impl<'m> IrBuilderFolder<'m, DynBrand> for ErasedAnswerFolder<'m> {
+    fn fold_bin_op_dyn(
+        &self,
+        _: BinaryOpcode,
+        _: Value<'m, DynBrand>,
+        _: Value<'m, DynBrand>,
+    ) -> IrResult<Option<Value<'m, DynBrand>>> {
+        Ok(Some(self.answer))
+    }
+
+    fn fold_no_wrap_bin_op_dyn(
+        &self,
+        _: BinaryOpcode,
+        _: Value<'m, DynBrand>,
+        _: Value<'m, DynBrand>,
+        _: OverflowFlags,
+    ) -> IrResult<Option<Value<'m, DynBrand>>> {
+        Ok(Some(self.answer))
+    }
+
+    fn fold_bin_op_fmf_dyn(
+        &self,
+        _: BinaryOpcode,
+        _: Value<'m, DynBrand>,
+        _: Value<'m, DynBrand>,
+        _: FastMathFlags,
+    ) -> IrResult<Option<Value<'m, DynBrand>>> {
+        Ok(Some(self.answer))
+    }
+
+    fn fold_cast_dyn(
+        &self,
+        _: CastOpcode,
+        _: Value<'m, DynBrand>,
+        _: Type<'m, DynBrand>,
+    ) -> IrResult<Option<Value<'m, DynBrand>>> {
+        Ok(Some(self.answer))
+    }
+}
+
+/// A folder whose typed hooks, overridden natively, answer with values
+/// another module minted — narrowed to the hook's own marker, so no default
+/// narrow runs and the builder's acceptance is the only check.
+struct TypedAnswerFolder<'m> {
+    int32: Value<'m, DynBrand>,
+    int64: Value<'m, DynBrand>,
+    float: Value<'m, DynBrand>,
+    double: Value<'m, DynBrand>,
+    boolean: Value<'m, DynBrand>,
+}
+
+impl<'m> IrBuilderFolder<'m, DynBrand> for TypedAnswerFolder<'m> {
+    fn fold_int_bin_op<W: IntWidth>(
+        &self,
+        _: BinaryOpcode,
+        _: IntValue<'m, W, DynBrand>,
+        _: IntValue<'m, W, DynBrand>,
+    ) -> IrResult<Option<IntValue<'m, W, DynBrand>>> {
+        W::narrow(self.int32).map(Some)
+    }
+
+    fn fold_int_bin_op_no_wrap<W: IntWidth>(
+        &self,
+        _: BinaryOpcode,
+        _: IntValue<'m, W, DynBrand>,
+        _: IntValue<'m, W, DynBrand>,
+        _: OverflowFlags,
+    ) -> IrResult<Option<IntValue<'m, W, DynBrand>>> {
+        W::narrow(self.int32).map(Some)
+    }
+
+    fn fold_fp_bin_op<K: FloatKind>(
+        &self,
+        _: BinaryOpcode,
+        _: FloatValue<'m, K, DynBrand>,
+        _: FloatValue<'m, K, DynBrand>,
+        _: FastMathFlags,
+    ) -> IrResult<Option<FloatValue<'m, K, DynBrand>>> {
+        K::narrow(self.float).map(Some)
+    }
+
+    fn fold_int_cmp<W: IntWidth>(
+        &self,
+        _: IntPredicate,
+        _: IntValue<'m, W, DynBrand>,
+        _: IntValue<'m, W, DynBrand>,
+    ) -> IrResult<Option<IntValue<'m, bool, DynBrand>>> {
+        <bool as IntWidth>::narrow(self.boolean).map(Some)
+    }
+
+    fn fold_cast_to_int<W: IntWidth>(
+        &self,
+        _: CastOpcode,
+        _: Value<'m, DynBrand>,
+        _: IntType<'m, W, DynBrand>,
+    ) -> IrResult<Option<IntValue<'m, W, DynBrand>>> {
+        W::narrow(self.int64).map(Some)
+    }
+
+    fn fold_cast_to_fp<K: FloatKind>(
+        &self,
+        _: CastOpcode,
+        _: Value<'m, DynBrand>,
+        _: FloatType<'m, K, DynBrand>,
+    ) -> IrResult<Option<FloatValue<'m, K, DynBrand>>> {
+        K::narrow(self.double).map(Some)
+    }
+}
+
+/// A positioned builder over a custom folder `F`.
+type FoldingBuilder<'m, F> = IrBuilder<'m, 'm, DynBrand, F, Positioned, Dyn>;
+
+/// `i32 name(i32, i64, float, double, ptr)` in `module` with a builder over
+/// `folder` at its entry, plus the `i32` and `float` parameters, typed.
+fn folding_builder<'m, F: IrBuilderFolder<'m, DynBrand>>(
+    module: &'m Module<DynBrand>,
+    name: &str,
+    folder: F,
+) -> (
+    FoldingBuilder<'m, F>,
+    IntValue<'m, i32, DynBrand>,
+    FloatValue<'m, f32, DynBrand>,
+) {
+    let (b, [narrow, _, single, _, _]) = builder_with_parameters(module, name);
+    let block = b.into_insert_block();
+    (
+        IrBuilder::with_folder(module, folder).position_at_end(block),
+        narrow.try_into().expect("an i32"),
+        single.try_into().expect("a float"),
+    )
+}
+
+/// A fold result a custom folder hands back is refused when another module
+/// minted it, instead of being returned as this builder's result: through
+/// the builder's own acceptance (`checked_folded_value` for the erased
+/// entries, the typed `accept_folded_*` for natively overridden typed hooks,
+/// and the compare acceptance) and through the default typed hooks' narrow.
+///
+/// No upstream counterpart: `IRBuilderFolder`'s hooks
+/// (`llvm/include/llvm/IR/IRBuilderFolder.h`) return a `Value *`, which
+/// carries its own identity.
+#[test]
+fn a_builder_rejects_a_fold_result_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let int32 = foreign.i32_type().const_int(9i32).as_erased();
+    let erased = ErasedAnswerFolder { answer: int32 };
+    let typed = TypedAnswerFolder {
+        int32,
+        int64: foreign.i64_type().const_int(9i64).as_erased(),
+        float: foreign.f32_type().const_float(1.0).as_erased(),
+        double: foreign.f64_type().const_double(1.0).as_erased(),
+        boolean: foreign.bool_type().const_int(true).as_erased(),
+    };
+    let (e, e_int, e_float) = folding_builder(&home, "e", erased);
+    let (t, t_int, t_float) = folding_builder(&home, "t", typed);
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "checked_folded_value (int_binop_erased)",
+            IrError::ForeignValueId,
+            without_value(e.int_binop_erased(
+                BinaryOpcode::Add,
+                e_int,
+                e_int,
+                IntBinOpFlags::default(),
+                "x",
+            )),
+        ),
+        (
+            "narrow_folded_int (int_add, default hook)",
+            IrError::ForeignValueId,
+            without_value(e.int_add(e_int, e_int, "x")),
+        ),
+        (
+            "narrow_folded_fp (fp_add, default hook)",
+            IrError::ForeignValueId,
+            without_value(e.fp_add(e_float, e_float, "x")),
+        ),
+        (
+            "narrow_folded_cast_int (zext, default hook)",
+            IrError::ForeignValueId,
+            without_value(e.zext::<i32, i64, _, _>(e_int, home.i64_type(), "x")),
+        ),
+        (
+            "narrow_folded_cast_fp (fp_ext, default hook)",
+            IrError::ForeignValueId,
+            without_value(e.fp_ext::<f32, f64, _, _>(e_float, home.f64_type(), "x")),
+        ),
+        (
+            "accept_folded_int (int_add, native hook)",
+            IrError::ForeignValueId,
+            without_value(t.int_add(t_int, t_int, "x")),
+        ),
+        (
+            "accept_folded_fp (fp_add, native hook)",
+            IrError::ForeignValueId,
+            without_value(t.fp_add(t_float, t_float, "x")),
+        ),
+        (
+            "accept_folded_cast_int (zext, native hook)",
+            IrError::ForeignValueId,
+            without_value(t.zext::<i32, i64, _, _>(t_int, home.i64_type(), "x")),
+        ),
+        (
+            "accept_folded_cast_fp (fp_ext, native hook)",
+            IrError::ForeignValueId,
+            without_value(t.fp_ext::<f32, f64, _, _>(t_float, home.f64_type(), "x")),
+        ),
+        (
+            "accept_folded_compare (int_cmp, native hook)",
+            IrError::ForeignValueId,
+            without_value(t.int_cmp(IntPredicate::Eq, t_int, t_int, "x")),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(format!("{home}"), before, "a refused fold must not mutate");
+}
+
+/// The fallible type entries refuse a type of another module before anything
+/// is read, set or declared: `set_struct_body` / `set_struct_body_dyn` (the
+/// struct and its elements), `add_function_dyn` (the signature),
+/// `intrinsic_descriptor_from_signature` (the function type) and
+/// `get_or_insert_intrinsic_declaration_by_id` (an overload type).
+///
+/// No upstream counterpart: `StructType::setBody` (`llvm/lib/IR/Type.cpp`),
+/// `Function::Create` (`llvm/lib/IR/Function.cpp`) and
+/// `Intrinsic::getOrInsertDeclaration` (`llvm/lib/IR/Intrinsics.cpp`) take
+/// `Type *`s uniqued per `LLVMContext`.
+#[test]
+fn a_type_entry_rejects_a_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let home_i32 = home.i32_type().as_type();
+    let foreign_i32 = foreign.i32_type().as_type();
+    let foreign_fn = foreign.function_type_no_parameters(foreign.void_type());
+    let home_struct = home.opaque_struct("S").expect("opaque");
+    let home_struct_dyn = home.opaque_struct("T").expect("opaque").as_dyn();
+    let foreign_struct = foreign.opaque_struct("S").expect("opaque");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "set_struct_body (element)",
+            IrError::ForeignType,
+            without_value(home.set_struct_body(home_struct, [foreign_i32], false)),
+        ),
+        (
+            "set_struct_body (struct)",
+            IrError::ForeignType,
+            without_value(home.set_struct_body(foreign_struct, [home_i32], false)),
+        ),
+        (
+            "set_struct_body_dyn (element)",
+            IrError::ForeignType,
+            home.set_struct_body_dyn(home_struct_dyn, [foreign_i32], false),
+        ),
+        (
+            "set_struct_body_dyn (struct)",
+            IrError::ForeignType,
+            home.set_struct_body_dyn(foreign_struct.as_dyn(), [home_i32], false),
+        ),
+        (
+            "add_function_dyn",
+            IrError::ForeignType,
+            without_value(home.add_function_dyn("f", foreign_fn, Linkage::External)),
+        ),
+        (
+            "intrinsic_descriptor_from_signature",
+            IrError::ForeignType,
+            without_value(home.intrinsic_descriptor_from_signature("llvm.trap", foreign_fn)),
+        ),
+        (
+            "get_or_insert_intrinsic_declaration_by_id",
+            IrError::ForeignType,
+            without_value(home.get_or_insert_intrinsic_declaration_by_id(
+                llvmkit_ir::IntrinsicId::ABS,
+                [foreign_i32],
+            )),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    let foreign_after = format!("{foreign}");
+    assert!(
+        !foreign_after.contains("%S = type {"),
+        "the foreign struct gained a body: {foreign_after}"
+    );
+    assert_eq!(format!("{home}"), before, "a refused entry must not mutate");
+}

@@ -350,7 +350,11 @@ fn block_name<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
     block_id: ValueSlot,
 ) -> String {
-    let label_ty = module.module().label_type::<B>().as_type().id();
+    let label_ty = module
+        .module()
+        .label_type::<B>()
+        .as_type()
+        .slot_trusting_same_module();
     let label = BasicBlock::<Dyn, Unterminated, B>::from_parts(block_id, module, label_ty).label();
     label
         .to_erased()
@@ -1781,7 +1785,11 @@ where
         let var_category = self.state.vars[idx].category;
         let var_name = self.state.vars[idx].name.clone();
         let module = self.module_ref();
-        let label_ty = module.module().label_type::<B>().as_type().id();
+        let label_ty = module
+            .module()
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
 
         // Read-only peek at the block's current first instruction,
         // independent of which state (open/current/filled) it is in --
@@ -1833,7 +1841,11 @@ where
         let module = self.module_ref();
         let phi_value = Value::from_parts(phi, module, module.value_data(phi).ty);
         let operand_value = Value::from_parts(operand, module, module.value_data(operand).ty);
-        let label_ty = module.module().label_type::<B>().as_type().id();
+        let label_ty = module
+            .module()
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let pred_block = BasicBlock::<Dyn, Unterminated, B>::from_parts(pred, module, label_ty);
         let ib: super::ir_builder::IrBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
             super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone());

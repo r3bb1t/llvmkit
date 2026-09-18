@@ -6408,15 +6408,15 @@ mod tests {
         let gep_id = fabricate_instruction(
             &m,
             entry.slot_trusting_same_module(),
-            gep_ty.id(),
+            gep_ty.slot_trusting_same_module(),
             InstructionKindData::Gep(GepInstData::new(
-                i8_ty.as_type().id(),
+                i8_ty.as_type().slot_trusting_same_module(),
                 base.slot_trusting_same_module(),
                 [minus_one.slot_trusting_same_module()],
                 crate::GepNoWrapFlags::empty(),
             )),
         );
-        let gep = fabricated_value(&m, gep_id, gep_ty.id());
+        let gep = fabricated_value(&m, gep_id, gep_ty.slot_trusting_same_module());
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
 

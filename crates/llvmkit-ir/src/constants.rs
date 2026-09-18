@@ -2649,8 +2649,10 @@ fn intern_int_constant<'ctx, W: IntWidth, B: ModuleBrand + 'ctx>(
     words: Box<[u64]>,
 ) -> ConstantIntValue<'ctx, W, B> {
     let module = ty.module;
-    let id = module.module().context().intern_constant_int(ty.id, words);
-    ConstantIntValue::from_parts_typed(constant_handle(id, module, ty.id))
+    // Internal: the constant is interned in `ty`'s own module.
+    let ty_id = ty.slot_trusting_same_module();
+    let id = module.module().context().intern_constant_int(ty_id, words);
+    ConstantIntValue::from_parts_typed(constant_handle(id, module, ty_id))
 }
 
 fn u128_to_words_for_float(bits: u128) -> [u64; 2] {
@@ -2665,8 +2667,10 @@ fn intern_float_constant<'ctx, K: FloatKind, B: ModuleBrand + 'ctx>(
     bits: u128,
 ) -> ConstantFloatValue<'ctx, K, B> {
     let module = ty.module;
-    let id = module.module().context().intern_constant_float(ty.id, bits);
-    ConstantFloatValue::from_parts_typed(constant_handle(id, module, ty.id))
+    // Internal: the constant is interned in `ty`'s own module.
+    let ty_id = ty.slot_trusting_same_module();
+    let id = module.module().context().intern_constant_float(ty_id, bits);
+    ConstantFloatValue::from_parts_typed(constant_handle(id, module, ty_id))
 }
 
 fn intern_pointer_null<'ctx, B: ModuleBrand + 'ctx>(

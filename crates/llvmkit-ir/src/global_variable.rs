@@ -203,7 +203,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     #[inline]
     pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(self.address_space())
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
@@ -221,7 +224,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// `as_constant` for the zero case.
     pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(addr_space).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(addr_space)
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, off);
@@ -232,7 +238,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// this global's address space in both the GEP result and pointer operand.
     pub fn ptr_offset(self, off: i64) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(self.address_space())
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, off);
@@ -260,7 +269,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         // module before its slot is interned into a constant here.
         let other_id = other.slot_in(self.module.id())?;
         let module = self.module.module();
-        let i64_ty = module.i64_type::<B>().as_type().id();
+        let i64_ty = module.i64_type::<B>().as_type().slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_symbol_delta(i64_ty, self.id, other_id);
@@ -281,7 +290,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         // module before its slot is interned into a constant here.
         let other_id = other.slot_in(self.module.id())?;
         let module = self.module.module();
-        let i64_ty = module.i64_type::<B>().as_type().id();
+        let i64_ty = module.i64_type::<B>().as_type().slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_symbol_delta_plus(i64_ty, self.id, other_id, addend);

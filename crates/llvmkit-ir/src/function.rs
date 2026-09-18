@@ -789,7 +789,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .params()
             .nth(slot)
             .unwrap_or_else(|| unreachable!("argument count matches signature"))
-            .id();
+            .slot_trusting_same_module();
         Ok(Argument::from_parts(
             id,
             self.module,
@@ -810,7 +810,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let args: Box<[ValueSlot]> = self.data().args.borrow().clone();
         let param_types: Vec<TypeSlot> = FunctionType::new(signature, module)
             .params()
-            .map(|t| t.id())
+            .map(|t| t.slot_trusting_same_module())
             .collect();
         args.into_vec()
             .into_iter()
@@ -882,7 +882,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Name: Into<String>,
     {
         let name = name.into();
-        let label_ty = self.module.module().label_type::<B>().as_type().id();
+        let label_ty = self
+            .module
+            .module()
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let bb_id = self.module.module().context().push_value(ValueData {
             ty: label_ty,
             name: RefCell::new(None),
@@ -944,7 +949,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type::<B>().as_type().id();
+        let label_ty = module
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
             .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
@@ -956,7 +964,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Some(BasicBlock::from_parts(
             id,
             self.module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         ))
     }
 
@@ -1034,7 +1045,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         // reference to a function in a non-zero program address space
         // (`test/Assembler/call-nonzero-program-addrspace.ll`) come out as a
         // plain `ptr`.
-        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(self.address_space())
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
@@ -1054,7 +1068,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// function entry).
     pub fn as_aggregate_ptr(self, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(addr_space).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(addr_space)
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, 0);
@@ -1125,7 +1142,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValu
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         let module = self.module.module();
-        let label_ty = module.label_type::<B>().as_type().id();
+        let label_ty = module
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         FunctionBasicBlocks {
             ids: ids.into_iter(),
@@ -1622,7 +1642,10 @@ impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx
     #[inline]
     pub fn return_int_type(self) -> IntType<'ctx, W, B> {
         let signature = self.signature();
-        IntType::new(signature.return_type().id(), self.module)
+        IntType::new(
+            signature.return_type().slot_trusting_same_module(),
+            self.module,
+        )
     }
 }
 
@@ -1631,7 +1654,10 @@ impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ct
     #[inline]
     pub fn return_float_type(self) -> FloatType<'ctx, K, B> {
         let signature = self.signature();
-        FloatType::new(signature.return_type().id(), self.module)
+        FloatType::new(
+            signature.return_type().slot_trusting_same_module(),
+            self.module,
+        )
     }
 }
 

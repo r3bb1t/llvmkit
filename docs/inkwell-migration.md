@@ -143,9 +143,11 @@ index (`TypeSlot`) with a `ModuleRef<'ctx, B>` that carries a process-global
 types, mixing their handles does not compile at all, so no comparison is
 reached.
 
-The arena indices (`TypeSlot`, `ValueSlot`) have no public constructor, and the
-`(ModuleId, slot)` payload inside every public id is private with no
-`from_raw_parts`. A slot cannot be forged from an arbitrary integer.
+The arena indices have no public constructor: `TypeSlot` is crate-private, and
+`ValueSlot` is public only as an opaque key that a few analyses return and no
+public function accepts. The `(ModuleId, slot)` payload inside every public id
+is private with no `from_raw_parts`. A slot cannot be forged from an arbitrary
+integer.
 
 ## LLVM 22 semantic deltas
 

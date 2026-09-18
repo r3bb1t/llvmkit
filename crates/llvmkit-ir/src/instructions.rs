@@ -4166,8 +4166,12 @@ pub fn indexed_gep_type<'ctx, B: ModuleBrand + 'ctx>(
         .iter()
         .map(|index| index.slot_trusting_same_module())
         .collect();
-    crate::constants::gep_indexed_type(module.module(), source_ty.id(), &slots)
-        .map(|indexed| Type::new(indexed, module))
+    crate::constants::gep_indexed_type(
+        module.module(),
+        source_ty.slot_trusting_same_module(),
+        &slots,
+    )
+    .map(|indexed| Type::new(indexed, module))
 }
 
 /// The type an `extractvalue` / `insertvalue` index list arrives at, or

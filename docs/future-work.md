@@ -1579,7 +1579,14 @@ supertrait drop above), three resolved by record — reality wins:
 3. **`ValueSlot`/`TypeSlot` stay `pub`** — `llvmkit-asmparser` genuinely
    consumes them. Narrowing that surface (the parser carrying tagged ids
    instead) is folded into the Milestone 0 parser cycle, which reworks that
-   crate anyway.
+   crate anyway. *(Superseded by the error-surface cleanup's Task 24,
+   2026-09-18: `TypeSlot` is `pub(crate)` and `Type::id` is gone, and no
+   public route hands out a value or type handle's slot — it leaves a handle
+   only through `ValueSlotAccess` / `TypeSlotAccess`. The parser names
+   neither slot type in code: `rg -n "TypeSlot|ValueSlot"
+   crates/llvmkit-asmparser/src` finds one doc comment. `ValueSlot` stays
+   `pub` only as the opaque key that `CfgEdge`, `color_eh_funclets` and
+   `OperandBundleData::inputs` return; no public function accepts one.)*
 
 ## Stringly-typed surfaces the 0.0.4 API-idioms sweep did not close (2026-08-06)
 

@@ -1230,7 +1230,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         bb.remove_instruction(self_id);
     }
@@ -1251,7 +1254,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         bb.remove_instruction(self_id);
         // Clear the parent pointer so iteration over orphan instructions
@@ -1292,7 +1298,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             cur_parent,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         cur_bb.remove_instruction(self_id);
         // Insert before other in other's parent.
@@ -1300,7 +1309,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             new_parent,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         new_bb.insert_instruction_before(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
@@ -1338,14 +1350,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             cur_parent,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         cur_bb.remove_instruction(self_id);
         let new_parent = other.data().parent.get();
         let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             new_parent,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         new_bb.insert_instruction_after(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
@@ -1378,7 +1396,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_id,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         bb.insert_instruction_before(self.id, other_id)?;
         update_instruction_parent(module, self.id, parent_id);
@@ -1406,7 +1427,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_id,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         bb.insert_instruction_after(self.id, other_id)?;
         update_instruction_parent(module, self.id, parent_id);
@@ -2328,7 +2352,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InstructionView<'ctx, B
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let module = self.module.module();
         let parent_id = self.data().parent.get();
-        let label_ty = module.label_type::<B>().as_type().id();
+        let label_ty = module
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let parent =
             BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(parent_id, self.module, label_ty);
         let slots = match parent.parent_id() {

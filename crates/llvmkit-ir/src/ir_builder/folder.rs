@@ -16,7 +16,7 @@ use crate::float_kind::FloatKind;
 use crate::instr_types::ShuffleMaskElem;
 use crate::instr_types::{ExactFlags, OverflowFlags};
 use crate::int_width::IntWidth;
-use crate::value::{FloatValue, IntValue, Typed};
+use crate::value::{FloatValue, IntValue, Typed, ValueSlotAccess};
 
 /// Strategy for folding values during builder calls.
 ///
@@ -362,6 +362,9 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
+    // Boundary: the folder's result, admitted against `like`'s module before
+    // its type is compared.
+    v.slot_in(like.as_erased().module.id())?;
     like.as_erased().ty().require_match(v.ty())?;
     Ok(Some(IntValue::from_value_unchecked(v)))
 }
@@ -377,6 +380,9 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
+    // Boundary: the folder's result, admitted against `like`'s module before
+    // its type is compared.
+    v.slot_in(like.as_erased().module.id())?;
     Typed::ty(like).require_match(v.ty())?;
     Ok(Some(FloatValue::from_value_unchecked(v)))
 }
@@ -415,6 +421,9 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
+    // Boundary: the folder's result, admitted against `dest_ty`'s module
+    // before its type is compared.
+    v.slot_in(dest_ty.as_type().module.id())?;
     dest_ty.as_type().require_match(v.ty())?;
     Ok(Some(IntValue::from_value_unchecked(v)))
 }
@@ -430,6 +439,9 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
+    // Boundary: the folder's result, admitted against `dest_ty`'s module
+    // before its type is compared.
+    v.slot_in(dest_ty.as_type().module.id())?;
     dest_ty.as_type().require_match(v.ty())?;
     Ok(Some(FloatValue::from_value_unchecked(v)))
 }

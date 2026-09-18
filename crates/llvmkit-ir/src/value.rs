@@ -42,7 +42,7 @@ use super::function::FunctionData;
 use super::instruction::{Instruction, InstructionData, InstructionView, state::Attached};
 use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified};
 use super::struct_body_state::StructBodyDyn;
-use super::r#type::{Type, TypeData, TypeSlot};
+use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -1453,7 +1453,7 @@ where
         match ty.data() {
             TypeData::Array { elem, n } => {
                 let expected_elem = E::element_ir_type(v.module);
-                if *elem != expected_elem.id() {
+                if *elem != expected_elem.slot_trusting_same_module() {
                     return Err(IrError::TypeIdentityMismatch {
                         expected: expected_elem.rendered(),
                         got: Type::new(*elem, v.module).rendered(),
@@ -1936,7 +1936,7 @@ where
         match ty.data() {
             TypeData::FixedVector { elem, n } => {
                 let expected_elem = E::element_ir_type(v.module);
-                if *elem != expected_elem.id() {
+                if *elem != expected_elem.slot_trusting_same_module() {
                     return Err(IrError::TypeIdentityMismatch {
                         expected: expected_elem.rendered(),
                         got: Type::new(*elem, v.module).rendered(),

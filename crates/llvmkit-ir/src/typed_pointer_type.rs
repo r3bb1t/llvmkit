@@ -21,12 +21,12 @@ use core::fmt;
 use crate::Branded;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::module::{ModuleBrand, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeSlot};
+use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 
 /// Typed pointer (`<elem>*`, `<elem> addrspace(N)*`).
 #[derive(Branded)]
 pub struct TypedPointerType<'ctx, B: ModuleBrand> {
-    pub(crate) id: TypeSlot,
+    id: TypeSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
 }
 
@@ -98,7 +98,8 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for TypedPointerType<'ctx, B> 
     fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
         if t.data().as_typed_pointer().is_some() {
             Ok(Self {
-                id: t.id(),
+                // Internal: a re-wrap that keeps `t`'s own module.
+                id: t.slot_trusting_same_module(),
                 module: t.module,
             })
         } else {

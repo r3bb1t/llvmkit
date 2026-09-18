@@ -1339,7 +1339,11 @@ where
         let slot = block
             .into_basic_block_label(module_ref)?
             .slot_trusting_same_module();
-        let label_ty = module_ref.module().label_type::<B>().as_type().id();
+        let label_ty = module_ref
+            .module()
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         Ok(BasicBlockView::new(BasicBlock::from_parts(
             slot, module_ref, label_ty,
         )))
