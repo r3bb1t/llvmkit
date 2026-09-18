@@ -62,8 +62,8 @@ use super::r#type::TypeSlot;
 use super::r#use::Use;
 use super::user::User;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, ValueUse,
-    sealed,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot,
+    ValueSlotAccess, ValueUse, sealed,
 };
 use super::value_id::BlockId;
 use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
@@ -1151,13 +1151,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// erased); call [`Self::erase_from_parent`] separately if needed.
     /// Mirrors LLVM's two-step pattern
     /// `I->replaceAllUsesWith(V); I->eraseFromParent();`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `replacement` belongs to
+    /// another module.
     pub fn replace_all_uses_with<V: IsValue<'ctx, B>>(
         self,
         module_token: &'ctx Module<B, Unverified>,
         replacement: V,
     ) -> IrResult<()> {
         let new_value = replacement.as_erased();
-        if new_value.id == self.id {
+        // Boundary: the caller's replacement, admitted before anything reads it.
+        let new_id = new_value.slot_in(self.module.id())?;
+        if new_id == self.id {
             // `self.replaceAllUsesWith(self)` is a no-op upstream; mirror.
             return Ok(());
         }
@@ -1169,7 +1174,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         }
         let module = module_token.core_ref();
         let self_id = self.id;
-        let new_id = new_value.id;
         // Snapshot the user list under a borrow so we can release it
         // before mutating each user's operand slots.
         let user_edges: Vec<ValueUse> = module
@@ -1271,14 +1275,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Move this instruction so it appears immediately before `other`
     /// in `other`'s parent block. Mirrors `Instruction::moveBefore` in
     /// `lib/IR/Instruction.cpp`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
+    /// module.
     pub fn move_before(
         self,
         module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let self_id = self.id;
-        let other_id = other.id;
         if self_id == other_id {
             return Ok(());
         }
@@ -1314,14 +1322,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
 
     /// Move this instruction so it appears immediately after `other` in
     /// `other`'s parent block. Mirrors `Instruction::moveAfter`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
+    /// module.
     pub fn move_after(
         self,
         module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let self_id = self.id;
-        let other_id = other.id;
         if self_id == other_id {
             return Ok(());
         }
@@ -1358,11 +1370,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// Insert this detached instruction immediately before `other` in
     /// `other`'s parent block. Mirrors `Instruction::insertBefore` in
     /// `lib/IR/Instruction.cpp`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
+    /// module.
     pub fn insert_before(
         self,
         module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
@@ -1371,7 +1388,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
             module,
             module.label_type::<B>().as_type().id(),
         );
-        bb.insert_instruction_before(self.id, other.id)?;
+        bb.insert_instruction_before(self.id, other_id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
             reinsert_local_name(self.to_erased(), parent_fn_id);
@@ -1381,11 +1398,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
 
     /// Insert this detached instruction immediately after `other` in
     /// `other`'s parent block. Mirrors `Instruction::insertAfter`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
+    /// module.
     pub fn insert_after(
         self,
         module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
@@ -1394,7 +1416,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
             module,
             module.label_type::<B>().as_type().id(),
         );
-        bb.insert_instruction_after(self.id, other.id)?;
+        bb.insert_instruction_after(self.id, other_id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
             reinsert_local_name(self.to_erased(), parent_fn_id);
@@ -1404,13 +1426,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
 
     /// Append this detached instruction to the end of `block`'s
     /// instruction list. Mirrors `Instruction::insertInto(BB, BB->end())`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `block` belongs to another
+    /// module.
     pub fn append_to<R: ReturnMarker>(
         self,
         module_token: &'ctx Module<B, Unverified>,
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        // Boundary: the caller's block, admitted before it is read.
+        let parent_id = block.to_erased().slot_in(self.module.id())?;
         let module = module_token.core_ref();
-        let parent_id = block.slot();
         let parent_fn_id = block.to_erased().local_parent_function_id();
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);

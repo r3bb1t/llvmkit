@@ -29,7 +29,7 @@ use super::constant_range::ConstantRange;
 use super::constant_range_list::ConstantRangeList;
 use super::fp_class::FpClassTest;
 use super::module::ModuleBrand;
-use super::r#type::{Type, TypeKind, TypeSlot};
+use super::r#type::{Type, TypeKind, TypeSlot, TypeSlotAccess};
 
 /// Whether an operation references memory, modifies memory, both, or neither.
 /// Mirrors `llvm::ModRefInfo` in `llvm/include/llvm/Support/ModRef.h`.
@@ -1628,9 +1628,13 @@ impl AttributeStored {
         match attr {
             Attribute::Enum(k) => Self::Enum(k),
             Attribute::Int(k, v) => Self::Int(k, v),
-            Attribute::Type(k, t) => Self::Type(k, t.id()),
+            // `AttributeStorage::add` is infallible and module-less, so it
+            // cannot refuse a type of another module.
+            // boundary (F1): refused by Task 26
+            Attribute::Type(k, t) => Self::Type(k, t.slot_trusting_same_module()),
             Attribute::Range { ty, lower, upper } => Self::Range {
-                ty: ty.id(),
+                // boundary (F1): refused by Task 26
+                ty: ty.slot_trusting_same_module(),
                 lower,
                 upper,
             },

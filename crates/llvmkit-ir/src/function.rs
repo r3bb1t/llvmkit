@@ -593,8 +593,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     where
         C: IsConstant<'ctx, B>,
     {
-        let constant = data.as_constant();
-        Ok(constant.slot())
+        // Boundary: the caller's constant, admitted against this function's
+        // module before it is stored.
+        data.as_constant().slot_in(self.module.id())
     }
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {

@@ -20,12 +20,13 @@
 //! llvmkit gives each module its own type arena.
 
 use llvmkit_ir::{
-    Align, Analyses, BasicBlock, CallSiteConfig, CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand,
-    FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
-    InlineAsmOptions, InstructionView, IntCastFlags, IntDyn, IntValue, IrBuilder, IrError,
-    IrResult, IrStruct, Linkage, Module, PatchBody, PointerValue, Positioned, ReshapeCfg,
-    SsaBuilder, SsaState, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value,
-    ValueId, ZextFlags, run_function_pass,
+    Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallSiteConfig,
+    CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FloatDyn, FloatValue, FnCx, FnReport,
+    FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions, InstructionView, IntCastFlags,
+    IntDyn, IntValue, IrBuilder, IrError, IrResult, IrStruct, Linkage, Module, PatchBody,
+    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind,
+    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, iter::BlockCursor,
+    run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -1869,4 +1870,178 @@ fn a_pass_rejects_an_instruction_or_type_from_another_module() {
     ];
     let let_through = not_refused_as_expected(outcomes);
     assert!(let_through.is_empty(), "{let_through:#?}");
+}
+
+/// Rewiring or relocating an instruction refuses a handle from another module
+/// before anything is read or moved: `Instruction::replace_all_uses_with`
+/// (the replacement), `move_before` / `move_after` and the detached
+/// `insert_before` / `insert_after` (the anchor), and `append_to` (the
+/// block).
+///
+/// No upstream counterpart: `Value::replaceAllUsesWith` (`lib/IR/Value.cpp`)
+/// takes a `Value *`, and `Instruction::moveBefore` / `moveAfter` /
+/// `insertBefore` / `insertAfter` / `insertInto` (`lib/IR/Instruction.cpp`)
+/// an `Instruction *` or `BasicBlock *`.
+#[test]
+fn an_instruction_move_rejects_a_handle_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (g, _) = function_with_an_add(&foreign, "g");
+    let foreign_add = foreign
+        .view(g)
+        .entry_block()
+        .expect("entry")
+        .instructions()
+        .next()
+        .expect("add");
+    let foreign_value = foreign.i32_type().const_int(5i32).as_erased();
+    let foreign_block = open_block(&foreign, "h");
+    // An `i32` instruction with a user, so an unadmitted `i32` replacement
+    // would pass the type check and be written into the user's operand.
+    let (replacing, [narrow, ..]) = builder_with_parameters(&home, "f1");
+    let narrow: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
+    let x = replacing.int_add(narrow, 1i32, "x").expect("add");
+    replacing.int_add(x, 2i32, "y").expect("a user of x");
+    let (replaced, _) = BlockCursor::at_start(replacing.into_insert_block())
+        .step()
+        .expect("the add");
+    let zero = home.i32_type().const_int(0i32);
+    let ret = |name: &str| builder(&home, name).ret(zero).expect("ret").1;
+    let moved_before = ret("f2");
+    let moved_after = ret("f3");
+    let inserted_before = ret("f4").detach_from_parent(&home);
+    let inserted_after = ret("f5").detach_from_parent(&home);
+    let appended = ret("f6").detach_from_parent(&home);
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "replace_all_uses_with",
+            IrError::ForeignValueId,
+            replaced.replace_all_uses_with(&home, foreign_value),
+        ),
+        (
+            "move_before",
+            IrError::ForeignValueId,
+            moved_before.move_before(&home, &foreign_add),
+        ),
+        (
+            "move_after",
+            IrError::ForeignValueId,
+            moved_after.move_after(&home, &foreign_add),
+        ),
+        (
+            "insert_before",
+            IrError::ForeignValueId,
+            inserted_before
+                .insert_before(&home, &foreign_add)
+                .map(|_| ()),
+        ),
+        (
+            "insert_after",
+            IrError::ForeignValueId,
+            inserted_after.insert_after(&home, &foreign_add).map(|_| ()),
+        ),
+        (
+            "append_to",
+            IrError::ForeignValueId,
+            appended.append_to(&home, &foreign_block).map(|_| ()),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(format!("{home}"), before, "a rejected move must not mutate");
+}
+
+/// The operand, clause and function-data setters refuse a value or constant
+/// from another module before anything is stored:
+/// `AtomicRmwInst::set_value_operand`, the width-erased `SwitchInst::add_case`,
+/// `LandingPadInst::add_catch_clause` / `add_filter_clause`, and
+/// `FunctionValue::set_prefix_data` / `set_prologue_data` /
+/// `set_personality_fn`.
+///
+/// No upstream counterpart: `AtomicRMWInst::setOperand`,
+/// `SwitchInst::addCase` and `LandingPadInst::addClause` (`IR/Instructions.h`)
+/// take `Value *` / `Constant *` operands, and `Function::setPrefixData` /
+/// `setPrologueData` / `setPersonalityFn` (`lib/IR/Function.cpp`) a
+/// `Constant *`.
+#[test]
+fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_value = foreign.i32_type().const_int(5i32);
+    let foreign_null = foreign.ptr_type(0).const_null();
+    let (b, [narrow, _, _, _, pointer]) = builder_with_parameters(&home, "f");
+    let narrow: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
+    let pointer: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let rmw = b
+        .atomicrmw(
+            AtomicRmwBinOp::Add,
+            pointer,
+            narrow,
+            AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+            "old",
+        )
+        .expect("atomicrmw");
+    let catch_pad = b
+        .landingpad(home.ptr_type(0).as_type(), false, "catch")
+        .expect("landingpad");
+    let filter_pad = b
+        .landingpad(home.ptr_type(0).as_type(), false, "filter")
+        .expect("landingpad");
+    let (switcher, default, case_target) = builder_with_targets(&home, "s");
+    let (_, switch) = switcher
+        .switch_dyn(home.i32_type().const_int(0i32), default, "")
+        .expect("switch");
+    let h_ty = home.function_type_no_parameters(home.i32_type());
+    let h = home
+        .add_function_dyn("h", h_ty, Linkage::External)
+        .expect("h");
+    let before = format!("{home}");
+
+    let outcomes = vec![
+        (
+            "AtomicRmwInst::set_value_operand",
+            IrError::ForeignValueId,
+            home.view(rmw)
+                .set_value_operand(&home, foreign_value.as_erased()),
+        ),
+        (
+            "SwitchInst::add_case",
+            IrError::ForeignValueId,
+            switch.add_case(foreign_value, case_target).map(|_| ()),
+        ),
+        (
+            "LandingPadInst::add_catch_clause",
+            IrError::ForeignValueId,
+            catch_pad.add_catch_clause(foreign_null).map(|_| ()),
+        ),
+        (
+            "LandingPadInst::add_filter_clause",
+            IrError::ForeignValueId,
+            filter_pad.add_filter_clause(foreign_null).map(|_| ()),
+        ),
+        (
+            "FunctionValue::set_prefix_data",
+            IrError::ForeignValueId,
+            home.view(h).set_prefix_data(&home, foreign_value),
+        ),
+        (
+            "FunctionValue::set_prologue_data",
+            IrError::ForeignValueId,
+            home.view(h).set_prologue_data(&home, foreign_value),
+        ),
+        (
+            "FunctionValue::set_personality_fn",
+            IrError::ForeignValueId,
+            home.view(h).set_personality_fn(&home, foreign_null),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a rejected setter must not mutate"
+    );
 }

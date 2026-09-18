@@ -69,7 +69,8 @@ use super::r#type::{Type, TypeData, TypeSlot};
 #[cfg(test)]
 use super::value::IntoPointerValue;
 use super::value::{
-    FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueUse,
+    FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueSlotAccess,
+    ValueUse,
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
@@ -2906,12 +2907,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
     /// mutation capability. `module_token` is the capability witness; the
     /// interior-mutable slot is reached through the handle's own
     /// `ModuleRef`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `value` belongs to another
+    /// module.
     pub fn set_value_operand(
         self,
         module_token: &'ctx Module<B, Unverified>,
         value: Value<'ctx, B>,
     ) -> IrResult<()> {
         let _ = module_token;
+        // Boundary: the caller's value, admitted before its type or slot is read.
+        let value_id = value.slot_in(self.module.id())?;
         let module = self.module.module();
         let expected = Type::new(self.ty, self.module);
         let got = value.ty();
@@ -2922,8 +2928,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
             });
         }
         let payload = self.payload();
-        let old_id = payload.value.replace(value.id);
-        if old_id == value.id {
+        let old_id = payload.value.replace(value_id);
+        if old_id == value_id {
             return Ok(());
         }
         {
@@ -2937,7 +2943,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
         }
         module
             .context()
-            .value_data(value.id)
+            .value_data(value_id)
             .add_use(ValueUse::Instruction(self.id));
         Ok(())
     }
@@ -3206,6 +3212,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
     /// [`crate::IrError::TypeMismatch`] LLVM's verifier would raise). The typed
     /// flavour on a `SwitchInst<'ctx, TermOpen, B, W>` for a static `W`
     /// makes a wrong-width case a compile error instead.
+    ///
+    /// Errors with [`crate::IrError::ForeignValueId`] if `case_value` belongs
+    /// to another module.
     pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>
     where
         V: IsValue<'ctx, B>,
@@ -3213,6 +3222,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let v = case_value.as_erased();
+        // Boundary: the caller's case value, admitted before it is validated.
+        v.slot_in(self.module.id())?;
         self.push_case_checked(v, target)
     }
 }
@@ -3675,30 +3686,38 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     }
     /// Append a `catch <ty> <val>` clause. Mirrors `LandingPadInst::addClause`
     /// for `Catch`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `type_info` belongs to
+    /// another module.
     pub fn add_catch_clause<V: IsValue<'ctx, B>>(self, type_info: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = type_info.as_erased();
+        // Boundary: the caller's type-info value, admitted before it is stored.
+        let v_id = type_info.slot_in(self.module.id())?;
         self.payload()
             .clauses
             .borrow_mut()
-            .push((LandingPadClauseKind::Catch, core::cell::Cell::new(v.id)));
+            .push((LandingPadClauseKind::Catch, core::cell::Cell::new(v_id)));
         module
             .context()
-            .value_data(v.id)
+            .value_data(v_id)
             .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Append a `filter <ty> <val>` clause.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `filter_array` belongs to
+    /// another module.
     pub fn add_filter_clause<V: IsValue<'ctx, B>>(self, filter_array: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = filter_array.as_erased();
+        // Boundary: the caller's filter array, admitted before it is stored.
+        let v_id = filter_array.slot_in(self.module.id())?;
         self.payload()
             .clauses
             .borrow_mut()
-            .push((LandingPadClauseKind::Filter, core::cell::Cell::new(v.id)));
+            .push((LandingPadClauseKind::Filter, core::cell::Cell::new(v_id)));
         module
             .context()
-            .value_data(v.id)
+            .value_data(v_id)
             .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }

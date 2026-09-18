@@ -220,6 +220,19 @@ cut, entries accumulate under **Unreleased**.
   type — before anything is read or appended. `FnPatch::erase` is
   infallible and cannot yet refuse an instruction of another module; it is
   marked for the task that makes it fallible.
+- **Fixed (llvmkit-ir):** the instruction and function mutators stored or
+  located a caller's handle by slot without comparing modules:
+  `Instruction::replace_all_uses_with` (the replacement), `move_before` /
+  `move_after` and the detached `insert_before` / `insert_after` (the
+  anchor), `append_to` (the block), `AtomicRmwInst::set_value_operand`, the
+  width-erased `SwitchInst::add_case`, `LandingPadInst::add_catch_clause` /
+  `add_filter_clause`, and `FunctionValue::set_prefix_data` /
+  `set_prologue_data` / `set_personality_fn`, whose private
+  `checked_constant_id` checked nothing. Each now returns `ForeignValueId`
+  before anything is read or stored. `AttributeStorage::add` is infallible
+  and module-less, so a type-carrying attribute (`byval`, `sret`, `range`,
+  …) still cannot refuse a type of another module; its conversion is marked
+  for the task that makes it fallible.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type
