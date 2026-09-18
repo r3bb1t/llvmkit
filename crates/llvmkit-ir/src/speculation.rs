@@ -46,6 +46,7 @@ use crate::module::{ModuleBrand, ModuleRef};
 use crate::pass_context::BasicBlockView;
 use crate::r#type::TypeKind;
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
+use crate::value_id::ValueId;
 use crate::value_tracking::propagates_poison;
 use core::cell::Cell;
 use std::collections::{HashSet, VecDeque};
@@ -442,8 +443,27 @@ pub fn is_guaranteed_to_execute_for_every_iteration<'ctx, B: ModuleBrand + 'ctx>
 /// Whether `instruction` is guaranteed to trigger undefined behaviour when the
 /// values in `known_poison` are poison.
 ///
-/// Ports `llvm::mustTriggerUB`.
+/// Ports `llvm::mustTriggerUB`, whose `KnownPoison` is a set of `Value *`s.
+/// Here it is a set of storable [`ValueId`]s, and membership compares the
+/// module tag as upstream's pointer identity compares the object: a value of
+/// another module is never one of this instruction's operands.
 pub fn must_trigger_ub<'ctx, B: ModuleBrand + 'ctx>(
+    instruction: &InstructionView<'ctx, B>,
+    known_poison: &HashSet<ValueId<B>>,
+) -> bool {
+    let module = instruction.to_erased().module.id();
+    guaranteed_non_poison_operands(instruction.to_erased(), |operand| {
+        // The operand is a slot of the instruction's own arena; tag it with
+        // that module, so the comparison carries the module.
+        known_poison.contains(&ValueId::from_raw(module, operand))
+    })
+}
+
+/// [`must_trigger_ub`] over a set of slots already in the instruction's own
+/// module — the forward-propagation walk in
+/// [`must_execute_ub_if_poison_on_path_to`], which only ever collects this
+/// function's instructions.
+fn must_trigger_ub_for_own_slots<'ctx, B: ModuleBrand + 'ctx>(
     instruction: &InstructionView<'ctx, B>,
     known_poison: &HashSet<ValueSlot>,
 ) -> bool {
@@ -596,7 +616,7 @@ pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx>(
     worklist.push_back(*root);
 
     while let Some(view) = worklist.pop_back() {
-        if must_trigger_ub(&view, &known_poison)
+        if must_trigger_ub_for_own_slots(&view, &known_poison)
             && dominator_tree.dominates_instruction(&view, on_path_to)
         {
             return true;

@@ -320,7 +320,11 @@ where
     /// [`FunctionValue`].
     #[inline]
     pub fn id(self) -> TypedFunctionId<Ret, Params, B> {
-        TypedFunctionId::from_raw(self.function.module.id(), self.function.id)
+        // Internal: the id takes the function's own module tag.
+        TypedFunctionId::from_raw(
+            self.function.module.id(),
+            self.function.slot_trusting_same_module(),
+        )
     }
 
     /// Return the underlying return-typed function handle.
@@ -483,7 +487,11 @@ where
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
     pub fn id(self) -> TypedVarArgsFunctionId<Ret, Params, B> {
-        TypedVarArgsFunctionId::from_raw(self.function.module.id(), self.function.id)
+        // Internal: the id takes the function's own module tag.
+        TypedVarArgsFunctionId::from_raw(
+            self.function.module.id(),
+            self.function.slot_trusting_same_module(),
+        )
     }
 
     /// Return the underlying return-typed function handle.
@@ -1407,7 +1415,8 @@ macro_rules! impl_call_args_tuple {
         {
             fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
                 let ($($x,)+) = self;
-                Ok(Box::new([$( $x.into_call_arg(module)?.slot(), )+]))
+                // Internal: each argument is admitted by its lift first.
+                Ok(Box::new([$( $x.into_call_arg(module)?.slot_trusting_same_module(), )+]))
             }
         }
     };

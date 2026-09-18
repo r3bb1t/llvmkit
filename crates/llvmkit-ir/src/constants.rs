@@ -86,9 +86,9 @@ macro_rules! decl_constant_handle {
         $(#[$attr])*
         #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
-            pub(super) id: ValueSlot,
+            id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeSlot,
+            ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
@@ -104,13 +104,13 @@ macro_rules! decl_constant_handle {
             /// Widen to the erased [`Constant`] handle.
             #[inline]
             pub fn as_constant(self) -> Constant<'ctx, B> {
-                Constant { id: self.id, module: self.module, ty: self.ty }
+                Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
             }
 
             /// Widen to the erased [`Value`] handle.
             #[inline]
             pub fn as_erased(self) -> Value<'ctx, B> {
-                Value { id: self.id, module: self.module, ty: self.ty }
+                Value::from_parts(self.id, self.module, self.ty)
             }
         }
 
@@ -215,9 +215,9 @@ decl_constant_handle!(
 #[derive(Branded)]
 #[branded(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstantIntValue<'ctx, W: IntWidth, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _w: PhantomData<W>,
 }
 
@@ -242,19 +242,11 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ConstantIntValue<'ctx, W, B> {
     }
     #[inline]
     pub fn as_constant(self) -> Constant<'ctx, B> {
-        Constant {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
     }
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
     /// Erase the width marker.
     #[inline]
@@ -408,9 +400,9 @@ impl_constant_int_static_try_from!(i128, 128);
 #[derive(Branded)]
 #[branded(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstantFloatValue<'ctx, K: FloatKind, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _k: PhantomData<K>,
 }
 
@@ -435,19 +427,11 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ConstantFloatValue<'ctx, K, B> {
     }
     #[inline]
     pub fn as_constant(self) -> Constant<'ctx, B> {
-        Constant {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
     }
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
     #[inline]
     pub fn as_dyn(self) -> ConstantFloatValue<'ctx, FloatDyn, B> {
@@ -2759,12 +2743,15 @@ mod tests {
         let replacement = i64_ty.const_zero().as_constant();
         let rewritten = constant_with_replaced_operand(
             m.core_ref(),
-            expr.slot(),
-            ptr_as_int.slot(),
-            replacement.slot(),
+            expr.slot_trusting_same_module(),
+            ptr_as_int.slot_trusting_same_module(),
+            replacement.slot_trusting_same_module(),
         )?;
 
-        assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).slot()));
+        assert_eq!(
+            rewritten,
+            Some(i64_ty.const_int(1_i64).slot_trusting_same_module())
+        );
         Ok(())
     }
 }

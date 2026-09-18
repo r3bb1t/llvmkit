@@ -33,7 +33,7 @@ use super::metadata::{
     SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
 };
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::TypeSlot;
+use super::r#type::{TypeSlot, TypeSlotAccess};
 use super::value::{
     HasDebugLoc, HasName, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess, sealed,
 };
@@ -119,9 +119,9 @@ pub struct BasicBlock<
     B: ModuleBrand,
     Params: BlockParams = BlockParamsDyn,
 > {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _r: PhantomData<R>,
     pub(super) _term: PhantomData<Term>,
     pub(super) _params: PhantomData<Params>,
@@ -178,9 +178,9 @@ pub struct BasicBlockLabel<
     B: ModuleBrand,
     Params: BlockParams = BlockParamsDyn,
 > {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _r: PhantomData<R>,
     pub(super) _params: PhantomData<Params>,
 }
@@ -237,18 +237,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// Borrows rather than consumes, so the label stays usable afterwards.
     #[inline]
     pub fn to_erased(&self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// The unchecked door for this handle: its erased value's
+    /// [`ValueSlotAccess::slot_trusting_same_module`], for a read that stays
+    /// inside this block's module. No public route hands out the bare slot;
+    /// [`id`](Self::id) mints the storable, module-tagged id.
     #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.to_erased().id
+    pub(crate) fn slot_trusting_same_module(&self) -> ValueSlot {
+        self.to_erased().slot_trusting_same_module()
     }
 
     /// Storable, module-tagged [`BlockId<R, B, Params>`] for this block
@@ -274,6 +272,29 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
             _r: PhantomData,
             _params: PhantomData,
         }
+    }
+
+    /// Crate-internal: the label for the block at `id` in `module`, typed
+    /// `ty`. Built by [`BlockId`]'s `resolve_in` after it compares the id's
+    /// module tag, and by nothing that skips that comparison.
+    #[inline]
+    pub(crate) fn from_parts(id: ValueSlot, module: ModuleRef<'ctx, B>, ty: TypeSlot) -> Self {
+        Self {
+            id,
+            module,
+            ty,
+            _r: PhantomData,
+            _params: PhantomData,
+        }
+    }
+
+    /// The linear block handle for this label's block, in the label's own
+    /// module. Crate-internal: the builder reopens a block it has already
+    /// admitted — through [`ViewIn::resolve_in`] or
+    /// [`IntoBasicBlockLabel`] — as its insertion point.
+    #[inline]
+    pub(crate) fn to_block<Term: BlockTerminationState>(self) -> BasicBlock<'ctx, R, Term, B> {
+        BasicBlock::from_parts(self.id, self.module, self.ty)
     }
 }
 
@@ -604,18 +625,16 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Borrows rather than consumes, so the block stays usable afterwards.
     #[inline]
     pub fn to_erased(&self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// The unchecked door for this handle: its erased value's
+    /// [`ValueSlotAccess::slot_trusting_same_module`], for a read that stays
+    /// inside this block's module. No public route hands out the bare slot;
+    /// [`id`](Self::id) mints the storable, module-tagged id.
     #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.to_erased().id
+    pub(crate) fn slot_trusting_same_module(&self) -> ValueSlot {
+        self.to_erased().slot_trusting_same_module()
     }
 
     /// Storable, module-tagged [`BlockId<R, B, Params>`] for this block
@@ -1016,11 +1035,13 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         dest: BasicBlock<'ctx, R2, S2, B>,
     ) -> IrResult<()> {
         let _ = module_token;
+        // Boundary: the caller's destination block, admitted against this
+        // block's module before either block is read or drained.
+        let dest_id = dest.to_erased().slot_in(self.module.id())?;
         let module = self.module.module();
         let source_fn_id = self.parent_id();
         let dest_fn_id = dest.parent_id();
         let rehome_names = source_fn_id != dest_fn_id;
-        let dest_id = dest.slot();
         let drained: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
             core::mem::take(&mut *src)
@@ -1201,7 +1222,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
         // BasicBlock *New = BasicBlock::Create(getContext(), BBName, getParent(),
         //                                      this->getNextNode());
         let new_block = parent_fn.insert_basic_block_at_unchecked(this_position + 1, name);
-        let new_id = new_block.slot();
+        // Internal: the block was minted in this module just above.
+        let new_id = new_block.slot_trusting_same_module();
 
         // New->splice(New->end(), this, I, end());
         let suffix: Vec<ValueSlot> = self
@@ -1224,9 +1246,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
             .br_to_slot_unchecked(new_id);
         // The splice left `I`'s records at this block's end, and inserting the
         // branch there adopts them (`Instruction::insertBefore`).
-        absorb_debug_records(module, split_id, branch.slot());
+        // Internal: the branch was minted in this module just above.
+        absorb_debug_records(module, split_id, branch.slot_trusting_same_module());
         // BI->setDebugLoc(Loc);
-        set_debug_location(self.module, branch.slot(), location);
+        set_debug_location(self.module, branch.slot_trusting_same_module(), location);
 
         // New->replaceSuccessorsPhiUsesWith(this, New);
         new_block.replace_successors_phi_uses_with(self.id, new_id);
@@ -1300,7 +1323,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
 
         // BasicBlock *New = BasicBlock::Create(getContext(), BBName, getParent(), this);
         let new_block = parent_fn.insert_basic_block_at_unchecked(this_position, name);
-        let new_id = new_block.slot();
+        // Internal: the block was minted in this module just above.
+        let new_id = new_block.slot_trusting_same_module();
 
         // New->splice(New->end(), this, begin(), I);
         let prefix: Vec<ValueSlot> = self
@@ -1350,9 +1374,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
             .br_to_slot_unchecked(self.id);
         // The splice moved `I`'s records to the new block's end, and inserting
         // the branch there adopts them (`Instruction::insertBefore`).
-        absorb_debug_records(module, split_id, branch.slot());
+        // Internal: the branch was minted in this module just above.
+        absorb_debug_records(module, split_id, branch.slot_trusting_same_module());
         // BI->setDebugLoc(Loc);
-        set_debug_location(self.module, branch.slot(), location);
+        set_debug_location(self.module, branch.slot_trusting_same_module(), location);
         Ok(BasicBlock::from_parts(new_id, self.module, self.ty))
     }
 }
@@ -1482,9 +1507,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>>
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::BasicBlock(_) => Ok(Self {
-                id: v.id,
+                // Internal: a re-wrap that keeps `v`'s own module.
+                id: v.slot_trusting_same_module(),
                 module: v.module,
-                ty: v.ty,
+                ty: v.ty().slot_trusting_same_module(),
                 _r: PhantomData,
                 _params: PhantomData,
             }),
@@ -1510,7 +1536,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
             // `bool IsEntryBlock = BB->getParent() && BB->isEntryBlock();`
             let is_entry_block = parent
                 .entry_block()
-                .is_some_and(|entry| entry.slot() == self.slot());
+                // Internal: `entry` is this block's own function's entry.
+                .is_some_and(|entry| {
+                    entry.slot_trusting_same_module() == self.slot_trusting_same_module()
+                });
             crate::asm_writer::fmt_basic_block(f, self.as_dyn(), &slots, is_entry_block)
         } else {
             // Orphan block: no slot tracker, and `BB->getParent()` is null so
@@ -1551,7 +1580,10 @@ mod tests {
         let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
             .try_into()
             .expect("a basic-block value narrows to a label");
-        assert_eq!(recovered.slot(), bb.slot());
+        assert_eq!(
+            recovered.slot_trusting_same_module(),
+            bb.slot_trusting_same_module()
+        );
         assert_dyn_params(recovered);
     }
 
@@ -1568,7 +1600,10 @@ mod tests {
             .to_erased()
             .try_into()
             .expect("a label's value round-trips to a label");
-        assert_eq!(round.slot(), label.slot());
+        assert_eq!(
+            round.slot_trusting_same_module(),
+            label.slot_trusting_same_module()
+        );
         assert_dyn_params(round);
     }
 

@@ -549,8 +549,11 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
                     return Ok(constant);
                 };
                 let folded = constant_fold_constant(element, dl, tli)?;
-                changed |= folded.slot() != id;
-                folded_ids.push(folded.slot());
+                // Internal: `folded` was folded from this aggregate's own
+                // element, in its module.
+                let folded_id = folded.slot_trusting_same_module();
+                changed |= folded_id != id;
+                folded_ids.push(folded_id);
             }
             if !changed {
                 return Ok(constant);
@@ -1988,7 +1991,12 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
     };
 
     let module = pointer.as_erased().module();
-    let index_ids: Vec<ValueSlot> = indices.iter().map(|index| index.slot()).collect();
+    // Internal: the indices are operands of one fold, already of `pointer`'s
+    // module.
+    let index_ids: Vec<ValueSlot> = indices
+        .iter()
+        .map(|index| index.slot_trusting_same_module())
+        .collect();
     // `Offset = APInt(BitWidth, DL.getIndexedOffsetInType(SrcElemTy, Ops[1..]), ...)`.
     // Bails (matching `for i in 1..: if (!isa<ConstantInt>(Ops[i])) return
     // nullptr;`) whenever an index isn't a plain scalar `ConstantInt`.
@@ -3106,8 +3114,9 @@ fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynB
 }
 
 fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, DynBrand> {
+    // Internal: the brand changes, the module does not.
     Value::from_parts(
-        value.id,
+        value.slot_trusting_same_module(),
         ModuleView::new(value.module().core_ref()),
         value.ty().id(),
     )
@@ -3117,8 +3126,9 @@ fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, DynBrand>,
     module: ModuleView<'ctx, B>,
 ) -> Constant<'ctx, B> {
+    // Internal: every caller passes the module `constant` was built in.
     Constant::from_parts(Value::from_parts(
-        constant.slot(),
+        constant.slot_trusting_same_module(),
         module,
         constant.ty().id(),
     ))

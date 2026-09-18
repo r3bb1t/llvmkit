@@ -825,13 +825,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
             matches!(module.type_data(data.ty), TypeData::Label),
             "BlockId points at a non-label arena type at its slot",
         );
-        Some(BasicBlockLabel {
-            id: self.slot,
-            module,
-            ty: data.ty,
-            _r: PhantomData,
-            _params: PhantomData,
-        })
+        Some(BasicBlockLabel::from_parts(self.slot, module, data.ty))
     }
 }
 

@@ -11438,7 +11438,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         } else {
                             self.parse_value(state, ty)?
                         };
-                        inputs.push(value.slot());
+                        inputs.push(value);
                         if !self.eat_punct(PunctKind::Comma)? {
                             break;
                         }
@@ -14154,10 +14154,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 ));
             }
         };
-        // Record the phi's source location, keyed by its arena id, so the
+        // Record the phi's source location, keyed by its storable id, so the
         // end-of-function coherence check can anchor a diagnostic here — a
         // numbered/anonymous phi has no matchable textual name.
-        state.phi_locs.push((phi_val.slot(), self.loc()));
+        state.phi_locs.push((phi_val.id(), self.loc()));
         // Parse incoming pairs: `[ val, label ], ...`
         // First pair has no leading comma; subsequent pairs have one.
         let mut first = true;
@@ -16132,7 +16132,7 @@ struct PerFunctionState<'ctx, B: ModuleBrand> {
     /// Source span of each parsed phi, keyed by its result name, so the
     /// end-of-function coherence check in `finish()` can point a diagnostic
     /// at the offending phi instead of at `Module::verify()`.
-    phi_locs: Vec<(llvmkit_ir::value::ValueSlot, Span)>,
+    phi_locs: Vec<(llvmkit_ir::ValueId<B>, Span)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
@@ -16732,7 +16732,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             let loc = self
                 .phi_locs
                 .iter()
-                .find(|(id, _)| *id == e.phi_id)
+                .find(|(id, _)| *id == e.phi)
                 .map(|(_, span)| *span)
                 .unwrap_or_else(Span::default);
             return Err(ParseError::Expected {

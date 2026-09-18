@@ -6346,7 +6346,6 @@ mod tests {
     use crate::data_layout::DataLayout;
     use crate::instruction::build_instruction_value;
     use crate::module::Module;
-    use crate::value::IsValue;
 
     fn fabricate_instruction<B: ModuleBrand>(
         m: &Module<B>,
@@ -6408,12 +6407,12 @@ mod tests {
         let gep_ty = ptr_vec_ty.as_type();
         let gep_id = fabricate_instruction(
             &m,
-            entry.slot(),
+            entry.slot_trusting_same_module(),
             gep_ty.id(),
             InstructionKindData::Gep(GepInstData::new(
                 i8_ty.as_type().id(),
-                base.slot(),
-                [minus_one.slot()],
+                base.slot_trusting_same_module(),
+                [minus_one.slot_trusting_same_module()],
                 crate::GepNoWrapFlags::empty(),
             )),
         );

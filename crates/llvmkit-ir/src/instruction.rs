@@ -58,7 +58,7 @@ use super::metadata::{
 };
 use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::term_open_state::Closed as TermClosed;
-use super::r#type::TypeSlot;
+use super::r#type::{TypeSlot, TypeSlotAccess};
 use super::r#use::Use;
 use super::user::User;
 use super::value::{
@@ -499,9 +499,9 @@ pub mod state {
 /// [`InstructionView`] for read-only inspection; lifecycle mutation requires
 /// a builder-produced [`Instruction`] or [`crate::iter::BlockCursor`].
 pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _state: core::marker::PhantomData<S>,
 }
 /// Copyable read-only instruction view. This is the rediscovery shape for
@@ -510,9 +510,9 @@ pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
 /// mutation capabilities.
 #[derive(Branded)]
 pub struct InstructionView<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 // Hand-rolled trait impls so that consumers do not have to spell `S`
@@ -556,18 +556,14 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().to_erased()
     }
 
-    /// Bare arena slot of the underlying value (same slot as
-    /// [`to_erased`](Self::to_erased)).
-    ///
-    /// Named `slot` rather than `id` since cycle B: across the crate `.id()`
-    /// mints a *storable, module-tagged* id, and an instruction — which may be
-    /// void, hence value-less — has none of its own. Reach a storable id
-    /// through `to_erased().id()` (a value-defining instruction) or through the
-    /// per-opcode handle's `id()` ([`CallInst::id`](crate::CallInst::id),
-    /// [`PhiInst::id`](crate::PhiInst::id), ...).
+    /// The unchecked door for this linear handle: its erased value's
+    /// [`ValueSlotAccess::slot_trusting_same_module`], for a read that stays
+    /// inside this instruction's module. No public route hands out the bare
+    /// slot; reach a storable id through `to_erased().id()` (a value-defining
+    /// instruction) or the per-opcode handle's `id()`.
     #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.to_erased().id
+    pub(crate) fn slot_trusting_same_module(&self) -> ValueSlot {
+        self.to_erased().slot_trusting_same_module()
     }
 
     /// Return the copyable read-only view for this instruction.
@@ -700,11 +696,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// [`IsValue::as_erased`] form is also available on this type.
     #[inline]
     pub fn to_erased(&self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Borrow the storage payload.
@@ -1166,7 +1158,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
             // `self.replaceAllUsesWith(self)` is a no-op upstream; mirror.
             return Ok(());
         }
-        if new_value.ty != self.ty {
+        if new_value.ty().slot_trusting_same_module() != self.ty {
             return Err(IrError::TypeIdentityMismatch {
                 expected: self.ty().rendered(),
                 got: new_value.ty().rendered(),
@@ -1758,7 +1750,8 @@ pub(super) fn rewrite_debug_record_value(
 fn remove_local_name_from_parent<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) {
     if let Some(parent_fn_id) = value.local_parent_function_id() {
         let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, value.module);
-        parent_fn.remove_local_value_name(value.id);
+        // Internal: `value` is an instruction of `parent_fn`'s own module.
+        parent_fn.remove_local_value_name(value.slot_trusting_same_module());
     }
 }
 
@@ -1770,7 +1763,8 @@ fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(
     if let Some(name) = current_name.as_deref() {
         value.set_name_internal(None);
         let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, value.module);
-        parent_fn.set_local_value_name(value.id, Some(name));
+        // Internal: `value` is an instruction of `parent_fn`'s own module.
+        parent_fn.set_local_value_name(value.slot_trusting_same_module(), Some(name));
     }
 }
 
@@ -1899,9 +1893,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for InstructionView<'c
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::Instruction(_) => Ok(Self {
-                id: v.id,
+                // Internal: a re-wrap that keeps `v`'s own module.
+                id: v.slot_trusting_same_module(),
                 module: v.module,
-                ty: v.ty,
+                ty: v.ty().slot_trusting_same_module(),
             }),
             _ => Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::Instruction,
@@ -2300,14 +2295,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
     #[inline]
     pub fn to_erased(&self) -> Value<'ctx, B> {
         self.view.to_erased()
-    }
-
-    /// Bare arena slot of the underlying value (same slot as
-    /// [`to_erased`](Self::to_erased)). Named `slot` rather than `id` for the
-    /// reason given on [`Instruction::slot`].
-    #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.view.slot()
     }
 
     /// Crate-internal: wrap a view already known to be a non-terminator.

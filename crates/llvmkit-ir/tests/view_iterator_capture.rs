@@ -24,8 +24,8 @@
 //! the file stops compiling rather than failing an assertion.
 
 use llvmkit_ir::{
-    Dyn, InstructionKind, InstructionView, IntValue, IrBuilder, IrError, IsValue, Linkage,
-    ModuleBrand, NoFolder, Value, module_new,
+    Dyn, InstructionKind, InstructionView, IntValue, IrBuilder, IrError, Linkage, ModuleBrand,
+    NoFolder, Value, module_new,
 };
 
 /// Build `@f` with two blocks and a phi, so there is something to walk:
@@ -108,8 +108,11 @@ fn instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Result<(), I
         collected
     };
     assert_eq!(
-        walk.iter().map(|i| i.slot()).collect::<Vec<_>>(),
-        nested.iter().map(|i| i.slot()).collect::<Vec<_>>(),
+        walk.iter().map(|i| i.to_erased().id()).collect::<Vec<_>>(),
+        nested
+            .iter()
+            .map(|i| i.to_erased().id())
+            .collect::<Vec<_>>(),
     );
     Ok(())
 }

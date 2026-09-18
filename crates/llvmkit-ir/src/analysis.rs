@@ -1860,8 +1860,8 @@ mod tests {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let next = m.view(f).append_basic_block(&m, "next");
-        let entry_id = entry.slot();
-        let next_id = next.slot();
+        let entry_id = entry.slot_trusting_same_module();
+        let next_id = next.slot_trusting_same_module();
         let next_label = next.id();
 
         // entry: br next    next: ret 0
@@ -1885,8 +1885,8 @@ mod tests {
         let new_label = new_bb.id();
         let updates = [
             CfgUpdate::delete(entry_id, next_id),
-            CfgUpdate::insert(new_bb.slot(), next_id),
-            CfgUpdate::insert(entry_id, new_bb.slot()),
+            CfgUpdate::insert(new_bb.slot_trusting_same_module(), next_id),
+            CfgUpdate::insert(entry_id, new_bb.slot_trusting_same_module()),
         ];
         // The stale tree has never seen `entry.split`.
         assert!(!dt.dominates_block(new_label, next_label));

@@ -68,7 +68,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntrinsicInst<'ctx, R, B> {
     /// "the storable id of this handle" — across the whole surface.
     #[inline]
     pub fn id(self) -> IntrinsicInstId<R, B> {
-        IntrinsicInstId::from_raw(self.call.to_erased().module().id(), self.call.slot())
+        // Internal: the id takes the call's own module tag.
+        IntrinsicInstId::from_raw(
+            self.call.to_erased().module().id(),
+            self.call.slot_trusting_same_module(),
+        )
     }
 
     /// Generated descriptor matched from the callee declaration.

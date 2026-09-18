@@ -58,7 +58,7 @@ use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_context::FunctionView;
-use super::r#type::{Type, TypeData, TypeSlot};
+use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData,
@@ -154,12 +154,12 @@ impl FunctionData {
 /// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
 /// to widen to the runtime-checked [`Dyn`] form.
 pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     /// Cached signature type id. The value's value-arena type is the
     /// pointer-to-function on real LLVM; here we cache the function-
     /// type id directly so `signature()` is a thin lookup.
-    pub(super) signature: TypeSlot,
+    signature: TypeSlot,
     pub(super) _r: PhantomData<R>,
 }
 
@@ -226,11 +226,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// useful per-value type-side information).
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.signature,
-        }
+        Value::from_parts(self.id, self.module, self.signature)
     }
 
     /// Storable, module-tagged [`FunctionId<R>`] for this function (llvmkit
@@ -473,11 +469,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn prefix_data(self) -> Option<Constant<'ctx, B>> {
         self.data().prefix_data.get().map(|id| {
             let data = self.module.module().context().value_data(id);
-            Constant {
-                id,
-                module: self.module,
-                ty: data.ty,
-            }
+            Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
@@ -507,11 +499,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn prologue_data(self) -> Option<Constant<'ctx, B>> {
         self.data().prologue_data.get().map(|id| {
             let data = self.module.module().context().value_data(id);
-            Constant {
-                id,
-                module: self.module,
-                ty: data.ty,
-            }
+            Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
@@ -541,11 +529,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn personality_fn(self) -> Option<Constant<'ctx, B>> {
         self.data().personality_fn.get().map(|id| {
             let data = self.module.module().context().value_data(id);
-            Constant {
-                id,
-                module: self.module,
-                ty: data.ty,
-            }
+            Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
@@ -927,6 +911,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         S2: BlockTerminationState,
     {
         let _ = module;
+        // Boundary: the caller's block, admitted against this function's
+        // module before its parent is compared or this block list is searched.
+        let block_id = block.to_erased().slot_in(self.module.id())?;
         let ValueKindData::BasicBlock(data) = &block.to_erased().data().kind else {
             return Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::BasicBlock,
@@ -939,7 +926,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        let Some(pos) = blocks.iter().position(|id| *id == block.slot()) else {
+        let Some(pos) = blocks.iter().position(|id| *id == block_id) else {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });
@@ -983,6 +970,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         value: Value<'ctx, B>,
     ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>> {
         let _ = module;
+        // Boundary: the caller's value, admitted against this function's
+        // module before its parent is compared or a handle is made of it.
+        let block_id = value.slot_in(self.module.id())?;
         let ValueKindData::BasicBlock(data) = &value.data().kind else {
             return Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::BasicBlock,
@@ -994,7 +984,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
                 message: "block does not belong to function",
             });
         }
-        let block = BasicBlock::from_parts(value.id, self.module, value.ty);
+        let block = BasicBlock::from_parts(
+            block_id,
+            self.module,
+            value.ty().slot_trusting_same_module(),
+        );
         if block.terminator().is_some_and(|inst| inst.is_terminator()) {
             return Err(IrError::InvalidOperation {
                 message: "cannot create insertion handle for terminated block",
@@ -1044,11 +1038,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
-        Constant {
-            id,
-            module: self.module,
-            ty: ptr_ty,
-        }
+        Constant::from_parts(Value::from_parts(id, self.module, ptr_ty))
     }
 
     /// A `ptr`-typed constant referencing this function, as a *distinct* arena
@@ -1068,11 +1058,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, 0);
-        Constant {
-            id,
-            module: self.module,
-            ty: ptr_ty,
-        }
+        Constant::from_parts(Value::from_parts(id, self.module, ptr_ty))
     }
 }
 
@@ -1239,7 +1225,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::Function(f) => Ok(Self {
-                id: v.id,
+                // Internal: a re-wrap that keeps `v`'s own module.
+                id: v.slot_trusting_same_module(),
                 module: v.module,
                 signature: f.signature,
                 _r: PhantomData,
@@ -1557,6 +1544,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
     /// return type does not match the chosen [`ReturnMarker`].
     pub fn build(self) -> IrResult<FunctionId<R, B>> {
+        // Boundary: the caller's signature and constants, parked by the
+        // infallible setters, are admitted against this module before the
+        // function is created — `ForeignType` / `ForeignValueId`.
+        let owner = self.module.id();
+        self.signature.slot_in(owner)?;
+        let prefix_data = self.prefix_data.map(|c| c.slot_in(owner)).transpose()?;
+        let prologue_data = self.prologue_data.map(|c| c.slot_in(owner)).transpose()?;
+        let personality_fn = self.personality_fn.map(|c| c.slot_in(owner)).transpose()?;
         let f = self.module.module().add_function_checked::<B, R, _>(
             &self.name,
             self.signature,
@@ -1580,29 +1575,17 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         }
         // Each of these is a use like any other, so the construction path
         // registers the same reverse edge the setters do.
-        if let Some(prefix_data) = self.prefix_data {
-            f.retarget_global_field_use(
-                GlobalFieldKind::PrefixData,
-                None,
-                Some(prefix_data.slot()),
-            );
-            f.data().prefix_data.set(Some(prefix_data.slot()));
+        if let Some(prefix_data) = prefix_data {
+            f.retarget_global_field_use(GlobalFieldKind::PrefixData, None, Some(prefix_data));
+            f.data().prefix_data.set(Some(prefix_data));
         }
-        if let Some(prologue_data) = self.prologue_data {
-            f.retarget_global_field_use(
-                GlobalFieldKind::PrologueData,
-                None,
-                Some(prologue_data.slot()),
-            );
-            f.data().prologue_data.set(Some(prologue_data.slot()));
+        if let Some(prologue_data) = prologue_data {
+            f.retarget_global_field_use(GlobalFieldKind::PrologueData, None, Some(prologue_data));
+            f.data().prologue_data.set(Some(prologue_data));
         }
-        if let Some(personality_fn) = self.personality_fn {
-            f.retarget_global_field_use(
-                GlobalFieldKind::PersonalityFn,
-                None,
-                Some(personality_fn.slot()),
-            );
-            f.data().personality_fn.set(Some(personality_fn.slot()));
+        if let Some(personality_fn) = personality_fn {
+            f.retarget_global_field_use(GlobalFieldKind::PersonalityFn, None, Some(personality_fn));
+            f.data().personality_fn.set(Some(personality_fn));
         }
         if let Some(comdat) = self.comdat {
             *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
@@ -1617,7 +1600,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            f.set_local_value_name(IsValue::slot(arg), Some(&name));
+            // Internal: `f`'s own argument.
+            f.set_local_value_name(arg.slot_trusting_same_module(), Some(&name));
         }
         Ok(f.id())
     }

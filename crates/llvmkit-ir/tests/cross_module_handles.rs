@@ -2540,3 +2540,186 @@ fn the_constant_folder_rejects_an_operand_or_type_from_another_module() {
         "a rejected fold must not mutate"
     );
 }
+
+/// Moving, reopening or splicing a block refuses a block of another module
+/// before either block is read: `FunctionValue::move_basic_block_to_end`,
+/// `FunctionValue::basic_block_for_construction` and `BasicBlock::splice_into`
+/// (the destination). The two functions are built alike, so the foreign
+/// block's slot and its parent's slot both name something real here.
+///
+/// No upstream counterpart: `Function::splice` and `BasicBlock::splice`
+/// (`lib/IR/Function.cpp`, `lib/IR/BasicBlock.cpp`) take `BasicBlock *`s.
+#[test]
+fn a_block_move_or_splice_rejects_a_block_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (f, _) = function_with_an_add(&home, "f");
+    let (g, _) = function_with_an_add(&foreign, "g");
+    let foreign_entry = || foreign.view(g).entry_block().expect("entry");
+    let home_entry = home.view(f).entry_block().expect("entry");
+    let before = (format!("{home}"), format!("{foreign}"));
+
+    let outcomes = vec![
+        (
+            "FunctionValue::move_basic_block_to_end",
+            IrError::ForeignValueId,
+            home.view(f).move_basic_block_to_end(&home, foreign_entry()),
+        ),
+        (
+            "FunctionValue::basic_block_for_construction",
+            IrError::ForeignValueId,
+            without_value(
+                home.view(f)
+                    .basic_block_for_construction(&home, foreign_entry().to_erased()),
+            ),
+        ),
+        (
+            "BasicBlock::splice_into",
+            IrError::ForeignValueId,
+            home_entry.splice_into(&home, foreign_entry()),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        (format!("{home}"), format!("{foreign}")),
+        before,
+        "a rejected move must not mutate"
+    );
+}
+
+/// `GlobalVariable::try_delta_from` and `try_delta_from_plus` refuse the other
+/// global when it belongs to another module, instead of interning its slot
+/// into a constant of this one.
+///
+/// No upstream counterpart: the delta is llvmkit's own spelling of
+/// `ConstantExpr::getSub` over two `ptrtoint`s (`lib/IR/Constants.cpp`), whose
+/// operands are `Constant *`s.
+#[test]
+fn a_symbol_delta_rejects_a_global_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let real = home
+        .add_global("real", home.i32_type().const_int(1i32))
+        .expect("global");
+    let anchor = foreign
+        .add_global("anchor", foreign.i32_type().const_int(2i32))
+        .expect("global");
+    let before = (format!("{home}"), format!("{foreign}"));
+
+    let outcomes = vec![
+        (
+            "GlobalVariable::try_delta_from",
+            IrError::ForeignValueId,
+            without_value(home.view(real).try_delta_from(foreign.view(anchor))),
+        ),
+        (
+            "GlobalVariable::try_delta_from_plus",
+            IrError::ForeignValueId,
+            without_value(home.view(real).try_delta_from_plus(foreign.view(anchor), 7)),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        (format!("{home}"), format!("{foreign}")),
+        before,
+        "a rejected delta must not mutate"
+    );
+}
+
+/// `FunctionBuilder::build` refuses a signature or a prefix, prologue or
+/// personality constant of another module, parked by the infallible setters,
+/// before the function is created.
+///
+/// No upstream counterpart: `Function::Create` takes a `FunctionType *`
+/// uniqued per `LLVMContext`, and `Function::setPrefixData` /
+/// `setPrologueData` / `setPersonalityFn` (`lib/IR/Function.cpp`) a
+/// `Constant *`.
+#[test]
+fn a_function_builder_rejects_a_signature_or_constant_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let home_ty = home.function_type_no_parameters(home.i32_type());
+    let foreign_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let foreign_constant = foreign.i32_type().const_int(5i32);
+    let foreign_null = foreign.ptr_type(0).const_null();
+    let before = (format!("{home}"), format!("{foreign}"));
+
+    let outcomes = vec![
+        (
+            "signature",
+            IrError::ForeignType,
+            without_value(home.function_builder::<Dyn, _>("a", foreign_ty).build()),
+        ),
+        (
+            "prefix_data",
+            IrError::ForeignValueId,
+            without_value(
+                home.function_builder::<Dyn, _>("b", home_ty)
+                    .prefix_data(foreign_constant)
+                    .build(),
+            ),
+        ),
+        (
+            "prologue_data",
+            IrError::ForeignValueId,
+            without_value(
+                home.function_builder::<Dyn, _>("c", home_ty)
+                    .prologue_data(foreign_constant)
+                    .build(),
+            ),
+        ),
+        (
+            "personality_fn",
+            IrError::ForeignValueId,
+            without_value(
+                home.function_builder::<Dyn, _>("d", home_ty)
+                    .personality_fn(foreign_null)
+                    .build(),
+            ),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        (format!("{home}"), format!("{foreign}")),
+        before,
+        "a rejected build must not create a function"
+    );
+}
+
+/// `must_trigger_ub`'s known-poison set holds tagged value ids, and a value of
+/// another module is never one of the instruction's operands — even at the
+/// operand's slot. The home divisor is the positive control.
+///
+/// No upstream counterpart: `llvm::mustTriggerUB`
+/// (`lib/Analysis/ValueTracking.cpp`) takes a `SmallPtrSetImpl<const Value *>`,
+/// whose members are compared by address.
+#[test]
+fn must_trigger_ub_matches_a_known_poison_value_in_its_own_module_only() {
+    use llvmkit_ir::must_trigger_ub;
+    use std::collections::HashSet;
+
+    /// `udiv i32 %0, %0` in a fresh `name`; returns the divisor `%0`.
+    fn udiv_by_parameter<'m>(module: &'m Module<DynBrand>, name: &str) -> Value<'m, DynBrand> {
+        let (b, [divisor, ..]) = builder_with_parameters(module, name);
+        let divisor_int: IntValue<'_, i32, DynBrand> = divisor.try_into().expect("an i32");
+        b.int_udiv(divisor_int, divisor_int, "q").expect("udiv");
+        divisor
+    }
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let home_divisor = udiv_by_parameter(&home, "f");
+    let foreign_divisor = udiv_by_parameter(&foreign, "f");
+    let udiv = home_divisor.users().next().expect("the udiv");
+
+    assert!(
+        must_trigger_ub(&udiv, &HashSet::from([home_divisor.id()])),
+        "positive control: a poison divisor of this udiv is UB"
+    );
+    assert!(
+        !must_trigger_ub(&udiv, &HashSet::from([foreign_divisor.id()])),
+        "a divisor of another module is not this udiv's operand"
+    );
+}

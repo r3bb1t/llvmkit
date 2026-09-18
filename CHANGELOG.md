@@ -247,6 +247,34 @@ cut, entries accumulate under **Unreleased**.
   hook. Signatures are unchanged. Crate code that already holds operands of
   one module calls crate-private `_trusting_same_module` cores, so each
   public entry's check is the only one on its path.
+- **Breaking (llvmkit-ir):** no public route hands out a value handle's bare
+  arena slot any more. A slot means something only in the module that
+  minted it, so a tagless one could be carried into another module. Removed:
+  `Value::slot`, `IsValue::slot`, and the `slot()` accessors of
+  `BasicBlock`, `BasicBlockLabel`, `Instruction`, `NonTerminator` and the
+  per-opcode instruction handles; `DominatorTreeBlock::dominator_block_id`
+  moved onto the trait's private seal. Use `id()` for a storable,
+  module-tagged id. Inside the crate every value handle's `id` and cached
+  `ty` fields are now private to the file that declares the handle, and a
+  slot leaves a handle only through `ValueSlotAccess`'s two doors — `slot_in`
+  (checked) or `slot_trusting_same_module` (unchecked, for reads within one
+  module). Two sinks that accepted bare slots changed shape:
+  `OperandBundleData::new` takes value handles, and `must_trigger_ub` takes
+  a `HashSet<ValueId>`, matched with the module tag included, as upstream's
+  `SmallPtrSetImpl<const Value *>` is matched by address. The
+  parser-facing `PhiCoherenceError` carries the phi's tagged `ValueId`.
+- **Fixed (llvmkit-ir):** making the raw fields private surfaced six more
+  entries that read a caller's handle by slot without comparing modules:
+  `FunctionValue::move_basic_block_to_end` and
+  `basic_block_for_construction` (the block), `BasicBlock::splice_into` (the
+  destination), `GlobalVariable::try_delta_from` / `try_delta_from_plus`
+  (the other global), and `FunctionBuilder::build` (the signature and the
+  prefix, prologue and personality constants its infallible setters park).
+  Each now returns `ForeignValueId` or `ForeignType` before anything is read
+  or created. `OperandBundleData::new` is infallible and module-less, like
+  `AttributeStorage::add`, so its conversion is marked for the task that
+  makes it fallible; `indexed_gep_type` reads its indices against the source
+  type's module and is marked with the read-only analyses.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type

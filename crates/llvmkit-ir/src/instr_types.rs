@@ -22,8 +22,9 @@ use crate::align::MaybeAlign;
 use crate::atomic_ordering::AtomicOrdering;
 use crate::attributes::AttributeStorage;
 use crate::fmf::FastMathFlags;
+use crate::module::ModuleBrand;
 use crate::sync_scope::SyncScope;
-use crate::value::ValueSlot;
+use crate::value::{IsValue, ValueSlot, ValueSlotAccess};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOpcode {
@@ -2156,13 +2157,25 @@ pub struct OperandBundleData {
 }
 
 impl OperandBundleData {
-    pub fn new<Inputs>(tag: OperandBundleTag, inputs: Inputs) -> Self
+    /// A bundle tagged `tag` over the values `inputs`.
+    ///
+    /// Takes value handles, not arena slots: no public route hands out a bare
+    /// slot, so a slot of one module cannot be carried into another's bundle.
+    pub fn new<'ctx, B, V, Inputs>(tag: OperandBundleTag, inputs: Inputs) -> Self
     where
-        Inputs: IntoIterator<Item = ValueSlot>,
+        B: ModuleBrand,
+        V: IsValue<'ctx, B>,
+        Inputs: IntoIterator<Item = V>,
     {
         Self {
             tag,
-            inputs: inputs.into_iter().map(Cell::new).collect(),
+            inputs: inputs
+                .into_iter()
+                // The bundle is module-less and this constructor infallible,
+                // so an input of another module cannot be refused here.
+                // boundary (F1): refused by Task 26
+                .map(|input| Cell::new(input.slot_trusting_same_module()))
+                .collect(),
         }
     }
 

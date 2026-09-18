@@ -11,17 +11,19 @@ use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::marker::Dyn;
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
-use super::r#type::{Type, TypeSlot};
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::r#type::{Type, TypeSlot, TypeSlotAccess};
+use super::value::{
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess, sealed,
+};
 use super::{DebugLoc, IrError, IrResult};
 use crate::Branded;
 
 /// Typed handle for a function parameter.
 #[derive(Branded)]
 pub struct Argument<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) parent_fn: ValueSlot,
     pub(super) slot: u32,
 }
@@ -50,11 +52,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Owning function as a runtime-checked [`FunctionValue<Dyn>`].
@@ -158,9 +156,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Argument<'ctx, B> 
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::Argument { parent_fn, slot } => Ok(Self {
-                id: v.id,
+                // Internal: a re-wrap that keeps `v`'s own module.
+                id: v.slot_trusting_same_module(),
                 module: v.module,
-                ty: v.ty,
+                ty: v.ty().slot_trusting_same_module(),
                 parent_fn,
                 slot,
             }),

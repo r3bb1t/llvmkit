@@ -40,9 +40,9 @@ pub(super) struct GlobalIfuncData {
 
 #[derive(Branded)]
 pub struct GlobalIfunc<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
@@ -60,11 +60,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
 
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Storable, module-tagged [`GlobalIfuncId`] for this `ifunc` (llvmkit
@@ -77,11 +73,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
 
     #[inline]
     pub fn as_constant(self) -> Constant<'ctx, B> {
-        Constant {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
     }
 
     #[inline]
@@ -124,11 +116,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
     pub fn resolver(self) -> Constant<'ctx, B> {
         let id = self.data().resolver.get();
         let value_data = self.module.value_data(id);
-        Constant {
-            id,
-            module: self.module,
-            ty: value_data.ty,
-        }
+        Constant::from_parts(Value::from_parts(id, self.module, value_data.ty))
     }
 
     pub fn set_resolver<C: IsConstant<'ctx, B>>(
@@ -323,9 +311,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalIfunc<'ctx, 
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::GlobalIfunc(_) => Ok(Self {
-                id: v.id,
+                // Internal: a re-wrap that keeps `v`'s own module.
+                id: v.slot_trusting_same_module(),
                 module: v.module,
-                ty: v.ty,
+                ty: v.ty().slot_trusting_same_module(),
             }),
             other => Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::GlobalIfunc,

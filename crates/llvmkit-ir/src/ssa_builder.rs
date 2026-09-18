@@ -72,9 +72,7 @@ use super::module::{Invariant, Module, ModuleBrand, ModuleRef, Unverified};
 use super::r#type::TypeSlot;
 use super::r#type::TypeSlotAccess;
 use super::value::ValueSlotAccess;
-use super::value::{
-    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueSlot,
-};
+use super::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Typed, Value, ValueSlot};
 use super::value_id::BlockId;
 use super::{FloatType, IntType, IrError, IrResult, PointerType};
 
@@ -674,7 +672,8 @@ where
     pub fn create_block<Name: Into<String>>(&mut self, name: Name) -> SsaBlock<R, B> {
         let block = self.function.append_basic_block(self.module, name);
         let id = block.id();
-        let block_id = block.slot();
+        // Internal: the block was minted in this builder's function just above.
+        let block_id = block.slot_trusting_same_module();
         if self.state.block_order.is_empty() {
             self.state.sealed.insert(block_id);
         }
@@ -996,7 +995,11 @@ where
     /// error names the block the caller was mid-way through rather than
     /// whichever unfilled block happens to come first in creation order.
     pub fn finish(mut self) -> IrResult<()> {
-        if let Some(open) = self.cursor.as_ref().map(|b| b.insert_block().slot()) {
+        if let Some(open) = self
+            .cursor
+            .as_ref()
+            .map(|b| b.insert_block().slot_trusting_same_module())
+        {
             return Err(IrError::SsaUnfilledBlock {
                 block: block_name(self.module_ref(), open),
             });
@@ -1069,7 +1072,7 @@ where
     /// block key.
     #[inline]
     fn current_block_id(&self) -> IrResult<ValueSlot> {
-        Ok(self.ins()?.insert_block().slot())
+        Ok(self.ins()?.insert_block().slot_trusting_same_module())
     }
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
@@ -1296,7 +1299,7 @@ where
     ///
     /// Case constants are statically bound to the SAME width `W` as
     /// `cond` (`C: IntoConstantInt<'ctx, W, B>`) rather than accepting
-    /// any [`IsValue`] -- a mismatched-width case is a *compile* error,
+    /// any [`IsValue`](crate::IsValue) -- a mismatched-width case is a *compile* error,
     /// not the runtime `TypeMismatch` `SwitchInst::add_case` would
     /// otherwise raise mid-loop, after the switch terminator (with its
     /// default target) has already been emitted. Every case is lifted
@@ -1478,17 +1481,17 @@ where
         VarCategory::Int => {
             let int_ty = IntType::<super::int_width::IntDyn, B>::new(ty, module);
             let phi = builder.int_phi_dyn(int_ty, name)?;
-            builder.view(phi).slot()
+            builder.view(phi).slot_trusting_same_module()
         }
         VarCategory::Float => {
             let float_ty = FloatType::<super::float_kind::FloatDyn, B>::new(ty, module);
             let phi = builder.fp_phi_dyn(float_ty, name)?;
-            builder.view(phi).slot()
+            builder.view(phi).slot_trusting_same_module()
         }
         VarCategory::Pointer => {
             let ptr_ty = PointerType::<B>::new(ty, module);
             let phi = builder.pointer_phi_in_addrspace(ptr_ty, name)?;
-            builder.view(phi).slot()
+            builder.view(phi).slot_trusting_same_module()
         }
     };
     Ok(id)
@@ -1861,7 +1864,11 @@ where
     fn phi_user_ids(&self, phi: ValueSlot) -> Vec<ValueSlot> {
         let module = self.module_ref();
         let value = Value::from_parts(phi, module, module.value_data(phi).ty);
-        value.users().map(|u| u.slot()).collect()
+        // Internal: the users of this module's own phi.
+        value
+            .users()
+            .map(|u| u.slot_trusting_same_module())
+            .collect()
     }
 
     /// A strict variable's read reached function entry with no write on
@@ -1876,7 +1883,8 @@ where
             let module = self.module_ref();
             let ty = super::r#type::Type::new(data.ty, module);
             let poison = ty.poison();
-            return Ok(poison.slot());
+            // Internal: minted in this module from the variable's own type.
+            return Ok(poison.slot_trusting_same_module());
         }
         Err(IrError::SsaUseOfUndefinedVariable {
             variable: data.name.clone(),
@@ -1944,7 +1952,8 @@ where
                     )
                 });
             Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
-            let resolved = poison.slot();
+            // Internal: minted in this module from the phi's own type.
+            let resolved = poison.slot_trusting_same_module();
             self.state.resolved.borrow_mut().insert(phi, resolved);
             for user in users {
                 if self.state.created_phis.contains(&user) {
@@ -2095,7 +2104,7 @@ mod tests {
         let entry_id = entry.id.slot();
 
         let var: IntVariable<i32, _> = b.declare_int_var("x");
-        let one = m.i32_type().const_int(1_i32).slot();
+        let one = m.i32_type().const_int(1_i32).slot_trusting_same_module();
         b.write_variable(var.index, entry_id, one);
         let read = b.read_variable_in(var.index, entry_id)?;
         assert_eq!(read, one);
@@ -2129,7 +2138,7 @@ mod tests {
         b.state.preds.entry(loop_id).or_default().push(loop_id);
 
         let var: IntVariable<i32, _> = b.declare_int_var("i");
-        let zero = m.i32_type().const_int(0_i32).slot();
+        let zero = m.i32_type().const_int(0_i32).slot_trusting_same_module();
         b.write_variable(var.index, entry_id, zero);
 
         // Read inside the not-yet-sealed loop block: creates an
@@ -2142,7 +2151,7 @@ mod tests {
         // Record the loop body's own write (e.g. `i + 1`, modeled
         // here as reusing a fresh constant is fine -- the engine
         // does not care what the value IS, only that a def exists).
-        let one = m.i32_type().const_int(1_i32).slot();
+        let one = m.i32_type().const_int(1_i32).slot_trusting_same_module();
         b.write_variable(var.index, loop_id, one);
 
         // Sealing completes the incomplete phi: two distinct incoming
@@ -2194,7 +2203,7 @@ mod tests {
         b.seal_block(right)?;
 
         let var: IntVariable<i32, _> = b.declare_int_var("x");
-        let same_value = m.i32_type().const_int(7_i32).slot();
+        let same_value = m.i32_type().const_int(7_i32).slot_trusting_same_module();
         // Both predecessors write the SAME value.
         b.write_variable(var.index, left_id, same_value);
         b.write_variable(var.index, right_id, same_value);
@@ -2261,7 +2270,7 @@ mod tests {
         let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
         let read = b.read_variable_in(var.index, entry_id)?;
         let i32_ty = m.i32_type();
-        let poison_id = i32_ty.as_type().poison().slot();
+        let poison_id = i32_ty.as_type().poison().slot_trusting_same_module();
         assert_eq!(read, poison_id);
         Ok(())
     }
@@ -2308,7 +2317,7 @@ mod tests {
         b.seal_block(b3)?;
 
         let var: IntVariable<i32, _> = b.declare_int_var("x");
-        let one = m.i32_type().const_int(1_i32).slot();
+        let one = m.i32_type().const_int(1_i32).slot_trusting_same_module();
         b.write_variable(var.index, entry_id, one);
 
         // Before the read: only entry has a current_def entry.

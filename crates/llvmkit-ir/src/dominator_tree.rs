@@ -42,23 +42,22 @@ pub struct DominatorTree {
 }
 
 mod dominator_block_sealed {
-    pub trait Sealed {}
+    use crate::value::ValueSlot;
+
+    /// Seals [`DominatorTreeBlock`](super::DominatorTreeBlock), and carries the
+    /// one method the tree needs from a block: its arena slot, compared with
+    /// the slots the tree keyed its maps by. It lives here, on a trait nothing
+    /// outside the crate can name, so no public route hands out a block's bare
+    /// slot.
+    pub trait Sealed {
+        fn dominator_block_id(self) -> ValueSlot;
+    }
 }
 
 /// Basic-block identity accepted by dominator-tree block queries.
-pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {
-    fn dominator_block_id(self) -> ValueSlot;
-}
+pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {}
 
 impl<'ctx, R, S, B> dominator_block_sealed::Sealed for BasicBlock<'ctx, R, S, B>
-where
-    R: ReturnMarker,
-    S: BlockTerminationState,
-    B: ModuleBrand + 'ctx,
-{
-}
-
-impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
@@ -69,8 +68,16 @@ where
         // boundary (F2): Task 27
         // Compared with slots the tree stored for its own function; nothing
         // proves this block belongs to that function's module.
-        self.to_erased().slot_trusting_same_module()
+        self.slot_trusting_same_module()
     }
+}
+
+impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S, B>
+where
+    R: ReturnMarker,
+    S: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+{
 }
 
 impl<'ctx, R, S, B> dominator_block_sealed::Sealed for &BasicBlock<'ctx, R, S, B>
@@ -79,6 +86,11 @@ where
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
+    #[inline]
+    fn dominator_block_id(self) -> ValueSlot {
+        // boundary (F2): Task 27
+        self.slot_trusting_same_module()
+    }
 }
 
 impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for &BasicBlock<'ctx, R, S, B>
@@ -87,28 +99,9 @@ where
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
-    #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
-        // boundary (F2): Task 27
-        self.to_erased().slot_trusting_same_module()
-    }
-}
-
-impl<'ctx, R, B> dominator_block_sealed::Sealed for BasicBlockLabel<'ctx, R, B>
-where
-    R: ReturnMarker,
-    B: ModuleBrand + 'ctx,
-{
 }
 
 impl<R, B> dominator_block_sealed::Sealed for BlockId<R, B>
-where
-    R: ReturnMarker,
-    B: ModuleBrand,
-{
-}
-
-impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BlockId<R, B>
 where
     R: ReturnMarker,
     B: ModuleBrand,
@@ -119,14 +112,14 @@ where
     }
 }
 
-impl<R, B> dominator_block_sealed::Sealed for &BlockId<R, B>
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BlockId<R, B>
 where
     R: ReturnMarker,
     B: ModuleBrand,
 {
 }
 
-impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BlockId<R, B>
+impl<R, B> dominator_block_sealed::Sealed for &BlockId<R, B>
 where
     R: ReturnMarker,
     B: ModuleBrand,
@@ -137,7 +130,14 @@ where
     }
 }
 
-impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+}
+
+impl<'ctx, R, B> dominator_block_sealed::Sealed for BasicBlockLabel<'ctx, R, B>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
@@ -145,8 +145,15 @@ where
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
         // boundary (F2): Task 27
-        self.to_erased().slot_trusting_same_module()
+        self.slot_trusting_same_module()
     }
+}
+
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BasicBlockLabel<'ctx, R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+{
 }
 
 impl<'ctx, R, B> dominator_block_sealed::Sealed for &BasicBlockLabel<'ctx, R, B>
@@ -154,6 +161,11 @@ where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
+    #[inline]
+    fn dominator_block_id(self) -> ValueSlot {
+        // boundary (F2): Task 27
+        self.slot_trusting_same_module()
+    }
 }
 
 impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BasicBlockLabel<'ctx, R, B>
@@ -161,24 +173,17 @@ where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockView<'ctx, B> {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
         // boundary (F2): Task 27
-        self.to_erased().slot_trusting_same_module()
+        self.as_basic_block().slot_trusting_same_module()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockView<'ctx, B> {}
-
-impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {
-    #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
-        // boundary (F2): Task 27
-        self.as_basic_block()
-            .to_erased()
-            .slot_trusting_same_module()
-    }
-}
+impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {}
 
 impl DominatorTree {
     /// Recompute dominance for `function`.

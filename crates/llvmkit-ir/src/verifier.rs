@@ -3431,7 +3431,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `visitCallBase`'s `swifterror` loop, which sits between the
         // parameter-type loop above and the operand-bundle loop below.
         self.verify_call_swift_error_arguments(f, bb, call)?;
-        self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
+        self.check_intrinsic_call(f, bb, inst.slot_trusting_same_module(), call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
         // `if (Call.isInlineAsm()) verifyInlineAsmCall(Call);` — the tail of
         // `visitCallBase`, after the operand-bundle loop.
@@ -5253,7 +5253,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             attrs: &d.attrs,
         };
         self.verify_call_swift_error_arguments(f, bb, call)?;
-        self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
+        self.check_intrinsic_call(f, bb, inst.slot_trusting_same_module(), call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
         // `if (Call.isInlineAsm()) verifyInlineAsmCall(Call);` — the same tail
         // of `visitCallBase` that `check_call` runs; `visitInvokeInst` calls
@@ -5416,7 +5416,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
             // `visitIntrinsicCall(CBI.getIntrinsicID(), CBI);`
-            self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
+            self.check_intrinsic_call(f, bb, inst.slot_trusting_same_module(), call, cx)?;
         }
 
         // `visitTerminator(CBI);` — llvmkit's spelling of the successor half
@@ -7280,9 +7280,9 @@ mod tests {
         // Reach the value-id pair without leaking the return marker.
         let f_id = {
             // FunctionValue<Dyn> has a private id field; widen via as_dyn.
-            m.view(f).as_dyn().slot()
+            m.view(f).as_dyn().slot_trusting_same_module()
         };
-        let bb_id = bb.as_dyn().slot();
+        let bb_id = bb.as_dyn().slot_trusting_same_module();
         (f_id, bb_id)
     }
 
@@ -7419,7 +7419,10 @@ mod tests {
             &m,
             bb_id,
             i32_ty.id(),
-            InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
+            InstructionKindData::Add(BinaryOpData::new(
+                ValueSlotAccess::slot_trusting_same_module(p0),
+                ValueSlotAccess::slot_trusting_same_module(p1),
+            )),
         );
         append_ret_void(&m, bb_id);
         let err = m.verify_borrowed().unwrap_err();
@@ -7437,8 +7440,8 @@ mod tests {
         let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
-        append_ret_void(&m, then_bb.slot());
-        append_ret_void(&m, else_bb.slot());
+        append_ret_void(&m, then_bb.slot_trusting_same_module());
+        append_ret_void(&m, else_bb.slot_trusting_same_module());
         let p0 = f.param(0).unwrap();
         fabricate_instruction(
             &m,
@@ -7446,9 +7449,9 @@ mod tests {
             void_ty.id(),
             InstructionKindData::Br(BranchInstData {
                 kind: core::cell::RefCell::new(BranchKind::Conditional {
-                    cond: core::cell::Cell::new(IsValue::slot(p0)),
-                    then_bb: then_bb.slot(),
-                    else_bb: else_bb.slot(),
+                    cond: core::cell::Cell::new(ValueSlotAccess::slot_trusting_same_module(p0)),
+                    then_bb: then_bb.slot_trusting_same_module(),
+                    else_bb: else_bb.slot_trusting_same_module(),
                 }),
             }),
         );
@@ -7490,7 +7493,10 @@ mod tests {
             &m,
             entry_id,
             i32_ty.id(),
-            InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
+            InstructionKindData::Add(BinaryOpData::new(
+                ValueSlotAccess::slot_trusting_same_module(p0),
+                ValueSlotAccess::slot_trusting_same_module(p1),
+            )),
         );
         fabricate_instruction(
             &m,
@@ -7595,7 +7601,7 @@ mod tests {
         let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
         let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
         let dead = f.append_basic_block(&m, "dead");
-        let dead_id = dead.slot();
+        let dead_id = dead.slot_trusting_same_module();
         fabricate_instruction(
             &m,
             dead_id,
@@ -7624,7 +7630,7 @@ mod tests {
         let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
         let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
         let target = f.append_basic_block(&m, "target");
-        let cond_id = IsValue::slot(f.param(0).unwrap());
+        let cond_id = ValueSlotAccess::slot_trusting_same_module(f.param(0).unwrap());
         fabricate_instruction(
             &m,
             entry_id,
@@ -7632,8 +7638,8 @@ mod tests {
             InstructionKindData::Br(BranchInstData {
                 kind: core::cell::RefCell::new(BranchKind::Conditional {
                     cond: core::cell::Cell::new(cond_id),
-                    then_bb: target.slot(),
-                    else_bb: target.slot(),
+                    then_bb: target.slot_trusting_same_module(),
+                    else_bb: target.slot_trusting_same_module(),
                 }),
             }),
         );
@@ -7648,11 +7654,11 @@ mod tests {
             .push((core::cell::Cell::new(two), entry_id));
         fabricate_instruction(
             &m,
-            target.slot(),
+            target.slot_trusting_same_module(),
             i32_ty.id(),
             InstructionKindData::Phi(phi),
         );
-        append_ret_void(&m, target.slot());
+        append_ret_void(&m, target.slot_trusting_same_module());
         let err = m.verify_borrowed().unwrap_err();
         assert_rule_and_check_line(
             &err,
@@ -7676,22 +7682,25 @@ mod tests {
             entry_id,
             void_ty.id(),
             InstructionKindData::Br(BranchInstData {
-                kind: core::cell::RefCell::new(BranchKind::Unconditional(target.slot())),
+                kind: core::cell::RefCell::new(BranchKind::Unconditional(
+                    target.slot_trusting_same_module(),
+                )),
             }),
         );
-        append_ret_void(&m, unrelated.slot());
+        append_ret_void(&m, unrelated.slot_trusting_same_module());
         let bogus = fab_const_int_id(&m, i32_ty.id(), 7);
         let phi = PhiData::new();
-        phi.incoming
-            .borrow_mut()
-            .push((core::cell::Cell::new(bogus), unrelated.slot()));
+        phi.incoming.borrow_mut().push((
+            core::cell::Cell::new(bogus),
+            unrelated.slot_trusting_same_module(),
+        ));
         fabricate_instruction(
             &m,
-            target.slot(),
+            target.slot_trusting_same_module(),
             i32_ty.id(),
             InstructionKindData::Phi(phi),
         );
-        append_ret_void(&m, target.slot());
+        append_ret_void(&m, target.slot_trusting_same_module());
         let err = m.verify_borrowed().unwrap_err();
         assert_rule(&err, VerifierRule::PhiPredecessorMismatch);
     }
@@ -7713,7 +7722,7 @@ mod tests {
         let zero = fab_const_int_id(&m, i32_ty.id(), 0);
         fabricate_instruction(
             &m,
-            cb.slot(),
+            cb.slot_trusting_same_module(),
             void_ty.id(),
             InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
         );
@@ -7723,20 +7732,20 @@ mod tests {
             .add_function_dyn("caller", caller_fn_ty, Linkage::External)
             .unwrap();
         let entry = m.view(caller).append_basic_block(&m, "entry");
-        let arg_id = IsValue::slot(m.view(caller).param(0).unwrap());
+        let arg_id = ValueSlotAccess::slot_trusting_same_module(m.view(caller).param(0).unwrap());
         fabricate_instruction(
             &m,
-            entry.slot(),
+            entry.slot_trusting_same_module(),
             i32_ty.id(),
             InstructionKindData::Call(CallInstData::new(
-                m.view(callee).slot(),
+                m.view(callee).slot_trusting_same_module(),
                 callee_fn_ty.as_type().id(),
                 [arg_id],
                 crate::CallingConv::default(),
                 crate::instr_types::TailCallKind::None,
             )),
         );
-        append_ret_void(&m, entry.slot());
+        append_ret_void(&m, entry.slot_trusting_same_module());
         let err = m.verify_borrowed().unwrap_err();
         assert_rule(&err, VerifierRule::CallArgCountMismatch);
     }
