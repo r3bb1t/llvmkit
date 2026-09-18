@@ -1,6 +1,19 @@
 //! Target-independent constant folding.
 //!
 //! Mirrors the pure-constant portions of `llvm/lib/IR/ConstantFold.cpp`.
+//!
+//! ## One module per fold
+//!
+//! A fold reads each handle through the module that minted it and builds its
+//! result in its first handle's module. Two modules that share a brand — every
+//! `Module::dynamic` is `DynBrand` — accept each other's handles without a type
+//! error, so under D7 each public entry that takes more than one handle admits
+//! every later one against its first handle's module through the checked door
+//! (`slot_in`), before anything is read, and returns
+//! [`IrError::ForeignValueId`] or [`IrError::ForeignType`]. It then calls its
+//! crate-private `_trusting_same_module` core, which is the one crate code
+//! calls with operands it minted or has already admitted — so each entry's
+//! check is the only one on its path.
 
 use super::align::Align;
 use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
@@ -22,9 +35,9 @@ use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode}
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
-use super::r#type::{Type, TypeData};
+use super::r#type::{Type, TypeData, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{IsValue, Value, ValueKindData, ValueSlot};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
 use super::{IrError, IrResult, RoundingMode};
 
@@ -61,7 +74,7 @@ where
         let Some(rhs) = constant_from_id(module, rhs) else {
             return Ok(None);
         };
-        return constant_fold_binary_instruction(opcode, lhs, rhs);
+        return constant_fold_binary_instruction_trusting_same_module(opcode, lhs, rhs);
     }
 
     match &data.kind {
@@ -69,7 +82,7 @@ where
             let Some(src) = constant_from_id(module, cast.src.get()) else {
                 return Ok(None);
             };
-            constant_fold_cast_instruction(cast.kind, src, value.ty())
+            constant_fold_cast_instruction_trusting_same_module(cast.kind, src, value.ty())
         }
         InstructionKindData::Icmp(cmp) => {
             let Some(lhs) = constant_from_id(module, cmp.lhs.get()) else {
@@ -78,7 +91,11 @@ where
             let Some(rhs) = constant_from_id(module, cmp.rhs.get()) else {
                 return Ok(None);
             };
-            constant_fold_compare_instruction(CmpPredicate::Int(cmp.predicate), lhs, rhs)
+            constant_fold_compare_instruction_trusting_same_module(
+                CmpPredicate::Int(cmp.predicate),
+                lhs,
+                rhs,
+            )
         }
         InstructionKindData::Fcmp(cmp) => {
             let Some(lhs) = constant_from_id(module, cmp.lhs.get()) else {
@@ -87,7 +104,11 @@ where
             let Some(rhs) = constant_from_id(module, cmp.rhs.get()) else {
                 return Ok(None);
             };
-            constant_fold_compare_instruction(CmpPredicate::Float(cmp.predicate), lhs, rhs)
+            constant_fold_compare_instruction_trusting_same_module(
+                CmpPredicate::Float(cmp.predicate),
+                lhs,
+                rhs,
+            )
         }
         InstructionKindData::Fneg(fneg) => {
             let Some(src) = constant_from_id(module, fneg.src.get()) else {
@@ -105,7 +126,7 @@ where
             let Some(false_value) = constant_from_id(module, select.false_val.get()) else {
                 return Ok(None);
             };
-            constant_fold_select_instruction(cond, true_value, false_value)
+            constant_fold_select_instruction_trusting_same_module(cond, true_value, false_value)
         }
         InstructionKindData::ExtractElement(extract) => {
             let Some(vector) = constant_from_id(module, extract.vector.get()) else {
@@ -114,7 +135,7 @@ where
             let Some(index) = constant_from_id(module, extract.index.get()) else {
                 return Ok(None);
             };
-            constant_fold_extract_element_instruction(vector, index)
+            constant_fold_extract_element_instruction_trusting_same_module(vector, index)
         }
         InstructionKindData::InsertElement(insert) => {
             let Some(vector) = constant_from_id(module, insert.vector.get()) else {
@@ -126,7 +147,7 @@ where
             let Some(index) = constant_from_id(module, insert.index.get()) else {
                 return Ok(None);
             };
-            constant_fold_insert_element_instruction(vector, element, index)
+            constant_fold_insert_element_instruction_trusting_same_module(vector, element, index)
         }
         InstructionKindData::ShuffleVector(shuffle) => {
             let Some(lhs) = constant_from_id(module, shuffle.lhs.get()) else {
@@ -135,7 +156,7 @@ where
             let Some(rhs) = constant_from_id(module, shuffle.rhs.get()) else {
                 return Ok(None);
             };
-            constant_fold_shuffle_vector_instruction(lhs, rhs, &shuffle.mask)
+            constant_fold_shuffle_vector_instruction_trusting_same_module(lhs, rhs, &shuffle.mask)
         }
         InstructionKindData::ExtractValue(extract) => {
             let Some(aggregate) = constant_from_id(module, extract.aggregate.get()) else {
@@ -150,7 +171,11 @@ where
             let Some(inserted) = constant_from_id(module, insert.value.get()) else {
                 return Ok(None);
             };
-            constant_fold_insert_value_instruction(aggregate, inserted, &insert.indices)
+            constant_fold_insert_value_instruction_trusting_same_module(
+                aggregate,
+                inserted,
+                &insert.indices,
+            )
         }
         InstructionKindData::Gep(gep) => {
             let Some(pointer) = constant_from_id(module, gep.ptr.get()) else {
@@ -160,7 +185,12 @@ where
             else {
                 return Ok(None);
             };
-            constant_fold_get_element_ptr(Type::new(gep.source_ty, module), pointer, &indices, None)
+            constant_fold_get_element_ptr_trusting_same_module(
+                Type::new(gep.source_ty, module),
+                pointer,
+                &indices,
+                None,
+            )
         }
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
@@ -355,7 +385,21 @@ pub fn constant_fold_unary_instruction<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold a binary instruction with constant operands.
+///
+/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// than `lhs`'s.
 pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    opcode: BinaryOpcode,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's operands, admitted against `lhs`'s module.
+    rhs.slot_in(lhs.module.id())?;
+    constant_fold_binary_instruction_trusting_same_module(opcode, lhs, rhs)
+}
+
+/// [`constant_fold_binary_instruction`] for operands of one module.
+pub(crate) fn constant_fold_binary_instruction_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
@@ -497,7 +541,7 @@ fn fold_constant_expr_associative_binary<'ctx, B: ModuleBrand + 'ctx>(
             {
                 return build_binary_constant_or_expr(opcode, rhs, lhs);
             }
-            return constant_fold_binary_instruction(opcode, rhs, lhs);
+            return constant_fold_binary_instruction_trusting_same_module(opcode, rhs, lhs);
         }
         return Ok(None);
     };
@@ -544,7 +588,7 @@ fn build_binary_constant_or_expr<'ctx, B: ModuleBrand + 'ctx>(
             )
             .map(Some);
     }
-    constant_fold_binary_instruction(opcode, lhs, rhs)
+    constant_fold_binary_instruction_trusting_same_module(opcode, lhs, rhs)
 }
 
 fn constant_expr_binary_opcode_of<'ctx, B: ModuleBrand + 'ctx>(
@@ -599,7 +643,22 @@ fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcod
 }
 
 /// Fold a cast instruction with a constant operand.
+///
+/// Errors with [`IrError::ForeignType`] if `dest_ty` belongs to a module other
+/// than `operand`'s.
 pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    opcode: CastOpcode,
+    operand: Constant<'ctx, B>,
+    dest_ty: Type<'ctx, B>,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's destination type, admitted against `operand`'s
+    // module.
+    dest_ty.slot_in(operand.module.id())?;
+    constant_fold_cast_instruction_trusting_same_module(opcode, operand, dest_ty)
+}
+
+/// [`constant_fold_cast_instruction`] for an operand and type of one module.
+pub(crate) fn constant_fold_cast_instruction_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     opcode: CastOpcode,
     operand: Constant<'ctx, B>,
     dest_ty: Type<'ctx, B>,
@@ -769,7 +828,7 @@ fn fold_maybe_undesirable_cast<'ctx, B: ModuleBrand + 'ctx>(
             )
             .map(Some);
     }
-    constant_fold_cast_instruction(opcode, value, dest_ty)
+    constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
 }
 
 fn fold_constant_cast_pair_opcode<B: ModuleBrand>(
@@ -888,7 +947,24 @@ fn type_is_integer<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
 }
 
 /// Fold an integer or floating-point compare instruction.
+///
+/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// than `lhs`'s.
 pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: CmpPredicate,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's operands, admitted against `lhs`'s module.
+    rhs.slot_in(lhs.module.id())?;
+    constant_fold_compare_instruction_trusting_same_module(predicate, lhs, rhs)
+}
+
+/// [`constant_fold_compare_instruction`] for operands of one module.
+pub(crate) fn constant_fold_compare_instruction_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     predicate: CmpPredicate,
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
@@ -948,7 +1024,8 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
 
     if lhs.ty().data().as_vector().is_some()
         && let (Some(lhs_splat), Some(rhs_splat)) = (lhs.splat_value(false), rhs.splat_value(false))
-        && let Some(folded) = constant_fold_compare_instruction(predicate, lhs_splat, rhs_splat)?
+        && let Some(folded) =
+            constant_fold_compare_instruction_trusting_same_module(predicate, lhs_splat, rhs_splat)?
     {
         return vector_splat_constant(result_ty, folded);
     }
@@ -971,8 +1048,11 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
         }
         let mut result = Vec::with_capacity(lane_count);
         for (lhs_element, rhs_element) in lhs_elements.into_iter().zip(rhs_elements) {
-            let Some(folded) =
-                constant_fold_compare_instruction(predicate, lhs_element, rhs_element)?
+            let Some(folded) = constant_fold_compare_instruction_trusting_same_module(
+                predicate,
+                lhs_element,
+                rhs_element,
+            )?
             else {
                 return Ok(None);
             };
@@ -1006,7 +1086,7 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
             if (lhs_is_not_expr && rhs_is_expr)
                 || (constant_is_null_value(lhs) && !constant_is_null_value(rhs))
             {
-                return constant_fold_compare_instruction(
+                return constant_fold_compare_instruction_trusting_same_module(
                     CmpPredicate::Int(swapped_int_predicate(pred)),
                     rhs,
                     lhs,
@@ -1387,7 +1467,23 @@ fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynB
 }
 
 /// Fold a `select` with constant condition/arms.
+///
+/// Errors with [`IrError::ForeignValueId`] if either arm belongs to a module
+/// other than `condition`'s.
 pub fn constant_fold_select_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    condition: Constant<'ctx, B>,
+    true_value: Constant<'ctx, B>,
+    false_value: Constant<'ctx, B>,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's arms, admitted against `condition`'s module.
+    let owner = condition.module.id();
+    true_value.slot_in(owner)?;
+    false_value.slot_in(owner)?;
+    constant_fold_select_instruction_trusting_same_module(condition, true_value, false_value)
+}
+
+/// [`constant_fold_select_instruction`] for operands of one module.
+pub(crate) fn constant_fold_select_instruction_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     condition: Constant<'ctx, B>,
     true_value: Constant<'ctx, B>,
     false_value: Constant<'ctx, B>,
@@ -1502,7 +1598,23 @@ pub fn constant_fold_select_instruction<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold an `extractelement` with constant vector and index operands.
+///
+/// Errors with [`IrError::ForeignValueId`] if `index` belongs to a module other
+/// than `vector`'s.
 pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    vector: Constant<'ctx, B>,
+    index: Constant<'ctx, B>,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's index, admitted against `vector`'s module.
+    index.slot_in(vector.module.id())?;
+    constant_fold_extract_element_instruction_trusting_same_module(vector, index)
+}
+
+/// [`constant_fold_extract_element_instruction`] for operands of one module.
+pub(crate) fn constant_fold_extract_element_instruction_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     vector: Constant<'ctx, B>,
     index: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
@@ -1549,10 +1661,11 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
                         return Ok(None);
                     };
                     let operand = if operand.ty().data().as_vector().is_some() {
-                        let Some(scalar) = constant_fold_extract_element_instruction(
-                            operand,
-                            index_constant.as_constant(),
-                        )?
+                        let Some(scalar) =
+                            constant_fold_extract_element_instruction_trusting_same_module(
+                                operand,
+                                index_constant.as_constant(),
+                            )?
                         else {
                             return Ok(None);
                         };
@@ -1627,7 +1740,27 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold an `insertelement` with constant operands.
+///
+/// Errors with [`IrError::ForeignValueId`] if `value` or `index` belongs to a
+/// module other than `vector`'s.
 pub fn constant_fold_insert_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    vector: Constant<'ctx, B>,
+    value: Constant<'ctx, B>,
+    index: Constant<'ctx, B>,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's element and index, admitted against `vector`'s
+    // module.
+    let owner = vector.module.id();
+    value.slot_in(owner)?;
+    index.slot_in(owner)?;
+    constant_fold_insert_element_instruction_trusting_same_module(vector, value, index)
+}
+
+/// [`constant_fold_insert_element_instruction`] for operands of one module.
+pub(crate) fn constant_fold_insert_element_instruction_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     vector: Constant<'ctx, B>,
     value: Constant<'ctx, B>,
     index: Constant<'ctx, B>,
@@ -1669,7 +1802,24 @@ pub fn constant_fold_insert_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold a `shufflevector` with constant operands.
+///
+/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// than `lhs`'s.
 pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    mask: &[ShuffleMaskElem],
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's operands, admitted against `lhs`'s module.
+    rhs.slot_in(lhs.module.id())?;
+    constant_fold_shuffle_vector_instruction_trusting_same_module(lhs, rhs, mask)
+}
+
+/// [`constant_fold_shuffle_vector_instruction`] for operands of one module.
+pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
     mask: &[ShuffleMaskElem],
@@ -1703,7 +1853,8 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
             .i32_type()
             .const_zero()
             .as_constant();
-        if let Some(element) = constant_fold_extract_element_instruction(lhs, index)?
+        if let Some(element) =
+            constant_fold_extract_element_instruction_trusting_same_module(lhs, index)?
             && (!scalable || constant_is_null_value(element) || is_undef_or_poison(element))
         {
             return vector_splat_constant(result_ty, element);
@@ -1804,7 +1955,25 @@ pub fn constant_fold_extract_value_instruction<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold an `insertvalue` with constant operands.
+///
+/// Errors with [`IrError::ForeignValueId`] if `value` belongs to a module
+/// other than `aggregate`'s.
 pub fn constant_fold_insert_value_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    aggregate: Constant<'ctx, B>,
+    value: Constant<'ctx, B>,
+    indices: &[u32],
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's inserted value, admitted against `aggregate`'s
+    // module.
+    value.slot_in(aggregate.module.id())?;
+    constant_fold_insert_value_instruction_trusting_same_module(aggregate, value, indices)
+}
+
+/// [`constant_fold_insert_value_instruction`] for operands of one module.
+pub(crate) fn constant_fold_insert_value_instruction_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     aggregate: Constant<'ctx, B>,
     value: Constant<'ctx, B>,
     indices: &[u32],
@@ -1821,7 +1990,8 @@ pub fn constant_fold_insert_value_instruction<'ctx, B: ModuleBrand + 'ctx>(
     let Some(current) = elements.get(index).copied() else {
         return Ok(None);
     };
-    let Some(updated) = constant_fold_insert_value_instruction(current, value, &indices[1..])?
+    let Some(updated) =
+        constant_fold_insert_value_instruction_trusting_same_module(current, value, &indices[1..])?
     else {
         return Ok(None);
     };
@@ -1831,7 +2001,28 @@ pub fn constant_fold_insert_value_instruction<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold a `getelementptr` with constant operands.
+///
+/// Errors with [`IrError::ForeignType`] if `source_ty`, or
+/// [`IrError::ForeignValueId`] if an index, belongs to a module other than
+/// `pointer`'s.
 pub fn constant_fold_get_element_ptr<'ctx, B: ModuleBrand + 'ctx>(
+    source_ty: Type<'ctx, B>,
+    pointer: Constant<'ctx, B>,
+    indices: &[Constant<'ctx, B>],
+    in_range: Option<&ConstantExprInRange>,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's source type and indices, admitted against
+    // `pointer`'s module.
+    let owner = pointer.module.id();
+    source_ty.slot_in(owner)?;
+    for index in indices {
+        index.slot_in(owner)?;
+    }
+    constant_fold_get_element_ptr_trusting_same_module(source_ty, pointer, indices, in_range)
+}
+
+/// [`constant_fold_get_element_ptr`] for operands of one module.
+pub(crate) fn constant_fold_get_element_ptr_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     _source_ty: Type<'ctx, B>,
     pointer: Constant<'ctx, B>,
     indices: &[Constant<'ctx, B>],
@@ -2783,7 +2974,9 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx>(
             return Ok(None);
         };
         let index = i32_ty.const_int(index).as_constant();
-        if let Some(folded) = constant_fold_extract_element_instruction(vector, index)? {
+        if let Some(folded) =
+            constant_fold_extract_element_instruction_trusting_same_module(vector, index)?
+        {
             elements.push(folded);
         } else {
             let expr = vector.as_erased().module().core_ref().constant_expr(

@@ -233,6 +233,20 @@ cut, entries accumulate under **Unreleased**.
   and module-less, so a type-carrying attribute (`byval`, `sret`, `range`,
   …) still cannot refuse a type of another module; its conversion is marked
   for the task that makes it fallible.
+- **Fixed (llvmkit-ir):** the public constant folds accepted handles of two
+  modules in one call. Each fold reads every handle through its own module
+  and builds in its first handle's, so a mixed call returned `Ok` — a
+  declined fold or a result mixing the two modules;
+  `constant_fold_insert_value_instruction` with no indices returns its
+  inserted value unread, so it handed the foreign value back. Every public entry that takes more than one handle
+  now admits each later one against its first handle's module before
+  reading anything, and returns `ForeignValueId` or `ForeignType`: the
+  multi-handle `constant_fold_*` functions of `constant_fold` and
+  `constant_folding`, `lossless_inv_cast` (and so `lossless_unsigned_trunc`
+  and `lossless_signed_trunc`), and every multi-handle `ConstantFolder`
+  hook. Signatures are unchanged. Crate code that already holds operands of
+  one module calls crate-private `_trusting_same_module` cores, so each
+  public entry's check is the only one on its path.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type

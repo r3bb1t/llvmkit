@@ -135,6 +135,12 @@ fn not_refused_as_expected(
         .collect()
 }
 
+/// An outcome with its success value dropped, so entries returning different
+/// values can share one `not_refused_as_expected` list.
+fn without_value<T>(outcome: Result<T, IrError>) -> Result<(), IrError> {
+    outcome.map(|_| ())
+}
+
 /// The labels of the outcomes that are not a `ForeignType` refusal, so one
 /// assertion names every entry that let a foreign type through.
 fn not_refused(outcomes: Vec<(&'static str, Result<(), IrError>)>) -> Vec<String> {
@@ -2043,5 +2049,494 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
         format!("{home}"),
         before,
         "a rejected setter must not mutate"
+    );
+}
+
+/// Every public constant-fold entry that takes more than one handle refuses a
+/// later one minted by another module before it reads either: the
+/// target-independent folds of `constant_fold`, the `DataLayout`-aware folds
+/// of `constant_folding`, and `lossless_inv_cast` with its two truncation
+/// forwarders. Each fold builds in its first handle's module, so the foreign
+/// handle is always a later argument.
+///
+/// No upstream counterpart: `llvm/lib/IR/ConstantFold.cpp` and
+/// `llvm/lib/Analysis/ConstantFolding.cpp` take `Constant *` operands and
+/// `Type *`s uniqued per `LLVMContext`.
+#[test]
+fn a_constant_fold_rejects_an_operand_or_type_from_another_module() {
+    use llvmkit_ir::constant_folding::constant_fold_call;
+    use llvmkit_ir::{
+        ApInt, BinaryIntrinsic, BinaryOpcode, CmpPredicate, DataLayout, DenormalMode,
+        FastMathFlags, FoldNonDeterminism, IntPredicate, LibFunc, Signedness, TargetLibraryInfo,
+        constant_fold_binary_instruction, constant_fold_binary_intrinsic,
+        constant_fold_binary_op_operands, constant_fold_cast_instruction,
+        constant_fold_cast_operand, constant_fold_compare_inst_operands,
+        constant_fold_compare_instruction, constant_fold_extract_element_instruction,
+        constant_fold_fp_inst_operands, constant_fold_get_element_ptr,
+        constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
+        constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_const,
+        constant_fold_load_from_const_ptr, constant_fold_load_from_uniform_value,
+        constant_fold_load_through_bitcast, constant_fold_select_instruction,
+        constant_fold_shuffle_vector_instruction, lossless_inv_cast, lossless_signed_trunc,
+        lossless_unsigned_trunc,
+    };
+
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let one = home.i32_type().const_int(1i32).as_constant();
+    let two = foreign.i32_type().const_int(2i32).as_constant();
+    let null = home.ptr_type(0).const_null().as_constant();
+    let home_i32 = home.i32_type().as_type();
+    let foreign_i32 = foreign.i32_type().as_type();
+    let foreign_i64 = foreign.i64_type().as_type();
+    let foreign_i8 = foreign.i8_type().as_type();
+    let home_double = home.f64_type().const_double(4.0).as_constant();
+    let foreign_double = foreign.f64_type().const_double(4.0).as_constant();
+    let (f, _) = function_with_an_add(&home, "f");
+    let add = home
+        .view(f)
+        .entry_block()
+        .expect("entry")
+        .instructions()
+        .next()
+        .expect("add");
+    let dl = DataLayout::default();
+    let tli = TargetLibraryInfo::default();
+    let equal: CmpPredicate = IntPredicate::Eq.into();
+    let before = (format!("{home}"), format!("{foreign}"));
+
+    let outcomes = vec![
+        (
+            "constant_fold_binary_instruction",
+            IrError::ForeignValueId,
+            without_value(constant_fold_binary_instruction(
+                BinaryOpcode::Add,
+                one,
+                two,
+            )),
+        ),
+        (
+            "constant_fold_cast_instruction",
+            IrError::ForeignType,
+            without_value(constant_fold_cast_instruction(
+                CastOpcode::Zext,
+                one,
+                foreign_i64,
+            )),
+        ),
+        (
+            "constant_fold_compare_instruction",
+            IrError::ForeignValueId,
+            without_value(constant_fold_compare_instruction(equal, one, two)),
+        ),
+        (
+            "constant_fold_select_instruction",
+            IrError::ForeignValueId,
+            without_value(constant_fold_select_instruction(one, two, one)),
+        ),
+        (
+            "constant_fold_extract_element_instruction",
+            IrError::ForeignValueId,
+            without_value(constant_fold_extract_element_instruction(one, two)),
+        ),
+        (
+            "constant_fold_insert_element_instruction",
+            IrError::ForeignValueId,
+            without_value(constant_fold_insert_element_instruction(one, one, two)),
+        ),
+        (
+            "constant_fold_shuffle_vector_instruction",
+            IrError::ForeignValueId,
+            without_value(constant_fold_shuffle_vector_instruction(one, two, &[])),
+        ),
+        (
+            "constant_fold_insert_value_instruction",
+            IrError::ForeignValueId,
+            without_value(constant_fold_insert_value_instruction(one, two, &[])),
+        ),
+        (
+            "constant_fold_get_element_ptr (source type)",
+            IrError::ForeignType,
+            without_value(constant_fold_get_element_ptr(
+                foreign_i32,
+                null,
+                &[one],
+                None,
+            )),
+        ),
+        (
+            "constant_fold_get_element_ptr (index)",
+            IrError::ForeignValueId,
+            without_value(constant_fold_get_element_ptr(home_i32, null, &[two], None)),
+        ),
+        (
+            "constant_fold_load_from_const_ptr",
+            IrError::ForeignType,
+            without_value(constant_fold_load_from_const_ptr(
+                null,
+                foreign_i32,
+                ApInt::zero(64),
+                &dl,
+            )),
+        ),
+        (
+            "constant_fold_load_from_const",
+            IrError::ForeignType,
+            without_value(constant_fold_load_from_const(
+                one,
+                foreign_i32,
+                ApInt::zero(64),
+                &dl,
+            )),
+        ),
+        (
+            "constant_fold_load_from_uniform_value",
+            IrError::ForeignType,
+            without_value(constant_fold_load_from_uniform_value(one, foreign_i32, &dl)),
+        ),
+        (
+            "constant_fold_cast_operand",
+            IrError::ForeignType,
+            without_value(constant_fold_cast_operand(
+                CastOpcode::Zext,
+                one,
+                foreign_i64,
+                &dl,
+            )),
+        ),
+        (
+            "constant_fold_integer_cast",
+            IrError::ForeignType,
+            without_value(constant_fold_integer_cast(
+                one,
+                foreign_i64,
+                Signedness::Signed,
+                &dl,
+            )),
+        ),
+        (
+            "constant_fold_inst_operands",
+            IrError::ForeignValueId,
+            without_value(constant_fold_inst_operands(
+                &add,
+                &[two, one],
+                &dl,
+                None,
+                FoldNonDeterminism::Allow,
+            )),
+        ),
+        (
+            "constant_fold_compare_inst_operands",
+            IrError::ForeignValueId,
+            without_value(constant_fold_compare_inst_operands(
+                equal, one, two, &dl, None,
+            )),
+        ),
+        (
+            "constant_fold_binary_op_operands",
+            IrError::ForeignValueId,
+            without_value(constant_fold_binary_op_operands(
+                BinaryOpcode::Add,
+                one,
+                two,
+                &dl,
+            )),
+        ),
+        (
+            "constant_fold_fp_inst_operands",
+            IrError::ForeignValueId,
+            without_value(constant_fold_fp_inst_operands(
+                BinaryOpcode::Fadd,
+                home_double,
+                foreign_double,
+                &dl,
+                DenormalMode::default(),
+                FastMathFlags::default(),
+                FoldNonDeterminism::Allow,
+            )),
+        ),
+        (
+            "constant_fold_binary_intrinsic (operand)",
+            IrError::ForeignValueId,
+            without_value(constant_fold_binary_intrinsic(
+                BinaryIntrinsic::Umax,
+                one,
+                two,
+                home_i32,
+                &dl,
+            )),
+        ),
+        (
+            "constant_fold_binary_intrinsic (type)",
+            IrError::ForeignType,
+            without_value(constant_fold_binary_intrinsic(
+                BinaryIntrinsic::Umax,
+                one,
+                one,
+                foreign_i32,
+                &dl,
+            )),
+        ),
+        (
+            "constant_fold_load_through_bitcast",
+            IrError::ForeignType,
+            without_value(constant_fold_load_through_bitcast(one, foreign_i32, &dl)),
+        ),
+        (
+            "constant_fold_call",
+            IrError::ForeignValueId,
+            without_value(constant_fold_call(
+                LibFunc::Sqrt,
+                &[foreign_double],
+                home.f64_type().as_type(),
+                &tli,
+                FoldNonDeterminism::Allow,
+            )),
+        ),
+        // A narrower type, so an ungated call folds the truncation instead
+        // of reaching `constant_expr`'s gate with an invalid one.
+        (
+            "lossless_inv_cast",
+            IrError::ForeignType,
+            without_value(lossless_inv_cast(one, foreign_i8, CastOpcode::Zext, &dl)),
+        ),
+        (
+            "lossless_unsigned_trunc",
+            IrError::ForeignType,
+            without_value(lossless_unsigned_trunc(one, foreign_i8, &dl)),
+        ),
+        (
+            "lossless_signed_trunc",
+            IrError::ForeignType,
+            without_value(lossless_signed_trunc(one, foreign_i8, &dl)),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        (format!("{home}"), format!("{foreign}")),
+        before,
+        "a rejected fold must not mutate"
+    );
+}
+
+/// Every `ConstantFolder` hook that takes more than one handle refuses a later
+/// one minted by another module before it reads either, so a direct call
+/// cannot pair two modules' values or types. The foreign handle is a
+/// parameter, which no fold can fold: an ungated hook declines with `Ok(None)`
+/// rather than reaching a module constructor that would refuse it for the
+/// hook.
+///
+/// No upstream counterpart: `llvm/include/llvm/IR/ConstantFolder.h` takes
+/// `Value *` operands and `Type *`s uniqued per `LLVMContext`.
+#[test]
+fn the_constant_folder_rejects_an_operand_or_type_from_another_module() {
+    use llvmkit_ir::{
+        BinaryIntrinsic, BinaryOpcode, CmpPredicate, ConstantFolder, ExactFlags, FastMathFlags,
+        FloatPredicate, IntPredicate, IrBuilderFolder, OverflowFlags,
+    };
+
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let (_, [h_i32, h_i64, h_f32, _, h_ptr]) = builder_with_parameters(&home, "f");
+    let (_, [f_i32, f_i64, f_f32, _, _]) = builder_with_parameters(&foreign, "g");
+    let h_int: IntValue<'_, i32, DynBrand> = h_i32.try_into().expect("an i32");
+    let f_int: IntValue<'_, i32, DynBrand> = f_i32.try_into().expect("an i32");
+    let h_float: FloatValue<'_, f32, DynBrand> = h_f32.try_into().expect("a float");
+    let f_float: FloatValue<'_, f32, DynBrand> = f_f32.try_into().expect("a float");
+    let null = home.ptr_type(0).const_null().as_constant();
+    let home_i32 = home.i32_type().as_type();
+    let foreign_i32 = foreign.i32_type().as_type();
+    let foreign_i64 = foreign.i64_type().as_type();
+    let foreign_float = foreign.f32_type().as_type();
+    let equal: CmpPredicate = IntPredicate::Eq.into();
+    let folder = ConstantFolder;
+    let before = (format!("{home}"), format!("{foreign}"));
+
+    let outcomes = vec![
+        (
+            "fold_bin_op_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_bin_op_dyn(BinaryOpcode::Add, h_i32, f_i32)),
+        ),
+        (
+            "fold_exact_bin_op_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_exact_bin_op_dyn(
+                BinaryOpcode::Udiv,
+                h_i32,
+                f_i32,
+                ExactFlags::default(),
+            )),
+        ),
+        (
+            "fold_no_wrap_bin_op_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_no_wrap_bin_op_dyn(
+                BinaryOpcode::Add,
+                h_i32,
+                f_i32,
+                OverflowFlags::default(),
+            )),
+        ),
+        (
+            "fold_bin_op_fmf_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_bin_op_fmf_dyn(
+                BinaryOpcode::Fadd,
+                h_f32,
+                f_f32,
+                FastMathFlags::default(),
+            )),
+        ),
+        (
+            "fold_cmp_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_cmp_dyn(equal, h_i32, f_i32)),
+        ),
+        (
+            "fold_gep_dyn (source type)",
+            IrError::ForeignType,
+            without_value(folder.fold_gep_dyn(
+                foreign_i32,
+                h_ptr,
+                &[h_i64],
+                GepNoWrapFlags::default(),
+            )),
+        ),
+        (
+            "fold_gep_dyn (index)",
+            IrError::ForeignValueId,
+            without_value(folder.fold_gep_dyn(
+                home_i32,
+                h_ptr,
+                &[f_i64],
+                GepNoWrapFlags::default(),
+            )),
+        ),
+        (
+            "fold_select_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_select_dyn(h_i32, f_i32, h_i32)),
+        ),
+        (
+            "fold_insert_value_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_insert_value_dyn(h_i32, f_i32, &[0])),
+        ),
+        (
+            "fold_extract_element_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_extract_element_dyn(h_i32, f_i32)),
+        ),
+        (
+            "fold_insert_element_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_insert_element_dyn(h_i32, f_i32, h_i32)),
+        ),
+        (
+            "fold_shuffle_vector_dyn",
+            IrError::ForeignValueId,
+            without_value(folder.fold_shuffle_vector_dyn(h_i32, f_i32, &[])),
+        ),
+        (
+            "fold_cast_dyn",
+            IrError::ForeignType,
+            without_value(folder.fold_cast_dyn(CastOpcode::Zext, h_i32, foreign_i64)),
+        ),
+        (
+            "fold_binary_intrinsic_dyn (operand)",
+            IrError::ForeignValueId,
+            without_value(folder.fold_binary_intrinsic_dyn(
+                BinaryIntrinsic::Umax,
+                h_i32,
+                f_i32,
+                home_i32,
+            )),
+        ),
+        (
+            "fold_binary_intrinsic_dyn (type)",
+            IrError::ForeignType,
+            without_value(folder.fold_binary_intrinsic_dyn(
+                BinaryIntrinsic::Umax,
+                h_i32,
+                h_i32,
+                foreign_i32,
+            )),
+        ),
+        // A non-pointer destination, so an ungated hook fails its own
+        // pointer-cast check rather than reaching `constant_expr`'s gate.
+        (
+            "create_pointer_cast",
+            IrError::ForeignType,
+            without_value(folder.create_pointer_cast(null, foreign_float)),
+        ),
+        (
+            "create_pointer_bitcast_or_addrspace_cast",
+            IrError::ForeignType,
+            without_value(folder.create_pointer_bitcast_or_addrspace_cast(null, foreign_float)),
+        ),
+        (
+            "fold_int_bin_op",
+            IrError::ForeignValueId,
+            without_value(folder.fold_int_bin_op(BinaryOpcode::Add, h_int, f_int)),
+        ),
+        (
+            "fold_int_bin_op_no_wrap",
+            IrError::ForeignValueId,
+            without_value(folder.fold_int_bin_op_no_wrap(
+                BinaryOpcode::Add,
+                h_int,
+                f_int,
+                OverflowFlags::default(),
+            )),
+        ),
+        (
+            "fold_int_bin_op_exact",
+            IrError::ForeignValueId,
+            without_value(folder.fold_int_bin_op_exact(
+                BinaryOpcode::Udiv,
+                h_int,
+                f_int,
+                ExactFlags::default(),
+            )),
+        ),
+        (
+            "fold_fp_bin_op",
+            IrError::ForeignValueId,
+            without_value(folder.fold_fp_bin_op(
+                BinaryOpcode::Fadd,
+                h_float,
+                f_float,
+                FastMathFlags::default(),
+            )),
+        ),
+        (
+            "fold_int_cmp",
+            IrError::ForeignValueId,
+            without_value(folder.fold_int_cmp(IntPredicate::Eq, h_int, f_int)),
+        ),
+        (
+            "fold_fp_cmp",
+            IrError::ForeignValueId,
+            without_value(folder.fold_fp_cmp(FloatPredicate::Oeq, h_float, f_float)),
+        ),
+        (
+            "fold_cast_to_int",
+            IrError::ForeignType,
+            without_value(folder.fold_cast_to_int(CastOpcode::Trunc, h_i64, foreign.i32_type())),
+        ),
+        (
+            "fold_cast_to_fp",
+            IrError::ForeignType,
+            without_value(folder.fold_cast_to_fp(CastOpcode::FpExt, h_f32, foreign.f64_type())),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        (format!("{home}"), format!("{foreign}")),
+        before,
+        "a rejected fold must not mutate"
     );
 }

@@ -30,9 +30,12 @@ use super::constant::{
     ForwardRefValue, IntoConstantValue, IsConstant,
 };
 use super::constant_fold::{
-    constant_fold_binary_instruction, constant_fold_cast_instruction,
-    constant_fold_extract_element_instruction, constant_fold_get_element_ptr,
-    constant_fold_insert_element_instruction, constant_fold_shuffle_vector_instruction,
+    constant_fold_binary_instruction_trusting_same_module,
+    constant_fold_cast_instruction_trusting_same_module,
+    constant_fold_extract_element_instruction_trusting_same_module,
+    constant_fold_get_element_ptr_trusting_same_module,
+    constant_fold_insert_element_instruction_trusting_same_module,
+    constant_fold_shuffle_vector_instruction_trusting_same_module,
     shufflevector_mask_from_constant,
 };
 use super::derived_types::{
@@ -1463,7 +1466,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
                 ConstantExprOpcode::Xor => BinaryOpcode::Xor,
                 _ => return Ok(None),
             };
-            constant_fold_binary_instruction(opcode, *lhs, *rhs)
+            constant_fold_binary_instruction_trusting_same_module(opcode, *lhs, *rhs)
         }
         ConstantExprOpcode::Trunc
         | ConstantExprOpcode::PtrToAddr
@@ -1483,7 +1486,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
                 ConstantExprOpcode::AddrSpaceCast => CastOpcode::AddrSpaceCast,
                 _ => return Ok(None),
             };
-            constant_fold_cast_instruction(opcode, *operand, result_ty)
+            constant_fold_cast_instruction_trusting_same_module(opcode, *operand, result_ty)
         }
         ConstantExprOpcode::GetElementPtr => {
             let Some(source_ty) = data
@@ -1499,19 +1502,19 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
                 ConstantExprFlags::Gep(flags) => flags.in_range(),
                 _ => None,
             };
-            constant_fold_get_element_ptr(source_ty, *base, indices, in_range)
+            constant_fold_get_element_ptr_trusting_same_module(source_ty, *base, indices, in_range)
         }
         ConstantExprOpcode::ExtractElement => {
             let [vector, index] = operands.as_slice() else {
                 return Ok(None);
             };
-            constant_fold_extract_element_instruction(*vector, *index)
+            constant_fold_extract_element_instruction_trusting_same_module(*vector, *index)
         }
         ConstantExprOpcode::InsertElement => {
             let [vector, element, index] = operands.as_slice() else {
                 return Ok(None);
             };
-            constant_fold_insert_element_instruction(*vector, *element, *index)
+            constant_fold_insert_element_instruction_trusting_same_module(*vector, *element, *index)
         }
         ConstantExprOpcode::ShuffleVector => {
             let [lhs, rhs, mask] = operands.as_slice() else {
@@ -1520,7 +1523,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
             let Some(mask) = shufflevector_mask_from_constant(*mask) else {
                 return Ok(None);
             };
-            constant_fold_shuffle_vector_instruction(*lhs, *rhs, &mask)
+            constant_fold_shuffle_vector_instruction_trusting_same_module(*lhs, *rhs, &mask)
         }
     }
 }

@@ -6,12 +6,16 @@
 //! `ConstantExpr` constructors for LLVM's desirable constant-expression groups.
 
 use super::constant_fold::{
-    constant_fold_binary_instruction, constant_fold_cast_instruction,
-    constant_fold_compare_instruction, constant_fold_extract_element_instruction,
-    constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
-    constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
-    constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
-    constant_fold_unary_instruction, gep_result_type,
+    constant_fold_binary_instruction_trusting_same_module,
+    constant_fold_cast_instruction_trusting_same_module,
+    constant_fold_compare_instruction_trusting_same_module,
+    constant_fold_extract_element_instruction_trusting_same_module,
+    constant_fold_extract_value_instruction, constant_fold_get_element_ptr_trusting_same_module,
+    constant_fold_insert_element_instruction_trusting_same_module,
+    constant_fold_insert_value_instruction_trusting_same_module,
+    constant_fold_select_instruction_trusting_same_module,
+    constant_fold_shuffle_vector_instruction_trusting_same_module, constant_fold_unary_instruction,
+    gep_result_type,
 };
 use super::folder::IrBuilderFolder;
 use super::{
@@ -24,10 +28,18 @@ use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::float_kind::FloatKind;
 use crate::instr_types::{ExactFlags, OverflowFlags};
 use crate::int_width::IntWidth;
-use crate::value::{FloatValue, IntValue};
+use crate::r#type::TypeSlotAccess;
+use crate::value::{FloatValue, IntValue, ValueSlotAccess};
 
 /// Default fold strategy: fold target-independent constant-on-constant
 /// operations and decline non-constant inputs.
+///
+/// Every hook that takes more than one handle refuses one minted by a module
+/// other than its first handle's — [`IrError::ForeignValueId`] for a value,
+/// [`IrError::ForeignType`] for a type — before it reads either, exactly as
+/// the free [`crate::constant_fold`] entries do (D7). A hook that forwards to
+/// another does so through a private helper rather than the other hook, so
+/// each hook's check is the only one on its path.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConstantFolder;
 
@@ -38,6 +50,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
         fold_binary(opcode, lhs, rhs, ConstantExprFlags::none())
     }
 
@@ -48,6 +62,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         rhs: Value<'ctx, B>,
         exact: ExactFlags,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
         fold_exact_binary(opcode, lhs, rhs, exact)
     }
 
@@ -58,12 +74,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         rhs: Value<'ctx, B>,
         flags: OverflowFlags,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        let flags = if matches!(opcode, BinaryOpcode::Add | BinaryOpcode::Sub) {
-            ConstantExprFlags::overflowing(flags.has_nuw(), flags.has_nsw())
-        } else {
-            ConstantExprFlags::none()
-        };
-        fold_binary(opcode, lhs, rhs, flags)
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
+        fold_no_wrap_binary(opcode, lhs, rhs, flags)
     }
 
     fn fold_bin_op_fmf_dyn(
@@ -73,7 +86,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         rhs: Value<'ctx, B>,
         _fmf: FastMathFlags,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        self.fold_bin_op_dyn(opcode, lhs, rhs)
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
+        fold_binary(opcode, lhs, rhs, ConstantExprFlags::none())
     }
 
     fn fold_un_op_fmf_dyn(
@@ -95,12 +110,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        let (lhs, rhs) = match constants2(lhs, rhs) {
-            Some(values) => values,
-            None => return Ok(None),
-        };
-        constant_fold_compare_instruction(predicate, lhs, rhs)
-            .map(|folded| folded.map(Constant::as_erased))
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
+        fold_compare(predicate, lhs, rhs)
     }
 
     fn fold_gep_dyn(
@@ -110,6 +122,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         indices: &[Value<'ctx, B>],
         no_wrap: GepNoWrapFlags,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's source type and indices, admitted against
+        // `ptr`'s module.
+        let owner = ptr.module.id();
+        source_ty.slot_in(owner)?;
+        for index in indices {
+            index.slot_in(owner)?;
+        }
         // Folding to a constant expression is only legal where
         // `ConstantExpr::isSupportedGetElementPtr` allows one.
         if source_ty.is_scalable() {
@@ -130,8 +149,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             operands.push(index.as_erased());
             index_constants.push(index);
         }
-        if let Some(folded) = constant_fold_get_element_ptr(source_ty, ptr, &index_constants, None)?
-        {
+        if let Some(folded) = constant_fold_get_element_ptr_trusting_same_module(
+            source_ty,
+            ptr,
+            &index_constants,
+            None,
+        )? {
             return Ok(Some(folded.as_erased()));
         }
         let result_ty = gep_result_type(ptr.ty(), &index_constants)?;
@@ -156,6 +179,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         true_value: Value<'ctx, B>,
         false_value: Value<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's arms, admitted against `cond`'s module.
+        let owner = cond.module.id();
+        true_value.slot_in(owner)?;
+        false_value.slot_in(owner)?;
         let cond = match Constant::try_from(cond) {
             Ok(cond) => cond,
             Err(_) => return Ok(None),
@@ -164,7 +191,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             Some(values) => values,
             None => return Ok(None),
         };
-        constant_fold_select_instruction(cond, true_value, false_value)
+        constant_fold_select_instruction_trusting_same_module(cond, true_value, false_value)
             .map(|folded| folded.map(Constant::as_erased))
     }
 
@@ -187,11 +214,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         value: Value<'ctx, B>,
         indices: &[u32],
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's inserted value, admitted against
+        // `aggregate`'s module.
+        value.slot_in(aggregate.module.id())?;
         let (aggregate, value) = match constants2(aggregate, value) {
             Some(values) => values,
             None => return Ok(None),
         };
-        constant_fold_insert_value_instruction(aggregate, value, indices)
+        constant_fold_insert_value_instruction_trusting_same_module(aggregate, value, indices)
             .map(|folded| folded.map(Constant::as_erased))
     }
 
@@ -200,11 +230,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         vector: Value<'ctx, B>,
         index: Value<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's index, admitted against `vector`'s module.
+        index.slot_in(vector.module.id())?;
         let (vector, index) = match constants2(vector, index) {
             Some(values) => values,
             None => return Ok(None),
         };
-        if let Some(folded) = constant_fold_extract_element_instruction(vector, index)? {
+        if let Some(folded) =
+            constant_fold_extract_element_instruction_trusting_same_module(vector, index)?
+        {
             return Ok(Some(folded.as_erased()));
         }
         let Some(result_ty) = vector_element_type(vector.ty()) else {
@@ -231,6 +265,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         new_element: Value<'ctx, B>,
         index: Value<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's element and index, admitted against
+        // `vector`'s module.
+        let owner = vector.module.id();
+        new_element.slot_in(owner)?;
+        index.slot_in(owner)?;
         let vector = match Constant::try_from(vector) {
             Ok(vector) => vector,
             Err(_) => return Ok(None),
@@ -243,8 +282,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             Ok(index) => index,
             Err(_) => return Ok(None),
         };
-        if let Some(folded) = constant_fold_insert_element_instruction(vector, new_element, index)?
-        {
+        if let Some(folded) = constant_fold_insert_element_instruction_trusting_same_module(
+            vector,
+            new_element,
+            index,
+        )? {
             return Ok(Some(folded.as_erased()));
         }
         vector
@@ -272,11 +314,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         rhs: Value<'ctx, B>,
         mask: &[ShuffleMaskElem],
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
         let (lhs, rhs) = match constants2(lhs, rhs) {
             Some(values) => values,
             None => return Ok(None),
         };
-        if let Some(folded) = constant_fold_shuffle_vector_instruction(lhs, rhs, mask)? {
+        if let Some(folded) =
+            constant_fold_shuffle_vector_instruction_trusting_same_module(lhs, rhs, mask)?
+        {
             return Ok(Some(folded.as_erased()));
         }
         let module: ModuleRef<'ctx, B> = lhs.as_erased().module().into();
@@ -310,40 +356,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         value: Value<'ctx, B>,
         dest_ty: Type<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        let value = match Constant::try_from(value) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        if opcode.is_desirable_constant_expr() {
-            let Some(expr_opcode) = cast_constant_expr_opcode(opcode) else {
-                return constant_fold_cast_instruction(opcode, value, dest_ty)
-                    .map(|folded| folded.map(Constant::as_erased));
-            };
-            return value
-                .as_erased()
-                .module()
-                .core_ref()
-                .constant_expr(
-                    dest_ty,
-                    expr_opcode,
-                    [value.as_erased()],
-                    [],
-                    [],
-                    ConstantExprFlags::none(),
-                )
-                .map(|folded| Some(folded.as_erased()));
-        }
-        constant_fold_cast_instruction(opcode, value, dest_ty)
-            .map(|folded| folded.map(Constant::as_erased))
+        // Boundary: the caller's destination type, admitted against `value`'s
+        // module.
+        dest_ty.slot_in(value.module.id())?;
+        fold_cast(opcode, value, dest_ty)
     }
 
     fn fold_binary_intrinsic_dyn(
         &self,
         _id: BinaryIntrinsic,
-        _lhs: Value<'ctx, B>,
-        _rhs: Value<'ctx, B>,
-        _ty: Type<'ctx, B>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
+        ty: Type<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's operand and type, admitted against `lhs`'s
+        // module, so a mixed call is refused rather than declined.
+        let owner = lhs.module.id();
+        rhs.slot_in(owner)?;
+        ty.slot_in(owner)?;
         // Mirrors ConstantFolder.h: use TargetFolder or InstSimplifyFolder instead.
         Ok(None)
     }
@@ -353,8 +383,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         value: Constant<'ctx, B>,
         dest_ty: Type<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's destination type, admitted against `value`'s
+        // module before either type is read.
+        dest_ty.slot_in(value.module.id())?;
         let opcode = pointer_cast_opcode(value.ty(), dest_ty)?;
-        self.fold_cast_dyn(opcode, value.as_erased(), dest_ty)
+        fold_cast(opcode, value.as_erased(), dest_ty)
     }
 
     fn create_pointer_bitcast_or_addrspace_cast(
@@ -362,8 +395,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         value: Constant<'ctx, B>,
         dest_ty: Type<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
+        // Boundary: the caller's destination type, admitted against `value`'s
+        // module before either type is read.
+        dest_ty.slot_in(value.module.id())?;
         let opcode = pointer_bitcast_or_addrspace_cast_opcode(value.ty(), dest_ty)?;
-        self.fold_cast_dyn(opcode, value.as_erased(), dest_ty)
+        fold_cast(opcode, value.as_erased(), dest_ty)
     }
 
     // ---- Typed hooks: native overrides over the erased hooks.
@@ -398,6 +434,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         lhs: IntValue<'ctx, W, B>,
         rhs: IntValue<'ctx, W, B>,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
         // Expected: constant_fold_binary_instruction pins its result to
         // lhs.ty() on every arm (and the ConstantExpr fallback passes lhs.ty()
         // explicitly), so `narrow` should always succeed here. It is checked
@@ -408,9 +446,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         // documented split (`int_width.rs`), inherited from the per-marker
         // `TryFrom<Value>` impls, and the same split the builder's
         // `accept_folded_int` reports for the same drift.
-        self.fold_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased())?
-            .map(W::narrow)
-            .transpose()
+        fold_binary(
+            opcode,
+            lhs.as_erased(),
+            rhs.as_erased(),
+            ConstantExprFlags::none(),
+        )?
+        .map(W::narrow)
+        .transpose()
     }
 
     fn fold_int_bin_op_no_wrap<W: IntWidth>(
@@ -420,10 +463,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         rhs: IntValue<'ctx, W, B>,
         flags: OverflowFlags,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
-        // Expected: fold_no_wrap_bin_op_dyn funnels into the same
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
+        // Expected: fold_no_wrap_binary funnels into the same
         // lhs.ty()-pinned fold_binary path as fold_bin_op_dyn. Checked, per
-        // the note on that hook.
-        self.fold_no_wrap_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased(), flags)?
+        // the note on fold_int_bin_op.
+        fold_no_wrap_binary(opcode, lhs.as_erased(), rhs.as_erased(), flags)?
             .map(W::narrow)
             .transpose()
     }
@@ -435,10 +480,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         rhs: IntValue<'ctx, W, B>,
         exact: ExactFlags,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
-        // Expected: fold_exact_bin_op_dyn -> fold_exact_binary ->
-        // fold_binary_constants, the same lhs.ty()-pinned path. Checked, per
-        // the note on fold_int_bin_op.
-        self.fold_exact_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased(), exact)?
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
+        // Expected: fold_exact_binary -> fold_binary_constants, the same
+        // lhs.ty()-pinned path. Checked, per the note on fold_int_bin_op.
+        fold_exact_binary(opcode, lhs.as_erased(), rhs.as_erased(), exact)?
             .map(W::narrow)
             .transpose()
     }
@@ -448,15 +494,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         opcode: BinaryOpcode,
         lhs: FloatValue<'ctx, K, B>,
         rhs: FloatValue<'ctx, K, B>,
-        fmf: FastMathFlags,
+        _fmf: FastMathFlags,
     ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
-        // Expected: fold_bin_op_fmf_dyn ignores fmf and delegates to
-        // fold_bin_op_dyn (ConstantFolder.h: FoldBinOpFMF drops the flags for
-        // the default folder), so lhs.ty() is preserved transitively.
-        // Checked, per the note on fold_int_bin_op.
-        self.fold_bin_op_fmf_dyn(opcode, lhs.as_erased(), rhs.as_erased(), fmf)?
-            .map(K::narrow)
-            .transpose()
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
+        // Expected: the flags are dropped, as fold_bin_op_fmf_dyn drops them
+        // (ConstantFolder.h: FoldBinOpFMF drops the flags for the default
+        // folder), and fold_binary preserves lhs.ty(). Checked, per the note
+        // on fold_int_bin_op.
+        fold_binary(
+            opcode,
+            lhs.as_erased(),
+            rhs.as_erased(),
+            ConstantExprFlags::none(),
+        )?
+        .map(K::narrow)
+        .transpose()
     }
 
     fn fold_fp_un_op<K: FloatKind>(
@@ -479,13 +532,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         lhs: IntValue<'ctx, W, B>,
         rhs: IntValue<'ctx, W, B>,
     ) -> IrResult<Option<IntValue<'ctx, bool, B>>> {
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
         // Expected: constant_fold_compare_instruction computes result_ty =
         // compare_result_type(lhs.ty()) once lhs.ty() == rhs.ty() holds, which
         // maps a scalar operand type to scalar i1 (only the vector-operand
         // branch yields `<N x i1>`, and IntValue's IntWidth marker is
         // scalar-only -- IntoIntValue rejects integer vectors). Narrowing to
         // the `bool` marker checks exactly that: the result really is i1.
-        self.fold_cmp_dyn(predicate.into(), lhs.as_erased(), rhs.as_erased())?
+        fold_compare(predicate.into(), lhs.as_erased(), rhs.as_erased())?
             .map(<bool as IntWidth>::narrow)
             .transpose()
     }
@@ -496,11 +551,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         lhs: FloatValue<'ctx, K, B>,
         rhs: FloatValue<'ctx, K, B>,
     ) -> IrResult<Option<IntValue<'ctx, bool, B>>> {
+        // Boundary: the caller's operands, admitted against `lhs`'s module.
+        rhs.slot_in(lhs.module.id())?;
         // Expected: same constant_fold_compare_instruction path as
         // fold_int_cmp above; FloatValue's FloatKind marker is likewise
         // scalar-only, so the scalar result_ty == i1 argument applies
         // identically for float predicates. Checked the same way.
-        self.fold_cmp_dyn(predicate.into(), lhs.as_erased(), rhs.as_erased())?
+        fold_compare(predicate.into(), lhs.as_erased(), rhs.as_erased())?
             .map(<bool as IntWidth>::narrow)
             .transpose()
     }
@@ -511,11 +568,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         value: Value<'ctx, B>,
         dest_ty: IntType<'ctx, W, B>,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+        // Boundary: the caller's destination type, admitted against `value`'s
+        // module.
+        dest_ty.slot_in(value.module.id())?;
         // Expected: constant_fold_cast_instruction builds every result at
         // exactly `dest_ty`, and the desirable-ConstantExpr fallback in
-        // fold_cast_dyn is explicitly dest_ty-typed too. Checked, per the
-        // note on fold_int_bin_op.
-        self.fold_cast_dyn(opcode, value, dest_ty.as_type())?
+        // fold_cast is explicitly dest_ty-typed too. Checked, per the note on
+        // fold_int_bin_op.
+        fold_cast(opcode, value, dest_ty.as_type())?
             .map(W::narrow)
             .transpose()
     }
@@ -526,14 +586,80 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         value: Value<'ctx, B>,
         dest_ty: FloatType<'ctx, K, B>,
     ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
-        // Expected: same constant_fold_cast_instruction / fold_cast_dyn
+        // Boundary: the caller's destination type, admitted against `value`'s
+        // module.
+        dest_ty.slot_in(value.module.id())?;
+        // Expected: same constant_fold_cast_instruction / fold_cast
         // dest_ty-pinning argument as fold_cast_to_int above, for the
         // float-destination opcodes (FpTrunc/FpExt/UiToFp/SiToFp/BitCast).
         // Checked the same way.
-        self.fold_cast_dyn(opcode, value, dest_ty.as_type())?
+        fold_cast(opcode, value, dest_ty.as_type())?
             .map(K::narrow)
             .transpose()
     }
+}
+
+/// `fold_no_wrap_bin_op_dyn`'s body, for operands of one module: only `add`
+/// and `sub` carry their wrap flags onto a constant expression.
+fn fold_no_wrap_binary<'ctx, B: ModuleBrand + 'ctx>(
+    opcode: BinaryOpcode,
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    flags: OverflowFlags,
+) -> IrResult<Option<Value<'ctx, B>>> {
+    let flags = if matches!(opcode, BinaryOpcode::Add | BinaryOpcode::Sub) {
+        ConstantExprFlags::overflowing(flags.has_nuw(), flags.has_nsw())
+    } else {
+        ConstantExprFlags::none()
+    };
+    fold_binary(opcode, lhs, rhs, flags)
+}
+
+/// `fold_cmp_dyn`'s body, for operands of one module.
+fn fold_compare<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: CmpPredicate,
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+) -> IrResult<Option<Value<'ctx, B>>> {
+    let (lhs, rhs) = match constants2(lhs, rhs) {
+        Some(values) => values,
+        None => return Ok(None),
+    };
+    constant_fold_compare_instruction_trusting_same_module(predicate, lhs, rhs)
+        .map(|folded| folded.map(Constant::as_erased))
+}
+
+/// `fold_cast_dyn`'s body, for a value and destination type of one module.
+fn fold_cast<'ctx, B: ModuleBrand + 'ctx>(
+    opcode: CastOpcode,
+    value: Value<'ctx, B>,
+    dest_ty: Type<'ctx, B>,
+) -> IrResult<Option<Value<'ctx, B>>> {
+    let value = match Constant::try_from(value) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    if opcode.is_desirable_constant_expr() {
+        let Some(expr_opcode) = cast_constant_expr_opcode(opcode) else {
+            return constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
+                .map(|folded| folded.map(Constant::as_erased));
+        };
+        return value
+            .as_erased()
+            .module()
+            .core_ref()
+            .constant_expr(
+                dest_ty,
+                expr_opcode,
+                [value.as_erased()],
+                [],
+                [],
+                ConstantExprFlags::none(),
+            )
+            .map(|folded| Some(folded.as_erased()));
+    }
+    constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
+        .map(|folded| folded.map(Constant::as_erased))
 }
 
 fn fold_binary<'ctx, B: ModuleBrand + 'ctx>(
@@ -573,7 +699,8 @@ fn fold_binary_constants<'ctx, B: ModuleBrand + 'ctx>(
             )
             .map(|folded| Some(folded.as_erased()));
     }
-    constant_fold_binary_instruction(opcode, lhs, rhs).map(|folded| folded.map(Constant::as_erased))
+    constant_fold_binary_instruction_trusting_same_module(opcode, lhs, rhs)
+        .map(|folded| folded.map(Constant::as_erased))
 }
 
 fn fold_exact_binary<'ctx, B: ModuleBrand + 'ctx>(
