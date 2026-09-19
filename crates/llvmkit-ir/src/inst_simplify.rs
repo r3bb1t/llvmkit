@@ -38,7 +38,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, PatchBody, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

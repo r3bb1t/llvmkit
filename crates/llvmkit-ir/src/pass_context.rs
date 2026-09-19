@@ -75,7 +75,6 @@ use super::instruction::{Instruction, InstructionView, NonTerminator, Terminator
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{InsertPoint, IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::metadata::StoredBrand;
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
@@ -513,27 +512,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> FusedIterator for ModuleFunctionViews<'ctx, B>
 /// floor the consumed capability rung structurally allows, not an author's
 /// optimistic guess (D1; D8).
 ///
-/// Unparameterized on purpose: the honesty guarantee comes from the consuming
-/// transition ([`FnCx::mutate`] discards the "all preserved" shortcut), not from
-/// a type tag. It is a distinct type from the module report ([`ModReport`]), so a
-/// function pass cannot return a module report by mistake.
-#[derive(Debug)]
-pub struct FnReport {
+/// The honesty guarantee comes from the consuming transition
+/// ([`FnCx::mutate`] discards the "all preserved" shortcut), not from a type
+/// tag. The brand `B` is the module's: the report carries a reshape pass's
+/// [`CfgUpdate<B>`] log to the driver of that module, the way
+/// [`FnReshape::pending_cfg_updates`] hands it out, so the log never leaves
+/// its brand (D7). It is a distinct type from the module report
+/// ([`ModReport`]), so a function pass cannot return a module report by
+/// mistake.
+#[derive(Branded)]
+#[branded(Debug)]
+pub struct FnReport<B: ModuleBrand> {
     pa: PreservedAnalyses,
     /// The reshape mutator's witnessed [`CfgUpdate`] log, carried out to the
     /// driver so its `done()`-flush can offer these edits to cached CFG
     /// analyses (and mark preserved those that repair). Empty for a non-reshape
     /// report. Not a preservation *claim* — the driver still witnesses each
     /// analysis repair before preserving it.
-    ///
-    /// Held under the crate-private storage brand, the way a module's arena
-    /// holds its own metadata: the report stays brand-free for the pass that
-    /// returns it, and the driver re-brands the log for the function it ran
-    /// on. Each endpoint keeps its module tag.
-    cfg_updates: Vec<CfgUpdate<StoredBrand>>,
+    cfg_updates: Vec<CfgUpdate<B>>,
 }
 
-impl FnReport {
+impl<B: ModuleBrand> FnReport<B> {
     /// Wrap a driver-derived preservation set (no CFG-edit log). `pub(crate)` —
     /// this is a sole construction path, so an external author can never
     /// fabricate a report that over-claims preservation. THE honesty guarantee.
@@ -549,27 +548,19 @@ impl FnReport {
     /// [`CfgUpdate`] log. `pub(crate)` — same honesty guarantee as
     /// [`Self::from_pa`]; the log is witnessed, not author-claimed.
     #[inline]
-    pub(crate) fn from_pa_with_cfg_updates<B: ModuleBrand>(
+    pub(crate) fn from_pa_with_cfg_updates(
         pa: PreservedAnalyses,
         cfg_updates: Vec<CfgUpdate<B>>,
     ) -> Self {
-        Self {
-            pa,
-            cfg_updates: cfg_updates
-                .into_iter()
-                .map(CfgUpdate::rebrand_as_stored)
-                .collect(),
-        }
+        Self { pa, cfg_updates }
     }
 
     /// Consume the report into its preservation set and recorded CFG-edit log.
     /// The function drivers read both: the log drives the `done()`-flush, then
     /// the (possibly-augmented) set drives invalidation. Tests that only want
     /// the set take `.into_parts().0`.
-    /// The log is handed out under the storage brand; the driver re-brands it
-    /// ([`CfgUpdate::rebrand_from_stored`]) for the function it ran the pass on.
     #[inline]
-    pub(crate) fn into_parts(self) -> (PreservedAnalyses, Vec<CfgUpdate<StoredBrand>>) {
+    pub(crate) fn into_parts(self) -> (PreservedAnalyses, Vec<CfgUpdate<B>>) {
         (self.pa, self.cfg_updates)
     }
 }
@@ -681,7 +672,7 @@ where
     /// Finish without mutating: report everything preserved. Available at every
     /// rung ("I inspected / changed nothing"). Consumes the context.
     #[inline]
-    pub fn done(self) -> FnReport {
+    pub fn done(self) -> FnReport<B> {
         FnReport::from_pa(PreservedAnalyses::all())
     }
 }
@@ -1035,7 +1026,7 @@ where
     /// run was a no-op. Consumes the mutator. The all-preserved case is
     /// *witnessed* by the dirty flag, so it needs no read-only pre-scan.
     #[inline]
-    pub fn done(self) -> FnReport {
+    pub fn done(self) -> FnReport<B> {
         if self.dirty.get() {
             FnReport::from_pa(<PatchBody as FnAccess>::preserved_floor())
         } else {
@@ -2381,7 +2372,7 @@ where
     /// is the *starting* point, and the framework then adds back exactly the
     /// analyses it witnesses repair (never an author claim).
     #[inline]
-    pub fn done(self) -> FnReport {
+    pub fn done(self) -> FnReport<B> {
         let dirty = self.patch.is_dirty();
         let updates = self.cfg_updates.into_inner();
         let pa = if dirty {

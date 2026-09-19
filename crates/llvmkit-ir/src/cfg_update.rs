@@ -31,7 +31,6 @@
 
 use crate::Branded;
 use crate::marker::Dyn;
-use crate::metadata::StoredBrand;
 use crate::module::ModuleBrand;
 use crate::value_id::BlockId;
 
@@ -124,37 +123,5 @@ impl<B: ModuleBrand> CfgUpdate<B> {
     #[inline]
     pub fn is_insert(&self) -> bool {
         matches!(self, Self::InsertEdge(_))
-    }
-
-    /// Crate-internal: this update under the crate-private storage brand, so
-    /// the brand-free `FnReport` can carry a reshape pass's log to the driver.
-    /// The log is the mutator's own, minted from its function's blocks; each
-    /// endpoint keeps its module tag.
-    pub(crate) fn rebrand_as_stored(self) -> CfgUpdate<StoredBrand> {
-        let edge = |edge: CfgEdge<B>| CfgEdge {
-            from: edge.from.rebrand_as_stored(),
-            to: edge.to.rebrand_as_stored(),
-        };
-        match self {
-            Self::InsertEdge(e) => CfgUpdate::InsertEdge(edge(e)),
-            Self::DeleteEdge(e) => CfgUpdate::DeleteEdge(edge(e)),
-        }
-    }
-}
-
-impl CfgUpdate<StoredBrand> {
-    /// Crate-internal: the inverse of
-    /// [`rebrand_as_stored`](CfgUpdate::rebrand_as_stored), for the driver
-    /// that offers the log to the analyses of the function it was recorded
-    /// on. Each endpoint keeps its module tag.
-    pub(crate) fn rebrand_from_stored<B: ModuleBrand>(self) -> CfgUpdate<B> {
-        let edge = |edge: CfgEdge<StoredBrand>| CfgEdge {
-            from: edge.from.rebrand_from_stored(),
-            to: edge.to.rebrand_from_stored(),
-        };
-        match self {
-            Self::InsertEdge(e) => CfgUpdate::InsertEdge(edge(e)),
-            Self::DeleteEdge(e) => CfgUpdate::DeleteEdge(edge(e)),
-        }
     }
 }

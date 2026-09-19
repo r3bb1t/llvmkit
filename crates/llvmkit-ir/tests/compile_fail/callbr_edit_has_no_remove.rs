@@ -14,7 +14,7 @@ impl<B: ModuleBrand> FunctionPass<B> for CallBrNoRemove {
     type Requires = ();
     const NAME: &'static str = "callbr-no-remove";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

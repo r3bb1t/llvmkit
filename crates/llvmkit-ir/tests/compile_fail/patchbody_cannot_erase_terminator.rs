@@ -17,7 +17,7 @@ impl<B: ModuleBrand> FunctionPass<B> for EraseTerminator {
     type Requires = ();
     const NAME: &'static str = "erase-terminator";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

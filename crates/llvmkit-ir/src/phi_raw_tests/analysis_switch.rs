@@ -28,7 +28,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveSwitchEdge<B> {
     type Requires = ();
     const NAME: &'static str = "remove-switch-edge";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -60,7 +60,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchEdge<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-switch-edge";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

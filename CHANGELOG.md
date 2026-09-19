@@ -19,6 +19,23 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — a function pass's report carries its module's brand *(breaking)*
+
+- **Breaking (llvmkit-ir, llvmkit-macros):** `FnReport` is `FnReport<B>`,
+  and `FunctionPass<B>::run` returns `IrResult<FnReport<B>>`. A raw
+  `FunctionPass` impl writes `-> IrResult<FnReport<B>>` (or its concrete
+  brand); the `#[function_pass]` sentinel `-> IrResult<FnReport>` is
+  unchanged, since the macro writes the signature. The report carries a
+  reshape pass's `CfgUpdate<B>` log to its driver; it used to hold that log
+  under the crate-private storage brand and the driver re-branded it for
+  whatever function it ran, checking nothing. The log now keeps its brand
+  from `FnReshape::done` to the driver's flush, and the crate-private
+  re-branding helpers (`CfgUpdate::rebrand_as_stored` /
+  `rebrand_from_stored`, `BlockId::rebrand_as_stored` /
+  `rebrand_from_stored`) are gone.
+  `crates/llvmkit-ir/tests/compile_fail/fn_report_keeps_its_brand.rs` pins
+  that a report of one brand is not a report of another.
+
 ### Changed — no public route hands out a value slot; operand bundles split along upstream's Def / Use line *(breaking)*
 
 - **Breaking (llvmkit-ir):** `ValueSlot` is crate-private and no longer

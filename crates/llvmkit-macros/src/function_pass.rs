@@ -51,7 +51,7 @@ fn try_expand(attr: TokenStream, item: TokenStream) -> Result<TokenStream2> {
             fn run<'m, 'ctx>(
                 &mut self,
                 #cx_ident: #ir::FnCx<'m, '_, 'ctx, B, #ir::#access, #requires_ty>,
-            ) -> #ir::IrResult<#ir::FnReport>
+            ) -> #ir::IrResult<#ir::FnReport<B>>
             where
                 'ctx: 'm,
                 Self: 'ctx,

@@ -15,7 +15,7 @@ impl<B: ModuleBrand> FunctionPass<B> for SwitchNoRemoveDefault {
     type Requires = ();
     const NAME: &'static str = "switch-no-remove-default";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

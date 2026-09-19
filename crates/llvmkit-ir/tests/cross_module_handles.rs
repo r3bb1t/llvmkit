@@ -2088,7 +2088,7 @@ impl<'s> FunctionPass<DynBrand> for ReplaceUsesOfForeignView<'s> {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, DynBrand, PatchBody, ()>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<DynBrand>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -2113,7 +2113,7 @@ impl<'s> FunctionPass<DynBrand> for InsertPhiOfForeignType<'s> {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, DynBrand, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<DynBrand>>
     where
         'ctx: 'm,
         Self: 'ctx,

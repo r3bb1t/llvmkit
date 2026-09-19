@@ -24,7 +24,7 @@ impl<B: ModuleBrand> FunctionPass<B> for StaleRead {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

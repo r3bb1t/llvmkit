@@ -38,7 +38,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveEdge {
     type Requires = ();
     const NAME: &'static str = "remove-edge-empty-phi-rt";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
