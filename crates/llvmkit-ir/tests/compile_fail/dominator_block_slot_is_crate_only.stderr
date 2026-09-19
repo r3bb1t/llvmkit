@@ -2,7 +2,7 @@ error[E0061]: this method takes 1 argument but 0 arguments were supplied
   --> tests/compile_fail/dominator_block_slot_is_crate_only.rs:13:19
    |
 13 |     let _ = block.dominator_block_id();
-   |                   ^^^^^^^^^^^^^^^^^^-- argument #1 of type `dominator_tree::dominator_block_sealed::CrateOnly` is missing
+   |                   ^^^^^^^^^^^^^^^^^^-- argument #1 of type `llvmkit_ir::crate_only::CrateOnly` is missing
    |
 note: method defined here
   --> src/dominator_tree.rs
@@ -11,5 +11,5 @@ note: method defined here
    |            ^^^^^^^^^^^^^^^^^^
 help: provide the argument
    |
-13 |     let _ = block.dominator_block_id(/* dominator_tree::dominator_block_sealed::CrateOnly */);
-   |                                      +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+13 |     let _ = block.dominator_block_id(/* llvmkit_ir::crate_only::CrateOnly */);
+   |                                      +++++++++++++++++++++++++++++++++++++++

@@ -4,6 +4,7 @@
 //! identified structs while all concrete values remain branded by the module
 //! that produced them.
 
+use crate::CrateOnly;
 use crate::argument::Argument;
 use crate::constant::Constant;
 use crate::error::{IrError, IrResult, TypeKindLabel};
@@ -614,8 +615,8 @@ where
     S: StructSchema,
     A: CallArgs<'ctx, S::FieldParams, B>,
 {
-    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<LoweredCallArguments> {
-        <A as CallArgs<'ctx, S::FieldParams, B>>::lower(self, module)
+    fn lower(self, module: ModuleRef<'ctx, B>, token: CrateOnly) -> IrResult<LoweredCallArguments> {
+        <A as CallArgs<'ctx, S::FieldParams, B>>::lower(self, module, token)
     }
 }
 
@@ -721,5 +722,44 @@ where
     {
         let validated = ValidatedStructValue::new();
         S::Value::from_struct_value(StructValue::from_value_unchecked(value), &validated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{CallArgs, CrateOnly, IrBuilder, IrError, Linkage, NoFolder};
+
+    #[derive(llvmkit_macros::IrStruct)]
+    #[llvmkit(crate = crate)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    /// llvmkit-specific derive-emitted `IntoCallArg` impl; closest upstream
+    /// coverage is `unittests/IR/InstructionsTest.cpp` for `CallInst` operand
+    /// construction, since a derived struct value must lower through the same
+    /// `CallArgs` seam as any other typed call argument.
+    ///
+    /// In-crate since Task 24 fix round 2: `lower` takes the crate-only token,
+    /// so it cannot be called from an integration test.
+    #[test]
+    fn derive_emits_into_call_arg_for_struct_schema() -> Result<(), IrError> {
+        // The schema is a Rust struct too; read its fields once, as the
+        // integration tests of the derive do.
+        let rust_point = Point { x: 1, y: 2 };
+        let _ = rust_point.x + rust_point.y;
+
+        let m = crate::module_new!("derived_call_arg")?;
+        let f = m.add_typed_function::<i32, (Point,), _>("consume_point", Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let point = PointValue::build(m.as_view(), &b, 1_i32, 2_i32, "point")?;
+
+        let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), (&m).into(), CrateOnly(()))?;
+
+        assert_eq!(ids.len(), 1, "expected one lowered call-argument id");
+        b.ret(0_i32)?;
+        Ok(())
     }
 }

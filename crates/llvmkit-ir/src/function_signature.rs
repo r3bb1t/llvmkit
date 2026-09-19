@@ -12,6 +12,7 @@ use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
 use super::value_id::ViewIn;
+use crate::CrateOnly;
 use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
@@ -1378,11 +1379,10 @@ mod call_args_sealed {
     pub trait Sealed {}
 
     /// The operand list [`CallArgs::lower`](super::CallArgs::lower) produces:
-    /// each argument's arena slot, admitted by its lift. The method is
-    /// reachable from outside the crate through the public trait, so the
-    /// list is opaque there — its length is readable, its slots are not.
-    /// The module that declares it is private and the slots are
-    /// crate-private.
+    /// each argument's arena slot, admitted by its lift. The method takes the
+    /// crate-only token, so no caller outside llvmkit can obtain one; the
+    /// declaring module is private and the slots are crate-private all the
+    /// same.
     #[derive(Debug)]
     pub struct LoweredCallArguments(pub(crate) Box<[crate::value::ValueSlot]>);
 
@@ -1412,14 +1412,20 @@ pub(crate) use call_args_sealed::LoweredCallArguments;
 pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand>:
     Sized + call_args_sealed::Sealed
 {
+    /// Crate-internal: lower the tuple to the call's operand list, each
+    /// argument admitted against `module` by its lift. The trait is public, so
+    /// the method would be callable wherever the trait is in scope — and it
+    /// interns constants into `module`, any module's, a `Verified` one
+    /// included through `(&module).into()`. The [`CrateOnly`] argument is the
+    /// lock: nothing outside llvmkit can build one.
     #[doc(hidden)]
-    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<LoweredCallArguments>;
+    fn lower(self, module: ModuleRef<'ctx, B>, _: CrateOnly) -> IrResult<LoweredCallArguments>;
 }
 
 impl call_args_sealed::Sealed for () {}
 impl<'ctx, B: ModuleBrand + 'ctx> CallArgs<'ctx, (), B> for () {
     #[inline]
-    fn lower(self, _module: ModuleRef<'ctx, B>) -> IrResult<LoweredCallArguments> {
+    fn lower(self, _module: ModuleRef<'ctx, B>, _: CrateOnly) -> IrResult<LoweredCallArguments> {
         Ok(LoweredCallArguments(Box::new([])))
     }
 }
@@ -1434,7 +1440,11 @@ macro_rules! impl_call_args_tuple {
             $($p: FunctionParam,)+
             $($v: IntoCallArg<'ctx, $p, B>,)+
         {
-            fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<LoweredCallArguments> {
+            fn lower(
+                self,
+                module: ModuleRef<'ctx, B>,
+                _: CrateOnly,
+            ) -> IrResult<LoweredCallArguments> {
                 let ($($x,)+) = self;
                 // Internal: each argument is admitted by its lift first.
                 Ok(LoweredCallArguments(Box::new([
@@ -1598,3 +1608,31 @@ impl_call_args_tuple!(
     P14 / V14 / v14,
     P15 / V15 / v15
 );
+
+#[cfg(test)]
+mod tests {
+    use crate::{CallArgs, CrateOnly, IrBuilder, IrError, Linkage};
+
+    /// llvmkit-specific typed-call argument lowering; closest upstream coverage is
+    /// `unittests/IR/InstructionsTest.cpp` for `CallInst` operand construction,
+    /// since `CallArgs::lower` produces the operand list a typed call site passes
+    /// to the underlying `CallInst` builder.
+    ///
+    /// In-crate since Task 24 fix round 2: `lower` takes the crate-only token,
+    /// so it cannot be called from an integration test.
+    #[test]
+    fn call_args_lowers_tuple_to_value_ids() -> Result<(), IrError> {
+        let m = crate::module_new!("call_args")?;
+        let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let (x, _rhs) = m.view(f).params();
+
+        let ids =
+            <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), (&m).into(), CrateOnly(()))?;
+
+        assert_eq!(ids.len(), 2, "expected two lowered call-argument ids");
+        b.ret(0_i32)?;
+        Ok(())
+    }
+}

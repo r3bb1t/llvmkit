@@ -42,25 +42,23 @@ pub struct DominatorTree {
 }
 
 mod dominator_block_sealed {
+    use crate::CrateOnly;
     use crate::value::SealedValueSlot;
-
-    /// A value only this crate can build. A `DominatorTreeBlock` bound in
-    /// downstream code brings this module's supertrait methods into scope even
-    /// though the trait cannot be named there, so the method below also takes
-    /// one of these: without it, nothing outside the crate can call it.
-    pub struct CrateOnly(pub(crate) ());
 
     /// Seals [`DominatorTreeBlock`](super::DominatorTreeBlock), and carries the
     /// one method the tree needs from a block: its arena slot, compared with
-    /// the slots the tree keyed its maps by. It lives here, behind
-    /// [`CrateOnly`], and hands the slot back in a wrapper only llvmkit can
-    /// open, so no public route hands out a block's bare slot.
+    /// the slots the tree keyed its maps by. It lives here, behind the
+    /// crate-only token (a `DominatorTreeBlock` bound in downstream code
+    /// brings this module's supertrait methods into scope even though the
+    /// trait cannot be named there, so without the token the method would be
+    /// callable), and hands the slot back in a wrapper only llvmkit can open,
+    /// so no public route hands out a block's bare slot.
     pub trait Sealed {
         fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot;
     }
 }
 
-use dominator_block_sealed::CrateOnly;
+use crate::CrateOnly;
 
 /// Basic-block identity accepted by dominator-tree block queries.
 pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {}

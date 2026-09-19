@@ -36,6 +36,20 @@ cut, entries accumulate under **Unreleased**.
   `crates/llvmkit-ir/tests/compile_fail/fn_report_keeps_its_brand.rs` pins
   that a report of one brand is not a report of another.
 
+### Changed — `CallArgs::lower` cannot be called outside llvmkit *(breaking)*
+
+- **Breaking (llvmkit-ir):** the hidden `CallArgs::lower` takes the
+  crate-only token the dominator seal already took, so a call from outside
+  the crate does not compile (`E0061`). Its opaque result had closed the slot
+  leak, but the call itself still interned constant arguments into whatever
+  module it was handed, a `Verified` one included through
+  `(&module).into()`. The token is one crate-wide type now, shared by both
+  methods (D5). `tests/compile_fail/value_slot_is_crate_private.rs` pins the
+  refused call; the two tests that called `lower` from integration tests
+  (`call_args_lowers_tuple_to_value_ids`,
+  `derive_emits_into_call_arg_for_struct_schema`) moved into the crate with
+  their assertions unchanged.
+
 ### Changed — no public route hands out a value slot; operand bundles split along upstream's Def / Use line *(breaking)*
 
 - **Breaking (llvmkit-ir):** `ValueSlot` is crate-private and no longer

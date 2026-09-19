@@ -1,11 +1,21 @@
 error[E0425]: cannot find type `ValueSlot` in crate `llvmkit_ir`
-  --> tests/compile_fail/value_slot_is_crate_private.rs:12:31
+  --> tests/compile_fail/value_slot_is_crate_private.rs:14:31
    |
-12 |     let _: Option<llvmkit_ir::ValueSlot> = None;
+14 |     let _: Option<llvmkit_ir::ValueSlot> = None;
    |                               ^^^^^^^^^ not found in `llvmkit_ir`
 
-error[E0616]: field `0` of struct `function_signature::call_args_sealed::LoweredCallArguments` is private
-  --> tests/compile_fail/value_slot_is_crate_private.rs:16:21
+error[E0061]: this function takes 3 arguments but 2 arguments were supplied
+  --> tests/compile_fail/value_slot_is_crate_private.rs:16:20
    |
-16 |     let _ = lowered.0;
-   |                     ^ private field
+16 |     let _lowered = <(i32,) as CallArgs<'_, (i32,), _>>::lower((1_i32,), (&m).into());
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^----------------------- argument #3 of type `llvmkit_ir::crate_only::CrateOnly` is missing
+   |
+note: method defined here
+  --> src/function_signature.rs
+   |
+   |     fn lower(self, module: ModuleRef<'ctx, B>, _: CrateOnly) -> IrResult<LoweredCallArguments>;
+   |        ^^^^^
+help: provide the argument
+   |
+16 |     let _lowered = <(i32,) as CallArgs<'_, (i32,), _>>::lower((1_i32,), (&m).into(), /* llvmkit_ir::crate_only::CrateOnly */);
+   |                                                                                    +++++++++++++++++++++++++++++++++++++++++

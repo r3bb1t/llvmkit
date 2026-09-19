@@ -134,6 +134,21 @@ pub mod pass_instrumentation;
 pub mod pass_manager;
 pub mod pass_pipeline;
 pub(crate) mod phi_check;
+
+/// Home of [`CrateOnly`], the crate's one call token (D5). Private, so the
+/// token is nameable nowhere outside llvmkit.
+mod crate_only {
+    /// A value only llvmkit can build. A method of a public trait that takes
+    /// one cannot be called outside the crate, even where a bound on the
+    /// trait brings the method into scope: the dominator seal's
+    /// `dominator_block_id` and `CallArgs::lower`. The declaring module is
+    /// private and the field crate-private, so no caller outside llvmkit can
+    /// construct one, and so none can supply the argument.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CrateOnly(pub(crate) ());
+}
+
+pub(crate) use crate_only::CrateOnly;
 #[cfg(test)]
 mod phi_raw_tests;
 pub mod pointer_analysis;
