@@ -1808,6 +1808,39 @@ Upstream read at the vendored tag `llvmorg-22.1.4` (the repo commit does not pin
 
 </details>
 
+### 134. `CallBase::getCalledFunction` is ported without its function-type check
+
+**Severity:** wrong-output, rejects-valid, accepts-invalid (derived by reading;
+no fixture exhibits any of the four — a hypothesis until one does)
+**Where:** four sites that each spell `getCalledFunction` as "the callee value
+is a function": `crates/llvmkit-ir/src/verifier.rs` (the
+`Direct call cannot have a ptrauth bundle` check, and `visitCallBrInst`'s
+`Callbr: indirect function / invalid signature`),
+`crates/llvmkit-ir/src/value_tracking.rs` (the `returned` lookup's
+`getCalledFunction()` arm), `crates/llvmkit-ir/src/speculation.rs`
+(`isSafeToSpeculativelyExecute`'s `Call` arm, before `callee_is_speculatable`).
+
+- **LLVM:** `CallBase::getCalledFunction` (`IR/InstrTypes.h`) is
+  `if (auto *F = dyn_cast_or_null<Function>(getCalledOperand())) if
+  (F->getValueType() == getFunctionType()) return F; return nullptr;` — a call
+  whose own function type differs from the callee's is *not* direct.
+- **llvmkit:** every site checks only that the callee is a function, and two
+  of the verifier comments state the plain `dyn_cast` as upstream's
+  definition. On a call through a mismatched signature llvmkit therefore
+  rejects a `ptrauth` bundle upstream allows, accepts a `callbr` upstream
+  rejects, reads a `returned` parameter upstream ignores, and calls a
+  `speculatable` callee hoistable where upstream says no.
+- **Found:** 2026-09-19, Task 24 fix round 3, while porting
+  `Function::isSpeculatable`. `rg -n "getCalledFunction" crates/llvmkit-ir/src/`
+  names three of the sites (the `returned` arm in `value_tracking.rs`, the two
+  verifier checks) plus two doc comments that decide nothing
+  (`CallInst::classify_callee`, `IrBuilder::indirect_callbr_with_config`); the
+  speculation site does not spell the name and was found by reading
+  `isSafeToSpeculativelyExecute`'s `Call` arm against its port.
+- **Fix:** one crate port of `getCalledFunction` (callee is a function *and*
+  its signature slot equals the call's `fn_ty`), called from all four sites,
+  with a mismatched-signature fixture per consequence.
+
 ## Coverage, tooling and provenance
 
 Nothing changes for a well-formed module; these are gaps in what is measured, guarded or recorded.
