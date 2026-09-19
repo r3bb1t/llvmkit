@@ -24,9 +24,9 @@ use llvmkit_ir::{
     CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FloatDyn, FloatValue, FnCx, FnReport,
     FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions, InstructionView, IntCastFlags,
     IntDyn, IntValue, IrBuilder, IrError, IrResult, IrStruct, Linkage, Module, OperandBundleDef,
-    OperandBundleTag, PatchBody, PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState,
-    SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId,
-    ZextFlags, iter::BlockCursor, run_function_pass,
+    OperandBundleTag, OperandBundleUse, PatchBody, PointerValue, Positioned, ReshapeCfg,
+    SsaBuilder, SsaState, SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated,
+    Value, ValueId, ZextFlags, iter::BlockCursor, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -1488,14 +1488,26 @@ fn invoke_and_callbr_reject_a_callee_or_function_type_from_another_module() {
     );
 }
 
+/// The single `deopt` bundle of a call site, read back as its inputs.
+fn deopt_inputs<'ctx>(
+    bundle: IrResult<Option<OperandBundleUse<'ctx, DynBrand>>>,
+) -> Vec<Value<'ctx, DynBrand>> {
+    bundle
+        .expect("at most one deopt bundle")
+        .expect("the deopt bundle is present")
+        .inputs()
+        .collect()
+}
+
 /// Every call-site entry that takes operand bundles refuses a bundle input of
 /// another module with `ForeignValueId` before the call is created: each
-/// consumer of `CallSiteConfig::operand_bundles`, and the `call_builder` /
-/// `typed_call_builder` chains. The foreign input is the bundle's *second*,
-/// so an entry that checked only the first would let it through. Both modules
-/// print unchanged. Positive control: the same bundle with a home input
-/// builds, prints in `AsmWriter`'s bundle form, and reads back through
-/// `CallInst::operand_bundle` with the same input.
+/// consumer of `CallSiteConfig::operand_bundles`, the `call_builder` /
+/// `typed_call_builder` chains, and `IntrinsicCallBuilder::operand_bundles`.
+/// The foreign input is the bundle's *second*, so an entry that checked only
+/// the first would let it through. Both modules print unchanged. Positive
+/// controls, one per entry: the same entry given a bundle of home inputs
+/// builds, prints the bundle in `AsmWriter`'s form, and reads it back through
+/// its view's `operand_bundle` with the same input.
 ///
 /// No upstream counterpart: `OperandBundleDefT<Value *>` (`IR/InstrTypes.h`)
 /// holds `Value *`s, which carry no module to compare.
@@ -1532,6 +1544,19 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let (b5, d5, _) = builder_with_targets(&home, "f5");
     let (b6, d6, _) = builder_with_targets(&home, "f6");
     let (b7, d7, _) = builder_with_targets(&home, "f7");
+    let (b9, _, _) = builder_with_targets(&home, "f9");
+    // The intrinsic is declared when its call builder is made, as
+    // `Intrinsic::getOrInsertDeclaration` runs before `CreateCall`; made here,
+    // before the snapshot, so the snapshot sees only what the refusal could
+    // change.
+    let donothing = llvmkit_ir::IntrinsicDescriptor::new(
+        llvmkit_ir::IntrinsicId::DONOTHING,
+        Vec::<Type<'_, DynBrand>>::new(),
+    )
+    .expect("llvm.donothing takes no overload");
+    let intrinsic9 = b9
+        .intrinsic_call_builder(&donothing)
+        .expect("llvm.donothing declares");
     let home_before = format!("{home}");
     let foreign_before = format!("{foreign}");
 
@@ -1637,6 +1662,11 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
                 config(),
             )),
         ),
+        (
+            "intrinsic_call_builder",
+            IrError::ForeignValueId,
+            without_value(intrinsic9.operand_bundles([mixed()]).build()),
+        ),
     ];
     let let_through = not_refused_as_expected(outcomes);
     assert!(let_through.is_empty(), "{let_through:#?}");
@@ -1671,6 +1701,175 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
         .expect("the deopt bundle is present");
     assert_eq!(bundle.inputs().collect::<Vec<_>>(), vec![seven]);
     assert_eq!(call.operand_bundles().len(), 1);
+
+    // One control per remaining entry (the `call_builder` one is above). Each
+    // bundle carries its own input, so the printed module shows which entry
+    // printed which bundle.
+    let home_bundle = |k: i32| {
+        let input = home.i32_type().const_int(k).as_erased();
+        (
+            input,
+            OperandBundleDef::new(OperandBundleTag::Deopt, [input]),
+        )
+    };
+    let home_config = |bundle| CallSiteConfig::new("r").operand_bundles([bundle]);
+    let mut controls = Vec::new();
+
+    let (c1, _, _) = builder_with_targets(&home, "c1");
+    let (input, bundle) = home_bundle(101);
+    let id = c1
+        .call_erased::<Dyn, _, _>(
+            home_fn_ty,
+            home.view(h).as_erased(),
+            no_args(),
+            TailCallKind::None,
+            home_config(bundle),
+        )
+        .expect("call_erased accepts a same-module bundle");
+    let read = deopt_inputs(home.view(id).operand_bundle(&OperandBundleTag::Deopt));
+    controls.push(("call_erased", 101, input, read));
+
+    let (c2, _, _) = builder_with_targets(&home, "c2");
+    let (input, bundle) = home_bundle(102);
+    let id = c2
+        .call_with_config(home.view(typed_h), (), home_config(bundle))
+        .expect("call_with_config accepts a same-module bundle");
+    let read = deopt_inputs(
+        home.view(id)
+            .as_call_inst()
+            .operand_bundle(&OperandBundleTag::Deopt),
+    );
+    controls.push(("call_with_config", 102, input, read));
+
+    let (c4, _, _) = builder_with_targets(&home, "c4");
+    let (input, bundle) = home_bundle(104);
+    let id = c4
+        .typed_call_builder(home.view(typed_h), ())
+        .operand_bundles([bundle])
+        .build()
+        .expect("typed_call_builder accepts a same-module bundle");
+    let read = deopt_inputs(
+        home.view(id)
+            .as_call_inst()
+            .operand_bundle(&OperandBundleTag::Deopt),
+    );
+    controls.push(("typed_call_builder", 104, input, read));
+
+    let (c5, n5, u5) = builder_with_targets(&home, "c5");
+    let (input, bundle) = home_bundle(105);
+    let (_, invoke) = c5
+        .invoke_with_config(home.view(typed_h), (), n5, u5, home_config(bundle))
+        .expect("invoke_with_config accepts a same-module bundle");
+    let read = deopt_inputs(invoke.operand_bundle(&OperandBundleTag::Deopt));
+    controls.push(("invoke_with_config", 105, input, read));
+
+    let (c6, n6, u6) = builder_with_targets(&home, "c6");
+    let (input, bundle) = home_bundle(106);
+    let (_, invoke) = c6
+        .invoke_dyn_with_config(home.view(h), no_args(), n6, u6, home_config(bundle))
+        .expect("invoke_dyn_with_config accepts a same-module bundle");
+    let read = deopt_inputs(invoke.operand_bundle(&OperandBundleTag::Deopt));
+    controls.push(("invoke_dyn_with_config", 106, input, read));
+
+    let (c7, n7, u7) = builder_with_targets(&home, "c7");
+    let (input, bundle) = home_bundle(107);
+    let (_, invoke) = c7
+        .indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
+            home_null,
+            home_fn_ty,
+            no_args(),
+            n7,
+            u7,
+            home_config(bundle),
+        )
+        .expect("indirect_invoke_dyn_with_config accepts a same-module bundle");
+    let read = deopt_inputs(invoke.operand_bundle(&OperandBundleTag::Deopt));
+    controls.push(("indirect_invoke_dyn_with_config", 107, input, read));
+
+    let (c8, n8, u8) = builder_with_targets(&home, "c8");
+    let (input, bundle) = home_bundle(108);
+    let (_, invoke) = c8
+        .inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
+            home_asm,
+            no_args(),
+            n8,
+            u8,
+            home_config(bundle),
+        )
+        .expect("inline_asm_invoke_with_config accepts a same-module bundle");
+    let read = deopt_inputs(invoke.operand_bundle(&OperandBundleTag::Deopt));
+    controls.push(("inline_asm_invoke_with_config", 108, input, read));
+
+    let (c9, d9, _) = builder_with_targets(&home, "c9");
+    let (input, bundle) = home_bundle(109);
+    let (_, callbr) = c9
+        .callbr_with_config(
+            home.view(h),
+            no_args(),
+            d9,
+            no_indirects(),
+            home_config(bundle),
+        )
+        .expect("callbr_with_config accepts a same-module bundle");
+    let read = deopt_inputs(callbr.operand_bundle(&OperandBundleTag::Deopt));
+    controls.push(("callbr_with_config", 109, input, read));
+
+    let (c10, d10, _) = builder_with_targets(&home, "c10");
+    let (input, bundle) = home_bundle(110);
+    let (_, callbr) = c10
+        .indirect_callbr_with_config(
+            home_null,
+            home_fn_ty,
+            no_args(),
+            d10,
+            no_indirects(),
+            home_config(bundle),
+        )
+        .expect("indirect_callbr_with_config accepts a same-module bundle");
+    let read = deopt_inputs(callbr.operand_bundle(&OperandBundleTag::Deopt));
+    controls.push(("indirect_callbr_with_config", 110, input, read));
+
+    let (c11, d11, _) = builder_with_targets(&home, "c11");
+    let (input, bundle) = home_bundle(111);
+    let (_, callbr) = c11
+        .inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
+            home_asm,
+            no_args(),
+            d11,
+            no_indirects(),
+            home_config(bundle),
+        )
+        .expect("inline_asm_callbr_with_config accepts a same-module bundle");
+    let read = deopt_inputs(callbr.operand_bundle(&OperandBundleTag::Deopt));
+    controls.push(("inline_asm_callbr_with_config", 111, input, read));
+
+    let (c12, _, _) = builder_with_targets(&home, "c12");
+    let (input, bundle) = home_bundle(112);
+    let id = c12
+        .intrinsic_call_builder(&donothing)
+        .expect("llvm.donothing is declared")
+        .operand_bundles([bundle])
+        .build()
+        .expect("intrinsic_call_builder accepts a same-module bundle");
+    let read = deopt_inputs(
+        home.view(id)
+            .call()
+            .operand_bundle(&OperandBundleTag::Deopt),
+    );
+    controls.push(("intrinsic_call_builder", 112, input, read));
+
+    let text = format!("{home}");
+    for (label, k, input, read) in &controls {
+        assert!(
+            text.contains(&format!("[ \"deopt\"(i32 {k}) ]")),
+            "{label}: the bundle is not printed:\n{text}"
+        );
+        assert_eq!(
+            read,
+            &vec![*input],
+            "{label}: the bundle does not read back"
+        );
+    }
 }
 
 /// `restore_insert_point` refuses an `InsertPoint` saved from another

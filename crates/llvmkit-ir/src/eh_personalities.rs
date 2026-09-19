@@ -287,9 +287,9 @@ pub fn color_eh_funclets<'ctx, B: ModuleBrand + 'ctx>(
 
 /// [`color_eh_funclets`] over the function's own arena slots — the walk
 /// itself, kept on slots because every helper it calls reads blocks by slot
-/// through `function`'s module. The verifier, which reads the colours through
-/// the same module, calls it directly.
-pub(crate) fn color_eh_funclet_slots<'ctx, B: ModuleBrand + 'ctx>(
+/// through `function`'s module. Its one caller is [`color_eh_funclets`], which
+/// the verifier calls too, so the colouring has one path (D5).
+fn color_eh_funclet_slots<'ctx, B: ModuleBrand + 'ctx>(
     function: FunctionValue<'ctx, Dyn, B>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
     let anchor = function.as_erased();

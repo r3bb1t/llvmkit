@@ -772,6 +772,148 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
     );
 }
 
+/// Every bundle of a call site, as `(tag, input texts)`, read through the
+/// `OperandBundleUse` view: shared by the invoke and callbr read-back tests.
+fn bundle_texts<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
+    bundles: impl Iterator<Item = llvmkit_ir::OperandBundleUse<'ctx, B>>,
+) -> Vec<(llvmkit_ir::OperandBundleTag, Vec<String>)> {
+    bundles
+        .map(|bundle| {
+            (
+                bundle.tag().clone(),
+                bundle.inputs().map(|input| input.to_string()).collect(),
+            )
+        })
+        .collect()
+}
+
+/// The parsed bundles of the invokes in `test/Bitcode/operand-bundles.ll`
+/// read back through `InvokeInst::operand_bundles` / `operand_bundle`: `@g0`'s
+/// `"foo"` and `"bar"` with their three inputs each, and `@g2`'s empty
+/// `"foo"()`. The fixture's own IR, loaded whole; the expected input text is
+/// the fixture's `CHECK` spelling, canonicalized to one space as the file's
+/// other test explains (`AssemblyWriter` prints `float 0.000000e+00`).
+///
+/// No upstream counterpart for the read-back itself: the fixture pins the
+/// printed form; this reads the same bundles through the view
+/// `CallBase::getOperandBundleAt` / `getOperandBundle` mirror.
+#[test]
+fn invoke_operand_bundles_read_back() {
+    use llvmkit_ir::{OperandBundleTag, TerminatorKind};
+
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
+    let module = Module::dynamic("operand-bundles");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let first_invoke = |name: &str| {
+        view.functions()
+            .find(|function| function.name() == name)
+            .expect("the fixture defines the function")
+            .basic_blocks()
+            .flat_map(|block| block.instructions())
+            .find_map(|instruction| match instruction.terminator_kind() {
+                Some(TerminatorKind::Invoke(invoke)) => Some(invoke),
+                _ => None,
+            })
+            .expect("the function makes an invoke")
+    };
+    let foo = OperandBundleTag::Custom("foo".to_string());
+    let bar = OperandBundleTag::Custom("bar".to_string());
+    let texts = |inputs: &[&str]| inputs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    let g0 = first_invoke("g0");
+    assert_eq!(
+        bundle_texts(g0.operand_bundles()),
+        vec![
+            (foo.clone(), texts(&["i32 42", "i64 100", "i32 %x"])),
+            (
+                bar.clone(),
+                texts(&["float 0.000000e+00", "i64 100", "i32 %l"])
+            ),
+        ]
+    );
+    assert_eq!(g0.operand_bundles().len(), 2);
+    let bar_use = g0
+        .operand_bundle(&bar)
+        .expect("one \"bar\" bundle")
+        .expect("the \"bar\" bundle is present");
+    assert_eq!(
+        bundle_texts(std::iter::once(bar_use)),
+        vec![(bar, texts(&["float 0.000000e+00", "i64 100", "i32 %l"]))]
+    );
+    assert!(
+        matches!(g0.operand_bundle(&OperandBundleTag::Deopt), Ok(None)),
+        "a tag the invoke lacks answers None"
+    );
+
+    let g2 = first_invoke("g2");
+    assert_eq!(
+        bundle_texts(g2.operand_bundles()),
+        vec![(foo.clone(), Vec::new())]
+    );
+    let empty = g2
+        .operand_bundle(&foo)
+        .expect("one \"foo\" bundle")
+        .expect("the \"foo\" bundle is present");
+    assert_eq!(empty.inputs().len(), 0);
+}
+
+/// The parsed bundle of `@test_callbr_intrinsic_no_operand_bundles` in
+/// `test/Verifier/callbr-intrinsic.ll` — `"foo"(i1 %c)` — read back through
+/// `CallBrInst::operand_bundles` / `operand_bundle`. The fixture, vendored
+/// whole, is one the verifier rejects (its `RUN` line is `not opt`); the
+/// module is parsed and not verified, which is all a read of its bundles
+/// needs.
+///
+/// No upstream counterpart for the read-back itself: the fixture pins the
+/// verifier's message for this call; this reads its bundle through the view
+/// `CallBase::getOperandBundleAt` / `getOperandBundle` mirror.
+#[test]
+fn callbr_operand_bundles_read_back() {
+    use llvmkit_ir::{OperandBundleTag, TerminatorKind};
+
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/Verifier/callbr-intrinsic.ll");
+    let module = Module::dynamic("callbr-intrinsic");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let callbr = view
+        .functions()
+        .find(|function| function.name() == "test_callbr_intrinsic_no_operand_bundles")
+        .expect("the fixture defines the function")
+        .basic_blocks()
+        .flat_map(|block| block.instructions())
+        .find_map(|instruction| match instruction.terminator_kind() {
+            Some(TerminatorKind::CallBr(callbr)) => Some(callbr),
+            _ => None,
+        })
+        .expect("the function makes a callbr");
+    let foo = OperandBundleTag::Custom("foo".to_string());
+
+    assert_eq!(
+        bundle_texts(callbr.operand_bundles()),
+        vec![(foo.clone(), vec!["i1 %c".to_string()])]
+    );
+    assert_eq!(callbr.operand_bundles().len(), 1);
+    let found = callbr
+        .operand_bundle(&foo)
+        .expect("one \"foo\" bundle")
+        .expect("the \"foo\" bundle is present");
+    assert_eq!(
+        bundle_texts(std::iter::once(found)),
+        vec![(foo, vec!["i1 %c".to_string()])]
+    );
+    assert!(
+        matches!(callbr.operand_bundle(&OperandBundleTag::Deopt), Ok(None)),
+        "a tag the callbr lacks answers None"
+    );
+}
+
 /// A `ValueAsMetadata` operand-bundle input — `metadata i32 %a`,
 /// `metadata i32 42`, `metadata ptr @g`.
 ///

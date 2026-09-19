@@ -44,7 +44,7 @@ use super::asm_writer::slot_label;
 use super::cfg::FunctionCfg;
 use super::constant::{Constant, ConstantData, ConstantExprOpcode};
 use super::eh_personalities::{
-    classify_eh_personality, color_eh_funclet_slots, first_non_phi_kind, is_funclet_pad_kind,
+    classify_eh_personality, color_eh_funclets, first_non_phi_kind, is_funclet_pad_kind,
     is_scoped_eh_personality,
 };
 use super::global_value::Linkage;
@@ -84,6 +84,7 @@ use crate::module::{Invariant, ModuleBrand, ModuleCore, ModuleView};
 use crate::module_flags::{ModuleFlagBehavior, module_flag_tuple, resolve_metadata_ref};
 use crate::named_md_node::NamedMetadataName;
 use crate::phi_check::{PhiViolation, check_phi_incoming};
+use crate::value_id::BlockId;
 // `Type::getScalarType` and the three scalar-or-vector predicates are ported
 // once, at the slot layer, in `type.rs`; these four names are imports, not
 // local definitions.
@@ -100,7 +101,11 @@ use crate::value::{IsValue, ValueKindData, ValueSlot};
 /// CFG context built once per function and threaded through every
 /// per-block / per-instruction visit. Mirrors LLVM's transient
 /// per-function state inside `Verifier::visit*`.
-struct FunctionContext<'a> {
+/// What `color_eh_funclets` answers: each block's colours, keyed by block id
+/// (`Verifier::BlockEHFuncletColors`, a `DenseMap<BasicBlock *, ColorVector>`).
+type FuncletColors<B> = HashMap<BlockId<Dyn, B>, Vec<BlockId<Dyn, B>>>;
+
+struct FunctionContext<'a, B: ModuleBrand> {
     /// Predecessor multiset per block id.
     predecessors: &'a HashMap<ValueSlot, Vec<ValueSlot>>,
     /// Declaration-order index of every block in the parent function.
@@ -110,8 +115,9 @@ struct FunctionContext<'a> {
     /// `Verifier::BlockEHFuncletColors`: the EH funclet colouring, built on
     /// demand by the first intrinsic call that needs it and shared by the rest
     /// of the function. Upstream clears the map per function; here it lives and
-    /// dies with this context.
-    eh_funclet_colors: &'a OnceCell<HashMap<ValueSlot, Vec<ValueSlot>>>,
+    /// dies with this context. Keyed by block id, as `colorEHFunclets` keys
+    /// its `DenseMap` by the block.
+    eh_funclet_colors: &'a OnceCell<FuncletColors<B>>,
     /// `Verifier::SiblingFuncletInfo`: the cleanup-sibling unwind edges
     /// `visitFuncletPadInst` and `visitCatchSwitchInst` record, consumed by
     /// `verifySiblingFuncletUnwinds` once the function's instructions have
@@ -1317,7 +1323,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let instructions: Vec<InstructionView<'ctx, B>> = bb.instructions().collect();
 
@@ -1400,7 +1406,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         index_in_block: usize,
         block_instructions: &[InstructionView<'ctx, B>],
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // Per-opcode dispatch. Reaches into the storage payload
         // directly because every typed handle re-narrows the same
@@ -3372,7 +3378,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         c: &CallInstData,
         position: BlockPosition<'_, 'ctx, B>,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // Callee must be a function value, OR a pointer of address
         // space 0 with a separately-tracked function-type (LLVM 17+
@@ -4593,7 +4599,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         instruction: ValueSlot,
         call: CallBaseParts<'_>,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let CallBaseParts {
             callee: callee_id,
@@ -4713,7 +4719,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         instruction: ValueSlot,
         args: &[core::cell::Cell<ValueSlot>],
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `const auto *CBR = dyn_cast<CallBrInst>(Call.getOperand(0));
         //  Check(CBR, "intrinstic requires callbr operand", &Call);
@@ -4852,7 +4858,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         id: IntrinsicId,
         attrs: &CallAttributeData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `if (IntrinsicInst::mayLowerToFunctionCall(ID)) {`
         if !crate::intrinsic_inst::may_lower_to_function_call(id) {
@@ -4873,23 +4879,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // The `OnceCell` is `FunctionContext`'s, so it is built at most once
         // per function and dropped with it — upstream clears the map in
         // `visitFunction` for the same reason.
-        // The slot-keyed core of `color_eh_funclets`: the verifier reads the
-        // colours through `f`'s own module.
-        let colors = cx
-            .eh_funclet_colors
-            .get_or_init(|| color_eh_funclet_slots(f));
+        let colors = cx.eh_funclet_colors.get_or_init(|| color_eh_funclets(f));
 
+        // `ColorVector &CV = BlockEHFuncletColors.find(Call.getParent())->second;`
+        // looked up by the call's block id; a block with no entry reads as
+        // no colours (see `color_eh_funclets`).
         // `bool InEHFunclet = false;
         //  for (BasicBlock *ColorFirstBB : CV)
         //    if (auto It = ColorFirstBB->getFirstNonPHIIt(); It != ColorFirstBB->end())
         //      if (isa_and_nonnull<FuncletPadInst>(&*It)) InEHFunclet = true;`
         let mut in_eh_funclet = false;
         let anchor = f.as_erased();
-        for color_first_bb in colors
-            .get(&bb.to_erased().slot_trusting_same_module())
-            .map_or(&[][..], Vec::as_slice)
-        {
-            if first_non_phi_kind(anchor, *color_first_bb).is_some_and(is_funclet_pad_kind) {
+        let owner = f.module().id();
+        for color_first_bb in colors.get(&bb.id()).map_or(&[][..], Vec::as_slice) {
+            // Each colour is a block of `f`, minted in `f`'s module by
+            // `color_eh_funclets`; the checked door admits it.
+            let color_first_bb = color_first_bb.slot_in(owner)?;
+            if first_non_phi_kind(anchor, color_first_bb).is_some_and(is_funclet_pad_kind) {
                 in_eh_funclet = true;
             }
         }
@@ -5262,7 +5268,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &InvokeInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let block_index = cx.block_index;
         if !block_index.contains_key(&d.normal_dest.get())
@@ -5331,7 +5337,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &CallBrInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let call = CallBaseParts {
             callee: d.callee.get(),
@@ -5708,7 +5714,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         pad: ValueSlot,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let block = bb.to_erased().slot_trusting_same_module();
         let no_predecessors: Vec<ValueSlot> = Vec::new();
@@ -5975,7 +5981,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &LandingPadInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let clauses = d.clauses.borrow();
         // `Check(LPI.getNumClauses() > 0 || LPI.isCleanup(), "LandingPadInst
@@ -6085,7 +6091,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         d: &ResumeInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `Check(RI.getFunction()->hasPersonalityFn(), "ResumeInst needs to be
         //  in a function with a personality.", &RI);`
@@ -6121,7 +6127,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &CatchPadInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `Check(F->hasPersonalityFn(), "CatchPadInst needs to be in a
         //  function with a personality.", &CPI);`
@@ -6194,7 +6200,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &CleanupPadInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `Check(F->hasPersonalityFn(), "CleanupPadInst needs to be in a
         //  function with a personality.", &CPI);`
@@ -6247,7 +6253,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &CatchSwitchInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `Check(F->hasPersonalityFn(), "CatchSwitchInst needs to be in a
         //  function with a personality.", &CatchSwitch);`
@@ -6397,7 +6403,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// standing for upstream's `MapVector`.
     fn record_sibling_funclet(
         &self,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
         pad: ValueSlot,
         terminator: ValueSlot,
     ) {
@@ -6420,7 +6426,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         fpi: ValueSlot,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `User *FirstUser = nullptr; Value *FirstUnwindPad = nullptr;
         //  SmallVector<FuncletPadInst *, 8> Worklist({&FPI});
@@ -6682,7 +6688,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     fn verify_sibling_funclet_unwinds(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `SmallPtrSet<Instruction *, 8> Visited; SmallPtrSet<Instruction *, 8>
         //  Active;`

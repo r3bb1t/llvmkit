@@ -298,6 +298,72 @@ fn catchswitch_numbered_result() {
     );
 }
 
+/// `color_eh_funclets` over `@report_missing` in
+/// `test/Verifier/operand-bundles-wineh.ll`, vendored whole: the map keyed by
+/// block id equals the colouring `colorEHFunclets`
+/// (`lib/IR/EHPersonalities.cpp`) computes, traced by hand from its worklist:
+///
+/// - `entry` is visited with colour `entry`; its `invoke` pushes `eh.cont`
+///   and then `catch.dispatch` with colour `entry`;
+/// - `catch.dispatch` is popped first; its first non-phi, the `catchswitch`,
+///   is an EH pad, so it is its own colour, and it pushes its handler
+///   `catch`;
+/// - `catch` starts with a `catchpad`, so it is its own colour, and its `br`
+///   pushes `catch.cont` with colour `catch`;
+/// - `catch.cont` takes colour `catch`; its `catchret`'s catchswitch parent
+///   pad is `none`, so its successor `eh.cont` is pushed with the entry
+///   block's colour;
+/// - `eh.cont` takes colour `entry` (its second visit finds it already
+///   there).
+///
+/// The same map is what the verifier consults for this file's diagnostic
+/// ([`wineh_missing_funclet_token_is_diagnosed`]): `catch.cont`'s colour
+/// `catch` begins with a funclet pad, so the `objc.retain` call there needs a
+/// `funclet` bundle.
+///
+/// No upstream counterpart: `rg -uuu -n "colorEHFunclets"
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/unittests` finds no unit test of
+/// the routine.
+#[test]
+fn color_eh_funclets_colours_the_wineh_fixture() {
+    use std::collections::HashMap;
+
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
+    let module = Module::dynamic("operand-bundles-wineh");
+    let _ = Parser::new(FIXTURE.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    let function = module.view(
+        module
+            .function_dyn("report_missing")
+            .expect("the fixture defines @report_missing"),
+    );
+    let block = |name: &str| {
+        function
+            .basic_blocks()
+            .find(|block| block.name().as_deref() == Some(name))
+            .expect("the fixture names the block")
+            .id()
+            .as_dyn()
+    };
+    let expected: HashMap<_, _> = [
+        ("entry", "entry"),
+        ("catch.dispatch", "catch.dispatch"),
+        ("catch", "catch"),
+        ("catch.cont", "catch"),
+        ("eh.cont", "entry"),
+    ]
+    .into_iter()
+    .map(|(visited, color)| (block(visited), vec![block(color)]))
+    .collect();
+
+    assert_eq!(
+        llvmkit_ir::eh_personalities::color_eh_funclets(function),
+        expected
+    );
+}
+
 /// `test/Verifier/operand-bundles-wineh.ll`'s verdict half: upstream's `RUN`
 /// line is `not opt -passes=verify` and the file's one `CHECK` is
 /// `Missing funclet token on intrinsic call`, the tail of
