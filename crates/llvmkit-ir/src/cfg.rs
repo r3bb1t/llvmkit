@@ -148,6 +148,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         self.adjacent(&self.predecessors, block)
     }
 
+    /// Crate-internal: the successor slots of the block at slot `block`,
+    /// read straight off the snapshot — the slot-level twin of
+    /// [`Self::successors`] for the crate's own CFG walks, which hold a block
+    /// slot of this function and so have no id to mint and strip again. An
+    /// absent block has none.
+    pub(crate) fn successor_slots(&self, block: ValueSlot) -> &[ValueSlot] {
+        self.successors.get(&block).map_or(&[], Vec::as_slice)
+    }
+
+    /// Crate-internal: the slot-level twin of [`Self::predecessors`]; see
+    /// [`Self::successor_slots`].
+    pub(crate) fn predecessor_slots(&self, block: ValueSlot) -> &[ValueSlot] {
+        self.predecessors.get(&block).map_or(&[], Vec::as_slice)
+    }
+
     /// Shared body of [`successors`](Self::successors) and
     /// [`predecessors`](Self::predecessors): resolve `block` against this
     /// CFG's module, then hand back the stored adjacency slice retagged as

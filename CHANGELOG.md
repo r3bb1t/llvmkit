@@ -176,10 +176,17 @@ cut, entries accumulate under **Unreleased**.
   `NamedMetadataId` reach a slot through `slot_in(owner)`, built on the
   comparison each currency already had (`ViewIn::resolve_in` for the value
   ids, `into_stored` for the metadata ids), or — on the crate-private storage
-  brand only — through `slot_trusting_same_module()`. `BlockId` keeps only
-  the unchecked door, for block ids read off their own function's CFG; a
-  caller's block id is admitted by `resolve_in` or, inside an `SsaBlock`, by
-  the session check.
+  brand only — through `slot_trusting_same_module()`. `BlockId` has the
+  checked door `slot_in(owner)` on the same comparison, and no unchecked
+  door: the crate's own CFG walks read block slots straight off the CFG
+  (`cfg::successor_ids`, `FunctionCfg::predecessor_slots`,
+  `InstructionView::parent_slot`) instead of minting an id to strip it, a
+  caller's block id is admitted by `resolve_in`, by `slot_in` or, inside an
+  `SsaBlock`, by the session check, and the counted F1 / F2 boundary sites
+  read a caller's block id through the one named exception,
+  `slot_unchecked_at_marked_boundary`, whose every call
+  `crates/llvmkit-ir/tests/boundary_door_drift.rs` requires to sit under a
+  boundary marker.
 - **Fixed (llvmkit-ir):** every operand lift took a caller's value *handle*
   on trust. The handle impls of `IntoIntValue`, `IntoFloatValue`,
   `IntoPointerValue` and `IntoErasedValue`, of `SelectArm`, `IntoCallee`,

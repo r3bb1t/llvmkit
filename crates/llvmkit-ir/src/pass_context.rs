@@ -1627,9 +1627,9 @@ where
         // module ref and label type as the target.
         let target_block =
             BasicBlock::<Dyn, Terminated, B>::from_parts(target_id, from_block.module, from.ty);
-        let surviving = crate::cfg::block_successors(&from_block)
+        let surviving = crate::cfg::successor_ids(&from_block)
             .iter()
-            .filter(|succ| succ.slot_trusting_same_module() == target_id)
+            .filter(|succ| **succ == target_id)
             .count();
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, target_id);
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
@@ -1706,10 +1706,7 @@ where
         // every terminator kind uniformly) and BEFORE the phi-values check, so
         // every redirect path — legacy and typed — shares it at the same error
         // priority.
-        if crate::cfg::block_successors(&from_block)
-            .iter()
-            .any(|succ| succ.slot_trusting_same_module() == new_id)
-        {
+        if crate::cfg::successor_ids(&from_block).contains(&new_id) {
             return Err(IrError::InvalidOperation {
                 message: "redirect: `from` already reaches `new_to`",
             });
@@ -1868,9 +1865,9 @@ where
         // target.
         let old_block =
             BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from.ty);
-        let surviving = crate::cfg::block_successors(&from_block)
+        let surviving = crate::cfg::successor_ids(&from_block)
             .iter()
-            .filter(|succ| succ.slot_trusting_same_module() == old_id)
+            .filter(|succ| **succ == old_id)
             .count();
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, old_id);
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, new_id);
@@ -2302,8 +2299,8 @@ where
         for bb in self.function().basic_blocks() {
             let handle = bb.as_basic_block();
             let pred_id = handle.slot_trusting_same_module();
-            for succ in crate::cfg::block_successors(&handle) {
-                if succ.slot_trusting_same_module() == target_id {
+            for succ in crate::cfg::successor_ids(&handle) {
+                if succ == target_id {
                     preds.push(pred_id);
                 }
             }
@@ -2344,10 +2341,7 @@ where
                     if !dt.dominates_block(def_block, *pred) {
                         // Internal: `value` and `pred` were both resolved
                         // against this module above.
-                        dom_failure = Some((
-                            def_block.slot_trusting_same_module(),
-                            pred.slot_trusting_same_module(),
-                        ));
+                        dom_failure = Some((inst.parent_slot(), pred.slot_trusting_same_module()));
                         break;
                     }
                 }

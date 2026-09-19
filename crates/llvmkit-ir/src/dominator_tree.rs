@@ -120,7 +120,7 @@ where
         // The caller's block id, compared with slots the tree stored for its
         // own function; nothing proves the id belongs to that function's
         // module — the same read as the `BasicBlock` impls above.
-        SealedValueSlot(self.slot_trusting_same_module())
+        SealedValueSlot(self.slot_unchecked_at_marked_boundary())
     }
 }
 
@@ -139,7 +139,7 @@ where
     #[inline]
     fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
         // boundary (F2): Task 27
-        SealedValueSlot((*self).slot_trusting_same_module())
+        SealedValueSlot((*self).slot_unchecked_at_marked_boundary())
     }
 }
 
@@ -288,7 +288,8 @@ impl DominatorTree {
         // boundary (F2): Task 27
         // Two ids' raw slots: `def` and `user` are the caller's, and nothing
         // proves they come from the same module.
-        if def_bb.slot_trusting_same_module() != use_bb.slot_trusting_same_module() {
+        if def_bb.slot_unchecked_at_marked_boundary() != use_bb.slot_unchecked_at_marked_boundary()
+        {
             return self.dominates_block(def_bb, use_bb);
         }
         self.instruction_comes_before(def_id, user_id)
@@ -315,7 +316,7 @@ impl DominatorTree {
             return false;
         }
         // boundary (F2): Task 27
-        let def_bb_id = def_bb.slot_trusting_same_module();
+        let def_bb_id = def_bb.slot_unchecked_at_marked_boundary();
         if def_bb_id == use_bb_id {
             return false;
         }
@@ -375,9 +376,9 @@ impl DominatorTree {
             // boundary (F2): Task 27
             // The caller's edge: its two block ids are looked up in the tree's
             // maps, and nothing proves they come from the tree's module.
-            edge.start().slot_trusting_same_module(),
+            edge.start().slot_unchecked_at_marked_boundary(),
             // boundary (F2): Task 27
-            edge.end().slot_trusting_same_module(),
+            edge.end().slot_unchecked_at_marked_boundary(),
             block.dominator_block_id(CrateOnly(())).0,
         )
     }
@@ -396,9 +397,9 @@ impl DominatorTree {
         self.dominates_edge_use_ids(
             // boundary (F2): Task 27
             // As in `dominates_edge`: the caller's edge.
-            edge.start().slot_trusting_same_module(),
+            edge.start().slot_unchecked_at_marked_boundary(),
             // boundary (F2): Task 27
-            edge.end().slot_trusting_same_module(),
+            edge.end().slot_unchecked_at_marked_boundary(),
             user_id,
             use_edge.index(),
         )
@@ -552,18 +553,20 @@ fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
     cfg: &FunctionCfg<'ctx, B>,
 ) -> HashSet<ValueSlot> {
     let mut reachable = HashSet::new();
-    let Some(entry) = function.entry_block().map(|bb| bb.id()) else {
+    let Some(entry) = function
+        .entry_block()
+        .map(|bb| bb.to_erased().slot_trusting_same_module())
+    else {
         return reachable;
     };
     let mut worklist = VecDeque::from([entry]);
-    while let Some(block) = worklist.pop_front() {
-        let block_id = block.slot_trusting_same_module();
+    while let Some(block_id) = worklist.pop_front() {
         if !reachable.insert(block_id) {
             continue;
         }
-        for succ in cfg.successors(block) {
-            if !reachable.contains(&succ.slot_trusting_same_module()) {
-                worklist.push_back(succ);
+        for succ in cfg.successor_slots(block_id) {
+            if !reachable.contains(succ) {
+                worklist.push_back(*succ);
             }
         }
     }
@@ -602,10 +605,10 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
                 continue;
             }
             let mut pred_sets = cfg
-                .predecessors(&block)
-                .map(|pred| pred.slot_trusting_same_module())
+                .predecessor_slots(block_id)
+                .iter()
                 .filter(|pred| reachable.contains(pred))
-                .filter_map(|pred| doms.get(&pred).cloned());
+                .filter_map(|pred| doms.get(pred).cloned());
             let mut new_set = pred_sets.next().unwrap_or_default();
             for pred_set in pred_sets {
                 new_set = new_set.intersection(&pred_set).copied().collect();
@@ -630,12 +633,8 @@ fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
     function
         .basic_blocks()
         .map(|bb| {
-            (
-                bb.to_erased().slot_trusting_same_module(),
-                cfg.predecessors(&bb.as_dyn())
-                    .map(|pred| pred.slot_trusting_same_module())
-                    .collect(),
-            )
+            let block_id = bb.to_erased().slot_trusting_same_module();
+            (block_id, cfg.predecessor_slots(block_id).to_vec())
         })
         .collect()
 }

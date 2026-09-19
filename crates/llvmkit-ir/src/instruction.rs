@@ -823,8 +823,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Containing basic block label.
     pub fn parent(&self) -> BlockId<Dyn, B> {
-        let parent = self.data().parent.get();
-        BlockId::<Dyn, B>::from_raw(self.module.id(), parent)
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.parent_slot())
+    }
+
+    /// Crate-internal: the containing block's slot in this instruction's own
+    /// module — the slot-level twin of [`Self::parent`] for the crate's own
+    /// CFG reads, which would otherwise mint an id only to strip it again.
+    #[inline]
+    pub(crate) fn parent_slot(&self) -> ValueSlot {
+        self.data().parent.get()
     }
 
     /// This instruction's opcode. Ports `Instruction::getOpcode`.

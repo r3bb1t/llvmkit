@@ -6984,12 +6984,8 @@ fn build_predecessors<B: ModuleBrand>(
     let cfg = FunctionCfg::new(f);
     f.basic_blocks()
         .map(|bb| {
-            (
-                bb.to_erased().slot_trusting_same_module(),
-                cfg.predecessors(&bb.as_dyn())
-                    .map(|pred| pred.slot_trusting_same_module())
-                    .collect(),
-            )
+            let block_id = bb.to_erased().slot_trusting_same_module();
+            (block_id, cfg.predecessor_slots(block_id).to_vec())
         })
         .collect()
 }

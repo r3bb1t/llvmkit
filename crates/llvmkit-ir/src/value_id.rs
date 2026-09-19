@@ -23,7 +23,10 @@
 //! storable, module-tagged id. The bare arena slot a handle or an id names is
 //! crate-internal, and leaves either only through a checked door (`slot_in`,
 //! or [`ViewIn::resolve_in`] for the ids) or the named unchecked one
-//! (`slot_trusting_same_module`).
+//! (`slot_trusting_same_module`, which a value id has on the storage brand
+//! only and a block id not at all). A caller's block id read at a counted F1
+//! / F2 boundary site goes through the one named exception,
+//! `slot_unchecked_at_marked_boundary`.
 //!
 //! Two shapes of id live here: the **value ids** ([`ValueId`], [`IntValueId`],
 //! ...), which name a value and nothing more, and the **instruction ids**
@@ -337,22 +340,34 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockId<R, B, Params>
         }
     }
 
-    /// The unchecked door: the arena slot this id names, **without** the
-    /// module-tag check [`ViewIn::resolve_in`] performs, trusting that the
-    /// slot is read against the module that minted the id. The id-currency
-    /// twin of
-    /// [`ValueSlotAccess::slot_trusting_same_module`](crate::value::ValueSlotAccess::slot_trusting_same_module).
+    /// The checked door: the arena slot this id names, if `owner` minted it;
+    /// [`IrError::ForeignValueId`] otherwise. Built on the value-id
+    /// currency's one comparison, `slot_admitted_by`, as `ValueId::slot_in`
+    /// is (D5).
     ///
-    /// For a block id read off its own function's CFG (a terminator's
-    /// successors, an instruction's parent, a predecessor list) the trust is
-    /// discharged by construction. A caller-supplied block id is admitted
-    /// first — by [`ViewIn::resolve_in`], which yields the label handle and
-    /// its checked door, or, inside an `SsaBlock`, by the SSA session's own
-    /// check, whose session id includes the module — unless the site is one
-    /// of the counted F1 / F2 boundary exceptions, each marked where it
-    /// reads.
+    /// A block id the crate read off its own function's CFG (a terminator's
+    /// successors, an instruction's parent, a predecessor list) never passes
+    /// through an id at all: those reads take the slot-level query beside
+    /// the id-returning one (`cfg::successor_ids`,
+    /// `FunctionCfg::predecessor_slots`, `InstructionView::parent_slot`).
     #[inline]
-    pub(crate) fn slot_trusting_same_module(self) -> ValueSlot {
+    pub(crate) fn slot_in(self, owner: ModuleId) -> IrResult<ValueSlot> {
+        slot_admitted_by(self.tag, self.slot, owner).ok_or(IrError::ForeignValueId)
+    }
+
+    /// **The exception door**, for the counted boundary sites only: the arena
+    /// slot of a *caller's* block id, read with no module check at an
+    /// infallible entry (the F1 marker, refused by Task 26) or a read-only
+    /// analysis combining two sources (the F2 marker, Task 27).
+    /// It trusts the marker, not the id: every call sits directly under one,
+    /// in the comment block above the line that calls it, and
+    /// `tests/boundary_door_drift.rs` fails when a call is not.
+    ///
+    /// There is no unchecked door for a caller's brand otherwise: the storage
+    /// brand means "native to the module holding it", which a caller's id is
+    /// not, so this is deliberately not spelled as a re-brand.
+    #[inline]
+    pub(crate) fn slot_unchecked_at_marked_boundary(self) -> ValueSlot {
         self.slot
     }
 
@@ -1245,3 +1260,33 @@ impl_into_erased_value_for_instruction_id!(
     PointerPhiInstId,
     OtherPhiInstId,
 );
+
+#[cfg(test)]
+mod tests {
+    use crate::value::ValueSlotAccess;
+    use crate::{IrError, Linkage, Module};
+
+    /// `BlockId::slot_in` admits a block id against the module that minted it
+    /// and refuses it against any other with `ForeignValueId`, on the value-id
+    /// currency's one comparison. Positive control: the home module admits
+    /// the id and hands back the block's own slot.
+    ///
+    /// No upstream counterpart: llvmkit-specific regression for the block-id
+    /// checked door (Task 24 fix round 2); a `BasicBlock *` carries no module
+    /// tag to compare.
+    #[test]
+    fn block_id_slot_in_refuses_an_id_of_another_module() -> Result<(), IrError> {
+        let home = Module::dynamic("home");
+        let foreign = Module::dynamic("foreign");
+        let fn_ty = home.function_type_no_parameters(home.void_type());
+        let f = home.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = home.view(f).append_basic_block(&home, "entry");
+        let id = entry.id();
+        assert_eq!(
+            id.slot_in(home.id()),
+            Ok(entry.to_erased().slot_trusting_same_module())
+        );
+        assert_eq!(id.slot_in(foreign.id()), Err(IrError::ForeignValueId));
+        Ok(())
+    }
+}
