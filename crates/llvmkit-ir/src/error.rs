@@ -18,6 +18,8 @@
 
 use core::fmt;
 
+use crate::instr_types::OperandBundleTag;
+
 /// Whether a failure indicates a bug in llvmkit.
 ///
 /// The distinction is upstream's. `llvm/include/llvm/Support/ErrorHandling.h`
@@ -1116,7 +1118,8 @@ impl DataLayoutError {
 /// `HashSet<IrError>`, not a `Vec` it has to scan.
 /// Every payload is `Hash + Eq + Clone` -- scalars, owned strings, and the
 /// crate's own label and nested-error types (`TypeKindLabel`, `RenderedType`,
-/// `VerifierRule`, `VerifierSubject`, `BrandError`, `DataLayoutError`) -- so
+/// `VerifierRule`, `VerifierSubject`, `OperandBundleTag`, `BrandError`,
+/// `DataLayoutError`) -- so
 /// the derive is total. That bound, not a list of types, is what a new
 /// payload has to satisfy; `crates/llvmkit-ir/tests/ir_error_bounds.rs`
 /// checks it. The sibling
@@ -1496,6 +1499,21 @@ pub enum IrError {
     InvalidOperation {
         /// Human-readable description of the violated LangRef invariant.
         message: &'static str,
+    },
+    /// A single-bundle lookup (`CallInst::operand_bundle` and its
+    /// `InvokeInst` / `CallBrInst` twins) asked for a tag the call site
+    /// carries more than once. Upstream's `CallBase::getOperandBundle`
+    /// (`IR/InstrTypes.h`) asserts `countOperandBundlesOfType(ID) < 2`; the
+    /// IR itself is valid, since the verifier rejects a repeated bundle only
+    /// for the tags it knows (`Verifier::visitCallBase`). Read every bundle
+    /// with `operand_bundles()` instead.
+    #[error(
+        "the call site carries more than one operand bundle tagged \"{}\"",
+        crate::asm_writer::operand_bundle_tag_name(.tag)
+    )]
+    DuplicateOperandBundle {
+        /// The tag the call site carries more than once.
+        tag: OperandBundleTag,
     },
     /// A `.ll` keyword did not name any variant of the enum it was parsed
     /// into — the error of the [`FromStr`](core::str::FromStr) family
@@ -1959,6 +1977,12 @@ impl IrError {
             // traced as beyond any caller's reach — an alias's and an ifunc's
             // type re-check at `build` — raise their own variants, above.
             Self::InvalidOperation { .. } => Blame::UsageError,
+
+            // A single-bundle lookup asked of a call site that carries the tag
+            // more than once: the precondition `CallBase::getOperandBundle`
+            // asserts, broken by the caller's question. The IR is valid; the
+            // caller holds a call it did not inspect.
+            Self::DuplicateOperandBundle { .. } => Blame::UsageError,
 
             // Analysis-manager contracts the caller broke: an unregistered
             // analysis, an invalidator asking about a dependency it never

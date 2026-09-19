@@ -36,6 +36,17 @@ cut, entries accumulate under **Unreleased**.
   `crates/llvmkit-ir/tests/compile_fail/fn_report_keeps_its_brand.rs` pins
   that a report of one brand is not a report of another.
 
+### Changed — a duplicated operand-bundle tag has its own error *(breaking)*
+
+- **Breaking (llvmkit-ir):** new `IrError::DuplicateOperandBundle { tag }`,
+  answering `Blame::UsageError`. `CallInst::operand_bundle` and its
+  `InvokeInst` / `CallBrInst` twins raised the stringly
+  `InvalidOperation { message }` for a call carrying the tag more than once;
+  the refusal is now a variant a caller can match, carrying the tag it asked
+  about. An exhaustive `match` over `IrError` needs a new arm.
+- `OperandBundleUse::inputs` reads the bundle's inputs lazily instead of
+  copying their slots into a `Vec` first.
+
 ### Changed — `CallArgs::lower` cannot be called outside llvmkit *(breaking)*
 
 - **Breaking (llvmkit-ir):** the hidden `CallArgs::lower` takes the
@@ -87,7 +98,8 @@ cut, entries accumulate under **Unreleased**.
   `operand_bundle(&tag)` on `CallInst`, `InvokeInst` and `CallBrInst`,
   mirroring `CallBase::getOperandBundleAt` / `getOperandBundle`.
   `operand_bundle` returns `IrResult<Option<_>>`: a call carrying more than
-  one bundle of the tag is refused with `InvalidOperation` where upstream
+  one bundle of the tag is refused with `DuplicateOperandBundle` (see the
+  entry above) where upstream
   asserts `countOperandBundlesOfType(ID) < 2` — the verifier rejects a
   duplicate only for the tags it knows, so two bundles of one custom tag are
   valid IR (`crates/llvmkit-asmparser/tests/parser_calls.rs`).

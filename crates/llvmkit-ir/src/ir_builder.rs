@@ -11798,10 +11798,14 @@ mod tests {
     /// The native override returns `Ok(Some(wrong_width_value))`
     /// straight back to `int_add`, which forwards it to
     /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`,
-    /// `folded.as_erased().ty().slot_trusting_same_module() != like.as_erased().ty().slot_trusting_same_module()` is
-    /// `true` (the stored value's real type is `i64`, `lhs`'s is the
-    /// 32-bit custom-width `IntDyn` type) -- so `accept_folded_int`
-    /// returns `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`.
+    /// `folded.slot_in(self.module.id())` first admits the result through
+    /// the checked door (it is this module's own constant, so it passes);
+    /// then `like.as_erased().ty().require_match(folded.as_erased().ty())`
+    /// compares the two types, which differ (the stored value's real type is
+    /// `i64`, `lhs`'s is the 32-bit custom-width `IntDyn` type). Both are
+    /// integers, so `require_match` reports the widths and
+    /// `accept_folded_int` returns
+    /// `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`.
     /// That is the exact line under test; `narrow_folded_int` is never
     /// reached on this path. The comparison is unconditional -- it no
     /// longer keys on `W::static_bits().is_none()` -- so `W = IntDyn` no

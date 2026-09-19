@@ -2454,7 +2454,7 @@ fn constant_int_zext_u128<B: ModuleBrand>(value: Value<'_, B>) -> Option<u128> {
 
 /// Mirrors `knownBundleName` (`lib/IR/LLVMContext.cpp`), the spelling table
 /// `LLVMContext::LLVMContext` registers for the `OB_*` operand-bundle tags.
-fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
+pub(crate) fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
     match tag {
         OperandBundleTag::Deopt => "deopt",
         OperandBundleTag::Funclet => "funclet",

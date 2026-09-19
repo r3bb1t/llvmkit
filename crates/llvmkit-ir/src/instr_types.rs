@@ -2262,10 +2262,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
     /// The bundle's inputs, in order. Mirrors `OperandBundleUse::Inputs`.
     pub fn inputs(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
         let module = self.module;
-        let slots: Vec<ValueSlot> = self.data.inputs().collect();
-        slots.into_iter().map(move |slot| {
-            let ty = module.value_data(slot).ty;
-            Value::from_parts(slot, module, ty)
+        // `data` borrows the module's arena for `'ctx`, so its input cells are
+        // read lazily, with nothing copied out first.
+        self.data.inputs.iter().map(move |input| {
+            let slot = input.get();
+            Value::from_parts(slot, module, module.value_data(slot).ty)
         })
     }
 
@@ -2283,11 +2284,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
     /// The bundle tagged `tag` among a call site's stored attributes. Ports
     /// `CallBase::getOperandBundle`, whose precondition — at most one bundle
     /// of the tag, `assert(countOperandBundlesOfType(ID) < 2 && "Precondition
-    /// violated!")` — is refused here with [`IrError::InvalidOperation`]
-    /// instead of asserting: the verifier rejects a second bundle only for
-    /// the tags it knows (`Verifier::visitCallBase`), so a call with two
-    /// bundles of one custom tag is valid IR, and choosing one of them for
-    /// the caller would answer a question it did not ask.
+    /// violated!")` — is refused here with
+    /// [`IrError::DuplicateOperandBundle`] instead of asserting: the verifier
+    /// rejects a second bundle only for the tags it knows
+    /// (`Verifier::visitCallBase`), so a call with two bundles of one custom
+    /// tag is valid IR, and choosing one of them for the caller would answer a
+    /// question it did not ask.
     pub(crate) fn find(
         attrs: &'ctx CallAttributeData,
         module: ModuleRef<'ctx, B>,
@@ -2296,9 +2298,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
         let mut matching = Self::all(attrs, module).filter(|bundle| bundle.data.tag == *tag);
         let first = matching.next();
         if matching.next().is_some() {
-            return Err(IrError::InvalidOperation {
-                message: "operand_bundle: the call carries more than one bundle with this tag",
-            });
+            return Err(IrError::DuplicateOperandBundle { tag: tag.clone() });
         }
         Ok(first)
     }

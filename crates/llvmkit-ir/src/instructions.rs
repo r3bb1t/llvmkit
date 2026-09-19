@@ -895,7 +895,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     /// The call's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; a call carrying more than one bundle of
     /// the tag — upstream's asserted precondition — is refused with
-    /// [`IrError::InvalidOperation`].
+    /// [`IrError::DuplicateOperandBundle`].
     pub fn operand_bundle(
         self,
         tag: &OperandBundleTag,
@@ -3523,7 +3523,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     }
     /// The invoke's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; more than one bundle of the tag is
-    /// refused with [`IrError::InvalidOperation`], as on
+    /// refused with [`IrError::DuplicateOperandBundle`], as on
     /// [`CallInst::operand_bundle`].
     pub fn operand_bundle(
         self,
@@ -3594,7 +3594,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     }
     /// The callbr's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; more than one bundle of the tag is
-    /// refused with [`IrError::InvalidOperation`], as on
+    /// refused with [`IrError::DuplicateOperandBundle`], as on
     /// [`CallInst::operand_bundle`].
     pub fn operand_bundle(
         self,

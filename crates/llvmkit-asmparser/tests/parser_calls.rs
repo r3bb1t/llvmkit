@@ -712,7 +712,7 @@ fn operand_bundles_ll_matches_upstream_check_lines() {
 /// `CallBase::getOperandBundle` (`IR/InstrTypes.h`) asserts
 /// `countOperandBundlesOfType(ID) < 2`, so upstream cannot ask `@f3`'s call
 /// for its `"foo"` bundle; llvmkit refuses the question with
-/// `InvalidOperation` instead, and a tag the call lacks answers `None`. No
+/// `DuplicateOperandBundle` instead, and a tag the call lacks answers `None`. No
 /// upstream counterpart for the refusal itself: it replaces an assert.
 #[test]
 fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
@@ -762,7 +762,7 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
     assert!(
         matches!(
             call.operand_bundle(&OperandBundleTag::Custom("foo".to_string())),
-            Err(IrError::InvalidOperation { .. })
+            Err(IrError::DuplicateOperandBundle { .. })
         ),
         "two \"foo\" bundles: the single-bundle lookup must refuse"
     );
@@ -789,8 +789,11 @@ fn bundle_texts<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
 
 /// The parsed bundles of the invokes in `test/Bitcode/operand-bundles.ll`
 /// read back through `InvokeInst::operand_bundles` / `operand_bundle`: `@g0`'s
-/// `"foo"` and `"bar"` with their three inputs each, and `@g2`'s empty
-/// `"foo"()`. The fixture's own IR, loaded whole; the expected input text is
+/// `"foo"` and `"bar"` with their three inputs each, `@g2`'s empty
+/// `"foo"()`, and `@g1`'s third invoke, whose two `"foo"` bundles the
+/// single-bundle lookup refuses with `DuplicateOperandBundle` naming the tag
+/// (upstream's `getOperandBundle` asserts instead). The fixture's own IR,
+/// loaded whole; the expected input text is
 /// the fixture's `CHECK` spelling, canonicalized to one space as the file's
 /// other test explains (`AssemblyWriter` prints `float 0.000000e+00`).
 ///
@@ -799,7 +802,7 @@ fn bundle_texts<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
 /// `CallBase::getOperandBundleAt` / `getOperandBundle` mirror.
 #[test]
 fn invoke_operand_bundles_read_back() {
-    use llvmkit_ir::{OperandBundleTag, TerminatorKind};
+    use llvmkit_ir::{Blame, IrError, OperandBundleTag, TerminatorKind};
 
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
     let module = Module::dynamic("operand-bundles");
@@ -808,16 +811,22 @@ fn invoke_operand_bundles_read_back() {
         .parse_module()
         .expect("parser succeeds");
     let view = module.as_view();
-    let first_invoke = |name: &str| {
+    let invokes = |name: &str| {
         view.functions()
             .find(|function| function.name() == name)
             .expect("the fixture defines the function")
             .basic_blocks()
             .flat_map(|block| block.instructions())
-            .find_map(|instruction| match instruction.terminator_kind() {
+            .filter_map(|instruction| match instruction.terminator_kind() {
                 Some(TerminatorKind::Invoke(invoke)) => Some(invoke),
                 _ => None,
             })
+            .collect::<Vec<_>>()
+    };
+    let first_invoke = |name: &str| {
+        invokes(name)
+            .into_iter()
+            .next()
             .expect("the function makes an invoke")
     };
     let foo = OperandBundleTag::Custom("foo".to_string());
@@ -859,6 +868,39 @@ fn invoke_operand_bundles_read_back() {
         .expect("one \"foo\" bundle")
         .expect("the \"foo\" bundle is present");
     assert_eq!(empty.inputs().len(), 0);
+
+    // `@g1`'s third invoke carries `"foo"` twice: the single-bundle lookup
+    // refuses with the variant naming the tag, and says so in its message.
+    let g1 = invokes("g1");
+    assert_eq!(g1.len(), 3, "@g1 makes three invokes");
+    assert_eq!(
+        bundle_texts(g1[2].operand_bundles()),
+        vec![
+            (foo.clone(), texts(&["i32 42", "i64 100", "i32 %x"])),
+            (
+                foo.clone(),
+                texts(&["i32 42", "float 0.000000e+00", "i32 %l"])
+            ),
+        ]
+    );
+    let refused = g1[2].operand_bundle(&foo);
+    assert!(
+        matches!(&refused, Err(IrError::DuplicateOperandBundle { tag }) if *tag == foo),
+        "{:?}",
+        refused.map(|found| found.map(|bundle| bundle.tag().clone()))
+    );
+    assert_eq!(
+        g1[2]
+            .operand_bundle(&foo)
+            .err()
+            .map(|error| error.to_string()),
+        Some("the call site carries more than one operand bundle tagged \"foo\"".to_string())
+    );
+    // The IR is valid; the caller asked a question with two answers.
+    assert_eq!(
+        g1[2].operand_bundle(&foo).err().map(|error| error.blame()),
+        Some(Blame::UsageError)
+    );
 }
 
 /// The parsed bundle of `@test_callbr_intrinsic_no_operand_bundles` in
