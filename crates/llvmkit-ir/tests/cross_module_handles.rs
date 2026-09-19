@@ -3269,12 +3269,18 @@ fn a_builder_rejects_a_fold_result_from_another_module() {
 /// The fallible type entries refuse a type of another module before anything
 /// is read, set or declared: `set_struct_body` / `set_struct_body_dyn` (the
 /// struct and its elements), `add_function_dyn` (the signature),
-/// `intrinsic_descriptor_from_signature` (the function type) and
-/// `get_or_insert_intrinsic_declaration_by_id` (an overload type).
+/// `intrinsic_descriptor_from_signature` (the function type),
+/// `get_or_insert_intrinsic_declaration_by_id` (an overload type), and the
+/// intrinsic signature builders `IntrinsicDescriptor::function_type`,
+/// `IntrinsicId::function_type` (an overload type), `IntrinsicId::match_signature`
+/// (the function type) and `IntrinsicDescriptor::new` (overloads of two
+/// modules). Each intrinsic entry also has a same-module positive control
+/// answering the signature LLVM declares for `llvm.abs` / `llvm.memcpy`.
 ///
 /// No upstream counterpart: `StructType::setBody` (`llvm/lib/IR/Type.cpp`),
-/// `Function::Create` (`llvm/lib/IR/Function.cpp`) and
-/// `Intrinsic::getOrInsertDeclaration` (`llvm/lib/IR/Intrinsics.cpp`) take
+/// `Function::Create` (`llvm/lib/IR/Function.cpp`),
+/// `Intrinsic::getOrInsertDeclaration`, `Intrinsic::getType` and
+/// `Intrinsic::matchIntrinsicSignature` (`llvm/lib/IR/Intrinsics.cpp`) take
 /// `Type *`s uniqued per `LLVMContext`.
 #[test]
 fn a_type_entry_rejects_a_type_from_another_module() {
@@ -3286,7 +3292,45 @@ fn a_type_entry_rejects_a_type_from_another_module() {
     let home_struct = home.opaque_struct("S").expect("opaque");
     let home_struct_dyn = home.opaque_struct("T").expect("opaque").as_dyn();
     let foreign_struct = foreign.opaque_struct("S").expect("opaque");
+    let abs = llvmkit_ir::IntrinsicId::ABS;
+    let memcpy = llvmkit_ir::IntrinsicId::MEMCPY;
+    let home_abs_ty = home.function_type(home.i32_type(), [home_i32, home.i1_type().as_type()]);
+    let foreign_abs_ty = foreign.function_type(
+        foreign.i32_type(),
+        [foreign_i32, foreign.i1_type().as_type()],
+    );
+    let foreign_abs =
+        llvmkit_ir::IntrinsicDescriptor::new(abs, [foreign_i32]).expect("foreign descriptor");
+    let home_ptr = home.ptr_type(0).as_type();
+    let foreign_ptr = foreign.ptr_type(0).as_type();
+    let home_i64 = home.i64_type().as_type();
+
+    // Positive controls: each intrinsic entry answers LLVM's signature when
+    // every type is the receiving module's own.
+    let home_abs =
+        llvmkit_ir::IntrinsicDescriptor::new(abs, [home_i32]).expect("same-module descriptor");
+    assert_eq!(
+        home_abs.function_type(&home).expect("descriptor signature"),
+        home_abs_ty
+    );
+    assert_eq!(
+        abs.function_type(&home, &[home_i32]).expect("id signature"),
+        home_abs_ty
+    );
+    assert_eq!(
+        abs.match_signature((&home).into(), home_abs_ty)
+            .expect("matched signature")
+            .overloads(),
+        &[home_i32]
+    );
+    assert_eq!(
+        llvmkit_ir::IntrinsicDescriptor::new(memcpy, [home_ptr, home_ptr, home_i64])
+            .expect("same-module memcpy descriptor")
+            .overloads(),
+        &[home_ptr, home_ptr, home_i64]
+    );
     let before = format!("{home}");
+    let foreign_before = format!("{foreign}");
 
     let outcomes = vec![
         (
@@ -3327,6 +3371,29 @@ fn a_type_entry_rejects_a_type_from_another_module() {
                 [foreign_i32],
             )),
         ),
+        (
+            "IntrinsicDescriptor::function_type",
+            IrError::ForeignType,
+            without_value(foreign_abs.function_type(&home)),
+        ),
+        (
+            "IntrinsicId::function_type",
+            IrError::ForeignType,
+            without_value(abs.function_type(&home, &[foreign_i32])),
+        ),
+        (
+            "IntrinsicId::match_signature",
+            IrError::ForeignType,
+            without_value(abs.match_signature((&home).into(), foreign_abs_ty)),
+        ),
+        (
+            "IntrinsicDescriptor::new (overloads of two modules)",
+            IrError::ForeignType,
+            without_value(llvmkit_ir::IntrinsicDescriptor::new(
+                memcpy,
+                [home_ptr, foreign_ptr, home_i64],
+            )),
+        ),
     ];
     let let_through = not_refused_as_expected(outcomes);
     assert!(let_through.is_empty(), "{let_through:#?}");
@@ -3334,6 +3401,10 @@ fn a_type_entry_rejects_a_type_from_another_module() {
     assert!(
         !foreign_after.contains("%S = type {"),
         "the foreign struct gained a body: {foreign_after}"
+    );
+    assert_eq!(
+        foreign_after, foreign_before,
+        "a refused entry must not mutate"
     );
     assert_eq!(format!("{home}"), before, "a refused entry must not mutate");
 }

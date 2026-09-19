@@ -11,7 +11,7 @@ use crate::attributes::{
 };
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
-use crate::module::{Module, ModuleBrand, ModuleRef};
+use crate::module::{Module, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
@@ -536,6 +536,13 @@ impl IntrinsicId {
         }
     }
 
+    /// The intrinsic's function type in `module` for `overloads`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignType`] if an overload type belongs to another module,
+    /// before anything is interned; otherwise the error of
+    /// [`IntrinsicDescriptor::new`] if `overloads` does not fit the intrinsic.
     pub fn function_type<'ctx, B, S>(
         self,
         module: &'ctx Module<B, S>,
@@ -544,9 +551,19 @@ impl IntrinsicId {
     where
         B: ModuleBrand + 'ctx,
     {
-        IntrinsicDescriptor::new(self, overloads.to_vec())?.function_type(module)
+        // Boundary: the caller's overload types, admitted against `module`
+        // before the descriptor validates them or a signature is interned.
+        admit_overload_types(overloads, module.id())?;
+        IntrinsicDescriptor::new(self, overloads.to_vec())?.function_type_ref(module.module_ref())
     }
 
+    /// The descriptor whose generated signature is `fn_ty` in `module`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignType`] if `fn_ty` belongs to another module, before
+    /// anything is read or interned; otherwise the mismatch error of the
+    /// signature match.
     pub fn match_signature<'ctx, B>(
         self,
         module: ModuleRef<'ctx, B>,
@@ -555,6 +572,9 @@ impl IntrinsicId {
     where
         B: ModuleBrand + 'ctx,
     {
+        // Boundary: the caller's function type, admitted against `module`
+        // before its parts are matched and the expected signature is interned.
+        fn_ty.slot_in(module.id())?;
         let overloads = match_intrinsic_signature(self, module, fn_ty)?;
         IntrinsicDescriptor::new(self, overloads)
     }
@@ -571,11 +591,25 @@ impl IntrinsicId {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
+    /// A descriptor for `id` with `overloads`, validated by building its
+    /// signature in the overloads' module.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignType`] if the overloads belong to more than one
+    /// module (each is admitted against the first's, before anything is
+    /// interned); [`IrError::IntrinsicSignatureMismatch`] if `overloads` does
+    /// not fit the intrinsic.
     pub fn new<Overloads>(id: IntrinsicId, overloads: Overloads) -> IrResult<Self>
     where
         Overloads: Into<Box<[Type<'ctx, B>]>>,
     {
         let overloads = overloads.into();
+        // Boundary: the signature below is interned in the first overload's
+        // module, so every other overload is admitted against it first.
+        if let Some(first) = overloads.first() {
+            admit_overload_types(&overloads, first.module.id())?;
+        }
         let descriptors = iit_descriptors(id.record())?;
         if overloads.len() != overload_slot_count(&descriptors) {
             return Err(intrinsic_mismatch_for_id(id));
@@ -629,8 +663,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         Ok(name)
     }
 
+    /// This descriptor's function type in `module`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignType`] if an overload type belongs to another module,
+    /// before anything is interned; [`IrError::IntrinsicSignatureMismatch`] if
+    /// the generated signature cannot be built.
     pub fn function_type<S>(&self, module: &'ctx Module<B, S>) -> IrResult<FunctionType<'ctx, B>> {
+        // Boundary: the descriptor's overload types, admitted against
+        // `module` before a signature is interned from them.
+        self.admit_overloads(module.id())?;
         self.function_type_ref(module.module_ref())
+    }
+
+    /// The checked door for a descriptor's overload types: each admitted
+    /// against `owner` ([`IrError::ForeignType`]). The one admission every
+    /// entry interning the descriptor's signature into a caller's module runs
+    /// (D5): [`Self::function_type`] and the module's intrinsic declaration.
+    pub(crate) fn admit_overloads(&self, owner: ModuleId) -> IrResult<()> {
+        admit_overload_types(&self.overloads, owner)
     }
 
     pub(crate) fn function_type_ref(
@@ -899,6 +951,19 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx>(
             }
             out.push('t');
         }
+    }
+    Ok(())
+}
+
+/// Each overload type admitted against `owner` through the checked door
+/// ([`IrError::ForeignType`]): the one loop behind every intrinsic entry that
+/// interns a caller's overloads into a module (D5).
+fn admit_overload_types<'ctx, B: ModuleBrand + 'ctx>(
+    overloads: &[Type<'ctx, B>],
+    owner: ModuleId,
+) -> IrResult<()> {
+    for overload in overloads {
+        overload.slot_in(owner)?;
     }
     Ok(())
 }

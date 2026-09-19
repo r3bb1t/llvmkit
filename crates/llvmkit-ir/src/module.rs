@@ -2105,9 +2105,7 @@ impl<'ctx> ModuleCore {
         // Boundary: the descriptor's overload types — the caller's, for
         // `get_or_insert_intrinsic_declaration_by_id` — admitted against this
         // module before a signature is built from them or they are stored.
-        for overload in descriptor.overloads() {
-            overload.slot_in(self.id())?;
-        }
+        descriptor.admit_overloads(self.id())?;
         let name = descriptor.mangled_name()?;
         let module_ref = ModuleRef::<B>::new(self);
         let signature = descriptor.function_type_ref(module_ref)?;

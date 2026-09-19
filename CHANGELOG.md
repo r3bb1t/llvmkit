@@ -387,6 +387,17 @@ cut, entries accumulate under **Unreleased**.
   compared bare type slots, so a foreign `i32` at the home `i32`'s slot
   matched. Each route now refuses the result with `ForeignValueId`, and the
   type check refuses a type of another module with `ForeignType`.
+- **Fixed (llvmkit-ir):** the public intrinsic signature builders interned a
+  caller's types into the receiving module by slot without comparing
+  modules: `IntrinsicDescriptor::function_type` and
+  `IntrinsicId::function_type` (the overload types) and
+  `IntrinsicId::match_signature` (the function type, which it matched and
+  rebuilt in the module even when the match then failed). Each now returns
+  `ForeignType` before anything is read or interned, through the one
+  overload admission the module's intrinsic declaration also runs.
+  `IntrinsicDescriptor::new`, which validates by building the signature in
+  the first overload's module, likewise refuses overloads of two modules
+  (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
 
 ### Changed — four llvmkit-bug sites get their own variants; alias and ifunc refuse a foreign constant *(breaking)*
 
