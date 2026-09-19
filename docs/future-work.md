@@ -1587,7 +1587,9 @@ supertrait drop above), three resolved by record — reality wins:
    as `Value`s through `OperandBundleUse`. Neither slot type is nameable
    outside `llvmkit-ir` (`tests/compile_fail/handle_slot_accessors_removed.rs`),
    and a slot leaves a handle or an id only through the crate-private doors
-   `slot_in` / `slot_trusting_same_module`.)*
+   `slot_in` / `slot_trusting_same_module` — or, for a `BlockId`, which has
+   no unchecked door, `slot_in` and the marker-pinned exception
+   `slot_unchecked_at_marked_boundary` (fix round 2).)*
 
 ## Stringly-typed surfaces the 0.0.4 API-idioms sweep did not close (2026-08-06)
 
