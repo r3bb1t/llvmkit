@@ -374,7 +374,7 @@ pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
     IntoPointerValue, IsValue, PointerValue, StructValue, Typed, UseListOrderError, Value,
-    ValueCategory, ValueSlot, VectorValue,
+    ValueCategory, VectorValue,
 };
 pub use value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,

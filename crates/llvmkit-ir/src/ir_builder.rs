@@ -5509,7 +5509,7 @@ where
         let f = callee
             .into_typed_callee(ModuleRef::new(self.module))?
             .as_function();
-        let arg_ids = args.lower(ModuleRef::new(self.module))?;
+        let arg_ids = args.lower(ModuleRef::new(self.module))?.0;
         let payload = CallInstData::new(
             f.slot_trusting_same_module(),
             f.signature().slot_trusting_same_module(),
@@ -5546,7 +5546,7 @@ where
         let f = callee
             .into_typed_callee(ModuleRef::new(self.module))?
             .as_function();
-        let arg_ids = args.lower(ModuleRef::new(self.module))?;
+        let arg_ids = args.lower(ModuleRef::new(self.module))?.0;
         let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let payload = CallInstData::new_with_attrs(
             f.slot_trusting_same_module(),
@@ -5619,7 +5619,8 @@ where
         let f = callee
             .into_varargs_callee(ModuleRef::new(self.module))?
             .as_function();
-        let mut arg_ids: Vec<ValueSlot> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
+        let mut arg_ids: Vec<ValueSlot> =
+            fixed_args.lower(ModuleRef::new(self.module))?.0.into_vec();
         for v in varargs {
             arg_ids.push(
                 v.into_erased_value(ModuleRef::new(self.module))?
@@ -5915,7 +5916,7 @@ where
         let params = <Sig::Params as FunctionParamList>::ir_types(module)?;
         let fn_ty = module.function_type(ret, params);
         let callee_v = IsValue::as_erased(callee);
-        let arg_ids = args.lower(ModuleRef::new(self.module))?;
+        let arg_ids = args.lower(ModuleRef::new(self.module))?.0;
         let payload = CallInstData::new(
             callee_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
@@ -8715,7 +8716,7 @@ where
         let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let f = callee.as_function();
-        let arg_ids = args.lower(ModuleRef::new(self.module))?;
+        let arg_ids = args.lower(ModuleRef::new(self.module))?.0;
         let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let payload = InvokeInstData::new_with_attrs(
             f.slot_trusting_same_module(),
@@ -10727,7 +10728,7 @@ where
     /// [`TypedCallInstId<Ret, B>`](crate::TypedCallInstId).
     pub fn build(self) -> IrResult<TypedCallInstId<Ret, B>> {
         let f = self.callee?.as_function();
-        let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
+        let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?.0;
         // Boundary: every operand-bundle input, admitted before the call is
         // created.
         let module_id = self.parent.module.id();

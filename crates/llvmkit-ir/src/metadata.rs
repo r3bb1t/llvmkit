@@ -10,7 +10,7 @@
 //! the *value* currency:
 //!
 //! - `MetadataSlot` is the bare arena index — crate-internal, carrying neither
-//!   a [`ModuleId`] tag nor a brand, the metadata twin of [`ValueSlot`].
+//!   a [`ModuleId`] tag nor a brand, the metadata twin of `ValueSlot`.
 //! - [`MetadataId<B>`] is the public currency: `Copy + Send + 'static`, a
 //!   `(tag, slot)` pair that only ever reaches the arena through a module-tag
 //!   check, the metadata twin of [`ValueId`].

@@ -7,7 +7,7 @@ error[E0061]: this method takes 1 argument but 0 arguments were supplied
 note: method defined here
   --> src/dominator_tree.rs
    |
-   |         fn dominator_block_id(self, _: CrateOnly) -> ValueSlot;
+   |         fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot;
    |            ^^^^^^^^^^^^^^^^^^
 help: provide the argument
    |

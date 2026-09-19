@@ -23,9 +23,7 @@ use crate::ir_builder::{IrBuilder, Unpositioned, constant_folder::ConstantFolder
 use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeKind};
-use crate::value::{
-    FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot, ValueSlotAccess,
-};
+use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlotAccess};
 use crate::value_id::{TypedFunctionId, TypedVarArgsFunctionId};
 
 #[doc(hidden)]
@@ -1378,7 +1376,30 @@ where
 
 mod call_args_sealed {
     pub trait Sealed {}
+
+    /// The operand list [`CallArgs::lower`](super::CallArgs::lower) produces:
+    /// each argument's arena slot, admitted by its lift. The method is
+    /// reachable from outside the crate through the public trait, so the
+    /// list is opaque there — its length is readable, its slots are not.
+    /// The module that declares it is private and the slots are
+    /// crate-private.
+    #[derive(Debug)]
+    pub struct LoweredCallArguments(pub(crate) Box<[crate::value::ValueSlot]>);
+
+    impl LoweredCallArguments {
+        /// The number of lowered arguments.
+        pub fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        /// Whether no argument was lowered.
+        pub fn is_empty(&self) -> bool {
+            self.0.is_empty()
+        }
+    }
 }
+
+pub(crate) use call_args_sealed::LoweredCallArguments;
 
 /// Argument tuple for a typed call site: arity must equal
 /// `Params::ARITY` and position `i` must satisfy `IntoCallArg<P_i>`.
@@ -1392,14 +1413,14 @@ pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand>:
     Sized + call_args_sealed::Sealed
 {
     #[doc(hidden)]
-    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>>;
+    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<LoweredCallArguments>;
 }
 
 impl call_args_sealed::Sealed for () {}
 impl<'ctx, B: ModuleBrand + 'ctx> CallArgs<'ctx, (), B> for () {
     #[inline]
-    fn lower(self, _module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
-        Ok(Box::new([]))
+    fn lower(self, _module: ModuleRef<'ctx, B>) -> IrResult<LoweredCallArguments> {
+        Ok(LoweredCallArguments(Box::new([])))
     }
 }
 
@@ -1413,10 +1434,12 @@ macro_rules! impl_call_args_tuple {
             $($p: FunctionParam,)+
             $($v: IntoCallArg<'ctx, $p, B>,)+
         {
-            fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
+            fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<LoweredCallArguments> {
                 let ($($x,)+) = self;
                 // Internal: each argument is admitted by its lift first.
-                Ok(Box::new([$( $x.into_call_arg(module)?.slot_trusting_same_module(), )+]))
+                Ok(LoweredCallArguments(Box::new([
+                    $( $x.into_call_arg(module)?.slot_trusting_same_module(), )+
+                ])))
             }
         }
     };

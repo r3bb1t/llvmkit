@@ -10,7 +10,7 @@ use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::function_signature::{
-    CallArgs, FunctionParam, FunctionParamList, FunctionReturn, IntoCallArg,
+    CallArgs, FunctionParam, FunctionParamList, FunctionReturn, IntoCallArg, LoweredCallArguments,
     token::{ValidatedCallResult, ValidatedFunctionParams},
 };
 use crate::instruction::{Instruction, state::Attached};
@@ -19,8 +19,7 @@ use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::{Type, TypeData};
 use crate::value::{
-    FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlot,
-    ValueSlotAccess,
+    FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlotAccess,
 };
 
 #[doc(hidden)]
@@ -615,7 +614,7 @@ where
     S: StructSchema,
     A: CallArgs<'ctx, S::FieldParams, B>,
 {
-    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
+    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<LoweredCallArguments> {
         <A as CallArgs<'ctx, S::FieldParams, B>>::lower(self, module)
     }
 }

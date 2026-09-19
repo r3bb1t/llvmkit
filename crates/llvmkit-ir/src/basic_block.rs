@@ -513,7 +513,7 @@ where
     where
         A: CallArgs<'ctx, Params, B>,
     {
-        let lowered = args.lower(self.module);
+        let lowered = args.lower(self.module).map(|lowered| lowered.0);
         BlockCall {
             target: self.id(),
             lowered,

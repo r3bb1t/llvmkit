@@ -83,7 +83,7 @@ use super::pass_access::{
 use super::phi_check::{check_phi_incoming, render_phi_violation};
 use super::r#type::{Type, TypeSlot, TypeSlotAccess};
 use super::value::{IntoErasedValue, IsValue, Typed, Value, ValueSlot, ValueSlotAccess};
-use super::value::{ValueKindData, ValueUse};
+use super::value::{SealedValueSlot, ValueKindData, ValueUse};
 use super::value_id::{BlockId, FunctionId, ValueId, ViewIn};
 use super::worklist::Worklist;
 
@@ -2189,7 +2189,7 @@ where
         // Internal: the phi was minted in this module just above.
         Ok(Id::id_from_raw(
             module_ref.id(),
-            phi.slot_trusting_same_module(),
+            SealedValueSlot(phi.slot_trusting_same_module()),
         ))
     }
 

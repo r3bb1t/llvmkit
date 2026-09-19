@@ -67,14 +67,33 @@ use super::vec_len::{Len, LenDyn, VecLen};
 // ValueSlot
 // --------------------------------------------------------------------------
 
-/// Stable index into the value arena. The numeric contents are opaque; callers
-/// may store and pass the handle back to this crate, but cannot construct one.
+/// Stable index into the value arena — crate-private, like `TypeSlot` and
+/// `MetadataSlot`. A slot carries no module tag and means something only in
+/// the module that minted it, so none leaves the crate: the public currency is
+/// the tagged id family ([`ValueId`](crate::ValueId), [`BlockId`](crate::BlockId),
+/// …) and the handles. Inside the crate a slot leaves a handle or an id only
+/// through the checked door `slot_in` or the unchecked
+/// `slot_trusting_same_module` ([`ValueSlotAccess`]).
 ///
 /// Ordered by arena position, so within one module the order is creation
 /// order. Opaque numerically, but a total order is what lets an id key a
 /// `BTreeMap` and give a pass deterministic iteration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValueSlot(NonZeroUsize);
+pub(crate) struct ValueSlot(NonZeroUsize);
+
+mod sealed_value_slot {
+    /// A [`ValueSlot`](super::ValueSlot) as it appears in the signature of a
+    /// public trait's hidden or sealed method — `ViewIn::id_from_raw` and the
+    /// dominator seal's block slot — which a bound on the public trait makes
+    /// reachable from outside the crate. The module that declares it is
+    /// private and its field is crate-private, so code outside llvmkit can
+    /// neither build one, and so call a method that takes one, nor read the
+    /// slot inside one it is handed.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct SealedValueSlot(pub(crate) super::ValueSlot);
+}
+
+pub(crate) use sealed_value_slot::SealedValueSlot;
 
 impl ValueSlot {
     /// Build from a 0-based arena index.

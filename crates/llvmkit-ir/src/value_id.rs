@@ -74,8 +74,9 @@ use crate::metadata::StoredBrand;
 use crate::module::{Invariant, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot};
 use crate::value::{
-    FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue, Value,
-    ValueKindData, ValueSlot, into_erased_value_sealed, into_pointer_value_sealed,
+    FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue,
+    SealedValueSlot, Value, ValueKindData, ValueSlot, into_erased_value_sealed,
+    into_pointer_value_sealed,
 };
 
 // --------------------------------------------------------------------------
@@ -624,8 +625,12 @@ pub trait ViewIn<'ctx, B: ModuleBrand>: Copy + sealed::Sealed {
     /// today — that are parameterised over the id and therefore cannot name a
     /// concrete `from_raw`; every monomorphic site calls its id's inherent
     /// `from_raw` directly.
+    ///
+    /// The slot comes wrapped in a value only llvmkit can build, so a bound on
+    /// this public trait does not let code outside the crate mint an id with a
+    /// tag of its choosing over a slot of its choosing.
     #[doc(hidden)]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self;
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self;
 }
 
 impl<B: ModuleBrand> sealed::Sealed for ValueId<B> {}
@@ -633,8 +638,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for ValueId<B> {
     type View = Value<'ctx, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -650,8 +655,8 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntValueId<W,
     type View = IntValue<'ctx, W, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -676,8 +681,8 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId
     type View = FloatValue<'ctx, K, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -708,8 +713,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
     type View = PointerValue<'ctx, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -731,8 +736,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FunctionI
     type View = FunctionValue<'ctx, R, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -775,8 +780,8 @@ macro_rules! impl_view_in_for_typed_function_id {
             type View = $facade<'ctx, Ret, Params, B>;
 
             #[inline]
-            fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-                Self::from_raw(tag, slot)
+            fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+                Self::from_raw(tag, slot.0)
             }
 
             #[inline]
@@ -822,8 +827,8 @@ macro_rules! impl_view_in_for_global_id {
             type View = $handle<'ctx, B>;
 
             #[inline]
-            fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-                Self::from_raw(tag, slot)
+            fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+                Self::from_raw(tag, slot.0)
             }
 
             #[inline]
@@ -855,8 +860,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
     type View = BasicBlockLabel<'ctx, R, B, Params>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -899,8 +904,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for CallInstI
     type View = CallInst<'ctx, R, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -919,8 +924,8 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for Typed
     type View = TypedCallInst<'ctx, Ret, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -941,8 +946,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for Intrinsic
     type View = IntrinsicInst<'ctx, R, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -969,8 +974,8 @@ macro_rules! impl_view_in_for_instruction_id {
             type View = $handle<'ctx, B>;
 
             #[inline]
-            fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-                Self::from_raw(tag, slot)
+            fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+                Self::from_raw(tag, slot.0)
             }
 
             #[inline]
@@ -1023,8 +1028,8 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PhiInstId<W, 
     type View = PhiInst<'ctx, W, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -1046,8 +1051,8 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<
     type View = FpPhiInst<'ctx, K, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]
@@ -1075,8 +1080,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
     type View = PointerPhiInst<'ctx, B>;
 
     #[inline]
-    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
-        Self::from_raw(tag, slot)
+    fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
+        Self::from_raw(tag, slot.0)
     }
 
     #[inline]

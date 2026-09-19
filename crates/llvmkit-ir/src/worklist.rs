@@ -11,7 +11,7 @@
 //! bypass.
 //!
 //! The stored currency is the *tagged* [`ValueId<B>`], not the untagged
-//! internal [`ValueSlot`](crate::value::ValueSlot): the worklist is a public
+//! internal `ValueSlot`: the worklist is a public
 //! type a pass author can hold, so a slot from a foreign module must not be
 //! able to enter it unnoticed. [`Worklist::pop`] resolves each id through
 //! [`ViewIn`], whose tag check is the same choke point

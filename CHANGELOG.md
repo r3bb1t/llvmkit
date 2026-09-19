@@ -19,10 +19,11 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
-### Changed — CFG updates, funclet colours and operand bundles answer in ids and values; bundles split along upstream's Def / Use line *(breaking)*
+### Changed — no public route hands out a value slot; operand bundles split along upstream's Def / Use line *(breaking)*
 
-- **Breaking (llvmkit-ir):** the public functions that returned a bare
-  `ValueSlot` — `CfgEdge::from` / `to`, `color_eh_funclets` and
+- **Breaking (llvmkit-ir):** `ValueSlot` is crate-private and no longer
+  exported, like `TypeSlot`. The public functions that still returned one —
+  `CfgEdge::from` / `to`, `color_eh_funclets` and
   `OperandBundleData::inputs` — answer in the tagged currency instead:
   - `CfgEdge` and `CfgUpdate` are brand-generic (`CfgEdge<B>`,
     `CfgUpdate<B>`), and `CfgEdge::from` / `to` return `BlockId<Dyn, B>`, the
@@ -32,6 +33,14 @@ cut, entries accumulate under **Unreleased**.
   - `color_eh_funclets` returns `HashMap<BlockId<Dyn, B>, Vec<BlockId<Dyn,
     B>>>`, as `colorEHFunclets` returns `DenseMap<BasicBlock *, ColorVector>`.
   - Operand-bundle inputs are read as values (below).
+  Two hidden routes on public traits carried slots too, found when the type
+  became crate-private (`private_interfaces` named them): `CallArgs::lower`
+  returned the lowered arguments' slots — it now returns an opaque list whose
+  length is readable and whose slots are not — and `ViewIn::id_from_raw`
+  minted an id from any tag and any slot; its slot now comes wrapped in a
+  value only llvmkit can build. The dominator seal's block slot is wrapped
+  the same way. `tests/compile_fail/value_slot_is_crate_private.rs` pins the
+  type and the opaque list.
 - **Breaking (llvmkit-ir):** operand bundles follow upstream's split. A
   caller builds an `OperandBundleDef<'ctx, B>` (`OperandBundleDefT<Value *>`)
   from value handles and hands it to the call site beside the arguments, as
