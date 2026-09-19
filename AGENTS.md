@@ -105,8 +105,11 @@ wins. (`CLAUDE.md` carries the same section under the same name, condensed.)
   currency; `BasicBlockLabel` is the borrowing view it resolves to, and
   `IntoBasicBlockLabel` accepts either (plus a `BasicBlock`).
 - Internal arena indices are named `*Slot` (`ValueSlot`, `TypeSlot`,
-  `MetadataSlot`) — **never** `*Id`. `handle.slot()` is the internal index;
-  `handle.id()` mints the public tagged id.
+  `MetadataSlot`) — **never** `*Id` — and all are crate-private.
+  `handle.id()` mints the public tagged id. A handle's or id's slot leaves it
+  only through the crate-private doors `slot_in(owner)` (checked: refuses
+  another module's with its `Foreign*` error) and
+  `slot_trusting_same_module()` (unchecked, for reads within one module).
 - **Phis are not authored by hand.** `IrBuilder::int_phi` /
   `fp_phi` / `pointer_phi` and every `PhiInst::add_incoming` are
   `pub(crate)` and unnameable from outside the crate (locked by
@@ -654,7 +657,7 @@ Calls, GEPs, allocas, and any op with several optional knobs ship a chainable bu
 - `b.call_dyn(callee, args, name)?` for homogeneous pre-widened arguments on runtime-shaped callees (parsed IR); validates arity/types at build time.
 - `b.call_builder(callee).arg(a).arg(b).tail().calling_conv(cc).name("r").build()?` for mixed-type / mixed-flag construction on the erased path. `.arg<V: IntoErasedValue<'ctx, B>>(value)` is generic per call so heterogeneous argument lists work without trait objects.
 
-The builder is a plain struct that accumulates state into a `Vec<ValueSlot>`; `.build()` performs cross-module checks once and emits the instruction.
+The builder is a plain struct that accumulates state: each `.arg(..)` is admitted by its operand lift, whose module check parks the first failure, and `.build()` replays that failure, admits the callee, the function type and every operand-bundle input through the checked door, and only then emits the instruction.
 
 **Builder-entry naming law.** A builder is opened by a method on the thing it builds into and closed by a **terminal**. The entry is either the `*_builder()` suffix where the flat form already owns the bare noun (`call_builder`, `typed_call_builder`, `intrinsic_call_builder`, `alloca_builder`, `function_builder`, `global_builder`) or a preposition phrase where it does not (`load_from(ptr)`, `store_to(value, ptr)`); it is never spelled `build_*` and never `new_*`. The terminal is `.build()`, except where the result *shape* is the choice being made — [`crate::LoadBuilder`] terminates on `.int::<W>(name)` / `.fp::<K>(name)` / `.pointer(name)` / `.typed::<T>(name)` / `.erased(ty, name)`, which is what keeps D4's typed results out of a runtime narrow. Every setter takes `self` by value, returns `Self`, and is `#[must_use]` (or the builder type itself is, which subsumes it — `clippy::double_must_use` rejects both). Builders exist **only** where several orthogonal optional knobs do; a two-knob op keeps its flat method, and adding a builder never removes one.
 
