@@ -297,6 +297,33 @@ round-trips where `llvm-as | llvm-dis` normalises it.
 but then prints a dangling `#N` with no `attributes #N = { … }` line —
 output that does not re-parse.
 
+**Lookups that must resolve the groups themselves.** With no merge, every
+reader of a function-index attribute has to consult the group numbers too, as
+`FunctionValue::function_string_attribute` does. On 2026-09-19 (Task 24 fix
+round 3) the three `CallBase::hasFnAttr` copies and the two
+`Function::hasFnAttribute` copies (`speculation.rs::callee_is_speculatable`,
+`assumptions.rs::enclosing_function_has_attribute`) that did not were
+replaced by one port that does (`instr_types::call_site_has_fn_attr`,
+`FunctionValue::has_fn_attribute`). Two readers still skip the groups — each
+reads a *payload*, so the fix is a port of `getFnAttribute`, not of
+`hasFnAttr`:
+
+- `speculation.rs::call_site_memory_effects` (`CallBase::getMemoryEffects`)
+  reads `memory(...)` from the call's inline attributes and the callee's
+  stored list only, so `attributes #0 = { memory(none) }` on either side reads
+  as unknown effects;
+- `value_tracking.rs::function_vscale_range` (`llvm::getVScaleRange`, via
+  `F->getFnAttribute(Attribute::VScaleRange)`) reads the stored list only.
+
+Both fall back to upstream's own answer for a missing attribute (unknown
+effects, no range), so the direction is conservative: an analysis learns
+less, never something false. Found with
+`rg -n "\.attributes\.borrow\(\)|function_attrs\(\)" crates/llvmkit-ir/src/`
+on the commit that adds this paragraph (17 hits), reading each: besides these
+two, the hits read a parameter or return index, which a `#N` group cannot
+carry, resolve the groups themselves (`function_string_attribute`, the
+verifier's `function_attrs_with_groups`), or are the printer.
+
 **What pins the current behaviour:**
 `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_equals_grammar_round_trips`
 asserts `attributes #0 = { align = 8 }` re-prints as `align=8` *inside* the

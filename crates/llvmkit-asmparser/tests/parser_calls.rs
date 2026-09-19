@@ -3230,3 +3230,55 @@ attributes #0 = { nounwind }
     assert!(callbr.has_fn_attr(AttrKind::NoUnwind));
     assert!(!callbr.has_fn_attr(AttrKind::Cold));
 }
+
+/// `isSafeToSpeculativelyExecute`'s `Call` arm asks
+/// `Callee->isSpeculatable()`, which is
+/// `Function::hasFnAttribute(Attribute::Speculatable)` — a read of the
+/// callee's attribute list, into which `LLParser::validateEndOfModule` has
+/// merged the declaration's `#N` groups. A callee that is `speculatable`
+/// through a group is therefore as hoistable as one that says so inline.
+///
+/// llvmkit-specific: no upstream unit test calls
+/// `isSafeToSpeculativelyExecute`. llvmkit's `speculatable` test was its own
+/// copy of `hasFnAttribute` and read inline attributes only, so it refused the
+/// group spelling. The inline callee is the positive control; the
+/// unannotated one, the negative.
+#[test]
+fn a_call_is_speculatable_when_its_callee_is_through_an_attribute_group() {
+    use llvmkit_ir::{SpeculationOptions, is_safe_to_speculatively_execute};
+
+    const SOURCE: &str = r"
+declare i32 @inline_attribute(i32) speculatable
+declare i32 @through_group(i32) #0
+declare i32 @plain(i32)
+
+define i32 @f(i32 %x) {
+  %inline = call i32 @inline_attribute(i32 %x)
+  %group = call i32 @through_group(i32 %x)
+  %plain = call i32 @plain(i32 %x)
+  ret i32 %inline
+}
+
+attributes #0 = { speculatable }
+";
+    let module = Module::dynamic("speculatable_group");
+    Parser::new(SOURCE.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let call = |name: &str| {
+        view.functions()
+            .find(|function| function.name() == "f")
+            .expect("the source defines @f")
+            .basic_blocks()
+            .flat_map(|block| block.instructions())
+            .find(|instruction| instruction.name().as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("the source defines %{name}"))
+    };
+    let options = SpeculationOptions::default();
+
+    assert!(is_safe_to_speculatively_execute(&call("inline"), options));
+    assert!(is_safe_to_speculatively_execute(&call("group"), options));
+    assert!(!is_safe_to_speculatively_execute(&call("plain"), options));
+}

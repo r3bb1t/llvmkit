@@ -36,6 +36,7 @@ use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored, 
 use crate::cfg::kind_successor_ids;
 use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
+use crate::function::FunctionValue;
 use crate::instr_types::{
     BranchKind, CallAttributeData, CastOpcode, LandingPadClauseKind, LandingPadInstData, Opcode,
     ShuffleMaskElem, ShuffleVectorInstData, call_site_has_fn_attr,
@@ -1437,22 +1438,14 @@ fn called_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Whether a callee is annotated `speculatable`. Ports
-/// `Function::isSpeculatable`.
+/// `Function::isSpeculatable`, which is
+/// `hasFnAttribute(Attribute::Speculatable)` — ported once, as
+/// `FunctionValue::has_fn_attribute`.
 fn callee_is_speculatable<'ctx, B: ModuleBrand + 'ctx>(callee: Value<'ctx, B>) -> bool {
-    let ValueKindData::Function(data) = &callee.data().kind else {
+    match FunctionValue::try_from(callee) {
+        Ok(function) => function.has_fn_attribute(AttrKind::Speculatable),
         // Upstream's `if (!Callee)`: an indirect call could do anything.
-        return false;
-    };
-    if storage_has_enum_attr(
-        &data.attributes.borrow(),
-        AttrIndex::Function,
-        AttrKind::Speculatable,
-    ) {
-        return true;
-    }
-    match descriptor_for_callee(callee) {
-        Some(descriptor) => descriptor.id().is_speculatable(),
-        None => false,
+        Err(_) => false,
     }
 }
 

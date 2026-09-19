@@ -46,6 +46,14 @@ cut, entries accumulate under **Unreleased**.
   `get_or_insert_intrinsic_declaration` stores them the same way — it is the
   only route that creates a function under an intrinsic's name. The record is
   no longer consulted.
+- **Fixed (llvmkit-ir):** `is_safe_to_speculatively_execute` refused a call
+  whose callee is `speculatable` through an `#N` group:
+  `Function::isSpeculatable` (`hasFnAttribute(Attribute::Speculatable)`) had
+  its own copy, reading inline attributes and the intrinsic record. It calls
+  the one port of `Function::hasFnAttribute` now. Two readers of a
+  function-attribute *payload* still skip the groups — `memory(...)` for
+  `CallBase::getMemoryEffects` and `vscale_range` — both in the conservative
+  direction; `docs/divergences.md` D9 records them.
 - There were three copies (`speculation.rs`, `assumptions.rs`, and the
   verifier's `call_does_not_throw`); there is one port now,
   `instr_types::call_site_has_fn_attr`, on top of a crate-internal port of
@@ -62,7 +70,8 @@ cut, entries accumulate under **Unreleased**.
   `assumptions::will_not_free_between_reads_nofree_through_an_attribute_group` /
   `..._reads_nosync_through_an_attribute_group` /
   `..._reads_an_intrinsic_declarations_attribute_list`, and
-  `parser_calls::call_site_views_answer_has_fn_attr_from_the_call_its_groups_and_its_callee`,
+  `parser_calls::call_site_views_answer_has_fn_attr_from_the_call_its_groups_and_its_callee`
+  and `parser_calls::a_call_is_speculatable_when_its_callee_is_through_an_attribute_group`,
   each with its positive control.
 
 ### Changed — a function pass's report carries its module's brand *(breaking)*
