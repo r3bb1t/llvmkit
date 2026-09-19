@@ -272,8 +272,11 @@ cut, entries accumulate under **Unreleased**.
   minted it, so a tagless one could be carried into another module. Removed:
   `Value::slot`, `IsValue::slot`, and the `slot()` accessors of
   `BasicBlock`, `BasicBlockLabel`, `Instruction`, `NonTerminator` and the
-  per-opcode instruction handles; `DominatorTreeBlock::dominator_block_id`
-  moved onto the trait's private seal. Use `id()` for a storable,
+  per-opcode instruction handles. `DominatorTreeBlock::dominator_block_id`
+  is a crate-only method: it lives on the trait's private seal and takes an
+  argument only llvmkit can build, because a bound on the public trait brings
+  the seal's methods into scope where the seal cannot be named
+  (`tests/compile_fail/dominator_block_slot_is_crate_only.rs`). Use `id()` for a storable,
   module-tagged id. Inside the crate every value handle's `id` and cached
   `ty` fields are now private to the file that declares the handle, and a
   slot leaves a handle only through `ValueSlotAccess`'s two doors — `slot_in`
@@ -304,14 +307,8 @@ cut, entries accumulate under **Unreleased**.
   compare and store `Type` handles, whose equality includes the module.
   Inside the crate every type handle's `id` field is private to the file
   that declares it, and a type slot leaves a handle only through
-  `TypeSlotAccess`'s two doors. The entry above said moving
-  `DominatorTreeBlock::dominator_block_id` onto the trait's private seal
-  took it off the public surface; it did not, because a bound on the public
-  trait brings the seal's methods into scope where the seal cannot be
-  named. The method now also takes a value only llvmkit can build. Two
-  compile-fail fixtures pin both routes
-  (`tests/compile_fail/handle_slot_accessors_removed.rs`,
-  `tests/compile_fail/dominator_block_slot_is_crate_only.rs`).
+  `TypeSlotAccess`'s two doors. A compile-fail fixture pins the removed
+  routes (`tests/compile_fail/handle_slot_accessors_removed.rs`).
 - **Fixed (llvmkit-ir):** making the type fields private surfaced
   fallible entries that read a caller's type by slot without comparing
   modules: `set_struct_body` and `set_struct_body_dyn` (the struct and each

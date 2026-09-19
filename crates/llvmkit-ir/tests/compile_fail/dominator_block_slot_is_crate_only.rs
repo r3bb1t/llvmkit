@@ -3,7 +3,7 @@
 //! The trait is sealed, and the seal carries the method the tree reads a
 //! block's slot through. Sealing alone did not hide it: a bound on the public
 //! trait brings the seal's methods into scope even where the seal cannot be
-//! named, so before the method took an argument (at `bbd732d`) this call
+//! named, so before the method took an argument (at `5910b3e`) this call
 //! returned the slot. It now also takes a value only llvmkit can build, so
 //! the call has no argument a caller can supply (`E0061`).
 
