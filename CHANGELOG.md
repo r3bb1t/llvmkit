@@ -211,6 +211,17 @@ cut, entries accumulate under **Unreleased**.
   `declare_pointer_var_in_addrspace` and their poison twins are infallible
   and cannot yet refuse a type of another module; they are marked for the
   task that makes them fallible.
+- **Fixed (llvmkit-ir):** an SSA session accepted a block or a variable
+  handed out by a session of another module. `SsaBuilderId` numbered
+  sessions per module, so the first session of each of two modules sharing a
+  brand had the same id and passed the other's `SsaForeignBlock` /
+  `SsaForeignVariable` check: `seal_block` sealed whatever block sat at the
+  foreign block's slot here, `def_int_var` / `use_int_var` used the variable
+  at the foreign index of this session's table, and the terminators refused
+  with an error naming the wrong block. `SsaBuilderId` now carries the
+  module as well as the per-module ordinal, so each of these entries refuses
+  the handle before anything is read (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
+  Its `Debug` output changes shape accordingly.
 - **Fixed (llvmkit-ir):** `BasicBlock::split_at` (and so
   `FnReshape::split_block`), `FnPatch::replace_all_uses` and
   `FnReshape::insert_phi_dyn` read a caller's instruction view or phi type

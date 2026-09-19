@@ -68,7 +68,7 @@ use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IrBuilderFolder;
 use super::ir_builder::{IntoReturnValue, Positioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Invariant, Module, ModuleBrand, ModuleRef, Unverified};
+use super::module::{Invariant, Module, ModuleBrand, ModuleId, ModuleRef, Unverified};
 use super::r#type::TypeSlot;
 use super::r#type::TypeSlotAccess;
 use super::value::ValueSlotAccess;
@@ -122,11 +122,22 @@ impl<T> IntoIrResult<T> for IrResult<T> {
 // Ids, typed variables, block handle
 // --------------------------------------------------------------------------
 
-/// Per-module monotonic id for an [`SsaBuilder`]; foreign-variable /
-/// foreign-block use is a typed runtime error (a generative per-builder
-/// brand was rejected: it would force nested closures per function body).
+/// Identity of an SSA session ([`SsaState`], and every [`SsaBuilder`] minted
+/// over it); foreign-variable / foreign-block use is a typed runtime error (a
+/// generative per-builder brand was rejected: it would force nested closures
+/// per function body).
+///
+/// The owning module's [`ModuleId`] plus a per-module ordinal, so it is
+/// unique across modules and not only within one: two modules that share a
+/// brand — every `Module::dynamic` is `DynBrand` — each number their first
+/// session `0`, and an ordinal alone would let one session accept the other's
+/// block or variable, whose slot, index and type mean something only in the
+/// module that minted them (D7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SsaBuilderId(u32);
+pub struct SsaBuilderId {
+    module: ModuleId,
+    ordinal: u32,
+}
 
 /// Typed SSA variable of integer width `W`. Cranelift analogue:
 /// `cranelift_frontend::Variable`, specialised per category per llvmkit
@@ -497,7 +508,10 @@ impl<B: ModuleBrand> SsaState<B> {
         }
         Ok(Self {
             function: function.as_dyn().id(),
-            id: SsaBuilderId(module.next_ssa_builder_id()),
+            id: SsaBuilderId {
+                module: module.id(),
+                ordinal: module.next_ssa_builder_id(),
+            },
             vars: Vec::new(),
             current_def: HashMap::new(),
             resolved: RefCell::new(HashMap::new()),
@@ -654,7 +668,7 @@ where
     F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
-    /// This session's per-module id. Exposed for diagnostics /
+    /// This session's id. Exposed for diagnostics /
     /// cross-checking; ordinary callers do not need to inspect it.
     /// Same value as [`SsaState::id`], since the identity lives in the
     /// state rather than in the (re-mintable) builder.

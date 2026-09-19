@@ -1702,6 +1702,131 @@ fn ssa_construction_rejects_a_function_or_state_from_another_module() {
     );
 }
 
+/// An SSA session refuses a block or a variable handed out by a session of
+/// another module — `SsaForeignBlock` / `SsaForeignVariable` — before the
+/// block's slot, the variable's index or its type is read. Both sessions here
+/// are the first of their module, so a session identity that did not include
+/// the module would match and let the foreign handle through. The positive
+/// control is the same session accepting its own block afterwards.
+///
+/// No upstream counterpart: llvmkit's SSA builder follows
+/// `cranelift-frontend`'s `FunctionBuilder`; the nearest LLVM analogue,
+/// `SSAUpdater` (`Transforms/Utils/SSAUpdater.cpp`), works on `Value *`s.
+#[test]
+fn an_ssa_session_rejects_a_block_or_variable_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let declare = |module: &Module<DynBrand>| {
+        let fn_ty = module.function_type(
+            module.void_type(),
+            [module.bool_type().as_type(), module.i32_type().as_type()],
+        );
+        module
+            .add_function_dyn("f", fn_ty, Linkage::External)
+            .expect("function")
+    };
+    let f = declare(&home);
+    let g = declare(&foreign);
+    let mut home_state = SsaState::for_function(&home, home.view(f)).expect("home state");
+    let mut foreign_state =
+        SsaState::for_function(&foreign, foreign.view(g)).expect("foreign state");
+    let (foreign_block, foreign_variable) = {
+        let mut session = SsaBuilder::for_function(&foreign, foreign.view(g), &mut foreign_state)
+            .expect("foreign session");
+        let _entry = session.create_block("entry");
+        (
+            session.create_block("target"),
+            session.declare_int_var::<i32, _>("x"),
+        )
+    };
+
+    let mut session =
+        SsaBuilder::for_function(&home, home.view(f), &mut home_state).expect("home session");
+    let entry = session.create_block("entry");
+    let target = session.create_block("target");
+    session.switch_to_block(entry).expect("positioned");
+    let function = home.view(f);
+    let condition: IntValue<'_, bool, DynBrand> = function
+        .param(0)
+        .expect("i1 parameter")
+        .try_into()
+        .expect("i1");
+    let selector: IntValue<'_, i32, DynBrand> = function
+        .param(1)
+        .expect("i32 parameter")
+        .try_into()
+        .expect("i32");
+    let home_before = format!("{home}");
+    let foreign_before = format!("{foreign}");
+    let counts_before = (
+        session.state().block_count(),
+        session.state().variable_count(),
+    );
+
+    let outcomes = vec![
+        (
+            "seal_block",
+            IrError::SsaForeignBlock,
+            session.seal_block(foreign_block),
+        ),
+        ("br", IrError::SsaForeignBlock, session.br(foreign_block)),
+        (
+            "cond_br",
+            IrError::SsaForeignBlock,
+            session.cond_br(condition, foreign_block, target),
+        ),
+        (
+            "switch default",
+            IrError::SsaForeignBlock,
+            session.switch(selector, foreign_block, [(0_i32, target)]),
+        ),
+        (
+            "switch case",
+            IrError::SsaForeignBlock,
+            session.switch(selector, target, [(0_i32, foreign_block)]),
+        ),
+        (
+            "def_int_var",
+            IrError::SsaForeignVariable,
+            session.def_int_var(foreign_variable, 1_i32),
+        ),
+        (
+            "use_int_var",
+            IrError::SsaForeignVariable,
+            without_value(session.use_int_var(foreign_variable)),
+        ),
+        (
+            "switch_to_block",
+            IrError::SsaForeignBlock,
+            session.switch_to_block(foreign_block),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        (
+            session.state().block_count(),
+            session.state().variable_count(),
+        ),
+        counts_before,
+        "a refused handle must not change the session"
+    );
+    assert_eq!(
+        format!("{home}"),
+        home_before,
+        "a refused handle must not mutate"
+    );
+    assert_eq!(
+        format!("{foreign}"),
+        foreign_before,
+        "a refused handle must not mutate its own module either"
+    );
+    // Positive control: the session still accepts its own block.
+    session
+        .br(target)
+        .expect("the session's own block is accepted");
+}
+
 /// `i32 name(i32 %a) { %x = add i32 %a, 1; ret i32 %x }` in `module`: a body
 /// whose first instruction a pass or a split can name. Built identically in
 /// two modules, the two `add`s sit at the same slot. Returns the function and
