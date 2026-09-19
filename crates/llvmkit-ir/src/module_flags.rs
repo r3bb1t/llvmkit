@@ -372,7 +372,7 @@ pub(crate) fn resolve_metadata_ref(
     let mut current = slot;
     for _ in 0..=store.len() {
         match store.get(current)? {
-            MetadataKind::Ref(id) => current = id.slot(),
+            MetadataKind::Ref(id) => current = id.slot_trusting_same_module(),
             _ => return Some(current),
         }
     }
@@ -387,7 +387,7 @@ pub(crate) fn module_flag_tuple(
     store: &MetadataStore,
     op: MetadataId<StoredBrand>,
 ) -> Option<[MetadataId<StoredBrand>; 3]> {
-    let slot = resolve_metadata_ref(store, op.slot())?;
+    let slot = resolve_metadata_ref(store, op.slot_trusting_same_module())?;
     let MetadataKind::Tuple { operands, .. } = store.get(slot)? else {
         return None;
     };

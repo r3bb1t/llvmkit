@@ -443,7 +443,7 @@ fn skip_metadata_wrapper(m: &ModuleCore, value: ValueSlot) -> ValueSlot {
     };
     let store = m.metadata_store();
     match store.nodes().get(node.0) {
-        Some(MetadataKind::Constant(wrapped)) => wrapped.slot(),
+        Some(MetadataKind::Constant(wrapped)) => wrapped.slot_trusting_same_module(),
         _ => value,
     }
 }
@@ -3115,11 +3115,16 @@ fn fmt_debug_metadata_operand(
     slots: &SlotTracker,
 ) -> fmt::Result {
     match operand {
-        DebugMetadataOperand::Metadata(md) => {
-            fmt_metadata_operand(f, md.slot(), module, store, md_slots, Some(slots))
-        }
+        DebugMetadataOperand::Metadata(md) => fmt_metadata_operand(
+            f,
+            md.slot_trusting_same_module(),
+            module,
+            store,
+            md_slots,
+            Some(slots),
+        ),
         DebugMetadataOperand::Value(id) => {
-            let slot = id.slot();
+            let slot = id.slot_trusting_same_module();
             let data = module.context().value_data(slot);
             fmt_operand(
                 f,
@@ -3146,7 +3151,7 @@ fn fmt_debug_record(
             f.write_str(", ")?;
             fmt_metadata_operand(
                 f,
-                record.variable().slot(),
+                record.variable().slot_trusting_same_module(),
                 module,
                 store,
                 md_slots,
@@ -3155,7 +3160,7 @@ fn fmt_debug_record(
             f.write_str(", ")?;
             fmt_metadata_operand(
                 f,
-                record.expression().slot(),
+                record.expression().slot_trusting_same_module(),
                 module,
                 store,
                 md_slots,
@@ -3163,7 +3168,14 @@ fn fmt_debug_record(
             )?;
             f.write_str(", ")?;
             if let Some(assign_id) = record.assign_id() {
-                fmt_metadata_operand(f, assign_id.slot(), module, store, md_slots, Some(slots))?;
+                fmt_metadata_operand(
+                    f,
+                    assign_id.slot_trusting_same_module(),
+                    module,
+                    store,
+                    md_slots,
+                    Some(slots),
+                )?;
                 f.write_str(", ")?;
             }
             if let Some(address_location) = record.address_location() {
@@ -3173,7 +3185,7 @@ fn fmt_debug_record(
             if let Some(address_expression) = record.address_expression() {
                 fmt_metadata_operand(
                     f,
-                    address_expression.slot(),
+                    address_expression.slot_trusting_same_module(),
                     module,
                     store,
                     md_slots,
@@ -3183,7 +3195,7 @@ fn fmt_debug_record(
             }
             fmt_metadata_operand(
                 f,
-                record.debug_loc().slot(),
+                record.debug_loc().slot_trusting_same_module(),
                 module,
                 store,
                 md_slots,
@@ -3193,9 +3205,23 @@ fn fmt_debug_record(
         }
         DebugRecord::Label { label, debug_loc } => {
             f.write_str("#dbg_label(")?;
-            fmt_metadata_operand(f, label.slot(), module, store, md_slots, Some(slots))?;
+            fmt_metadata_operand(
+                f,
+                label.slot_trusting_same_module(),
+                module,
+                store,
+                md_slots,
+                Some(slots),
+            )?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, debug_loc.slot(), module, store, md_slots, Some(slots))?;
+            fmt_metadata_operand(
+                f,
+                debug_loc.slot_trusting_same_module(),
+                module,
+                store,
+                md_slots,
+                Some(slots),
+            )?;
             f.write_str(")")
         }
     }
@@ -3788,7 +3814,7 @@ pub(super) fn fmt_module_with_options(
                     }
                     // `printNamedMDNode` runs under `printModule`'s
                     // `Machine`, with no function incorporated.
-                    fmt_metadata_operand(f, op.slot(), m, &md, &slots, None)?;
+                    fmt_metadata_operand(f, op.slot_trusting_same_module(), m, &md, &slots, None)?;
                 }
                 f.write_str("}\n")?;
             }
@@ -3857,13 +3883,25 @@ fn fmt_metadata_node(
                 if i > 0 {
                     f.write_str(", ")?;
                 }
-                fmt_metadata_operand(f, op.slot(), module, store, slots, value_slots)?;
+                fmt_metadata_operand(
+                    f,
+                    op.slot_trusting_same_module(),
+                    module,
+                    store,
+                    slots,
+                    value_slots,
+                )?;
             }
             f.write_str("}")
         }
-        MetadataKind::Ref(id) => {
-            fmt_metadata_operand(f, id.slot(), module, store, slots, value_slots)
-        }
+        MetadataKind::Ref(id) => fmt_metadata_operand(
+            f,
+            id.slot_trusting_same_module(),
+            module,
+            store,
+            slots,
+            value_slots,
+        ),
         MetadataKind::Specialized(node) => {
             fmt_specialized_metadata_node(f, node, module, store, slots, value_slots)
         }
@@ -3877,9 +3915,12 @@ fn fmt_metadata_node(
                     f.write_str(", ")?;
                 }
                 let value = Value::<DynBrand>::from_parts(
-                    argument.slot(),
+                    argument.slot_trusting_same_module(),
                     module,
-                    module.context().value_data(argument.slot()).ty,
+                    module
+                        .context()
+                        .value_data(argument.slot_trusting_same_module())
+                        .ty,
                 );
                 write!(f, "{} ", value.ty())?;
                 fmt_operand_ref(f, value, value_slots)?;
@@ -3887,7 +3928,7 @@ fn fmt_metadata_node(
             f.write_str(")")
         }
         MetadataKind::Constant(id) => {
-            let slot = id.slot();
+            let slot = id.slot_trusting_same_module();
             let data = module.context().value_data(slot);
             let value = Value::<DynBrand>::from_parts(slot, module, data.ty);
             fmt_operand(f, value, value_slots)
@@ -3992,16 +4033,28 @@ fn fmt_specialized_metadata_node(
                     )?;
                 }
             }
-            MetadataFieldValue::Metadata(md) => {
-                fmt_metadata_operand(f, md.slot(), module, store, slots, value_slots)?
-            }
+            MetadataFieldValue::Metadata(md) => fmt_metadata_operand(
+                f,
+                md.slot_trusting_same_module(),
+                module,
+                store,
+                slots,
+                value_slots,
+            )?,
             MetadataFieldValue::MetadataList(items) => {
                 f.write_str("!{")?;
                 for (j, md) in items.iter().enumerate() {
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, md.slot(), module, store, slots, value_slots)?;
+                    fmt_metadata_operand(
+                        f,
+                        md.slot_trusting_same_module(),
+                        module,
+                        store,
+                        slots,
+                        value_slots,
+                    )?;
                 }
                 f.write_str("}")?;
             }
@@ -4062,7 +4115,14 @@ fn fmt_metadata_attachments(
 ) -> fmt::Result {
     for (kind, id) in attachments.iter() {
         write!(f, "{separator}!{} ", kind.name())?;
-        fmt_metadata_operand(f, id.slot(), module, store, slots, value_slots)?;
+        fmt_metadata_operand(
+            f,
+            id.slot_trusting_same_module(),
+            module,
+            store,
+            slots,
+            value_slots,
+        )?;
     }
     Ok(())
 }

@@ -114,6 +114,15 @@ cut, entries accumulate under **Unreleased**.
   caller's handles until `build` and store only what the checked door
   returns — the separate `aliasee_module` / `resolver_module` fields that had
   to be kept in step with the slot are gone.
+- The ids follow the same law, with no public change: their crate-private
+  raw `slot()` accessors are gone. `ValueId`, `MetadataId` and
+  `NamedMetadataId` reach a slot through `slot_in(owner)`, built on the
+  comparison each currency already had (`ViewIn::resolve_in` for the value
+  ids, `into_stored` for the metadata ids), or — on the crate-private storage
+  brand only — through `slot_trusting_same_module()`. `BlockId` keeps only
+  the unchecked door, for block ids read off their own function's CFG; a
+  caller's block id is admitted by `resolve_in` or, inside an `SsaBlock`, by
+  the session check.
 - **Fixed (llvmkit-ir):** every operand lift took a caller's value *handle*
   on trust. The handle impls of `IntoIntValue`, `IntoFloatValue`,
   `IntoPointerValue` and `IntoErasedValue`, of `SelectArm`, `IntoCallee`,

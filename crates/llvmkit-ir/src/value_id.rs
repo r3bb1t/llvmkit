@@ -20,8 +20,10 @@
 //! of [`Module::view`](crate::Module::view) for reading at a build site.
 //!
 //! One naming rule holds across the whole surface: `handle.id()` mints the
-//! storable, module-tagged id, and `handle.slot()` is the bare arena index
-//! (crate-internal side tables only).
+//! storable, module-tagged id. The bare arena slot a handle or an id names is
+//! crate-internal, and leaves either only through a checked door (`slot_in`,
+//! or [`ViewIn::resolve_in`] for the ids) or the named unchecked one
+//! (`slot_trusting_same_module`).
 //!
 //! Two shapes of id live here: the **value ids** ([`ValueId`], [`IntValueId`],
 //! ...), which name a value and nothing more, and the **instruction ids**
@@ -68,6 +70,7 @@ use crate::instructions::{
 use crate::int_width::{IntDyn, IntWidth, IntoIntValue, into_int_value_sealed};
 use crate::intrinsic_inst::IntrinsicInst;
 use crate::marker::{Dyn, ReturnMarker};
+use crate::metadata::StoredBrand;
 use crate::module::{Invariant, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot};
 use crate::value::{
@@ -179,24 +182,53 @@ decl_value_id! {
     ValueId
 }
 
+/// **The value-id currency's tag check** — the one comparison every value
+/// id's slot passes before it is read against a module. Each
+/// [`ViewIn::resolve_in`] and [`ValueId::slot_in`] call it, so a foreign id is
+/// refused in one place, the way `MetadataId::into_stored` refuses a foreign
+/// metadata id (D5).
+///
+/// `Some(slot)` when `owner` minted the id — `tag` is its [`ModuleId`] — and
+/// `None` otherwise.
+#[inline]
+fn slot_admitted_by(tag: ModuleId, slot: ValueSlot, owner: ModuleId) -> Option<ValueSlot> {
+    (tag == owner).then_some(slot)
+}
+
 impl<B: ModuleBrand> ValueId<B> {
-    /// Crate-internal: the module tag this id carries.
+    /// The checked door: the arena slot this id names, if `owner` minted it;
+    /// [`IrError::ForeignValueId`] otherwise. The id-currency twin of
+    /// [`ValueSlotAccess::slot_in`](crate::value::ValueSlotAccess::slot_in) on
+    /// the handles.
     ///
-    /// Reserved for the metadata layer, whose stored/public boundary
-    /// (`metadata::DebugMetadataOperand`, `metadata::MetadataKind::Constant`)
-    /// carries value ids and performs its own tag check with it. Every other
-    /// consumer resolves through [`ViewIn`], which compares the tag itself.
+    /// A caller's `ValueId<B>` reaches a slot only here or through
+    /// [`ViewIn::resolve_in`]: the unchecked door is defined on the storage
+    /// brand alone, as `MetadataId`'s is.
+    #[inline]
+    pub(crate) fn slot_in(self, owner: ModuleId) -> IrResult<ValueSlot> {
+        slot_admitted_by(self.tag, self.slot, owner).ok_or(IrError::ForeignValueId)
+    }
+}
+
+impl ValueId<StoredBrand> {
+    /// Crate-internal: the module tag a **stored** id carries, so the metadata
+    /// layer can re-mint it — retargeted to another slot of the same module
+    /// (RAUW), or retagged back into the caller's brand.
     #[inline]
     pub(crate) fn tag(self) -> ModuleId {
         self.tag
     }
 
-    /// Crate-internal: the arena slot this id names, **without** the module-tag
-    /// check [`ViewIn::resolve_in`] performs. Paired with [`tag`](Self::tag) and
-    /// reserved for the same metadata-layer boundary, which compares the tag
-    /// before it reads the slot.
+    /// The unchecked door: the arena slot a **stored** id names, trusting that
+    /// it is read against the module that stores it.
+    ///
+    /// Defined only for the storage brand, which is what discharges the
+    /// trust: a stored value id is minted by the metadata layer from a
+    /// caller's id through [`slot_in`](ValueId::slot_in), or by the module
+    /// itself, so it is native to the module holding it. A caller-supplied
+    /// `ValueId<B>` has no such accessor.
     #[inline]
-    pub(crate) fn slot(self) -> ValueSlot {
+    pub(crate) fn slot_trusting_same_module(self) -> ValueSlot {
         self.slot
     }
 }
@@ -304,15 +336,22 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockId<R, B, Params>
         }
     }
 
-    /// Crate-internal: the arena slot this id names, **without** the module-tag
-    /// check [`ViewIn::resolve_in`] performs. Reserved for the two places that
-    /// key raw slot maps and have no [`ModuleRef`] in hand — the dominator
-    /// tree's block ids and the Braun SSA engine's block-keyed maps — both of
-    /// which were already slot-keyed and unchecked before ids existed. Every
-    /// other consumer resolves through [`ViewIn`] so a foreign id is rejected
-    /// before the arena is touched.
+    /// The unchecked door: the arena slot this id names, **without** the
+    /// module-tag check [`ViewIn::resolve_in`] performs, trusting that the
+    /// slot is read against the module that minted the id. The id-currency
+    /// twin of
+    /// [`ValueSlotAccess::slot_trusting_same_module`](crate::value::ValueSlotAccess::slot_trusting_same_module).
+    ///
+    /// For a block id read off its own function's CFG (a terminator's
+    /// successors, an instruction's parent, a predecessor list) the trust is
+    /// discharged by construction. A caller-supplied block id is admitted
+    /// first — by [`ViewIn::resolve_in`], which yields the label handle and
+    /// its checked door, or, inside an `SsaBlock`, by the SSA session's own
+    /// check, whose session id includes the module — unless the site is one
+    /// of the counted F1 / F2 boundary exceptions, each marked where it
+    /// reads.
     #[inline]
-    pub(crate) fn slot(self) -> ValueSlot {
+    pub(crate) fn slot_trusting_same_module(self) -> ValueSlot {
         self.slot
     }
 
@@ -580,11 +619,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for ValueId<B> {
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-        if self.tag != module.id() {
-            return None;
-        }
-        let ty = module.value_data(self.slot).ty;
-        Some(Value::from_parts(self.slot, module, ty))
+        let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
+        let ty = module.value_data(slot).ty;
+        Some(Value::from_parts(slot, module, ty))
     }
 }
 
@@ -599,10 +636,8 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntValueId<W,
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-        if self.tag != module.id() {
-            return None;
-        }
-        let ty = module.value_data(self.slot).ty;
+        let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
+        let ty = module.value_data(slot).ty;
         debug_assert!(
             matches!(
                 module.type_data(ty),
@@ -611,7 +646,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntValueId<W,
             "IntValueId width marker does not match the arena type at its slot",
         );
         Some(IntValue::from_value_unchecked(Value::from_parts(
-            self.slot, module, ty,
+            slot, module, ty,
         )))
     }
 }
@@ -627,10 +662,8 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-        if self.tag != module.id() {
-            return None;
-        }
-        let ty = module.value_data(self.slot).ty;
+        let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
+        let ty = module.value_data(slot).ty;
         debug_assert!(
             matches!(
                 module.type_data(ty),
@@ -645,7 +678,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId
             "FloatValueId kind marker does not match the arena type at its slot",
         );
         Some(FloatValue::from_value_unchecked(Value::from_parts(
-            self.slot, module, ty,
+            slot, module, ty,
         )))
     }
 }
@@ -661,16 +694,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-        if self.tag != module.id() {
-            return None;
-        }
-        let ty = module.value_data(self.slot).ty;
+        let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
+        let ty = module.value_data(slot).ty;
         debug_assert!(
             matches!(module.type_data(ty), TypeData::Pointer { .. }),
             "PointerValueId points at a non-pointer arena type at its slot",
         );
         Some(PointerValue::from_value_unchecked(Value::from_parts(
-            self.slot, module, ty,
+            slot, module, ty,
         )))
     }
 }
@@ -686,10 +717,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FunctionI
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-        if self.tag != module.id() {
-            return None;
-        }
-        let signature = match &module.value_data(self.slot).kind {
+        let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
+        let signature = match &module.value_data(slot).kind {
             ValueKindData::Function(f) => f.signature,
             _ => return None,
         };
@@ -700,7 +729,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FunctionI
                 .is_some_and(|(ret, ..)| signature_matches_marker::<R>(module.type_data(ret))),
             "FunctionId return marker does not match the arena signature at its slot",
         );
-        Some(FunctionValue::from_parts_unchecked(self.slot, module))
+        Some(FunctionValue::from_parts_unchecked(slot, module))
     }
 }
 
@@ -779,14 +808,12 @@ macro_rules! impl_view_in_for_global_id {
 
             #[inline]
             fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-                if self.tag != module.id() {
-                    return None;
-                }
-                let data = module.value_data(self.slot);
+                let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
+                let data = module.value_data(slot);
                 if !matches!(data.kind, ValueKindData::$kind(_)) {
                     return None;
                 }
-                Some($handle::from_parts_unchecked(self.slot, module, data.ty))
+                Some($handle::from_parts_unchecked(slot, module, data.ty))
             }
         }
     )+ };
@@ -814,10 +841,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-        if self.tag != module.id() {
-            return None;
-        }
-        let data = module.value_data(self.slot);
+        let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
+        let data = module.value_data(slot);
         if !matches!(data.kind, ValueKindData::BasicBlock(_)) {
             return None;
         }
@@ -825,7 +850,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
             matches!(module.type_data(data.ty), TypeData::Label),
             "BlockId points at a non-label arena type at its slot",
         );
-        Some(BasicBlockLabel::from_parts(self.slot, module, data.ty))
+        Some(BasicBlockLabel::from_parts(slot, module, data.ty))
     }
 }
 
@@ -838,9 +863,7 @@ fn call_result_type_in<B: ModuleBrand>(
     slot: ValueSlot,
     module: ModuleRef<'_, B>,
 ) -> Option<TypeSlot> {
-    if tag != module.id() {
-        return None;
-    }
+    let slot = slot_admitted_by(tag, slot, module.id())?;
     let data = module.value_data(slot);
     let ValueKindData::Instruction(inst) = &data.kind else {
         return None;
@@ -932,17 +955,15 @@ macro_rules! impl_view_in_for_instruction_id {
 
             #[inline]
             fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-                if self.tag != module.id() {
-                    return None;
-                }
-                let data = module.value_data(self.slot);
+                let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
+                let data = module.value_data(slot);
                 let ValueKindData::Instruction(inst) = &data.kind else {
                     return None;
                 };
                 if !matches!(inst.kind, InstructionKindData::$kind(_)) {
                     return None;
                 }
-                Some($handle::from_raw(self.slot, module, data.ty))
+                Some($handle::from_raw(slot, module, data.ty))
             }
         }
     )+ };
@@ -966,9 +987,7 @@ fn phi_result_type_in<B: ModuleBrand>(
     slot: ValueSlot,
     module: ModuleRef<'_, B>,
 ) -> Option<TypeSlot> {
-    if tag != module.id() {
-        return None;
-    }
+    let slot = slot_admitted_by(tag, slot, module.id())?;
     let data = module.value_data(slot);
     let ValueKindData::Instruction(inst) = &data.kind else {
         return None;

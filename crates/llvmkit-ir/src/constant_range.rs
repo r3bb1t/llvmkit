@@ -3020,8 +3020,10 @@ pub(crate) fn constant_ranges_from_metadata(
     }
     let mut ranges = Vec::with_capacity(operands.len() / 2);
     for pair in operands.chunks_exact(2) {
-        let (low_ty, low) = metadata_constant_int(module, store, pair[0].slot())?;
-        let (high_ty, high) = metadata_constant_int(module, store, pair[1].slot())?;
+        let (low_ty, low) =
+            metadata_constant_int(module, store, pair[0].slot_trusting_same_module())?;
+        let (high_ty, high) =
+            metadata_constant_int(module, store, pair[1].slot_trusting_same_module())?;
         if low_ty != high_ty || high_ty != expected_scalar_ty {
             return None;
         }
@@ -3042,7 +3044,7 @@ pub(crate) fn metadata_constant_int(
     let MetadataKind::Constant(value_id) = store.get(id)? else {
         return None;
     };
-    constant_int_from_value(module, value_id.slot())
+    constant_int_from_value(module, value_id.slot_trusting_same_module())
 }
 
 fn constant_int_from_value(module: &ModuleCore, id: ValueSlot) -> Option<(TypeSlot, ApInt)> {

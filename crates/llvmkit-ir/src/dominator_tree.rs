@@ -115,7 +115,11 @@ where
 {
     #[inline]
     fn dominator_block_id(self, _: CrateOnly) -> ValueSlot {
-        self.slot()
+        // boundary (F2): Task 27
+        // The caller's block id, compared with slots the tree stored for its
+        // own function; nothing proves the id belongs to that function's
+        // module — the same read as the `BasicBlock` impls above.
+        self.slot_trusting_same_module()
     }
 }
 
@@ -133,7 +137,8 @@ where
 {
     #[inline]
     fn dominator_block_id(self, _: CrateOnly) -> ValueSlot {
-        (*self).slot()
+        // boundary (F2): Task 27
+        (*self).slot_trusting_same_module()
     }
 }
 
@@ -282,7 +287,7 @@ impl DominatorTree {
         // boundary (F2): Task 27
         // Two ids' raw slots: `def` and `user` are the caller's, and nothing
         // proves they come from the same module.
-        if def_bb.slot() != use_bb.slot() {
+        if def_bb.slot_trusting_same_module() != use_bb.slot_trusting_same_module() {
             return self.dominates_block(def_bb, use_bb);
         }
         self.instruction_comes_before(def_id, user_id)
@@ -309,7 +314,7 @@ impl DominatorTree {
             return false;
         }
         // boundary (F2): Task 27
-        let def_bb_id = def_bb.slot();
+        let def_bb_id = def_bb.slot_trusting_same_module();
         if def_bb_id == use_bb_id {
             return false;
         }
@@ -366,8 +371,12 @@ impl DominatorTree {
         B: DominatorTreeBlock<'ctx>,
     {
         self.dominates_edge_slots(
-            edge.start().slot(),
-            edge.end().slot(),
+            // boundary (F2): Task 27
+            // The caller's edge: its two block ids are looked up in the tree's
+            // maps, and nothing proves they come from the tree's module.
+            edge.start().slot_trusting_same_module(),
+            // boundary (F2): Task 27
+            edge.end().slot_trusting_same_module(),
             block.dominator_block_id(CrateOnly(())),
         )
     }
@@ -384,8 +393,11 @@ impl DominatorTree {
         // boundary (F2): Task 27
         let user_id = user_inst.slot_trusting_same_module();
         self.dominates_edge_use_ids(
-            edge.start().slot(),
-            edge.end().slot(),
+            // boundary (F2): Task 27
+            // As in `dominates_edge`: the caller's edge.
+            edge.start().slot_trusting_same_module(),
+            // boundary (F2): Task 27
+            edge.end().slot_trusting_same_module(),
             user_id,
             use_edge.index(),
         )
@@ -544,12 +556,12 @@ fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
     };
     let mut worklist = VecDeque::from([entry]);
     while let Some(block) = worklist.pop_front() {
-        let block_id = block.slot();
+        let block_id = block.slot_trusting_same_module();
         if !reachable.insert(block_id) {
             continue;
         }
         for succ in cfg.successors(block) {
-            if !reachable.contains(&succ.slot()) {
+            if !reachable.contains(&succ.slot_trusting_same_module()) {
                 worklist.push_back(succ);
             }
         }
@@ -590,7 +602,7 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
             }
             let mut pred_sets = cfg
                 .predecessors(&block)
-                .map(|pred| pred.slot())
+                .map(|pred| pred.slot_trusting_same_module())
                 .filter(|pred| reachable.contains(pred))
                 .filter_map(|pred| doms.get(&pred).cloned());
             let mut new_set = pred_sets.next().unwrap_or_default();
@@ -620,7 +632,7 @@ fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
             (
                 bb.to_erased().slot_trusting_same_module(),
                 cfg.predecessors(&bb.as_dyn())
-                    .map(|pred| pred.slot())
+                    .map(|pred| pred.slot_trusting_same_module())
                     .collect(),
             )
         })

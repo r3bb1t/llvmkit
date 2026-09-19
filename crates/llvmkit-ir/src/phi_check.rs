@@ -185,7 +185,10 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
     for block in function.basic_blocks() {
         let block_id = block.to_erased().slot_trusting_same_module();
         for succ in crate::cfg::block_successors(&block) {
-            predecessors.entry(succ.slot()).or_default().push(block_id);
+            predecessors
+                .entry(succ.slot_trusting_same_module())
+                .or_default()
+                .push(block_id);
         }
     }
 

@@ -722,7 +722,7 @@ where
         // boundary (F1): refused by Task 26
         let anchor_id = anchor.slot_trusting_same_module();
         // boundary (F1): refused by Task 26
-        let parent_block_id = anchor.parent().slot();
+        let parent_block_id = anchor.parent().slot_trusting_same_module();
         let label_ty = self
             .module
             .label_type::<B>()

@@ -1390,7 +1390,7 @@ where
 
         let mut log = self.cfg_updates.borrow_mut();
         for succ in &successors {
-            let succ_id = succ.slot();
+            let succ_id = succ.slot_trusting_same_module();
             log.push(CfgUpdate::delete(source_id, succ_id));
             log.push(CfgUpdate::insert(new_id, succ_id));
         }
@@ -1616,7 +1616,7 @@ where
             BasicBlock::<Dyn, Terminated, B>::from_parts(target_id, from_block.module, from.ty);
         let surviving = crate::cfg::block_successors(&from_block)
             .iter()
-            .filter(|succ| succ.slot() == target_id)
+            .filter(|succ| succ.slot_trusting_same_module() == target_id)
             .count();
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, target_id);
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
@@ -1692,7 +1692,7 @@ where
         // priority.
         if crate::cfg::block_successors(&from_block)
             .iter()
-            .any(|succ| succ.slot() == new_id)
+            .any(|succ| succ.slot_trusting_same_module() == new_id)
         {
             return Err(IrError::InvalidOperation {
                 message: "redirect: `from` already reaches `new_to`",
@@ -1854,7 +1854,7 @@ where
             BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from.ty);
         let surviving = crate::cfg::block_successors(&from_block)
             .iter()
-            .filter(|succ| succ.slot() == old_id)
+            .filter(|succ| succ.slot_trusting_same_module() == old_id)
             .count();
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, old_id);
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, new_id);
@@ -2284,7 +2284,7 @@ where
             let handle = bb.as_basic_block();
             let pred_id = handle.slot_trusting_same_module();
             for succ in crate::cfg::block_successors(&handle) {
-                if succ.slot() == target_id {
+                if succ.slot_trusting_same_module() == target_id {
                     preds.push(pred_id);
                 }
             }
@@ -2323,7 +2323,12 @@ where
                 if let Ok(inst) = InstructionView::try_from(*value) {
                     let def_block = inst.parent();
                     if !dt.dominates_block(def_block, *pred) {
-                        dom_failure = Some((def_block.slot(), pred.slot_trusting_same_module()));
+                        // Internal: `value` and `pred` were both resolved
+                        // against this module above.
+                        dom_failure = Some((
+                            def_block.slot_trusting_same_module(),
+                            pred.slot_trusting_same_module(),
+                        ));
                         break;
                     }
                 }
@@ -3764,7 +3769,7 @@ mod tests {
             .terminator()
             .expect("entry is terminated by the br");
         let new_block = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
-        let new_id = new_block.slot();
+        let new_id = new_block.slot_trusting_same_module();
 
         // Exactly the rewiring: entry loses `→ next`, the new block gains it,
         // and entry gains `→ new block`.

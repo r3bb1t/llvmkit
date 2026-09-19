@@ -817,7 +817,7 @@ fn dom_predecessor_condition<'ctx, B: ModuleBrand + 'ctx>(
     context: &InstructionView<'ctx, B>,
 ) -> Option<(Value<'ctx, B>, bool)> {
     let anchor = context.to_erased();
-    let context_block = context.parent().slot();
+    let context_block = context.parent().slot_trusting_same_module();
     let predecessor = single_predecessor(value_from_slot(anchor, context_block))?;
 
     let terminator = terminator_of_block(anchor, predecessor)?;

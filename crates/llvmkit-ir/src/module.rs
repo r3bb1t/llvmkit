@@ -2527,9 +2527,9 @@ impl<'ctx> ModuleCore {
                 MetadataKind::Specialized(node) => (store.get_specialized(node), Vec::new()),
                 MetadataKind::Constant(value_id) => {
                     let slot = store.get_constant(value_id);
-                    (slot, vec![value_id.slot()])
+                    (slot, vec![value_id.slot_trusting_same_module()])
                 }
-                MetadataKind::Ref(id) => (id.slot(), Vec::new()),
+                MetadataKind::Ref(id) => (id.slot_trusting_same_module(), Vec::new()),
                 MetadataKind::Null => {
                     let slot = store.reserve();
                     store.set(slot, MetadataKind::Null);
@@ -2538,7 +2538,10 @@ impl<'ctx> ModuleCore {
                 // Every operand of a `!DIArgList` is a real use of its value,
                 // so all of them are registered — not just a first one.
                 MetadataKind::ArgList { arguments } => {
-                    let uses = arguments.iter().map(|id| id.slot()).collect();
+                    let uses = arguments
+                        .iter()
+                        .map(|id| id.slot_trusting_same_module())
+                        .collect();
                     let slot = store.get_arg_list(arguments);
                     (slot, uses)
                 }
@@ -2577,18 +2580,21 @@ impl<'ctx> ModuleCore {
         let kind = kind.into_stored(self.id)?;
         match self.metadata.borrow().get(slot).cloned() {
             Some(MetadataKind::Constant(value_id)) => {
-                self.deregister_metadata_value_use(slot, value_id.slot());
+                self.deregister_metadata_value_use(slot, value_id.slot_trusting_same_module());
             }
             Some(MetadataKind::ArgList { arguments }) => {
                 for value_id in arguments {
-                    self.deregister_metadata_value_use(slot, value_id.slot());
+                    self.deregister_metadata_value_use(slot, value_id.slot_trusting_same_module());
                 }
             }
             _ => {}
         }
         let value_use: Vec<_> = match &kind {
-            MetadataKind::Constant(value_id) => vec![value_id.slot()],
-            MetadataKind::ArgList { arguments } => arguments.iter().map(|id| id.slot()).collect(),
+            MetadataKind::Constant(value_id) => vec![value_id.slot_trusting_same_module()],
+            MetadataKind::ArgList { arguments } => arguments
+                .iter()
+                .map(|id| id.slot_trusting_same_module())
+                .collect(),
             MetadataKind::Null
             | MetadataKind::String(_)
             | MetadataKind::Tuple { .. }
@@ -2605,14 +2611,15 @@ impl<'ctx> ModuleCore {
     /// The metadata arena's boundary: compare `id`'s module tag against this
     /// module, then range-check the slot it names.
     ///
-    /// Nothing else in the crate turns a caller's [`MetadataId`] into a
-    /// [`MetadataSlot`] — `MetadataId::slot` exists only on the storage brand —
-    /// so the tag check cannot be skipped one level up.
+    /// A caller's [`MetadataId`] reaches a [`MetadataSlot`] only through the
+    /// checked door `MetadataId::slot_in` (or `into_stored`) — the unchecked
+    /// `slot_trusting_same_module` exists only on the storage brand — so the
+    /// tag check cannot be skipped one level up.
     fn metadata_slot_of<B>(&self, id: MetadataId<B>) -> IrResult<MetadataSlot>
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id)?.slot();
+        let slot = id.slot_in(self.id)?;
         let store = self.metadata.borrow();
         if store.get(slot).is_none() {
             return Err(IrError::UnknownMetadataSlot {
@@ -2643,7 +2650,7 @@ impl<'ctx> ModuleCore {
     ) {
         let mut store = self.metadata.borrow_mut();
         if let Some(MetadataKind::Constant(value_id)) = store.get_mut(slot)
-            && value_id.slot() == from
+            && value_id.slot_trusting_same_module() == from
         {
             let tag = value_id.tag();
             *value_id = ValueId::from_raw(tag, to);
@@ -2672,7 +2679,7 @@ impl<'ctx> ModuleCore {
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id).ok()?.slot();
+        let slot = id.slot_in(self.id).ok()?;
         self.metadata
             .borrow()
             .get(slot)
@@ -2735,7 +2742,7 @@ impl<'ctx> ModuleCore {
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id)?.slot();
+        let slot = id.slot_in(self.id)?;
         let op = op.into_stored(self.id)?;
         let mut nmd = self.named_metadata.borrow_mut();
         let node = nmd.get_mut(slot.0).unwrap_or_else(|| {
@@ -2755,7 +2762,7 @@ impl<'ctx> ModuleCore {
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id)?.slot();
+        let slot = id.slot_in(self.id)?;
         let mut nmd = self.named_metadata.borrow_mut();
         let node = nmd.get_mut(slot.0).unwrap_or_else(|| {
             unreachable!("a stored NamedMetadataId always names a node in the append-only list")
@@ -2771,7 +2778,7 @@ impl<'ctx> ModuleCore {
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id).ok()?.slot();
+        let slot = id.slot_in(self.id).ok()?;
         let nmd = self.named_metadata.borrow();
         let node = nmd.get(slot.0).unwrap_or_else(|| {
             unreachable!("a stored NamedMetadataId always names a node in the append-only list")
@@ -2808,9 +2815,11 @@ impl<'ctx> ModuleCore {
             return Vec::new();
         };
         let nmd = self.named_metadata.borrow();
-        let node = nmd.get(id.slot().0).unwrap_or_else(|| {
-            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-        });
+        let node = nmd
+            .get(id.slot_trusting_same_module().0)
+            .unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
         node.operands().to_vec()
     }
 
@@ -2825,7 +2834,8 @@ impl<'ctx> ModuleCore {
                 continue;
             };
             let Some(MetadataKind::String(s)) =
-                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+                resolve_metadata_ref(&store, key_id.slot_trusting_same_module())
+                    .and_then(|slot| store.get(slot))
             else {
                 continue;
             };
@@ -2847,14 +2857,18 @@ impl<'ctx> ModuleCore {
             let Some([behavior_id, key_id, value_id]) = module_flag_tuple(&store, op) else {
                 continue;
             };
-            let Some(behavior) = resolve_metadata_ref(&store, behavior_id.slot())
-                .and_then(|slot| metadata_constant_int(self, &store, slot))
-                .and_then(|(_, value)| ModuleFlagBehavior::from_raw(value.limited_value(u64::MAX)))
+            let Some(behavior) =
+                resolve_metadata_ref(&store, behavior_id.slot_trusting_same_module())
+                    .and_then(|slot| metadata_constant_int(self, &store, slot))
+                    .and_then(|(_, value)| {
+                        ModuleFlagBehavior::from_raw(value.limited_value(u64::MAX))
+                    })
             else {
                 continue;
             };
             let Some(MetadataKind::String(key)) =
-                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+                resolve_metadata_ref(&store, key_id.slot_trusting_same_module())
+                    .and_then(|slot| store.get(slot))
             else {
                 continue;
             };
@@ -2884,9 +2898,11 @@ impl<'ctx> ModuleCore {
             return false;
         };
         let mut nmd = self.named_metadata.borrow_mut();
-        let node = nmd.get_mut(id.slot().0).unwrap_or_else(|| {
-            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-        });
+        let node = nmd
+            .get_mut(id.slot_trusting_same_module().0)
+            .unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
         if index >= node.operands().len() {
             return false;
         }
@@ -2908,7 +2924,7 @@ impl<'ctx> ModuleCore {
         id: MetadataId<StoredBrand>,
     ) -> Option<Vec<MetadataId<StoredBrand>>> {
         let store = self.metadata.borrow();
-        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let slot = resolve_metadata_ref(&store, id.slot_trusting_same_module())?;
         let MetadataKind::Tuple { operands, .. } = store.get(slot)? else {
             return None;
         };
@@ -2920,7 +2936,7 @@ impl<'ctx> ModuleCore {
     /// `dyn_cast_or_null<MDString>` shape.
     pub(super) fn metadata_string_value(&self, id: MetadataId<StoredBrand>) -> Option<String> {
         let store = self.metadata.borrow();
-        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let slot = resolve_metadata_ref(&store, id.slot_trusting_same_module())?;
         match store.get(slot)? {
             MetadataKind::String(s) => Some(s.clone()),
             _ => None,
@@ -2936,7 +2952,7 @@ impl<'ctx> ModuleCore {
         id: MetadataId<StoredBrand>,
     ) -> Option<(u32, ApInt)> {
         let store = self.metadata.borrow();
-        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let slot = resolve_metadata_ref(&store, id.slot_trusting_same_module())?;
         // `metadata_constant_int` already established the type is an integer,
         // and built the `ApInt` at its width — so the width is the answer to
         // `Md->getValue()->getType() == Int8Ty` without a second type lookup.
@@ -2960,11 +2976,15 @@ impl<'ctx> ModuleCore {
         id: MetadataId<StoredBrand>,
     ) -> Option<ValueSlot> {
         let store = self.metadata.borrow();
-        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let slot = resolve_metadata_ref(&store, id.slot_trusting_same_module())?;
         let MetadataKind::Constant(value_id) = store.get(slot)? else {
             return None;
         };
-        match &self.context().value_data(value_id.slot()).kind {
+        match &self
+            .context()
+            .value_data(value_id.slot_trusting_same_module())
+            .kind
+        {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Some(*value),
             _ => None,
         }
@@ -2985,14 +3005,18 @@ impl<'ctx> ModuleCore {
         };
         let replace_at = {
             let nmd = self.named_metadata.borrow();
-            let node = nmd.get(id.slot().0).unwrap_or_else(|| {
-                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-            });
+            let node = nmd
+                .get(id.slot_trusting_same_module().0)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "a stored NamedMetadataId always names a node in the append-only list"
+                    )
+                });
             let store = self.metadata.borrow();
             node.operands().iter().position(|op| {
                 matches!(
                     module_flag_tuple(&store, *op).and_then(|[_, key_id, _]| {
-                        resolve_metadata_ref(&store, key_id.slot())
+                        resolve_metadata_ref(&store, key_id.slot_trusting_same_module())
                             .and_then(|slot| store.get(slot))
                     }),
                     Some(MetadataKind::String(s)) if s.as_str() == key
@@ -3007,9 +3031,11 @@ impl<'ctx> ModuleCore {
         // replacement rebuilds the node with the one operand swapped —
         // observable content is identical to upstream's `setOperand(i, ..)`.
         let mut nmd = self.named_metadata.borrow_mut();
-        let node = nmd.get_mut(id.slot().0).unwrap_or_else(|| {
-            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-        });
+        let node = nmd
+            .get_mut(id.slot_trusting_same_module().0)
+            .unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
         let mut rebuilt = NamedMetadataNode::new(node.name().clone());
         for (i, op) in node.operands().iter().enumerate() {
             rebuilt.add_operand(if i == index { replacement } else { *op });

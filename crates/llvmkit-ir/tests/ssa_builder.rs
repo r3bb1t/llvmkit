@@ -599,7 +599,7 @@ fn double_seal_rejected() -> Result<(), IrError> {
 /// `foreign_variable_rejected`: a declared variable handle from one
 /// `SsaBuilder` used against a different builder's def/use surface is a
 /// typed runtime error (`check_owner_var`, the sibling check to
-/// `check_owner_block`'s existing `SsaForeignBlock` coverage).
+/// `admit_block`'s existing `SsaForeignBlock` coverage).
 #[test]
 fn foreign_variable_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-foreign-variable")?;

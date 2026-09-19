@@ -76,17 +76,29 @@ impl<B: ModuleBrand> NamedMetadataId<B> {
     /// id into the storage form, rejecting one minted by a different module.
     ///
     /// This is the only route from a caller's [`NamedMetadataId<B>`] to a
-    /// `NamedMetadataSlot`: `slot()` exists solely on
-    /// `NamedMetadataId<StoredBrand>`, which can only be produced here or by
-    /// `from_stored` on an id the module already owns. So the check cannot be
-    /// forgotten one level up — a call site that wants the slot must first
-    /// name this function and handle its `Err`.
+    /// `NamedMetadataSlot`: the unchecked door `slot_trusting_same_module`
+    /// exists solely on `NamedMetadataId<StoredBrand>`, which can only be
+    /// produced here or by `from_stored` on an id the module already owns, and
+    /// the checked door [`slot_in`](Self::slot_in) is this function followed
+    /// by that read. So the check cannot be forgotten one level up — a call
+    /// site that wants the slot must first name one of the two and handle its
+    /// `Err`.
     #[inline]
     pub(crate) fn into_stored(self, owner: ModuleId) -> IrResult<NamedMetadataId<StoredBrand>> {
         if self.tag != owner {
             return Err(IrError::ForeignNamedMetadataId);
         }
         Ok(NamedMetadataId::from_raw(self.tag, self.slot))
+    }
+
+    /// The checked door: the list slot this id names, if `owner` minted it;
+    /// [`IrError::ForeignNamedMetadataId`] otherwise. Built on
+    /// [`into_stored`](Self::into_stored), so the currency keeps one
+    /// comparison.
+    #[inline]
+    pub(crate) fn slot_in(self, owner: ModuleId) -> IrResult<NamedMetadataSlot> {
+        self.into_stored(owner)
+            .map(NamedMetadataId::slot_trusting_same_module)
     }
 
     /// Crate-internal: retag an id the module already owns back into the
@@ -99,14 +111,17 @@ impl<B: ModuleBrand> NamedMetadataId<B> {
 }
 
 impl NamedMetadataId<StoredBrand> {
-    /// Crate-internal: the list slot this **stored** id names.
+    /// The unchecked door: the list slot this **stored** id names, trusting
+    /// that it is read against the module that stores it.
     ///
     /// Defined only for the storage brand, which is the whole point: a stored
-    /// id is native to the module that holds it, so no tag check is owed. A
-    /// caller-supplied `NamedMetadataId<B>` has no such accessor and must go
-    /// through [`into_stored`](NamedMetadataId::into_stored) instead.
+    /// id is native to the module that holds it, so the trust is discharged
+    /// by construction and no tag check is owed. A caller-supplied
+    /// `NamedMetadataId<B>` has no such accessor and must go through
+    /// [`slot_in`](NamedMetadataId::slot_in) or
+    /// [`into_stored`](NamedMetadataId::into_stored) instead.
     #[inline]
-    pub(crate) fn slot(self) -> NamedMetadataSlot {
+    pub(crate) fn slot_trusting_same_module(self) -> NamedMetadataSlot {
         self.slot
     }
 }

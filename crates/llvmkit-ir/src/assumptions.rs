@@ -306,8 +306,12 @@ pub fn is_valid_assume_for_context<'ctx, B: ModuleBrand + 'ctx>(
     dominator_tree: Option<&DominatorTree>,
     allow_ephemerals: bool,
 ) -> bool {
-    let assume_block = assume.parent().slot();
-    let context_block = context.parent().slot();
+    // boundary (F2): Task 27
+    // The two caller instructions' parent block ids: compared with each other,
+    // and `context_block` is read through `assume`'s module below.
+    let assume_block = assume.parent().slot_trusting_same_module();
+    // boundary (F2): Task 27
+    let context_block = context.parent().slot_trusting_same_module();
     let anchor = assume.to_erased();
     // boundary (F2): Task 27
     // `assume` and `context` are both the caller's; their slots are compared
@@ -363,8 +367,11 @@ pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
     context: &InstructionView<'ctx, B>,
 ) -> bool {
     let anchor = assume.to_erased();
-    let assume_block = assume.parent().slot();
-    let context_block = context.parent().slot();
+    // boundary (F2): Task 27
+    // As in `is_valid_assume_for_context`: two caller instructions' blocks.
+    let assume_block = assume.parent().slot_trusting_same_module();
+    // boundary (F2): Task 27
+    let context_block = context.parent().slot_trusting_same_module();
     // boundary (F2): Task 27
     // As in `is_valid_assume_for_context`: two caller instructions.
     let assume_slot = assume.slot_trusting_same_module();
