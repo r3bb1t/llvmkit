@@ -3131,3 +3131,102 @@ fn upstream_verifier_operand_bundles_fixture_messages_match() {
         }
     }
 }
+
+/// `CallBase::hasFnAttr(Attribute::AttrKind)` through the public
+/// `has_fn_attr` on each call-site view — `CallInst`, `InvokeInst` and
+/// `CallBrInst` — reading the three places upstream's one `AttributeList`
+/// lookup covers here: the call's own attributes, its `#N` groups (which
+/// `LLParser::validateEndOfModule` merges into that list upstream), and the
+/// called function's attributes (`CallBase::hasFnAttrOnCalledFunction`).
+///
+/// llvmkit-specific: the upstream unit tests that call `hasFnAttr` with an
+/// enum kind are `InstructionsTest.AlterCallBundles` /
+/// `AlterInvokeBundles`, which read it off a copied call; this pins the
+/// reader on each view directly, with `cold` absent everywhere as the
+/// negative control.
+#[test]
+fn call_site_views_answer_has_fn_attr_from_the_call_its_groups_and_its_callee() {
+    use llvmkit_ir::{AttrKind, InstructionKind, TerminatorKind};
+
+    const SOURCE: &str = r"
+declare void @plain()
+declare void @callee_nounwind() nounwind
+declare i32 @__gxx_personality_v0(...)
+
+define void @f() personality ptr @__gxx_personality_v0 {
+entry:
+  call void @plain() nounwind
+  call void @plain() #0
+  call void @callee_nounwind()
+  call void @plain()
+  invoke void @plain() #0
+          to label %next unwind label %pad
+
+next:
+  callbr void @plain() #0
+          to label %done []
+
+done:
+  ret void
+
+pad:
+  %lp = landingpad { ptr, i32 } cleanup
+  resume { ptr, i32 } %lp
+}
+
+attributes #0 = { nounwind }
+";
+    let module = Module::dynamic("has_fn_attr");
+    Parser::new(SOURCE.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let instructions: Vec<_> = view
+        .functions()
+        .find(|function| function.name() == "f")
+        .expect("the source defines @f")
+        .basic_blocks()
+        .flat_map(|block| block.instructions())
+        .collect();
+    let calls: Vec<_> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            Some(InstructionKind::Call(call)) => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 4);
+
+    // Inline on the call site.
+    assert!(calls[0].has_fn_attr(AttrKind::NoUnwind));
+    // Through the call site's `#0`.
+    assert!(calls[1].has_fn_attr(AttrKind::NoUnwind));
+    // On the called function's declaration.
+    assert!(calls[2].has_fn_attr(AttrKind::NoUnwind));
+    // Nowhere.
+    assert!(!calls[3].has_fn_attr(AttrKind::NoUnwind));
+    for call in &calls {
+        assert!(!call.has_fn_attr(AttrKind::Cold));
+    }
+
+    let invoke = instructions
+        .iter()
+        .find_map(|instruction| match instruction.terminator_kind() {
+            Some(TerminatorKind::Invoke(invoke)) => Some(invoke),
+            _ => None,
+        })
+        .expect("the source makes an invoke");
+    assert!(invoke.has_fn_attr(AttrKind::NoUnwind));
+    assert!(!invoke.has_fn_attr(AttrKind::Cold));
+
+    let callbr = instructions
+        .iter()
+        .find_map(|instruction| match instruction.terminator_kind() {
+            Some(TerminatorKind::CallBr(callbr)) => Some(callbr),
+            _ => None,
+        })
+        .expect("the source makes a callbr");
+    assert!(callbr.has_fn_attr(AttrKind::NoUnwind));
+    assert!(!callbr.has_fn_attr(AttrKind::Cold));
+}

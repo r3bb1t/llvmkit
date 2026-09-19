@@ -21,12 +21,14 @@ use super::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::Branded;
 use crate::align::MaybeAlign;
 use crate::atomic_ordering::AtomicOrdering;
-use crate::attributes::AttributeStorage;
+use crate::attributes::{AttrIndex, AttrKind, AttributeStorage};
 use crate::error::{IrError, IrResult};
 use crate::fmf::FastMathFlags;
-use crate::module::{ModuleBrand, ModuleId, ModuleRef};
+use crate::function::FunctionValue;
+use crate::marker::Dyn;
+use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef};
 use crate::sync_scope::SyncScope;
-use crate::value::{IsValue, Value, ValueSlot, ValueSlotAccess};
+use crate::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOpcode {
@@ -2409,6 +2411,58 @@ impl CallAttributeData {
 
     pub fn fast_math_flags_value(&self) -> FastMathFlags {
         self.fmf
+    }
+
+    /// `Attrs.hasFnAttr(Kind)` — whether the call site's own attribute list
+    /// carries the function attribute `kind`. Upstream's list already holds
+    /// every `#N` group the call named (`LLParser::validateEndOfModule` merges
+    /// them); llvmkit keeps the group numbers beside the inline attributes and
+    /// resolves them here (`docs/divergences.md` D9).
+    fn has_fn_attr_in(&self, module: &ModuleCore, kind: AttrKind) -> bool {
+        self.function_attrs.has_kind(AttrIndex::Function, kind)
+            || self.function_attr_groups.iter().any(|group| {
+                module
+                    .attribute_group(*group)
+                    .is_some_and(|storage| storage.has_kind(AttrIndex::Function, kind))
+            })
+    }
+}
+
+/// Whether a call site has the function attribute `kind`, on itself or on the
+/// function it calls. The one port of `CallBase::hasFnAttr(Attribute::AttrKind)`
+/// (`IR/InstrTypes.h`) — its `hasFnAttrImpl` body and the
+/// `CallBase::hasFnAttrOnCalledFunction` it falls back to
+/// (`lib/IR/Instructions.cpp`) — for every caller in the crate: the call-site
+/// views' [`CallInst::has_fn_attr`](crate::CallInst::has_fn_attr) and its
+/// siblings, the speculation and assumption analyses, and the verifier.
+///
+/// `callee` is the call's called operand as stored — upstream's
+/// `getCalledOperand()`, not stripped of pointer casts — and `attrs` the call
+/// site's stored attributes, both of `module`.
+///
+/// Upstream's `hasFnAttr` asserts `Kind != Attribute::NoBuiltin` ("Use
+/// CallBase::isNoBuiltin() to check for Attribute::NoBuiltin"); this routine
+/// is `hasFnAttrImpl`, which has no such guard, and answers for `NoBuiltin`
+/// the way `isNoBuiltin`'s first half asks it.
+pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
+    module: ModuleRef<'ctx, B>,
+    callee: ValueSlot,
+    attrs: &CallAttributeData,
+    kind: AttrKind,
+) -> bool {
+    // `if (Attrs.hasFnAttr(Kind)) return true;`
+    if attrs.has_fn_attr_in(module.module(), kind) {
+        return true;
+    }
+    // `return hasFnAttrOnCalledFunction(Kind);`, which is
+    // `if (auto *F = dyn_cast<Function>(getCalledOperand()))
+    //    return F->getAttributes().hasFnAttr(Kind);
+    //  return false;`
+    match &module.value_data(callee).kind {
+        ValueKindData::Function(_) => {
+            FunctionValue::<Dyn, B>::from_parts_unchecked(callee, module).has_fn_attribute(kind)
+        }
+        _ => false,
     }
 }
 

@@ -26,11 +26,14 @@
 
 use core::iter::FusedIterator;
 
-use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
+use crate::attributes::AttrKind;
 use crate::basic_block::BasicBlockData;
 use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
-use crate::instr_types::{BinaryOpData, BranchKind, CallAttributeData, CastOpcode, SelectInstData};
+use crate::function::FunctionValue;
+use crate::instr_types::{
+    BinaryOpData, BranchKind, CallAttributeData, CastOpcode, SelectInstData, call_site_has_fn_attr,
+};
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
@@ -434,7 +437,8 @@ fn has_no_free_calls<'ctx, B: ModuleBrand + 'ctx>(
         let Some((callee, attrs)) = call_parts(kind) else {
             continue;
         };
-        if !call_site_has_fn_attr(anchor, callee, attrs, AttrKind::NoFree) {
+        let module: ModuleRef<B> = ModuleRef::new(anchor.module().core_ref());
+        if !call_site_has_fn_attr(module, callee, attrs, AttrKind::NoFree) {
             return false;
         }
     }
@@ -804,7 +808,8 @@ fn is_entry_block<'ctx, B: ModuleBrand + 'ctx>(anchor: Value<'ctx, B>, block: Va
     data.basic_blocks.borrow().first() == Some(&block)
 }
 
-/// Whether the function containing `block` carries `attribute`.
+/// Whether the function containing `block` carries `attribute`: upstream's
+/// `F->hasFnAttribute(Kind)`, ported once as `FunctionValue::has_fn_attribute`.
 fn enclosing_function_has_attribute<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     block: ValueSlot,
@@ -814,10 +819,10 @@ fn enclosing_function_has_attribute<'ctx, B: ModuleBrand + 'ctx>(
         return false;
     };
     let function = value_from_slot(anchor, parent);
-    let ValueKindData::Function(data) = &function.data().kind else {
-        return false;
-    };
-    storage_has_enum_attr(&data.attributes.borrow(), AttrIndex::Function, attribute)
+    match FunctionValue::try_from(function) {
+        Ok(function) => function.has_fn_attribute(attribute),
+        Err(_) => false,
+    }
 }
 
 /// Run `f` over `block`'s [`BasicBlockData`], or answer `None` when the slot is
@@ -1196,30 +1201,6 @@ fn may_have_side_effects<'ctx, B: ModuleBrand + 'ctx>(
     instruction_may_have_side_effects(value, kind)
 }
 
-/// Whether the call site or its callee carries `attribute`. Ports
-/// `CallBase::hasFnAttr`.
-fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    callee: ValueSlot,
-    attrs: &CallAttributeData,
-    attribute: AttrKind,
-) -> bool {
-    if storage_has_enum_attr(attrs.function_attrs(), AttrIndex::Function, attribute) {
-        return true;
-    }
-    let callee = value_from_slot(anchor, callee);
-    let ValueKindData::Function(data) = &callee.data().kind else {
-        return false;
-    };
-    if storage_has_enum_attr(&data.attributes.borrow(), AttrIndex::Function, attribute) {
-        return true;
-    }
-    match descriptor_for_callee(callee).map(|descriptor| descriptor.id()) {
-        Some(id) if attribute == AttrKind::NoFree => id.no_free(),
-        _ => false,
-    }
-}
-
 /// The callee and call-site attributes of a call-like instruction.
 fn call_parts(kind: &InstructionKindData) -> Option<(ValueSlot, &CallAttributeData)> {
     match kind {
@@ -1228,19 +1209,6 @@ fn call_parts(kind: &InstructionKindData) -> Option<(ValueSlot, &CallAttributeDa
         InstructionKindData::CallBr(data) => Some((data.callee.get(), &data.attrs)),
         _ => None,
     }
-}
-
-/// Whether `storage` carries the enum attribute `attribute` at `index`.
-fn storage_has_enum_attr(
-    storage: &AttributeStorage,
-    index: AttrIndex,
-    attribute: AttrKind,
-) -> bool {
-    storage.get(index).is_some_and(|stored| {
-        stored
-            .iter()
-            .any(|entry| matches!(entry, AttributeStored::Enum(kind) if *kind == attribute))
-    })
 }
 
 /// The instruction payload behind `value`, or `None` when it is not one.

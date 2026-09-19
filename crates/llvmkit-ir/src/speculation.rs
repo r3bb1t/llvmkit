@@ -38,7 +38,7 @@ use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
 use crate::instr_types::{
     BranchKind, CallAttributeData, CastOpcode, LandingPadClauseKind, LandingPadInstData, Opcode,
-    ShuffleMaskElem, ShuffleVectorInstData,
+    ShuffleMaskElem, ShuffleVectorInstData, call_site_has_fn_attr,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicId, descriptor_for_callee};
@@ -975,9 +975,12 @@ fn may_throw<'ctx, B: ModuleBrand + 'ctx>(
     kind: &InstructionKindData,
 ) -> bool {
     match kind {
-        InstructionKindData::Call(data) => {
-            !call_site_has_fn_attr(anchor, data.callee.get(), &data.attrs, AttrKind::NoUnwind)
-        }
+        InstructionKindData::Call(data) => !call_site_has_fn_attr(
+            module_ref(anchor),
+            data.callee.get(),
+            &data.attrs,
+            AttrKind::NoUnwind,
+        ),
         // `unwindsToCaller()` is "no unwind destination".
         InstructionKindData::CleanupReturn(data) => data.unwind_dest.get().is_none(),
         InstructionKindData::CatchSwitch(data) => data.unwind_dest.get().is_none(),
@@ -1053,7 +1056,12 @@ fn will_return<'ctx, B: ModuleBrand + 'ctx>(
             let Some(call) = call_parts(kind) else {
                 return true;
             };
-            call_site_has_fn_attr(anchor, call.callee.get(), call.attrs, AttrKind::WillReturn)
+            call_site_has_fn_attr(
+                module_ref(anchor),
+                call.callee.get(),
+                call.attrs,
+                AttrKind::WillReturn,
+            )
         }
         _ => true,
     }
@@ -1285,54 +1293,6 @@ fn call_parts(kind: &InstructionKindData) -> Option<CallParts<'_>> {
             attrs: &data.attrs,
         }),
         _ => None,
-    }
-}
-
-/// Whether the call site or its callee carries `attribute` as a function
-/// attribute. Ports `CallBase::hasFnAttr`, which checks the call site first and
-/// falls back to the called function.
-pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    callee: ValueSlot,
-    attrs: &CallAttributeData,
-    attribute: AttrKind,
-) -> bool {
-    if storage_has_enum_attr(attrs.function_attrs(), AttrIndex::Function, attribute) {
-        return true;
-    }
-    // `LLParser::parseCall` folds a `#N` attribute-group reference into the
-    // call's `AttributeList` before `CallBase::hasFnAttr` ever reads it, so
-    // upstream has no separate group lookup. llvmkit keeps the group numbers
-    // beside the call and resolves them here; without this, `call void @f() #0`
-    // with `attributes #0 = { noreturn }` reports no `noreturn` at all.
-    let module = module_ref(anchor).module();
-    for group in attrs.function_attr_groups_slice() {
-        if let Some(group_attrs) = module.attribute_group(*group)
-            && storage_has_enum_attr(&group_attrs, AttrIndex::Function, attribute)
-        {
-            return true;
-        }
-    }
-    let callee = value_from_slot(anchor, callee);
-    let ValueKindData::Function(data) = &callee.data().kind else {
-        return false;
-    };
-    if storage_has_enum_attr(&data.attributes.borrow(), AttrIndex::Function, attribute) {
-        return true;
-    }
-    // An intrinsic declaration carries its TableGen properties whether or not
-    // they were spelled out in the `.ll`: upstream materialises them in the
-    // `Function` constructor, llvmkit reads them back off the record.
-    match descriptor_for_callee(callee).map(|descriptor| descriptor.id()) {
-        Some(id) => match attribute {
-            AttrKind::NoUnwind => !id.may_throw(),
-            AttrKind::WillReturn => id.will_return(),
-            AttrKind::Speculatable => id.is_speculatable(),
-            AttrKind::NoFree => id.no_free(),
-            AttrKind::NoReturn => id.no_return(),
-            _ => false,
-        },
-        None => false,
     }
 }
 

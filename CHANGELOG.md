@@ -19,6 +19,52 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `hasFnAttr` reads attribute groups, from one port
+
+- **Fixed (llvmkit-ir):** `will_not_free_between` answered `false` when a
+  call's `nofree` — on the call site or on the callee's declaration — or the
+  enclosing function's `nosync` was written through an `#N` attribute group.
+  Upstream's parser has merged every group into the object's attribute list
+  before `CallBase::hasFnAttr` / `Function::hasFnAttribute` read it; llvmkit
+  keeps the group numbers beside the object and resolves them on lookup, and
+  the assumptions copy of `hasFnAttr` did not.
+- **Fixed (llvmkit-ir):** the verifier rejected a valid module with
+  `A single unwind edge may only enter one EH pad` when `nounwind` reached an
+  `invoke` of an intrinsic through a call-site group:
+  `Verifier::visitEHPadPredecessors`' `II->doesNotThrow()` had its own copy of
+  `hasFnAttr`, which read inline attributes only. It also read the called
+  operand after `stripPointerCasts`; upstream's `doesNotThrow` reads
+  `getCalledOperand()` as stored.
+- **Fixed (llvmkit-ir):** replacing an intrinsic declaration's attributes
+  (`FunctionValue::set_attributes`) did not change what its calls answered:
+  the speculation and assumptions copies of `hasFnAttr` also read the
+  intrinsic's TableGen record at query time (`nounwind`, `willreturn`,
+  `speculatable`, `nofree` and `noreturn` in one, `nofree` in the other).
+  Upstream reads the declaration's list as it stands; the attributes
+  `Intrinsic::getAttributes` gives it are in that list because the `Function`
+  constructor put them there, and llvmkit's
+  `get_or_insert_intrinsic_declaration` stores them the same way — it is the
+  only route that creates a function under an intrinsic's name. The record is
+  no longer consulted.
+- There were three copies (`speculation.rs`, `assumptions.rs`, and the
+  verifier's `call_does_not_throw`); there is one port now,
+  `instr_types::call_site_has_fn_attr`, on top of a crate-internal port of
+  `Function::hasFnAttribute` (D5). It matches an attribute of the kind
+  whatever its payload, as `AttributeList::hasFnAttr` does, where the copies
+  matched only bare enum attributes.
+- **Added (llvmkit-ir):** `has_fn_attr(AttrKind) -> bool` on `CallInst`,
+  `TypedCallInst`, `InvokeInst` and `CallBrInst` — `CallBase::hasFnAttr`,
+  answered by that one port. Upstream asserts on `Attribute::NoBuiltin`;
+  llvmkit answers it by the same two lookups instead of porting the crash.
+- New tests: `parser_eh_funclet::upstream_pr69428_fixture_verifies`
+  (`test/Verifier/pr69428.ll`, vendored),
+  `parser_eh_funclet::an_invoke_edge_is_exempt_when_nounwind_arrives_through_an_attribute_group`,
+  `assumptions::will_not_free_between_reads_nofree_through_an_attribute_group` /
+  `..._reads_nosync_through_an_attribute_group` /
+  `..._reads_an_intrinsic_declarations_attribute_list`, and
+  `parser_calls::call_site_views_answer_has_fn_attr_from_the_call_its_groups_and_its_callee`,
+  each with its positive control.
+
 ### Changed — a function pass's report carries its module's brand *(breaking)*
 
 - **Breaking (llvmkit-ir, llvmkit-macros):** `FnReport` is `FnReport<B>`,

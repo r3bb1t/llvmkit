@@ -709,6 +709,47 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .map(|value| value == "true")
     }
 
+    /// Whether this function's attribute list carries the function attribute
+    /// `kind`. Ports `Function::hasFnAttribute(Attribute::AttrKind)`
+    /// (`IR/Function.h`), which is `AttributeSets.hasFnAttr(Kind)` — the same
+    /// question `CallBase::hasFnAttrOnCalledFunction` asks as
+    /// `F->getAttributes().hasFnAttr(Kind)`.
+    ///
+    /// Upstream's list is one `AttributeList`; llvmkit's is the attributes
+    /// stored on the function plus its `#N` attribute groups, which
+    /// `LLParser::validateEndOfModule`'s `ForwardRefAttrGroups` loop merges
+    /// into the list upstream and llvmkit keeps beside the function, resolved
+    /// on lookup (`docs/divergences.md` D9).
+    ///
+    /// An intrinsic declaration needs no third source: the attributes
+    /// `Intrinsic::getAttributes` gives it — which upstream's `Function`
+    /// constructor installs, and `UpgradeIntrinsicFunction` reinstalls after
+    /// parsing — are stored on it by `get_or_insert_intrinsic_declaration`,
+    /// the only route that creates a function under an intrinsic's name. What
+    /// is read is the list as it stands, so a list replaced through
+    /// [`set_attributes`](Self::set_attributes) answers for itself, as
+    /// upstream's does after `Function::setAttributes`.
+    pub(crate) fn has_fn_attribute(self, kind: AttrKind) -> bool {
+        if self
+            .data()
+            .attributes
+            .borrow()
+            .has_kind(AttrIndex::Function, kind)
+        {
+            return true;
+        }
+        let module = self.module.module();
+        self.data()
+            .function_attr_groups
+            .borrow()
+            .iter()
+            .any(|group| {
+                module
+                    .attribute_group(*group)
+                    .is_some_and(|storage| storage.has_kind(AttrIndex::Function, kind))
+            })
+    }
+
     pub(crate) fn function_string_attribute(self, key: &str) -> Option<String> {
         {
             let attrs = self.data().attributes.borrow();

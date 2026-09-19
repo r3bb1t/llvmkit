@@ -4127,12 +4127,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         //         (Call.doesNotReturn() && FTy->getReturnType()->isVoidTy())), …)`
         //
         // `CallBase::doesNotReturn()` is `hasFnAttr(Attribute::NoReturn)`,
-        // already ported as `call_site_has_fn_attr`. Its first argument is an
-        // anchor used only to recover the module, so the callee value serves.
-        let callee_data = self.module.context().value_data(callee);
-        let anchor = Value::<B>::from_parts(callee, self.module, callee_data.ty);
-        let does_not_return =
-            crate::speculation::call_site_has_fn_attr(anchor, callee, attrs, AttrKind::NoReturn);
+        // ported once as `call_site_has_fn_attr`.
+        let does_not_return = crate::instr_types::call_site_has_fn_attr(
+            ModuleRef::<B>::new(self.module),
+            callee,
+            attrs,
+            AttrKind::NoReturn,
+        );
         self.verifier_check(
             f,
             bb,
@@ -5687,25 +5688,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         self.first_non_phi_in_block(f, unwind_dest)
     }
 
-    /// `CallBase::doesNotThrow()` — `hasFnAttr(Attribute::NoUnwind)`, which
-    /// reads the call site's own function attributes and then the called
-    /// function's (`CallBase::hasFnAttrOnCalledFunction`).
-    fn call_does_not_throw(&self, callee: ValueSlot, attrs: &CallAttributeData) -> bool {
-        if attrs
-            .function_attrs()
-            .has_kind(AttrIndex::Function, AttrKind::NoUnwind)
-        {
-            return true;
-        }
-        match &self.module.context().value_data(callee).kind {
-            ValueKindData::Function(data) => data
-                .attributes
-                .borrow()
-                .has_kind(AttrIndex::Function, AttrKind::NoUnwind),
-            _ => false,
-        }
-    }
-
     /// `Verifier::visitEHPadPredecessors` (`lib/IR/Verifier.cpp`), whole.
     ///
     /// `pad` is upstream's `Instruction &I`, and `bb` its parent block.
@@ -5864,10 +5846,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     let stripped = crate::pointer_analysis::strip_pointer_casts(callee_value);
                     let intrinsic_id = crate::intrinsics::descriptor_for_callee(stripped)
                         .map(|descriptor| descriptor.id());
+                    // `II->doesNotThrow()` is `hasFnAttr(Attribute::NoUnwind)`
+                    // on the invoke, whose called operand is `II`'s own —
+                    // not the stripped `CalledFn`.
                     if let Some(id) = intrinsic_id
-                        && self.call_does_not_throw(
-                            stripped.slot_trusting_same_module(),
+                        && crate::instr_types::call_site_has_fn_attr(
+                            ModuleRef::<B>::new(self.module),
+                            callee,
                             &invoke.attrs,
+                            AttrKind::NoUnwind,
                         )
                         && !crate::intrinsic_inst::may_lower_to_function_call(id)
                     {

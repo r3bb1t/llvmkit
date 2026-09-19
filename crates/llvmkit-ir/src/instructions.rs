@@ -37,6 +37,7 @@ use super::{IrError, IrResult};
 // Only the crate-internal raw-phi authoring surface lifts through these, and
 // that surface is `#[cfg(test)]` — block arguments are the public way to
 // author a phi. See `docs/design/phi-type-guarantees-design.md`, slice 7.
+use super::attributes::AttrKind;
 #[cfg(test)]
 use super::float_kind::IntoFloatValue;
 use super::float_kind::{Bfloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
@@ -46,6 +47,7 @@ use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::ShuffleMaskElem;
 use super::instr_types::TailCallKind;
+use super::instr_types::call_site_has_fn_attr;
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
@@ -885,6 +887,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     pub fn tail_call_kind(self) -> TailCallKind {
         self.payload().tail_kind
     }
+    /// Whether this call, or the function it calls, has the function
+    /// attribute `kind`. Mirrors `CallBase::hasFnAttr(Attribute::AttrKind)`:
+    /// the call's own attributes first — its `#N` groups included, which
+    /// upstream's parser has already merged — then
+    /// `CallBase::hasFnAttrOnCalledFunction`, the attributes of a callee that
+    /// is a function.
+    ///
+    /// Upstream asserts `Kind != Attribute::NoBuiltin`, pointing a caller at
+    /// `isNoBuiltin`. llvmkit does not port the crash: asked about `nobuiltin`
+    /// it answers the same two lookups, which is what `isNoBuiltin`'s first
+    /// half (`hasFnAttrImpl(Attribute::NoBuiltin)`) reads.
+    pub fn has_fn_attr(self, kind: AttrKind) -> bool {
+        let payload = self.payload();
+        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+    }
     /// The call's operand bundles, in order. Mirrors reading
     /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
     pub fn operand_bundles(
@@ -1038,6 +1055,14 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
     #[inline]
     pub fn as_dyn(self) -> CallInst<'ctx, Dyn, B> {
         self.inner.as_dyn()
+    }
+
+    /// Whether this call, or the function it calls, has the function
+    /// attribute `kind`. Mirrors `CallBase::hasFnAttr`; see
+    /// [`CallInst::has_fn_attr`].
+    #[inline]
+    pub fn has_fn_attr(self, kind: AttrKind) -> bool {
+        self.inner.has_fn_attr(kind)
     }
 
     /// Widen to the erased [`Value`] handle.
@@ -3531,6 +3556,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
         OperandBundleUse::find(&self.payload().attrs, self.module, tag)
     }
+    /// Whether this invoke, or the function it calls, has the function
+    /// attribute `kind`. Mirrors `CallBase::hasFnAttr`, as
+    /// [`CallInst::has_fn_attr`] does.
+    pub fn has_fn_attr(self, kind: AttrKind) -> bool {
+        let payload = self.payload();
+        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+    }
     pub fn normal_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().normal_dest.get())
     }
@@ -3601,6 +3633,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
         tag: &OperandBundleTag,
     ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
         OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+    }
+    /// Whether this callbr, or the function it calls, has the function
+    /// attribute `kind`. Mirrors `CallBase::hasFnAttr`, as
+    /// [`CallInst::has_fn_attr`] does.
+    pub fn has_fn_attr(self, kind: AttrKind) -> bool {
+        let payload = self.payload();
+        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
     }
     pub fn default_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_dest.get())
