@@ -1779,10 +1779,40 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 - Const-index GEP shortcuts (`CreateConstGEP1_32` etc.).
 - Named `icmp_*` per-predicate wrappers already exist; audit found no
   gap there.
-- Debug-loc threading and operand-bundle infrastructure (deferred with
-  metadata work).
+- Debug-loc threading (deferred with metadata work). Operand bundles are no
+  longer deferred: since 2026-09-19 the call, invoke and callbr builders take
+  `OperandBundleDef`s beside the arguments, as `CreateCall(…, Args,
+  OpBundles, …)` does.
 - RAII-style `InsertPointGuard` / `FastMathFlagGuard` analogs (Rust shape:
   scoped closure `with_insert_point(bb, |b| ...)` rather than Drop guards).
+
+## Operand bundles — three upstream unit tests not ported (found 2026-09-19, Task 24 fix round 1)
+
+The bundle split (`OperandBundleDef` in, `OperandBundleUse` out, as
+`IR/InstrTypes.h` has them) was checked against the three upstream unit tests
+that exercise bundles. None ports whole, for these reasons:
+
+- `InstructionsTest.AlterCallBundles` and `InstructionsTest.AlterInvokeBundles`
+  (`unittests/IR/InstructionsTest.cpp`) build a call or invoke, then copy it
+  with its bundles replaced — `CallInst::Create(Call.get(), NewBundle)` /
+  `InvokeInst::Create(Invoke.get(), NewBundle)`, the `CallBase::Create(CallBase *CB,
+  ArrayRef<OperandBundleDef> Bundles, InsertPosition)` family — and compare the
+  copy's arguments, calling convention, tail kind, `cold` attribute, debug
+  location and bundle. llvmkit has no such copy constructor:
+  `rg -n "fn \w*(clone|bundles|create)\w*" crates/llvmkit-ir/src/instructions.rs crates/llvmkit-ir/src/instruction.rs`
+  finds only `Clone` impls of the copyable views and the new `operand_bundles`
+  readers. Closing it means a "re-create this call site with other bundles"
+  constructor (the upstream shape inserts the copy detached, which llvmkit's
+  typestate would spell as a `Detached` instruction). The two tests port whole
+  once it exists; until then the bundle round trip is pinned by
+  `cross_module_handles::an_operand_bundle_input_from_another_module_is_refused`
+  (positive control) and `parser_calls::operand_bundle_reads_back_and_refuses_a_duplicated_tag`,
+  neither of which claims to be these ports.
+- `AsmWriterTest.PrintNullOperandBundle` (`unittests/IR/AsmWriterTest.cpp`)
+  nulls a bundle input with `dropAllReferences()` and checks the printer's
+  `<null operand bundle!>`. Not portable by model: a stored input is an arena
+  slot, never null, so the branch has no llvmkit state to print — recorded at
+  `fmt_operand_bundles` in `asm_writer.rs` since the operand-bundle parity work.
 
 ## Ergonomics backlog (from the core audit)
 

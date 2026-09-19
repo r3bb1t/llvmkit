@@ -83,7 +83,8 @@ use super::instr_types::{
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, ExactFlags,
-    LoadInstData, OverflowFlags, ReturnOpData, ShuffleMaskElem, StoreInstData, UnaryOpcode,
+    LoadInstData, OperandBundleDef, OverflowFlags, ReturnOpData, ShuffleMaskElem, StoreInstData,
+    UnaryOpcode,
 };
 use super::instruction::{
     Instruction, InstructionKind, InstructionKindData, InstructionView, build_instruction_value,
@@ -103,7 +104,8 @@ use super::ir_builder::folder::IrBuilderFolder;
 use super::marker::ExpectedRetKind;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{
-    DynBrand, Invariant, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified,
+    DynBrand, Invariant, Module, ModuleBrand, ModuleCore, ModuleId, ModuleRef, ModuleView,
+    Unverified,
 };
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
@@ -296,6 +298,7 @@ pub struct CallSiteConfig<'ctx, B: ModuleBrand> {
     name: String,
     calling_conv: CallingConv,
     attrs: CallAttributeData,
+    operand_bundles: Vec<OperandBundleDef<'ctx, B>>,
     call_site_fn_ty: Option<FunctionType<'ctx, B>>,
 }
 
@@ -308,6 +311,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallSiteConfig<'ctx, B> {
             name: name.into(),
             calling_conv: CallingConv::C,
             attrs: CallAttributeData::default(),
+            operand_bundles: Vec::new(),
             call_site_fn_ty: None,
         }
     }
@@ -354,8 +358,46 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallSiteConfig<'ctx, B> {
         &self.attrs
     }
 
-    pub(super) fn into_parts(self) -> (String, CallingConv, CallAttributeData) {
-        (self.name, self.calling_conv, self.attrs)
+    /// The call site's operand bundles, replacing any set before. Mirrors the
+    /// `ArrayRef<OperandBundleDef> OpBundles` parameter of
+    /// `IRBuilderBase::CreateCall` / `CreateInvoke` / `CreateCallBr`, which
+    /// upstream takes beside the arguments rather than in the
+    /// `AttributeList`. The consuming builder admits every input through the
+    /// checked door before anything is created: an input of another module is
+    /// refused with [`IrError::ForeignValueId`].
+    #[must_use]
+    pub fn operand_bundles<Bundles>(mut self, bundles: Bundles) -> Self
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        self.operand_bundles = bundles.into_iter().collect();
+        self
+    }
+
+    /// The operand bundles set so far.
+    pub fn operand_bundles_value(&self) -> &[OperandBundleDef<'ctx, B>] {
+        &self.operand_bundles
+    }
+
+    /// Consume the config into its name, calling convention and stored
+    /// attributes, admitting every operand-bundle input against `owner` — the
+    /// module of the call site being built — through the checked door. Each
+    /// consumer calls it before the call site is created, so a refused input
+    /// leaves the module unchanged.
+    pub(super) fn into_parts(
+        self,
+        owner: ModuleId,
+    ) -> IrResult<(String, CallingConv, CallAttributeData)> {
+        let bundles = self
+            .operand_bundles
+            .into_iter()
+            .map(|bundle| bundle.into_stored(owner))
+            .collect::<IrResult<Box<[_]>>>()?;
+        Ok((
+            self.name,
+            self.calling_conv,
+            self.attrs.with_operand_bundles(bundles),
+        ))
     }
 }
 
@@ -5505,7 +5547,7 @@ where
             .into_typed_callee(ModuleRef::new(self.module))?
             .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let payload = CallInstData::new_with_attrs(
             f.slot_trusting_same_module(),
             f.signature().slot_trusting_same_module(),
@@ -5547,6 +5589,7 @@ where
             tail_kind: TailCallKind::None,
             calling_conv: None,
             attrs: CallAttributeData::default(),
+            operand_bundles: Vec::new(),
             name: String::new(),
         }
     }
@@ -5739,6 +5782,7 @@ where
             calling_conv: callee.calling_conv(),
             tail_kind: TailCallKind::None,
             attrs: CallAttributeData::default(),
+            operand_bundles: Vec::new(),
             name: String::new(),
             intrinsic_descriptor: None,
             arg_error: None,
@@ -5820,7 +5864,7 @@ where
         // `CallInst::Create` then `setTailCallKind` / `setCallingConv` /
         // `setAttributes`: llvmkit's payload constructor takes all four at
         // once, so the four upstream statements land as one.
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let payload = CallInstData::new_with_attrs(
             callee,
             fn_ty.slot_trusting_same_module(),
@@ -8672,7 +8716,7 @@ where
         let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let f = callee.as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let payload = InvokeInstData::new_with_attrs(
             f.slot_trusting_same_module(),
             f.signature().slot_trusting_same_module(),
@@ -8868,7 +8912,7 @@ where
         let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let callee_v = callee.as_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config)?;
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -8936,7 +8980,7 @@ where
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
         let callee_v = IsValue::as_erased(callee);
         let ret_ty = fn_ty.return_type().slot_trusting_same_module();
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -9036,7 +9080,7 @@ where
             arg_ids.push(v.slot_trusting_same_module());
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let payload = InvokeInstData::new_with_attrs(
             asm_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
@@ -9120,7 +9164,7 @@ where
         let default_dest = self.plain_edge_target(default_dest)?;
         let callee_v = callee.as_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config)?;
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -9196,7 +9240,7 @@ where
         let default_dest = self.plain_edge_target(default_dest)?;
         let callee_v = IsValue::as_erased(callee);
         let ret_ty = fn_ty.return_type().slot_trusting_same_module();
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -9309,7 +9353,7 @@ where
                     .map(|l| l.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
-        let (name, calling_conv, attrs) = config.into_parts();
+        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
         let payload = CallBrInstData::new_with_attrs(
             asm_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
@@ -10327,6 +10371,9 @@ where
     calling_conv: crate::CallingConv,
     tail_kind: TailCallKind,
     attrs: CallAttributeData,
+    /// The caller's operand bundles, kept as handles and admitted by
+    /// [`build`](CallBuilder::build) through the checked door.
+    operand_bundles: Vec<OperandBundleDef<'ctx, B>>,
     name: String,
     intrinsic_descriptor: Option<IntrinsicDescriptor<'ctx, B>>,
     /// First error raised by an [`arg`](CallBuilder::arg) operand, replayed by
@@ -10355,6 +10402,7 @@ where
             .field("arguments", &self.args.len())
             .field("calling_conv", &self.calling_conv)
             .field("tail_kind", &self.tail_kind)
+            .field("operand_bundles", &self.operand_bundles)
             .field("name", &self.name)
             .field("intrinsic_descriptor", &self.intrinsic_descriptor)
             .field("arg_error", &self.arg_error)
@@ -10413,6 +10461,20 @@ where
     #[must_use]
     pub fn call_attributes(mut self, attrs: CallAttributeData) -> Self {
         self.attrs = attrs;
+        self
+    }
+
+    /// The call's operand bundles, replacing any set before — the
+    /// `ArrayRef<OperandBundleDef> OpBundles` parameter of
+    /// `IRBuilderBase::CreateCall`. [`build`](Self::build) admits every input
+    /// through the checked door before the call is created: an input of
+    /// another module is refused with [`IrError::ForeignValueId`].
+    #[must_use]
+    pub fn operand_bundles<Bundles>(mut self, bundles: Bundles) -> Self
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        self.operand_bundles = bundles.into_iter().collect();
         self
     }
 
@@ -10478,6 +10540,12 @@ where
         let module_id = self.parent.module.id();
         let callee = self.callee.slot_in(module_id)?;
         let fn_ty = self.fn_ty.slot_in(module_id)?;
+        // Boundary: every operand-bundle input, admitted before anything is
+        // read or created.
+        let bundles = core::mem::take(&mut self.operand_bundles)
+            .into_iter()
+            .map(|bundle| bundle.into_stored(module_id))
+            .collect::<IrResult<Box<[_]>>>()?;
         self.validate_intrinsic_descriptor_args()?;
         self.parent
             .validate_call_site_args(self.fn_ty, &self.args)?;
@@ -10487,7 +10555,7 @@ where
             self.args.into_boxed_slice(),
             self.calling_conv,
             self.tail_kind,
-            self.attrs,
+            self.attrs.with_operand_bundles(bundles),
         );
         Ok(self.parent.append_instruction(
             // Internal: read from the callee or the override, both admitted above.
@@ -10555,6 +10623,9 @@ where
     tail_kind: TailCallKind,
     calling_conv: Option<CallingConv>,
     attrs: CallAttributeData,
+    /// The caller's operand bundles, kept as handles and admitted by
+    /// [`build`](TypedCallBuilder::build) through the checked door.
+    operand_bundles: Vec<OperandBundleDef<'ctx, B>>,
     name: String,
 }
 
@@ -10583,6 +10654,7 @@ where
             .field("arguments", &core::any::type_name::<A>())
             .field("calling_conv", &self.calling_conv)
             .field("tail_kind", &self.tail_kind)
+            .field("operand_bundles", &self.operand_bundles)
             .field("name", &self.name)
             .finish()
     }
@@ -10628,6 +10700,20 @@ where
         self
     }
 
+    /// The call's operand bundles, replacing any set before — the
+    /// `ArrayRef<OperandBundleDef> OpBundles` parameter of
+    /// `IRBuilderBase::CreateCall`. [`build`](Self::build) admits every input
+    /// through the checked door before the call is created: an input of
+    /// another module is refused with [`IrError::ForeignValueId`].
+    #[must_use]
+    pub fn operand_bundles<Bundles>(mut self, bundles: Bundles) -> Self
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        self.operand_bundles = bundles.into_iter().collect();
+        self
+    }
+
     #[must_use]
     pub fn name<Name>(mut self, name: Name) -> Self
     where
@@ -10642,6 +10728,14 @@ where
     pub fn build(self) -> IrResult<TypedCallInstId<Ret, B>> {
         let f = self.callee?.as_function();
         let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
+        // Boundary: every operand-bundle input, admitted before the call is
+        // created.
+        let module_id = self.parent.module.id();
+        let bundles = self
+            .operand_bundles
+            .into_iter()
+            .map(|bundle| bundle.into_stored(module_id))
+            .collect::<IrResult<Box<[_]>>>()?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
         let payload = CallInstData::new_with_attrs(
             f.slot_trusting_same_module(),
@@ -10649,7 +10743,7 @@ where
             arg_ids,
             calling_conv,
             self.tail_kind,
-            self.attrs,
+            self.attrs.with_operand_bundles(bundles),
         );
         let inst = self.parent.append_instruction(
             f.return_type().slot_trusting_same_module(),
@@ -10732,6 +10826,16 @@ where
     #[must_use]
     pub fn call_attributes(mut self, attrs: CallAttributeData) -> Self {
         self.inner = self.inner.call_attributes(attrs);
+        self
+    }
+
+    /// Forwards to [`CallBuilder::operand_bundles`].
+    #[must_use]
+    pub fn operand_bundles<Bundles>(mut self, bundles: Bundles) -> Self
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        self.inner = self.inner.operand_bundles(bundles);
         self
     }
 

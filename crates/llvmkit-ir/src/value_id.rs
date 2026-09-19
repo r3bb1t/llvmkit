@@ -364,6 +364,26 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockId<R, B, Params>
     pub(crate) fn erase_params(self) -> BlockId<R, B> {
         BlockId::from_raw(self.tag, self.slot)
     }
+
+    /// Crate-internal: the same id under the crate-private storage brand, for
+    /// a brand-free container that carries block ids it did not take from a
+    /// caller — a reshape pass's recorded CFG edits, which travel to the
+    /// driver in the brand-free `FnReport`. The module tag is kept, so the id
+    /// still resolves only in the module that minted it.
+    #[inline]
+    pub(crate) fn rebrand_as_stored(self) -> BlockId<R, StoredBrand, Params> {
+        BlockId::from_raw(self.tag, self.slot)
+    }
+}
+
+impl<R: ReturnMarker, Params: BlockParams> BlockId<R, StoredBrand, Params> {
+    /// Crate-internal: the inverse of
+    /// [`rebrand_as_stored`](BlockId::rebrand_as_stored) — the stored id back
+    /// under the brand of the module it was minted in. The tag is kept.
+    #[inline]
+    pub(crate) fn rebrand_from_stored<B: ModuleBrand>(self) -> BlockId<R, B, Params> {
+        BlockId::from_raw(self.tag, self.slot)
+    }
 }
 
 // --------------------------------------------------------------------------

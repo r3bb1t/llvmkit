@@ -19,6 +19,54 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — CFG updates, funclet colours and operand bundles answer in ids and values; bundles split along upstream's Def / Use line *(breaking)*
+
+- **Breaking (llvmkit-ir):** the public functions that returned a bare
+  `ValueSlot` — `CfgEdge::from` / `to`, `color_eh_funclets` and
+  `OperandBundleData::inputs` — answer in the tagged currency instead:
+  - `CfgEdge` and `CfgUpdate` are brand-generic (`CfgEdge<B>`,
+    `CfgUpdate<B>`), and `CfgEdge::from` / `to` return `BlockId<Dyn, B>`, the
+    shape of `cfg::BasicBlockEdge<B>` and of upstream's `cfg::Update`, whose
+    `getFrom` / `getTo` return the block. `CfgIncremental::apply_updates`
+    and `FnReshape::pending_cfg_updates` follow.
+  - `color_eh_funclets` returns `HashMap<BlockId<Dyn, B>, Vec<BlockId<Dyn,
+    B>>>`, as `colorEHFunclets` returns `DenseMap<BasicBlock *, ColorVector>`.
+  - Operand-bundle inputs are read as values (below).
+- **Breaking (llvmkit-ir):** operand bundles follow upstream's split. A
+  caller builds an `OperandBundleDef<'ctx, B>` (`OperandBundleDefT<Value *>`)
+  from value handles and hands it to the call site beside the arguments, as
+  `IRBuilderBase::CreateCall(…, Args, OpBundles, …)` takes them:
+  `CallSiteConfig::operand_bundles`, `CallBuilder::operand_bundles`,
+  `TypedCallBuilder::operand_bundles` and
+  `IntrinsicCallBuilder::operand_bundles`. The stored form is crate-private:
+  `OperandBundleData` is no longer exported, and `CallAttributeData` no
+  longer carries bundles on its public face — its `operand_bundles` setter
+  and `operand_bundles_slice` getter are gone, as `OpBundles` is not part of
+  upstream's `AttributeList`. Bundles are read back through the new
+  `OperandBundleUse<'ctx, B>` view: `operand_bundles()` and
+  `operand_bundle(&tag)` on `CallInst`, `InvokeInst` and `CallBrInst`,
+  mirroring `CallBase::getOperandBundleAt` / `getOperandBundle`.
+  `operand_bundle` returns `IrResult<Option<_>>`: a call carrying more than
+  one bundle of the tag is refused with `InvalidOperation` where upstream
+  asserts `countOperandBundlesOfType(ID) < 2` — the verifier rejects a
+  duplicate only for the tags it knows, so two bundles of one custom tag are
+  valid IR (`crates/llvmkit-asmparser/tests/parser_calls.rs`).
+- **Fixed (llvmkit-ir):** a bundle input of another module was stored at its
+  slot. `OperandBundleData::new` took value handles into a module-less
+  bundle, so it could not compare modules, and the call builders never
+  looked at bundle inputs; under a shared brand (every `Module::dynamic` is
+  `DynBrand`) a call in one module could carry another module's value as a
+  bundle operand. Every entry that takes bundles now admits each input
+  through the checked door before the call is created and returns
+  `ForeignValueId` for a foreign one: every consumer of `CallSiteConfig`
+  (`call_erased`, `call_with_config`, and the invoke and callbr
+  `_with_config` entries — the nine `config.into_parts(…)` sites that
+  `rg -c "config.into_parts\(self.module.id\(\)\)" crates/llvmkit-ir/src/ir_builder.rs`
+  counts) and the `call_builder` / `typed_call_builder` terminals
+  (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
+- The parser builds `OperandBundleDef`s and passes them through
+  `CallSiteConfig::operand_bundles`; its output is unchanged.
+
 ### Fixed — a block reached twice from one predecessor has no single predecessor
 
 - **Fixed (llvmkit-ir):** the helper that ported
@@ -281,8 +329,9 @@ cut, entries accumulate under **Unreleased**.
   `ty` fields are now private to the file that declares the handle, and a
   slot leaves a handle only through `ValueSlotAccess`'s two doors — `slot_in`
   (checked) or `slot_trusting_same_module` (unchecked, for reads within one
-  module). Two sinks that accepted bare slots changed shape:
-  `OperandBundleData::new` takes value handles, and `must_trigger_ub` takes
+  module). Two sinks that accepted bare slots changed shape: operand
+  bundles are built from value handles (`OperandBundleDef`; see "operand
+  bundles split along upstream's Def / Use line" above), and `must_trigger_ub` takes
   a `HashSet<ValueId>`, matched with the module tag included, as upstream's
   `SmallPtrSetImpl<const Value *>` is matched by address. The
   parser-facing `PhiCoherenceError` carries the phi's tagged `ValueId`.
@@ -294,9 +343,7 @@ cut, entries accumulate under **Unreleased**.
   (the other global), and `FunctionBuilder::build` (the signature and the
   prefix, prologue and personality constants its infallible setters park).
   Each now returns `ForeignValueId` or `ForeignType` before anything is read
-  or created. `OperandBundleData::new` is infallible and module-less, like
-  `AttributeStorage::add`, so its conversion is marked for the task that
-  makes it fallible; `indexed_gep_type` reads its indices against the source
+  or created. `indexed_gep_type` reads its indices against the source
   type's module and is marked with the read-only analyses.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now

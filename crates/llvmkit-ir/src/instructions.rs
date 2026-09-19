@@ -59,6 +59,7 @@ use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     LandingPadClauseKind, PhiData, ReturnOpData,
 };
+use super::instr_types::{OperandBundleTag, OperandBundleUse};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::marker::{Dyn, Ptr, ReturnMarker};
@@ -883,6 +884,23 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     }
     pub fn tail_call_kind(self) -> TailCallKind {
         self.payload().tail_kind
+    }
+    /// The call's operand bundles, in order. Mirrors reading
+    /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
+    pub fn operand_bundles(
+        self,
+    ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
+        OperandBundleUse::all(&self.payload().attrs, self.module)
+    }
+    /// The call's bundle tagged `tag`, or `None`. Mirrors
+    /// `CallBase::getOperandBundle`; a call carrying more than one bundle of
+    /// the tag — upstream's asserted precondition — is refused with
+    /// [`IrError::InvalidOperation`].
+    pub fn operand_bundle(
+        self,
+        tag: &OperandBundleTag,
+    ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
+        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
     }
     /// Return value, or `None` for a void-returning callee. Available
     /// on every `R`; the typed `return_int_value` /
@@ -3496,6 +3514,23 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
+    /// The invoke's operand bundles, in order. Mirrors reading
+    /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
+    pub fn operand_bundles(
+        self,
+    ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
+        OperandBundleUse::all(&self.payload().attrs, self.module)
+    }
+    /// The invoke's bundle tagged `tag`, or `None`. Mirrors
+    /// `CallBase::getOperandBundle`; more than one bundle of the tag is
+    /// refused with [`IrError::InvalidOperation`], as on
+    /// [`CallInst::operand_bundle`].
+    pub fn operand_bundle(
+        self,
+        tag: &OperandBundleTag,
+    ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
+        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+    }
     pub fn normal_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().normal_dest.get())
     }
@@ -3549,6 +3584,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     }
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
+    }
+    /// The callbr's operand bundles, in order. Mirrors reading
+    /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
+    pub fn operand_bundles(
+        self,
+    ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
+        OperandBundleUse::all(&self.payload().attrs, self.module)
+    }
+    /// The callbr's bundle tagged `tag`, or `None`. Mirrors
+    /// `CallBase::getOperandBundle`; more than one bundle of the tag is
+    /// refused with [`IrError::InvalidOperation`], as on
+    /// [`CallInst::operand_bundle`].
+    pub fn operand_bundle(
+        self,
+        tag: &OperandBundleTag,
+    ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
+        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
     }
     pub fn default_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_dest.get())

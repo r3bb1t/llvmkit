@@ -11412,10 +11412,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_optional_operand_bundles(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-    ) -> ParseResult<Box<[llvmkit_ir::instr_types::OperandBundleData]>> {
+    ) -> ParseResult<Vec<llvmkit_ir::OperandBundleDef<'ctx, B>>> {
         let begin_loc = self.loc();
         if !self.eat_punct(PunctKind::LSquare)? {
-            return Ok(Box::new([]));
+            return Ok(Vec::new());
         }
         let mut bundles = Vec::new();
         if !matches!(self.peek(), Token::RSquare) {
@@ -11445,7 +11445,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 self.expect_punct(PunctKind::RParen, "')' in operand bundle")?;
-                bundles.push(llvmkit_ir::instr_types::OperandBundleData::new(
+                bundles.push(llvmkit_ir::OperandBundleDef::new(
                     Self::operand_bundle_tag_from_name(tag),
                     inputs,
                 ));
@@ -11461,7 +11461,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.message_at(begin_loc, "operand bundle set must not be empty"));
         }
         self.expect_punct(PunctKind::RSquare, "']' to close operand bundles")?;
-        Ok(bundles.into_boxed_slice())
+        Ok(bundles)
     }
 
     // ── declare ─────────────────────────────────────────────────────────
@@ -14356,7 +14356,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             function_attrs,
         )
         .function_attr_groups(function_attr_groups.into_boxed_slice())
-        .operand_bundles(operand_bundles)
         .fast_math_flags(fmf);
         // `resolveFunctionType`: an explicit function type is used as written;
         // anything else is a bare *return* type and the signature is built
@@ -14443,7 +14442,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 tail_kind,
                 llvmkit_ir::CallSiteConfig::new(result_name.as_str())
                     .calling_conv(calling_conv)
-                    .attrs(call_attrs),
+                    .attrs(call_attrs)
+                    .operand_bundles(operand_bundles),
             )
             .map_err(|e| self.builder_err("call", e))?;
         Ok(b.view(call).to_erased())
@@ -15523,8 +15523,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             arg_attrs.into_boxed_slice(),
             function_attrs,
         )
-        .function_attr_groups(function_attr_groups.into_boxed_slice())
-        .operand_bundles(operand_bundles);
+        .function_attr_groups(function_attr_groups.into_boxed_slice());
         self.expect_keyword(Keyword::To, "'to' in invoke")?;
         let normal_bb = self.parse_type_and_basic_block(state)?;
         self.expect_keyword(Keyword::Unwind, "'unwind' in invoke")?;
@@ -15557,6 +15556,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
                         .attrs(call_attrs)
+                        .operand_bundles(operand_bundles)
                         .call_site_type(parsed_fn_ty),
                 )
                 .map_err(|e| self.builder_err("invoke", e))?,
@@ -15568,7 +15568,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     unwind_bb,
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
-                        .attrs(call_attrs),
+                        .attrs(call_attrs)
+                        .operand_bundles(operand_bundles),
                 )
                 .map_err(|e| self.builder_err("invoke", e))?,
             ParsedCallee::Indirect(callee_ptr) => b
@@ -15580,7 +15581,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     unwind_bb,
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
-                        .attrs(call_attrs),
+                        .attrs(call_attrs)
+                        .operand_bundles(operand_bundles),
                 )
                 .map_err(|e| self.builder_err("invoke", e))?,
         };
@@ -15668,8 +15670,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             arg_attrs.into_boxed_slice(),
             function_attrs,
         )
-        .function_attr_groups(function_attr_groups.into_boxed_slice())
-        .operand_bundles(operand_bundles);
+        .function_attr_groups(function_attr_groups.into_boxed_slice());
         self.expect_keyword(Keyword::To, "'to' in callbr")?;
         let fallthrough = self.parse_type_and_basic_block(state)?;
         // Optional `[ label %ind1, ... ]`
@@ -15719,6 +15720,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
                         .attrs(call_attrs)
+                        .operand_bundles(operand_bundles)
                         .call_site_type(parsed_fn_ty),
                 )
                 .map_err(|e| self.builder_err("callbr", e))?,
@@ -15730,7 +15732,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     indirect,
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
-                        .attrs(call_attrs),
+                        .attrs(call_attrs)
+                        .operand_bundles(operand_bundles),
                 )
                 .map_err(|e| self.builder_err("callbr", e))?,
             // `parseCallBr` stores whatever `Value *` its callee resolved to,
@@ -15749,7 +15752,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     indirect,
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
-                        .attrs(call_attrs),
+                        .attrs(call_attrs)
+                        .operand_bundles(operand_bundles),
                 )
                 .map_err(|e| self.builder_err("callbr", e))?,
         };

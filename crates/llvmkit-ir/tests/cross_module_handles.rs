@@ -23,10 +23,10 @@ use llvmkit_ir::{
     Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallSiteConfig,
     CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FloatDyn, FloatValue, FnCx, FnReport,
     FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions, InstructionView, IntCastFlags,
-    IntDyn, IntValue, IrBuilder, IrError, IrResult, IrStruct, Linkage, Module, PatchBody,
-    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind,
-    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, iter::BlockCursor,
-    run_function_pass,
+    IntDyn, IntValue, IrBuilder, IrError, IrResult, IrStruct, Linkage, Module, OperandBundleDef,
+    OperandBundleTag, PatchBody, PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState,
+    SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId,
+    ZextFlags, iter::BlockCursor, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -1486,6 +1486,191 @@ fn invoke_and_callbr_reject_a_callee_or_function_type_from_another_module() {
         before,
         "a rejected terminator must not mutate"
     );
+}
+
+/// Every call-site entry that takes operand bundles refuses a bundle input of
+/// another module with `ForeignValueId` before the call is created: each
+/// consumer of `CallSiteConfig::operand_bundles`, and the `call_builder` /
+/// `typed_call_builder` chains. The foreign input is the bundle's *second*,
+/// so an entry that checked only the first would let it through. Both modules
+/// print unchanged. Positive control: the same bundle with a home input
+/// builds, prints in `AsmWriter`'s bundle form, and reads back through
+/// `CallInst::operand_bundle` with the same input.
+///
+/// No upstream counterpart: `OperandBundleDefT<Value *>` (`IR/InstrTypes.h`)
+/// holds `Value *`s, which carry no module to compare.
+#[test]
+fn an_operand_bundle_input_from_another_module_is_refused() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let home_fn_ty = home.function_type_no_parameters(home.i32_type());
+    let h = home
+        .add_function_dyn("h", home_fn_ty, Linkage::External)
+        .expect("h");
+    let typed_h = home
+        .add_typed_function::<i32, (), _>("typed_h", Linkage::External)
+        .expect("typed_h");
+    let home_asm = home.inline_asm(home_fn_ty, "nop", "=r", InlineAsmOptions::new());
+    let home_null = home.ptr_type(0).const_null();
+    let mixed = || {
+        OperandBundleDef::new(
+            OperandBundleTag::Deopt,
+            [
+                home.i32_type().const_int(1i32).as_erased(),
+                foreign.i32_type().const_int(7i32).as_erased(),
+            ],
+        )
+    };
+    let config = || CallSiteConfig::new("r").operand_bundles([mixed()]);
+    let no_args = Vec::<Value<'_, DynBrand>>::new;
+    let no_indirects = Vec::<BasicBlock<'_, Dyn, Unterminated, DynBrand>>::new;
+    let (b0, _, _) = builder_with_targets(&home, "f0");
+    let (b1, n1, u1) = builder_with_targets(&home, "f1");
+    let (b2, n2, u2) = builder_with_targets(&home, "f2");
+    let (b3, n3, u3) = builder_with_targets(&home, "f3");
+    let (b4, n4, u4) = builder_with_targets(&home, "f4");
+    let (b5, d5, _) = builder_with_targets(&home, "f5");
+    let (b6, d6, _) = builder_with_targets(&home, "f6");
+    let (b7, d7, _) = builder_with_targets(&home, "f7");
+    let home_before = format!("{home}");
+    let foreign_before = format!("{foreign}");
+
+    let outcomes = vec![
+        (
+            "call_erased",
+            IrError::ForeignValueId,
+            without_value(b0.call_erased::<Dyn, _, _>(
+                home_fn_ty,
+                home.view(h).as_erased(),
+                no_args(),
+                TailCallKind::None,
+                config(),
+            )),
+        ),
+        (
+            "call_with_config",
+            IrError::ForeignValueId,
+            without_value(b0.call_with_config(home.view(typed_h), (), config())),
+        ),
+        (
+            "call_builder",
+            IrError::ForeignValueId,
+            without_value(
+                b0.call_builder(home.view(h))
+                    .operand_bundles([mixed()])
+                    .build(),
+            ),
+        ),
+        (
+            "typed_call_builder",
+            IrError::ForeignValueId,
+            without_value(
+                b0.typed_call_builder(home.view(typed_h), ())
+                    .operand_bundles([mixed()])
+                    .build(),
+            ),
+        ),
+        (
+            "invoke_with_config",
+            IrError::ForeignValueId,
+            without_value(b1.invoke_with_config(home.view(typed_h), (), n1, u1, config())),
+        ),
+        (
+            "invoke_dyn_with_config",
+            IrError::ForeignValueId,
+            without_value(b2.invoke_dyn_with_config(home.view(h), no_args(), n2, u2, config())),
+        ),
+        (
+            "indirect_invoke_dyn_with_config",
+            IrError::ForeignValueId,
+            without_value(b3.indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
+                home_null,
+                home_fn_ty,
+                no_args(),
+                n3,
+                u3,
+                config(),
+            )),
+        ),
+        (
+            "inline_asm_invoke_with_config",
+            IrError::ForeignValueId,
+            without_value(b4.inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
+                home_asm,
+                no_args(),
+                n4,
+                u4,
+                config(),
+            )),
+        ),
+        (
+            "callbr_with_config",
+            IrError::ForeignValueId,
+            without_value(b5.callbr_with_config(
+                home.view(h),
+                no_args(),
+                d5,
+                no_indirects(),
+                config(),
+            )),
+        ),
+        (
+            "indirect_callbr_with_config",
+            IrError::ForeignValueId,
+            without_value(b6.indirect_callbr_with_config(
+                home_null,
+                home_fn_ty,
+                no_args(),
+                d6,
+                no_indirects(),
+                config(),
+            )),
+        ),
+        (
+            "inline_asm_callbr_with_config",
+            IrError::ForeignValueId,
+            without_value(b7.inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
+                home_asm,
+                no_args(),
+                d7,
+                no_indirects(),
+                config(),
+            )),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        format!("{home}"),
+        home_before,
+        "a refused bundle must not mutate"
+    );
+    assert_eq!(
+        format!("{foreign}"),
+        foreign_before,
+        "a refused bundle must not mutate its input's module either"
+    );
+
+    // Positive control: a bundle of home inputs is accepted, printed, and
+    // read back with the same input.
+    let (b8, _, _) = builder_with_targets(&home, "f8");
+    let seven = home.i32_type().const_int(7i32).as_erased();
+    let call = b8
+        .call_builder(home.view(h))
+        .operand_bundles([OperandBundleDef::new(OperandBundleTag::Deopt, [seven])])
+        .build()
+        .expect("a same-module bundle is accepted");
+    let call = home.view(call);
+    assert!(
+        format!("{home}").contains(r#"call i32 @h() [ "deopt"(i32 7) ]"#),
+        "{home}"
+    );
+    let bundle = call
+        .operand_bundle(&OperandBundleTag::Deopt)
+        .expect("one deopt bundle")
+        .expect("the deopt bundle is present");
+    assert_eq!(bundle.inputs().collect::<Vec<_>>(), vec![seven]);
+    assert_eq!(call.operand_bundles().len(), 1);
 }
 
 /// `restore_insert_point` refuses an `InsertPoint` saved from another

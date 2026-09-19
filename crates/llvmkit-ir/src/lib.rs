@@ -263,9 +263,9 @@ pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
     CallAttributeData, CastOpcode, CmpXchgFlags, ExactFlags, IcmpFlags, IntBinOpFlags,
-    IntCastFlags, LshrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags,
-    SdivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags,
-    UiToFpFlags, UnaryOpcode, ZextFlags,
+    IntCastFlags, LshrFlags, MulFlags, OperandBundleDef, OperandBundleTag, OperandBundleUse,
+    OrFlags, OverflowFlags, SdivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind,
+    TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode, ZextFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,

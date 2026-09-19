@@ -75,6 +75,7 @@ use super::instruction::{Instruction, InstructionView, NonTerminator, Terminator
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{InsertPoint, IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
+use super::metadata::StoredBrand;
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
@@ -524,7 +525,12 @@ pub struct FnReport {
     /// analyses (and mark preserved those that repair). Empty for a non-reshape
     /// report. Not a preservation *claim* — the driver still witnesses each
     /// analysis repair before preserving it.
-    cfg_updates: Vec<CfgUpdate>,
+    ///
+    /// Held under the crate-private storage brand, the way a module's arena
+    /// holds its own metadata: the report stays brand-free for the pass that
+    /// returns it, and the driver re-brands the log for the function it ran
+    /// on. Each endpoint keeps its module tag.
+    cfg_updates: Vec<CfgUpdate<StoredBrand>>,
 }
 
 impl FnReport {
@@ -543,19 +549,27 @@ impl FnReport {
     /// [`CfgUpdate`] log. `pub(crate)` — same honesty guarantee as
     /// [`Self::from_pa`]; the log is witnessed, not author-claimed.
     #[inline]
-    pub(crate) fn from_pa_with_cfg_updates(
+    pub(crate) fn from_pa_with_cfg_updates<B: ModuleBrand>(
         pa: PreservedAnalyses,
-        cfg_updates: Vec<CfgUpdate>,
+        cfg_updates: Vec<CfgUpdate<B>>,
     ) -> Self {
-        Self { pa, cfg_updates }
+        Self {
+            pa,
+            cfg_updates: cfg_updates
+                .into_iter()
+                .map(CfgUpdate::rebrand_as_stored)
+                .collect(),
+        }
     }
 
     /// Consume the report into its preservation set and recorded CFG-edit log.
     /// The function drivers read both: the log drives the `done()`-flush, then
     /// the (possibly-augmented) set drives invalidation. Tests that only want
     /// the set take `.into_parts().0`.
+    /// The log is handed out under the storage brand; the driver re-brands it
+    /// ([`CfgUpdate::rebrand_from_stored`]) for the function it ran the pass on.
     #[inline]
-    pub(crate) fn into_parts(self) -> (PreservedAnalyses, Vec<CfgUpdate>) {
+    pub(crate) fn into_parts(self) -> (PreservedAnalyses, Vec<CfgUpdate<StoredBrand>>) {
         (self.pa, self.cfg_updates)
     }
 }
@@ -1148,7 +1162,7 @@ where
     /// the same reason [`FnPatch`]'s `dirty` flag is a `Cell`: the recording
     /// edit methods append through a shared `&self` while IR mutation flows
     /// through the interior-mutable module token.
-    cfg_updates: core::cell::RefCell<Vec<CfgUpdate>>,
+    cfg_updates: core::cell::RefCell<Vec<CfgUpdate<B>>>,
     /// Graveyard of freshly-repaired/recomputed analysis results produced by
     /// [`Self::analysis_repaired`]. Each mid-pass repair pushes its owned result
     /// here and hands back a borrow into it whose lifetime is tied to the
@@ -1195,7 +1209,7 @@ where
     #[inline]
     pub fn pending_cfg_updates(
         &self,
-    ) -> impl ExactSizeIterator<Item = CfgUpdate> + DoubleEndedIterator + FusedIterator + use<B, R>
+    ) -> impl ExactSizeIterator<Item = CfgUpdate<B>> + DoubleEndedIterator + FusedIterator + use<B, R>
     {
         self.cfg_updates.borrow().clone().into_iter()
     }
@@ -1309,7 +1323,7 @@ where
         // the driver's `done()`-flush, which repairs the FAM-cached result the
         // same way. Recompute-based repair makes reading a snapshot each time
         // correct regardless of call order.
-        let updates: Vec<CfgUpdate> = self.cfg_updates.get_mut().clone();
+        let updates: Vec<CfgUpdate<B>> = self.cfg_updates.get_mut().clone();
         let function = self.patch.function();
         // Offer the recorded edits to a working copy of the cached result; fall
         // back to a from-scratch recompute when the analysis declines them.
@@ -1381,16 +1395,15 @@ where
         // the branch the split inserts adds `block → new_block`.
         let source = self.resolve_block(block)?.as_basic_block();
         // Internal: `source` was resolved against this module, and the split
-        // mints `new_block` there.
-        let source_id = source.slot_trusting_same_module();
+        // mints `new_block` there; the successors are `source`'s own.
+        let source_id = source.id().as_dyn();
         let successors = crate::cfg::block_successors(&source);
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
-        let new_id = new_block.slot_trusting_same_module();
+        let new_id = new_block.id().as_dyn();
 
         let mut log = self.cfg_updates.borrow_mut();
-        for succ in &successors {
-            let succ_id = succ.slot_trusting_same_module();
+        for &succ_id in &successors {
             log.push(CfgUpdate::delete(source_id, succ_id));
             log.push(CfgUpdate::insert(new_id, succ_id));
         }
@@ -1621,9 +1634,12 @@ where
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, target_id);
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
 
-        self.cfg_updates
-            .borrow_mut()
-            .push(CfgUpdate::delete(from_id, target_id));
+        // Internal: both are blocks of the function under edit.
+        let module_id = from_block.module_ref().id();
+        self.cfg_updates.borrow_mut().push(CfgUpdate::delete(
+            BlockId::from_raw(module_id, from_id),
+            BlockId::from_raw(module_id, target_id),
+        ));
         self.patch.dirty.set(true);
         Ok(())
     }
@@ -1873,9 +1889,12 @@ where
         }
 
         {
+            // Internal: all three are blocks of the function under edit.
+            let module_id = from_block.module_ref().id();
+            let block = |slot| BlockId::<Dyn, B>::from_raw(module_id, slot);
             let mut log = self.cfg_updates.borrow_mut();
-            log.push(CfgUpdate::delete(from_id, old_id));
-            log.push(CfgUpdate::insert(from_id, new_id));
+            log.push(CfgUpdate::delete(block(from_id), block(old_id)));
+            log.push(CfgUpdate::insert(block(from_id), block(new_id)));
         }
         self.patch.dirty.set(true);
         Ok(())
@@ -3736,8 +3755,8 @@ mod tests {
         let next = m.view(f).append_basic_block(&m, "next");
         // Ids captured up front — the block handles are consumed by the
         // builders below.
-        let entry_id = entry.slot_trusting_same_module();
-        let next_id = next.slot_trusting_same_module();
+        let entry_id = entry.id().as_dyn();
+        let next_id = next.id().as_dyn();
 
         // entry: %x = add 1, 2 ; br label %next
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3768,8 +3787,7 @@ mod tests {
             .as_basic_block()
             .terminator()
             .expect("entry is terminated by the br");
-        let new_block = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
-        let new_id = new_block.slot_trusting_same_module();
+        let new_id = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
 
         // Exactly the rewiring: entry loses `→ next`, the new block gains it,
         // and entry gains `→ new block`.

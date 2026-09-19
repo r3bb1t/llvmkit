@@ -704,6 +704,74 @@ fn operand_bundles_ll_matches_upstream_check_lines() {
     assert_check_lines(&canonical_text, &needles);
 }
 
+/// The parsed bundles of `@f3` in `test/Bitcode/operand-bundles.ll` read back
+/// through the call view: two `"foo"` bundles, in order, with their inputs.
+/// The fixture's own IR, loaded whole; `@f3`'s `CHECK` line pins the printed
+/// form in [`operand_bundles_ll_matches_upstream_check_lines`].
+///
+/// `CallBase::getOperandBundle` (`IR/InstrTypes.h`) asserts
+/// `countOperandBundlesOfType(ID) < 2`, so upstream cannot ask `@f3`'s call
+/// for its `"foo"` bundle; llvmkit refuses the question with
+/// `InvalidOperation` instead, and a tag the call lacks answers `None`. No
+/// upstream counterpart for the refusal itself: it replaces an assert.
+#[test]
+fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
+    use llvmkit_ir::{InstructionKind, IrError, OperandBundleTag, Value};
+
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
+    let module = Module::dynamic("operand-bundles");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let call = view
+        .functions()
+        .find(|function| function.name() == "f3")
+        .expect("the fixture defines @f3")
+        .basic_blocks()
+        .flat_map(|block| block.instructions())
+        .find_map(|instruction| match instruction.kind() {
+            Some(InstructionKind::Call(call)) => Some(call),
+            _ => None,
+        })
+        .expect("@f3 makes one call");
+
+    let bundles: Vec<(OperandBundleTag, Vec<String>)> = call
+        .operand_bundles()
+        .map(|bundle| {
+            (
+                bundle.tag().clone(),
+                bundle
+                    .inputs()
+                    .map(|input: Value<'_, _>| input.to_string())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(bundles.len(), 2, "{bundles:?}");
+    assert!(
+        bundles
+            .iter()
+            .all(|(tag, _)| *tag == OperandBundleTag::Custom("foo".to_string())),
+        "{bundles:?}"
+    );
+    assert_eq!(bundles[0].1.len(), 3, "{bundles:?}");
+    assert_eq!(bundles[1].1.len(), 3, "{bundles:?}");
+
+    assert!(
+        matches!(
+            call.operand_bundle(&OperandBundleTag::Custom("foo".to_string())),
+            Err(IrError::InvalidOperation { .. })
+        ),
+        "two \"foo\" bundles: the single-bundle lookup must refuse"
+    );
+    assert!(
+        matches!(call.operand_bundle(&OperandBundleTag::Deopt), Ok(None)),
+        "a tag the call lacks answers None"
+    );
+}
+
 /// A `ValueAsMetadata` operand-bundle input — `metadata i32 %a`,
 /// `metadata i32 42`, `metadata ptr @g`.
 ///

@@ -19,6 +19,7 @@ use crate::module::ModuleBrand;
 use crate::pointer_analysis::strip_pointer_casts;
 use crate::r#type::TypeSlot;
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
+use crate::value_id::BlockId;
 
 /// Mirrors `enum class EHPersonality`
 /// (`llvm/include/llvm/IR/EHPersonalities.h`), in its own order.
@@ -267,7 +268,28 @@ fn parent_block<'ctx, B: ModuleBrand + 'ctx>(
 /// the entry block and follows successors. Upstream's caller then asserts on a
 /// block with no colours; llvmkit's caller reads the missing entry as "not in a
 /// funclet" instead — see `Verifier::check_intrinsic_call`.
+///
+/// Keyed and valued by [`BlockId`], as upstream's
+/// `DenseMap<BasicBlock *, ColorVector>` is by the block: a caller looks a
+/// block up by the id it holds, and each colour is a block it can view.
 pub fn color_eh_funclets<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, Dyn, B>,
+) -> HashMap<BlockId<Dyn, B>, Vec<BlockId<Dyn, B>>> {
+    // Internal: every slot the walk visits is a block of `function`, read
+    // through `function`'s own module, so each is minted under its tag.
+    let module_id = function.module().id();
+    let block = |slot| BlockId::<Dyn, B>::from_raw(module_id, slot);
+    color_eh_funclet_slots(function)
+        .into_iter()
+        .map(|(visiting, colors)| (block(visiting), colors.into_iter().map(block).collect()))
+        .collect()
+}
+
+/// [`color_eh_funclets`] over the function's own arena slots — the walk
+/// itself, kept on slots because every helper it calls reads blocks by slot
+/// through `function`'s module. The verifier, which reads the colours through
+/// the same module, calls it directly.
+pub(crate) fn color_eh_funclet_slots<'ctx, B: ModuleBrand + 'ctx>(
     function: FunctionValue<'ctx, Dyn, B>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
     let anchor = function.as_erased();

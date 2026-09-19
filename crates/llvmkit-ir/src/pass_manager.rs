@@ -101,6 +101,7 @@ use crate::analysis::{
     FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, ModuleAnalysisList,
     ModuleAnalysisManager, PreservedAnalyses,
 };
+use crate::cfg_update::CfgUpdate;
 use crate::marker::Dyn;
 use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified};
 use crate::pass_access::{
@@ -515,6 +516,10 @@ where
     // invalidation, so they survive instead of being evicted by the rung floor.
     let (mut pa, cfg_updates) = report.into_parts();
     if !cfg_updates.is_empty() {
+        let cfg_updates: Vec<CfgUpdate<B>> = cfg_updates
+            .into_iter()
+            .map(CfgUpdate::rebrand_from_stored)
+            .collect();
         fam.flush_cfg_updates(out_view, &cfg_updates, &mut pa);
     }
     fam.invalidate(out_view, &pa)?;
@@ -680,6 +685,10 @@ where
     // repaired analysis is kept for the next pipeline member instead of evicted.
     let (mut pa, cfg_updates) = report.into_parts();
     if !cfg_updates.is_empty() {
+        let cfg_updates: Vec<CfgUpdate<B>> = cfg_updates
+            .into_iter()
+            .map(CfgUpdate::rebrand_from_stored)
+            .collect();
         fam.flush_cfg_updates(function, &cfg_updates, &mut pa);
     }
     fam.invalidate(function, &pa)?;

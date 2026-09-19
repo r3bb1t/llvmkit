@@ -44,7 +44,7 @@ use super::asm_writer::slot_label;
 use super::cfg::FunctionCfg;
 use super::constant::{Constant, ConstantData, ConstantExprOpcode};
 use super::eh_personalities::{
-    classify_eh_personality, color_eh_funclets, first_non_phi_kind, is_funclet_pad_kind,
+    classify_eh_personality, color_eh_funclet_slots, first_non_phi_kind, is_funclet_pad_kind,
     is_scoped_eh_personality,
 };
 use super::global_value::Linkage;
@@ -4873,7 +4873,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // The `OnceCell` is `FunctionContext`'s, so it is built at most once
         // per function and dropped with it — upstream clears the map in
         // `visitFunction` for the same reason.
-        let colors = cx.eh_funclet_colors.get_or_init(|| color_eh_funclets(f));
+        // The slot-keyed core of `color_eh_funclets`: the verifier reads the
+        // colours through `f`'s own module.
+        let colors = cx
+            .eh_funclet_colors
+            .get_or_init(|| color_eh_funclet_slots(f));
 
         // `bool InEHFunclet = false;
         //  for (BasicBlock *ColorFirstBB : CV)

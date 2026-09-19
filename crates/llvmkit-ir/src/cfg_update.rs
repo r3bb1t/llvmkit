@@ -16,57 +16,69 @@
 //! therefore unconstructible rather than merely discouraged.
 //!
 //! Vocabulary scope is deliberately CFG-shaped, mirroring LLVM's
-//! `DominatorTree::UpdateType`: only edge insertions and deletions. Value-level
-//! analyses (KnownBits, DemandedBits) are out of scope — every mutating rung's
-//! preservation floor already evicts them, and instruction-level events are a
-//! documented possible extension, not designed here.
+//! `cfg::Update<BasicBlock *>` (`Support/CFGUpdate.h`), which
+//! `DominatorTree::UpdateType` names: only edge insertions and deletions, each
+//! naming its two blocks. The blocks are storable [`BlockId`]s, as upstream's
+//! are the blocks themselves. Value-level analyses (KnownBits, DemandedBits)
+//! are out of scope — every mutating rung's preservation floor already evicts
+//! them, and instruction-level events are a documented possible extension, not
+//! designed here.
 //!
 //! [`split_block`]: crate::pass_context::FnReshape::split_block
 //! [`CfgIncremental`]: crate::analysis::CfgIncremental
 
 #![deny(missing_docs)]
 
-use crate::value::ValueSlot;
+use crate::Branded;
+use crate::marker::Dyn;
+use crate::metadata::StoredBrand;
+use crate::module::ModuleBrand;
+use crate::value_id::BlockId;
 
-/// A directed CFG edge, identified by its endpoint blocks' stable value IDs.
+/// A directed CFG edge, identified by its endpoint blocks' storable ids.
+/// Mirrors the `From` / `To` pair of `cfg::Update` (`Support/CFGUpdate.h`).
 ///
-/// Distinct from [`crate::cfg::BasicBlockEdge`] (which carries lifetime-bearing
-/// block *labels* for live CFG snapshots): this edge is lifetime-free so the
-/// reshape mutator can own a plain `Vec<CfgUpdate>` and the driver can drain it
-/// after the borrow of the function ends. The endpoints are the same `ValueSlot`s
-/// the dominator machinery already keys on.
+/// Distinct from [`crate::cfg::BasicBlockEdge`], as upstream keeps
+/// `BasicBlockEdge` (`IR/Dominators.h`) apart from `cfg::Update`: this edge is
+/// the payload of a recorded update, so the reshape mutator can own a plain
+/// `Vec<CfgUpdate<B>>` and the driver can drain it after the borrow of the
+/// function ends. Like every id, each endpoint carries its module's tag;
+/// resolve one with [`Module::view`](crate::Module::view) to read the block.
 ///
 /// Fields are private: an edge — and therefore a [`CfgUpdate`] — can only be
 /// constructed inside the crate. Downstream analyses implementing
 /// [`CfgIncremental`](crate::analysis::CfgIncremental) read the endpoints through [`Self::from`]
 /// / [`Self::to`] but cannot fabricate one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CfgEdge {
-    from: ValueSlot,
-    to: ValueSlot,
+#[derive(Branded)]
+pub struct CfgEdge<B: ModuleBrand> {
+    from: BlockId<Dyn, B>,
+    to: BlockId<Dyn, B>,
 }
 
-impl CfgEdge {
+impl<B: ModuleBrand> CfgEdge<B> {
     #[inline]
-    pub(crate) fn new(from: ValueSlot, to: ValueSlot) -> Self {
+    pub(crate) fn new(from: BlockId<Dyn, B>, to: BlockId<Dyn, B>) -> Self {
         Self { from, to }
     }
 
-    /// Predecessor endpoint — the block the edge leaves.
+    /// Predecessor endpoint — the block the edge leaves. Mirrors
+    /// `cfg::Update::getFrom`.
     #[inline]
-    pub fn from(&self) -> ValueSlot {
+    pub fn from(&self) -> BlockId<Dyn, B> {
         self.from
     }
 
-    /// Successor endpoint — the block the edge enters.
+    /// Successor endpoint — the block the edge enters. Mirrors
+    /// `cfg::Update::getTo`.
     #[inline]
-    pub fn to(&self) -> ValueSlot {
+    pub fn to(&self) -> BlockId<Dyn, B> {
         self.to
     }
 }
 
 /// One structural change to a function's CFG, in the LLVM `DomTreeUpdater`
-/// vocabulary. The reshape mutator records these as it edits; a
+/// vocabulary (`cfg::Update`'s `UpdateKind::Insert` / `Delete`). The reshape
+/// mutator records these as it edits; a
 /// [`CfgIncremental`](crate::analysis::CfgIncremental) analysis consumes a slice of them to
 /// repair its cached result.
 ///
@@ -76,33 +88,33 @@ impl CfgEdge {
 /// to make unrepresentable. Construction stays crate-private via [`CfgEdge`]'s
 /// private fields, so exhaustive downstream matching and non-fabrication
 /// coexist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CfgUpdate {
+#[derive(Branded)]
+pub enum CfgUpdate<B: ModuleBrand> {
     /// A new edge `from → to` was created.
-    InsertEdge(CfgEdge),
+    InsertEdge(CfgEdge<B>),
     /// An existing edge `from → to` was removed.
-    DeleteEdge(CfgEdge),
+    DeleteEdge(CfgEdge<B>),
 }
 
-impl CfgUpdate {
+impl<B: ModuleBrand> CfgUpdate<B> {
     /// Record an inserted edge `from → to`. Crate-private: only a structural
     /// edit method may mint one.
     #[inline]
-    pub(crate) fn insert(from: ValueSlot, to: ValueSlot) -> Self {
+    pub(crate) fn insert(from: BlockId<Dyn, B>, to: BlockId<Dyn, B>) -> Self {
         Self::InsertEdge(CfgEdge::new(from, to))
     }
 
     /// Record a deleted edge `from → to`. Crate-private: only a structural edit
     /// method may mint one.
     #[inline]
-    pub(crate) fn delete(from: ValueSlot, to: ValueSlot) -> Self {
+    pub(crate) fn delete(from: BlockId<Dyn, B>, to: BlockId<Dyn, B>) -> Self {
         Self::DeleteEdge(CfgEdge::new(from, to))
     }
 
     /// The edge this update concerns, regardless of whether it was inserted or
     /// deleted.
     #[inline]
-    pub fn edge(&self) -> CfgEdge {
+    pub fn edge(&self) -> CfgEdge<B> {
         match self {
             Self::InsertEdge(e) | Self::DeleteEdge(e) => *e,
         }
@@ -112,5 +124,37 @@ impl CfgUpdate {
     #[inline]
     pub fn is_insert(&self) -> bool {
         matches!(self, Self::InsertEdge(_))
+    }
+
+    /// Crate-internal: this update under the crate-private storage brand, so
+    /// the brand-free `FnReport` can carry a reshape pass's log to the driver.
+    /// The log is the mutator's own, minted from its function's blocks; each
+    /// endpoint keeps its module tag.
+    pub(crate) fn rebrand_as_stored(self) -> CfgUpdate<StoredBrand> {
+        let edge = |edge: CfgEdge<B>| CfgEdge {
+            from: edge.from.rebrand_as_stored(),
+            to: edge.to.rebrand_as_stored(),
+        };
+        match self {
+            Self::InsertEdge(e) => CfgUpdate::InsertEdge(edge(e)),
+            Self::DeleteEdge(e) => CfgUpdate::DeleteEdge(edge(e)),
+        }
+    }
+}
+
+impl CfgUpdate<StoredBrand> {
+    /// Crate-internal: the inverse of
+    /// [`rebrand_as_stored`](CfgUpdate::rebrand_as_stored), for the driver
+    /// that offers the log to the analyses of the function it was recorded
+    /// on. Each endpoint keeps its module tag.
+    pub(crate) fn rebrand_from_stored<B: ModuleBrand>(self) -> CfgUpdate<B> {
+        let edge = |edge: CfgEdge<StoredBrand>| CfgEdge {
+            from: edge.from.rebrand_from_stored(),
+            to: edge.to.rebrand_from_stored(),
+        };
+        match self {
+            Self::InsertEdge(e) => CfgUpdate::InsertEdge(edge(e)),
+            Self::DeleteEdge(e) => CfgUpdate::DeleteEdge(edge(e)),
+        }
     }
 }

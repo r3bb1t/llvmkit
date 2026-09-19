@@ -449,7 +449,7 @@ pub trait CfgIncremental<'ctx, B: ModuleBrand>: Sized {
     /// recomputes (via [`Self::recompute`]) or evicts.
     fn apply_updates<'v>(
         &mut self,
-        updates: &[CfgUpdate],
+        updates: &[CfgUpdate<B>],
         function: FunctionView<'v, B>,
     ) -> RepairOutcome
     where
@@ -502,7 +502,7 @@ trait FunctionAnalysisOps<'ctx, B: ModuleBrand + 'ctx> {
     fn cfg_apply_erased<'v>(
         &self,
         _result: &mut dyn Any,
-        _updates: &[CfgUpdate],
+        _updates: &[CfgUpdate<B>],
         _function: FunctionView<'v, B>,
     ) -> Option<RepairOutcome>
     where
@@ -603,7 +603,7 @@ where
     fn cfg_apply_erased<'v>(
         &self,
         result: &mut dyn Any,
-        updates: &[CfgUpdate],
+        updates: &[CfgUpdate<B>],
         function: FunctionView<'v, B>,
     ) -> Option<RepairOutcome>
     where
@@ -843,7 +843,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     pub(crate) fn flush_cfg_updates<'v>(
         &mut self,
         function: FunctionView<'v, B>,
-        updates: &[CfgUpdate],
+        updates: &[CfgUpdate<B>],
         pa: &mut PreservedAnalyses,
     ) where
         'ctx: 'v,
@@ -1322,7 +1322,7 @@ where
 /// keyed to `R`) degrades safely to [`RepairOutcome::PreferRecompute`].
 fn cfg_apply_result<'v, 'ctx, B, R>(
     result: &mut dyn Any,
-    updates: &[CfgUpdate],
+    updates: &[CfgUpdate<B>],
     function: FunctionView<'v, B>,
 ) -> RepairOutcome
 where
@@ -1417,7 +1417,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
     #[inline]
     fn apply_updates<'v>(
         &mut self,
-        _updates: &[CfgUpdate],
+        _updates: &[CfgUpdate<B>],
         function: FunctionView<'v, B>,
     ) -> RepairOutcome
     where
@@ -1860,8 +1860,8 @@ mod tests {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let next = m.view(f).append_basic_block(&m, "next");
-        let entry_id = entry.slot_trusting_same_module();
-        let next_id = next.slot_trusting_same_module();
+        let entry_id = entry.id().as_dyn();
+        let next_id = next.id().as_dyn();
         let next_label = next.id();
 
         // entry: br next    next: ret 0
@@ -1885,8 +1885,8 @@ mod tests {
         let new_label = new_bb.id();
         let updates = [
             CfgUpdate::delete(entry_id, next_id),
-            CfgUpdate::insert(new_bb.slot_trusting_same_module(), next_id),
-            CfgUpdate::insert(entry_id, new_bb.slot_trusting_same_module()),
+            CfgUpdate::insert(new_bb.id().as_dyn(), next_id),
+            CfgUpdate::insert(entry_id, new_bb.id().as_dyn()),
         ];
         // The stale tree has never seen `entry.split`.
         assert!(!dt.dominates_block(new_label, next_label));
