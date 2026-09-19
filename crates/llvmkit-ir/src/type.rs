@@ -14,10 +14,10 @@
 //!
 //! - **Storage:** an internal `TypeData` enum, one variant
 //!   per LLVM `TypeID`.
-//! - **Public handle:** [`Type`] is `(TypeSlot, ModuleRef<'ctx>)`. Both
-//!   fields are `Hash + Eq`, so the handle derives all of
-//!   `Copy + Clone + PartialEq + Eq + Hash + Debug` with no hand-written
-//!   impls.
+//! - **Public handle:** [`Type`] is `(TypeSlot, ModuleRef<'ctx>)`. Its
+//!   `Copy + Clone + PartialEq + Eq + Hash + Debug` impls are hand-written
+//!   so they bound nothing on the brand; equality and hashing include the
+//!   module, and the slot leaves the handle only through `TypeSlotAccess`.
 //! - **Analysis enum:** [`TypeKind`] is the discriminator users
 //!   pattern-match for read-only inspection.
 //!
@@ -46,10 +46,12 @@ pub const MAX_INT_BITS: u32 = 1 << 23;
 // Type id
 // --------------------------------------------------------------------------
 
-/// Stable index into the type arena. The numeric contents are opaque; callers
-/// may store and pass the handle back to this crate, but cannot construct one.
+/// Stable index into one module's type arena. Crate-private: a type slot is
+/// untagged and means something only in the module that minted it, so it
+/// never leaves the crate — callers compare and store [`Type`] handles, whose
+/// equality includes the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypeSlot(NonZeroU32);
+pub(crate) struct TypeSlot(NonZeroU32);
 
 impl TypeSlot {
     /// Build from a 0-based arena index. Stored as `index + 1` so the
@@ -320,7 +322,9 @@ pub(crate) struct TargetExtTypeData {
 /// [`ModuleId`], so the handle remains cheap to copy and
 /// store in maps.
 pub struct Type<'ctx, B: ModuleBrand> {
-    pub(crate) id: TypeSlot,
+    // Private to this module: the slot leaves a type handle only through the
+    // two doors of `TypeSlotAccess`.
+    id: TypeSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
 }
 
@@ -374,13 +378,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     #[inline]
     pub(crate) fn data(self) -> &'ctx TypeData {
         self.module.type_data(self.id)
-    }
-
-    /// Opaque arena id for structured side tables such as use-list order
-    /// records.
-    #[inline]
-    pub fn id(self) -> TypeSlot {
-        self.id
     }
 
     /// Owning module reference.
@@ -438,9 +435,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// No false rejections: `llvm_context.rs` memoizes `int_type(bits)` by
     /// width and `ptr_type(addr_space)` by address space, so `TypeSlot`
     /// equality is structural type equality — a correctly typed value
-    /// always compares equal. Cost is one `TypeSlot` compare.
+    /// always compares equal. Cost is one `ModuleId` compare (the admission
+    /// of `got`) and one `TypeSlot` compare.
+    ///
+    /// Errors with [`IrError::ForeignType`] if `got` belongs to another module.
     pub(crate) fn require_match(self, got: Self) -> IrResult<()> {
-        if self.id == got.id {
+        // `got` is admitted against this type's module first: two modules'
+        // arenas can hold different types at one slot, so a bare slot
+        // comparison would accept a type of another module that merely shares
+        // the number — and the arms below would describe it as a width or
+        // address-space drift it is not.
+        if self.id == got.slot_in(self.module.id())? {
             return Ok(());
         }
         let (expected_data, got_data) = (self.data(), got.data());
@@ -449,8 +454,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             _ => match (expected_data.as_pointer(), got_data.as_pointer()) {
                 (Some(expected), Some(got)) => IrError::AddressSpaceMismatch { expected, got },
                 // Every failure here is an *identity* mismatch — the guard
-                // above is `self.id == got.id` — so the kinds can agree while
-                // the types differ. Reporting labels alone rendered
+                // above compares slots within one module — so the kinds can
+                // agree while the types differ. Reporting labels alone rendered
                 // "expected struct, got struct" for two distinct structs, and
                 // the two arms above are the special cases that were added to
                 // dodge that for integers and pointers rather than to fix it.
@@ -1207,3 +1212,33 @@ pub(crate) trait TypeSlotAccess<'ctx, B: ModuleBrand>: IrType<'ctx, B> {
 }
 
 impl<'ctx, B: ModuleBrand, T: IrType<'ctx, B>> TypeSlotAccess<'ctx, B> for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::TypeSlotAccess;
+    use crate::{IrError, Module};
+
+    /// `Type::require_match` admits the type it is given through the checked
+    /// door, so a type of another module at the same arena slot is refused as
+    /// `ForeignType` rather than matched. The home `i32` is the positive
+    /// control, and the first assertion checks the premise that the two
+    /// `i32`s really do share a slot.
+    ///
+    /// No upstream counterpart: upstream compares `Type *`s, whose identity
+    /// is the object's.
+    #[test]
+    fn require_match_refuses_a_type_of_another_module_at_the_same_slot() {
+        let home = Module::dynamic("home");
+        let foreign = Module::dynamic("foreign");
+        let home_i32 = home.i32_type().as_type();
+        let foreign_i32 = foreign.i32_type().as_type();
+        assert_eq!(
+            home_i32.slot_trusting_same_module(),
+            foreign_i32.slot_trusting_same_module(),
+            "premise: both modules intern i32 at one slot"
+        );
+        assert!(home_i32.require_match(home.i32_type().as_type()).is_ok());
+        let refused = home_i32.require_match(foreign_i32);
+        assert!(matches!(refused, Err(IrError::ForeignType)), "{refused:?}");
+    }
+}

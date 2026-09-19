@@ -155,10 +155,10 @@ pub(super) struct GlobalVariableData {
 /// initializer when one is present.
 #[derive(Branded)]
 pub struct GlobalVariable<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr addrspace(N)`).
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
@@ -177,11 +177,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Storable, module-tagged [`GlobalId`] for this global (0.0.4),
@@ -198,11 +194,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// `ConstantExpr` operands.
     #[inline]
     pub fn as_constant(self) -> Constant<'ctx, B> {
-        Constant {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
     }
 
     /// View this global as a pointer-typed constant reference. Mirrors
@@ -211,15 +203,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     #[inline]
     pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(self.address_space())
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
-        Constant {
-            id,
-            module: self.module,
-            ty: ptr_ty,
-        }
+        Constant::from_parts(Value::from_parts(id, self.module, ptr_ty))
     }
 
     /// A `ptr`-typed constant pointing `off` bytes into this global, printed as
@@ -233,30 +224,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// `as_constant` for the zero case.
     pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(addr_space).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(addr_space)
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, off);
-        Constant {
-            id,
-            module: self.module,
-            ty: ptr_ty,
-        }
+        Constant::from_parts(Value::from_parts(id, self.module, ptr_ty))
     }
 
     /// A `ptr`-typed constant pointing `off` bytes into this global, preserving
     /// this global's address space in both the GEP result and pointer operand.
     pub fn ptr_offset(self, off: i64) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(self.address_space())
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, off);
-        Constant {
-            id,
-            module: self.module,
-            ty: ptr_ty,
-        }
+        Constant::from_parts(Value::from_parts(id, self.module, ptr_ty))
     }
 
     /// An `i64` constant equal to `self_addr - other_addr`, printed as the
@@ -276,16 +265,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self,
         other: GlobalVariable<'ctx, B>,
     ) -> IrResult<ConstantIntValue<'ctx, i64, B>> {
+        // Boundary: the caller's other global, admitted against this global's
+        // module before its slot is interned into a constant here.
+        let other_id = other.slot_in(self.module.id())?;
         let module = self.module.module();
-        let i64_ty = module.i64_type::<B>().as_type().id();
+        let i64_ty = module.i64_type::<B>().as_type().slot_trusting_same_module();
         let id = module
             .context()
-            .intern_constant_symbol_delta(i64_ty, self.id, other.id);
-        Ok(ConstantIntValue::<i64, B>::from_parts_typed(Constant {
-            id,
-            module: self.module,
-            ty: i64_ty,
-        }))
+            .intern_constant_symbol_delta(i64_ty, self.id, other_id);
+        Ok(ConstantIntValue::<i64, B>::from_parts_typed(
+            Constant::from_parts(Value::from_parts(id, self.module, i64_ty)),
+        ))
     }
 
     /// An `i64` constant equal to `(self_addr - other_addr) + addend`, printed
@@ -296,16 +286,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         other: GlobalVariable<'ctx, B>,
         addend: i64,
     ) -> IrResult<ConstantIntValue<'ctx, i64, B>> {
+        // Boundary: the caller's other global, admitted against this global's
+        // module before its slot is interned into a constant here.
+        let other_id = other.slot_in(self.module.id())?;
         let module = self.module.module();
-        let i64_ty = module.i64_type::<B>().as_type().id();
+        let i64_ty = module.i64_type::<B>().as_type().slot_trusting_same_module();
         let id = module
             .context()
-            .intern_constant_symbol_delta_plus(i64_ty, self.id, other.id, addend);
-        Ok(ConstantIntValue::<i64, B>::from_parts_typed(Constant {
-            id,
-            module: self.module,
-            ty: i64_ty,
-        }))
+            .intern_constant_symbol_delta_plus(i64_ty, self.id, other_id, addend);
+        Ok(ConstantIntValue::<i64, B>::from_parts_typed(
+            Constant::from_parts(Value::from_parts(id, self.module, i64_ty)),
+        ))
     }
 
     fn data(self) -> &'ctx GlobalVariableData {
@@ -374,11 +365,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     pub fn initializer(self) -> Option<Constant<'ctx, B>> {
         let id = self.data().initializer.get()?;
         let value_data = self.module.value_data(id);
-        Some(Constant {
+        Some(Constant::from_parts(Value::from_parts(
             id,
-            module: self.module,
-            ty: value_data.ty,
-        })
+            self.module,
+            value_data.ty,
+        )))
     }
 
     /// Set the initializer. Mirrors `GlobalVariable::setInitializer`.
@@ -742,9 +733,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ct
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::GlobalVariable(_) => Ok(Self {
-                id: v.id,
+                // Internal: a re-wrap that keeps `v`'s own module.
+                id: v.slot_trusting_same_module(),
                 module: v.module,
-                ty: v.ty,
+                ty: v.ty().slot_trusting_same_module(),
             }),
             other => {
                 let got = crate::value::category_label_for_kind(other);

@@ -18,12 +18,14 @@
 
 use std::collections::HashMap;
 
+use crate::Branded;
 use crate::function::FunctionValue;
 use crate::instruction::InstructionKindData;
 use crate::marker::Dyn;
 use crate::module::{Module, ModuleBrand, Unverified};
 use crate::r#type::{Type, TypeSlot, TypeSlotAccess};
 use crate::value::{IsValue, ValueKindData, ValueSlot, ValueSlotAccess};
+use crate::value_id::ValueId;
 
 /// A single coherence violation for one phi, identified by the raw
 /// `ValueSlot`/`TypeSlot` at fault. The verifier maps each variant back to
@@ -114,11 +116,14 @@ pub(crate) fn check_phi_incoming(
 /// Internal contract for llvmkit-asmparser; not public API, may change
 /// without notice.
 #[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct PhiCoherenceError {
-    /// Arena id of the offending phi instruction, so the caller can anchor a
-    /// diagnostic at that phi regardless of whether it is named or numbered.
-    pub phi_id: ValueSlot,
+#[derive(Branded)]
+#[branded(Debug, Clone)]
+pub struct PhiCoherenceError<B: ModuleBrand> {
+    /// Storable, module-tagged id of the offending phi instruction, so the
+    /// caller can anchor a diagnostic at that phi regardless of whether it is
+    /// named or numbered. Tagged rather than a bare slot, so a phi of another
+    /// module can never match the caller's.
+    pub phi: ValueId<B>,
     /// Rendered coherence-failure message.
     pub message: String,
 }
@@ -170,7 +175,7 @@ pub(crate) fn render_phi_violation<B: ModuleBrand>(
 pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
     module: &'ctx Module<B, Unverified>,
     function: FunctionValue<'ctx, Dyn, B>,
-) -> Result<(), PhiCoherenceError> {
+) -> Result<(), PhiCoherenceError<B>> {
     let ctx = module.core_ref().context();
 
     // Predecessor multiset per block: walk every block's terminator
@@ -179,8 +184,8 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
     let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for block in function.basic_blocks() {
         let block_id = block.to_erased().slot_trusting_same_module();
-        for succ in crate::cfg::block_successors(&block) {
-            predecessors.entry(succ.slot()).or_default().push(block_id);
+        for succ in crate::cfg::successor_ids(&block) {
+            predecessors.entry(succ).or_default().push(block_id);
         }
     }
 
@@ -214,10 +219,7 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 .collect();
             if let Err(violation) = check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
                 return Err(PhiCoherenceError {
-                    // boundary (F2): Task 27
-                    // A slot of `function`'s arena, matched by the caller against
-                    // slots of `module`'s.
-                    phi_id: inst.slot_trusting_same_module(),
+                    phi: inst.to_erased().id(),
                     message: render_phi_violation(&violation, result_ty, module),
                 });
             }

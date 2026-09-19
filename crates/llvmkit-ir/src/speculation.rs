@@ -36,9 +36,10 @@ use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored, 
 use crate::cfg::kind_successor_ids;
 use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
+use crate::function::FunctionValue;
 use crate::instr_types::{
     BranchKind, CallAttributeData, CastOpcode, LandingPadClauseKind, LandingPadInstData, Opcode,
-    ShuffleMaskElem, ShuffleVectorInstData,
+    ShuffleMaskElem, ShuffleVectorInstData, call_site_has_fn_attr,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicId, descriptor_for_callee};
@@ -46,6 +47,7 @@ use crate::module::{ModuleBrand, ModuleRef};
 use crate::pass_context::BasicBlockView;
 use crate::r#type::TypeKind;
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
+use crate::value_id::ValueId;
 use crate::value_tracking::propagates_poison;
 use core::cell::Cell;
 use std::collections::{HashSet, VecDeque};
@@ -442,8 +444,27 @@ pub fn is_guaranteed_to_execute_for_every_iteration<'ctx, B: ModuleBrand + 'ctx>
 /// Whether `instruction` is guaranteed to trigger undefined behaviour when the
 /// values in `known_poison` are poison.
 ///
-/// Ports `llvm::mustTriggerUB`.
+/// Ports `llvm::mustTriggerUB`, whose `KnownPoison` is a set of `Value *`s.
+/// Here it is a set of storable [`ValueId`]s, and membership compares the
+/// module tag as upstream's pointer identity compares the object: a value of
+/// another module is never one of this instruction's operands.
 pub fn must_trigger_ub<'ctx, B: ModuleBrand + 'ctx>(
+    instruction: &InstructionView<'ctx, B>,
+    known_poison: &HashSet<ValueId<B>>,
+) -> bool {
+    let module = instruction.to_erased().module.id();
+    guaranteed_non_poison_operands(instruction.to_erased(), |operand| {
+        // The operand is a slot of the instruction's own arena; tag it with
+        // that module, so the comparison carries the module.
+        known_poison.contains(&ValueId::from_raw(module, operand))
+    })
+}
+
+/// [`must_trigger_ub`] over a set of slots already in the instruction's own
+/// module — the forward-propagation walk in
+/// [`must_execute_ub_if_poison_on_path_to`], which only ever collects this
+/// function's instructions.
+fn must_trigger_ub_for_own_slots<'ctx, B: ModuleBrand + 'ctx>(
     instruction: &InstructionView<'ctx, B>,
     known_poison: &HashSet<ValueSlot>,
 ) -> bool {
@@ -596,7 +617,7 @@ pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx>(
     worklist.push_back(*root);
 
     while let Some(view) = worklist.pop_back() {
-        if must_trigger_ub(&view, &known_poison)
+        if must_trigger_ub_for_own_slots(&view, &known_poison)
             && dominator_tree.dominates_instruction(&view, on_path_to)
         {
             return true;
@@ -955,9 +976,12 @@ fn may_throw<'ctx, B: ModuleBrand + 'ctx>(
     kind: &InstructionKindData,
 ) -> bool {
     match kind {
-        InstructionKindData::Call(data) => {
-            !call_site_has_fn_attr(anchor, data.callee.get(), &data.attrs, AttrKind::NoUnwind)
-        }
+        InstructionKindData::Call(data) => !call_site_has_fn_attr(
+            module_ref(anchor),
+            data.callee.get(),
+            &data.attrs,
+            AttrKind::NoUnwind,
+        ),
         // `unwindsToCaller()` is "no unwind destination".
         InstructionKindData::CleanupReturn(data) => data.unwind_dest.get().is_none(),
         InstructionKindData::CatchSwitch(data) => data.unwind_dest.get().is_none(),
@@ -1033,7 +1057,12 @@ fn will_return<'ctx, B: ModuleBrand + 'ctx>(
             let Some(call) = call_parts(kind) else {
                 return true;
             };
-            call_site_has_fn_attr(anchor, call.callee.get(), call.attrs, AttrKind::WillReturn)
+            call_site_has_fn_attr(
+                module_ref(anchor),
+                call.callee.get(),
+                call.attrs,
+                AttrKind::WillReturn,
+            )
         }
         _ => true,
     }
@@ -1268,54 +1297,6 @@ fn call_parts(kind: &InstructionKindData) -> Option<CallParts<'_>> {
     }
 }
 
-/// Whether the call site or its callee carries `attribute` as a function
-/// attribute. Ports `CallBase::hasFnAttr`, which checks the call site first and
-/// falls back to the called function.
-pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    callee: ValueSlot,
-    attrs: &CallAttributeData,
-    attribute: AttrKind,
-) -> bool {
-    if storage_has_enum_attr(attrs.function_attrs(), AttrIndex::Function, attribute) {
-        return true;
-    }
-    // `LLParser::parseCall` folds a `#N` attribute-group reference into the
-    // call's `AttributeList` before `CallBase::hasFnAttr` ever reads it, so
-    // upstream has no separate group lookup. llvmkit keeps the group numbers
-    // beside the call and resolves them here; without this, `call void @f() #0`
-    // with `attributes #0 = { noreturn }` reports no `noreturn` at all.
-    let module = module_ref(anchor).module();
-    for group in attrs.function_attr_groups_slice() {
-        if let Some(group_attrs) = module.attribute_group(*group)
-            && storage_has_enum_attr(&group_attrs, AttrIndex::Function, attribute)
-        {
-            return true;
-        }
-    }
-    let callee = value_from_slot(anchor, callee);
-    let ValueKindData::Function(data) = &callee.data().kind else {
-        return false;
-    };
-    if storage_has_enum_attr(&data.attributes.borrow(), AttrIndex::Function, attribute) {
-        return true;
-    }
-    // An intrinsic declaration carries its TableGen properties whether or not
-    // they were spelled out in the `.ll`: upstream materialises them in the
-    // `Function` constructor, llvmkit reads them back off the record.
-    match descriptor_for_callee(callee).map(|descriptor| descriptor.id()) {
-        Some(id) => match attribute {
-            AttrKind::NoUnwind => !id.may_throw(),
-            AttrKind::WillReturn => id.will_return(),
-            AttrKind::Speculatable => id.is_speculatable(),
-            AttrKind::NoFree => id.no_free(),
-            AttrKind::NoReturn => id.no_return(),
-            _ => false,
-        },
-        None => false,
-    }
-}
-
 /// The memory effects of a call site: the `memory(...)` attribute if present,
 /// otherwise the callee's, otherwise unknown. Ports `CallBase::getMemoryEffects`.
 fn call_site_memory_effects<'ctx, B: ModuleBrand + 'ctx>(
@@ -1457,22 +1438,14 @@ fn called_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Whether a callee is annotated `speculatable`. Ports
-/// `Function::isSpeculatable`.
+/// `Function::isSpeculatable`, which is
+/// `hasFnAttribute(Attribute::Speculatable)` — ported once, as
+/// `FunctionValue::has_fn_attribute`.
 fn callee_is_speculatable<'ctx, B: ModuleBrand + 'ctx>(callee: Value<'ctx, B>) -> bool {
-    let ValueKindData::Function(data) = &callee.data().kind else {
+    match FunctionValue::try_from(callee) {
+        Ok(function) => function.has_fn_attribute(AttrKind::Speculatable),
         // Upstream's `if (!Callee)`: an indirect call could do anything.
-        return false;
-    };
-    if storage_has_enum_attr(
-        &data.attributes.borrow(),
-        AttrIndex::Function,
-        AttrKind::Speculatable,
-    ) {
-        return true;
-    }
-    match descriptor_for_callee(callee) {
-        Some(descriptor) => descriptor.id().is_speculatable(),
-        None => false,
+        Err(_) => false,
     }
 }
 

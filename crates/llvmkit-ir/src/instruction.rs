@@ -58,12 +58,12 @@ use super::metadata::{
 };
 use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::term_open_state::Closed as TermClosed;
-use super::r#type::TypeSlot;
+use super::r#type::{TypeSlot, TypeSlotAccess};
 use super::r#use::Use;
 use super::user::User;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, ValueUse,
-    sealed,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot,
+    ValueSlotAccess, ValueUse, sealed,
 };
 use super::value_id::BlockId;
 use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
@@ -499,9 +499,9 @@ pub mod state {
 /// [`InstructionView`] for read-only inspection; lifecycle mutation requires
 /// a builder-produced [`Instruction`] or [`crate::iter::BlockCursor`].
 pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _state: core::marker::PhantomData<S>,
 }
 /// Copyable read-only instruction view. This is the rediscovery shape for
@@ -510,9 +510,9 @@ pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
 /// mutation capabilities.
 #[derive(Branded)]
 pub struct InstructionView<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 // Hand-rolled trait impls so that consumers do not have to spell `S`
@@ -556,18 +556,14 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().to_erased()
     }
 
-    /// Bare arena slot of the underlying value (same slot as
-    /// [`to_erased`](Self::to_erased)).
-    ///
-    /// Named `slot` rather than `id` since cycle B: across the crate `.id()`
-    /// mints a *storable, module-tagged* id, and an instruction — which may be
-    /// void, hence value-less — has none of its own. Reach a storable id
-    /// through `to_erased().id()` (a value-defining instruction) or through the
-    /// per-opcode handle's `id()` ([`CallInst::id`](crate::CallInst::id),
-    /// [`PhiInst::id`](crate::PhiInst::id), ...).
+    /// The unchecked door for this linear handle: its erased value's
+    /// [`ValueSlotAccess::slot_trusting_same_module`], for a read that stays
+    /// inside this instruction's module. No public route hands out the bare
+    /// slot; reach a storable id through `to_erased().id()` (a value-defining
+    /// instruction) or the per-opcode handle's `id()`.
     #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.to_erased().id
+    pub(crate) fn slot_trusting_same_module(&self) -> ValueSlot {
+        self.to_erased().slot_trusting_same_module()
     }
 
     /// Return the copyable read-only view for this instruction.
@@ -700,11 +696,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// [`IsValue::as_erased`] form is also available on this type.
     #[inline]
     pub fn to_erased(&self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Borrow the storage payload.
@@ -831,8 +823,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Containing basic block label.
     pub fn parent(&self) -> BlockId<Dyn, B> {
-        let parent = self.data().parent.get();
-        BlockId::<Dyn, B>::from_raw(self.module.id(), parent)
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.parent_slot())
+    }
+
+    /// Crate-internal: the containing block's slot in this instruction's own
+    /// module — the slot-level twin of [`Self::parent`] for the crate's own
+    /// CFG reads, which would otherwise mint an id only to strip it again.
+    #[inline]
+    pub(crate) fn parent_slot(&self) -> ValueSlot {
+        self.data().parent.get()
     }
 
     /// This instruction's opcode. Ports `Instruction::getOpcode`.
@@ -1151,17 +1150,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// erased); call [`Self::erase_from_parent`] separately if needed.
     /// Mirrors LLVM's two-step pattern
     /// `I->replaceAllUsesWith(V); I->eraseFromParent();`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `replacement` belongs to
+    /// another module.
     pub fn replace_all_uses_with<V: IsValue<'ctx, B>>(
         self,
         module_token: &'ctx Module<B, Unverified>,
         replacement: V,
     ) -> IrResult<()> {
         let new_value = replacement.as_erased();
-        if new_value.id == self.id {
+        // Boundary: the caller's replacement, admitted before anything reads it.
+        let new_id = new_value.slot_in(self.module.id())?;
+        if new_id == self.id {
             // `self.replaceAllUsesWith(self)` is a no-op upstream; mirror.
             return Ok(());
         }
-        if new_value.ty != self.ty {
+        if new_value.ty().slot_trusting_same_module() != self.ty {
             return Err(IrError::TypeIdentityMismatch {
                 expected: self.ty().rendered(),
                 got: new_value.ty().rendered(),
@@ -1169,7 +1173,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         }
         let module = module_token.core_ref();
         let self_id = self.id;
-        let new_id = new_value.id;
         // Snapshot the user list under a borrow so we can release it
         // before mutating each user's operand slots.
         let user_edges: Vec<ValueUse> = module
@@ -1234,7 +1237,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         bb.remove_instruction(self_id);
     }
@@ -1255,7 +1261,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         bb.remove_instruction(self_id);
         // Clear the parent pointer so iteration over orphan instructions
@@ -1271,14 +1280,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Move this instruction so it appears immediately before `other`
     /// in `other`'s parent block. Mirrors `Instruction::moveBefore` in
     /// `lib/IR/Instruction.cpp`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
+    /// module.
     pub fn move_before(
         self,
         module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let self_id = self.id;
-        let other_id = other.id;
         if self_id == other_id {
             return Ok(());
         }
@@ -1292,7 +1305,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             cur_parent,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         cur_bb.remove_instruction(self_id);
         // Insert before other in other's parent.
@@ -1300,7 +1316,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             new_parent,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         new_bb.insert_instruction_before(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
@@ -1314,14 +1333,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
 
     /// Move this instruction so it appears immediately after `other` in
     /// `other`'s parent block. Mirrors `Instruction::moveAfter`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
+    /// module.
     pub fn move_after(
         self,
         module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let self_id = self.id;
-        let other_id = other.id;
         if self_id == other_id {
             return Ok(());
         }
@@ -1334,14 +1357,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             cur_parent,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         cur_bb.remove_instruction(self_id);
         let new_parent = other.data().parent.get();
         let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             new_parent,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
         new_bb.insert_instruction_after(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
@@ -1358,20 +1387,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// Insert this detached instruction immediately before `other` in
     /// `other`'s parent block. Mirrors `Instruction::insertBefore` in
     /// `lib/IR/Instruction.cpp`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
+    /// module.
     pub fn insert_before(
         self,
         module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_id,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
-        bb.insert_instruction_before(self.id, other.id)?;
+        bb.insert_instruction_before(self.id, other_id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
             reinsert_local_name(self.to_erased(), parent_fn_id);
@@ -1381,20 +1418,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
 
     /// Insert this detached instruction immediately after `other` in
     /// `other`'s parent block. Mirrors `Instruction::insertAfter`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
+    /// module.
     pub fn insert_after(
         self,
         module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_id,
             module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         );
-        bb.insert_instruction_after(self.id, other.id)?;
+        bb.insert_instruction_after(self.id, other_id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
             reinsert_local_name(self.to_erased(), parent_fn_id);
@@ -1404,13 +1449,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
 
     /// Append this detached instruction to the end of `block`'s
     /// instruction list. Mirrors `Instruction::insertInto(BB, BB->end())`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `block` belongs to another
+    /// module.
     pub fn append_to<R: ReturnMarker>(
         self,
         module_token: &'ctx Module<B, Unverified>,
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        // Boundary: the caller's block, admitted before it is read.
+        let parent_id = block.to_erased().slot_in(self.module.id())?;
         let module = module_token.core_ref();
-        let parent_id = block.slot();
         let parent_fn_id = block.to_erased().local_parent_function_id();
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);
@@ -1732,7 +1781,8 @@ pub(super) fn rewrite_debug_record_value(
 fn remove_local_name_from_parent<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) {
     if let Some(parent_fn_id) = value.local_parent_function_id() {
         let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, value.module);
-        parent_fn.remove_local_value_name(value.id);
+        // Internal: `value` is an instruction of `parent_fn`'s own module.
+        parent_fn.remove_local_value_name(value.slot_trusting_same_module());
     }
 }
 
@@ -1744,7 +1794,8 @@ fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(
     if let Some(name) = current_name.as_deref() {
         value.set_name_internal(None);
         let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, value.module);
-        parent_fn.set_local_value_name(value.id, Some(name));
+        // Internal: `value` is an instruction of `parent_fn`'s own module.
+        parent_fn.set_local_value_name(value.slot_trusting_same_module(), Some(name));
     }
 }
 
@@ -1873,9 +1924,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for InstructionView<'c
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::Instruction(_) => Ok(Self {
-                id: v.id,
+                // Internal: a re-wrap that keeps `v`'s own module.
+                id: v.slot_trusting_same_module(),
                 module: v.module,
-                ty: v.ty,
+                ty: v.ty().slot_trusting_same_module(),
             }),
             _ => Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::Instruction,
@@ -2276,14 +2328,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
         self.view.to_erased()
     }
 
-    /// Bare arena slot of the underlying value (same slot as
-    /// [`to_erased`](Self::to_erased)). Named `slot` rather than `id` for the
-    /// reason given on [`Instruction::slot`].
-    #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.view.slot()
-    }
-
     /// Crate-internal: wrap a view already known to be a non-terminator.
     #[inline]
     pub(crate) fn from_view_unchecked(view: InstructionView<'ctx, B>) -> Self {
@@ -2315,7 +2359,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InstructionView<'ctx, B
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let module = self.module.module();
         let parent_id = self.data().parent.get();
-        let label_ty = module.label_type::<B>().as_type().id();
+        let label_ty = module
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let parent =
             BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(parent_id, self.module, label_ty);
         let slots = match parent.parent_id() {

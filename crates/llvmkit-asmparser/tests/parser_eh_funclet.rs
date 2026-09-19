@@ -298,6 +298,72 @@ fn catchswitch_numbered_result() {
     );
 }
 
+/// `color_eh_funclets` over `@report_missing` in
+/// `test/Verifier/operand-bundles-wineh.ll`, vendored whole: the map keyed by
+/// block id equals the colouring `colorEHFunclets`
+/// (`lib/IR/EHPersonalities.cpp`) computes, traced by hand from its worklist:
+///
+/// - `entry` is visited with colour `entry`; its `invoke` pushes `eh.cont`
+///   and then `catch.dispatch` with colour `entry`;
+/// - `catch.dispatch` is popped first; its first non-phi, the `catchswitch`,
+///   is an EH pad, so it is its own colour, and it pushes its handler
+///   `catch`;
+/// - `catch` starts with a `catchpad`, so it is its own colour, and its `br`
+///   pushes `catch.cont` with colour `catch`;
+/// - `catch.cont` takes colour `catch`; its `catchret`'s catchswitch parent
+///   pad is `none`, so its successor `eh.cont` is pushed with the entry
+///   block's colour;
+/// - `eh.cont` takes colour `entry` (its second visit finds it already
+///   there).
+///
+/// The same map is what the verifier consults for this file's diagnostic
+/// ([`wineh_missing_funclet_token_is_diagnosed`]): `catch.cont`'s colour
+/// `catch` begins with a funclet pad, so the `objc.retain` call there needs a
+/// `funclet` bundle.
+///
+/// No upstream counterpart: `rg -uuu -n "colorEHFunclets"
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/unittests` finds no unit test of
+/// the routine.
+#[test]
+fn color_eh_funclets_colours_the_wineh_fixture() {
+    use std::collections::HashMap;
+
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
+    let module = Module::dynamic("operand-bundles-wineh");
+    let _ = Parser::new(FIXTURE.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    let function = module.view(
+        module
+            .function_dyn("report_missing")
+            .expect("the fixture defines @report_missing"),
+    );
+    let block = |name: &str| {
+        function
+            .basic_blocks()
+            .find(|block| block.name().as_deref() == Some(name))
+            .expect("the fixture names the block")
+            .id()
+            .as_dyn()
+    };
+    let expected: HashMap<_, _> = [
+        ("entry", "entry"),
+        ("catch.dispatch", "catch.dispatch"),
+        ("catch", "catch"),
+        ("catch.cont", "catch"),
+        ("eh.cont", "entry"),
+    ]
+    .into_iter()
+    .map(|(visited, color)| (block(visited), vec![block(color)]))
+    .collect();
+
+    assert_eq!(
+        llvmkit_ir::eh_personalities::color_eh_funclets(function),
+        expected
+    );
+}
+
 /// `test/Verifier/operand-bundles-wineh.ll`'s verdict half: upstream's `RUN`
 /// line is `not opt -passes=verify` and the file's one `CHECK` is
 /// `Missing funclet token on intrinsic call`, the tail of
@@ -613,4 +679,110 @@ fn upstream_invalid_cleanuppad_chain_fixture_message_matches() {
         message.contains("CleanupReturnInst needs to be provided a CleanupPad"),
         "{message:?}"
     );
+}
+
+/// `llvm/test/Verifier/pr69428.ll`, vendored verbatim. Its one `RUN` line is
+/// `llvm-as -disable-output %s`: the module parses and verifies, and that is
+/// the whole oracle.
+///
+/// What it pins is the `continue` in `Verifier::visitEHPadPredecessors`:
+/// `if (CalledFn && CalledFn->isIntrinsic() && II->doesNotThrow() &&
+/// !IntrinsicInst::mayLowerToFunctionCall(...)) continue;`. Both `invoke`s of
+/// `@llvm.seh.scope.begin` / `@llvm.seh.scope.end` inside `%1` carry no
+/// `funclet` bundle and unwind to `%2 = cleanuppad within %1`, so without that
+/// `continue` the edge would enter a pad from `none` and fail `A single unwind
+/// edge may only enter one EH pad`. `II->doesNotThrow()` is
+/// `CallBase::hasFnAttr(Attribute::NoUnwind)`, and the two declarations spell
+/// no attributes: `nounwind` reaches them only through
+/// `Intrinsic::getAttributes`, which gives every intrinsic without `Throws`
+/// that attribute.
+#[test]
+fn upstream_pr69428_fixture_verifies() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/pr69428.ll");
+    let module = Module::dynamic("pr69428");
+    Parser::new(FIXTURE.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("upstream's RUN line is `llvm-as -disable-output`: the fixture parses");
+    if let Err(error) = module.verify_borrowed() {
+        panic!(
+            "upstream's RUN line is `llvm-as -disable-output`: the fixture verifies; got {error:?}"
+        );
+    }
+}
+
+/// **No upstream counterpart** — `upstream_pr69428_fixture_verifies`'s shape,
+/// with the `invoke` inside the cleanup calling `@llvm.coro.resume`, one of
+/// the intrinsics `Intrinsics.td` marks `Throws`, so `nounwind` can reach the
+/// call only from the call site.
+///
+/// `II->doesNotThrow()` is `CallBase::hasFnAttr(Attribute::NoUnwind)`, which
+/// reads the call site's `AttributeList` first — and `LLParser` has folded
+/// every `#N` into that list by then (`LLParser::validateEndOfModule`'s
+/// `ForwardRefAttrGroups` loop). So `nounwind` written through an attribute
+/// group makes the edge exempt exactly as `nounwind` written inline does, and
+/// the module verifies. llvmkit keeps the group numbers beside the call and
+/// used to answer `hasFnAttr` from the inline attributes alone here, so it
+/// rejected the group spelling with `A single unwind edge may only enter one
+/// EH pad`. The third case is the positive control: a group that resolves to
+/// something other than `nounwind` leaves the rule live.
+#[test]
+fn an_invoke_edge_is_exempt_when_nounwind_arrives_through_an_attribute_group() {
+    let source = |call_attributes: &str, group: &str| {
+        format!(
+            r"
+define void @f() personality ptr @__CxxFrameHandler3 {{
+entry:
+  invoke void @g()
+          to label %exit unwind label %outer
+
+outer:
+  %1 = cleanuppad within none []
+  invoke void @llvm.coro.resume(ptr null) {call_attributes}
+          to label %cont unwind label %inner
+
+inner:
+  %2 = cleanuppad within %1 []
+  cleanupret from %2 unwind to caller
+
+cont:
+  cleanupret from %1 unwind to caller
+
+exit:
+  ret void
+}}
+
+declare i32 @__CxxFrameHandler3(...)
+declare void @g()
+declare void @llvm.coro.resume(ptr)
+{group}
+"
+        )
+    };
+    let verify = |text: String| {
+        let module = Module::dynamic("nounwind_group");
+        Parser::new(text.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("the module parses; the verifier is the layer under test");
+        module.verify_borrowed()
+    };
+
+    // `nounwind` on the call site, inline: the edge is exempt.
+    if let Err(error) = verify(source("nounwind", "")) {
+        panic!("inline `nounwind` exempts the edge; got {error:?}");
+    }
+    // The same attribute through a group: exempt as well.
+    if let Err(error) = verify(source("#0", "attributes #0 = { nounwind }")) {
+        panic!("`nounwind` through `#0` exempts the edge; got {error:?}");
+    }
+    // A group without `nounwind`: the rule is live and fires.
+    match verify(source("#0", "attributes #0 = { cold }")) {
+        Ok(()) => panic!("without `nounwind` the edge enters a pad from `none`"),
+        Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => assert!(
+            message.contains("A single unwind edge may only enter one EH pad"),
+            "{message:?}"
+        ),
+        Err(other) => panic!("expected a verifier failure, got {other:?}"),
+    }
 }

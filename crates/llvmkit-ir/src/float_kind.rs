@@ -22,7 +22,7 @@
 use core::fmt;
 
 use super::error::TypeKindLabel;
-use super::r#type::sealed;
+use super::r#type::{TypeSlotAccess, sealed};
 
 /// Sealed marker trait implemented by every IEEE-like float kind tag.
 pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
@@ -357,7 +357,11 @@ macro_rules! impl_into_float_value_static {
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<FloatValue<'ctx, $marker, B>> {
                 let ty = FloatType::<$marker, B>::new(
-                    module.module().$ty_method::<B>().as_type().id(),
+                    module
+                        .module()
+                        .$ty_method::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
                     module,
                 );
                 match self.into_constant_float(ty) {
@@ -410,7 +414,14 @@ macro_rules! impl_static_float_kind {
             fn ir_type<'ctx, B: ModuleBrand + 'ctx>(
                 module: ModuleRef<'ctx, B>,
             ) -> FloatType<'ctx, Self, B> {
-                FloatType::<Self, B>::new(module.module().$method::<B>().as_type().id(), module)
+                FloatType::<Self, B>::new(
+                    module
+                        .module()
+                        .$method::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
+                    module,
+                )
             }
         }
     };

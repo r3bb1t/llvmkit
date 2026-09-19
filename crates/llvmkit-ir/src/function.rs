@@ -58,7 +58,7 @@ use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_context::FunctionView;
-use super::r#type::{Type, TypeData, TypeSlot};
+use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData,
@@ -154,12 +154,12 @@ impl FunctionData {
 /// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
 /// to widen to the runtime-checked [`Dyn`] form.
 pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     /// Cached signature type id. The value's value-arena type is the
     /// pointer-to-function on real LLVM; here we cache the function-
     /// type id directly so `signature()` is a thin lookup.
-    pub(super) signature: TypeSlot,
+    signature: TypeSlot,
     pub(super) _r: PhantomData<R>,
 }
 
@@ -226,11 +226,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// useful per-value type-side information).
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.signature,
-        }
+        Value::from_parts(self.id, self.module, self.signature)
     }
 
     /// Storable, module-tagged [`FunctionId<R>`] for this function (llvmkit
@@ -473,11 +469,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn prefix_data(self) -> Option<Constant<'ctx, B>> {
         self.data().prefix_data.get().map(|id| {
             let data = self.module.module().context().value_data(id);
-            Constant {
-                id,
-                module: self.module,
-                ty: data.ty,
-            }
+            Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
@@ -507,11 +499,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn prologue_data(self) -> Option<Constant<'ctx, B>> {
         self.data().prologue_data.get().map(|id| {
             let data = self.module.module().context().value_data(id);
-            Constant {
-                id,
-                module: self.module,
-                ty: data.ty,
-            }
+            Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
@@ -541,11 +529,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn personality_fn(self) -> Option<Constant<'ctx, B>> {
         self.data().personality_fn.get().map(|id| {
             let data = self.module.module().context().value_data(id);
-            Constant {
-                id,
-                module: self.module,
-                ty: data.ty,
-            }
+            Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
@@ -593,8 +577,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     where
         C: IsConstant<'ctx, B>,
     {
-        let constant = data.as_constant();
-        Ok(constant.slot())
+        // Boundary: the caller's constant, admitted against this function's
+        // module before it is stored.
+        data.as_constant().slot_in(self.module.id())
     }
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
@@ -724,6 +709,47 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .map(|value| value == "true")
     }
 
+    /// Whether this function's attribute list carries the function attribute
+    /// `kind`. Ports `Function::hasFnAttribute(Attribute::AttrKind)`
+    /// (`IR/Function.h`), which is `AttributeSets.hasFnAttr(Kind)` — the same
+    /// question `CallBase::hasFnAttrOnCalledFunction` asks as
+    /// `F->getAttributes().hasFnAttr(Kind)`.
+    ///
+    /// Upstream's list is one `AttributeList`; llvmkit's is the attributes
+    /// stored on the function plus its `#N` attribute groups, which
+    /// `LLParser::validateEndOfModule`'s `ForwardRefAttrGroups` loop merges
+    /// into the list upstream and llvmkit keeps beside the function, resolved
+    /// on lookup (`docs/divergences.md` D9).
+    ///
+    /// An intrinsic declaration needs no third source: the attributes
+    /// `Intrinsic::getAttributes` gives it — which upstream's `Function`
+    /// constructor installs, and `UpgradeIntrinsicFunction` reinstalls after
+    /// parsing — are stored on it by `get_or_insert_intrinsic_declaration`,
+    /// the only route that creates a function under an intrinsic's name. What
+    /// is read is the list as it stands, so a list replaced through
+    /// [`set_attributes`](Self::set_attributes) answers for itself, as
+    /// upstream's does after `Function::setAttributes`.
+    pub(crate) fn has_fn_attribute(self, kind: AttrKind) -> bool {
+        if self
+            .data()
+            .attributes
+            .borrow()
+            .has_kind(AttrIndex::Function, kind)
+        {
+            return true;
+        }
+        let module = self.module.module();
+        self.data()
+            .function_attr_groups
+            .borrow()
+            .iter()
+            .any(|group| {
+                module
+                    .attribute_group(*group)
+                    .is_some_and(|storage| storage.has_kind(AttrIndex::Function, kind))
+            })
+    }
+
     pub(crate) fn function_string_attribute(self, key: &str) -> Option<String> {
         {
             let attrs = self.data().attributes.borrow();
@@ -804,7 +830,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .params()
             .nth(slot)
             .unwrap_or_else(|| unreachable!("argument count matches signature"))
-            .id();
+            .slot_trusting_same_module();
         Ok(Argument::from_parts(
             id,
             self.module,
@@ -825,7 +851,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let args: Box<[ValueSlot]> = self.data().args.borrow().clone();
         let param_types: Vec<TypeSlot> = FunctionType::new(signature, module)
             .params()
-            .map(|t| t.id())
+            .map(|t| t.slot_trusting_same_module())
             .collect();
         args.into_vec()
             .into_iter()
@@ -897,7 +923,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Name: Into<String>,
     {
         let name = name.into();
-        let label_ty = self.module.module().label_type::<B>().as_type().id();
+        let label_ty = self
+            .module
+            .module()
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let bb_id = self.module.module().context().push_value(ValueData {
             ty: label_ty,
             name: RefCell::new(None),
@@ -926,6 +957,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         S2: BlockTerminationState,
     {
         let _ = module;
+        // Boundary: the caller's block, admitted against this function's
+        // module before its parent is compared or this block list is searched.
+        let block_id = block.to_erased().slot_in(self.module.id())?;
         let ValueKindData::BasicBlock(data) = &block.to_erased().data().kind else {
             return Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::BasicBlock,
@@ -938,7 +972,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        let Some(pos) = blocks.iter().position(|id| *id == block.slot()) else {
+        let Some(pos) = blocks.iter().position(|id| *id == block_id) else {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });
@@ -956,7 +990,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type::<B>().as_type().id();
+        let label_ty = module
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
             .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
@@ -968,7 +1005,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Some(BasicBlock::from_parts(
             id,
             self.module,
-            module.label_type::<B>().as_type().id(),
+            module
+                .label_type::<B>()
+                .as_type()
+                .slot_trusting_same_module(),
         ))
     }
 
@@ -982,6 +1022,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         value: Value<'ctx, B>,
     ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>> {
         let _ = module;
+        // Boundary: the caller's value, admitted against this function's
+        // module before its parent is compared or a handle is made of it.
+        let block_id = value.slot_in(self.module.id())?;
         let ValueKindData::BasicBlock(data) = &value.data().kind else {
             return Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::BasicBlock,
@@ -993,7 +1036,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
                 message: "block does not belong to function",
             });
         }
-        let block = BasicBlock::from_parts(value.id, self.module, value.ty);
+        let block = BasicBlock::from_parts(
+            block_id,
+            self.module,
+            value.ty().slot_trusting_same_module(),
+        );
         if block.terminator().is_some_and(|inst| inst.is_terminator()) {
             return Err(IrError::InvalidOperation {
                 message: "cannot create insertion handle for terminated block",
@@ -1039,15 +1086,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         // reference to a function in a non-zero program address space
         // (`test/Assembler/call-nonzero-program-addrspace.ll`) come out as a
         // plain `ptr`.
-        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(self.address_space())
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
-        Constant {
-            id,
-            module: self.module,
-            ty: ptr_ty,
-        }
+        Constant::from_parts(Value::from_parts(id, self.module, ptr_ty))
     }
 
     /// A `ptr`-typed constant referencing this function, as a *distinct* arena
@@ -1063,15 +1109,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// function entry).
     pub fn as_aggregate_ptr(self, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(addr_space).as_type().id();
+        let ptr_ty = module
+            .ptr_type::<B>(addr_space)
+            .as_type()
+            .slot_trusting_same_module();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, 0);
-        Constant {
-            id,
-            module: self.module,
-            ty: ptr_ty,
-        }
+        Constant::from_parts(Value::from_parts(id, self.module, ptr_ty))
     }
 }
 
@@ -1138,7 +1183,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValu
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         let module = self.module.module();
-        let label_ty = module.label_type::<B>().as_type().id();
+        let label_ty = module
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         FunctionBasicBlocks {
             ids: ids.into_iter(),
@@ -1238,7 +1286,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::Function(f) => Ok(Self {
-                id: v.id,
+                // Internal: a re-wrap that keeps `v`'s own module.
+                id: v.slot_trusting_same_module(),
                 module: v.module,
                 signature: f.signature,
                 _r: PhantomData,
@@ -1556,6 +1605,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
     /// return type does not match the chosen [`ReturnMarker`].
     pub fn build(self) -> IrResult<FunctionId<R, B>> {
+        // Boundary: the caller's signature and constants, parked by the
+        // infallible setters, are admitted against this module before the
+        // function is created — `ForeignType` / `ForeignValueId`.
+        let owner = self.module.id();
+        self.signature.slot_in(owner)?;
+        let prefix_data = self.prefix_data.map(|c| c.slot_in(owner)).transpose()?;
+        let prologue_data = self.prologue_data.map(|c| c.slot_in(owner)).transpose()?;
+        let personality_fn = self.personality_fn.map(|c| c.slot_in(owner)).transpose()?;
         let f = self.module.module().add_function_checked::<B, R, _>(
             &self.name,
             self.signature,
@@ -1579,29 +1636,17 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         }
         // Each of these is a use like any other, so the construction path
         // registers the same reverse edge the setters do.
-        if let Some(prefix_data) = self.prefix_data {
-            f.retarget_global_field_use(
-                GlobalFieldKind::PrefixData,
-                None,
-                Some(prefix_data.slot()),
-            );
-            f.data().prefix_data.set(Some(prefix_data.slot()));
+        if let Some(prefix_data) = prefix_data {
+            f.retarget_global_field_use(GlobalFieldKind::PrefixData, None, Some(prefix_data));
+            f.data().prefix_data.set(Some(prefix_data));
         }
-        if let Some(prologue_data) = self.prologue_data {
-            f.retarget_global_field_use(
-                GlobalFieldKind::PrologueData,
-                None,
-                Some(prologue_data.slot()),
-            );
-            f.data().prologue_data.set(Some(prologue_data.slot()));
+        if let Some(prologue_data) = prologue_data {
+            f.retarget_global_field_use(GlobalFieldKind::PrologueData, None, Some(prologue_data));
+            f.data().prologue_data.set(Some(prologue_data));
         }
-        if let Some(personality_fn) = self.personality_fn {
-            f.retarget_global_field_use(
-                GlobalFieldKind::PersonalityFn,
-                None,
-                Some(personality_fn.slot()),
-            );
-            f.data().personality_fn.set(Some(personality_fn.slot()));
+        if let Some(personality_fn) = personality_fn {
+            f.retarget_global_field_use(GlobalFieldKind::PersonalityFn, None, Some(personality_fn));
+            f.data().personality_fn.set(Some(personality_fn));
         }
         if let Some(comdat) = self.comdat {
             *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
@@ -1616,7 +1661,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            f.set_local_value_name(IsValue::slot(arg), Some(&name));
+            // Internal: `f`'s own argument.
+            f.set_local_value_name(arg.slot_trusting_same_module(), Some(&name));
         }
         Ok(f.id())
     }
@@ -1637,7 +1683,10 @@ impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx
     #[inline]
     pub fn return_int_type(self) -> IntType<'ctx, W, B> {
         let signature = self.signature();
-        IntType::new(signature.return_type().id(), self.module)
+        IntType::new(
+            signature.return_type().slot_trusting_same_module(),
+            self.module,
+        )
     }
 }
 
@@ -1646,7 +1695,10 @@ impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ct
     #[inline]
     pub fn return_float_type(self) -> FloatType<'ctx, K, B> {
         let signature = self.signature();
-        FloatType::new(signature.return_type().id(), self.module)
+        FloatType::new(
+            signature.return_type().slot_trusting_same_module(),
+            self.module,
+        )
     }
 }
 

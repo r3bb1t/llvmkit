@@ -19,6 +19,161 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — `hasFnAttr` reads attribute groups, from one port
+
+- **Fixed (llvmkit-ir):** `will_not_free_between` answered `false` when a
+  call's `nofree` — on the call site or on the callee's declaration — or the
+  enclosing function's `nosync` was written through an `#N` attribute group.
+  Upstream's parser has merged every group into the object's attribute list
+  before `CallBase::hasFnAttr` / `Function::hasFnAttribute` read it; llvmkit
+  keeps the group numbers beside the object and resolves them on lookup, and
+  the assumptions copy of `hasFnAttr` did not.
+- **Fixed (llvmkit-ir):** the verifier rejected a valid module with
+  `A single unwind edge may only enter one EH pad` when `nounwind` reached an
+  `invoke` of an intrinsic through a call-site group:
+  `Verifier::visitEHPadPredecessors`' `II->doesNotThrow()` had its own copy of
+  `hasFnAttr`, which read inline attributes only. It also read the called
+  operand after `stripPointerCasts`; upstream's `doesNotThrow` reads
+  `getCalledOperand()` as stored.
+- **Fixed (llvmkit-ir):** replacing an intrinsic declaration's attributes
+  (`FunctionValue::set_attributes`) did not change what its calls answered:
+  the speculation and assumptions copies of `hasFnAttr` also read the
+  intrinsic's TableGen record at query time (`nounwind`, `willreturn`,
+  `speculatable`, `nofree` and `noreturn` in one, `nofree` in the other).
+  Upstream reads the declaration's list as it stands; the attributes
+  `Intrinsic::getAttributes` gives it are in that list because the `Function`
+  constructor put them there, and llvmkit's
+  `get_or_insert_intrinsic_declaration` stores them the same way — it is the
+  only route that creates a function under an intrinsic's name. The record is
+  no longer consulted.
+- **Fixed (llvmkit-ir):** `is_safe_to_speculatively_execute` refused a call
+  whose callee is `speculatable` through an `#N` group:
+  `Function::isSpeculatable` (`hasFnAttribute(Attribute::Speculatable)`) had
+  its own copy, reading inline attributes and the intrinsic record. It calls
+  the one port of `Function::hasFnAttribute` now. Two readers of a
+  function-attribute *payload* still skip the groups — `memory(...)` for
+  `CallBase::getMemoryEffects` and `vscale_range` — both in the conservative
+  direction; `docs/divergences.md` D9 records them.
+- There were three copies (`speculation.rs`, `assumptions.rs`, and the
+  verifier's `call_does_not_throw`); there is one port now,
+  `instr_types::call_site_has_fn_attr`, on top of a crate-internal port of
+  `Function::hasFnAttribute` (D5). It matches an attribute of the kind
+  whatever its payload, as `AttributeList::hasFnAttr` does, where the copies
+  matched only bare enum attributes.
+- **Added (llvmkit-ir):** `has_fn_attr(AttrKind) -> bool` on `CallInst`,
+  `TypedCallInst`, `InvokeInst` and `CallBrInst` — `CallBase::hasFnAttr`,
+  answered by that one port. Upstream asserts on `Attribute::NoBuiltin`;
+  llvmkit answers it by the same two lookups instead of porting the crash.
+- New tests: `parser_eh_funclet::upstream_pr69428_fixture_verifies`
+  (`test/Verifier/pr69428.ll`, vendored),
+  `parser_eh_funclet::an_invoke_edge_is_exempt_when_nounwind_arrives_through_an_attribute_group`,
+  `assumptions::will_not_free_between_reads_nofree_through_an_attribute_group` /
+  `..._reads_nosync_through_an_attribute_group` /
+  `..._reads_an_intrinsic_declarations_attribute_list`, and
+  `parser_calls::call_site_views_answer_has_fn_attr_from_the_call_its_groups_and_its_callee`
+  and `parser_calls::a_call_is_speculatable_when_its_callee_is_through_an_attribute_group`,
+  each with its positive control.
+
+### Changed — a function pass's report carries its module's brand *(breaking)*
+
+- **Breaking (llvmkit-ir, llvmkit-macros):** `FnReport` is `FnReport<B>`,
+  and `FunctionPass<B>::run` returns `IrResult<FnReport<B>>`. A raw
+  `FunctionPass` impl writes `-> IrResult<FnReport<B>>` (or its concrete
+  brand); the `#[function_pass]` sentinel `-> IrResult<FnReport>` is
+  unchanged, since the macro writes the signature. The report carries a
+  reshape pass's `CfgUpdate<B>` log to its driver; it used to hold that log
+  under the crate-private storage brand and the driver re-branded it for
+  whatever function it ran, checking nothing. The log now keeps its brand
+  from `FnReshape::done` to the driver's flush, and the crate-private
+  re-branding helpers (`CfgUpdate::rebrand_as_stored` /
+  `rebrand_from_stored`, `BlockId::rebrand_as_stored` /
+  `rebrand_from_stored`) are gone.
+  `crates/llvmkit-ir/tests/compile_fail/fn_report_keeps_its_brand.rs` pins
+  that a report of one brand is not a report of another.
+
+### Changed — a duplicated operand-bundle tag has its own error *(breaking)*
+
+- **Breaking (llvmkit-ir):** new `IrError::DuplicateOperandBundle { tag }`,
+  answering `Blame::UsageError`. `CallInst::operand_bundle` and its
+  `InvokeInst` / `CallBrInst` twins raised the stringly
+  `InvalidOperation { message }` for a call carrying the tag more than once;
+  the refusal is now a variant a caller can match, carrying the tag it asked
+  about. An exhaustive `match` over `IrError` needs a new arm.
+- `OperandBundleUse::inputs` reads the bundle's inputs lazily instead of
+  copying their slots into a `Vec` first.
+
+### Changed — `CallArgs::lower` cannot be called outside llvmkit *(breaking)*
+
+- **Breaking (llvmkit-ir):** the hidden `CallArgs::lower` takes the
+  crate-only token the dominator seal already took, so a call from outside
+  the crate does not compile (`E0061`). Its opaque result had closed the slot
+  leak, but the call itself still interned constant arguments into whatever
+  module it was handed, a `Verified` one included through
+  `(&module).into()`. The token is one crate-wide type now, shared by both
+  methods (D5). `tests/compile_fail/value_slot_is_crate_private.rs` pins the
+  refused call; the two tests that called `lower` from integration tests
+  (`call_args_lowers_tuple_to_value_ids`,
+  `derive_emits_into_call_arg_for_struct_schema`) moved into the crate with
+  their assertions unchanged.
+
+### Changed — no public route hands out a value slot; operand bundles split along upstream's Def / Use line *(breaking)*
+
+- **Breaking (llvmkit-ir):** `ValueSlot` is crate-private and no longer
+  exported, like `TypeSlot`. The public functions that still returned one —
+  `CfgEdge::from` / `to`, `color_eh_funclets` and
+  `OperandBundleData::inputs` — answer in the tagged currency instead:
+  - `CfgEdge` and `CfgUpdate` are brand-generic (`CfgEdge<B>`,
+    `CfgUpdate<B>`), and `CfgEdge::from` / `to` return `BlockId<Dyn, B>`, the
+    shape of `cfg::BasicBlockEdge<B>` and of upstream's `cfg::Update`, whose
+    `getFrom` / `getTo` return the block. `CfgIncremental::apply_updates`
+    and `FnReshape::pending_cfg_updates` follow.
+  - `color_eh_funclets` returns `HashMap<BlockId<Dyn, B>, Vec<BlockId<Dyn,
+    B>>>`, as `colorEHFunclets` returns `DenseMap<BasicBlock *, ColorVector>`.
+  - Operand-bundle inputs are read as values (below).
+  Two hidden routes on public traits carried slots too, found when the type
+  became crate-private (`private_interfaces` named them): `CallArgs::lower`
+  returned the lowered arguments' slots — it now returns an opaque list whose
+  length is readable and whose slots are not — and `ViewIn::id_from_raw`
+  minted an id from any tag and any slot; its slot now comes wrapped in a
+  value only llvmkit can build. The dominator seal's block slot is wrapped
+  the same way. `tests/compile_fail/value_slot_is_crate_private.rs` pins the
+  type and the opaque list.
+- **Breaking (llvmkit-ir):** operand bundles follow upstream's split. A
+  caller builds an `OperandBundleDef<'ctx, B>` (`OperandBundleDefT<Value *>`)
+  from value handles and hands it to the call site beside the arguments, as
+  `IRBuilderBase::CreateCall(…, Args, OpBundles, …)` takes them:
+  `CallSiteConfig::operand_bundles`, `CallBuilder::operand_bundles`,
+  `TypedCallBuilder::operand_bundles` and
+  `IntrinsicCallBuilder::operand_bundles`. The stored form is crate-private:
+  `OperandBundleData` is no longer exported, and `CallAttributeData` no
+  longer carries bundles on its public face — its `operand_bundles` setter
+  and `operand_bundles_slice` getter are gone, as `OpBundles` is not part of
+  upstream's `AttributeList`. Bundles are read back through the new
+  `OperandBundleUse<'ctx, B>` view: `operand_bundles()` and
+  `operand_bundle(&tag)` on `CallInst`, `InvokeInst` and `CallBrInst`,
+  mirroring `CallBase::getOperandBundleAt` / `getOperandBundle`.
+  `operand_bundle` returns `IrResult<Option<_>>`: a call carrying more than
+  one bundle of the tag is refused with `DuplicateOperandBundle` (see the
+  entry above) where upstream
+  asserts `countOperandBundlesOfType(ID) < 2` — the verifier rejects a
+  duplicate only for the tags it knows, so two bundles of one custom tag are
+  valid IR (`crates/llvmkit-asmparser/tests/parser_calls.rs`).
+- **Fixed (llvmkit-ir):** a bundle input of another module was stored at its
+  slot. `OperandBundleData::new` took value handles into a module-less
+  bundle, so it could not compare modules, and the call builders never
+  looked at bundle inputs; under a shared brand (every `Module::dynamic` is
+  `DynBrand`) a call in one module could carry another module's value as a
+  bundle operand. Every entry that takes bundles now admits each input
+  through the checked door before the call is created and returns
+  `ForeignValueId` for a foreign one: every consumer of `CallSiteConfig`
+  (`call_erased`, `call_with_config`, and the invoke and callbr
+  `_with_config` entries — the nine `config.into_parts(…)` sites that
+  `rg -c "config.into_parts\(self.module.id\(\)\)" crates/llvmkit-ir/src/ir_builder.rs`
+  counts) and the `call_builder` / `typed_call_builder` terminals
+  (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
+- The parser builds `OperandBundleDef`s and passes them through
+  `CallSiteConfig::operand_bundles`; its output is unchanged.
+
 ### Fixed — a block reached twice from one predecessor has no single predecessor
 
 - **Fixed (llvmkit-ir):** the helper that ported
@@ -114,6 +269,22 @@ cut, entries accumulate under **Unreleased**.
   caller's handles until `build` and store only what the checked door
   returns — the separate `aliasee_module` / `resolver_module` fields that had
   to be kept in step with the slot are gone.
+- The ids follow the same law, with no public change: their crate-private
+  raw `slot()` accessors are gone. `ValueId`, `MetadataId` and
+  `NamedMetadataId` reach a slot through `slot_in(owner)`, built on the
+  comparison each currency already had (`ViewIn::resolve_in` for the value
+  ids, `into_stored` for the metadata ids), or — on the crate-private storage
+  brand only — through `slot_trusting_same_module()`. `BlockId` has the
+  checked door `slot_in(owner)` on the same comparison, and no unchecked
+  door: the crate's own CFG walks read block slots straight off the CFG
+  (`cfg::successor_ids`, `FunctionCfg::predecessor_slots`,
+  `InstructionView::parent_slot`) instead of minting an id to strip it, a
+  caller's block id is admitted by `resolve_in`, by `slot_in` or, inside an
+  `SsaBlock`, by the session check, and the counted F1 / F2 boundary sites
+  read a caller's block id through the one named exception,
+  `slot_unchecked_at_marked_boundary`, whose every call
+  `crates/llvmkit-ir/tests/boundary_door_drift.rs` requires to sit under a
+  boundary marker.
 - **Fixed (llvmkit-ir):** every operand lift took a caller's value *handle*
   on trust. The handle impls of `IntoIntValue`, `IntoFloatValue`,
   `IntoPointerValue` and `IntoErasedValue`, of `SelectArm`, `IntoCallee`,
@@ -211,6 +382,17 @@ cut, entries accumulate under **Unreleased**.
   `declare_pointer_var_in_addrspace` and their poison twins are infallible
   and cannot yet refuse a type of another module; they are marked for the
   task that makes them fallible.
+- **Fixed (llvmkit-ir):** an SSA session accepted a block or a variable
+  handed out by a session of another module. `SsaBuilderId` numbered
+  sessions per module, so the first session of each of two modules sharing a
+  brand had the same id and passed the other's `SsaForeignBlock` /
+  `SsaForeignVariable` check: `seal_block` sealed whatever block sat at the
+  foreign block's slot here, `def_int_var` / `use_int_var` used the variable
+  at the foreign index of this session's table, and the terminators refused
+  with an error naming the wrong block. `SsaBuilderId` now carries the
+  module as well as the per-module ordinal, so each of these entries refuses
+  the handle before anything is read (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
+  Its `Debug` output changes shape accordingly.
 - **Fixed (llvmkit-ir):** `BasicBlock::split_at` (and so
   `FnReshape::split_block`), `FnPatch::replace_all_uses` and
   `FnReshape::insert_phi_dyn` read a caller's instruction view or phi type
@@ -220,10 +402,107 @@ cut, entries accumulate under **Unreleased**.
   type — before anything is read or appended. `FnPatch::erase` is
   infallible and cannot yet refuse an instruction of another module; it is
   marked for the task that makes it fallible.
+- **Fixed (llvmkit-ir):** the instruction and function mutators stored or
+  located a caller's handle by slot without comparing modules:
+  `Instruction::replace_all_uses_with` (the replacement), `move_before` /
+  `move_after` and the detached `insert_before` / `insert_after` (the
+  anchor), `append_to` (the block), `AtomicRmwInst::set_value_operand`, the
+  width-erased `SwitchInst::add_case`, `LandingPadInst::add_catch_clause` /
+  `add_filter_clause`, and `FunctionValue::set_prefix_data` /
+  `set_prologue_data` / `set_personality_fn`, whose private
+  `checked_constant_id` checked nothing. Each now returns `ForeignValueId`
+  before anything is read or stored. `AttributeStorage::add` is infallible
+  and module-less, so a type-carrying attribute (`byval`, `sret`, `range`,
+  …) still cannot refuse a type of another module; its conversion is marked
+  for the task that makes it fallible.
+- **Fixed (llvmkit-ir):** the public constant folds accepted handles of two
+  modules in one call. Each fold reads every handle through its own module
+  and builds in its first handle's, so a mixed call returned `Ok` — a
+  declined fold or a result mixing the two modules;
+  `constant_fold_insert_value_instruction` with no indices returns its
+  inserted value unread, so it handed the foreign value back. Every public entry that takes more than one handle
+  now admits each later one against its first handle's module before
+  reading anything, and returns `ForeignValueId` or `ForeignType`: the
+  multi-handle `constant_fold_*` functions of `constant_fold` and
+  `constant_folding`, `lossless_inv_cast` (and so `lossless_unsigned_trunc`
+  and `lossless_signed_trunc`), and every multi-handle `ConstantFolder`
+  hook. Signatures are unchanged. Crate code that already holds operands of
+  one module calls crate-private `_trusting_same_module` cores, so each
+  public entry's check is the only one on its path.
+- **Breaking (llvmkit-ir):** no public route hands out a value handle's bare
+  arena slot any more. A slot means something only in the module that
+  minted it, so a tagless one could be carried into another module. Removed:
+  `Value::slot`, `IsValue::slot`, and the `slot()` accessors of
+  `BasicBlock`, `BasicBlockLabel`, `Instruction`, `NonTerminator` and the
+  per-opcode instruction handles. `DominatorTreeBlock::dominator_block_id`
+  is a crate-only method: it lives on the trait's private seal and takes an
+  argument only llvmkit can build, because a bound on the public trait brings
+  the seal's methods into scope where the seal cannot be named
+  (`tests/compile_fail/dominator_block_slot_is_crate_only.rs`). Use `id()` for a storable,
+  module-tagged id. Inside the crate every value handle's `id` and cached
+  `ty` fields are now private to the file that declares the handle, and a
+  slot leaves a handle only through `ValueSlotAccess`'s two doors — `slot_in`
+  (checked) or `slot_trusting_same_module` (unchecked, for reads within one
+  module). Two sinks that accepted bare slots changed shape: operand
+  bundles are built from value handles (`OperandBundleDef`; see "operand
+  bundles split along upstream's Def / Use line" above), and `must_trigger_ub` takes
+  a `HashSet<ValueId>`, matched with the module tag included, as upstream's
+  `SmallPtrSetImpl<const Value *>` is matched by address. The
+  parser-facing `PhiCoherenceError` carries the phi's tagged `ValueId`.
+- **Fixed (llvmkit-ir):** making the raw fields private surfaced six more
+  entries that read a caller's handle by slot without comparing modules:
+  `FunctionValue::move_basic_block_to_end` and
+  `basic_block_for_construction` (the block), `BasicBlock::splice_into` (the
+  destination), `GlobalVariable::try_delta_from` / `try_delta_from_plus`
+  (the other global), and `FunctionBuilder::build` (the signature and the
+  prefix, prologue and personality constants its infallible setters park).
+  Each now returns `ForeignValueId` or `ForeignType` before anything is read
+  or created. `indexed_gep_type` reads its indices against the source
+  type's module and is marked with the read-only analyses.
 - `GlobalVariable::set_initializer`'s documentation said "module provenance
   is enforced by `B`", which is false for two modules sharing a brand; it now
   says which check does it. It also named the wrong error for a type
   mismatch (`TypeMismatch`; the method returns `TypeIdentityMismatch`).
+- **Breaking (llvmkit-ir):** a type handle's bare slot has no public route
+  out either. `Type::id` is removed and `TypeSlot` is no longer exported;
+  compare and store `Type` handles, whose equality includes the module.
+  Inside the crate every type handle's `id` field is private to the file
+  that declares it, and a type slot leaves a handle only through
+  `TypeSlotAccess`'s two doors. A compile-fail fixture pins the removed
+  routes (`tests/compile_fail/handle_slot_accessors_removed.rs`).
+- **Fixed (llvmkit-ir):** making the type fields private surfaced
+  fallible entries that read a caller's type by slot without comparing
+  modules: `set_struct_body` and `set_struct_body_dyn` (the struct and each
+  element), `add_function_dyn` (the signature),
+  `intrinsic_descriptor_from_signature` (the function type), and
+  `get_or_insert_intrinsic_declaration` / `_by_id` (the descriptor's
+  overload types). A type of another module sharing the brand was read as
+  whatever sat at its slot here. Each now returns `ForeignType` before
+  anything is read, set or declared. The infallible type constructors
+  (`typed_pointer_type`, `array_type`, `vector_type`,
+  `scalable_vector_type`, `struct_type` / `packed_struct_type`,
+  `function_type` / `variadic_function_type`, `target_ext_type`) and
+  `inline_asm` still cannot refuse a type of another module; they are
+  marked for the task that makes them fallible.
+- **Fixed (llvmkit-ir):** an `IrBuilder` took a custom folder's result on
+  trust. An `IrBuilderFolder` hook that returned a value of another module
+  sharing the brand had it handed back as the builder's result — through
+  the erased entries, the natively overridden typed hooks and typed
+  compares, and the default typed hooks' narrowing, whose type check
+  compared bare type slots, so a foreign `i32` at the home `i32`'s slot
+  matched. Each route now refuses the result with `ForeignValueId`, and the
+  type check refuses a type of another module with `ForeignType`.
+- **Fixed (llvmkit-ir):** the public intrinsic signature builders interned a
+  caller's types into the receiving module by slot without comparing
+  modules: `IntrinsicDescriptor::function_type` and
+  `IntrinsicId::function_type` (the overload types) and
+  `IntrinsicId::match_signature` (the function type, which it matched and
+  rebuilt in the module even when the match then failed). Each now returns
+  `ForeignType` before anything is read or interned, through the one
+  overload admission the module's intrinsic declaration also runs.
+  `IntrinsicDescriptor::new`, which validates by building the signature in
+  the first overload's module, likewise refuses overloads of two modules
+  (`crates/llvmkit-ir/tests/cross_module_handles.rs`).
 
 ### Changed — four llvmkit-bug sites get their own variants; alias and ifunc refuse a foreign constant *(breaking)*
 

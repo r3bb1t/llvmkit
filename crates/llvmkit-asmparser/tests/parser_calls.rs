@@ -704,6 +704,258 @@ fn operand_bundles_ll_matches_upstream_check_lines() {
     assert_check_lines(&canonical_text, &needles);
 }
 
+/// The parsed bundles of `@f3` in `test/Bitcode/operand-bundles.ll` read back
+/// through the call view: two `"foo"` bundles, in order, with their inputs.
+/// The fixture's own IR, loaded whole; `@f3`'s `CHECK` line pins the printed
+/// form in [`operand_bundles_ll_matches_upstream_check_lines`].
+///
+/// `CallBase::getOperandBundle` (`IR/InstrTypes.h`) asserts
+/// `countOperandBundlesOfType(ID) < 2`, so upstream cannot ask `@f3`'s call
+/// for its `"foo"` bundle; llvmkit refuses the question with
+/// `DuplicateOperandBundle` instead, and a tag the call lacks answers `None`. No
+/// upstream counterpart for the refusal itself: it replaces an assert.
+#[test]
+fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
+    use llvmkit_ir::{InstructionKind, IrError, OperandBundleTag, Value};
+
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
+    let module = Module::dynamic("operand-bundles");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let call = view
+        .functions()
+        .find(|function| function.name() == "f3")
+        .expect("the fixture defines @f3")
+        .basic_blocks()
+        .flat_map(|block| block.instructions())
+        .find_map(|instruction| match instruction.kind() {
+            Some(InstructionKind::Call(call)) => Some(call),
+            _ => None,
+        })
+        .expect("@f3 makes one call");
+
+    let bundles: Vec<(OperandBundleTag, Vec<String>)> = call
+        .operand_bundles()
+        .map(|bundle| {
+            (
+                bundle.tag().clone(),
+                bundle
+                    .inputs()
+                    .map(|input: Value<'_, _>| input.to_string())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(bundles.len(), 2, "{bundles:?}");
+    assert!(
+        bundles
+            .iter()
+            .all(|(tag, _)| *tag == OperandBundleTag::Custom("foo".to_string())),
+        "{bundles:?}"
+    );
+    assert_eq!(bundles[0].1.len(), 3, "{bundles:?}");
+    assert_eq!(bundles[1].1.len(), 3, "{bundles:?}");
+
+    assert!(
+        matches!(
+            call.operand_bundle(&OperandBundleTag::Custom("foo".to_string())),
+            Err(IrError::DuplicateOperandBundle { .. })
+        ),
+        "two \"foo\" bundles: the single-bundle lookup must refuse"
+    );
+    assert!(
+        matches!(call.operand_bundle(&OperandBundleTag::Deopt), Ok(None)),
+        "a tag the call lacks answers None"
+    );
+}
+
+/// Every bundle of a call site, as `(tag, input texts)`, read through the
+/// `OperandBundleUse` view: shared by the invoke and callbr read-back tests.
+fn bundle_texts<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
+    bundles: impl Iterator<Item = llvmkit_ir::OperandBundleUse<'ctx, B>>,
+) -> Vec<(llvmkit_ir::OperandBundleTag, Vec<String>)> {
+    bundles
+        .map(|bundle| {
+            (
+                bundle.tag().clone(),
+                bundle.inputs().map(|input| input.to_string()).collect(),
+            )
+        })
+        .collect()
+}
+
+/// The parsed bundles of the invokes in `test/Bitcode/operand-bundles.ll`
+/// read back through `InvokeInst::operand_bundles` / `operand_bundle`: `@g0`'s
+/// `"foo"` and `"bar"` with their three inputs each, `@g2`'s empty
+/// `"foo"()`, and `@g1`'s third invoke, whose two `"foo"` bundles the
+/// single-bundle lookup refuses with `DuplicateOperandBundle` naming the tag
+/// (upstream's `getOperandBundle` asserts instead). The fixture's own IR,
+/// loaded whole; the expected input text is
+/// the fixture's `CHECK` spelling, canonicalized to one space as the file's
+/// other test explains (`AssemblyWriter` prints `float 0.000000e+00`).
+///
+/// No upstream counterpart for the read-back itself: the fixture pins the
+/// printed form; this reads the same bundles through the view
+/// `CallBase::getOperandBundleAt` / `getOperandBundle` mirror.
+#[test]
+fn invoke_operand_bundles_read_back() {
+    use llvmkit_ir::{Blame, IrError, OperandBundleTag, TerminatorKind};
+
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
+    let module = Module::dynamic("operand-bundles");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let invokes = |name: &str| {
+        view.functions()
+            .find(|function| function.name() == name)
+            .expect("the fixture defines the function")
+            .basic_blocks()
+            .flat_map(|block| block.instructions())
+            .filter_map(|instruction| match instruction.terminator_kind() {
+                Some(TerminatorKind::Invoke(invoke)) => Some(invoke),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let first_invoke = |name: &str| {
+        invokes(name)
+            .into_iter()
+            .next()
+            .expect("the function makes an invoke")
+    };
+    let foo = OperandBundleTag::Custom("foo".to_string());
+    let bar = OperandBundleTag::Custom("bar".to_string());
+    let texts = |inputs: &[&str]| inputs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    let g0 = first_invoke("g0");
+    assert_eq!(
+        bundle_texts(g0.operand_bundles()),
+        vec![
+            (foo.clone(), texts(&["i32 42", "i64 100", "i32 %x"])),
+            (
+                bar.clone(),
+                texts(&["float 0.000000e+00", "i64 100", "i32 %l"])
+            ),
+        ]
+    );
+    assert_eq!(g0.operand_bundles().len(), 2);
+    let bar_use = g0
+        .operand_bundle(&bar)
+        .expect("one \"bar\" bundle")
+        .expect("the \"bar\" bundle is present");
+    assert_eq!(
+        bundle_texts(std::iter::once(bar_use)),
+        vec![(bar, texts(&["float 0.000000e+00", "i64 100", "i32 %l"]))]
+    );
+    assert!(
+        matches!(g0.operand_bundle(&OperandBundleTag::Deopt), Ok(None)),
+        "a tag the invoke lacks answers None"
+    );
+
+    let g2 = first_invoke("g2");
+    assert_eq!(
+        bundle_texts(g2.operand_bundles()),
+        vec![(foo.clone(), Vec::new())]
+    );
+    let empty = g2
+        .operand_bundle(&foo)
+        .expect("one \"foo\" bundle")
+        .expect("the \"foo\" bundle is present");
+    assert_eq!(empty.inputs().len(), 0);
+
+    // `@g1`'s third invoke carries `"foo"` twice: the single-bundle lookup
+    // refuses with the variant naming the tag, and says so in its message.
+    let g1 = invokes("g1");
+    assert_eq!(g1.len(), 3, "@g1 makes three invokes");
+    assert_eq!(
+        bundle_texts(g1[2].operand_bundles()),
+        vec![
+            (foo.clone(), texts(&["i32 42", "i64 100", "i32 %x"])),
+            (
+                foo.clone(),
+                texts(&["i32 42", "float 0.000000e+00", "i32 %l"])
+            ),
+        ]
+    );
+    let refused = g1[2].operand_bundle(&foo);
+    assert!(
+        matches!(&refused, Err(IrError::DuplicateOperandBundle { tag }) if *tag == foo),
+        "{:?}",
+        refused.map(|found| found.map(|bundle| bundle.tag().clone()))
+    );
+    assert_eq!(
+        g1[2]
+            .operand_bundle(&foo)
+            .err()
+            .map(|error| error.to_string()),
+        Some("the call site carries more than one operand bundle tagged \"foo\"".to_string())
+    );
+    // The IR is valid; the caller asked a question with two answers.
+    assert_eq!(
+        g1[2].operand_bundle(&foo).err().map(|error| error.blame()),
+        Some(Blame::UsageError)
+    );
+}
+
+/// The parsed bundle of `@test_callbr_intrinsic_no_operand_bundles` in
+/// `test/Verifier/callbr-intrinsic.ll` — `"foo"(i1 %c)` — read back through
+/// `CallBrInst::operand_bundles` / `operand_bundle`. The fixture, vendored
+/// whole, is one the verifier rejects (its `RUN` line is `not opt`); the
+/// module is parsed and not verified, which is all a read of its bundles
+/// needs.
+///
+/// No upstream counterpart for the read-back itself: the fixture pins the
+/// verifier's message for this call; this reads its bundle through the view
+/// `CallBase::getOperandBundleAt` / `getOperandBundle` mirror.
+#[test]
+fn callbr_operand_bundles_read_back() {
+    use llvmkit_ir::{OperandBundleTag, TerminatorKind};
+
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/Verifier/callbr-intrinsic.ll");
+    let module = Module::dynamic("callbr-intrinsic");
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let callbr = view
+        .functions()
+        .find(|function| function.name() == "test_callbr_intrinsic_no_operand_bundles")
+        .expect("the fixture defines the function")
+        .basic_blocks()
+        .flat_map(|block| block.instructions())
+        .find_map(|instruction| match instruction.terminator_kind() {
+            Some(TerminatorKind::CallBr(callbr)) => Some(callbr),
+            _ => None,
+        })
+        .expect("the function makes a callbr");
+    let foo = OperandBundleTag::Custom("foo".to_string());
+
+    assert_eq!(
+        bundle_texts(callbr.operand_bundles()),
+        vec![(foo.clone(), vec!["i1 %c".to_string()])]
+    );
+    assert_eq!(callbr.operand_bundles().len(), 1);
+    let found = callbr
+        .operand_bundle(&foo)
+        .expect("one \"foo\" bundle")
+        .expect("the \"foo\" bundle is present");
+    assert_eq!(
+        bundle_texts(std::iter::once(found)),
+        vec![(foo, vec!["i1 %c".to_string()])]
+    );
+    assert!(
+        matches!(callbr.operand_bundle(&OperandBundleTag::Deopt), Ok(None)),
+        "a tag the callbr lacks answers None"
+    );
+}
+
 /// A `ValueAsMetadata` operand-bundle input — `metadata i32 %a`,
 /// `metadata i32 42`, `metadata ptr @g`.
 ///
@@ -2878,4 +3130,155 @@ fn upstream_verifier_operand_bundles_fixture_messages_match() {
             ),
         }
     }
+}
+
+/// `CallBase::hasFnAttr(Attribute::AttrKind)` through the public
+/// `has_fn_attr` on each call-site view — `CallInst`, `InvokeInst` and
+/// `CallBrInst` — reading the three places upstream's one `AttributeList`
+/// lookup covers here: the call's own attributes, its `#N` groups (which
+/// `LLParser::validateEndOfModule` merges into that list upstream), and the
+/// called function's attributes (`CallBase::hasFnAttrOnCalledFunction`).
+///
+/// llvmkit-specific: the upstream unit tests that call `hasFnAttr` with an
+/// enum kind are `InstructionsTest.AlterCallBundles` /
+/// `AlterInvokeBundles`, which read it off a copied call; this pins the
+/// reader on each view directly, with `cold` absent everywhere as the
+/// negative control.
+#[test]
+fn call_site_views_answer_has_fn_attr_from_the_call_its_groups_and_its_callee() {
+    use llvmkit_ir::{AttrKind, InstructionKind, TerminatorKind};
+
+    const SOURCE: &str = r"
+declare void @plain()
+declare void @callee_nounwind() nounwind
+declare i32 @__gxx_personality_v0(...)
+
+define void @f() personality ptr @__gxx_personality_v0 {
+entry:
+  call void @plain() nounwind
+  call void @plain() #0
+  call void @callee_nounwind()
+  call void @plain()
+  invoke void @plain() #0
+          to label %next unwind label %pad
+
+next:
+  callbr void @plain() #0
+          to label %done []
+
+done:
+  ret void
+
+pad:
+  %lp = landingpad { ptr, i32 } cleanup
+  resume { ptr, i32 } %lp
+}
+
+attributes #0 = { nounwind }
+";
+    let module = Module::dynamic("has_fn_attr");
+    Parser::new(SOURCE.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let instructions: Vec<_> = view
+        .functions()
+        .find(|function| function.name() == "f")
+        .expect("the source defines @f")
+        .basic_blocks()
+        .flat_map(|block| block.instructions())
+        .collect();
+    let calls: Vec<_> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            Some(InstructionKind::Call(call)) => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 4);
+
+    // Inline on the call site.
+    assert!(calls[0].has_fn_attr(AttrKind::NoUnwind));
+    // Through the call site's `#0`.
+    assert!(calls[1].has_fn_attr(AttrKind::NoUnwind));
+    // On the called function's declaration.
+    assert!(calls[2].has_fn_attr(AttrKind::NoUnwind));
+    // Nowhere.
+    assert!(!calls[3].has_fn_attr(AttrKind::NoUnwind));
+    for call in &calls {
+        assert!(!call.has_fn_attr(AttrKind::Cold));
+    }
+
+    let invoke = instructions
+        .iter()
+        .find_map(|instruction| match instruction.terminator_kind() {
+            Some(TerminatorKind::Invoke(invoke)) => Some(invoke),
+            _ => None,
+        })
+        .expect("the source makes an invoke");
+    assert!(invoke.has_fn_attr(AttrKind::NoUnwind));
+    assert!(!invoke.has_fn_attr(AttrKind::Cold));
+
+    let callbr = instructions
+        .iter()
+        .find_map(|instruction| match instruction.terminator_kind() {
+            Some(TerminatorKind::CallBr(callbr)) => Some(callbr),
+            _ => None,
+        })
+        .expect("the source makes a callbr");
+    assert!(callbr.has_fn_attr(AttrKind::NoUnwind));
+    assert!(!callbr.has_fn_attr(AttrKind::Cold));
+}
+
+/// `isSafeToSpeculativelyExecute`'s `Call` arm asks
+/// `Callee->isSpeculatable()`, which is
+/// `Function::hasFnAttribute(Attribute::Speculatable)` — a read of the
+/// callee's attribute list, into which `LLParser::validateEndOfModule` has
+/// merged the declaration's `#N` groups. A callee that is `speculatable`
+/// through a group is therefore as hoistable as one that says so inline.
+///
+/// llvmkit-specific: no upstream unit test calls
+/// `isSafeToSpeculativelyExecute`. llvmkit's `speculatable` test was its own
+/// copy of `hasFnAttribute` and read inline attributes only, so it refused the
+/// group spelling. The inline callee is the positive control; the
+/// unannotated one, the negative.
+#[test]
+fn a_call_is_speculatable_when_its_callee_is_through_an_attribute_group() {
+    use llvmkit_ir::{SpeculationOptions, is_safe_to_speculatively_execute};
+
+    const SOURCE: &str = r"
+declare i32 @inline_attribute(i32) speculatable
+declare i32 @through_group(i32) #0
+declare i32 @plain(i32)
+
+define i32 @f(i32 %x) {
+  %inline = call i32 @inline_attribute(i32 %x)
+  %group = call i32 @through_group(i32 %x)
+  %plain = call i32 @plain(i32 %x)
+  ret i32 %inline
+}
+
+attributes #0 = { speculatable }
+";
+    let module = Module::dynamic("speculatable_group");
+    Parser::new(SOURCE.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    let view = module.as_view();
+    let call = |name: &str| {
+        view.functions()
+            .find(|function| function.name() == "f")
+            .expect("the source defines @f")
+            .basic_blocks()
+            .flat_map(|block| block.instructions())
+            .find(|instruction| instruction.name().as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("the source defines %{name}"))
+    };
+    let options = SpeculationOptions::default();
+
+    assert!(is_safe_to_speculatively_execute(&call("inline"), options));
+    assert!(is_safe_to_speculatively_execute(&call("group"), options));
+    assert!(!is_safe_to_speculatively_execute(&call("plain"), options));
 }

@@ -80,6 +80,17 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/saved_function_handle_requires_unverified_token.rs");
     t.compile_fail("tests/compile_fail/saved_global_handle_requires_unverified_token.rs");
     t.compile_fail("tests/compile_fail/intrinsic_id_raw_constructor_private.rs");
+    // Error-surface cleanup Task 24 (D7): a handle's bare arena slot has no
+    // public route out — the removed accessors (`E0599`), the crate-private
+    // `TypeSlot`, and the sealed dominator-block method, which a bound on the
+    // public trait would otherwise reach (`E0061`).
+    t.compile_fail("tests/compile_fail/handle_slot_accessors_removed.rs");
+    t.compile_fail("tests/compile_fail/dominator_block_slot_is_crate_only.rs");
+    // Task 24 fix round 1 (D7): `ValueSlot` is crate-private too, and the
+    // hidden `CallArgs::lower` hands its slots back opaque.
+    t.compile_fail("tests/compile_fail/value_slot_is_crate_private.rs");
+    // Task 24 fix round 2 (D7): a function pass's report keeps its brand.
+    t.compile_fail("tests/compile_fail/fn_report_keeps_its_brand.rs");
     t.compile_fail("tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs");
     t.compile_fail("tests/compile_fail/default_pipeline_o2_not_supported.rs");
     t.compile_fail("tests/compile_fail/module_pipeline_step_rejects_raw_string.rs");

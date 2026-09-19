@@ -39,7 +39,7 @@ use crate::Branded;
 use crate::ap_int::ApInt;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
-use crate::r#type::{Type, TypeKind, TypeSlot};
+use crate::r#type::{Type, TypeKind, TypeSlot, TypeSlotAccess};
 use crate::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, ValueSlotAccess, sealed,
 };
@@ -525,9 +525,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ForwardRefValue<'ctx, B> {
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
 #[derive(Branded)]
 pub struct Constant<'ctx, B: ModuleBrand> {
-    pub(crate) id: ValueSlot,
+    // Private to this module: the slot leaves a handle only through the two
+    // doors of `ValueSlotAccess`, and the cached type only as a `Type` handle.
+    id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
@@ -535,10 +537,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// constructors hand these out.
     #[inline]
     pub(crate) fn from_parts(value: Value<'ctx, B>) -> Self {
+        // Internal: a re-wrap that keeps `value`'s own module.
         Self {
-            id: value.id,
+            id: value.slot_trusting_same_module(),
             module: value.module,
-            ty: value.ty,
+            ty: value.ty().slot_trusting_same_module(),
         }
     }
 
@@ -901,11 +904,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// IR type of the constant.
@@ -1061,7 +1060,11 @@ macro_rules! impl_into_constant_value_int {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
                 let ty = IntType::<$marker, B>::new(
-                    module.module().$ty_method::<B>().as_type().id(),
+                    module
+                        .module()
+                        .$ty_method::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
                     module,
                 );
                 Ok(IntoConstantInt::into_constant_int(self, ty)
@@ -1093,7 +1096,11 @@ macro_rules! impl_into_constant_value_float {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
                 let ty = FloatType::<$marker, B>::new(
-                    module.module().$ty_method::<B>().as_type().id(),
+                    module
+                        .module()
+                        .$ty_method::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
                     module,
                 );
                 Ok(IntoConstantFloat::into_constant_float(self, ty)

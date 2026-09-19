@@ -963,8 +963,12 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     let module = module_view.core_ref();
     let store = module_view.metadata_store();
     let expected_ty = scalar_type_slot(module, value.ty().slot_trusting_same_module());
-    let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id.slot(), expected_ty)
-    else {
+    let Some(ranges) = constant_ranges_from_metadata(
+        module,
+        &store,
+        range_id.slot_trusting_same_module(),
+        expected_ty,
+    ) else {
         return KnownBits::unknown(bit_width);
     };
     ranges_known_bits(ranges, bit_width)
@@ -6346,7 +6350,6 @@ mod tests {
     use crate::data_layout::DataLayout;
     use crate::instruction::build_instruction_value;
     use crate::module::Module;
-    use crate::value::IsValue;
 
     fn fabricate_instruction<B: ModuleBrand>(
         m: &Module<B>,
@@ -6408,16 +6411,16 @@ mod tests {
         let gep_ty = ptr_vec_ty.as_type();
         let gep_id = fabricate_instruction(
             &m,
-            entry.slot(),
-            gep_ty.id(),
+            entry.slot_trusting_same_module(),
+            gep_ty.slot_trusting_same_module(),
             InstructionKindData::Gep(GepInstData::new(
-                i8_ty.as_type().id(),
-                base.slot(),
-                [minus_one.slot()],
+                i8_ty.as_type().slot_trusting_same_module(),
+                base.slot_trusting_same_module(),
+                [minus_one.slot_trusting_same_module()],
                 crate::GepNoWrapFlags::empty(),
             )),
         );
-        let gep = fabricated_value(&m, gep_id, gep_ty.id());
+        let gep = fabricated_value(&m, gep_id, gep_ty.slot_trusting_same_module());
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
 

@@ -134,6 +134,21 @@ pub mod pass_instrumentation;
 pub mod pass_manager;
 pub mod pass_pipeline;
 pub(crate) mod phi_check;
+
+/// Home of [`CrateOnly`], the crate's one call token (D5). Private, so the
+/// token is nameable nowhere outside llvmkit.
+mod crate_only {
+    /// A value only llvmkit can build. A method of a public trait that takes
+    /// one cannot be called outside the crate, even where a bound on the
+    /// trait brings the method into scope: the dominator seal's
+    /// `dominator_block_id` and `CallArgs::lower`. The declaring module is
+    /// private and the field crate-private, so no caller outside llvmkit can
+    /// construct one, and so none can supply the argument.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CrateOnly(pub(crate) ());
+}
+
+pub(crate) use crate_only::CrateOnly;
 #[cfg(test)]
 mod phi_raw_tests;
 pub mod pointer_analysis;
@@ -263,9 +278,9 @@ pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
     CallAttributeData, CastOpcode, CmpXchgFlags, ExactFlags, IcmpFlags, IntBinOpFlags,
-    IntCastFlags, LshrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags,
-    SdivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags,
-    UiToFpFlags, UnaryOpcode, ZextFlags,
+    IntCastFlags, LshrFlags, MulFlags, OperandBundleDef, OperandBundleTag, OperandBundleUse,
+    OrFlags, OverflowFlags, SdivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind,
+    TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode, ZextFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
@@ -365,7 +380,7 @@ pub use struct_schema::{
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
-pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind, TypeSlot};
+pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
@@ -374,7 +389,7 @@ pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
     IntoPointerValue, IsValue, PointerValue, StructValue, Typed, UseListOrderError, Value,
-    ValueCategory, ValueSlot, VectorValue,
+    ValueCategory, VectorValue,
 };
 pub use value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,

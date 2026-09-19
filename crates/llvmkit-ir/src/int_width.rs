@@ -36,7 +36,7 @@ use core::fmt;
 use super::ap_int::Signedness;
 use super::constants::ConstantIntValue;
 use super::module::{ModuleBrand, ModuleRef};
-use super::r#type::sealed;
+use super::r#type::{TypeSlotAccess, sealed};
 use super::value::{IntValue, IsValue, Value, ValueSlotAccess};
 
 /// Sealed marker trait implemented by every integer width tag.
@@ -693,7 +693,11 @@ macro_rules! impl_into_int_value_static {
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<IntValue<'ctx, $marker, B>> {
                 let ty = IntType::<$marker, B>::new(
-                    module.module().$ty_method::<B>().as_type().id(),
+                    module
+                        .module()
+                        .$ty_method::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
                     module,
                 );
                 match self.into_constant_int(ty) {
@@ -759,7 +763,14 @@ macro_rules! impl_static_int_width {
             fn ir_type<'ctx, B: ModuleBrand + 'ctx>(
                 module: ModuleRef<'ctx, B>,
             ) -> IntType<'ctx, Self, B> {
-                IntType::<Self, B>::new(module.module().$method::<B>().as_type().id(), module)
+                IntType::<Self, B>::new(
+                    module
+                        .module()
+                        .$method::<B>()
+                        .as_type()
+                        .slot_trusting_same_module(),
+                    module,
+                )
             }
         }
     };
@@ -778,7 +789,14 @@ impl<const N: u32> StaticIntWidth for Width<N> {
     const STATIC_BITS: u32 = N;
     #[inline]
     fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B> {
-        IntType::<Self, B>::new(module.module().int_type_n::<N, B>().as_type().id(), module)
+        IntType::<Self, B>::new(
+            module
+                .module()
+                .int_type_n::<N, B>()
+                .as_type()
+                .slot_trusting_same_module(),
+            module,
+        )
     }
 }
 

@@ -1,5 +1,5 @@
 use llvmkit_ir::{
-    CallArgs, FloatValue, IntValue, IrBuilder, IrError, Linkage, ModuleBrand, PointerValue, Ptr,
+    FloatValue, IntValue, IrBuilder, IrError, Linkage, ModuleBrand, PointerValue, Ptr,
     TypeKindLabel, TypedFunctionValue, Width, module_new,
 };
 
@@ -186,24 +186,5 @@ fn builder_can_be_created_from_function_pointer_return_schema() -> Result<(), Ir
     b.ret(0_i32)?;
     let text = format!("{m}");
     assert!(text.contains("ret i32 0\n"), "got:\n{text}");
-    Ok(())
-}
-
-/// llvmkit-specific typed-call argument lowering; closest upstream coverage is
-/// `unittests/IR/InstructionsTest.cpp` for `CallInst` operand construction,
-/// since `CallArgs::lower` produces the operand list a typed call site passes
-/// to the underlying `CallInst` builder.
-#[test]
-fn call_args_lowers_tuple_to_value_ids() -> Result<(), IrError> {
-    let m = module_new!("call_args")?;
-    let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
-    let (x, _rhs) = m.view(f).params();
-
-    let ids = <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), (&m).into())?;
-
-    assert_eq!(ids.len(), 2, "expected two lowered call-argument ids");
-    b.ret(0_i32)?;
     Ok(())
 }

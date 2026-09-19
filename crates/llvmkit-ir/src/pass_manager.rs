@@ -43,7 +43,7 @@
 //!     type Requires = ();
 //!     const NAME: &'static str = "count-blocks";
 //!
-//!     fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+//!     fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport<B>>
 //!     where
 //!         'ctx: 'm,
 //!         Self: 'ctx,
@@ -187,7 +187,7 @@ pub trait FunctionPass<B: ModuleBrand> {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, Self::Access, Self::Requires>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -302,6 +302,12 @@ mod fn_rung_sealed {
     impl Sealed for super::ReshapeCfg {}
 }
 
+/// What [`FnRungExecute::execute`] hands back: the pass's report, carrying the
+/// module's brand, and the module in the typestate the rung's verdict maps it
+/// to.
+type FnRungOutcome<'ctx, B, Verdict> =
+    (FnReport<B>, <Verdict as PassExecution>::OutModule<'ctx, B>);
+
 /// Per-rung execution seam for [`run_function_pass`]: builds the rung's entry
 /// token, runs the pass, and returns the report plus the verdict-mapped module.
 ///
@@ -323,10 +329,7 @@ pub trait FnRungExecute: FnAccess + fn_rung_sealed::Sealed {
         module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(
-        FnReport,
-        <Self::Verdict as PassExecution>::OutModule<'ctx, B>,
-    )>
+    ) -> IrResult<FnRungOutcome<'ctx, B, Self::Verdict>>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
@@ -340,7 +343,7 @@ impl FnRungExecute for Inspect {
         module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<B, Verified>)>
+    ) -> IrResult<(FnReport<B>, Module<B, Verified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
@@ -361,7 +364,7 @@ impl FnRungExecute for PatchBody {
         module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<B, Unverified>)>
+    ) -> IrResult<(FnReport<B>, Module<B, Unverified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
@@ -382,7 +385,7 @@ impl FnRungExecute for ReshapeCfg {
         module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<B, Unverified>)>
+    ) -> IrResult<(FnReport<B>, Module<B, Unverified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,

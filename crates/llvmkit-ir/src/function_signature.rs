@@ -12,6 +12,7 @@ use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
 use super::value_id::ViewIn;
+use crate::CrateOnly;
 use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
@@ -23,9 +24,7 @@ use crate::ir_builder::{IrBuilder, Unpositioned, constant_folder::ConstantFolder
 use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeKind};
-use crate::value::{
-    FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot, ValueSlotAccess,
-};
+use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlotAccess};
 use crate::value_id::{TypedFunctionId, TypedVarArgsFunctionId};
 
 #[doc(hidden)]
@@ -320,7 +319,11 @@ where
     /// [`FunctionValue`].
     #[inline]
     pub fn id(self) -> TypedFunctionId<Ret, Params, B> {
-        TypedFunctionId::from_raw(self.function.module.id(), self.function.id)
+        // Internal: the id takes the function's own module tag.
+        TypedFunctionId::from_raw(
+            self.function.module.id(),
+            self.function.slot_trusting_same_module(),
+        )
     }
 
     /// Return the underlying return-typed function handle.
@@ -483,7 +486,11 @@ where
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
     pub fn id(self) -> TypedVarArgsFunctionId<Ret, Params, B> {
-        TypedVarArgsFunctionId::from_raw(self.function.module.id(), self.function.id)
+        // Internal: the id takes the function's own module tag.
+        TypedVarArgsFunctionId::from_raw(
+            self.function.module.id(),
+            self.function.slot_trusting_same_module(),
+        )
     }
 
     /// Return the underlying return-typed function handle.
@@ -1370,7 +1377,29 @@ where
 
 mod call_args_sealed {
     pub trait Sealed {}
+
+    /// The operand list [`CallArgs::lower`](super::CallArgs::lower) produces:
+    /// each argument's arena slot, admitted by its lift. The method takes the
+    /// crate-only token, so no caller outside llvmkit can obtain one; the
+    /// declaring module is private and the slots are crate-private all the
+    /// same.
+    #[derive(Debug)]
+    pub struct LoweredCallArguments(pub(crate) Box<[crate::value::ValueSlot]>);
+
+    impl LoweredCallArguments {
+        /// The number of lowered arguments.
+        pub fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        /// Whether no argument was lowered.
+        pub fn is_empty(&self) -> bool {
+            self.0.is_empty()
+        }
+    }
 }
+
+pub(crate) use call_args_sealed::LoweredCallArguments;
 
 /// Argument tuple for a typed call site: arity must equal
 /// `Params::ARITY` and position `i` must satisfy `IntoCallArg<P_i>`.
@@ -1383,15 +1412,21 @@ mod call_args_sealed {
 pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand>:
     Sized + call_args_sealed::Sealed
 {
+    /// Crate-internal: lower the tuple to the call's operand list, each
+    /// argument admitted against `module` by its lift. The trait is public, so
+    /// the method would be callable wherever the trait is in scope — and it
+    /// interns constants into `module`, any module's, a `Verified` one
+    /// included through `(&module).into()`. The [`CrateOnly`] argument is the
+    /// lock: nothing outside llvmkit can build one.
     #[doc(hidden)]
-    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>>;
+    fn lower(self, module: ModuleRef<'ctx, B>, _: CrateOnly) -> IrResult<LoweredCallArguments>;
 }
 
 impl call_args_sealed::Sealed for () {}
 impl<'ctx, B: ModuleBrand + 'ctx> CallArgs<'ctx, (), B> for () {
     #[inline]
-    fn lower(self, _module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
-        Ok(Box::new([]))
+    fn lower(self, _module: ModuleRef<'ctx, B>, _: CrateOnly) -> IrResult<LoweredCallArguments> {
+        Ok(LoweredCallArguments(Box::new([])))
     }
 }
 
@@ -1405,9 +1440,16 @@ macro_rules! impl_call_args_tuple {
             $($p: FunctionParam,)+
             $($v: IntoCallArg<'ctx, $p, B>,)+
         {
-            fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
+            fn lower(
+                self,
+                module: ModuleRef<'ctx, B>,
+                _: CrateOnly,
+            ) -> IrResult<LoweredCallArguments> {
                 let ($($x,)+) = self;
-                Ok(Box::new([$( $x.into_call_arg(module)?.slot(), )+]))
+                // Internal: each argument is admitted by its lift first.
+                Ok(LoweredCallArguments(Box::new([
+                    $( $x.into_call_arg(module)?.slot_trusting_same_module(), )+
+                ])))
             }
         }
     };
@@ -1566,3 +1608,31 @@ impl_call_args_tuple!(
     P14 / V14 / v14,
     P15 / V15 / v15
 );
+
+#[cfg(test)]
+mod tests {
+    use crate::{CallArgs, CrateOnly, IrBuilder, IrError, Linkage};
+
+    /// llvmkit-specific typed-call argument lowering; closest upstream coverage is
+    /// `unittests/IR/InstructionsTest.cpp` for `CallInst` operand construction,
+    /// since `CallArgs::lower` produces the operand list a typed call site passes
+    /// to the underlying `CallInst` builder.
+    ///
+    /// In-crate since Task 24 fix round 2: `lower` takes the crate-only token,
+    /// so it cannot be called from an integration test.
+    #[test]
+    fn call_args_lowers_tuple_to_value_ids() -> Result<(), IrError> {
+        let m = crate::module_new!("call_args")?;
+        let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let (x, _rhs) = m.view(f).params();
+
+        let ids =
+            <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), (&m).into(), CrateOnly(()))?;
+
+        assert_eq!(ids.len(), 2, "expected two lowered call-argument ids");
+        b.ret(0_i32)?;
+        Ok(())
+    }
+}

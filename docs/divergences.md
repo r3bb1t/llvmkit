@@ -297,6 +297,33 @@ round-trips where `llvm-as | llvm-dis` normalises it.
 but then prints a dangling `#N` with no `attributes #N = { … }` line —
 output that does not re-parse.
 
+**Lookups that must resolve the groups themselves.** With no merge, every
+reader of a function-index attribute has to consult the group numbers too, as
+`FunctionValue::function_string_attribute` does. On 2026-09-19 (Task 24 fix
+round 3) the three `CallBase::hasFnAttr` copies and the two
+`Function::hasFnAttribute` copies (`speculation.rs::callee_is_speculatable`,
+`assumptions.rs::enclosing_function_has_attribute`) that did not were
+replaced by one port that does (`instr_types::call_site_has_fn_attr`,
+`FunctionValue::has_fn_attribute`). Two readers still skip the groups — each
+reads a *payload*, so the fix is a port of `getFnAttribute`, not of
+`hasFnAttr`:
+
+- `speculation.rs::call_site_memory_effects` (`CallBase::getMemoryEffects`)
+  reads `memory(...)` from the call's inline attributes and the callee's
+  stored list only, so `attributes #0 = { memory(none) }` on either side reads
+  as unknown effects;
+- `value_tracking.rs::function_vscale_range` (`llvm::getVScaleRange`, via
+  `F->getFnAttribute(Attribute::VScaleRange)`) reads the stored list only.
+
+Both fall back to upstream's own answer for a missing attribute (unknown
+effects, no range), so the direction is conservative: an analysis learns
+less, never something false. Found with
+`rg -n "\.attributes\.borrow\(\)|function_attrs\(\)" crates/llvmkit-ir/src/`
+on the commit that adds this paragraph (17 hits), reading each: besides these
+two, the hits read a parameter or return index, which a `#N` group cannot
+carry, resolve the groups themselves (`function_string_attribute`, the
+verifier's `function_attrs_with_groups`), or are the printer.
+
 **What pins the current behaviour:**
 `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_equals_grammar_round_trips`
 asserts `attributes #0 = { align = 8 }` re-prints as `align=8` *inside* the
@@ -1780,6 +1807,39 @@ Files read: `C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/src/ll_lexe
 Upstream read at the vendored tag `llvmorg-22.1.4` (the repo commit does not pin `orig_cpp/`, which is gitignored): `llvm/lib/IR/Verifier.cpp::Verifier::visitGetElementPtrInst` — the eight statements, in order, are the base `isa<PointerType>` check, `isSized`, the struct-scalable `Check`, the `all_of` integer-index `Check`, `ElTy = getIndexedType(...)` plus `Check(ElTy, ...)`, `PtrTy = dyn_cast<PointerType>(GEP.getType()->getScalarType())` plus the two-conjunct `Check`, the vector block, and the trailing address-space `Check`. Every one of those is emitted by `check_gep` except the second conjunct of the `PtrTy` `Check` and the address-space `Check`; the struct-scalable one was unported when this entry was first written and was ported in the fix round that narrowed it (`VerifierRule::GepScalableStructSource`, locked by `verifier_basic.rs::verify_gep_into_scalable_struct_fails`). `llvm/include/llvm/IR/Instructions.h` — `GetElementPtrInst`'s constructor initialiser list is `SourceElementType(PointeeType), ResultElementType(getIndexedType(PointeeType, IdxList))`, and `getAddressSpace()` forwards to `getPointerAddressSpace()`, which is `getPointerOperandType()->getPointerAddressSpace()`, under the comment quoted above. llvmkit side, at this commit: `crates/llvmkit-ir/src/instr_types.rs::GepInstData` has exactly four fields (`source_ty`, `ptr`, `indices`, `flags`); `crates/llvmkit-ir/src/ir_builder.rs::gep_return_type` derives the result type from the base operand's type alone; `crates/llvmkit-ir/src/instruction.rs::replace_all_uses_with` rejects a replacement with `IrError::TypeMismatch` when `new_value.ty != self.ty`, and no public operand setter exists (`grep -n 'pub fn set_operand\|pub fn replace_operand' crates/llvmkit-ir/src/*.rs` returns nothing), so an operand cannot be swapped for one in another address space after construction.
 
 </details>
+
+### 134. `CallBase::getCalledFunction` is ported without its function-type check
+
+**Severity:** wrong-output, rejects-valid, accepts-invalid (derived by reading;
+no fixture exhibits any of the four — a hypothesis until one does)
+**Where:** four sites that each spell `getCalledFunction` as "the callee value
+is a function": `crates/llvmkit-ir/src/verifier.rs` (the
+`Direct call cannot have a ptrauth bundle` check, and `visitCallBrInst`'s
+`Callbr: indirect function / invalid signature`),
+`crates/llvmkit-ir/src/value_tracking.rs` (the `returned` lookup's
+`getCalledFunction()` arm), `crates/llvmkit-ir/src/speculation.rs`
+(`isSafeToSpeculativelyExecute`'s `Call` arm, before `callee_is_speculatable`).
+
+- **LLVM:** `CallBase::getCalledFunction` (`IR/InstrTypes.h`) is
+  `if (auto *F = dyn_cast_or_null<Function>(getCalledOperand())) if
+  (F->getValueType() == getFunctionType()) return F; return nullptr;` — a call
+  whose own function type differs from the callee's is *not* direct.
+- **llvmkit:** every site checks only that the callee is a function, and two
+  of the verifier comments state the plain `dyn_cast` as upstream's
+  definition. On a call through a mismatched signature llvmkit therefore
+  rejects a `ptrauth` bundle upstream allows, accepts a `callbr` upstream
+  rejects, reads a `returned` parameter upstream ignores, and calls a
+  `speculatable` callee hoistable where upstream says no.
+- **Found:** 2026-09-19, Task 24 fix round 3, while porting
+  `Function::isSpeculatable`. `rg -n "getCalledFunction" crates/llvmkit-ir/src/`
+  names three of the sites (the `returned` arm in `value_tracking.rs`, the two
+  verifier checks) plus two doc comments that decide nothing
+  (`CallInst::classify_callee`, `IrBuilder::indirect_callbr_with_config`); the
+  speculation site does not spell the name and was found by reading
+  `isSafeToSpeculativelyExecute`'s `Call` arm against its port.
+- **Fix:** one crate port of `getCalledFunction` (callee is a function *and*
+  its signature slot equals the call's `fn_ty`), called from all four sites,
+  with a mismatched-signature fixture per consequence.
 
 ## Coverage, tooling and provenance
 

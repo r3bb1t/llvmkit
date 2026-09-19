@@ -780,7 +780,7 @@ impl<B: ModuleBrand> FunctionPass<B> for SimplifyDemandedBitsPass {
     type Requires = ();
     const NAME: &'static str = "simplify-demanded-bits";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

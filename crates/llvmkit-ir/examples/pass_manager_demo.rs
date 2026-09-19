@@ -66,7 +66,7 @@ impl<B: ModuleBrand> FunctionPass<B> for ReportFunctionPass {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
-    ) -> Result<FnReport, IrError>
+    ) -> Result<FnReport<B>, IrError>
     where
         'ctx: 'm,
         Self: 'ctx,

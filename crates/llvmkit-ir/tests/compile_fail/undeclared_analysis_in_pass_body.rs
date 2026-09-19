@@ -22,7 +22,7 @@ impl<B: ModuleBrand> FunctionPass<B> for UndeclaredAnalysis {
     type Requires = ();
     const NAME: &'static str = "undeclared-analysis";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

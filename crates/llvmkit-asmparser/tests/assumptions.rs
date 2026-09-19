@@ -863,3 +863,133 @@ context:
         &instruction(&module, "use")
     ));
 }
+
+/// `willNotFreeBetween` asks `CallBase::hasFnAttr(Attribute::NoFree)` of every
+/// call in the range. `hasFnAttr` reads the call site's `AttributeList`, then
+/// the called function's (`CallBase::hasFnAttrOnCalledFunction`), and upstream's
+/// parser has folded each `#N` into the list it belongs to before either is
+/// read (`LLParser::validateEndOfModule`'s `ForwardRefAttrGroups` loop). So
+/// `nofree` written through an attribute group — on the call or on the
+/// callee's declaration — counts exactly as `nofree` written inline does.
+///
+/// llvmkit-specific: no upstream unit test calls `willNotFreeBetween`, and no
+/// fixture under `llvm/test/Analysis/ValueTracking` spells the attribute
+/// through a group. llvmkit keeps group numbers beside the call and the
+/// function and resolves them on lookup; its assumptions copy of `hasFnAttr`
+/// did not, and answered `false` for both group spellings. The last case is
+/// the positive control: a group that resolves to something other than
+/// `nofree` still leaves a call that might free.
+#[test]
+fn will_not_free_between_reads_nofree_through_an_attribute_group() {
+    let source = |declaration_attributes: &str, call_attributes: &str, group: &str| {
+        format!(
+            r"
+declare void @llvm.assume(i1)
+declare void @opaque() {declaration_attributes}
+
+define i32 @test(i32 %x) nosync {{
+  call void @llvm.assume(i1 true)
+  call void @opaque() {call_attributes}
+  %use = add i32 %x, 0
+  ret i32 %use
+}}
+
+{group}
+"
+        )
+    };
+    let answer = |text: String| {
+        let module = parse(&text);
+        will_not_free_between(&assume(&module, 0), &instruction(&module, "use"))
+    };
+
+    // On the call site, through `#0`.
+    assert!(answer(source("", "#0", "attributes #0 = { nofree }")));
+    // On the callee's declaration, through `#0`.
+    assert!(answer(source("#0", "", "attributes #0 = { nofree }")));
+    // A group without `nofree`, on either side: the call might free.
+    assert!(!answer(source("", "#0", "attributes #0 = { nounwind }")));
+    assert!(!answer(source("#0", "", "attributes #0 = { nounwind }")));
+}
+
+/// `willNotFreeBetween`'s first test is `F->hasFnAttribute(Attribute::NoSync)`
+/// on the enclosing function, and that reads the function's `AttributeList` —
+/// into which `LLParser::validateEndOfModule` has already folded the
+/// function's `#N` groups. `nosync` written through a group therefore
+/// satisfies it just as `nosync` written inline does.
+///
+/// llvmkit-specific, for the reasons
+/// [`will_not_free_between_reads_nofree_through_an_attribute_group`] gives.
+/// The last case is the positive control: a group without `nosync`.
+#[test]
+fn will_not_free_between_reads_nosync_through_an_attribute_group() {
+    let source = |group: &str| {
+        format!(
+            r"
+declare void @llvm.assume(i1)
+
+define i32 @test(i32 %x) #0 {{
+  call void @llvm.assume(i1 true)
+  %use = add i32 %x, 0
+  ret i32 %use
+}}
+
+attributes #0 = {{ {group} }}
+"
+        )
+    };
+    let answer = |text: String| {
+        let module = parse(&text);
+        will_not_free_between(&assume(&module, 0), &instruction(&module, "use"))
+    };
+
+    assert!(answer(source("nosync")));
+    assert!(!answer(source("nounwind")));
+}
+
+/// `willNotFreeBetween`'s `CallBase::hasFnAttr(Attribute::NoFree)` on an
+/// `@llvm.assume` in the range reads the intrinsic declaration's attribute
+/// list (`CallBase::hasFnAttrOnCalledFunction`, `F->getAttributes()`). That
+/// list holds `nofree` because `Intrinsic::getAttributes` installed it — in
+/// the `Function` constructor, and again in `UpgradeIntrinsicFunction` after
+/// parsing — so the range is free of frees. Replace the list
+/// (`Function::setAttributes`) and the answer follows the new list: nothing is
+/// read back off the intrinsic's TableGen record at query time.
+///
+/// llvmkit-specific: no upstream unit test calls `willNotFreeBetween`.
+/// llvmkit stores the installed attributes on the declaration too
+/// (`get_or_insert_intrinsic_declaration`), and its `hasFnAttr` copies also
+/// consulted the record directly, so they kept answering `nofree` after the
+/// list was replaced. The first assertion is the positive control: the
+/// intrinsic's own `nofree`, from the stored list.
+#[test]
+fn will_not_free_between_reads_an_intrinsic_declarations_attribute_list() {
+    let module = parse(
+        r"
+declare void @llvm.assume(i1)
+
+define i32 @test(i32 %x) nosync {
+  call void @llvm.assume(i1 true)
+  %use = add i32 %x, 0
+  ret i32 %use
+}
+",
+    );
+    assert!(will_not_free_between(
+        &assume(&module, 0),
+        &instruction(&module, "use")
+    ));
+
+    let declaration = module
+        .as_view()
+        .functions()
+        .find(|function| function.name() == "llvm.assume")
+        .expect("the fixture declares @llvm.assume");
+    module
+        .view(declaration.id())
+        .set_attributes(&module, llvmkit_ir::AttributeStorage::new());
+    assert!(!will_not_free_between(
+        &assume(&module, 0),
+        &instruction(&module, "use")
+    ));
+}

@@ -10,7 +10,7 @@
 //! the *value* currency:
 //!
 //! - `MetadataSlot` is the bare arena index — crate-internal, carrying neither
-//!   a [`ModuleId`] tag nor a brand, the metadata twin of [`ValueSlot`].
+//!   a [`ModuleId`] tag nor a brand, the metadata twin of `ValueSlot`.
 //! - [`MetadataId<B>`] is the public currency: `Copy + Send + 'static`, a
 //!   `(tag, slot)` pair that only ever reaches the arena through a module-tag
 //!   check, the metadata twin of [`ValueId`].
@@ -118,17 +118,28 @@ impl<B: ModuleBrand> MetadataId<B> {
     /// the storage form, rejecting one minted by a different module.
     ///
     /// This is the only route from a caller's [`MetadataId<B>`] to a
-    /// [`MetadataSlot`]: `slot()` exists solely on `MetadataId<StoredBrand>`,
-    /// which can only be produced here or by `from_stored` on an id the arena
-    /// already owns. So the check cannot be forgotten one level up — a call
-    /// site that wants the slot must first name this function and handle its
-    /// `Err`.
+    /// [`MetadataSlot`]: the unchecked door `slot_trusting_same_module` exists
+    /// solely on `MetadataId<StoredBrand>`, which can only be produced here or
+    /// by `from_stored` on an id the arena already owns, and the checked door
+    /// [`slot_in`](Self::slot_in) is this function followed by that read. So
+    /// the check cannot be forgotten one level up — a call site that wants the
+    /// slot must first name one of the two and handle its `Err`.
     #[inline]
     pub(crate) fn into_stored(self, owner: ModuleId) -> IrResult<MetadataId<StoredBrand>> {
         if self.tag != owner {
             return Err(IrError::ForeignMetadataId);
         }
         Ok(MetadataId::from_raw(self.tag, self.slot))
+    }
+
+    /// The checked door: the arena slot this id names, if `owner` minted it;
+    /// [`IrError::ForeignMetadataId`] otherwise. Built on
+    /// [`into_stored`](Self::into_stored), so the currency keeps one
+    /// comparison.
+    #[inline]
+    pub(crate) fn slot_in(self, owner: ModuleId) -> IrResult<MetadataSlot> {
+        self.into_stored(owner)
+            .map(MetadataId::slot_trusting_same_module)
     }
 
     /// Crate-internal: retag an id the arena already owns back into the
@@ -141,14 +152,17 @@ impl<B: ModuleBrand> MetadataId<B> {
 }
 
 impl MetadataId<StoredBrand> {
-    /// Crate-internal: the arena slot this **stored** id names.
+    /// The unchecked door: the arena slot this **stored** id names, trusting
+    /// that it is read against the module that stores it.
     ///
     /// Defined only for the storage brand, which is the whole point: a stored
-    /// id is native to the module that holds it, so no tag check is owed. A
-    /// caller-supplied `MetadataId<B>` has no such accessor and must go through
+    /// id is native to the module that holds it, so the trust is discharged
+    /// by construction and no tag check is owed. A caller-supplied
+    /// `MetadataId<B>` has no such accessor and must go through
+    /// [`slot_in`](MetadataId::slot_in) or
     /// [`into_stored`](MetadataId::into_stored) instead.
     #[inline]
-    pub(crate) fn slot(self) -> MetadataSlot {
+    pub(crate) fn slot_trusting_same_module(self) -> MetadataSlot {
         self.slot
     }
 }
@@ -2694,14 +2708,14 @@ impl<B: ModuleBrand> DebugMetadataOperand<B> {
 impl DebugMetadataOperand<StoredBrand> {
     pub(crate) fn value_slot(self) -> Option<ValueSlot> {
         match self {
-            Self::Value(id) => Some(id.slot()),
+            Self::Value(id) => Some(id.slot_trusting_same_module()),
             Self::Metadata(_) => None,
         }
     }
 
     fn replace_value_slot(&mut self, from: ValueSlot, to: ValueSlot) {
         if let Self::Value(id) = *self
-            && id.slot() == from
+            && id.slot_trusting_same_module() == from
         {
             *self = Self::Value(ValueId::from_raw(id.tag(), to));
         }
@@ -2711,19 +2725,17 @@ impl DebugMetadataOperand<StoredBrand> {
 /// Tag-check a caller-supplied value id on the debug-record path. The metadata
 /// twin of [`MetadataId::into_stored`] — a `#dbg_value` operand names a value,
 /// and a value from another module is the same defect as a node from another
-/// module.
+/// module. The comparison is the value-id currency's own
+/// ([`ValueId::slot_in`]), not a second one written here.
 fn value_id_into_stored<B: ModuleBrand>(
     id: ValueId<B>,
     owner: ModuleId,
 ) -> IrResult<ValueId<StoredBrand>> {
-    if id.tag() != owner {
-        return Err(IrError::ForeignValueId);
-    }
-    Ok(ValueId::from_raw(id.tag(), id.slot()))
+    Ok(ValueId::from_raw(owner, id.slot_in(owner)?))
 }
 
 fn value_id_from_stored<B: ModuleBrand>(stored: ValueId<StoredBrand>) -> ValueId<B> {
-    ValueId::from_raw(stored.tag(), stored.slot())
+    ValueId::from_raw(stored.tag(), stored.slot_trusting_same_module())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

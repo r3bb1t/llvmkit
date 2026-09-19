@@ -18,12 +18,17 @@ use core::cell::{Cell, RefCell};
 use super::atomicrmw_binop::AtomicRmwBinOp;
 use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
+use crate::Branded;
 use crate::align::MaybeAlign;
 use crate::atomic_ordering::AtomicOrdering;
-use crate::attributes::AttributeStorage;
+use crate::attributes::{AttrIndex, AttrKind, AttributeStorage};
+use crate::error::{IrError, IrResult};
 use crate::fmf::FastMathFlags;
+use crate::function::FunctionValue;
+use crate::marker::Dyn;
+use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef};
 use crate::sync_scope::SyncScope;
-use crate::value::ValueSlot;
+use crate::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOpcode {
@@ -2149,33 +2154,155 @@ pub enum OperandBundleTag {
     Custom(String),
 }
 
+/// An operand bundle to attach to a call site, holding its inputs as value
+/// handles. Mirrors `OperandBundleDefT<Value *>` (`OperandBundleDef`,
+/// `IR/InstrTypes.h`), the form upstream's `IRBuilderBase::CreateCall`,
+/// `CreateInvoke` and `CreateCallBr` take beside the arguments.
+///
+/// Building one is infallible, as upstream's constructor is: there is no
+/// receiving module yet. Each input keeps the module it was minted in, and the
+/// call-site builder that receives the bundle
+/// ([`CallSiteConfig::operand_bundles`](crate::CallSiteConfig::operand_bundles),
+/// [`CallBuilder::operand_bundles`](crate::CallBuilder::operand_bundles)) admits
+/// every input through the checked door before anything is created, refusing
+/// one of another module with [`IrError::ForeignValueId`] — a check upstream
+/// cannot express, since a `Value *` carries no module to compare.
+#[derive(Branded)]
+#[branded(Debug, Clone)]
+pub struct OperandBundleDef<'ctx, B: ModuleBrand> {
+    tag: OperandBundleTag,
+    inputs: Vec<Value<'ctx, B>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleDef<'ctx, B> {
+    /// A bundle tagged `tag` over the values `inputs`. Mirrors
+    /// `OperandBundleDefT(std::string Tag, std::vector<InputTy> Inputs)`.
+    pub fn new<V, Inputs>(tag: OperandBundleTag, inputs: Inputs) -> Self
+    where
+        V: IsValue<'ctx, B>,
+        Inputs: IntoIterator<Item = V>,
+    {
+        Self {
+            tag,
+            inputs: inputs.into_iter().map(IsValue::as_erased).collect(),
+        }
+    }
+
+    /// The bundle's tag. Mirrors `OperandBundleDefT::getTag`.
+    pub fn tag(&self) -> &OperandBundleTag {
+        &self.tag
+    }
+
+    /// The bundle's inputs, in order. Mirrors `OperandBundleDefT::inputs`.
+    pub fn inputs(&self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + '_ {
+        self.inputs.iter().copied()
+    }
+
+    /// Crate-internal: the storage form for the call site `owner` is building,
+    /// admitting every input through the checked door. The one route from a
+    /// caller's bundle to stored input slots, so the check cannot be skipped
+    /// one level up.
+    pub(crate) fn into_stored(self, owner: ModuleId) -> IrResult<OperandBundleData> {
+        let inputs = self
+            .inputs
+            .into_iter()
+            .map(|input| input.slot_in(owner).map(Cell::new))
+            .collect::<IrResult<Box<[_]>>>()?;
+        Ok(OperandBundleData {
+            tag: self.tag,
+            inputs,
+        })
+    }
+}
+
+/// Crate-internal: an operand bundle as a call site stores it — its tag and
+/// its inputs' arena slots, in the owning module. Built only by
+/// [`OperandBundleDef::into_stored`], so every stored input was admitted
+/// through the checked door; read back publicly through [`OperandBundleUse`].
 #[derive(Debug)]
-pub struct OperandBundleData {
+pub(crate) struct OperandBundleData {
     tag: OperandBundleTag,
     inputs: Box<[Cell<ValueSlot>]>,
 }
 
 impl OperandBundleData {
-    pub fn new<Inputs>(tag: OperandBundleTag, inputs: Inputs) -> Self
-    where
-        Inputs: IntoIterator<Item = ValueSlot>,
-    {
-        Self {
-            tag,
-            inputs: inputs.into_iter().map(Cell::new).collect(),
-        }
-    }
-
-    pub fn tag(&self) -> &OperandBundleTag {
+    pub(crate) fn tag(&self) -> &OperandBundleTag {
         &self.tag
     }
 
-    pub fn inputs(&self) -> impl ExactSizeIterator<Item = ValueSlot> + '_ {
+    pub(crate) fn inputs(&self) -> impl ExactSizeIterator<Item = ValueSlot> + '_ {
         self.inputs.iter().map(|input| input.get())
     }
 
     pub(crate) fn input_cells(&self) -> &[Cell<ValueSlot>] {
         &self.inputs
+    }
+}
+
+/// A read view of one operand bundle on a call site. Mirrors
+/// `OperandBundleUse` (`IR/InstrTypes.h`), as `CallBase::getOperandBundleAt` /
+/// `getOperandBundle` hand it out.
+///
+/// Reached from the call views — [`CallInst::operand_bundles`](crate::CallInst::operand_bundles),
+/// [`InvokeInst::operand_bundles`](crate::InvokeInst::operand_bundles) and
+/// [`CallBrInst::operand_bundles`](crate::CallBrInst::operand_bundles) and their
+/// `operand_bundle` lookups. Borrows the module, like every view.
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy)]
+pub struct OperandBundleUse<'ctx, B: ModuleBrand> {
+    data: &'ctx OperandBundleData,
+    module: ModuleRef<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
+    /// The bundle's tag. Mirrors `OperandBundleUse::getTagName` /
+    /// `getTagID`, which the tag enum carries together.
+    pub fn tag(self) -> &'ctx OperandBundleTag {
+        &self.data.tag
+    }
+
+    /// The bundle's inputs, in order. Mirrors `OperandBundleUse::Inputs`.
+    pub fn inputs(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
+        let module = self.module;
+        // `data` borrows the module's arena for `'ctx`, so its input cells are
+        // read lazily, with nothing copied out first.
+        self.data.inputs.iter().map(move |input| {
+            let slot = input.get();
+            Value::from_parts(slot, module, module.value_data(slot).ty)
+        })
+    }
+
+    /// Every bundle of a call site's stored attributes, in order.
+    pub(crate) fn all(
+        attrs: &'ctx CallAttributeData,
+        module: ModuleRef<'ctx, B>,
+    ) -> impl ExactSizeIterator<Item = Self> + 'ctx {
+        attrs
+            .operand_bundles_slice()
+            .iter()
+            .map(move |data| Self { data, module })
+    }
+
+    /// The bundle tagged `tag` among a call site's stored attributes. Ports
+    /// `CallBase::getOperandBundle`, whose precondition — at most one bundle
+    /// of the tag, `assert(countOperandBundlesOfType(ID) < 2 && "Precondition
+    /// violated!")` — is refused here with
+    /// [`IrError::DuplicateOperandBundle`] instead of asserting: the verifier
+    /// rejects a second bundle only for the tags it knows
+    /// (`Verifier::visitCallBase`), so a call with two bundles of one custom
+    /// tag is valid IR, and choosing one of them for the caller would answer a
+    /// question it did not ask.
+    pub(crate) fn find(
+        attrs: &'ctx CallAttributeData,
+        module: ModuleRef<'ctx, B>,
+        tag: &OperandBundleTag,
+    ) -> IrResult<Option<Self>> {
+        let mut matching = Self::all(attrs, module).filter(|bundle| bundle.data.tag == *tag);
+        let first = matching.next();
+        if matching.next().is_some() {
+            return Err(IrError::DuplicateOperandBundle { tag: tag.clone() });
+        }
+        Ok(first)
     }
 }
 
@@ -2242,8 +2369,13 @@ impl CallAttributeData {
         self
     }
 
+    /// Crate-internal: attach bundles already admitted into the receiving
+    /// module ([`OperandBundleDef::into_stored`]). A caller hands bundles to
+    /// the call-site builder, beside the arguments, as upstream's
+    /// `CreateCall(…, Args, OpBundles, …)` takes them apart from the
+    /// `AttributeList`.
     #[must_use]
-    pub fn operand_bundles(mut self, bundles: Box<[OperandBundleData]>) -> Self {
+    pub(crate) fn with_operand_bundles(mut self, bundles: Box<[OperandBundleData]>) -> Self {
         self.operand_bundles = bundles;
         self
     }
@@ -2273,12 +2405,64 @@ impl CallAttributeData {
         &self.function_attr_groups
     }
 
-    pub fn operand_bundles_slice(&self) -> &[OperandBundleData] {
+    pub(crate) fn operand_bundles_slice(&self) -> &[OperandBundleData] {
         &self.operand_bundles
     }
 
     pub fn fast_math_flags_value(&self) -> FastMathFlags {
         self.fmf
+    }
+
+    /// `Attrs.hasFnAttr(Kind)` — whether the call site's own attribute list
+    /// carries the function attribute `kind`. Upstream's list already holds
+    /// every `#N` group the call named (`LLParser::validateEndOfModule` merges
+    /// them); llvmkit keeps the group numbers beside the inline attributes and
+    /// resolves them here (`docs/divergences.md` D9).
+    fn has_fn_attr_in(&self, module: &ModuleCore, kind: AttrKind) -> bool {
+        self.function_attrs.has_kind(AttrIndex::Function, kind)
+            || self.function_attr_groups.iter().any(|group| {
+                module
+                    .attribute_group(*group)
+                    .is_some_and(|storage| storage.has_kind(AttrIndex::Function, kind))
+            })
+    }
+}
+
+/// Whether a call site has the function attribute `kind`, on itself or on the
+/// function it calls. The one port of `CallBase::hasFnAttr(Attribute::AttrKind)`
+/// (`IR/InstrTypes.h`) — its `hasFnAttrImpl` body and the
+/// `CallBase::hasFnAttrOnCalledFunction` it falls back to
+/// (`lib/IR/Instructions.cpp`) — for every caller in the crate: the call-site
+/// views' [`CallInst::has_fn_attr`](crate::CallInst::has_fn_attr) and its
+/// siblings, the speculation and assumption analyses, and the verifier.
+///
+/// `callee` is the call's called operand as stored — upstream's
+/// `getCalledOperand()`, not stripped of pointer casts — and `attrs` the call
+/// site's stored attributes, both of `module`.
+///
+/// Upstream's `hasFnAttr` asserts `Kind != Attribute::NoBuiltin` ("Use
+/// CallBase::isNoBuiltin() to check for Attribute::NoBuiltin"); this routine
+/// is `hasFnAttrImpl`, which has no such guard, and answers for `NoBuiltin`
+/// the way `isNoBuiltin`'s first half asks it.
+pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
+    module: ModuleRef<'ctx, B>,
+    callee: ValueSlot,
+    attrs: &CallAttributeData,
+    kind: AttrKind,
+) -> bool {
+    // `if (Attrs.hasFnAttr(Kind)) return true;`
+    if attrs.has_fn_attr_in(module.module(), kind) {
+        return true;
+    }
+    // `return hasFnAttrOnCalledFunction(Kind);`, which is
+    // `if (auto *F = dyn_cast<Function>(getCalledOperand()))
+    //    return F->getAttributes().hasFnAttr(Kind);
+    //  return false;`
+    match &module.value_data(callee).kind {
+        ValueKindData::Function(_) => {
+            FunctionValue::<Dyn, B>::from_parts_unchecked(callee, module).has_fn_attribute(kind)
+        }
+        _ => false,
     }
 }
 

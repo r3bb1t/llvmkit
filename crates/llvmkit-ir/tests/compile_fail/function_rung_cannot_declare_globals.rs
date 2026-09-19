@@ -31,7 +31,7 @@ impl<B: ModuleBrand> FunctionPass<B> for DeclareGlobalFromPatchBody {
     type Requires = ();
     const NAME: &'static str = "declare-global-from-patch-body";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

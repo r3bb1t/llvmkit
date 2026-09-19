@@ -13,12 +13,16 @@ use super::constant::{
     ConstantExprOpcode, is_poison, is_undef,
 };
 use super::constant_fold::{
-    constant_fold_binary_instruction, constant_fold_cast_instruction,
-    constant_fold_compare_instruction, constant_fold_extract_element_instruction,
-    constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
-    constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
-    constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
-    constant_fold_unary_instruction, shufflevector_mask_from_constant,
+    constant_fold_binary_instruction_trusting_same_module,
+    constant_fold_cast_instruction_trusting_same_module,
+    constant_fold_compare_instruction_trusting_same_module,
+    constant_fold_extract_element_instruction_trusting_same_module,
+    constant_fold_extract_value_instruction, constant_fold_get_element_ptr_trusting_same_module,
+    constant_fold_insert_element_instruction_trusting_same_module,
+    constant_fold_insert_value_instruction_trusting_same_module,
+    constant_fold_select_instruction_trusting_same_module,
+    constant_fold_shuffle_vector_instruction_trusting_same_module, constant_fold_unary_instruction,
+    shufflevector_mask_from_constant,
 };
 use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::DataLayout;
@@ -35,8 +39,8 @@ use super::int_width::IntDyn;
 use super::intrinsics::BinaryIntrinsic;
 use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
-use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
-use super::value::{IsValue, Value, ValueKindData, ValueSlot};
+use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlotAccess};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
 use crate::Branded;
@@ -212,7 +216,25 @@ pub fn is_constant_offset_from_global<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold a load from a pointer to a constant global.
+///
+/// Errors with [`IrError::ForeignType`] if `ty` belongs to a module other than
+/// `pointer`'s.
 pub fn constant_fold_load_from_const_ptr<'ctx, B: ModuleBrand + 'ctx>(
+    pointer: Constant<'ctx, B>,
+    ty: Type<'ctx, B>,
+    offset: ApInt,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's load type, admitted against `pointer`'s module.
+    ty.slot_in(pointer.module.id())?;
+    constant_fold_load_from_const_ptr_trusting_same_module(pointer, ty, offset, dl)
+}
+
+/// [`constant_fold_load_from_const_ptr`] for a pointer and type of one module.
+pub(crate) fn constant_fold_load_from_const_ptr_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     pointer: Constant<'ctx, B>,
     ty: Type<'ctx, B>,
     offset: ApInt,
@@ -234,11 +256,31 @@ pub fn constant_fold_load_from_const_ptr<'ctx, B: ModuleBrand + 'ctx>(
     let Some(initializer) = global.initializer() else {
         return Ok(None);
     };
-    constant_fold_load_from_const(initializer, ty, resolved.offset().clone(), dl)
+    constant_fold_load_from_const_trusting_same_module(
+        initializer,
+        ty,
+        resolved.offset().clone(),
+        dl,
+    )
 }
 
 /// Fold a load directly from a constant aggregate/scalar at byte `offset`.
+///
+/// Errors with [`IrError::ForeignType`] if `ty` belongs to a module other than
+/// `constant`'s.
 pub fn constant_fold_load_from_const<'ctx, B: ModuleBrand + 'ctx>(
+    constant: Constant<'ctx, B>,
+    ty: Type<'ctx, B>,
+    offset: ApInt,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's load type, admitted against `constant`'s module.
+    ty.slot_in(constant.module.id())?;
+    constant_fold_load_from_const_trusting_same_module(constant, ty, offset, dl)
+}
+
+/// [`constant_fold_load_from_const`] for a constant and type of one module.
+pub(crate) fn constant_fold_load_from_const_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
     ty: Type<'ctx, B>,
     offset: ApInt,
@@ -262,7 +304,8 @@ pub fn constant_fold_load_from_const<'ctx, B: ModuleBrand + 'ctx>(
     // `llvm/lib/Analysis/ConstantFolding.cpp`: first try the constant stored at
     // the byte offset, then reinterpret it through the requested load type.
     if let Some(at_offset) = constant_at_offset(constant, start, dl)?
-        && let Some(folded) = constant_fold_load_through_bitcast(at_offset, ty, dl)?
+        && let Some(folded) =
+            constant_fold_load_through_bitcast_trusting_same_module(at_offset, ty, dl)?
     {
         return Ok(Some(folded));
     }
@@ -283,7 +326,25 @@ pub fn constant_fold_load_from_const<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// If `constant` has a uniform bit pattern, materialise that value as `ty`.
+///
+/// Errors with [`IrError::ForeignType`] if `ty` belongs to a module other than
+/// `constant`'s.
 pub fn constant_fold_load_from_uniform_value<'ctx, B: ModuleBrand + 'ctx>(
+    constant: Constant<'ctx, B>,
+    ty: Type<'ctx, B>,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's load type, admitted against `constant`'s module.
+    ty.slot_in(constant.module.id())?;
+    constant_fold_load_from_uniform_value_trusting_same_module(constant, ty, dl)
+}
+
+/// [`constant_fold_load_from_uniform_value`] for a constant and type of one
+/// module.
+pub(crate) fn constant_fold_load_from_uniform_value_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     constant: Constant<'ctx, B>,
     ty: Type<'ctx, B>,
     dl: &DataLayout,
@@ -293,13 +354,31 @@ pub fn constant_fold_load_from_uniform_value<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Fold a cast using `DataLayout` where target-independent `ConstantFold.cpp`
 /// cannot decide.
+///
+/// Errors with [`IrError::ForeignType`] if `dest_ty` belongs to a module other
+/// than `operand`'s.
 pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
     opcode: CastOpcode,
     operand: Constant<'ctx, B>,
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    if let Some(folded) = constant_fold_cast_instruction(opcode, operand, dest_ty)? {
+    // Boundary: the caller's destination type, admitted against `operand`'s
+    // module.
+    dest_ty.slot_in(operand.module.id())?;
+    constant_fold_cast_operand_trusting_same_module(opcode, operand, dest_ty, dl)
+}
+
+/// [`constant_fold_cast_operand`] for an operand and type of one module.
+pub(crate) fn constant_fold_cast_operand_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
+    opcode: CastOpcode,
+    operand: Constant<'ctx, B>,
+    dest_ty: Type<'ctx, B>,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    if let Some(folded) =
+        constant_fold_cast_instruction_trusting_same_module(opcode, operand, dest_ty)?
+    {
         return Ok(Some(folded));
     }
 
@@ -346,7 +425,23 @@ pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Constant fold a zext, sext or trunc according to source and destination width.
+///
+/// Errors with [`IrError::ForeignType`] if `dest_ty` belongs to a module other
+/// than `constant`'s.
 pub fn constant_fold_integer_cast<'ctx, B: ModuleBrand + 'ctx>(
+    constant: Constant<'ctx, B>,
+    dest_ty: Type<'ctx, B>,
+    signedness: Signedness,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's destination type, admitted against `constant`'s
+    // module.
+    dest_ty.slot_in(constant.module.id())?;
+    constant_fold_integer_cast_trusting_same_module(constant, dest_ty, signedness, dl)
+}
+
+/// [`constant_fold_integer_cast`] for a constant and type of one module.
+pub(crate) fn constant_fold_integer_cast_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
     dest_ty: Type<'ctx, B>,
     signedness: Signedness,
@@ -398,7 +493,13 @@ where
             };
             args.push(constant_fold_constant(constant, dl, Some(tli))?);
         }
-        return constant_fold_call(lib_func, &args, value.ty(), tli, FoldNonDeterminism::Allow);
+        return constant_fold_call_trusting_same_module(
+            lib_func,
+            &args,
+            value.ty(),
+            tli,
+            FoldNonDeterminism::Allow,
+        );
     }
 
     let mut operands = Vec::new();
@@ -409,7 +510,13 @@ where
         operands.push(constant_fold_constant(constant, dl, tli)?);
     }
 
-    constant_fold_inst_operands(instruction, &operands, dl, tli, FoldNonDeterminism::Allow)
+    constant_fold_inst_operands_trusting_same_module(
+        instruction,
+        &operands,
+        dl,
+        tli,
+        FoldNonDeterminism::Allow,
+    )
 }
 
 /// Fold a constant using DataLayout-aware analysis rules.
@@ -442,19 +549,23 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
                     return Ok(constant);
                 };
                 let folded = constant_fold_constant(element, dl, tli)?;
-                changed |= folded.slot() != id;
-                folded_ids.push(folded.slot());
+                // Internal: `folded` was folded from this aggregate's own
+                // element, in its module.
+                let folded_id = folded.slot_trusting_same_module();
+                changed |= folded_id != id;
+                folded_ids.push(folded_id);
             }
             if !changed {
                 return Ok(constant);
             }
-            let id = module
-                .context()
-                .intern_constant_aggregate(constant.ty().id(), folded_ids.into_boxed_slice());
+            let id = module.context().intern_constant_aggregate(
+                constant.ty().slot_trusting_same_module(),
+                folded_ids.into_boxed_slice(),
+            );
             Ok(Constant::from_parts(Value::from_parts(
                 id,
                 module,
-                constant.ty().id(),
+                constant.ty().slot_trusting_same_module(),
             )))
         }
         _ => Ok(constant),
@@ -462,7 +573,36 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold an instruction with caller-provided constant operands.
+///
+/// Errors with [`IrError::ForeignValueId`] if an operand belongs to a module
+/// other than `instruction`'s.
 pub fn constant_fold_inst_operands<'ctx, B>(
+    instruction: &InstructionView<'ctx, B>,
+    operands: &[Constant<'ctx, B>],
+    dl: &DataLayout,
+    tli: Option<&TargetLibraryInfo>,
+    allow_non_deterministic: FoldNonDeterminism,
+) -> IrResult<Option<Constant<'ctx, B>>>
+where
+    B: ModuleBrand + 'ctx,
+{
+    // Boundary: the caller's operands, admitted against `instruction`'s
+    // module.
+    let owner = instruction.as_erased().module.id();
+    for operand in operands {
+        operand.slot_in(owner)?;
+    }
+    constant_fold_inst_operands_trusting_same_module(
+        instruction,
+        operands,
+        dl,
+        tli,
+        allow_non_deterministic,
+    )
+}
+
+/// [`constant_fold_inst_operands`] for operands of the instruction's module.
+pub(crate) fn constant_fold_inst_operands_trusting_same_module<'ctx, B>(
     instruction: &InstructionView<'ctx, B>,
     operands: &[Constant<'ctx, B>],
     dl: &DataLayout,
@@ -489,7 +629,7 @@ where
                 | BinaryOpcode::Fdiv
                 | BinaryOpcode::Frem
         ) {
-            constant_fold_fp_inst_operands(
+            constant_fold_fp_inst_operands_trusting_same_module(
                 opcode,
                 *lhs,
                 *rhs,
@@ -499,7 +639,7 @@ where
                 allow_non_deterministic,
             )
         } else {
-            constant_fold_binary_op_operands(opcode, *lhs, *rhs, dl)
+            constant_fold_binary_op_operands_trusting_same_module(opcode, *lhs, *rhs, dl)
         };
     }
 
@@ -508,13 +648,13 @@ where
             let [operand] = operands else {
                 return Ok(None);
             };
-            constant_fold_cast_operand(cast.kind, *operand, value.ty(), dl)
+            constant_fold_cast_operand_trusting_same_module(cast.kind, *operand, value.ty(), dl)
         }
         InstructionKindData::Icmp(cmp) => {
             let [lhs, rhs] = operands else {
                 return Ok(None);
             };
-            constant_fold_compare_inst_operands(
+            constant_fold_compare_inst_operands_trusting_same_module(
                 CmpPredicate::Int(cmp.predicate),
                 *lhs,
                 *rhs,
@@ -526,7 +666,7 @@ where
             let [lhs, rhs] = operands else {
                 return Ok(None);
             };
-            constant_fold_compare_inst_operands(
+            constant_fold_compare_inst_operands_trusting_same_module(
                 CmpPredicate::Float(cmp.predicate),
                 *lhs,
                 *rhs,
@@ -548,25 +688,29 @@ where
             let [condition, true_value, false_value] = operands else {
                 return Ok(None);
             };
-            constant_fold_select_instruction(*condition, *true_value, *false_value)
+            constant_fold_select_instruction_trusting_same_module(
+                *condition,
+                *true_value,
+                *false_value,
+            )
         }
         InstructionKindData::ExtractElement(_) => {
             let [vector, index] = operands else {
                 return Ok(None);
             };
-            constant_fold_extract_element_instruction(*vector, *index)
+            constant_fold_extract_element_instruction_trusting_same_module(*vector, *index)
         }
         InstructionKindData::InsertElement(_) => {
             let [vector, value, index] = operands else {
                 return Ok(None);
             };
-            constant_fold_insert_element_instruction(*vector, *value, *index)
+            constant_fold_insert_element_instruction_trusting_same_module(*vector, *value, *index)
         }
         InstructionKindData::ShuffleVector(shuffle) => {
             let [lhs, rhs] = operands else {
                 return Ok(None);
             };
-            constant_fold_shuffle_vector_instruction(*lhs, *rhs, &shuffle.mask)
+            constant_fold_shuffle_vector_instruction_trusting_same_module(*lhs, *rhs, &shuffle.mask)
         }
         InstructionKindData::ExtractValue(extract) => {
             let [aggregate] = operands else {
@@ -578,7 +722,11 @@ where
             let [aggregate, value] = operands else {
                 return Ok(None);
             };
-            constant_fold_insert_value_instruction(*aggregate, *value, &insert.indices)
+            constant_fold_insert_value_instruction_trusting_same_module(
+                *aggregate,
+                *value,
+                &insert.indices,
+            )
         }
         InstructionKindData::Gep(gep) => {
             let Some((pointer, indices)) = operands.split_first() else {
@@ -590,7 +738,7 @@ where
             {
                 return Ok(Some(folded));
             }
-            constant_fold_get_element_ptr(source_ty, *pointer, indices, None)
+            constant_fold_get_element_ptr_trusting_same_module(source_ty, *pointer, indices, None)
         }
         InstructionKindData::Load(load) => {
             if load.volatile {
@@ -602,7 +750,12 @@ where
             let Some(index_bits) = index_bits_for_pointer(pointer.ty(), dl) else {
                 return Ok(None);
             };
-            constant_fold_load_from_const_ptr(*pointer, value.ty(), ApInt::zero(index_bits), dl)
+            constant_fold_load_from_const_ptr_trusting_same_module(
+                *pointer,
+                value.ty(),
+                ApInt::zero(index_bits),
+                dl,
+            )
         }
         // Mirrors `ConstantFoldInstOperandsImpl`'s Freeze arm in
         // `llvm/lib/Analysis/ConstantFolding.cpp`: only forward operands proven
@@ -637,7 +790,13 @@ where
             } else {
                 return Ok(None);
             };
-            constant_fold_call(lib_func, args, value.ty(), tli, allow_non_deterministic)
+            constant_fold_call_trusting_same_module(
+                lib_func,
+                args,
+                value.ty(),
+                tli,
+                allow_non_deterministic,
+            )
         }
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
@@ -700,7 +859,26 @@ where
 ///    underlying base (lines 1268-1291).
 /// 4. If only the right-hand operand is a constant expression, swap
 ///    operands and predicate and retry (lines 1292-1297).
+///
+/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// than `lhs`'s.
 pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: CmpPredicate,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+    denormal_mode: Option<DenormalMode>,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's operands, admitted against `lhs`'s module.
+    rhs.slot_in(lhs.module.id())?;
+    constant_fold_compare_inst_operands_trusting_same_module(predicate, lhs, rhs, dl, denormal_mode)
+}
+
+/// [`constant_fold_compare_inst_operands`] for operands of one module.
+pub(crate) fn constant_fold_compare_inst_operands_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     predicate: CmpPredicate,
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
@@ -726,7 +904,7 @@ pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     } else if is_constant_expr_like(rhs) {
         // If RHS is a constant expression, but the left side isn't, swap the
         // operands and try again.
-        return constant_fold_compare_inst_operands(
+        return constant_fold_compare_inst_operands_trusting_same_module(
             swap_cmp_predicate(predicate),
             rhs,
             lhs,
@@ -759,7 +937,7 @@ pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     } else {
         rhs
     };
-    constant_fold_compare_instruction(predicate, lhs, rhs)
+    constant_fold_compare_instruction_trusting_same_module(predicate, lhs, rhs)
 }
 
 /// `dyn_cast<ConstantExpr>(V) != nullptr`, extended to llvmkit's compact
@@ -821,13 +999,15 @@ fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx>(
         if let Some(casted) = fold_integer_cast_constant(operand, int_ptr_ty.as_type(), false, dl)?
         {
             let null = int_ptr_ty.const_zero().as_constant();
-            return Ok(Some(constant_fold_compare_inst_operands(
-                predicate,
-                casted,
-                null,
-                dl,
-                denormal_mode,
-            )?));
+            return Ok(Some(
+                constant_fold_compare_inst_operands_trusting_same_module(
+                    predicate,
+                    casted,
+                    null,
+                    dl,
+                    denormal_mode,
+                )?,
+            ));
         }
     }
 
@@ -844,13 +1024,15 @@ fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx>(
         && let Ok(ptr_ty) = PointerType::<B>::try_from(operand.ty())
     {
         let null = ptr_ty.const_null().as_constant();
-        return Ok(Some(constant_fold_compare_inst_operands(
-            predicate,
-            operand,
-            null,
-            dl,
-            denormal_mode,
-        )?));
+        return Ok(Some(
+            constant_fold_compare_inst_operands_trusting_same_module(
+                predicate,
+                operand,
+                null,
+                dl,
+                denormal_mode,
+            )?,
+        ));
     }
 
     Ok(None)
@@ -897,13 +1079,15 @@ fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
             && let Some(c1) =
                 fold_integer_cast_constant(rhs_operand, int_ptr_ty.as_type(), false, dl)?
         {
-            return Ok(Some(constant_fold_compare_inst_operands(
-                predicate,
-                c0,
-                c1,
-                dl,
-                denormal_mode,
-            )?));
+            return Ok(Some(
+                constant_fold_compare_inst_operands_trusting_same_module(
+                    predicate,
+                    c0,
+                    c1,
+                    dl,
+                    denormal_mode,
+                )?,
+            ));
         }
     }
 
@@ -921,13 +1105,15 @@ fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
         && lhs_int_ty.bit_width() == addr_bits
         && lhs_operand.ty() == rhs_operand.ty()
     {
-        return Ok(Some(constant_fold_compare_inst_operands(
-            predicate,
-            lhs_operand,
-            rhs_operand,
-            dl,
-            denormal_mode,
-        )?));
+        return Ok(Some(
+            constant_fold_compare_inst_operands_trusting_same_module(
+                predicate,
+                lhs_operand,
+                rhs_operand,
+                dl,
+                denormal_mode,
+            )?,
+        ));
     }
 
     Ok(None)
@@ -1013,8 +1199,12 @@ fn strip_and_accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
                 let ptr_ty = current.ty();
                 let wrapped = module
                     .context()
-                    .intern_constant_global_value_ref(ptr_ty.id(), *base_id);
-                let base = Constant::from_parts(Value::from_parts(wrapped, module, ptr_ty.id()));
+                    .intern_constant_global_value_ref(ptr_ty.slot_trusting_same_module(), *base_id);
+                let base = Constant::from_parts(Value::from_parts(
+                    wrapped,
+                    module,
+                    ptr_ty.slot_trusting_same_module(),
+                ));
                 offset = offset.wrapping_add(&gep_offset_magnitude(*off, index_bits));
                 current = base;
             }
@@ -1132,13 +1322,28 @@ pub fn constant_fold_unary_op_operand<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold a binary operation with caller-provided constant operands.
+///
+/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// than `lhs`'s.
 pub fn constant_fold_binary_op_operands<'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    if let Some(folded) = constant_fold_binary_instruction(opcode, lhs, rhs)? {
+    // Boundary: the caller's operands, admitted against `lhs`'s module.
+    rhs.slot_in(lhs.module.id())?;
+    constant_fold_binary_op_operands_trusting_same_module(opcode, lhs, rhs, dl)
+}
+
+/// [`constant_fold_binary_op_operands`] for operands of one module.
+pub(crate) fn constant_fold_binary_op_operands_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
+    opcode: BinaryOpcode,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    if let Some(folded) = constant_fold_binary_instruction_trusting_same_module(opcode, lhs, rhs)? {
         return Ok(Some(folded));
     }
     let _ = dl;
@@ -1161,7 +1366,33 @@ pub fn constant_fold_binary_op_operands<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold a floating-point binary operation with denormal handling.
+///
+/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// than `lhs`'s.
 pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
+    opcode: BinaryOpcode,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+    denormal_mode: DenormalMode,
+    fmf: FastMathFlags,
+    allow_non_deterministic: FoldNonDeterminism,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's operands, admitted against `lhs`'s module.
+    rhs.slot_in(lhs.module.id())?;
+    constant_fold_fp_inst_operands_trusting_same_module(
+        opcode,
+        lhs,
+        rhs,
+        dl,
+        denormal_mode,
+        fmf,
+        allow_non_deterministic,
+    )
+}
+
+/// [`constant_fold_fp_inst_operands`] for operands of one module.
+pub(crate) fn constant_fold_fp_inst_operands_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
@@ -1190,7 +1421,8 @@ pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     {
         return Ok(None);
     }
-    let Some(folded) = constant_fold_binary_op_operands(opcode, lhs, rhs, dl)? else {
+    let Some(folded) = constant_fold_binary_op_operands_trusting_same_module(opcode, lhs, rhs, dl)?
+    else {
         return Ok(None);
     };
     let Some(folded) = flush_fp_constant(folded, denormal_mode, DenormalModeSide::Output)? else {
@@ -1203,7 +1435,26 @@ pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold the currently modelled binary intrinsic set.
+///
+/// Errors with [`IrError::ForeignValueId`] if `rhs`, or
+/// [`IrError::ForeignType`] if `ty`, belongs to a module other than `lhs`'s.
 pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
+    intrinsic: BinaryIntrinsic,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    ty: Type<'ctx, B>,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's operand and type, admitted against `lhs`'s
+    // module.
+    let owner = lhs.module.id();
+    rhs.slot_in(owner)?;
+    ty.slot_in(owner)?;
+    constant_fold_binary_intrinsic_trusting_same_module(intrinsic, lhs, rhs, ty, dl)
+}
+
+/// [`constant_fold_binary_intrinsic`] for operands and a type of one module.
+pub(crate) fn constant_fold_binary_intrinsic_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     intrinsic: BinaryIntrinsic,
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
@@ -1215,7 +1466,26 @@ pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Reinterpret `constant` as though it were loaded through a bitcasted pointer.
+///
+/// Errors with [`IrError::ForeignType`] if `dest_ty` belongs to a module other
+/// than `constant`'s.
 pub fn constant_fold_load_through_bitcast<'ctx, B: ModuleBrand + 'ctx>(
+    constant: Constant<'ctx, B>,
+    dest_ty: Type<'ctx, B>,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's destination type, admitted against `constant`'s
+    // module.
+    dest_ty.slot_in(constant.module.id())?;
+    constant_fold_load_through_bitcast_trusting_same_module(constant, dest_ty, dl)
+}
+
+/// [`constant_fold_load_through_bitcast`] for a constant and type of one
+/// module.
+pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+>(
     constant: Constant<'ctx, B>,
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
@@ -1230,7 +1500,9 @@ pub fn constant_fold_load_through_bitcast<'ctx, B: ModuleBrand + 'ctx>(
         if src_size < dest_size {
             return Ok(None);
         }
-        if let Some(folded) = constant_fold_load_from_uniform_value(value, dest_ty, dl)? {
+        if let Some(folded) =
+            constant_fold_load_from_uniform_value_trusting_same_module(value, dest_ty, dl)?
+        {
             return Ok(Some(folded));
         }
         // Mirrors `ConstantFoldLoadThroughBitcast`: the all-zero/uniform case
@@ -1241,7 +1513,9 @@ pub fn constant_fold_load_through_bitcast<'ctx, B: ModuleBrand + 'ctx>(
                 == is_non_integral_pointer_type(dest_ty, dl)
         {
             let opcode = load_through_bitcast_opcode(value.ty(), dest_ty);
-            if let Some(folded) = constant_fold_cast_operand(opcode, value, dest_ty, dl)? {
+            if let Some(folded) =
+                constant_fold_cast_operand_trusting_same_module(opcode, value, dest_ty, dl)?
+            {
                 return Ok(Some(folded));
             }
         }
@@ -1251,42 +1525,67 @@ pub fn constant_fold_load_through_bitcast<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Return an inverse cast if recasting it with `cast_op` losslessly recovers `constant`.
+///
+/// Errors with [`IrError::ForeignType`] if `inv_cast_to` belongs to a module
+/// other than `constant`'s.
 pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
     inv_cast_to: Type<'ctx, B>,
     cast_op: CastOpcode,
     dl: &DataLayout,
 ) -> IrResult<Option<(Constant<'ctx, B>, PreservedCastFlags)>> {
+    // Boundary: the caller's type, admitted against `constant`'s module before
+    // either is read. `lossless_unsigned_trunc` and `lossless_signed_trunc`
+    // forward their caller's pair here unread, so this is their check too.
+    inv_cast_to.slot_in(constant.module.id())?;
     match cast_op {
         CastOpcode::BitCast => {
-            let Some(folded) =
-                constant_fold_cast_operand(CastOpcode::BitCast, constant, inv_cast_to, dl)?
+            let Some(folded) = constant_fold_cast_operand_trusting_same_module(
+                CastOpcode::BitCast,
+                constant,
+                inv_cast_to,
+                dl,
+            )?
             else {
                 return Ok(None);
             };
             Ok(Some((folded, PreservedCastFlags::none())))
         }
         CastOpcode::Trunc => {
-            let Some(zext) =
-                constant_fold_cast_operand(CastOpcode::Zext, constant, inv_cast_to, dl)?
+            let Some(zext) = constant_fold_cast_operand_trusting_same_module(
+                CastOpcode::Zext,
+                constant,
+                inv_cast_to,
+                dl,
+            )?
             else {
                 return Ok(None);
             };
             let mut flags = PreservedCastFlags::none().no_unsigned_wrap();
-            if constant_fold_cast_operand(CastOpcode::Sext, constant, inv_cast_to, dl)?
-                == Some(zext)
+            if constant_fold_cast_operand_trusting_same_module(
+                CastOpcode::Sext,
+                constant,
+                inv_cast_to,
+                dl,
+            )? == Some(zext)
             {
                 flags = flags.no_signed_wrap();
             }
             Ok(Some((zext, flags)))
         }
         CastOpcode::Zext | CastOpcode::Sext => {
-            let Some(inv) =
-                constant_fold_cast_operand(CastOpcode::Trunc, constant, inv_cast_to, dl)?
+            let Some(inv) = constant_fold_cast_operand_trusting_same_module(
+                CastOpcode::Trunc,
+                constant,
+                inv_cast_to,
+                dl,
+            )?
             else {
                 return Ok(None);
             };
-            let Some(recast) = constant_fold_cast_operand(cast_op, inv, constant.ty(), dl)? else {
+            let Some(recast) =
+                constant_fold_cast_operand_trusting_same_module(cast_op, inv, constant.ty(), dl)?
+            else {
                 return Ok(None);
             };
             if recast != constant {
@@ -1294,8 +1593,12 @@ pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx>(
             }
             let mut flags = PreservedCastFlags::none();
             if cast_op == CastOpcode::Zext
-                && constant_fold_cast_operand(CastOpcode::Sext, inv, constant.ty(), dl)?
-                    == Some(recast)
+                && constant_fold_cast_operand_trusting_same_module(
+                    CastOpcode::Sext,
+                    inv,
+                    constant.ty(),
+                    dl,
+                )? == Some(recast)
             {
                 flags = flags.non_negative();
             }
@@ -1332,7 +1635,33 @@ pub fn lossless_signed_trunc<'ctx, B: ModuleBrand + 'ctx>(
     lossless_inv_cast(constant, dest_ty, CastOpcode::Sext, dl)
 }
 /// Fold a known library call with constant operands.
+///
+/// Errors with [`IrError::ForeignValueId`] if an operand belongs to a module
+/// other than `result_ty`'s.
 pub fn constant_fold_call<'ctx, B: ModuleBrand + 'ctx>(
+    lib_func: LibFunc,
+    operands: &[Constant<'ctx, B>],
+    result_ty: Type<'ctx, B>,
+    tli: &TargetLibraryInfo,
+    allow_non_deterministic: FoldNonDeterminism,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Boundary: the caller's operands, admitted against `result_ty`'s module —
+    // the one handle a call with no operands still carries.
+    let owner = result_ty.module.id();
+    for operand in operands {
+        operand.slot_in(owner)?;
+    }
+    constant_fold_call_trusting_same_module(
+        lib_func,
+        operands,
+        result_ty,
+        tli,
+        allow_non_deterministic,
+    )
+}
+
+/// [`constant_fold_call`] for operands and a result type of one module.
+pub(crate) fn constant_fold_call_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
     lib_func: LibFunc,
     operands: &[Constant<'ctx, B>],
     result_ty: Type<'ctx, B>,
@@ -1605,7 +1934,7 @@ fn scaled_offset(index: &ApInt, scale: u64, index_bits: u32) -> ApInt {
 /// `ConstantData::GepOffset` form) and propagating no-wrap flags the same way
 /// upstream's merge loop does (lines 915-951, 982-984). Tried by both GEP
 /// dispatch sites *before* falling back to the existing
-/// [`constant_fold_get_element_ptr`] empty/poison/undef/noop/in-range folds,
+/// [`constant_fold_get_element_ptr_trusting_same_module`] empty/poison/undef/noop/in-range folds,
 /// matching upstream's `ConstantFoldInstOperandsImpl` dispatch order (lines
 /// 1031-1041: `SymbolicallyEvaluateGEP` first, `ConstantExpr::getGetElementPtr`
 /// — whose own constructor re-runs the target-independent fold — second).
@@ -1667,7 +1996,12 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
     };
 
     let module = pointer.as_erased().module();
-    let index_ids: Vec<ValueSlot> = indices.iter().map(|index| index.slot()).collect();
+    // Internal: the indices are operands of one fold, already of `pointer`'s
+    // module.
+    let index_ids: Vec<ValueSlot> = indices
+        .iter()
+        .map(|index| index.slot_trusting_same_module())
+        .collect();
     // `Offset = APInt(BitWidth, DL.getIndexedOffsetInType(SrcElemTy, Ops[1..]), ...)`.
     // Bails (matching `for i in 1..: if (!isa<ConstantInt>(Ops[i])) return
     // nullptr;`) whenever an index isn't a plain scalar `ConstantInt`.
@@ -1783,8 +2117,12 @@ fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
             let ptr_ty = ptr.ty();
             let wrapped = module
                 .context()
-                .intern_constant_global_value_ref(ptr_ty.id(), *base_id);
-            let base = Constant::from_parts(Value::from_parts(wrapped, module, ptr_ty.id()));
+                .intern_constant_global_value_ref(ptr_ty.slot_trusting_same_module(), *base_id);
+            let base = Constant::from_parts(Value::from_parts(
+                wrapped,
+                module,
+                ptr_ty.slot_trusting_same_module(),
+            ));
             Some((base, gep_offset_magnitude(*off, index_bits)))
         }
         ValueKindData::Constant(ConstantData::Expr(expr))
@@ -1890,13 +2228,15 @@ fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
         && let Some(off) = offset.try_sext_i64()
     {
         let ptr_ty = ptr.ty();
-        let id = module
-            .context()
-            .intern_constant_gep_offset(ptr_ty.id(), *value, off);
+        let id = module.context().intern_constant_gep_offset(
+            ptr_ty.slot_trusting_same_module(),
+            *value,
+            off,
+        );
         return Ok(Some(Constant::from_parts(Value::from_parts(
             id,
             module,
-            ptr_ty.id(),
+            ptr_ty.slot_trusting_same_module(),
         ))));
     }
 
@@ -2034,11 +2374,13 @@ fn zero_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
     }
     if matches!(ty.data(), TypeData::Pointer { .. }) {
         let module = ty.module();
-        let id = module.context().intern_constant_null(ty.id());
+        let id = module
+            .context()
+            .intern_constant_null(ty.slot_trusting_same_module());
         return Ok(Some(Constant::from_parts(Value::from_parts(
             id,
             module,
-            ty.id(),
+            ty.slot_trusting_same_module(),
         ))));
     }
     Ok(None)
@@ -2094,7 +2436,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             let Some(opcode) = binary_opcode_from_constant_expr(expr.opcode) else {
                 return Ok(None);
             };
-            constant_fold_binary_op_operands(opcode, *lhs, *rhs, dl)
+            constant_fold_binary_op_operands_trusting_same_module(opcode, *lhs, *rhs, dl)
         }
         ConstantExprOpcode::GetElementPtr => {
             let Some(source_ty) = expr.source_ty else {
@@ -2113,7 +2455,9 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             {
                 return Ok(Some(folded));
             }
-            constant_fold_get_element_ptr(source_ty, *pointer, indices, in_range)
+            constant_fold_get_element_ptr_trusting_same_module(
+                source_ty, *pointer, indices, in_range,
+            )
         }
         ConstantExprOpcode::ShuffleVector => {
             let [lhs, rhs, mask] = operands else {
@@ -2122,19 +2466,19 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             let Some(mask) = shufflevector_mask_from_constant(*mask) else {
                 return Ok(None);
             };
-            constant_fold_shuffle_vector_instruction(*lhs, *rhs, &mask)
+            constant_fold_shuffle_vector_instruction_trusting_same_module(*lhs, *rhs, &mask)
         }
         ConstantExprOpcode::InsertElement => {
             let [vector, value, index] = operands else {
                 return Ok(None);
             };
-            constant_fold_insert_element_instruction(*vector, *value, *index)
+            constant_fold_insert_element_instruction_trusting_same_module(*vector, *value, *index)
         }
         ConstantExprOpcode::ExtractElement => {
             let [vector, index] = operands else {
                 return Ok(None);
             };
-            constant_fold_extract_element_instruction(*vector, *index)
+            constant_fold_extract_element_instruction_trusting_same_module(*vector, *index)
         }
         ConstantExprOpcode::Trunc
         | ConstantExprOpcode::PtrToAddr
@@ -2148,7 +2492,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             let Some(opcode) = cast_opcode_from_constant_expr(expr.opcode) else {
                 return Ok(None);
             };
-            constant_fold_cast_operand(
+            constant_fold_cast_operand_trusting_same_module(
                 opcode,
                 *operand,
                 Type::new(expr.result_ty, original.as_erased().module()),
@@ -2528,7 +2872,7 @@ fn fold_integer_cast_constant<'ctx, B: ModuleBrand + 'ctx>(
     } else {
         CastOpcode::Zext
     };
-    constant_fold_cast_operand(opcode, constant, dest_ty, dl)
+    constant_fold_cast_operand_trusting_same_module(opcode, constant, dest_ty, dl)
 }
 
 fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx>(
@@ -2536,7 +2880,9 @@ fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    if let Some(folded) = constant_fold_cast_instruction(CastOpcode::BitCast, operand, dest_ty)? {
+    if let Some(folded) =
+        constant_fold_cast_instruction_trusting_same_module(CastOpcode::BitCast, operand, dest_ty)?
+    {
         return Ok(Some(folded));
     }
     if dl.type_store_size(erase_type(operand.ty())) != dl.type_store_size(erase_type(dest_ty)) {
@@ -2777,14 +3123,18 @@ fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>
 }
 
 fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
-    Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
+    Type::new(
+        ty.slot_trusting_same_module(),
+        ModuleRef::new(ty.module().core_ref()),
+    )
 }
 
 fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, DynBrand> {
+    // Internal: the brand changes, the module does not.
     Value::from_parts(
-        value.id,
+        value.slot_trusting_same_module(),
         ModuleView::new(value.module().core_ref()),
-        value.ty().id(),
+        value.ty().slot_trusting_same_module(),
     )
 }
 
@@ -2792,9 +3142,10 @@ fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, DynBrand>,
     module: ModuleView<'ctx, B>,
 ) -> Constant<'ctx, B> {
+    // Internal: every caller passes the module `constant` was built in.
     Constant::from_parts(Value::from_parts(
-        constant.slot(),
+        constant.slot_trusting_same_module(),
         module,
-        constant.ty().id(),
+        constant.ty().slot_trusting_same_module(),
     ))
 }

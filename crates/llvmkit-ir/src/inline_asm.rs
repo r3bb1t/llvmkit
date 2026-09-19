@@ -159,11 +159,11 @@ pub(crate) struct InlineAsmData {
 /// ModuleRef, TypeSlot)` triple plus the cached pointer type.
 #[derive(Branded)]
 pub struct InlineAsm<'ctx, B: ModuleBrand> {
-    pub(crate) id: ValueSlot,
+    id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr`). The value's value-arena type is
     /// this pointer type; the wrapped function type lives in the payload.
-    pub(crate) ty: TypeSlot,
+    ty: TypeSlot,
     pub(crate) _ctx: PhantomData<&'ctx ()>,
 }
 
@@ -201,11 +201,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     /// the `ptr` type, matching LLVM's pointer typing of inline asm.
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Owning module reference.

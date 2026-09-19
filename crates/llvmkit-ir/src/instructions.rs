@@ -37,6 +37,7 @@ use super::{IrError, IrResult};
 // Only the crate-internal raw-phi authoring surface lifts through these, and
 // that surface is `#[cfg(test)]` — block arguments are the public way to
 // author a phi. See `docs/design/phi-type-guarantees-design.md`, slice 7.
+use super::attributes::AttrKind;
 #[cfg(test)]
 use super::float_kind::IntoFloatValue;
 use super::float_kind::{Bfloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
@@ -46,6 +47,7 @@ use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::ShuffleMaskElem;
 use super::instr_types::TailCallKind;
+use super::instr_types::call_site_has_fn_attr;
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
@@ -59,17 +61,19 @@ use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     LandingPadClauseKind, PhiData, ReturnOpData,
 };
+use super::instr_types::{OperandBundleTag, OperandBundleUse};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
-use super::r#type::{Type, TypeData, TypeSlot};
+use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 #[cfg(test)]
 use super::value::IntoPointerValue;
 use super::value::{
-    FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueUse,
+    FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueSlotAccess,
+    ValueUse,
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
@@ -85,9 +89,9 @@ macro_rules! decl_binop_handle {
         $(#[$attr])*
         #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
-            pub(super) id: ValueSlot,
+            id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeSlot,
+            ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
@@ -240,18 +244,19 @@ decl_binop_handle!(
 #[derive(Branded)]
 #[branded(Debug, Clone, Copy)]
 pub struct BinaryOp<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) opcode: BinaryOpcode,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
     pub(super) fn from_value(v: Value<'ctx, B>, opcode: BinaryOpcode) -> Self {
         Self {
-            id: v.id,
+            // Internal: a re-wrap that keeps `v`'s own module.
+            id: v.slot_trusting_same_module(),
             module: v.module,
-            ty: v.ty,
+            ty: v.ty().slot_trusting_same_module(),
             opcode,
         }
     }
@@ -345,17 +350,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
 #[derive(Branded)]
 #[branded(Debug, Clone, Copy)]
 pub struct Cmp<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
     pub(super) fn from_value(v: Value<'ctx, B>) -> Self {
         Self {
-            id: v.id,
+            // Internal: a re-wrap that keeps `v`'s own module.
+            id: v.slot_trusting_same_module(),
             module: v.module,
-            ty: v.ty,
+            ty: v.ty().slot_trusting_same_module(),
         }
     }
 
@@ -475,13 +481,6 @@ macro_rules! decl_instruction_id_accessors {
             pub fn id(&self) -> $id<B> {
                 $id::from_raw(self.module.id(), self.id)
             }
-
-            /// Bare arena slot of this instruction. Untagged: prefer
-            /// [`id`](Self::id).
-            #[inline]
-            pub fn slot(&self) -> ValueSlot {
-                self.id
-            }
         }
     )+ };
 }
@@ -497,9 +496,9 @@ decl_instruction_id_accessors!(
 /// (`Instructions.h`).
 #[derive(Branded)]
 pub struct AllocaInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AllocaInst);
@@ -549,9 +548,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AllocaInst<'ctx, B> {
 /// `load` instruction. Mirrors `LoadInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct LoadInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(LoadInst);
@@ -612,9 +611,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
 /// `store` instruction. Mirrors `StoreInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct StoreInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(StoreInst);
@@ -671,9 +670,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> StoreInst<'ctx, B> {
 /// (`Instructions.h`).
 #[derive(Branded)]
 pub struct GepInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(GepInst);
@@ -743,9 +742,9 @@ pub enum Callee<'ctx, B: ModuleBrand> {
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct CallInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     _r: core::marker::PhantomData<R>,
 }
 
@@ -798,9 +797,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Bare arena slot of this call. Untagged: prefer [`id`](Self::id).
+    /// The unchecked door for this handle: its arena slot, for a read that
+    /// stays inside its own module. No public route hands out the bare slot;
+    /// [`id`](Self::id) is the storable, module-tagged id.
     #[inline]
-    pub fn slot(&self) -> ValueSlot {
+    pub(crate) fn slot_trusting_same_module(&self) -> ValueSlot {
         self.id
     }
 
@@ -885,6 +886,38 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     }
     pub fn tail_call_kind(self) -> TailCallKind {
         self.payload().tail_kind
+    }
+    /// Whether this call, or the function it calls, has the function
+    /// attribute `kind`. Mirrors `CallBase::hasFnAttr(Attribute::AttrKind)`:
+    /// the call's own attributes first — its `#N` groups included, which
+    /// upstream's parser has already merged — then
+    /// `CallBase::hasFnAttrOnCalledFunction`, the attributes of a callee that
+    /// is a function.
+    ///
+    /// Upstream asserts `Kind != Attribute::NoBuiltin`, pointing a caller at
+    /// `isNoBuiltin`. llvmkit does not port the crash: asked about `nobuiltin`
+    /// it answers the same two lookups, which is what `isNoBuiltin`'s first
+    /// half (`hasFnAttrImpl(Attribute::NoBuiltin)`) reads.
+    pub fn has_fn_attr(self, kind: AttrKind) -> bool {
+        let payload = self.payload();
+        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+    }
+    /// The call's operand bundles, in order. Mirrors reading
+    /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
+    pub fn operand_bundles(
+        self,
+    ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
+        OperandBundleUse::all(&self.payload().attrs, self.module)
+    }
+    /// The call's bundle tagged `tag`, or `None`. Mirrors
+    /// `CallBase::getOperandBundle`; a call carrying more than one bundle of
+    /// the tag — upstream's asserted precondition — is refused with
+    /// [`IrError::DuplicateOperandBundle`].
+    pub fn operand_bundle(
+        self,
+        tag: &OperandBundleTag,
+    ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
+        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
     }
     /// Return value, or `None` for a void-returning callee. Available
     /// on every `R`; the typed `return_int_value` /
@@ -1010,12 +1043,6 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
         self.inner
     }
 
-    /// Bare arena slot of this call. Untagged: prefer [`id`](Self::id).
-    #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.inner.slot()
-    }
-
     /// Storable, module-tagged [`TypedCallInstId<Ret>`](crate::TypedCallInstId)
     /// for this call — the schema rides on the id, so viewing it recovers the
     /// infallible [`result`](Self::result) without a re-narrowing step.
@@ -1030,6 +1057,14 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
         self.inner.as_dyn()
     }
 
+    /// Whether this call, or the function it calls, has the function
+    /// attribute `kind`. Mirrors `CallBase::hasFnAttr`; see
+    /// [`CallInst::has_fn_attr`].
+    #[inline]
+    pub fn has_fn_attr(self, kind: AttrKind) -> bool {
+        self.inner.has_fn_attr(kind)
+    }
+
     /// Widen to the erased [`Value`] handle.
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
@@ -1040,9 +1075,9 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
 /// `select` instruction. Mirrors `SelectInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct SelectInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(SelectInst);
@@ -1087,9 +1122,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectInst<'ctx, B> {
 /// `Instructions.h`.
 #[derive(Branded)]
 pub struct RetInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(RetInst);
@@ -1129,9 +1164,9 @@ macro_rules! decl_cast_handle {
         $(#[$attr])*
         #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
-            pub(super) id: ValueSlot,
+            id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeSlot,
+            ty: TypeSlot,
         }
 
         decl_handle_scaffold!($name);
@@ -1253,9 +1288,9 @@ decl_cast_handle!(
 /// `icmp` integer comparison. Mirrors `IcmpInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct IcmpInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(IcmpInst);
@@ -1294,9 +1329,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IcmpInst<'ctx, B> {
 /// (`Instructions.h`).
 #[derive(Branded)]
 pub struct FcmpInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FcmpInst);
@@ -1338,9 +1373,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FcmpInst<'ctx, B> {
 /// `br` terminator. Mirrors `BranchInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct BranchInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(BranchInst);
@@ -1397,9 +1432,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
 /// (`Instructions.h`).
 #[derive(Branded)]
 pub struct UnreachableInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(UnreachableInst);
@@ -1481,9 +1516,9 @@ fn phi_remove_incoming<'ctx, B: ModuleBrand + 'ctx>(
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     _w: core::marker::PhantomData<fn() -> W>,
 }
 
@@ -1551,13 +1586,13 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Bare arena slot of the underlying value (same slot as
-    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id),
-    /// which carries the owning module and resolves back through
+    /// The unchecked door for this handle: its arena slot, for a read that
+    /// stays inside its own module. No public route hands out the bare slot;
+    /// [`id`](Self::id) carries the owning module and resolves back through
     /// [`Module::view`](crate::Module::view).
     #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.to_erased().id
+    pub(crate) fn slot_trusting_same_module(&self) -> ValueSlot {
+        self.id
     }
 
     /// Storable, module-tagged [`PhiInstId<W>`](crate::PhiInstId) for this phi
@@ -1681,9 +1716,11 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
-        if value.as_erased().ty == self.ty {
-            let value_id = value.slot();
-            let block_id = block.into_basic_block_label(self.module)?.slot();
+        if value.as_erased().ty().slot_trusting_same_module() == self.ty {
+            let value_id = value.slot_trusting_same_module();
+            let block_id = block
+                .into_basic_block_label(self.module)?
+                .slot_trusting_same_module();
             if self
                 .payload()
                 .incoming
@@ -1747,9 +1784,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> core::hash::Hash for PhiInst<'ctx, W, B>
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct FpPhiInst<'ctx, K: FloatKind, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     _k: core::marker::PhantomData<fn() -> K>,
 }
 
@@ -1816,11 +1853,12 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Bare arena slot of the underlying value (same slot as
-    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
+    /// The unchecked door for this handle: its arena slot, for a read that
+    /// stays inside its own module. No public route hands out the bare slot;
+    /// [`id`](Self::id) is the storable, module-tagged id.
     #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.to_erased().id
+    pub(crate) fn slot_trusting_same_module(&self) -> ValueSlot {
+        self.id
     }
 
     /// Storable, module-tagged [`FpPhiInstId<K>`](crate::FpPhiInstId) for this
@@ -1924,9 +1962,11 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
-        if value.as_erased().ty == self.ty {
-            let value_id = value.slot();
-            let block_id = block.into_basic_block_label(self.module)?.slot();
+        if value.as_erased().ty().slot_trusting_same_module() == self.ty {
+            let value_id = value.slot_trusting_same_module();
+            let block_id = block
+                .into_basic_block_label(self.module)?
+                .slot_trusting_same_module();
             if self
                 .payload()
                 .incoming
@@ -1987,9 +2027,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> core::hash::Hash for FpPhiInst<'ctx, K,
 #[derive(Branded)]
 #[branded(Debug, Clone, Copy)]
 pub struct PointerPhiInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
@@ -2029,11 +2069,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Bare arena slot of the underlying value (same slot as
-    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
+    /// The unchecked door for this handle: its arena slot, for a read that
+    /// stays inside its own module. No public route hands out the bare slot;
+    /// [`id`](Self::id) is the storable, module-tagged id.
     #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.to_erased().id
+    pub(crate) fn slot_trusting_same_module(&self) -> ValueSlot {
+        self.id
     }
 
     /// Storable, module-tagged [`PointerPhiInstId`] for this phi.
@@ -2131,9 +2172,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
-        if value.as_erased().ty == self.ty {
-            let value_id = value.slot();
-            let block_id = block.into_basic_block_label(self.module)?.slot();
+        if value.as_erased().ty().slot_trusting_same_module() == self.ty {
+            let value_id = value.slot_trusting_same_module();
+            let block_id = block
+                .into_basic_block_label(self.module)?
+                .slot_trusting_same_module();
             if self
                 .payload()
                 .incoming
@@ -2189,9 +2232,9 @@ impl<'ctx, B: ModuleBrand> core::hash::Hash for PointerPhiInst<'ctx, B> {
 #[derive(Branded)]
 #[branded(Debug, Clone, Copy)]
 pub struct OtherPhiInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(OtherPhiInst);
@@ -2231,13 +2274,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
         }
         self.payload().fmf.set(fmf);
         Ok(())
-    }
-
-    /// Bare arena slot of the underlying value (same slot as
-    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
-    #[inline]
-    pub fn slot(&self) -> ValueSlot {
-        self.id
     }
 
     /// Storable, module-tagged [`OtherPhiInstId`] for this phi.
@@ -2324,9 +2360,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
 /// `FPMathOperator`-class instruction (`Operator.h`).
 #[derive(Branded)]
 pub struct FnegInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FnegInst);
@@ -2359,9 +2395,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FnegInst<'ctx, B> {
 /// (`Instructions.h`). The result type matches the operand type.
 #[derive(Branded)]
 pub struct FreezeInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FreezeInst);
@@ -2391,9 +2427,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FreezeInst<'ctx, B> {
 /// type lives on [`Self::result_type`].
 #[derive(Branded)]
 pub struct VaArgInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(VaArgInst);
@@ -2432,9 +2468,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> VaArgInst<'ctx, B> {
 /// constant indices. Mirrors `ExtractValueInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct ExtractValueInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ExtractValueInst);
@@ -2467,9 +2503,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExtractValueInst<'ctx, B> {
 /// constant indices. Mirrors `InsertValueInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct InsertValueInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(InsertValueInst);
@@ -2510,9 +2546,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> InsertValueInst<'ctx, B> {
 /// `ExtractElementInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct ExtractElementInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ExtractElementInst);
@@ -2546,9 +2582,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExtractElementInst<'ctx, B> {
 /// Mirrors `InsertElementInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct InsertElementInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(InsertElementInst);
@@ -2589,9 +2625,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> InsertElementInst<'ctx, B> {
 /// `ShuffleVectorInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct ShuffleVectorInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ShuffleVectorInst);
@@ -2749,13 +2785,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
         // it needs the tag test the crate spells `IrError::ForeignValueId`
         // elsewhere. A predicate has no error channel, and a mask belonging to a
         // different module is not a valid operand of this shuffle, so it joins
-        // the routine's other rejections.
-        if mask.module.id() != v1.module.id() {
+        // the routine's other rejections — through the checked door, whose
+        // refusal is that tag test.
+        let Ok(mask_slot) = mask.slot_in(v1.module.id()) else {
             return false;
-        }
+        };
         crate::constants::valid_shufflevector_mask_constant(
             v1.ty().module().core_ref(),
-            mask.slot(),
+            mask_slot,
             v1_size,
             v1_scalable,
         )
@@ -2770,9 +2807,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
 /// No SSA operands; carries memory ordering and synchronization scope.
 #[derive(Branded)]
 pub struct FenceInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FenceInst);
@@ -2803,9 +2840,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FenceInst<'ctx, B> {
 /// `{ <pointee>, i1 }`.
 #[derive(Branded)]
 pub struct AtomicCmpXchgInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AtomicCmpXchgInst);
@@ -2865,9 +2902,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
 /// (`Instructions.h`).
 #[derive(Branded)]
 pub struct AtomicRmwInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AtomicRmwInst);
@@ -2906,12 +2943,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
     /// mutation capability. `module_token` is the capability witness; the
     /// interior-mutable slot is reached through the handle's own
     /// `ModuleRef`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `value` belongs to another
+    /// module.
     pub fn set_value_operand(
         self,
         module_token: &'ctx Module<B, Unverified>,
         value: Value<'ctx, B>,
     ) -> IrResult<()> {
         let _ = module_token;
+        // Boundary: the caller's value, admitted before its type or slot is read.
+        let value_id = value.slot_in(self.module.id())?;
         let module = self.module.module();
         let expected = Type::new(self.ty, self.module);
         let got = value.ty();
@@ -2922,8 +2964,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
             });
         }
         let payload = self.payload();
-        let old_id = payload.value.replace(value.id);
-        if old_id == value.id {
+        let old_id = payload.value.replace(value_id);
+        if old_id == value_id {
             return Ok(());
         }
         {
@@ -2937,7 +2979,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
         }
         module
             .context()
-            .value_data(value.id)
+            .value_data(value_id)
             .add_use(ValueUse::Instruction(self.id));
         Ok(())
     }
@@ -2979,9 +3021,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct SwitchInst<'ctx, P: TermOpenState, B: ModuleBrand, W: IntWidth = IntDyn> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
     _w: core::marker::PhantomData<W>,
 }
@@ -3117,7 +3159,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let target = self.validate_case(v, target)?;
-        require_no_block_parameters(self.module, target.slot())?;
+        // Internal: `validate_case` admitted the target against this module.
+        require_no_block_parameters(self.module, target.slot_trusting_same_module())?;
         Ok(self.record_case(v, target))
     }
 
@@ -3160,7 +3203,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         let module = self.module.module();
         let cond_ty = self.payload().cond.get();
         let cond_ty = module.context().value_data(cond_ty).ty;
-        if v.ty != cond_ty {
+        // Internal: every caller admitted `v` against this module — the typed
+        // and erased `add_case`, and the builder's lowered seeded cases.
+        if v.ty().slot_trusting_same_module() != cond_ty {
             return Err(crate::IrError::TypeMismatch {
                 expected: Type::<B>::new(cond_ty, module).kind_label(),
                 got: v.ty().kind_label(),
@@ -3177,11 +3222,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         v: Value<'ctx, B>,
         target: BasicBlockLabel<'ctx, R, B>,
     ) -> Self {
-        let v_id = v.id;
+        // Internal: `v` and `target` were admitted before `validate_case` ran.
+        let v_id = v.slot_trusting_same_module();
+        let target_id = target.slot_trusting_same_module();
         self.payload()
             .cases
             .borrow_mut()
-            .push((core::cell::Cell::new(v_id), target.slot()));
+            .push((core::cell::Cell::new(v_id), target_id));
         let context = self.module.module().context();
         context
             .value_data(v_id)
@@ -3190,7 +3237,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         // value and its destination — so the block gets an edge as well.
         // Registered after the value, matching `[…, CaseVal, CaseDest]`.
         context
-            .value_data(target.slot())
+            .value_data(target_id)
             .add_use(ValueUse::Instruction(self.id));
         self
     }
@@ -3206,6 +3253,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
     /// [`crate::IrError::TypeMismatch`] LLVM's verifier would raise). The typed
     /// flavour on a `SwitchInst<'ctx, TermOpen, B, W>` for a static `W`
     /// makes a wrong-width case a compile error instead.
+    ///
+    /// Errors with [`crate::IrError::ForeignValueId`] if `case_value` belongs
+    /// to another module.
     pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>
     where
         V: IsValue<'ctx, B>,
@@ -3213,6 +3263,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let v = case_value.as_erased();
+        // Boundary: the caller's case value, admitted before it is validated.
+        v.slot_in(self.module.id())?;
         self.push_case_checked(v, target)
     }
 }
@@ -3245,9 +3297,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, 
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct IndirectBrInst<'ctx, P: TermOpenState, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -3354,13 +3406,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let target = target.into_basic_block_label(self.module)?;
-        require_no_block_parameters(self.module, target.slot())?;
-        self.payload().destinations.borrow_mut().push(target.slot());
+        // Internal: admitted by `into_basic_block_label` just above.
+        let target_id = target.slot_trusting_same_module();
+        require_no_block_parameters(self.module, target_id)?;
+        self.payload().destinations.borrow_mut().push(target_id);
         // `IndirectBrInst::addDestination` appends a real operand.
         self.module
             .module()
             .context()
-            .value_data(target.slot())
+            .value_data(target_id)
             .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
@@ -3382,9 +3436,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct InvokeInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     _r: core::marker::PhantomData<R>,
 }
 
@@ -3485,6 +3539,30 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
+    /// The invoke's operand bundles, in order. Mirrors reading
+    /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
+    pub fn operand_bundles(
+        self,
+    ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
+        OperandBundleUse::all(&self.payload().attrs, self.module)
+    }
+    /// The invoke's bundle tagged `tag`, or `None`. Mirrors
+    /// `CallBase::getOperandBundle`; more than one bundle of the tag is
+    /// refused with [`IrError::DuplicateOperandBundle`], as on
+    /// [`CallInst::operand_bundle`].
+    pub fn operand_bundle(
+        self,
+        tag: &OperandBundleTag,
+    ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
+        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+    }
+    /// Whether this invoke, or the function it calls, has the function
+    /// attribute `kind`. Mirrors `CallBase::hasFnAttr`, as
+    /// [`CallInst::has_fn_attr`] does.
+    pub fn has_fn_attr(self, kind: AttrKind) -> bool {
+        let payload = self.payload();
+        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+    }
     pub fn normal_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().normal_dest.get())
     }
@@ -3498,9 +3576,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
 /// or more indirect destination labels.
 #[derive(Branded)]
 pub struct CallBrInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CallBrInst);
@@ -3539,6 +3617,30 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
+    /// The callbr's operand bundles, in order. Mirrors reading
+    /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
+    pub fn operand_bundles(
+        self,
+    ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
+        OperandBundleUse::all(&self.payload().attrs, self.module)
+    }
+    /// The callbr's bundle tagged `tag`, or `None`. Mirrors
+    /// `CallBase::getOperandBundle`; more than one bundle of the tag is
+    /// refused with [`IrError::DuplicateOperandBundle`], as on
+    /// [`CallInst::operand_bundle`].
+    pub fn operand_bundle(
+        self,
+        tag: &OperandBundleTag,
+    ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
+        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+    }
+    /// Whether this callbr, or the function it calls, has the function
+    /// attribute `kind`. Mirrors `CallBase::hasFnAttr`, as
+    /// [`CallInst::has_fn_attr`] does.
+    pub fn has_fn_attr(self, kind: AttrKind) -> bool {
+        let payload = self.payload();
+        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+    }
     pub fn default_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_dest.get())
     }
@@ -3569,9 +3671,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct LandingPadInst<'ctx, P: TermOpenState, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -3675,30 +3777,38 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     }
     /// Append a `catch <ty> <val>` clause. Mirrors `LandingPadInst::addClause`
     /// for `Catch`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `type_info` belongs to
+    /// another module.
     pub fn add_catch_clause<V: IsValue<'ctx, B>>(self, type_info: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = type_info.as_erased();
+        // Boundary: the caller's type-info value, admitted before it is stored.
+        let v_id = type_info.slot_in(self.module.id())?;
         self.payload()
             .clauses
             .borrow_mut()
-            .push((LandingPadClauseKind::Catch, core::cell::Cell::new(v.id)));
+            .push((LandingPadClauseKind::Catch, core::cell::Cell::new(v_id)));
         module
             .context()
-            .value_data(v.id)
+            .value_data(v_id)
             .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Append a `filter <ty> <val>` clause.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `filter_array` belongs to
+    /// another module.
     pub fn add_filter_clause<V: IsValue<'ctx, B>>(self, filter_array: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = filter_array.as_erased();
+        // Boundary: the caller's filter array, admitted before it is stored.
+        let v_id = filter_array.slot_in(self.module.id())?;
         self.payload()
             .clauses
             .borrow_mut()
-            .push((LandingPadClauseKind::Filter, core::cell::Cell::new(v.id)));
+            .push((LandingPadClauseKind::Filter, core::cell::Cell::new(v_id)));
         module
             .context()
-            .value_data(v.id)
+            .value_data(v_id)
             .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
@@ -3713,9 +3823,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
 /// Single value operand (typically a `landingpad` result).
 #[derive(Branded)]
 pub struct ResumeInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ResumeInst);
@@ -3747,9 +3857,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ResumeInst<'ctx, B> {
 /// Result is a `token`-typed value used as a funclet pad.
 #[derive(Branded)]
 pub struct CleanupPadInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CleanupPadInst);
@@ -3791,9 +3901,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
 /// be a `catchswitch` (verifier rule).
 #[derive(Branded)]
 pub struct CatchPadInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CatchPadInst);
@@ -3831,9 +3941,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
 /// `catchret` terminator. Mirrors `CatchReturnInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct CatchReturnInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CatchReturnInst);
@@ -3863,9 +3973,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
 /// `cleanupret` terminator. Mirrors `CleanupReturnInst` (`Instructions.h`).
 #[derive(Branded)]
 pub struct CleanupReturnInst<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CleanupReturnInst);
@@ -3899,9 +4009,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct CatchSwitchInst<'ctx, P: TermOpenState, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -4001,12 +4111,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         Handler: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let handler = handler.into_basic_block_label(self.module)?;
-        self.payload().handlers.borrow_mut().push(handler.slot());
+        // Internal: admitted by `into_basic_block_label` just above.
+        let handler_id = handler.slot_trusting_same_module();
+        self.payload().handlers.borrow_mut().push(handler_id);
         // `CatchSwitchInst::addHandler` appends a real operand.
         self.module
             .module()
             .context()
-            .value_data(handler.slot())
+            .value_data(handler_id)
             .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
@@ -4138,9 +4250,19 @@ pub fn indexed_gep_type<'ctx, B: ModuleBrand + 'ctx>(
     indices: &[Value<'ctx, B>],
 ) -> Option<Type<'ctx, B>> {
     let module = source_ty.module;
-    let slots: Vec<_> = indices.iter().map(|index| index.slot()).collect();
-    crate::constants::gep_indexed_type(module.module(), source_ty.id(), &slots)
-        .map(|indexed| Type::new(indexed, module))
+    // boundary (F2): Task 27
+    // Each index's slot is read against `source_ty`'s arena; nothing proves
+    // the index belongs to that module.
+    let slots: Vec<_> = indices
+        .iter()
+        .map(|index| index.slot_trusting_same_module())
+        .collect();
+    crate::constants::gep_indexed_type(
+        module.module(),
+        source_ty.slot_trusting_same_module(),
+        &slots,
+    )
+    .map(|indexed| Type::new(indexed, module))
 }
 
 /// The type an `extractvalue` / `insertvalue` index list arrives at, or
@@ -4209,7 +4331,7 @@ mod tests {
 
         let call: CallInst<'_, i32, _> =
             b.view(b.call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
-        let call_id = call.to_erased().slot();
+        let call_id = call.to_erased().slot_trusting_same_module();
 
         let typed = TypedCallInst::<i32, _> {
             inner: call,
@@ -4217,7 +4339,7 @@ mod tests {
         };
         let result = typed.result();
 
-        assert_eq!(result.slot(), call_id);
+        assert_eq!(result.slot_trusting_same_module(), call_id);
         Ok(())
     }
 }

@@ -30,9 +30,12 @@ use super::constant::{
     ForwardRefValue, IntoConstantValue, IsConstant,
 };
 use super::constant_fold::{
-    constant_fold_binary_instruction, constant_fold_cast_instruction,
-    constant_fold_extract_element_instruction, constant_fold_get_element_ptr,
-    constant_fold_insert_element_instruction, constant_fold_shuffle_vector_instruction,
+    constant_fold_binary_instruction_trusting_same_module,
+    constant_fold_cast_instruction_trusting_same_module,
+    constant_fold_extract_element_instruction_trusting_same_module,
+    constant_fold_get_element_ptr_trusting_same_module,
+    constant_fold_insert_element_instruction_trusting_same_module,
+    constant_fold_shuffle_vector_instruction_trusting_same_module,
     shufflevector_mask_from_constant,
 };
 use super::derived_types::{
@@ -83,9 +86,9 @@ macro_rules! decl_constant_handle {
         $(#[$attr])*
         #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
-            pub(super) id: ValueSlot,
+            id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeSlot,
+            ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
@@ -101,13 +104,13 @@ macro_rules! decl_constant_handle {
             /// Widen to the erased [`Constant`] handle.
             #[inline]
             pub fn as_constant(self) -> Constant<'ctx, B> {
-                Constant { id: self.id, module: self.module, ty: self.ty }
+                Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
             }
 
             /// Widen to the erased [`Value`] handle.
             #[inline]
             pub fn as_erased(self) -> Value<'ctx, B> {
-                Value { id: self.id, module: self.module, ty: self.ty }
+                Value::from_parts(self.id, self.module, self.ty)
             }
         }
 
@@ -212,9 +215,9 @@ decl_constant_handle!(
 #[derive(Branded)]
 #[branded(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstantIntValue<'ctx, W: IntWidth, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _w: PhantomData<W>,
 }
 
@@ -239,19 +242,11 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ConstantIntValue<'ctx, W, B> {
     }
     #[inline]
     pub fn as_constant(self) -> Constant<'ctx, B> {
-        Constant {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
     }
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
     /// Erase the width marker.
     #[inline]
@@ -405,9 +400,9 @@ impl_constant_int_static_try_from!(i128, 128);
 #[derive(Branded)]
 #[branded(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstantFloatValue<'ctx, K: FloatKind, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _k: PhantomData<K>,
 }
 
@@ -432,19 +427,11 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ConstantFloatValue<'ctx, K, B> {
     }
     #[inline]
     pub fn as_constant(self) -> Constant<'ctx, B> {
-        Constant {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
     }
     #[inline]
     pub fn as_erased(self) -> Value<'ctx, B> {
-        Value {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-        }
+        Value::from_parts(self.id, self.module, self.ty)
     }
     #[inline]
     pub fn as_dyn(self) -> ConstantFloatValue<'ctx, FloatDyn, B> {
@@ -1463,7 +1450,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
                 ConstantExprOpcode::Xor => BinaryOpcode::Xor,
                 _ => return Ok(None),
             };
-            constant_fold_binary_instruction(opcode, *lhs, *rhs)
+            constant_fold_binary_instruction_trusting_same_module(opcode, *lhs, *rhs)
         }
         ConstantExprOpcode::Trunc
         | ConstantExprOpcode::PtrToAddr
@@ -1483,7 +1470,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
                 ConstantExprOpcode::AddrSpaceCast => CastOpcode::AddrSpaceCast,
                 _ => return Ok(None),
             };
-            constant_fold_cast_instruction(opcode, *operand, result_ty)
+            constant_fold_cast_instruction_trusting_same_module(opcode, *operand, result_ty)
         }
         ConstantExprOpcode::GetElementPtr => {
             let Some(source_ty) = data
@@ -1499,19 +1486,19 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
                 ConstantExprFlags::Gep(flags) => flags.in_range(),
                 _ => None,
             };
-            constant_fold_get_element_ptr(source_ty, *base, indices, in_range)
+            constant_fold_get_element_ptr_trusting_same_module(source_ty, *base, indices, in_range)
         }
         ConstantExprOpcode::ExtractElement => {
             let [vector, index] = operands.as_slice() else {
                 return Ok(None);
             };
-            constant_fold_extract_element_instruction(*vector, *index)
+            constant_fold_extract_element_instruction_trusting_same_module(*vector, *index)
         }
         ConstantExprOpcode::InsertElement => {
             let [vector, element, index] = operands.as_slice() else {
                 return Ok(None);
             };
-            constant_fold_insert_element_instruction(*vector, *element, *index)
+            constant_fold_insert_element_instruction_trusting_same_module(*vector, *element, *index)
         }
         ConstantExprOpcode::ShuffleVector => {
             let [lhs, rhs, mask] = operands.as_slice() else {
@@ -1520,7 +1507,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
             let Some(mask) = shufflevector_mask_from_constant(*mask) else {
                 return Ok(None);
             };
-            constant_fold_shuffle_vector_instruction(*lhs, *rhs, &mask)
+            constant_fold_shuffle_vector_instruction_trusting_same_module(*lhs, *rhs, &mask)
         }
     }
 }
@@ -2662,8 +2649,10 @@ fn intern_int_constant<'ctx, W: IntWidth, B: ModuleBrand + 'ctx>(
     words: Box<[u64]>,
 ) -> ConstantIntValue<'ctx, W, B> {
     let module = ty.module;
-    let id = module.module().context().intern_constant_int(ty.id, words);
-    ConstantIntValue::from_parts_typed(constant_handle(id, module, ty.id))
+    // Internal: the constant is interned in `ty`'s own module.
+    let ty_id = ty.slot_trusting_same_module();
+    let id = module.module().context().intern_constant_int(ty_id, words);
+    ConstantIntValue::from_parts_typed(constant_handle(id, module, ty_id))
 }
 
 fn u128_to_words_for_float(bits: u128) -> [u64; 2] {
@@ -2678,8 +2667,10 @@ fn intern_float_constant<'ctx, K: FloatKind, B: ModuleBrand + 'ctx>(
     bits: u128,
 ) -> ConstantFloatValue<'ctx, K, B> {
     let module = ty.module;
-    let id = module.module().context().intern_constant_float(ty.id, bits);
-    ConstantFloatValue::from_parts_typed(constant_handle(id, module, ty.id))
+    // Internal: the constant is interned in `ty`'s own module.
+    let ty_id = ty.slot_trusting_same_module();
+    let id = module.module().context().intern_constant_float(ty_id, bits);
+    ConstantFloatValue::from_parts_typed(constant_handle(id, module, ty_id))
 }
 
 fn intern_pointer_null<'ctx, B: ModuleBrand + 'ctx>(
@@ -2756,12 +2747,15 @@ mod tests {
         let replacement = i64_ty.const_zero().as_constant();
         let rewritten = constant_with_replaced_operand(
             m.core_ref(),
-            expr.slot(),
-            ptr_as_int.slot(),
-            replacement.slot(),
+            expr.slot_trusting_same_module(),
+            ptr_as_int.slot_trusting_same_module(),
+            replacement.slot_trusting_same_module(),
         )?;
 
-        assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).slot()));
+        assert_eq!(
+            rewritten,
+            Some(i64_ty.const_int(1_i64).slot_trusting_same_module())
+        );
         Ok(())
     }
 }

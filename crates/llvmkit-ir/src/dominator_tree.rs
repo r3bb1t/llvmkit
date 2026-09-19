@@ -17,7 +17,7 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::ModuleBrand;
 use super::pass_context::BasicBlockView;
 use super::r#use::Use;
-use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
+use super::value::{IsValue, SealedValueSlot, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::value_id::BlockId;
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
@@ -42,13 +42,26 @@ pub struct DominatorTree {
 }
 
 mod dominator_block_sealed {
-    pub trait Sealed {}
+    use crate::CrateOnly;
+    use crate::value::SealedValueSlot;
+
+    /// Seals [`DominatorTreeBlock`](super::DominatorTreeBlock), and carries the
+    /// one method the tree needs from a block: its arena slot, compared with
+    /// the slots the tree keyed its maps by. It lives here, behind the
+    /// crate-only token (a `DominatorTreeBlock` bound in downstream code
+    /// brings this module's supertrait methods into scope even though the
+    /// trait cannot be named there, so without the token the method would be
+    /// callable), and hands the slot back in a wrapper only llvmkit can open,
+    /// so no public route hands out a block's bare slot.
+    pub trait Sealed {
+        fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot;
+    }
 }
 
+use crate::CrateOnly;
+
 /// Basic-block identity accepted by dominator-tree block queries.
-pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {
-    fn dominator_block_id(self) -> ValueSlot;
-}
+pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {}
 
 impl<'ctx, R, S, B> dominator_block_sealed::Sealed for BasicBlock<'ctx, R, S, B>
 where
@@ -56,6 +69,13 @@ where
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
+    #[inline]
+    fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
+        // boundary (F2): Task 27
+        // Compared with slots the tree stored for its own function; nothing
+        // proves this block belongs to that function's module.
+        SealedValueSlot(self.slot_trusting_same_module())
+    }
 }
 
 impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S, B>
@@ -64,13 +84,6 @@ where
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
-    #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
-        // boundary (F2): Task 27
-        // Compared with slots the tree stored for its own function; nothing
-        // proves this block belongs to that function's module.
-        self.to_erased().slot_trusting_same_module()
-    }
 }
 
 impl<'ctx, R, S, B> dominator_block_sealed::Sealed for &BasicBlock<'ctx, R, S, B>
@@ -79,24 +92,17 @@ where
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
+    #[inline]
+    fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
+        // boundary (F2): Task 27
+        SealedValueSlot(self.slot_trusting_same_module())
+    }
 }
 
 impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for &BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
-    B: ModuleBrand + 'ctx,
-{
-    #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
-        // boundary (F2): Task 27
-        self.to_erased().slot_trusting_same_module()
-    }
-}
-
-impl<'ctx, R, B> dominator_block_sealed::Sealed for BasicBlockLabel<'ctx, R, B>
-where
-    R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
 }
@@ -106,6 +112,14 @@ where
     R: ReturnMarker,
     B: ModuleBrand,
 {
+    #[inline]
+    fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
+        // boundary (F2): Task 27
+        // The caller's block id, compared with slots the tree stored for its
+        // own function; nothing proves the id belongs to that function's
+        // module — the same read as the `BasicBlock` impls above.
+        SealedValueSlot(self.slot_unchecked_at_marked_boundary())
+    }
 }
 
 impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BlockId<R, B>
@@ -113,10 +127,6 @@ where
     R: ReturnMarker,
     B: ModuleBrand,
 {
-    #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
-        self.slot()
-    }
 }
 
 impl<R, B> dominator_block_sealed::Sealed for &BlockId<R, B>
@@ -124,6 +134,11 @@ where
     R: ReturnMarker,
     B: ModuleBrand,
 {
+    #[inline]
+    fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
+        // boundary (F2): Task 27
+        SealedValueSlot((*self).slot_unchecked_at_marked_boundary())
+    }
 }
 
 impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BlockId<R, B>
@@ -131,9 +146,17 @@ where
     R: ReturnMarker,
     B: ModuleBrand,
 {
+}
+
+impl<'ctx, R, B> dominator_block_sealed::Sealed for BasicBlockLabel<'ctx, R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+{
     #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
-        (*self).slot()
+    fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
+        // boundary (F2): Task 27
+        SealedValueSlot(self.slot_trusting_same_module())
     }
 }
 
@@ -142,11 +165,6 @@ where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
-    #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
-        // boundary (F2): Task 27
-        self.to_erased().slot_trusting_same_module()
-    }
 }
 
 impl<'ctx, R, B> dominator_block_sealed::Sealed for &BasicBlockLabel<'ctx, R, B>
@@ -154,6 +172,11 @@ where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
+    #[inline]
+    fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
+        // boundary (F2): Task 27
+        SealedValueSlot(self.slot_trusting_same_module())
+    }
 }
 
 impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BasicBlockLabel<'ctx, R, B>
@@ -161,24 +184,17 @@ where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockView<'ctx, B> {
     #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
+    fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
         // boundary (F2): Task 27
-        self.to_erased().slot_trusting_same_module()
+        SealedValueSlot(self.as_basic_block().slot_trusting_same_module())
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockView<'ctx, B> {}
-
-impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {
-    #[inline]
-    fn dominator_block_id(self) -> ValueSlot {
-        // boundary (F2): Task 27
-        self.as_basic_block()
-            .to_erased()
-            .slot_trusting_same_module()
-    }
-}
+impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {}
 
 impl DominatorTree {
     /// Recompute dominance for `function`.
@@ -199,7 +215,8 @@ impl DominatorTree {
     where
         B: DominatorTreeBlock<'ctx>,
     {
-        self.reachable.contains(&block.dominator_block_id())
+        self.reachable
+            .contains(&block.dominator_block_id(CrateOnly(())).0)
     }
 
     /// Inclusive block dominance. For an unreachable use block, LLVM answers
@@ -210,8 +227,8 @@ impl DominatorTree {
         A: DominatorTreeBlock<'ctx>,
         B: DominatorTreeBlock<'ctx>,
     {
-        let a_id = a.dominator_block_id();
-        let b_id = b.dominator_block_id();
+        let a_id = a.dominator_block_id(CrateOnly(())).0;
+        let b_id = b.dominator_block_id(CrateOnly(())).0;
         if a_id == b_id {
             return true;
         }
@@ -234,8 +251,8 @@ impl DominatorTree {
         A: DominatorTreeBlock<'ctx>,
         B: DominatorTreeBlock<'ctx>,
     {
-        let a_id = a.dominator_block_id();
-        let b_id = b.dominator_block_id();
+        let a_id = a.dominator_block_id(CrateOnly(())).0;
+        let b_id = b.dominator_block_id(CrateOnly(())).0;
         a_id != b_id && self.dominates_block_ids(a_id, b_id)
     }
 
@@ -269,7 +286,8 @@ impl DominatorTree {
         // boundary (F2): Task 27
         // Two ids' raw slots: `def` and `user` are the caller's, and nothing
         // proves they come from the same module.
-        if def_bb.slot() != use_bb.slot() {
+        if def_bb.slot_unchecked_at_marked_boundary() != use_bb.slot_unchecked_at_marked_boundary()
+        {
             return self.dominates_block(def_bb, use_bb);
         }
         self.instruction_comes_before(def_id, user_id)
@@ -285,7 +303,7 @@ impl DominatorTree {
         B: ModuleBrand + 'ctx,
         Block: DominatorTreeBlock<'ctx>,
     {
-        let use_bb_id = block.dominator_block_id();
+        let use_bb_id = block.dominator_block_id(CrateOnly(())).0;
         let def_bb = def.parent();
         // boundary (F2): Task 27
         let def_id = def.slot_trusting_same_module();
@@ -296,7 +314,7 @@ impl DominatorTree {
             return false;
         }
         // boundary (F2): Task 27
-        let def_bb_id = def_bb.slot();
+        let def_bb_id = def_bb.slot_unchecked_at_marked_boundary();
         if def_bb_id == use_bb_id {
             return false;
         }
@@ -353,9 +371,13 @@ impl DominatorTree {
         B: DominatorTreeBlock<'ctx>,
     {
         self.dominates_edge_slots(
-            edge.start().slot(),
-            edge.end().slot(),
-            block.dominator_block_id(),
+            // boundary (F2): Task 27
+            // The caller's edge: its two block ids are looked up in the tree's
+            // maps, and nothing proves they come from the tree's module.
+            edge.start().slot_unchecked_at_marked_boundary(),
+            // boundary (F2): Task 27
+            edge.end().slot_unchecked_at_marked_boundary(),
+            block.dominator_block_id(CrateOnly(())).0,
         )
     }
 
@@ -371,8 +393,11 @@ impl DominatorTree {
         // boundary (F2): Task 27
         let user_id = user_inst.slot_trusting_same_module();
         self.dominates_edge_use_ids(
-            edge.start().slot(),
-            edge.end().slot(),
+            // boundary (F2): Task 27
+            // As in `dominates_edge`: the caller's edge.
+            edge.start().slot_unchecked_at_marked_boundary(),
+            // boundary (F2): Task 27
+            edge.end().slot_unchecked_at_marked_boundary(),
             user_id,
             use_edge.index(),
         )
@@ -526,18 +551,20 @@ fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
     cfg: &FunctionCfg<'ctx, B>,
 ) -> HashSet<ValueSlot> {
     let mut reachable = HashSet::new();
-    let Some(entry) = function.entry_block().map(|bb| bb.id()) else {
+    let Some(entry) = function
+        .entry_block()
+        .map(|bb| bb.to_erased().slot_trusting_same_module())
+    else {
         return reachable;
     };
     let mut worklist = VecDeque::from([entry]);
-    while let Some(block) = worklist.pop_front() {
-        let block_id = block.slot();
+    while let Some(block_id) = worklist.pop_front() {
         if !reachable.insert(block_id) {
             continue;
         }
-        for succ in cfg.successors(block) {
-            if !reachable.contains(&succ.slot()) {
-                worklist.push_back(succ);
+        for succ in cfg.successor_slots(block_id) {
+            if !reachable.contains(succ) {
+                worklist.push_back(*succ);
             }
         }
     }
@@ -576,10 +603,10 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
                 continue;
             }
             let mut pred_sets = cfg
-                .predecessors(&block)
-                .map(|pred| pred.slot())
+                .predecessor_slots(block_id)
+                .iter()
                 .filter(|pred| reachable.contains(pred))
-                .filter_map(|pred| doms.get(&pred).cloned());
+                .filter_map(|pred| doms.get(pred).cloned());
             let mut new_set = pred_sets.next().unwrap_or_default();
             for pred_set in pred_sets {
                 new_set = new_set.intersection(&pred_set).copied().collect();
@@ -604,12 +631,8 @@ fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
     function
         .basic_blocks()
         .map(|bb| {
-            (
-                bb.to_erased().slot_trusting_same_module(),
-                cfg.predecessors(&bb.as_dyn())
-                    .map(|pred| pred.slot())
-                    .collect(),
-            )
+            let block_id = bb.to_erased().slot_trusting_same_module();
+            (block_id, cfg.predecessor_slots(block_id).to_vec())
         })
         .collect()
 }

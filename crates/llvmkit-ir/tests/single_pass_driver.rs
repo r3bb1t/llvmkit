@@ -162,7 +162,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InspectFnPass {
     type Requires = ();
     const NAME: &'static str = "inspect-fn-probe";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

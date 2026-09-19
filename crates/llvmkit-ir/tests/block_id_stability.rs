@@ -99,7 +99,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectAllPreds<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-all-preds";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

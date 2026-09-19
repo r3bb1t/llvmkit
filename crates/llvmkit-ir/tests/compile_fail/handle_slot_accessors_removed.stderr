@@ -1,0 +1,23 @@
+error[E0425]: cannot find type `TypeSlot` in crate `llvmkit_ir`
+  --> tests/compile_fail/handle_slot_accessors_removed.rs:18:31
+   |
+18 |     let _: Option<llvmkit_ir::TypeSlot> = None;
+   |                               ^^^^^^^^ not found in `llvmkit_ir`
+
+error[E0599]: no method named `id` found for struct `llvmkit_ir::Type<'ctx, B>` in the current scope
+  --> tests/compile_fail/handle_slot_accessors_removed.rs:15:20
+   |
+15 |     let _ = i32_ty.id();
+   |                    ^^ private field, not a method
+   |
+help: there is a method `kind` with a similar name
+   |
+15 -     let _ = i32_ty.id();
+15 +     let _ = i32_ty.kind();
+   |
+
+error[E0599]: no method named `slot` found for struct `llvmkit_ir::Value<'ctx, B>` in the current scope
+  --> tests/compile_fail/handle_slot_accessors_removed.rs:17:19
+   |
+17 |     let _ = value.slot();
+   |                   ^^^^ method not found in `llvmkit_ir::Value<'_, DynBrand>`

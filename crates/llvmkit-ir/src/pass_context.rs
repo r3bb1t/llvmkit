@@ -82,7 +82,7 @@ use super::pass_access::{
 use super::phi_check::{check_phi_incoming, render_phi_violation};
 use super::r#type::{Type, TypeSlot, TypeSlotAccess};
 use super::value::{IntoErasedValue, IsValue, Typed, Value, ValueSlot, ValueSlotAccess};
-use super::value::{ValueKindData, ValueUse};
+use super::value::{SealedValueSlot, ValueKindData, ValueUse};
 use super::value_id::{BlockId, FunctionId, ValueId, ViewIn};
 use super::worklist::Worklist;
 
@@ -101,10 +101,11 @@ pub struct BasicBlockView<'ctx, B: ModuleBrand> {
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub(super) fn new(block: BasicBlock<'ctx, Dyn, Terminated, B>) -> Self {
+        // Internal: the view keeps the block's own parts, with its own module.
         Self {
-            id: block.id,
+            id: block.slot_trusting_same_module(),
             module: block.module,
-            ty: block.ty,
+            ty: block.to_erased().ty().slot_trusting_same_module(),
         }
     }
 
@@ -511,22 +512,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> FusedIterator for ModuleFunctionViews<'ctx, B>
 /// floor the consumed capability rung structurally allows, not an author's
 /// optimistic guess (D1; D8).
 ///
-/// Unparameterized on purpose: the honesty guarantee comes from the consuming
-/// transition ([`FnCx::mutate`] discards the "all preserved" shortcut), not from
-/// a type tag. It is a distinct type from the module report ([`ModReport`]), so a
-/// function pass cannot return a module report by mistake.
-#[derive(Debug)]
-pub struct FnReport {
+/// The honesty guarantee comes from the consuming transition
+/// ([`FnCx::mutate`] discards the "all preserved" shortcut), not from a type
+/// tag. The brand `B` is the module's: the report carries a reshape pass's
+/// [`CfgUpdate<B>`] log to the driver of that module, the way
+/// [`FnReshape::pending_cfg_updates`] hands it out, so the log never leaves
+/// its brand (D7). It is a distinct type from the module report
+/// ([`ModReport`]), so a function pass cannot return a module report by
+/// mistake.
+#[derive(Branded)]
+#[branded(Debug)]
+pub struct FnReport<B: ModuleBrand> {
     pa: PreservedAnalyses,
     /// The reshape mutator's witnessed [`CfgUpdate`] log, carried out to the
     /// driver so its `done()`-flush can offer these edits to cached CFG
     /// analyses (and mark preserved those that repair). Empty for a non-reshape
     /// report. Not a preservation *claim* — the driver still witnesses each
     /// analysis repair before preserving it.
-    cfg_updates: Vec<CfgUpdate>,
+    cfg_updates: Vec<CfgUpdate<B>>,
 }
 
-impl FnReport {
+impl<B: ModuleBrand> FnReport<B> {
     /// Wrap a driver-derived preservation set (no CFG-edit log). `pub(crate)` —
     /// this is a sole construction path, so an external author can never
     /// fabricate a report that over-claims preservation. THE honesty guarantee.
@@ -544,7 +550,7 @@ impl FnReport {
     #[inline]
     pub(crate) fn from_pa_with_cfg_updates(
         pa: PreservedAnalyses,
-        cfg_updates: Vec<CfgUpdate>,
+        cfg_updates: Vec<CfgUpdate<B>>,
     ) -> Self {
         Self { pa, cfg_updates }
     }
@@ -554,7 +560,7 @@ impl FnReport {
     /// the (possibly-augmented) set drives invalidation. Tests that only want
     /// the set take `.into_parts().0`.
     #[inline]
-    pub(crate) fn into_parts(self) -> (PreservedAnalyses, Vec<CfgUpdate>) {
+    pub(crate) fn into_parts(self) -> (PreservedAnalyses, Vec<CfgUpdate<B>>) {
         (self.pa, self.cfg_updates)
     }
 }
@@ -666,7 +672,7 @@ where
     /// Finish without mutating: report everything preserved. Available at every
     /// rung ("I inspected / changed nothing"). Consumes the context.
     #[inline]
-    pub fn done(self) -> FnReport {
+    pub fn done(self) -> FnReport<B> {
         FnReport::from_pa(PreservedAnalyses::all())
     }
 }
@@ -1020,7 +1026,7 @@ where
     /// run was a no-op. Consumes the mutator. The all-preserved case is
     /// *witnessed* by the dirty flag, so it needs no read-only pre-scan.
     #[inline]
-    pub fn done(self) -> FnReport {
+    pub fn done(self) -> FnReport<B> {
         if self.dirty.get() {
             FnReport::from_pa(<PatchBody as FnAccess>::preserved_floor())
         } else {
@@ -1147,7 +1153,7 @@ where
     /// the same reason [`FnPatch`]'s `dirty` flag is a `Cell`: the recording
     /// edit methods append through a shared `&self` while IR mutation flows
     /// through the interior-mutable module token.
-    cfg_updates: core::cell::RefCell<Vec<CfgUpdate>>,
+    cfg_updates: core::cell::RefCell<Vec<CfgUpdate<B>>>,
     /// Graveyard of freshly-repaired/recomputed analysis results produced by
     /// [`Self::analysis_repaired`]. Each mid-pass repair pushes its owned result
     /// here and hands back a borrow into it whose lifetime is tied to the
@@ -1194,7 +1200,7 @@ where
     #[inline]
     pub fn pending_cfg_updates(
         &self,
-    ) -> impl ExactSizeIterator<Item = CfgUpdate> + DoubleEndedIterator + FusedIterator + use<B, R>
+    ) -> impl ExactSizeIterator<Item = CfgUpdate<B>> + DoubleEndedIterator + FusedIterator + use<B, R>
     {
         self.cfg_updates.borrow().clone().into_iter()
     }
@@ -1308,7 +1314,7 @@ where
         // the driver's `done()`-flush, which repairs the FAM-cached result the
         // same way. Recompute-based repair makes reading a snapshot each time
         // correct regardless of call order.
-        let updates: Vec<CfgUpdate> = self.cfg_updates.get_mut().clone();
+        let updates: Vec<CfgUpdate<B>> = self.cfg_updates.get_mut().clone();
         let function = self.patch.function();
         // Offer the recorded edits to a working copy of the cached result; fall
         // back to a from-scratch recompute when the analysis declines them.
@@ -1334,8 +1340,15 @@ where
     #[inline]
     fn resolve_block(&self, block: BlockId<Dyn, B>) -> IrResult<BasicBlockView<'m, B>> {
         let module_ref = self.patch.module_mut().module_ref();
-        let slot = block.into_basic_block_label(module_ref)?.slot();
-        let label_ty = module_ref.module().label_type::<B>().as_type().id();
+        // Internal: admitted by `into_basic_block_label` on this line.
+        let slot = block
+            .into_basic_block_label(module_ref)?
+            .slot_trusting_same_module();
+        let label_ty = module_ref
+            .module()
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         Ok(BasicBlockView::new(BasicBlock::from_parts(
             slot, module_ref, label_ty,
         )))
@@ -1372,15 +1385,16 @@ where
         // CFG is exactly: each edge `block → s` becomes `new_block → s`, and
         // the branch the split inserts adds `block → new_block`.
         let source = self.resolve_block(block)?.as_basic_block();
-        let source_id = source.slot();
+        // Internal: `source` was resolved against this module, and the split
+        // mints `new_block` there; the successors are `source`'s own.
+        let source_id = source.id().as_dyn();
         let successors = crate::cfg::block_successors(&source);
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
-        let new_id = new_block.slot();
+        let new_id = new_block.id().as_dyn();
 
         let mut log = self.cfg_updates.borrow_mut();
-        for succ in &successors {
-            let succ_id = succ.slot();
+        for &succ_id in &successors {
             log.push(CfgUpdate::delete(source_id, succ_id));
             log.push(CfgUpdate::insert(new_id, succ_id));
         }
@@ -1512,7 +1526,8 @@ where
         slot: EditSlot,
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.slot();
+        // Internal: the pass's own block, read in its own module.
+        let from_id = from_block.slot_trusting_same_module();
         let ctx = self.patch.module_mut().core_ref().context();
 
         // Mutate the terminator and learn the removed target block.
@@ -1601,21 +1616,21 @@ where
         // removal, 1 when the sibling arm targeted the same block). All blocks
         // share the module's label type, so `from`'s block carries the same
         // module ref and label type as the target.
-        let target_block = BasicBlock::<Dyn, Terminated, B>::from_parts(
-            target_id,
-            from_block.module,
-            from_block.ty,
-        );
-        let surviving = crate::cfg::block_successors(&from_block)
+        let target_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(target_id, from_block.module, from.ty);
+        let surviving = crate::cfg::successor_ids(&from_block)
             .iter()
-            .filter(|succ| succ.slot() == target_id)
+            .filter(|succ| **succ == target_id)
             .count();
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, target_id);
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
 
-        self.cfg_updates
-            .borrow_mut()
-            .push(CfgUpdate::delete(from_id, target_id));
+        // Internal: both are blocks of the function under edit.
+        let module_id = from_block.module_ref().id();
+        self.cfg_updates.borrow_mut().push(CfgUpdate::delete(
+            BlockId::from_raw(module_id, from_id),
+            BlockId::from_raw(module_id, target_id),
+        ));
         self.patch.dirty.set(true);
         Ok(())
     }
@@ -1652,12 +1667,14 @@ where
         phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.slot();
+        // Internal: the pass's own block, read in its own module.
+        let from_id = from_block.slot_trusting_same_module();
         // Resolve the target id against this function's module *first*: a
         // foreign `BlockId` is rejected here, before any successor scan or phi
         // read touches the arena.
         let new_to = new_to.into_basic_block_label(from_block.module_ref())?;
-        let new_id = new_to.slot();
+        // Internal: admitted by `into_basic_block_label` just above.
+        let new_id = new_to.slot_trusting_same_module();
         // Same for the seed values: resolve every caller-supplied `ValueId`
         // against this module *before* any precondition scan, so a foreign id
         // is rejected while the terminator and every phi are still untouched.
@@ -1680,10 +1697,7 @@ where
         // every terminator kind uniformly) and BEFORE the phi-values check, so
         // every redirect path — legacy and typed — shares it at the same error
         // priority.
-        if crate::cfg::block_successors(&from_block)
-            .iter()
-            .any(|succ| succ.slot() == new_id)
-        {
+        if crate::cfg::successor_ids(&from_block).contains(&new_id) {
             return Err(IrError::InvalidOperation {
                 message: "redirect: `from` already reaches `new_to`",
             });
@@ -1692,8 +1706,7 @@ where
         // Collect `new_to`'s leading phis (its block parameters) and validate
         // `phi_values` against them BEFORE mutating — all-or-nothing, mirroring
         // the block-argument branch builder.
-        let new_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(new_to.id, new_to.module, new_to.ty);
+        let new_block: BasicBlock<'m, Dyn, Terminated, B> = new_to.to_block();
         let mut param_phis: Vec<ValueSlot> = Vec::new();
         for inst_id in new_block.instruction_ids() {
             let ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind else {
@@ -1712,10 +1725,12 @@ where
         }
         for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
             let phi_ty = ctx.value_data(*phi_id).ty;
-            if value.ty != phi_ty {
+            // Internal: each value was resolved against this module above.
+            let value_ty = value.ty().slot_trusting_same_module();
+            if value_ty != phi_ty {
                 return Err(IrError::TypeMismatch {
                     expected: Type::new(phi_ty, new_to.module).kind_label(),
-                    got: Type::new(value.ty, new_to.module).kind_label(),
+                    got: Type::new(value_ty, new_to.module).kind_label(),
                 });
             }
         }
@@ -1840,10 +1855,10 @@ where
         // `from`'s block carries the same module ref and label type as the old
         // target.
         let old_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from_block.ty);
-        let surviving = crate::cfg::block_successors(&from_block)
+            BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from.ty);
+        let surviving = crate::cfg::successor_ids(&from_block)
             .iter()
-            .filter(|succ| succ.slot() == old_id)
+            .filter(|succ| **succ == old_id)
             .count();
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, old_id);
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, new_id);
@@ -1862,9 +1877,12 @@ where
         }
 
         {
+            // Internal: all three are blocks of the function under edit.
+            let module_id = from_block.module_ref().id();
+            let block = |slot| BlockId::<Dyn, B>::from_raw(module_id, slot);
             let mut log = self.cfg_updates.borrow_mut();
-            log.push(CfgUpdate::delete(from_id, old_id));
-            log.push(CfgUpdate::insert(from_id, new_id));
+            log.push(CfgUpdate::delete(block(from_id), block(old_id)));
+            log.push(CfgUpdate::insert(block(from_id), block(new_id)));
         }
         self.patch.dirty.set(true);
         Ok(())
@@ -1939,7 +1957,8 @@ where
         let term = from_block.terminator().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from` has no terminator",
         })?;
-        let term_id = term.slot();
+        // Internal: the terminator of a block resolved against this module.
+        let term_id = term.slot_trusting_same_module();
         let kind = term.terminator_kind().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from`'s last instruction is not a terminator",
         })?;
@@ -2155,7 +2174,11 @@ where
         // the category (or the type) required and the one supplied. Rewriting
         // it here replaced a matchable finding with prose.
         Id::View::try_from(phi)?;
-        Ok(Id::id_from_raw(module_ref.id(), phi.slot()))
+        // Internal: the phi was minted in this module just above.
+        Ok(Id::id_from_raw(
+            module_ref.id(),
+            SealedValueSlot(phi.slot_trusting_same_module()),
+        ))
     }
 
     /// Insert a fully-witnessed phi at `block`'s phi head from erased incomings,
@@ -2245,7 +2268,9 @@ where
         // before any coherence, dominance or arena work reads it.
         let ty_id = ty.slot_in(self.patch.module_mut().id())?;
         let target_block = self.resolve_block(block)?.as_basic_block();
-        let target_id = target_block.slot();
+        // Internal: resolved against this module by `resolve_block`. The
+        // incoming values below were resolved from tagged ids by both callers.
+        let target_id = target_block.slot_trusting_same_module();
         // Resolve every predecessor id against this function's module up front:
         // a foreign `BlockId` is rejected before any coherence, dominance, or
         // arena work runs. The resolved labels are the ephemeral views the rest
@@ -2264,9 +2289,9 @@ where
         let mut preds: Vec<ValueSlot> = Vec::new();
         for bb in self.function().basic_blocks() {
             let handle = bb.as_basic_block();
-            let pred_id = handle.slot();
-            for succ in crate::cfg::block_successors(&handle) {
-                if succ.slot() == target_id {
+            let pred_id = handle.slot_trusting_same_module();
+            for succ in crate::cfg::successor_ids(&handle) {
+                if succ == target_id {
                     preds.push(pred_id);
                 }
             }
@@ -2276,7 +2301,12 @@ where
         // per-phi coherence algorithm, mapped to an `IrError` on failure.
         let incoming_ids: Vec<(ValueSlot, ValueSlot)> = incomings
             .iter()
-            .map(|(value, pred)| (value.id, pred.slot()))
+            .map(|(value, pred)| {
+                (
+                    value.slot_trusting_same_module(),
+                    pred.slot_trusting_same_module(),
+                )
+            })
             .collect();
         let ctx = self.patch.module_mut().core_ref().context();
         let value_ty_of = |id: ValueSlot| ctx.value_data(id).ty;
@@ -2300,7 +2330,9 @@ where
                 if let Ok(inst) = InstructionView::try_from(*value) {
                     let def_block = inst.parent();
                     if !dt.dominates_block(def_block, *pred) {
-                        dom_failure = Some((def_block.slot(), pred.slot()));
+                        // Internal: `value` and `pred` were both resolved
+                        // against this module above.
+                        dom_failure = Some((inst.parent_slot(), pred.slot_trusting_same_module()));
                         break;
                     }
                 }
@@ -2320,8 +2352,7 @@ where
         let builder = IrBuilder::new(self.patch.module_mut());
         let phi_val = builder.make_phi_in_block(target_id, ty_id, "");
         for (value, pred) in incomings {
-            let pred_block =
-                BasicBlock::<Dyn, Terminated, B>::from_parts(pred.slot(), module_ref, pred.ty);
+            let pred_block: BasicBlock<'m, Dyn, Terminated, B> = pred.to_block();
             builder.phi_add_incoming_from_value(phi_val, *value, pred_block)?;
         }
 
@@ -2341,7 +2372,7 @@ where
     /// is the *starting* point, and the framework then adds back exactly the
     /// analyses it witnesses repair (never an author claim).
     #[inline]
-    pub fn done(self) -> FnReport {
+    pub fn done(self) -> FnReport<B> {
         let dirty = self.patch.is_dirty();
         let updates = self.cfg_updates.into_inner();
         let pa = if dirty {
@@ -2569,7 +2600,8 @@ where
     ) -> IrResult<()> {
         let old_id = old_to
             .into_basic_block_label(self.from.as_basic_block().module_ref())?
-            .slot();
+            // Internal: admitted by `into_basic_block_label` just above.
+            .slot_trusting_same_module();
         // `old_to` is target-based, so witness it names a live case before
         // delegating: a bogus `old_to` retargets zero cases yet the shared tail
         // would still seed `new_to`'s phis / log a spurious `CfgUpdate`. This
@@ -2629,7 +2661,8 @@ where
     pub fn remove_successor(&self, old_to: BlockId<Dyn, B>) -> IrResult<()> {
         let old_id = old_to
             .into_basic_block_label(self.from.as_basic_block().module_ref())?
-            .slot();
+            // Internal: admitted by `into_basic_block_label` just above.
+            .slot_trusting_same_module();
         if self.reshape.switch_default_dest(self.term_id) == old_id {
             return Err(IrError::InvalidOperation {
                 message: "remove_successor: cannot remove a `switch`'s default edge",
@@ -3326,7 +3359,8 @@ mod tests {
     use crate::dominator_tree::DominatorTreeAnalysis;
     use crate::instruction::InstructionView;
     use crate::pass_access::{Inspect, PatchBody, ReshapeCfg, RewriteModule};
-    use crate::{Dyn, IntValue, IrBuilder, IrError, IsValue, Linkage, ModuleView, NoFolder};
+    use crate::value::ValueSlotAccess;
+    use crate::{Dyn, IntValue, IrBuilder, IrError, Linkage, ModuleView, NoFolder};
 
     /// The `Requires` list shared by these tests: a single CFG-shaped analysis
     /// so both the infallible accessor and the preservation floors have a
@@ -3706,8 +3740,8 @@ mod tests {
         let next = m.view(f).append_basic_block(&m, "next");
         // Ids captured up front — the block handles are consumed by the
         // builders below.
-        let entry_id = entry.slot();
-        let next_id = next.slot();
+        let entry_id = entry.id().as_dyn();
+        let next_id = next.id().as_dyn();
 
         // entry: %x = add 1, 2 ; br label %next
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3738,8 +3772,7 @@ mod tests {
             .as_basic_block()
             .terminator()
             .expect("entry is terminated by the br");
-        let new_block = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
-        let new_id = new_block.slot();
+        let new_id = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
 
         // Exactly the rewiring: entry loses `→ next`, the new block gains it,
         // and entry gains `→ new block`.
@@ -4037,8 +4070,8 @@ mod tests {
         let a = b.int_add(x, 1_i32, "a")?;
         let bb = b.int_add(a, 1_i32, "b")?;
         b.ret(x)?;
-        let a_id = m.view(a).slot();
-        let b_id = m.view(bb).slot();
+        let a_id = m.view(a).slot_trusting_same_module();
+        let b_id = m.view(bb).slot_trusting_same_module();
 
         let function = FunctionView::from(m.view(f));
         let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
@@ -4049,9 +4082,13 @@ mod tests {
         // instructions are still attached.
         let scope = patch.worklist();
         let first = scope.step().expect("seed pops b first (LIFO)");
-        assert_eq!(first.slot(), b_id, "LIFO seed order: b before a");
+        assert_eq!(
+            first.to_erased().slot_trusting_same_module(),
+            b_id,
+            "LIFO seed order: b before a"
+        );
         let second = scope.step().expect("seed pops a second");
-        assert_eq!(second.slot(), a_id);
+        assert_eq!(second.to_erased().slot_trusting_same_module(), a_id);
         assert!(scope.step().is_none(), "seed fully drained");
 
         // Erase `b` through the active worklist: this must push `b`'s
@@ -4065,7 +4102,8 @@ mod tests {
         assert_eq!(
             resurfaced
                 .expect("a re-pushed by erase's operand cascade")
-                .slot(),
+                .to_erased()
+                .slot_trusting_same_module(),
             a_id,
         );
         drop(scope);
@@ -4182,10 +4220,13 @@ mod tests {
         let block = function
             .entry_block()
             .expect("definition has an entry block");
-        let ids: Vec<_> = block.instructions().map(|inst| inst.slot()).collect();
+        let ids: Vec<_> = block
+            .instructions()
+            .map(|inst| inst.slot_trusting_same_module())
+            .collect();
         let mut walked = Vec::new();
         for inst in block {
-            walked.push(inst.slot());
+            walked.push(inst.slot_trusting_same_module());
         }
         assert_eq!(walked, ids);
         assert_eq!(block.instruction_count(), 2, "add + ret");

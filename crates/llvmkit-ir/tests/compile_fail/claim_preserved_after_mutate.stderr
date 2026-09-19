@@ -1,7 +1,7 @@
 error[E0382]: use of moved value: `cx`
   --> tests/compile_fail/claim_preserved_after_mutate.rs:39:12
    |
-30 |     fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+30 |     fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport<B>>
    |                                 -- move occurs because `cx` has type `FnCx<'_, '_, '_, B, PatchBody, ()>`, which does not implement the `Copy` trait
 ...
 38 |         let _patch = cx.mutate();

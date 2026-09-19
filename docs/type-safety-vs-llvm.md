@@ -1026,7 +1026,7 @@ pub trait FunctionPass<B: ModuleBrand> {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, Self::Access, Self::Requires>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -1054,7 +1054,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InspectMutates {
     type Requires = ();
     const NAME: &'static str = "inspect-mutates";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -1076,7 +1076,7 @@ The only report left is the mutator's own `done()`, which carries the rung's
 derived floor. "Mutated, then claimed everything preserved" has no spelling:
 
 ```rust
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

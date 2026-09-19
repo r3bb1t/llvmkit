@@ -68,13 +68,11 @@ use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IrBuilderFolder;
 use super::ir_builder::{IntoReturnValue, Positioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Invariant, Module, ModuleBrand, ModuleRef, Unverified};
+use super::module::{Invariant, Module, ModuleBrand, ModuleId, ModuleRef, Unverified};
 use super::r#type::TypeSlot;
 use super::r#type::TypeSlotAccess;
 use super::value::ValueSlotAccess;
-use super::value::{
-    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueSlot,
-};
+use super::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Typed, Value, ValueSlot};
 use super::value_id::BlockId;
 use super::{FloatType, IntType, IrError, IrResult, PointerType};
 
@@ -124,11 +122,22 @@ impl<T> IntoIrResult<T> for IrResult<T> {
 // Ids, typed variables, block handle
 // --------------------------------------------------------------------------
 
-/// Per-module monotonic id for an [`SsaBuilder`]; foreign-variable /
-/// foreign-block use is a typed runtime error (a generative per-builder
-/// brand was rejected: it would force nested closures per function body).
+/// Identity of an SSA session ([`SsaState`], and every [`SsaBuilder`] minted
+/// over it); foreign-variable / foreign-block use is a typed runtime error (a
+/// generative per-builder brand was rejected: it would force nested closures
+/// per function body).
+///
+/// The owning module's [`ModuleId`] plus a per-module ordinal, so it is
+/// unique across modules and not only within one: two modules that share a
+/// brand — every `Module::dynamic` is `DynBrand` — each number their first
+/// session `0`, and an ordinal alone would let one session accept the other's
+/// block or variable, whose slot, index and type mean something only in the
+/// module that minted them (D7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SsaBuilderId(u32);
+pub struct SsaBuilderId {
+    module: ModuleId,
+    ordinal: u32,
+}
 
 /// Typed SSA variable of integer width `W`. Cranelift analogue:
 /// `cranelift_frontend::Variable`, specialised per category per llvmkit
@@ -352,7 +361,11 @@ fn block_name<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
     block_id: ValueSlot,
 ) -> String {
-    let label_ty = module.module().label_type::<B>().as_type().id();
+    let label_ty = module
+        .module()
+        .label_type::<B>()
+        .as_type()
+        .slot_trusting_same_module();
     let label = BasicBlock::<Dyn, Unterminated, B>::from_parts(block_id, module, label_ty).label();
     label
         .to_erased()
@@ -495,7 +508,10 @@ impl<B: ModuleBrand> SsaState<B> {
         }
         Ok(Self {
             function: function.as_dyn().id(),
-            id: SsaBuilderId(module.next_ssa_builder_id()),
+            id: SsaBuilderId {
+                module: module.id(),
+                ordinal: module.next_ssa_builder_id(),
+            },
             vars: Vec::new(),
             current_def: HashMap::new(),
             resolved: RefCell::new(HashMap::new()),
@@ -652,7 +668,7 @@ where
     F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
-    /// This session's per-module id. Exposed for diagnostics /
+    /// This session's id. Exposed for diagnostics /
     /// cross-checking; ordinary callers do not need to inspect it.
     /// Same value as [`SsaState::id`], since the identity lives in the
     /// state rather than in the (re-mintable) builder.
@@ -674,7 +690,8 @@ where
     pub fn create_block<Name: Into<String>>(&mut self, name: Name) -> SsaBlock<R, B> {
         let block = self.function.append_basic_block(self.module, name);
         let id = block.id();
-        let block_id = block.slot();
+        // Internal: the block was minted in this builder's function just above.
+        let block_id = block.slot_trusting_same_module();
         if self.state.block_order.is_empty() {
             self.state.sealed.insert(block_id);
         }
@@ -886,14 +903,20 @@ where
         ModuleRef::new(self.module.core_ref())
     }
 
-    fn check_owner_block(&self, block: &SsaBlock<R, B>) -> IrResult<()> {
+    /// The SSA layer's boundary for a caller's block: it must come from this
+    /// session ([`IrError::SsaForeignBlock`]), and only then is its slot read.
+    /// The session id carries the module ([`SsaBuilderId`]), so a block this
+    /// admits was minted by this session, in this builder's module.
+    fn admit_block(&self, block: &SsaBlock<R, B>) -> IrResult<ValueSlot> {
         if block.owner != self.state.id {
             return Err(IrError::SsaForeignBlock);
         }
-        Ok(())
+        // The session check above admitted the block; its id's slot leaves
+        // through the checked door all the same, which cannot refuse here.
+        block.id.slot_in(self.module_ref().id())
     }
 
-    /// Sibling to [`Self::check_owner_block`] for variable handles: a
+    /// Sibling to [`Self::admit_block`] for variable handles: a
     /// declared variable used against a different `SsaBuilder` than the
     /// one that declared it is a typed runtime error. Takes just the
     /// owner id (rather than a whole variable handle) since
@@ -910,8 +933,7 @@ where
     /// Braun `sealBlock`: the predecessor set is complete; complete this
     /// block's incomplete phis.
     pub fn seal_block(&mut self, block: SsaBlock<R, B>) -> IrResult<()> {
-        self.check_owner_block(&block)?;
-        let block_id = block.id.slot();
+        let block_id = self.admit_block(&block)?;
         if self.state.sealed.contains(&block_id) {
             return Err(IrError::SsaBlockAlreadySealed {
                 block: block_name(self.module_ref(), block_id),
@@ -951,8 +973,7 @@ where
     /// abandoned half-built. See the module docs for why the SSA layer --
     /// and only the SSA layer -- makes that trade.
     pub fn switch_to_block(&mut self, block: SsaBlock<R, B>) -> IrResult<()> {
-        self.check_owner_block(&block)?;
-        let block_id = block.id.slot();
+        let block_id = self.admit_block(&block)?;
         if self.state.filled.contains(&block_id) {
             return Err(IrError::SsaBlockAlreadyFilled {
                 block: block_name(self.module_ref(), block_id),
@@ -996,7 +1017,11 @@ where
     /// error names the block the caller was mid-way through rather than
     /// whichever unfilled block happens to come first in creation order.
     pub fn finish(mut self) -> IrResult<()> {
-        if let Some(open) = self.cursor.as_ref().map(|b| b.insert_block().slot()) {
+        if let Some(open) = self
+            .cursor
+            .as_ref()
+            .map(|b| b.insert_block().slot_trusting_same_module())
+        {
             return Err(IrError::SsaUnfilledBlock {
                 block: block_name(self.module_ref(), open),
             });
@@ -1069,7 +1094,7 @@ where
     /// block key.
     #[inline]
     fn current_block_id(&self) -> IrResult<ValueSlot> {
-        Ok(self.ins()?.insert_block().slot())
+        Ok(self.ins()?.insert_block().slot_trusting_same_module())
     }
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
@@ -1226,8 +1251,7 @@ where
 
     /// Produce `br label %dest`. Mirrors `IRBuilder::CreateBr`.
     pub fn br(&mut self, dest: SsaBlock<R, B>) -> IrResult<()> {
-        self.check_owner_block(&dest)?;
-        let dest_id = dest.id.slot();
+        let dest_id = self.admit_block(&dest)?;
         if self.state.sealed.contains(&dest_id) {
             return Err(IrError::SsaBranchToSealedBlock {
                 block: block_name(self.module_ref(), dest_id),
@@ -1255,10 +1279,8 @@ where
     where
         C: IntoIntValue<'ctx, bool, B>,
     {
-        self.check_owner_block(&then_dest)?;
-        self.check_owner_block(&else_dest)?;
-        let then_id = then_dest.id.slot();
-        let else_id = else_dest.id.slot();
+        let then_id = self.admit_block(&then_dest)?;
+        let else_id = self.admit_block(&else_dest)?;
         if self.state.sealed.contains(&then_id) {
             return Err(IrError::SsaBranchToSealedBlock {
                 block: block_name(self.module_ref(), then_id),
@@ -1296,7 +1318,7 @@ where
     ///
     /// Case constants are statically bound to the SAME width `W` as
     /// `cond` (`C: IntoConstantInt<'ctx, W, B>`) rather than accepting
-    /// any [`IsValue`] -- a mismatched-width case is a *compile* error,
+    /// any [`IsValue`](crate::IsValue) -- a mismatched-width case is a *compile* error,
     /// not the runtime `TypeMismatch` `SwitchInst::add_case` would
     /// otherwise raise mid-loop, after the switch terminator (with its
     /// default target) has already been emitted. Every case is lifted
@@ -1319,23 +1341,19 @@ where
         C: IntoConstantInt<'ctx, W, B>,
         Result<ConstantIntValue<'ctx, W, B>, C::Error>: IntoIrResult<ConstantIntValue<'ctx, W, B>>,
     {
-        self.check_owner_block(&default_dest)?;
+        // The default first, then every case target in order — the edge order
+        // recorded below.
+        let mut dest_ids = vec![self.admit_block(&default_dest)?];
         let cond = cond.into_int_value(self.module_ref())?;
         let cond_ty = cond.ty();
         let cases: Vec<(ConstantIntValue<'ctx, W, B>, SsaBlock<R, B>)> = cases
             .into_iter()
             .map(|(case_value, target)| {
-                self.check_owner_block(&target)?;
+                dest_ids.push(self.admit_block(&target)?);
                 let lifted = case_value.into_constant_int(cond_ty).into_ir_result()?;
                 Ok((lifted, target))
             })
             .collect::<IrResult<Vec<_>>>()?;
-        let mut dest_ids = Vec::with_capacity(cases.len() + 1);
-        let default_id = default_dest.id.slot();
-        dest_ids.push(default_id);
-        for (_, target) in &cases {
-            dest_ids.push(target.id.slot());
-        }
         for &dest_id in &dest_ids {
             if self.state.sealed.contains(&dest_id) {
                 return Err(IrError::SsaBranchToSealedBlock {
@@ -1478,17 +1496,17 @@ where
         VarCategory::Int => {
             let int_ty = IntType::<super::int_width::IntDyn, B>::new(ty, module);
             let phi = builder.int_phi_dyn(int_ty, name)?;
-            builder.view(phi).slot()
+            builder.view(phi).slot_trusting_same_module()
         }
         VarCategory::Float => {
             let float_ty = FloatType::<super::float_kind::FloatDyn, B>::new(ty, module);
             let phi = builder.fp_phi_dyn(float_ty, name)?;
-            builder.view(phi).slot()
+            builder.view(phi).slot_trusting_same_module()
         }
         VarCategory::Pointer => {
             let ptr_ty = PointerType::<B>::new(ty, module);
             let phi = builder.pointer_phi_in_addrspace(ptr_ty, name)?;
-            builder.view(phi).slot()
+            builder.view(phi).slot_trusting_same_module()
         }
     };
     Ok(id)
@@ -1778,7 +1796,11 @@ where
         let var_category = self.state.vars[idx].category;
         let var_name = self.state.vars[idx].name.clone();
         let module = self.module_ref();
-        let label_ty = module.module().label_type::<B>().as_type().id();
+        let label_ty = module
+            .module()
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
 
         // Read-only peek at the block's current first instruction,
         // independent of which state (open/current/filled) it is in --
@@ -1830,7 +1852,11 @@ where
         let module = self.module_ref();
         let phi_value = Value::from_parts(phi, module, module.value_data(phi).ty);
         let operand_value = Value::from_parts(operand, module, module.value_data(operand).ty);
-        let label_ty = module.module().label_type::<B>().as_type().id();
+        let label_ty = module
+            .module()
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
         let pred_block = BasicBlock::<Dyn, Unterminated, B>::from_parts(pred, module, label_ty);
         let ib: super::ir_builder::IrBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
             super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone());
@@ -1861,7 +1887,11 @@ where
     fn phi_user_ids(&self, phi: ValueSlot) -> Vec<ValueSlot> {
         let module = self.module_ref();
         let value = Value::from_parts(phi, module, module.value_data(phi).ty);
-        value.users().map(|u| u.slot()).collect()
+        // Internal: the users of this module's own phi.
+        value
+            .users()
+            .map(|u| u.slot_trusting_same_module())
+            .collect()
     }
 
     /// A strict variable's read reached function entry with no write on
@@ -1876,7 +1906,8 @@ where
             let module = self.module_ref();
             let ty = super::r#type::Type::new(data.ty, module);
             let poison = ty.poison();
-            return Ok(poison.slot());
+            // Internal: minted in this module from the variable's own type.
+            return Ok(poison.slot_trusting_same_module());
         }
         Err(IrError::SsaUseOfUndefinedVariable {
             variable: data.name.clone(),
@@ -1897,9 +1928,10 @@ where
                  phi still present in created_phis"
             )
         }
+        // Internal: a phi this session created, read through its own module.
         let block_id = Instruction::<Attached, B>::from_parts(phi, module)
-            .parent()
-            .slot();
+            .as_view()
+            .parent_slot();
         // Recover which declared variable this phi belongs to via
         // `phi_var`, populated alongside `created_phis` in
         // `emit_operandless_phi` (the one place that KNOWS which
@@ -1944,7 +1976,8 @@ where
                     )
                 });
             Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
-            let resolved = poison.slot();
+            // Internal: minted in this module from the phi's own type.
+            let resolved = poison.slot_trusting_same_module();
             self.state.resolved.borrow_mut().insert(phi, resolved);
             for user in users {
                 if self.state.created_phis.contains(&user) {
@@ -1980,12 +2013,12 @@ mod tests {
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
-        let entry_id = entry.id.slot();
+        let entry_id = b.admit_block(&entry)?;
         assert!(b.state.sealed.contains(&entry_id));
 
         // A second block is NOT auto-sealed.
         let second = b.create_block("second");
-        let second_id = second.id.slot();
+        let second_id = b.admit_block(&second)?;
         assert!(!b.state.sealed.contains(&second_id));
         Ok(())
     }
@@ -2092,10 +2125,10 @@ mod tests {
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
-        let entry_id = entry.id.slot();
+        let entry_id = b.admit_block(&entry)?;
 
         let var: IntVariable<i32, _> = b.declare_int_var("x");
-        let one = m.i32_type().const_int(1_i32).slot();
+        let one = m.i32_type().const_int(1_i32).slot_trusting_same_module();
         b.write_variable(var.index, entry_id, one);
         let read = b.read_variable_in(var.index, entry_id)?;
         assert_eq!(read, one);
@@ -2120,16 +2153,16 @@ mod tests {
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let _entry = b.create_block("entry");
-        let entry_id = _entry.id.slot();
+        let entry_id = b.admit_block(&_entry)?;
         let loop_bb = b.create_block("loop");
-        let loop_id = loop_bb.id.slot();
+        let loop_id = b.admit_block(&loop_bb)?;
 
         // Record edges: entry -> loop, loop -> loop (self back-edge).
         b.state.preds.entry(loop_id).or_default().push(entry_id);
         b.state.preds.entry(loop_id).or_default().push(loop_id);
 
         let var: IntVariable<i32, _> = b.declare_int_var("i");
-        let zero = m.i32_type().const_int(0_i32).slot();
+        let zero = m.i32_type().const_int(0_i32).slot_trusting_same_module();
         b.write_variable(var.index, entry_id, zero);
 
         // Read inside the not-yet-sealed loop block: creates an
@@ -2142,7 +2175,7 @@ mod tests {
         // Record the loop body's own write (e.g. `i + 1`, modeled
         // here as reusing a fresh constant is fine -- the engine
         // does not care what the value IS, only that a def exists).
-        let one = m.i32_type().const_int(1_i32).slot();
+        let one = m.i32_type().const_int(1_i32).slot_trusting_same_module();
         b.write_variable(var.index, loop_id, one);
 
         // Sealing completes the incomplete phi: two distinct incoming
@@ -2178,13 +2211,13 @@ mod tests {
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let _entry = b.create_block("entry");
-        let entry_id = _entry.id.slot();
+        let entry_id = b.admit_block(&_entry)?;
         let left = b.create_block("left");
-        let left_id = left.id.slot();
+        let left_id = b.admit_block(&left)?;
         let right = b.create_block("right");
-        let right_id = right.id.slot();
+        let right_id = b.admit_block(&right)?;
         let join = b.create_block("join");
-        let join_id = join.id.slot();
+        let join_id = b.admit_block(&join)?;
 
         b.state.preds.entry(left_id).or_default().push(entry_id);
         b.state.preds.entry(right_id).or_default().push(entry_id);
@@ -2194,7 +2227,7 @@ mod tests {
         b.seal_block(right)?;
 
         let var: IntVariable<i32, _> = b.declare_int_var("x");
-        let same_value = m.i32_type().const_int(7_i32).slot();
+        let same_value = m.i32_type().const_int(7_i32).slot_trusting_same_module();
         // Both predecessors write the SAME value.
         b.write_variable(var.index, left_id, same_value);
         b.write_variable(var.index, right_id, same_value);
@@ -2231,7 +2264,7 @@ mod tests {
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
-        let entry_id = entry.id.slot();
+        let entry_id = b.admit_block(&entry)?;
 
         let var: IntVariable<i32, _> = b.declare_int_var("x");
         match b.read_variable_in(var.index, entry_id) {
@@ -2256,12 +2289,12 @@ mod tests {
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
-        let entry_id = entry.id.slot();
+        let entry_id = b.admit_block(&entry)?;
 
         let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
         let read = b.read_variable_in(var.index, entry_id)?;
         let i32_ty = m.i32_type();
-        let poison_id = i32_ty.as_type().poison().slot();
+        let poison_id = i32_ty.as_type().poison().slot_trusting_same_module();
         assert_eq!(read, poison_id);
         Ok(())
     }
@@ -2289,13 +2322,13 @@ mod tests {
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
-        let entry_id = entry.id.slot();
+        let entry_id = b.admit_block(&entry)?;
         let b1 = b.create_block("b1");
-        let b1_id = b1.id.slot();
+        let b1_id = b.admit_block(&b1)?;
         let b2 = b.create_block("b2");
-        let b2_id = b2.id.slot();
+        let b2_id = b.admit_block(&b2)?;
         let b3 = b.create_block("b3");
-        let b3_id = b3.id.slot();
+        let b3_id = b.admit_block(&b3)?;
 
         // Straight-line chain: entry -> b1 -> b2 -> b3, each with a
         // single predecessor, all sealed as soon as their one edge is
@@ -2308,7 +2341,7 @@ mod tests {
         b.seal_block(b3)?;
 
         let var: IntVariable<i32, _> = b.declare_int_var("x");
-        let one = m.i32_type().const_int(1_i32).slot();
+        let one = m.i32_type().const_int(1_i32).slot_trusting_same_module();
         b.write_variable(var.index, entry_id, one);
 
         // Before the read: only entry has a current_def entry.

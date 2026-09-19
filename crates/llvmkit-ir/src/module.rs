@@ -104,7 +104,9 @@ use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
 use super::struct_body_state::{BodySet, Opaque};
 use super::struct_schema::StructSchema;
-use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot};
+use super::r#type::{
+    MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
+};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
@@ -1120,7 +1122,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     where
         T: Into<Type<'ctx, B>>,
     {
-        let pointee_id = pointee.into().id();
+        // boundary (F1): refused by Task 26
+        let pointee_id = pointee.into().slot_trusting_same_module();
         TypedPointerType::new(
             self.core.ctx.typed_pointer_type(pointee_id, addr_space),
             ModuleRef::new(self.core),
@@ -1133,7 +1136,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     where
         T: Into<Type<'ctx, B>>,
     {
-        let elem_id = elem.into().id();
+        // boundary (F1): refused by Task 26
+        let elem_id = elem.into().slot_trusting_same_module();
         ArrayType::new(
             self.core.ctx.array_type(elem_id, n),
             ModuleRef::new(self.core),
@@ -1150,7 +1154,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         E: StaticVecElem<'ctx, B>,
     {
         let elem = E::element_ir_type(ModuleRef::new(self.core));
-        let id = self.core.ctx.array_type(elem.id(), N);
+        let id = self
+            .core
+            .ctx
+            .array_type(elem.slot_trusting_same_module(), N);
         ArrayType::new(id, ModuleRef::new(self.core))
     }
 
@@ -1160,7 +1167,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     where
         T: Into<Type<'ctx, B>>,
     {
-        let id = self.core.ctx.fixed_vector_type(elem.into().id(), n);
+        // boundary (F1): refused by Task 26
+        let id = self
+            .core
+            .ctx
+            .fixed_vector_type(elem.into().slot_trusting_same_module(), n);
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
@@ -1171,7 +1182,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     where
         T: Into<Type<'ctx, B>>,
     {
-        let id = self.core.ctx.scalable_vector_type(elem.into().id(), n);
+        // boundary (F1): refused by Task 26
+        let id = self
+            .core
+            .ctx
+            .scalable_vector_type(elem.into().slot_trusting_same_module(), n);
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
@@ -1187,7 +1202,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
             assert!(N > 0, "vector length must be >= 1");
         }
         let elem = E::element_ir_type(ModuleRef::new(self.core));
-        let id = self.core.ctx.fixed_vector_type(elem.id(), N);
+        let id = self
+            .core
+            .ctx
+            .fixed_vector_type(elem.slot_trusting_same_module(), N);
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
@@ -1221,7 +1239,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
+        // boundary (F1): refused by Task 26
+        let elems: Box<[TypeSlot]> = elements
+            .into_iter()
+            .map(|t| t.into().slot_trusting_same_module())
+            .collect();
         StructType::new(
             self.core.ctx.literal_struct_type(elems, packed),
             ModuleRef::new(self.core),
@@ -1266,10 +1288,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         R: Into<Type<'ctx, B>>,
         T: Into<Type<'ctx, B>>,
     {
-        let ret = return_type.into();
-        let params: Box<[TypeSlot]> = parameters.into_iter().map(|t| t.into().id()).collect();
+        // boundary (F1): refused by Task 26
+        let ret = return_type.into().slot_trusting_same_module();
+        // boundary (F1): refused by Task 26
+        let params: Box<[TypeSlot]> = parameters
+            .into_iter()
+            .map(|t| t.into().slot_trusting_same_module())
+            .collect();
         FunctionType::new(
-            self.core.ctx.function_type(ret.id(), params, is_var_arg),
+            self.core.ctx.function_type(ret, params, is_var_arg),
             ModuleRef::new(self.core),
         )
     }
@@ -1357,7 +1384,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
             });
         }
         let field_types = S::field_types(self)?;
-        let elements: Box<[TypeSlot]> = field_types.iter().map(|t| t.id()).collect();
+        // Internal: the schema's field types were minted in this module.
+        let elements: Box<[TypeSlot]> = field_types
+            .iter()
+            .map(|t| t.slot_trusting_same_module())
+            .collect();
         let (id, _existed) = self.core.ctx.get_or_create_named_struct(S::NAME);
         let data = self
             .core
@@ -1401,7 +1432,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         J: IntoIterator<Item = u32>,
     {
         let name: String = name.into();
-        let type_params: Box<[TypeSlot]> = type_params.into_iter().map(|t| t.into().id()).collect();
+        // boundary (F1): refused by Task 26
+        let type_params: Box<[TypeSlot]> = type_params
+            .into_iter()
+            .map(|t| t.into().slot_trusting_same_module())
+            .collect();
         let int_params: Box<[u32]> = int_params.into_iter().collect();
         TargetExtType::new(
             self.core.ctx.target_ext_type(name, type_params, int_params),
@@ -1890,7 +1925,8 @@ impl<'ctx> ModuleCore {
         B: ModuleBrand + 'ctx,
         T: Into<Type<'ctx, B>>,
     {
-        let elem_id = elem.into().id();
+        // boundary (F1): refused by Task 26
+        let elem_id = elem.into().slot_trusting_same_module();
         let id = if scalable {
             self.ctx.scalable_vector_type(elem_id, n)
         } else {
@@ -1933,7 +1969,11 @@ impl<'ctx> ModuleCore {
             });
         }
         // Reject the static-marker / signature mismatch up front.
-        let ret_data = self.ctx.type_data(signature.return_type().id());
+        // Internal: `FunctionBuilder::build`, the one caller, admitted the
+        // signature.
+        let ret_data = self
+            .ctx
+            .type_data(signature.return_type().slot_trusting_same_module());
         if !crate::function::signature_matches_marker::<R>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
                 expected: crate::marker::marker_kind_label::<R>()
@@ -1964,7 +2004,9 @@ impl<'ctx> ModuleCore {
     where
         R: ReturnMarker,
     {
-        let signature_id = signature.id;
+        // Internal: every caller admitted `signature` against this module
+        // (`add_function_dyn`, `FunctionBuilder::build`) or minted it here.
+        let signature_id = signature.slot_trusting_same_module();
 
         let fn_data = FunctionData::new(
             name.to_owned(),
@@ -1981,7 +2023,10 @@ impl<'ctx> ModuleCore {
             use_list: core::cell::RefCell::new(Vec::new()),
         });
 
-        let param_types: Vec<TypeSlot> = signature.params().map(|t| t.id()).collect();
+        let param_types: Vec<TypeSlot> = signature
+            .params()
+            .map(|t| t.slot_trusting_same_module())
+            .collect();
         let mut arg_ids = Vec::with_capacity(param_types.len());
         for (slot, &ty) in param_types.iter().enumerate() {
             let slot_u32 = u32::try_from(slot)
@@ -2026,6 +2071,9 @@ impl<'ctx> ModuleCore {
         name: &str,
         fn_ty: FunctionType<'ctx, B>,
     ) -> IrResult<IntrinsicDescriptor<'ctx, B>> {
+        // Boundary: the caller's function type, admitted against this module
+        // before it is compared with the generated signature.
+        fn_ty.slot_in(self.id())?;
         let id = match resolve_intrinsic_name(name) {
             IntrinsicNameResolution::Known(id) => id,
             IntrinsicNameResolution::UnknownIntrinsic => {
@@ -2054,6 +2102,10 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         descriptor: &IntrinsicDescriptor<'ctx, B>,
     ) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+        // Boundary: the descriptor's overload types — the caller's, for
+        // `get_or_insert_intrinsic_declaration_by_id` — admitted against this
+        // module before a signature is built from them or they are stored.
+        descriptor.admit_overloads(self.id())?;
         let name = descriptor.mangled_name()?;
         let module_ref = ModuleRef::<B>::new(self);
         let signature = descriptor.function_type_ref(module_ref)?;
@@ -2473,9 +2525,9 @@ impl<'ctx> ModuleCore {
                 MetadataKind::Specialized(node) => (store.get_specialized(node), Vec::new()),
                 MetadataKind::Constant(value_id) => {
                     let slot = store.get_constant(value_id);
-                    (slot, vec![value_id.slot()])
+                    (slot, vec![value_id.slot_trusting_same_module()])
                 }
-                MetadataKind::Ref(id) => (id.slot(), Vec::new()),
+                MetadataKind::Ref(id) => (id.slot_trusting_same_module(), Vec::new()),
                 MetadataKind::Null => {
                     let slot = store.reserve();
                     store.set(slot, MetadataKind::Null);
@@ -2484,7 +2536,10 @@ impl<'ctx> ModuleCore {
                 // Every operand of a `!DIArgList` is a real use of its value,
                 // so all of them are registered — not just a first one.
                 MetadataKind::ArgList { arguments } => {
-                    let uses = arguments.iter().map(|id| id.slot()).collect();
+                    let uses = arguments
+                        .iter()
+                        .map(|id| id.slot_trusting_same_module())
+                        .collect();
                     let slot = store.get_arg_list(arguments);
                     (slot, uses)
                 }
@@ -2523,18 +2578,21 @@ impl<'ctx> ModuleCore {
         let kind = kind.into_stored(self.id)?;
         match self.metadata.borrow().get(slot).cloned() {
             Some(MetadataKind::Constant(value_id)) => {
-                self.deregister_metadata_value_use(slot, value_id.slot());
+                self.deregister_metadata_value_use(slot, value_id.slot_trusting_same_module());
             }
             Some(MetadataKind::ArgList { arguments }) => {
                 for value_id in arguments {
-                    self.deregister_metadata_value_use(slot, value_id.slot());
+                    self.deregister_metadata_value_use(slot, value_id.slot_trusting_same_module());
                 }
             }
             _ => {}
         }
         let value_use: Vec<_> = match &kind {
-            MetadataKind::Constant(value_id) => vec![value_id.slot()],
-            MetadataKind::ArgList { arguments } => arguments.iter().map(|id| id.slot()).collect(),
+            MetadataKind::Constant(value_id) => vec![value_id.slot_trusting_same_module()],
+            MetadataKind::ArgList { arguments } => arguments
+                .iter()
+                .map(|id| id.slot_trusting_same_module())
+                .collect(),
             MetadataKind::Null
             | MetadataKind::String(_)
             | MetadataKind::Tuple { .. }
@@ -2551,14 +2609,15 @@ impl<'ctx> ModuleCore {
     /// The metadata arena's boundary: compare `id`'s module tag against this
     /// module, then range-check the slot it names.
     ///
-    /// Nothing else in the crate turns a caller's [`MetadataId`] into a
-    /// [`MetadataSlot`] — `MetadataId::slot` exists only on the storage brand —
-    /// so the tag check cannot be skipped one level up.
+    /// A caller's [`MetadataId`] reaches a [`MetadataSlot`] only through the
+    /// checked door `MetadataId::slot_in` (or `into_stored`) — the unchecked
+    /// `slot_trusting_same_module` exists only on the storage brand — so the
+    /// tag check cannot be skipped one level up.
     fn metadata_slot_of<B>(&self, id: MetadataId<B>) -> IrResult<MetadataSlot>
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id)?.slot();
+        let slot = id.slot_in(self.id)?;
         let store = self.metadata.borrow();
         if store.get(slot).is_none() {
             return Err(IrError::UnknownMetadataSlot {
@@ -2589,7 +2648,7 @@ impl<'ctx> ModuleCore {
     ) {
         let mut store = self.metadata.borrow_mut();
         if let Some(MetadataKind::Constant(value_id)) = store.get_mut(slot)
-            && value_id.slot() == from
+            && value_id.slot_trusting_same_module() == from
         {
             let tag = value_id.tag();
             *value_id = ValueId::from_raw(tag, to);
@@ -2618,7 +2677,7 @@ impl<'ctx> ModuleCore {
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id).ok()?.slot();
+        let slot = id.slot_in(self.id).ok()?;
         self.metadata
             .borrow()
             .get(slot)
@@ -2681,7 +2740,7 @@ impl<'ctx> ModuleCore {
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id)?.slot();
+        let slot = id.slot_in(self.id)?;
         let op = op.into_stored(self.id)?;
         let mut nmd = self.named_metadata.borrow_mut();
         let node = nmd.get_mut(slot.0).unwrap_or_else(|| {
@@ -2701,7 +2760,7 @@ impl<'ctx> ModuleCore {
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id)?.slot();
+        let slot = id.slot_in(self.id)?;
         let mut nmd = self.named_metadata.borrow_mut();
         let node = nmd.get_mut(slot.0).unwrap_or_else(|| {
             unreachable!("a stored NamedMetadataId always names a node in the append-only list")
@@ -2717,7 +2776,7 @@ impl<'ctx> ModuleCore {
     where
         B: ModuleBrand,
     {
-        let slot = id.into_stored(self.id).ok()?.slot();
+        let slot = id.slot_in(self.id).ok()?;
         let nmd = self.named_metadata.borrow();
         let node = nmd.get(slot.0).unwrap_or_else(|| {
             unreachable!("a stored NamedMetadataId always names a node in the append-only list")
@@ -2754,9 +2813,11 @@ impl<'ctx> ModuleCore {
             return Vec::new();
         };
         let nmd = self.named_metadata.borrow();
-        let node = nmd.get(id.slot().0).unwrap_or_else(|| {
-            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-        });
+        let node = nmd
+            .get(id.slot_trusting_same_module().0)
+            .unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
         node.operands().to_vec()
     }
 
@@ -2771,7 +2832,8 @@ impl<'ctx> ModuleCore {
                 continue;
             };
             let Some(MetadataKind::String(s)) =
-                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+                resolve_metadata_ref(&store, key_id.slot_trusting_same_module())
+                    .and_then(|slot| store.get(slot))
             else {
                 continue;
             };
@@ -2793,14 +2855,18 @@ impl<'ctx> ModuleCore {
             let Some([behavior_id, key_id, value_id]) = module_flag_tuple(&store, op) else {
                 continue;
             };
-            let Some(behavior) = resolve_metadata_ref(&store, behavior_id.slot())
-                .and_then(|slot| metadata_constant_int(self, &store, slot))
-                .and_then(|(_, value)| ModuleFlagBehavior::from_raw(value.limited_value(u64::MAX)))
+            let Some(behavior) =
+                resolve_metadata_ref(&store, behavior_id.slot_trusting_same_module())
+                    .and_then(|slot| metadata_constant_int(self, &store, slot))
+                    .and_then(|(_, value)| {
+                        ModuleFlagBehavior::from_raw(value.limited_value(u64::MAX))
+                    })
             else {
                 continue;
             };
             let Some(MetadataKind::String(key)) =
-                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+                resolve_metadata_ref(&store, key_id.slot_trusting_same_module())
+                    .and_then(|slot| store.get(slot))
             else {
                 continue;
             };
@@ -2830,9 +2896,11 @@ impl<'ctx> ModuleCore {
             return false;
         };
         let mut nmd = self.named_metadata.borrow_mut();
-        let node = nmd.get_mut(id.slot().0).unwrap_or_else(|| {
-            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-        });
+        let node = nmd
+            .get_mut(id.slot_trusting_same_module().0)
+            .unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
         if index >= node.operands().len() {
             return false;
         }
@@ -2854,7 +2922,7 @@ impl<'ctx> ModuleCore {
         id: MetadataId<StoredBrand>,
     ) -> Option<Vec<MetadataId<StoredBrand>>> {
         let store = self.metadata.borrow();
-        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let slot = resolve_metadata_ref(&store, id.slot_trusting_same_module())?;
         let MetadataKind::Tuple { operands, .. } = store.get(slot)? else {
             return None;
         };
@@ -2866,7 +2934,7 @@ impl<'ctx> ModuleCore {
     /// `dyn_cast_or_null<MDString>` shape.
     pub(super) fn metadata_string_value(&self, id: MetadataId<StoredBrand>) -> Option<String> {
         let store = self.metadata.borrow();
-        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let slot = resolve_metadata_ref(&store, id.slot_trusting_same_module())?;
         match store.get(slot)? {
             MetadataKind::String(s) => Some(s.clone()),
             _ => None,
@@ -2882,7 +2950,7 @@ impl<'ctx> ModuleCore {
         id: MetadataId<StoredBrand>,
     ) -> Option<(u32, ApInt)> {
         let store = self.metadata.borrow();
-        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let slot = resolve_metadata_ref(&store, id.slot_trusting_same_module())?;
         // `metadata_constant_int` already established the type is an integer,
         // and built the `ApInt` at its width — so the width is the answer to
         // `Md->getValue()->getType() == Int8Ty` without a second type lookup.
@@ -2906,11 +2974,15 @@ impl<'ctx> ModuleCore {
         id: MetadataId<StoredBrand>,
     ) -> Option<ValueSlot> {
         let store = self.metadata.borrow();
-        let slot = resolve_metadata_ref(&store, id.slot())?;
+        let slot = resolve_metadata_ref(&store, id.slot_trusting_same_module())?;
         let MetadataKind::Constant(value_id) = store.get(slot)? else {
             return None;
         };
-        match &self.context().value_data(value_id.slot()).kind {
+        match &self
+            .context()
+            .value_data(value_id.slot_trusting_same_module())
+            .kind
+        {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Some(*value),
             _ => None,
         }
@@ -2931,14 +3003,18 @@ impl<'ctx> ModuleCore {
         };
         let replace_at = {
             let nmd = self.named_metadata.borrow();
-            let node = nmd.get(id.slot().0).unwrap_or_else(|| {
-                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-            });
+            let node = nmd
+                .get(id.slot_trusting_same_module().0)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "a stored NamedMetadataId always names a node in the append-only list"
+                    )
+                });
             let store = self.metadata.borrow();
             node.operands().iter().position(|op| {
                 matches!(
                     module_flag_tuple(&store, *op).and_then(|[_, key_id, _]| {
-                        resolve_metadata_ref(&store, key_id.slot())
+                        resolve_metadata_ref(&store, key_id.slot_trusting_same_module())
                             .and_then(|slot| store.get(slot))
                     }),
                     Some(MetadataKind::String(s)) if s.as_str() == key
@@ -2953,9 +3029,11 @@ impl<'ctx> ModuleCore {
         // replacement rebuilds the node with the one operand swapped —
         // observable content is identical to upstream's `setOperand(i, ..)`.
         let mut nmd = self.named_metadata.borrow_mut();
-        let node = nmd.get_mut(id.slot().0).unwrap_or_else(|| {
-            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-        });
+        let node = nmd
+            .get_mut(id.slot_trusting_same_module().0)
+            .unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
         let mut rebuilt = NamedMetadataNode::new(node.name().clone());
         for (i, op) in node.operands().iter().enumerate() {
             rebuilt.add_operand(if i == index { replacement } else { *op });
@@ -3754,7 +3832,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         T: Into<Type<'ctx, B>>,
     {
-        let pointee_id = pointee.into().id();
+        // boundary (F1): refused by Task 26
+        let pointee_id = pointee.into().slot_trusting_same_module();
         TypedPointerType::new(
             self.core().ctx.typed_pointer_type(pointee_id, addr_space),
             self.module_ref(),
@@ -3765,7 +3844,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         T: Into<Type<'ctx, B>>,
     {
-        let elem_id = elem.into().id();
+        // boundary (F1): refused by Task 26
+        let elem_id = elem.into().slot_trusting_same_module();
         ArrayType::new(self.core().ctx.array_type(elem_id, n), self.module_ref())
     }
 
@@ -3780,7 +3860,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         E: StaticVecElem<'ctx, B>,
     {
         let elem = E::element_ir_type(self.module_ref());
-        let id = self.core().ctx.array_type(elem.id(), N);
+        let id = self
+            .core()
+            .ctx
+            .array_type(elem.slot_trusting_same_module(), N);
         ArrayType::new(id, self.module_ref())
     }
 
@@ -3818,7 +3901,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             assert!(N > 0, "vector length must be >= 1");
         }
         let elem = E::element_ir_type(self.module_ref());
-        let id = self.core().ctx.fixed_vector_type(elem.id(), N);
+        let id = self
+            .core()
+            .ctx
+            .fixed_vector_type(elem.slot_trusting_same_module(), N);
         VectorType::new(id, self.module_ref())
     }
 
@@ -3900,7 +3986,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
+        // Boundary: the caller's struct and element types, admitted against
+        // this module before the struct is read or its body set.
+        let owner = self.id();
+        let st_id = st.slot_in(owner)?;
+        let elems = elements
+            .into_iter()
+            .map(|t| t.into().slot_in(owner))
+            .collect::<IrResult<Box<[TypeSlot]>>>()?;
         let body = StructBody {
             elements: elems,
             packed,
@@ -3908,7 +4001,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         let s = self
             .core()
             .ctx
-            .type_data(st.id)
+            .type_data(st_id)
             .as_struct()
             .unwrap_or_else(|| unreachable!("StructType wraps struct data"));
         if s.identity.is_literal() {
@@ -3919,7 +4012,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             // structs; the fault is that a literal one has no body to set.
             return Err(IrError::LiteralStructBodyNotSettable);
         }
-        self.core().ctx.set_named_struct_body(st.id, body)
+        self.core().ctx.set_named_struct_body(st_id, body)
     }
 
     pub fn set_struct_body<I, T>(
@@ -3932,12 +4025,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
+        // Boundary: the caller's struct and element types, admitted against
+        // this module before the body is set.
+        let owner = self.id();
+        let opaque_id = opaque.slot_in(owner)?;
+        let elems = elements
+            .into_iter()
+            .map(|t| t.into().slot_in(owner))
+            .collect::<IrResult<Box<[TypeSlot]>>>()?;
         let body = StructBody {
             elements: elems,
             packed,
         };
-        self.core().ctx.set_named_struct_body(opaque.id, body)?;
+        self.core().ctx.set_named_struct_body(opaque_id, body)?;
         Ok(opaque.retag::<BodySet>())
     }
 
@@ -4047,7 +4147,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         J: IntoIterator<Item = u32>,
     {
         let name: String = name.into();
-        let type_params: Box<[TypeSlot]> = type_params.into_iter().map(|t| t.into().id()).collect();
+        // boundary (F1): refused by Task 26
+        let type_params: Box<[TypeSlot]> = type_params
+            .into_iter()
+            .map(|t| t.into().slot_trusting_same_module())
+            .collect();
         let int_params: Box<[u32]> = int_params.into_iter().collect();
         TargetExtType::new(
             self.core()
@@ -4185,6 +4289,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ///
     /// Resolve the id back into a borrowing [`FunctionValue`] with
     /// [`view`](Self::view).
+    ///
+    /// Errors with [`IrError::ForeignType`] if `signature` belongs to another
+    /// module.
     pub fn add_function_dyn<Name>(
         &'ctx self,
         name: Name,
@@ -4194,6 +4301,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         Name: AsRef<str>,
     {
+        // Boundary: the caller's signature, admitted against this module before
+        // the function is declared (`ForeignType`).
+        signature.slot_in(self.id())?;
         // `R = Dyn` matches every signature, so no return-marker check is needed.
         self.declare_function::<Dyn>(name.as_ref(), signature, linkage)
             .map(|f| f.id())
@@ -4420,11 +4530,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Asm: Into<String>,
         Constraints: Into<String>,
     {
-        let ptr_ty = self.ptr_type(0).as_type().id();
+        let ptr_ty = self.ptr_type(0).as_type().slot_trusting_same_module();
         let data = InlineAsmData {
             asm_string: asm.into(),
             constraint_string: constraints.into(),
-            fn_ty: fn_ty.as_type().id(),
+            // `inline_asm` is infallible, so a function type of another module
+            // cannot be refused here.
+            // boundary (F1): refused by Task 26
+            fn_ty: fn_ty.as_type().slot_trusting_same_module(),
             has_side_effects: options.has_side_effects(),
             is_align_stack: options.is_align_stack(),
             can_unwind: options.can_unwind(),

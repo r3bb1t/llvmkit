@@ -42,7 +42,7 @@ use super::function::FunctionData;
 use super::instruction::{Instruction, InstructionData, InstructionView, state::Attached};
 use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified};
 use super::struct_body_state::StructBodyDyn;
-use super::r#type::{Type, TypeData, TypeSlot};
+use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -67,14 +67,33 @@ use super::vec_len::{Len, LenDyn, VecLen};
 // ValueSlot
 // --------------------------------------------------------------------------
 
-/// Stable index into the value arena. The numeric contents are opaque; callers
-/// may store and pass the handle back to this crate, but cannot construct one.
+/// Stable index into the value arena — crate-private, like `TypeSlot` and
+/// `MetadataSlot`. A slot carries no module tag and means something only in
+/// the module that minted it, so none leaves the crate: the public currency is
+/// the tagged id family ([`ValueId`](crate::ValueId), [`BlockId`](crate::BlockId),
+/// …) and the handles. Inside the crate a slot leaves a handle or an id only
+/// through the checked door `slot_in` or the unchecked
+/// `slot_trusting_same_module` ([`ValueSlotAccess`]).
 ///
 /// Ordered by arena position, so within one module the order is creation
 /// order. Opaque numerically, but a total order is what lets an id key a
 /// `BTreeMap` and give a pass deterministic iteration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValueSlot(NonZeroUsize);
+pub(crate) struct ValueSlot(NonZeroUsize);
+
+mod sealed_value_slot {
+    /// A [`ValueSlot`](super::ValueSlot) as it appears in the signature of a
+    /// public trait's hidden or sealed method — `ViewIn::id_from_raw` and the
+    /// dominator seal's block slot — which a bound on the public trait makes
+    /// reachable from outside the crate. The module that declares it is
+    /// private and its field is crate-private, so code outside llvmkit can
+    /// neither build one, and so call a method that takes one, nor read the
+    /// slot inside one it is handed.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct SealedValueSlot(pub(crate) super::ValueSlot);
+}
+
+pub(crate) use sealed_value_slot::SealedValueSlot;
 
 impl ValueSlot {
     /// Build from a 0-based arena index.
@@ -315,9 +334,11 @@ pub(super) enum ValueKindData {
 /// Equality and hashing compare the branded module reference by `ModuleId`,
 /// so the handle remains cheap to copy and store in maps.
 pub struct Value<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    // Private to this module: the slot leaves a handle only through the two
+    // doors of `ValueSlotAccess`, and the cached type only as a `Type` handle.
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 impl<B: ModuleBrand> Clone for Value<'_, B> {
@@ -383,20 +404,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         ModuleView::new(self.module.module())
     }
 
-    /// Opaque arena id for structured side tables such as use-list order
-    /// records.
-    #[inline]
-    pub fn slot(self) -> ValueSlot {
-        self.id
-    }
-
     /// Storable, module-tagged [`ValueId`] for this value (0.0.4).
     ///
-    /// Unlike [`slot`](Self::slot) — which returns the bare, untagged arena
-    /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
-    /// [`ModuleId`] and can be resolved back into a handle
-    /// with [`Module::view`](crate::Module::view) /
-    /// [`Module::try_view`](crate::Module::try_view).
+    /// The id carries the owning [`ModuleId`] and can be resolved back into a
+    /// handle with [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). A handle hands out no
+    /// bare arena slot: the slot means something only in its own module, so a
+    /// tagless one could be carried into another.
     #[inline]
     pub fn id(self) -> ValueId<B> {
         ValueId::from_raw(self.module.id(), self.id)
@@ -786,14 +800,6 @@ pub(super) mod sealed {
 pub trait IsValue<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
     /// Widen to the erased [`Value`] handle.
     fn as_erased(self) -> Value<'ctx, B>;
-
-    /// Opaque arena id of the underlying value. Every handle shares the
-    /// id of its erased [`Value`], so `x.slot()` replaces the
-    /// `x.as_erased().id` widen-then-project chain.
-    #[inline]
-    fn slot(self) -> ValueSlot {
-        ValueSlotAccess::slot_trusting_same_module(self)
-    }
 }
 
 /// A value handle's route to the arena [`ValueSlot`] it names: one checked
@@ -1007,9 +1013,9 @@ macro_rules! decl_value_handle {
         $(#[$attr])*
         #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
-            pub(super) id: ValueSlot,
+            id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeSlot,
+            ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
@@ -1213,9 +1219,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
 /// erased) is the dynamic handle; `ArrayValue<'ctx, i32, ArrLen<4>>` is a
 /// statically typed `[4 x i32]`.
 pub struct ArrayValue<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
 }
@@ -1466,7 +1472,7 @@ where
         match ty.data() {
             TypeData::Array { elem, n } => {
                 let expected_elem = E::element_ir_type(v.module);
-                if *elem != expected_elem.id() {
+                if *elem != expected_elem.slot_trusting_same_module() {
                     return Err(IrError::TypeIdentityMismatch {
                         expected: expected_elem.rendered(),
                         got: Type::new(*elem, v.module).rendered(),
@@ -1508,9 +1514,9 @@ impl<'ctx, E: VecElem, const N: u64, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx
 /// Value whose type is a struct.
 #[derive(Branded)]
 pub struct StructValue<'ctx, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
@@ -1694,9 +1700,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
 /// is the dynamic handle; `VectorValue<'ctx, i32, Len<4>>` is a statically
 /// typed `<4 x i32>`.
 pub struct VectorValue<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
 }
@@ -1949,7 +1955,7 @@ where
         match ty.data() {
             TypeData::FixedVector { elem, n } => {
                 let expected_elem = E::element_ir_type(v.module);
-                if *elem != expected_elem.id() {
+                if *elem != expected_elem.slot_trusting_same_module() {
                     return Err(IrError::TypeIdentityMismatch {
                         expected: expected_elem.rendered(),
                         got: Type::new(*elem, v.module).rendered(),
@@ -2007,9 +2013,9 @@ decl_value_handle!(
 /// bit-width at the type level, so the IrBuilder can reject mismatched
 /// widths at compile time.
 pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _w: PhantomData<W>,
 }
 
@@ -2410,9 +2416,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> From<IntValue<'ctx, Width<N>, B>
 
 /// Value whose IR type is an IEEE / non-IEEE float.
 pub struct FloatValue<'ctx, K: FloatKind, B: ModuleBrand> {
-    pub(super) id: ValueSlot,
+    id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeSlot,
+    ty: TypeSlot,
     pub(super) _k: PhantomData<K>,
 }
 

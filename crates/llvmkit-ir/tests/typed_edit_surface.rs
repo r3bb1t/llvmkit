@@ -68,7 +68,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectInvokeEdge<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-invoke-edge";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -202,7 +202,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-callbr-edge";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -331,7 +331,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrArm {
     type Requires = ();
     const NAME: &'static str = "remove-condbr-arm";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -441,7 +441,7 @@ impl<B: ModuleBrand> FunctionPass<B> for SwitchCaseOp<B> {
     type Requires = ();
     const NAME: &'static str = "switch-case-op";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -576,7 +576,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchSuccessor<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-switch-successor";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -721,7 +721,7 @@ impl<B: ModuleBrand> FunctionPass<B> for AssertUneditable {
     type Requires = ();
     const NAME: &'static str = "assert-uneditable";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

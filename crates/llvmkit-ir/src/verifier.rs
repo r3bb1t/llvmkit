@@ -84,6 +84,7 @@ use crate::module::{Invariant, ModuleBrand, ModuleCore, ModuleView};
 use crate::module_flags::{ModuleFlagBehavior, module_flag_tuple, resolve_metadata_ref};
 use crate::named_md_node::NamedMetadataName;
 use crate::phi_check::{PhiViolation, check_phi_incoming};
+use crate::value_id::BlockId;
 // `Type::getScalarType` and the three scalar-or-vector predicates are ported
 // once, at the slot layer, in `type.rs`; these four names are imports, not
 // local definitions.
@@ -100,7 +101,11 @@ use crate::value::{IsValue, ValueKindData, ValueSlot};
 /// CFG context built once per function and threaded through every
 /// per-block / per-instruction visit. Mirrors LLVM's transient
 /// per-function state inside `Verifier::visit*`.
-struct FunctionContext<'a> {
+/// What `color_eh_funclets` answers: each block's colours, keyed by block id
+/// (`Verifier::BlockEHFuncletColors`, a `DenseMap<BasicBlock *, ColorVector>`).
+type FuncletColors<B> = HashMap<BlockId<Dyn, B>, Vec<BlockId<Dyn, B>>>;
+
+struct FunctionContext<'a, B: ModuleBrand> {
     /// Predecessor multiset per block id.
     predecessors: &'a HashMap<ValueSlot, Vec<ValueSlot>>,
     /// Declaration-order index of every block in the parent function.
@@ -110,8 +115,9 @@ struct FunctionContext<'a> {
     /// `Verifier::BlockEHFuncletColors`: the EH funclet colouring, built on
     /// demand by the first intrinsic call that needs it and shared by the rest
     /// of the function. Upstream clears the map per function; here it lives and
-    /// dies with this context.
-    eh_funclet_colors: &'a OnceCell<HashMap<ValueSlot, Vec<ValueSlot>>>,
+    /// dies with this context. Keyed by block id, as `colorEHFunclets` keys
+    /// its `DenseMap` by the block.
+    eh_funclet_colors: &'a OnceCell<FuncletColors<B>>,
     /// `Verifier::SiblingFuncletInfo`: the cleanup-sibling unwind edges
     /// `visitFuncletPadInst` and `visitCatchSwitchInst` record, consumed by
     /// `verifySiblingFuncletUnwinds` once the function's instructions have
@@ -311,7 +317,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             let pointer_int_ty = self.module.context().int_type(pointer_width);
             self.verify_range_like_metadata_global(
                 g,
-                range_id.slot(),
+                range_id.slot_trusting_same_module(),
                 pointer_int_ty,
                 RangeLikeMetadataKind::AbsoluteSymbol,
             )?;
@@ -539,9 +545,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         };
         let operands: Vec<MetadataId<StoredBrand>> = {
             let nmd = self.module.named_metadata_list();
-            let node = nmd.get(flags_id.slot().0).unwrap_or_else(|| {
-                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
-            });
+            let node = nmd
+                .get(flags_id.slot_trusting_same_module().0)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "a stored NamedMetadataId always names a node in the append-only list"
+                    )
+                });
             node.operands().to_vec()
         };
 
@@ -562,12 +572,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 continue;
             };
             let Some(MetadataKind::String(name)) =
-                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+                resolve_metadata_ref(&store, key_id.slot_trusting_same_module())
+                    .and_then(|slot| store.get(slot))
             else {
                 continue;
             };
             let constant_value = || {
-                resolve_metadata_ref(&store, value_id.slot())
+                resolve_metadata_ref(&store, value_id.slot_trusting_same_module())
                     .and_then(|slot| metadata_constant_int(self.module, &store, slot))
                     .map(|(_, value)| value.limited_value(u64::MAX))
             };
@@ -593,7 +604,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 unreachable!("a collected requirement was validated as a metadata pair")
             };
             let Some(MetadataKind::String(flag_name)) =
-                resolve_metadata_ref(&store, pair[0].slot()).and_then(|slot| store.get(slot))
+                resolve_metadata_ref(&store, pair[0].slot_trusting_same_module())
+                    .and_then(|slot| store.get(slot))
             else {
                 unreachable!("a collected requirement's first operand was validated as a string")
             };
@@ -610,8 +622,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 Some(actual_value) => {
                     if !self.metadata_structurally_equal(
                         &store,
-                        actual_value.slot(),
-                        required_value.slot(),
+                        actual_value.slot_trusting_same_module(),
+                        required_value.slot_trusting_same_module(),
                         METADATA_EQUALITY_DEPTH_LIMIT,
                     ) {
                         return Err(self.fail_module_flags(
@@ -645,7 +657,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // only shape failure is the operand count; llvmkit's named-metadata
         // operands are any metadata id, and a non-tuple operand lands in the
         // same arm.
-        let operands = match resolve_metadata_ref(store, op.slot()).and_then(|slot| store.get(slot))
+        let operands = match resolve_metadata_ref(store, op.slot_trusting_same_module())
+            .and_then(|slot| store.get(slot))
         {
             Some(MetadataKind::Tuple { operands, .. }) if operands.len() == 3 => operands.clone(),
             _ => {
@@ -657,8 +670,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         };
 
         // Behavior operand: a constant integer inside `1..=8`.
-        let Some((_, behavior_value)) = resolve_metadata_ref(store, operands[0].slot())
-            .and_then(|slot| metadata_constant_int(self.module, store, slot))
+        let Some((_, behavior_value)) =
+            resolve_metadata_ref(store, operands[0].slot_trusting_same_module())
+                .and_then(|slot| metadata_constant_int(self.module, store, slot))
         else {
             return Err(self.fail_module_flags(
                 VerifierRule::ModuleFlagInvalidBehavior,
@@ -674,7 +688,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         };
 
         // ID operand: a metadata string.
-        let key = match resolve_metadata_ref(store, operands[1].slot())
+        let key = match resolve_metadata_ref(store, operands[1].slot_trusting_same_module())
             .and_then(|slot| store.get(slot))
         {
             Some(MetadataKind::String(s)) => s.clone(),
@@ -688,7 +702,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
         // Check the values for behaviors with additional requirements.
         let value_id = operands[2];
-        let value_slot = resolve_metadata_ref(store, value_id.slot());
+        let value_slot = resolve_metadata_ref(store, value_id.slot_trusting_same_module());
         let value_constant_int =
             || value_slot.and_then(|slot| metadata_constant_int(self.module, store, slot));
         match behavior {
@@ -731,7 +745,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     }
                 };
                 let first_is_string = matches!(
-                    resolve_metadata_ref(store, pair[0].slot()).and_then(|slot| store.get(slot)),
+                    resolve_metadata_ref(store, pair[0].slot_trusting_same_module())
+                        .and_then(|slot| store.get(slot)),
                     Some(MetadataKind::String(_))
                 );
                 if !first_is_string {
@@ -832,7 +847,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         store: &MetadataStore,
         entry: MetadataId<StoredBrand>,
     ) -> IrResult<()> {
-        let triple = match resolve_metadata_ref(store, entry.slot())
+        let triple = match resolve_metadata_ref(store, entry.slot_trusting_same_module())
             .and_then(|slot| store.get(slot))
         {
             Some(MetadataKind::Tuple { operands, .. }) if operands.len() == 3 => operands.clone(),
@@ -851,7 +866,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
         }
-        let count_is_integer = resolve_metadata_ref(store, triple[2].slot())
+        let count_is_integer = resolve_metadata_ref(store, triple[2].slot_trusting_same_module())
             .and_then(|slot| metadata_constant_int(self.module, store, slot))
             .is_some();
         if !count_is_integer {
@@ -873,13 +888,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         store: &MetadataStore,
         op: MetadataId<StoredBrand>,
     ) -> bool {
-        let Some(slot) = resolve_metadata_ref(store, op.slot()) else {
+        let Some(slot) = resolve_metadata_ref(store, op.slot_trusting_same_module()) else {
             return false;
         };
         match store.get(slot) {
             Some(MetadataKind::Null) => true,
             Some(MetadataKind::Constant(value_id)) => {
-                let data = self.module.context().value_data(value_id.slot());
+                let data = self
+                    .module
+                    .context()
+                    .value_data(value_id.slot_trusting_same_module());
                 match &data.kind {
                     ValueKindData::Function(_) => true,
                     ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => matches!(
@@ -933,8 +951,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             (MetadataKind::Null, MetadataKind::Null) => true,
             (MetadataKind::String(x), MetadataKind::String(y)) => x == y,
             (MetadataKind::Constant(x), MetadataKind::Constant(y)) => {
-                let data_x = self.module.context().value_data(x.slot());
-                let data_y = self.module.context().value_data(y.slot());
+                let data_x = self
+                    .module
+                    .context()
+                    .value_data(x.slot_trusting_same_module());
+                let data_y = self
+                    .module
+                    .context()
+                    .value_data(y.slot_trusting_same_module());
                 if data_x.ty != data_y.ty {
                     return false;
                 }
@@ -957,7 +981,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             ) => {
                 x.len() == y.len()
                     && x.iter().zip(y.iter()).all(|(x, y)| {
-                        self.metadata_structurally_equal(store, x.slot(), y.slot(), depth - 1)
+                        self.metadata_structurally_equal(
+                            store,
+                            x.slot_trusting_same_module(),
+                            y.slot_trusting_same_module(),
+                            depth - 1,
+                        )
                     })
             }
             _ => false,
@@ -1294,7 +1323,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let instructions: Vec<InstructionView<'ctx, B>> = bb.instructions().collect();
 
@@ -1377,7 +1406,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         index_in_block: usize,
         block_instructions: &[InstructionView<'ctx, B>],
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // Per-opcode dispatch. Reaches into the storage payload
         // directly because every typed handle re-narrows the same
@@ -1537,7 +1566,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             f,
             bb,
             inst,
-            range_id.slot(),
+            range_id.slot_trusting_same_module(),
             scalar_type_slot(self.module, inst.ty().slot_trusting_same_module()),
             RangeLikeMetadataKind::Range,
         )
@@ -1607,14 +1636,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let mut first_range = None;
         let mut last_range = None;
         for (idx, pair) in operands.chunks_exact(2).enumerate() {
-            let Some((low_ty, low)) = metadata_constant_int(self.module, &store, pair[0].slot())
+            let Some((low_ty, low)) =
+                metadata_constant_int(self.module, &store, pair[0].slot_trusting_same_module())
             else {
                 return Err(fail(
                     VerifierRule::RangeMetadataMalformed,
                     "The lower limit must be an integer!".to_string(),
                 ));
             };
-            let Some((high_ty, high)) = metadata_constant_int(self.module, &store, pair[1].slot())
+            let Some((high_ty, high)) =
+                metadata_constant_int(self.module, &store, pair[1].slot_trusting_same_module())
             else {
                 return Err(fail(
                     VerifierRule::RangeMetadataMalformed,
@@ -3347,7 +3378,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         c: &CallInstData,
         position: BlockPosition<'_, 'ctx, B>,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // Callee must be a function value, OR a pointer of address
         // space 0 with a separately-tracked function-type (LLVM 17+
@@ -3431,7 +3462,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `visitCallBase`'s `swifterror` loop, which sits between the
         // parameter-type loop above and the operand-bundle loop below.
         self.verify_call_swift_error_arguments(f, bb, call)?;
-        self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
+        self.check_intrinsic_call(f, bb, inst.slot_trusting_same_module(), call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
         // `if (Call.isInlineAsm()) verifyInlineAsmCall(Call);` — the tail of
         // `visitCallBase`, after the operand-bundle loop.
@@ -4096,12 +4127,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         //         (Call.doesNotReturn() && FTy->getReturnType()->isVoidTy())), …)`
         //
         // `CallBase::doesNotReturn()` is `hasFnAttr(Attribute::NoReturn)`,
-        // already ported as `call_site_has_fn_attr`. Its first argument is an
-        // anchor used only to recover the module, so the callee value serves.
-        let callee_data = self.module.context().value_data(callee);
-        let anchor = Value::<B>::from_parts(callee, self.module, callee_data.ty);
-        let does_not_return =
-            crate::speculation::call_site_has_fn_attr(anchor, callee, attrs, AttrKind::NoReturn);
+        // ported once as `call_site_has_fn_attr`.
+        let does_not_return = crate::instr_types::call_site_has_fn_attr(
+            ModuleRef::<B>::new(self.module),
+            callee,
+            attrs,
+            AttrKind::NoReturn,
+        );
         self.verifier_check(
             f,
             bb,
@@ -4568,7 +4600,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         instruction: ValueSlot,
         call: CallBaseParts<'_>,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let CallBaseParts {
             callee: callee_id,
@@ -4688,7 +4720,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         instruction: ValueSlot,
         args: &[core::cell::Cell<ValueSlot>],
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `const auto *CBR = dyn_cast<CallBrInst>(Call.getOperand(0));
         //  Check(CBR, "intrinstic requires callbr operand", &Call);
@@ -4827,7 +4859,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         id: IntrinsicId,
         attrs: &CallAttributeData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `if (IntrinsicInst::mayLowerToFunctionCall(ID)) {`
         if !crate::intrinsic_inst::may_lower_to_function_call(id) {
@@ -4850,17 +4882,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `visitFunction` for the same reason.
         let colors = cx.eh_funclet_colors.get_or_init(|| color_eh_funclets(f));
 
+        // `ColorVector &CV = BlockEHFuncletColors.find(Call.getParent())->second;`
+        // looked up by the call's block id; a block with no entry reads as
+        // no colours (see `color_eh_funclets`).
         // `bool InEHFunclet = false;
         //  for (BasicBlock *ColorFirstBB : CV)
         //    if (auto It = ColorFirstBB->getFirstNonPHIIt(); It != ColorFirstBB->end())
         //      if (isa_and_nonnull<FuncletPadInst>(&*It)) InEHFunclet = true;`
         let mut in_eh_funclet = false;
         let anchor = f.as_erased();
-        for color_first_bb in colors
-            .get(&bb.to_erased().slot_trusting_same_module())
-            .map_or(&[][..], Vec::as_slice)
-        {
-            if first_non_phi_kind(anchor, *color_first_bb).is_some_and(is_funclet_pad_kind) {
+        let owner = f.module().id();
+        for color_first_bb in colors.get(&bb.id()).map_or(&[][..], Vec::as_slice) {
+            // Each colour is a block of `f`, minted in `f`'s module by
+            // `color_eh_funclets`; the checked door admits it.
+            let color_first_bb = color_first_bb.slot_in(owner)?;
+            if first_non_phi_kind(anchor, color_first_bb).is_some_and(is_funclet_pad_kind) {
                 in_eh_funclet = true;
             }
         }
@@ -5233,7 +5269,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &InvokeInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let block_index = cx.block_index;
         if !block_index.contains_key(&d.normal_dest.get())
@@ -5253,7 +5289,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             attrs: &d.attrs,
         };
         self.verify_call_swift_error_arguments(f, bb, call)?;
-        self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
+        self.check_intrinsic_call(f, bb, inst.slot_trusting_same_module(), call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
         // `if (Call.isInlineAsm()) verifyInlineAsmCall(Call);` — the same tail
         // of `visitCallBase` that `check_call` runs; `visitInvokeInst` calls
@@ -5302,7 +5338,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &CallBrInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let call = CallBaseParts {
             callee: d.callee.get(),
@@ -5416,7 +5452,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
             // `visitIntrinsicCall(CBI.getIntrinsicID(), CBI);`
-            self.check_intrinsic_call(f, bb, inst.id, call, cx)?;
+            self.check_intrinsic_call(f, bb, inst.slot_trusting_same_module(), call, cx)?;
         }
 
         // `visitTerminator(CBI);` — llvmkit's spelling of the successor half
@@ -5652,25 +5688,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         self.first_non_phi_in_block(f, unwind_dest)
     }
 
-    /// `CallBase::doesNotThrow()` — `hasFnAttr(Attribute::NoUnwind)`, which
-    /// reads the call site's own function attributes and then the called
-    /// function's (`CallBase::hasFnAttrOnCalledFunction`).
-    fn call_does_not_throw(&self, callee: ValueSlot, attrs: &CallAttributeData) -> bool {
-        if attrs
-            .function_attrs()
-            .has_kind(AttrIndex::Function, AttrKind::NoUnwind)
-        {
-            return true;
-        }
-        match &self.module.context().value_data(callee).kind {
-            ValueKindData::Function(data) => data
-                .attributes
-                .borrow()
-                .has_kind(AttrIndex::Function, AttrKind::NoUnwind),
-            _ => false,
-        }
-    }
-
     /// `Verifier::visitEHPadPredecessors` (`lib/IR/Verifier.cpp`), whole.
     ///
     /// `pad` is upstream's `Instruction &I`, and `bb` its parent block.
@@ -5679,7 +5696,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         pad: ValueSlot,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let block = bb.to_erased().slot_trusting_same_module();
         let no_predecessors: Vec<ValueSlot> = Vec::new();
@@ -5829,10 +5846,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     let stripped = crate::pointer_analysis::strip_pointer_casts(callee_value);
                     let intrinsic_id = crate::intrinsics::descriptor_for_callee(stripped)
                         .map(|descriptor| descriptor.id());
+                    // `II->doesNotThrow()` is `hasFnAttr(Attribute::NoUnwind)`
+                    // on the invoke, whose called operand is `II`'s own —
+                    // not the stripped `CalledFn`.
                     if let Some(id) = intrinsic_id
-                        && self.call_does_not_throw(
-                            stripped.slot_trusting_same_module(),
+                        && crate::instr_types::call_site_has_fn_attr(
+                            ModuleRef::<B>::new(self.module),
+                            callee,
                             &invoke.attrs,
+                            AttrKind::NoUnwind,
                         )
                         && !crate::intrinsic_inst::may_lower_to_function_call(id)
                     {
@@ -5946,7 +5968,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &LandingPadInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         let clauses = d.clauses.borrow();
         // `Check(LPI.getNumClauses() > 0 || LPI.isCleanup(), "LandingPadInst
@@ -6056,7 +6078,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         d: &ResumeInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `Check(RI.getFunction()->hasPersonalityFn(), "ResumeInst needs to be
         //  in a function with a personality.", &RI);`
@@ -6092,7 +6114,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &CatchPadInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `Check(F->hasPersonalityFn(), "CatchPadInst needs to be in a
         //  function with a personality.", &CPI);`
@@ -6165,7 +6187,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &CleanupPadInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `Check(F->hasPersonalityFn(), "CleanupPadInst needs to be in a
         //  function with a personality.", &CPI);`
@@ -6218,7 +6240,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
         d: &CatchSwitchInstData,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `Check(F->hasPersonalityFn(), "CatchSwitchInst needs to be in a
         //  function with a personality.", &CatchSwitch);`
@@ -6368,7 +6390,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// standing for upstream's `MapVector`.
     fn record_sibling_funclet(
         &self,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
         pad: ValueSlot,
         terminator: ValueSlot,
     ) {
@@ -6391,7 +6413,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         fpi: ValueSlot,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `User *FirstUser = nullptr; Value *FirstUnwindPad = nullptr;
         //  SmallVector<FuncletPadInst *, 8> Worklist({&FPI});
@@ -6653,7 +6675,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     fn verify_sibling_funclet_unwinds(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
-        cx: &FunctionContext<'_>,
+        cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `SmallPtrSet<Instruction *, 8> Visited; SmallPtrSet<Instruction *, 8>
         //  Active;`
@@ -6955,12 +6977,8 @@ fn build_predecessors<B: ModuleBrand>(
     let cfg = FunctionCfg::new(f);
     f.basic_blocks()
         .map(|bb| {
-            (
-                bb.to_erased().slot_trusting_same_module(),
-                cfg.predecessors(&bb.as_dyn())
-                    .map(|pred| pred.slot())
-                    .collect(),
-            )
+            let block_id = bb.to_erased().slot_trusting_same_module();
+            (block_id, cfg.predecessor_slots(block_id).to_vec())
         })
         .collect()
 }
@@ -7280,9 +7298,9 @@ mod tests {
         // Reach the value-id pair without leaking the return marker.
         let f_id = {
             // FunctionValue<Dyn> has a private id field; widen via as_dyn.
-            m.view(f).as_dyn().slot()
+            m.view(f).as_dyn().slot_trusting_same_module()
         };
-        let bb_id = bb.as_dyn().slot();
+        let bb_id = bb.as_dyn().slot_trusting_same_module();
         (f_id, bb_id)
     }
 
@@ -7291,7 +7309,7 @@ mod tests {
         fabricate_instruction(
             m,
             bb_id,
-            m.void_type().as_type().id(),
+            m.void_type().as_type().slot_trusting_same_module(),
             InstructionKindData::Ret(ReturnOpData::new(None)),
         );
     }
@@ -7373,11 +7391,11 @@ mod tests {
         let i32_ty = m.i32_type().as_type();
         let ptr_ty = m.ptr_type(0).as_type();
         let (_, bb_id) = skeleton(&m, i32_ty, &[], "f");
-        let null_id = fab_null_ptr_id(&m, ptr_ty.id());
+        let null_id = fab_null_ptr_id(&m, ptr_ty.slot_trusting_same_module());
         fabricate_instruction(
             &m,
             bb_id,
-            m.void_type().as_type().id(),
+            m.void_type().as_type().slot_trusting_same_module(),
             InstructionKindData::Ret(ReturnOpData::new(Some(null_id))),
         );
         let err = m.verify_borrowed().unwrap_err();
@@ -7392,11 +7410,11 @@ mod tests {
         let void_ty = m.void_type().as_type();
         let i32_ty = m.i32_type().as_type();
         let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
-        let zero_id = fab_const_int_id(&m, i32_ty.id(), 0);
+        let zero_id = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 0);
         fabricate_instruction(
             &m,
             bb_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Ret(ReturnOpData::new(Some(zero_id))),
         );
         let err = m.verify_borrowed().unwrap_err();
@@ -7418,8 +7436,11 @@ mod tests {
         fabricate_instruction(
             &m,
             bb_id,
-            i32_ty.id(),
-            InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
+            i32_ty.slot_trusting_same_module(),
+            InstructionKindData::Add(BinaryOpData::new(
+                ValueSlotAccess::slot_trusting_same_module(p0),
+                ValueSlotAccess::slot_trusting_same_module(p1),
+            )),
         );
         append_ret_void(&m, bb_id);
         let err = m.verify_borrowed().unwrap_err();
@@ -7437,18 +7458,18 @@ mod tests {
         let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
-        append_ret_void(&m, then_bb.slot());
-        append_ret_void(&m, else_bb.slot());
+        append_ret_void(&m, then_bb.slot_trusting_same_module());
+        append_ret_void(&m, else_bb.slot_trusting_same_module());
         let p0 = f.param(0).unwrap();
         fabricate_instruction(
             &m,
             entry_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Br(BranchInstData {
                 kind: core::cell::RefCell::new(BranchKind::Conditional {
-                    cond: core::cell::Cell::new(IsValue::slot(p0)),
-                    then_bb: then_bb.slot(),
-                    else_bb: else_bb.slot(),
+                    cond: core::cell::Cell::new(ValueSlotAccess::slot_trusting_same_module(p0)),
+                    then_bb: then_bb.slot_trusting_same_module(),
+                    else_bb: else_bb.slot_trusting_same_module(),
                 }),
             }),
         );
@@ -7489,13 +7510,16 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            i32_ty.id(),
-            InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
+            i32_ty.slot_trusting_same_module(),
+            InstructionKindData::Add(BinaryOpData::new(
+                ValueSlotAccess::slot_trusting_same_module(p0),
+                ValueSlotAccess::slot_trusting_same_module(p1),
+            )),
         );
         fabricate_instruction(
             &m,
             entry_id,
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(PhiData::new()),
         );
         append_ret_void(&m, entry_id);
@@ -7517,14 +7541,14 @@ mod tests {
         let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
         // Predict the next value-id by pushing a probe and reading
         // its arena index.
-        let probe = fab_const_int_id(&m, i32_ty.id(), 0);
+        let probe = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 0);
         let next_index = probe.arena_index() + 1;
         let next_id = ValueSlot::from_index(next_index);
         // Push an `add i32 next_id, probe` -- next_id IS this add's id.
         let pushed = fabricate_instruction(
             &m,
             bb_id,
-            i32_ty.id(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Add(BinaryOpData::new(next_id, probe)),
         );
         assert_eq!(pushed, next_id, "id prediction must match arena order");
@@ -7555,7 +7579,7 @@ mod tests {
             fabricate_instruction(
                 &m,
                 entry_id,
-                token_ty.id(),
+                token_ty.slot_trusting_same_module(),
                 InstructionKindData::Phi(PhiData::new()),
             );
             append_ret_void(&m, entry_id);
@@ -7569,7 +7593,7 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(PhiData::new()),
         );
         append_ret_void(&m, entry_id);
@@ -7595,11 +7619,11 @@ mod tests {
         let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
         let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
         let dead = f.append_basic_block(&m, "dead");
-        let dead_id = dead.slot();
+        let dead_id = dead.slot_trusting_same_module();
         fabricate_instruction(
             &m,
             dead_id,
-            tptr_ty.id(),
+            tptr_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(PhiData::new()),
         );
         append_ret_void(&m, dead_id);
@@ -7624,21 +7648,21 @@ mod tests {
         let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
         let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
         let target = f.append_basic_block(&m, "target");
-        let cond_id = IsValue::slot(f.param(0).unwrap());
+        let cond_id = ValueSlotAccess::slot_trusting_same_module(f.param(0).unwrap());
         fabricate_instruction(
             &m,
             entry_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Br(BranchInstData {
                 kind: core::cell::RefCell::new(BranchKind::Conditional {
                     cond: core::cell::Cell::new(cond_id),
-                    then_bb: target.slot(),
-                    else_bb: target.slot(),
+                    then_bb: target.slot_trusting_same_module(),
+                    else_bb: target.slot_trusting_same_module(),
                 }),
             }),
         );
-        let one = fab_const_int_id(&m, i32_ty.id(), 1);
-        let two = fab_const_int_id(&m, i32_ty.id(), 2);
+        let one = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 1);
+        let two = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 2);
         let phi = PhiData::new();
         phi.incoming
             .borrow_mut()
@@ -7648,11 +7672,11 @@ mod tests {
             .push((core::cell::Cell::new(two), entry_id));
         fabricate_instruction(
             &m,
-            target.slot(),
-            i32_ty.id(),
+            target.slot_trusting_same_module(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(phi),
         );
-        append_ret_void(&m, target.slot());
+        append_ret_void(&m, target.slot_trusting_same_module());
         let err = m.verify_borrowed().unwrap_err();
         assert_rule_and_check_line(
             &err,
@@ -7674,24 +7698,27 @@ mod tests {
         fabricate_instruction(
             &m,
             entry_id,
-            void_ty.id(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Br(BranchInstData {
-                kind: core::cell::RefCell::new(BranchKind::Unconditional(target.slot())),
+                kind: core::cell::RefCell::new(BranchKind::Unconditional(
+                    target.slot_trusting_same_module(),
+                )),
             }),
         );
-        append_ret_void(&m, unrelated.slot());
-        let bogus = fab_const_int_id(&m, i32_ty.id(), 7);
+        append_ret_void(&m, unrelated.slot_trusting_same_module());
+        let bogus = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 7);
         let phi = PhiData::new();
-        phi.incoming
-            .borrow_mut()
-            .push((core::cell::Cell::new(bogus), unrelated.slot()));
+        phi.incoming.borrow_mut().push((
+            core::cell::Cell::new(bogus),
+            unrelated.slot_trusting_same_module(),
+        ));
         fabricate_instruction(
             &m,
-            target.slot(),
-            i32_ty.id(),
+            target.slot_trusting_same_module(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Phi(phi),
         );
-        append_ret_void(&m, target.slot());
+        append_ret_void(&m, target.slot_trusting_same_module());
         let err = m.verify_borrowed().unwrap_err();
         assert_rule(&err, VerifierRule::PhiPredecessorMismatch);
     }
@@ -7710,11 +7737,11 @@ mod tests {
             .add_function_dyn("callee", callee_fn_ty, Linkage::External)
             .unwrap();
         let cb = m.view(callee).append_basic_block(&m, "entry");
-        let zero = fab_const_int_id(&m, i32_ty.id(), 0);
+        let zero = fab_const_int_id(&m, i32_ty.slot_trusting_same_module(), 0);
         fabricate_instruction(
             &m,
-            cb.slot(),
-            void_ty.id(),
+            cb.slot_trusting_same_module(),
+            void_ty.slot_trusting_same_module(),
             InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
         );
         // Caller: passes only ONE arg.
@@ -7723,20 +7750,20 @@ mod tests {
             .add_function_dyn("caller", caller_fn_ty, Linkage::External)
             .unwrap();
         let entry = m.view(caller).append_basic_block(&m, "entry");
-        let arg_id = IsValue::slot(m.view(caller).param(0).unwrap());
+        let arg_id = ValueSlotAccess::slot_trusting_same_module(m.view(caller).param(0).unwrap());
         fabricate_instruction(
             &m,
-            entry.slot(),
-            i32_ty.id(),
+            entry.slot_trusting_same_module(),
+            i32_ty.slot_trusting_same_module(),
             InstructionKindData::Call(CallInstData::new(
-                m.view(callee).slot(),
-                callee_fn_ty.as_type().id(),
+                m.view(callee).slot_trusting_same_module(),
+                callee_fn_ty.as_type().slot_trusting_same_module(),
                 [arg_id],
                 crate::CallingConv::default(),
                 crate::instr_types::TailCallKind::None,
             )),
         );
-        append_ret_void(&m, entry.slot());
+        append_ret_void(&m, entry.slot_trusting_same_module());
         let err = m.verify_borrowed().unwrap_err();
         assert_rule(&err, VerifierRule::CallArgCountMismatch);
     }
@@ -7750,11 +7777,11 @@ mod tests {
         let i64_ty = m.i64_type().as_type();
         let ptr1_ty = m.ptr_type(1).as_type();
         let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "f");
-        let ptr = fab_null_ptr_id(&m, ptr1_ty.id());
+        let ptr = fab_null_ptr_id(&m, ptr1_ty.slot_trusting_same_module());
         fabricate_instruction(
             &m,
             bb_id,
-            i64_ty.id(),
+            i64_ty.slot_trusting_same_module(),
             InstructionKindData::Cast(CastOpData::new(CastOpcode::PtrToAddr, ptr)),
         );
         append_ret_void(&m, bb_id);

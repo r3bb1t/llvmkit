@@ -27,7 +27,7 @@ impl<B: ModuleBrand> FunctionPass<B> for SplitEntryPass {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -146,7 +146,10 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         type Requires = ();
         const NAME: &'static str = "split-at-terminator";
 
-        fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+        fn run<'m, 'ctx>(
+            &mut self,
+            cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>,
+        ) -> IrResult<FnReport<B>>
         where
             'ctx: 'm,
             Self: 'ctx,
@@ -203,7 +206,10 @@ fn split_block_refuses_an_instruction_of_another_block_without_mutating() -> Res
         type Requires = ();
         const NAME: &'static str = "split-at-foreign-instruction";
 
-        fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+        fn run<'m, 'ctx>(
+            &mut self,
+            cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>,
+        ) -> IrResult<FnReport<B>>
         where
             'ctx: 'm,
             Self: 'ctx,
@@ -288,7 +294,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhi<B> {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -419,7 +425,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhiTyped<B> {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -514,7 +520,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhiGlobal<B> {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -657,7 +663,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchCase<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-switch-case";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -870,7 +876,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCondBrThen<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-condbr-then";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -902,7 +908,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectBr<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-br";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -932,7 +938,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrElse {
     type Requires = ();
     const NAME: &'static str = "remove-condbr-else";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -960,7 +966,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrThen {
     type Requires = ();
     const NAME: &'static str = "remove-condbr-then";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

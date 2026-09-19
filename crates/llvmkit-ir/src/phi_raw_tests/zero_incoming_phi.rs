@@ -43,7 +43,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveEdge {
     type Requires = ();
     const NAME: &'static str = "remove-edge-empty-phi";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
@@ -73,7 +73,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectEmptyEdge<B> {
     type Requires = ();
     const NAME: &'static str = "redirect-edge-empty-phi";
 
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,

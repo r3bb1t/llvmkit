@@ -722,7 +722,7 @@ Core pass / analysis infrastructure available today:
 
 A pass is one `impl` block. Declare `type Access` (the rung), `type Requires`
 (a tuple of analysis markers, prefetched before the run), and `const NAME`, then
-write `fn run(cx) -> IrResult<FnReport>` (a module pass returns
+write `fn run(cx) -> IrResult<FnReport<B>>` (a module pass returns
 `IrResult<ModReport>`). The `#[function_pass]` / `#[module_pass]` macros are
 zero-cost sugar that expand to exactly that trait impl — `FnCx<Self>` /
 `FnReport` in the macro form are readability sentinels the macro rewrites, so
@@ -811,7 +811,7 @@ impl<B: ModuleBrand> FunctionPass<B> for EntryReachable {
     fn run<'m, 'ctx>(
         &mut self,
         cx: FnCx<'m, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport>
+    ) -> IrResult<FnReport<B>>
     where
         'ctx: 'm,
         Self: 'ctx,
