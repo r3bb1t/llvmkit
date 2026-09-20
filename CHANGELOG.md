@@ -19,6 +19,24 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — the insert and move entries take a placement witness *(breaking)*
+
+- **Breaking (llvmkit-ir):** `IrBuilder::position_before`,
+  `Instruction::move_before` / `move_after` / `insert_before` / `insert_after`
+  take a new `PlacedInstruction<'ctx, B>` instead of an `&InstructionView`. An
+  instruction that was never in a block therefore cannot reach them at all
+  (D1), which `tests/compile_fail/position_before_needs_a_placed_instruction.rs`
+  pins.
+- Mint one with `InstructionView::placed` (checked, `Option`) or
+  `Instruction::placed` on the `Attached` typestate (total, since that state is
+  only minted in a block).
+- The witness proves *was placed*, not *is placed*: llvmkit mutates through
+  `&Module` with interior mutability, so nothing stops a `detach_from_parent`
+  between the mint and the call. The entries re-read the current block and
+  still return `IrError::InstructionHasNoParent` for that stale case, which is
+  now the variant's only reachable path there. Freezing it entirely would take
+  exclusive access to the function's layout.
+
 ### Changed — an instruction in no block says so *(breaking)*
 
 - **Breaking (llvmkit-ir):** `InstructionView::parent` returns

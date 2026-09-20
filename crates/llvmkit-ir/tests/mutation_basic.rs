@@ -376,11 +376,11 @@ fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
     let block = builder.into_insert_block();
     let cursor = BlockCursor::at_start(block);
     let (a_inst, cursor) = cursor.step().expect("a instruction");
-    let a_anchor = a_inst.as_view();
-    a_inst.move_before(&m, &a_anchor)?;
+    let a_anchor = a_inst.placed();
+    a_inst.move_before(&m, a_anchor)?;
     let (b_inst, cursor) = cursor.step().expect("b instruction");
-    let b_anchor = b_inst.as_view();
-    b_inst.move_after(&m, &b_anchor)?;
+    let b_anchor = b_inst.placed();
+    b_inst.move_after(&m, b_anchor)?;
 
     let block = cursor.into_block();
     let builder = IrBuilder::with_folder(&m, NoFolder).position_at_end(block);
@@ -690,7 +690,7 @@ fn position_before_refuses_an_anchor_in_no_block_without_mutating() -> Result<()
 
     // Positive control: an anchor in a block positions the builder, and the
     // instruction it emits lands before that anchor.
-    let positioned = IrBuilder::new_for::<Dyn>(&m).position_before(&anchor.as_view())?;
+    let positioned = IrBuilder::new_for::<Dyn>(&m).position_before(anchor.placed())?;
     let _before = positioned.int_add::<i32, _, _, _>(
         i32_ty.const_int(3_u32),
         i32_ty.const_int(4_u32),
@@ -698,12 +698,21 @@ fn position_before_refuses_an_anchor_in_no_block_without_mutating() -> Result<()
     )?;
 
     let _ = block;
+    // The witness is minted while the anchor is still in its block, then the
+    // anchor leaves it: the one case a `PlacedInstruction` cannot rule out,
+    // because nothing freezes the layout between the mint and the call.
+    let stale = anchor.placed();
     let detached = anchor.detach_from_parent(&m);
+    assert_eq!(
+        detached.as_view().placed().map(|placed| placed.block()),
+        None,
+        "a detached instruction mints no witness"
+    );
     let printed_before = format!("{m}");
-    let refused = IrBuilder::new_for::<Dyn>(&m).position_before(&detached.as_view());
+    let refused = IrBuilder::new_for::<Dyn>(&m).position_before(stale);
     assert!(
         matches!(refused, Err(IrError::InstructionHasNoParent)),
-        "an anchor in no block must be refused"
+        "a stale witness must be refused"
     );
     assert_eq!(
         format!("{m}"),
@@ -736,13 +745,16 @@ fn a_move_or_insert_refuses_an_anchor_in_no_block_without_mutating() -> Result<(
     let (anchor, cursor) = BlockCursor::at_start(block).step().expect("entry holds %x");
     let (mover, cursor) = cursor.step().expect("entry holds %y");
     let block = cursor.into_block();
+    // As in the positioning test: the witness is minted while the anchor is
+    // in its block, and the anchor then leaves it.
+    let stale = anchor.placed();
     let detached_anchor = anchor.detach_from_parent(&m);
     let printed_before = format!("{m}");
 
-    let refused = mover.move_before(&m, &detached_anchor.as_view());
+    let refused = mover.move_before(&m, stale);
     assert!(
         matches!(refused, Err(IrError::InstructionHasNoParent)),
-        "moving before an anchor in no block must be refused"
+        "moving before a stale witness must be refused"
     );
     assert_eq!(
         format!("{m}"),
@@ -752,10 +764,14 @@ fn a_move_or_insert_refuses_an_anchor_in_no_block_without_mutating() -> Result<(
 
     let (mover, cursor) = BlockCursor::at_start(block).step().expect("entry holds %y");
     let _ = cursor.into_block();
-    let refused = mover.move_after(&m, &detached_anchor.as_view());
+    assert!(
+        detached_anchor.as_view().placed().is_none(),
+        "a detached anchor mints no witness"
+    );
+    let refused = mover.move_after(&m, stale);
     assert!(
         matches!(refused, Err(IrError::InstructionHasNoParent)),
-        "moving after an anchor in no block must be refused"
+        "moving after a stale witness must be refused"
     );
     assert_eq!(format!("{m}"), printed_before, "still unmoved");
     Ok(())

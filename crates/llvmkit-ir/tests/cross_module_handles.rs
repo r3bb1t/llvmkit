@@ -1905,13 +1905,17 @@ fn position_before_rejects_an_anchor_from_another_module() {
         )
         .expect("foreign anchor");
 
-    let foreign_view =
-        InstructionView::try_from(foreign.view(foreign_anchor)).expect("an add is an instruction");
-    let home_view =
-        InstructionView::try_from(home.view(home_anchor)).expect("an add is an instruction");
+    let foreign_placed = InstructionView::try_from(foreign.view(foreign_anchor))
+        .expect("an add is an instruction")
+        .placed()
+        .expect("the foreign add is in a block");
+    let home_placed = InstructionView::try_from(home.view(home_anchor))
+        .expect("an add is an instruction")
+        .placed()
+        .expect("the home add is in a block");
 
     let home_before = format!("{home}");
-    let refused = IrBuilder::new_for::<Dyn>(&home).position_before(&foreign_view);
+    let refused = IrBuilder::new_for::<Dyn>(&home).position_before(foreign_placed);
     assert!(
         matches!(refused, Err(IrError::ForeignValueId)),
         "{refused:?}"
@@ -1923,7 +1927,7 @@ fn position_before_rejects_an_anchor_from_another_module() {
     );
 
     let positioned = IrBuilder::new_for::<Dyn>(&home)
-        .position_before(&home_view)
+        .position_before(home_placed)
         .expect("a home anchor positions the builder");
     positioned
         .int_binop_erased(
@@ -2474,6 +2478,10 @@ fn an_instruction_move_rejects_a_handle_from_another_module() {
         .instructions()
         .next()
         .expect("add");
+    // The foreign anchor is in a block of its own module, so it mints a
+    // witness; what the entries below refuse is the module, not the
+    // placement.
+    let foreign_anchor = foreign_add.placed().expect("the add is in a block");
     let foreign_value = foreign.i32_type().const_int(5i32).as_erased();
     let foreign_block = open_block(&foreign, "h");
     // An `i32` instruction with a user, so an unadmitted `i32` replacement
@@ -2503,24 +2511,26 @@ fn an_instruction_move_rejects_a_handle_from_another_module() {
         (
             "move_before",
             IrError::ForeignValueId,
-            moved_before.move_before(&home, &foreign_add),
+            moved_before.move_before(&home, foreign_anchor),
         ),
         (
             "move_after",
             IrError::ForeignValueId,
-            moved_after.move_after(&home, &foreign_add),
+            moved_after.move_after(&home, foreign_anchor),
         ),
         (
             "insert_before",
             IrError::ForeignValueId,
             inserted_before
-                .insert_before(&home, &foreign_add)
+                .insert_before(&home, foreign_anchor)
                 .map(|_| ()),
         ),
         (
             "insert_after",
             IrError::ForeignValueId,
-            inserted_after.insert_after(&home, &foreign_add).map(|_| ()),
+            inserted_after
+                .insert_after(&home, foreign_anchor)
+                .map(|_| ()),
         ),
         (
             "append_to",

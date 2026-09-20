@@ -519,6 +519,52 @@ pub struct InstructionView<'ctx, B: ModuleBrand> {
     ty: TypeSlot,
 }
 
+/// An instruction together with the block it was in when this value was made
+/// — what the entries that insert or move relative to an instruction take,
+/// so "this instruction was never in a block" cannot reach them (D1).
+///
+/// There is no public constructor. It is minted where the block is known:
+/// [`InstructionView::placed`] (the one checked mint),
+/// [`Instruction::placed`] on the `Attached` typestate (total, since that
+/// state is only minted in a block), and the crate's own iteration paths.
+///
+/// It proves *was placed*, not *is placed*: llvmkit mutates through
+/// `&Module` with interior mutability, so nothing stops a
+/// [`detach_from_parent`](Instruction::detach_from_parent) between the mint
+/// and the use. The entries therefore re-read the current block and refuse a
+/// stale witness with [`IrError::InstructionHasNoParent`] — the narrow case
+/// the type cannot rule out. Freezing that would take exclusive access to the
+/// function's layout, which is its own design.
+///
+/// No upstream counterpart: `Instruction *` carries a `Parent` pointer that
+/// upstream's callers dereference without asking.
+#[derive(Branded)]
+pub struct PlacedInstruction<'ctx, B: ModuleBrand> {
+    view: InstructionView<'ctx, B>,
+    block: BlockId<Dyn, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> PlacedInstruction<'ctx, B> {
+    /// Crate-internal: mint for a caller that already holds the block this
+    /// instruction is in.
+    #[inline]
+    pub(crate) fn in_block(view: InstructionView<'ctx, B>, block: BlockId<Dyn, B>) -> Self {
+        Self { view, block }
+    }
+
+    /// The instruction itself.
+    #[inline]
+    pub fn instruction(self) -> InstructionView<'ctx, B> {
+        self.view
+    }
+
+    /// The block the instruction was in when this value was made.
+    #[inline]
+    pub fn block(self) -> BlockId<Dyn, B> {
+        self.block
+    }
+}
+
 // Hand-rolled trait impls so that consumers do not have to spell `S`
 // bounds at every match position, and so that `Instruction` is
 // definitively neither `Clone` nor `Copy`.
@@ -842,6 +888,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
         self.data().parent.get()
     }
 
+    /// This instruction paired with its block, for the entries that insert or
+    /// move relative to it — `None` while it is in no block.
+    ///
+    /// The one checked mint of [`PlacedInstruction`]; read its docs for what
+    /// the witness does and does not prove.
+    #[inline]
+    pub fn placed(&self) -> Option<PlacedInstruction<'ctx, B>> {
+        self.parent()
+            .map(|block| PlacedInstruction::in_block(*self, block))
+    }
+
     /// This instruction's opcode. Ports `Instruction::getOpcode`.
     ///
     /// Total, and independent of [`Self::kind`] / [`Self::terminator_kind`]:
@@ -1150,6 +1207,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.parent_slot())
     }
 
+    /// This instruction paired with its block. Total where
+    /// [`InstructionView::placed`] is not, for the same reason
+    /// [`Self::parent`] is: the `Attached` typestate is only minted in a
+    /// block (D1).
+    #[inline]
+    pub fn placed(&self) -> PlacedInstruction<'ctx, B> {
+        PlacedInstruction::in_block(self.as_view(), self.parent())
+    }
+
     /// Crate-internal: the containing block's slot, the slot-level twin of
     /// [`Self::parent`] and total for the same reason.
     #[inline]
@@ -1307,13 +1373,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// in `other`'s parent block. Mirrors `Instruction::moveBefore` in
     /// `lib/IR/Instruction.cpp`.
     ///
+    /// Takes a [`PlacedInstruction`], so an anchor that was never in a block
+    /// cannot reach this call (D1).
+    ///
     /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
-    /// module.
+    /// module, and with [`IrError::InstructionHasNoParent`] if it was
+    /// detached after the witness was made.
     pub fn move_before(
         self,
         module_token: &'ctx Module<B, Unverified>,
-        other: &InstructionView<'ctx, B>,
+        other: PlacedInstruction<'ctx, B>,
     ) -> IrResult<()> {
+        let other = &other.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
@@ -1362,13 +1433,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Move this instruction so it appears immediately after `other` in
     /// `other`'s parent block. Mirrors `Instruction::moveAfter`.
     ///
+    /// Takes a [`PlacedInstruction`], as [`Self::move_before`] does.
+    ///
     /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
-    /// module.
+    /// module, and with [`IrError::InstructionHasNoParent`] if it was
+    /// detached after the witness was made.
     pub fn move_after(
         self,
         module_token: &'ctx Module<B, Unverified>,
-        other: &InstructionView<'ctx, B>,
+        other: PlacedInstruction<'ctx, B>,
     ) -> IrResult<()> {
+        let other = &other.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
@@ -1418,13 +1493,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// `other`'s parent block. Mirrors `Instruction::insertBefore` in
     /// `lib/IR/Instruction.cpp`.
     ///
+    /// Takes a [`PlacedInstruction`], as the move entries do.
+    ///
     /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
-    /// module.
+    /// module, and with [`IrError::InstructionHasNoParent`] if it was
+    /// detached after the witness was made.
     pub fn insert_before(
         self,
         module_token: &'ctx Module<B, Unverified>,
-        other: &InstructionView<'ctx, B>,
+        other: PlacedInstruction<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        let other = &other.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
@@ -1450,13 +1529,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// Insert this detached instruction immediately after `other` in
     /// `other`'s parent block. Mirrors `Instruction::insertAfter`.
     ///
+    /// Takes a [`PlacedInstruction`], as the move entries do.
+    ///
     /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
-    /// module.
+    /// module, and with [`IrError::InstructionHasNoParent`] if it was
+    /// detached after the witness was made.
     pub fn insert_after(
         self,
         module_token: &'ctx Module<B, Unverified>,
-        other: &InstructionView<'ctx, B>,
+        other: PlacedInstruction<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        let other = &other.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
