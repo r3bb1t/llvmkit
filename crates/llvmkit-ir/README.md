@@ -54,6 +54,17 @@ handles: erase, detach, move, and RAUW consume the handle. Copyable rediscovery
 paths return `InstructionView`, and cursor-driven mutation goes through
 `BlockCursor::step` on an unterminated block.
 
+Inserting or moving *relative to* an instruction takes one more thing: a
+`PlacedInstruction`, the instruction paired with the block it was in. An
+instruction can be in no block at all (`InstructionView::parent` is `Option`,
+as upstream's `getParent` is nullable), and `IrBuilder::position_before` /
+`Instruction::move_before` / `move_after` / `insert_before` / `insert_after`
+take the witness instead of a bare view, so that case cannot reach them. Mint
+one with `view.placed()` (checked), `attached.placed()` (total), or
+`block.placed_instructions()`, which needs no check because the block is the
+one being walked. The witness proves *was placed*, not *is placed* — a detach
+between the mint and the call is still refused, at run time.
+
 Phis are not written by hand. The raw `int_phi` / `fp_phi` / `pointer_phi` +
 `add_incoming` pair is crate-private; author merges with **block arguments**
 instead (`append_block_with_params` / `append_block_typed`, branched to with

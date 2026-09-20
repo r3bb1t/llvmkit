@@ -19,6 +19,26 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — a block walk mints placement witnesses without a check
+
+- `BasicBlock::placed_instructions` and `BasicBlockView::placed_instructions`
+  iterate a block's instructions in program order, each already paired with
+  that block as a `PlacedInstruction`. The block is the one being walked rather
+  than a field read, so there is nothing to refuse and no `Option` between the
+  walk and `IrBuilder::position_before` / `Instruction::move_before` and its
+  siblings.
+- Both are snapshots and carry the same `use<..>` bound their
+  `instructions` twins do, so
+  `function.basic_blocks().flat_map(|block| block.placed_instructions())`
+  borrow-checks. The twin on `BasicBlockView` is what makes the walk reachable
+  from `ModuleView::functions`, which is the surface most callers discover
+  blocks through.
+- This does not change what a witness proves. It is still *was placed*, so a
+  detach during the walk leaves the witnesses already yielded stale, and the
+  entries still refuse those with `IrError::InstructionHasNoParent`.
+- No upstream counterpart: `BasicBlock::iterator` yields `Instruction &`, whose
+  `getParent()` upstream's callers dereference without asking.
+
 ### Changed — the insert and move entries take a placement witness *(breaking)*
 
 - **Breaking (llvmkit-ir):** `IrBuilder::position_before`,

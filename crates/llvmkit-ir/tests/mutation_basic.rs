@@ -679,25 +679,31 @@ fn detach_from_parent_leaves_the_instruction_in_no_block() -> Result<(), IrError
 fn position_before_refuses_an_anchor_in_no_block_without_mutating() -> Result<(), IrError> {
     let m = module_new!("position-before-detached")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let _x = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
+    let _x = b.int_add(a, 1_i32, "x")?;
     let block = b.into_insert_block();
     let (anchor, cursor) = BlockCursor::at_start(block).step().expect("entry holds %x");
     let block = cursor.into_block();
 
     // Positive control: an anchor in a block positions the builder, and the
-    // instruction it emits lands before that anchor.
+    // instruction it emits lands before that anchor. Its left operand is a
+    // parameter, so this builder's default folder cannot turn the add into a
+    // constant and leave no instruction behind to find.
     let positioned = IrBuilder::new_for::<Dyn>(&m).position_before(anchor.placed())?;
-    let _before = positioned.int_add::<i32, _, _, _>(
-        i32_ty.const_int(3_u32),
-        i32_ty.const_int(4_u32),
-        "before",
-    )?;
+    let _before = positioned.int_add(a, 2_i32, "before")?;
+    assert_eq!(
+        block
+            .instructions()
+            .map(|instruction| instruction.name())
+            .collect::<Vec<_>>(),
+        vec![Some("before".to_string()), Some("x".to_string())],
+        "the positive control's instruction lands before the anchor"
+    );
 
-    let _ = block;
     // The witness is minted while the anchor is still in its block, then the
     // anchor leaves it: the one case a `PlacedInstruction` cannot rule out,
     // because nothing freezes the layout between the mint and the call.
@@ -774,5 +780,74 @@ fn a_move_or_insert_refuses_an_anchor_in_no_block_without_mutating() -> Result<(
         "moving after a stale witness must be refused"
     );
     assert_eq!(format!("{m}"), printed_before, "still unmoved");
+    Ok(())
+}
+
+/// `BasicBlock::placed_instructions` mints a witness per instruction without a
+/// check, because the block is the one being walked rather than a field read.
+///
+/// **No upstream counterpart.** `BasicBlock::iterator`
+/// (`include/llvm/IR/BasicBlock.h`) yields `Instruction &`, whose
+/// `getParent()` upstream's callers dereference without asking, so there is no
+/// upstream behaviour to port. The claim is llvmkit's own, in three parts:
+/// every witness the walk yields names the walked block; the walk agrees with
+/// [`BasicBlock::instructions`] element for element; and a witness taken
+/// straight from the walk drives `position_before` with no `Option` in
+/// between, which is what distinguishes this mint from
+/// `InstructionView::placed`.
+#[test]
+fn placed_instructions_mint_a_witness_for_the_block_being_walked() -> Result<(), IrError> {
+    let m = module_new!("placed-instructions")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let _x = b.int_add(a, 1_i32, "x")?;
+    let _y = b.int_add(a, 2_i32, "y")?;
+    let block = b.into_insert_block();
+    let block_id = block.id();
+
+    assert_eq!(
+        block.placed_instructions().len(),
+        2,
+        "the walk covers the whole block"
+    );
+    for placed in block.placed_instructions() {
+        assert_eq!(
+            placed.block(),
+            block_id.as_dyn(),
+            "a witness from the walk names the walked block"
+        );
+    }
+    assert_eq!(
+        block
+            .placed_instructions()
+            .map(|placed| placed.instruction())
+            .collect::<Vec<_>>(),
+        block.instructions().collect::<Vec<_>>(),
+        "the witness walk and the view walk agree element for element"
+    );
+
+    // The mint needs no `ok_or`: `position_before` takes what the walk yields.
+    let anchor = block
+        .placed_instructions()
+        .next()
+        .expect("entry holds two instructions");
+    let positioned = IrBuilder::new_for::<Dyn>(&m).position_before(anchor)?;
+    let _first = positioned.int_add(a, 3_i32, "first")?;
+    assert_eq!(
+        block
+            .instructions()
+            .map(|instruction| instruction.name())
+            .collect::<Vec<_>>(),
+        vec![
+            Some("first".to_string()),
+            Some("x".to_string()),
+            Some("y".to_string())
+        ],
+        "the emitted instruction lands before the anchor the walk yielded"
+    );
     Ok(())
 }
