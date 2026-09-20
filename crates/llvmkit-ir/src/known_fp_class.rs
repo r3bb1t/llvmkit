@@ -1658,7 +1658,8 @@ pub(crate) fn enclosing_function_slot<'ctx, B: ModuleBrand + 'ctx>(
     let ValueKindData::Instruction(data) = &instruction.data().kind else {
         return None;
     };
-    let block = value_from_slot(instruction, data.parent.get());
+    // In no block, so in no function.
+    let block = value_from_slot(instruction, data.parent.get()?);
     let ValueKindData::BasicBlock(block) = &block.data().kind else {
         return None;
     };

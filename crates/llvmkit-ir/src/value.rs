@@ -488,7 +488,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             ValueKindData::Argument { parent_fn, .. } => Some(*parent_fn),
             ValueKindData::BasicBlock(data) => *data.parent.borrow(),
             ValueKindData::Instruction(data) => {
-                let parent_block_id = data.parent.get();
+                // In no block, so in no function either — as upstream's
+                // `Instruction::getFunction` answers through a null
+                // `getParent()`.
+                let parent_block_id = data.parent.get()?;
                 let parent_block = self.module.value_data(parent_block_id);
                 match &parent_block.kind {
                     ValueKindData::BasicBlock(block) => {

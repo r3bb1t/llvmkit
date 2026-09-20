@@ -1697,6 +1697,19 @@ pub enum IrError {
     #[error("value belongs to a different Module")]
     ForeignValueId,
 
+    /// An instruction that is in no block was handed to an API that needs the
+    /// block it sits in — the anchor of
+    /// [`IrBuilder::position_before`](crate::IrBuilder::position_before), or
+    /// the `other` of [`Instruction::move_before`](crate::Instruction::move_before)
+    /// and its siblings.
+    ///
+    /// `Instruction::getParent` is null for an instruction created without an
+    /// insert position and for one `Instruction::removeFromParent` took out of
+    /// its block; upstream's callers dereference it, so this is llvmkit
+    /// answering what upstream leaves undefined (D10).
+    #[error("instruction is in no basic block")]
+    InstructionHasNoParent,
+
     /// A type handle minted by one [`Module`](crate::Module) reached an API of
     /// another that would store its slot. Each module interns types in its own
     /// arena, so the slot would name a different type there, or nothing.
@@ -2012,6 +2025,10 @@ impl IrError {
             | Self::SsaFunctionHasBlocks
             | Self::SsaForeignFunction
             | Self::SsaUnpositioned => Blame::UsageError,
+
+            // An instruction the caller had taken out of its block, or never
+            // put in one, handed to an API that needs that block.
+            Self::InstructionHasNoParent => Blame::UsageError,
 
             // A handle or id the caller minted in one module and handed to
             // another.

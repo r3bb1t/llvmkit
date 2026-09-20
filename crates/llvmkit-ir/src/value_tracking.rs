@@ -3918,7 +3918,7 @@ pub(crate) fn parent_block<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<ValueSlot> {
     match &value.data().kind {
-        ValueKindData::Instruction(inst) => Some(inst.parent.get()),
+        ValueKindData::Instruction(inst) => inst.parent.get(),
         _ => None,
     }
 }
@@ -6358,7 +6358,7 @@ mod tests {
         kind: InstructionKindData,
     ) -> ValueSlot {
         let core = m.core_ref();
-        let value = build_instruction_value(result_ty, bb_id, kind, None);
+        let value = build_instruction_value(result_ty, Some(bb_id), kind, None);
         // `IrBuilder::append_instruction`'s use registration, verbatim — see
         // the twin helper in `verifier.rs`.
         let operand_ids = match &value.kind {

@@ -2996,11 +2996,17 @@ fn is_non_integral_pointer_type<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn denormal_mode_for_instruction<'ctx, B: ModuleBrand + 'ctx>(
-    parent_id: ValueSlot,
+    parent_id: Option<ValueSlot>,
     module: ModuleView<'ctx, B>,
     ty: Type<'ctx, B>,
 ) -> DenormalMode {
     let Ok(float_ty) = FloatType::<FloatDyn, B>::try_from(ty) else {
+        return DenormalMode::dynamic();
+    };
+    // In no block, so in no function whose `denormal-fp-math` attribute could
+    // be read — the same answer this routine gives for a block with no parent
+    // function.
+    let Some(parent_id) = parent_id else {
         return DenormalMode::dynamic();
     };
     let parent = module.context().value_data(parent_id);

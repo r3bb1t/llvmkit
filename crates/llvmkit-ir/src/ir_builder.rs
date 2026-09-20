@@ -756,16 +756,22 @@ where
     /// New instructions land between the prior instruction and `anchor`.
     /// Mirrors `IRBuilder::SetInsertPoint(Instruction *I)` in `IRBuilder.h`,
     /// which sets `BB = I->getParent(); InsertPt = I->getIterator();`.
+    ///
+    /// Errors with [`IrError::ForeignValueId`] if `anchor` belongs to another
+    /// module, and with [`IrError::InstructionHasNoParent`] if it is in no
+    /// block — the null `getParent()` upstream dereferences.
     pub fn position_before(
         self,
         anchor: &InstructionView<'ctx, B>,
-    ) -> IrBuilder<'m, 'ctx, B, F, Positioned, R> {
-        // `anchor` may belong to another module; this infallible entry cannot
-        // refuse it.
-        // boundary (F1): refused by Task 26
-        let anchor_id = anchor.slot_trusting_same_module();
-        // boundary (F1): refused by Task 26
-        let parent_block_id = anchor.parent().slot_unchecked_at_marked_boundary();
+    ) -> IrResult<IrBuilder<'m, 'ctx, B, F, Positioned, R>> {
+        // Boundary: the caller's anchor, admitted before its block is read.
+        let anchor_id = anchor.slot_in(self.module.id())?;
+        // `IRBuilderBase::SetInsertPoint(Instruction *I)` reads `I->getParent()`
+        // and inserts there; an anchor in no block names none, which upstream
+        // dereferences and llvmkit refuses (D10).
+        let parent_block_id = anchor
+            .parent_slot()
+            .ok_or(IrError::InstructionHasNoParent)?;
         let label_ty = self
             .module
             .label_type::<B>()
@@ -776,7 +782,7 @@ where
             ModuleRef::<B>::new(self.module),
             label_ty,
         );
-        IrBuilder {
+        Ok(IrBuilder {
             module: self.module,
             _module: PhantomData,
             insert_block: Some(bb),
@@ -784,7 +790,7 @@ where
             folder: self.folder,
             fmf: self.fmf,
             _state: PhantomData,
-        }
+        })
     }
 
     /// Position at the entry block, past any leading `alloca`s. Mirrors
@@ -1013,7 +1019,8 @@ where
         name: &str,
     ) -> Value<'ctx, B> {
         let payload = PhiData::new();
-        let value = build_instruction_value(ty, block_id, InstructionKindData::Phi(payload), None);
+        let value =
+            build_instruction_value(ty, Some(block_id), InstructionKindData::Phi(payload), None);
         // Snapshot operand ids before the value moves into the arena so the
         // new phi can be registered in each operand's reverse use-list --
         // identical to `append_phi_instruction`. A fresh phi has no operands,
@@ -9745,7 +9752,7 @@ where
         // cannot refuse a block of another module.
         // boundary (F1): refused by Task 26
         let bb_id = bb.to_erased().slot_trusting_same_module();
-        let value = build_instruction_value(ty, bb_id, kind, None);
+        let value = build_instruction_value(ty, Some(bb_id), kind, None);
         // Snapshot operand ids before the value is moved into the arena;
         // we need them to register the new instruction in each operand's
         // reverse use-list. Mirrors `User::setOperand` in
@@ -9951,7 +9958,7 @@ where
         // cannot refuse a block of another module.
         // boundary (F1): refused by Task 26
         let bb_id = bb.to_erased().slot_trusting_same_module();
-        let value = build_instruction_value(ty, bb_id, kind, None);
+        let value = build_instruction_value(ty, Some(bb_id), kind, None);
         // Snapshot operand ids before the value is moved into the arena so
         // we can register the new instruction in each operand's reverse
         // use-list -- identical to `append_instruction`.

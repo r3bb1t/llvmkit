@@ -623,3 +623,140 @@ fn split_before_refuses_a_block_without_a_terminator_without_mutating() -> Resul
     );
     Ok(())
 }
+
+/// `Instruction::removeFromParent` (`lib/IR/Instruction.cpp`) takes the
+/// instruction out of its block's list, and `Instruction::getParent` answers
+/// null for it afterwards: the `Parent` pointer is cleared by the
+/// `ilist` traits' `removeNodeFromList`. llvmkit's `detach_from_parent` must
+/// leave the same state — a detached instruction names no block — and
+/// re-inserting it must name the new one.
+///
+/// llvmkit-specific: no upstream unit test asserts the null parent
+/// (`rg -n "removeFromParent" unittests/IR/*.cpp` reaches only
+/// `BasicBlockTest.cpp`'s `RemoveNoInvalidation`, which asserts instruction
+/// order). The attached reads on either side are the positive controls.
+#[test]
+fn detach_from_parent_leaves_the_instruction_in_no_block() -> Result<(), IrError> {
+    let m = module_new!("detached-parent")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let _x = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
+    let block = b.into_insert_block();
+    let block_id = block.id();
+    let (instruction, cursor) = BlockCursor::at_start(block).step().expect("entry holds %x");
+    let block = cursor.into_block();
+
+    // Positive control: attached, it names the block it is in.
+    assert_eq!(instruction.as_view().parent(), Some(block_id.as_dyn()));
+
+    let detached = instruction.detach_from_parent(&m);
+    assert_eq!(
+        detached.as_view().parent(),
+        None,
+        "a detached instruction is in no block"
+    );
+
+    let reattached = detached.append_to(&m, &block)?;
+    assert_eq!(
+        reattached.as_view().parent(),
+        Some(block_id.as_dyn()),
+        "re-inserting names the new block"
+    );
+    Ok(())
+}
+
+/// `IRBuilderBase::SetInsertPoint(Instruction *I)` (`IR/IRBuilder.h`) reads
+/// `I->getParent()` and inserts into it. For an instruction in no block that
+/// pointer is null and upstream dereferences it; llvmkit refuses with
+/// [`IrError::InstructionHasNoParent`] before anything is created (D10).
+///
+/// llvmkit-specific: upstream has no test for the null case, because there is
+/// no defined behaviour to test. The attached anchor is the positive control.
+#[test]
+fn position_before_refuses_an_anchor_in_no_block_without_mutating() -> Result<(), IrError> {
+    let m = module_new!("position-before-detached")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let _x = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
+    let block = b.into_insert_block();
+    let (anchor, cursor) = BlockCursor::at_start(block).step().expect("entry holds %x");
+    let block = cursor.into_block();
+
+    // Positive control: an anchor in a block positions the builder, and the
+    // instruction it emits lands before that anchor.
+    let positioned = IrBuilder::new_for::<Dyn>(&m).position_before(&anchor.as_view())?;
+    let _before = positioned.int_add::<i32, _, _, _>(
+        i32_ty.const_int(3_u32),
+        i32_ty.const_int(4_u32),
+        "before",
+    )?;
+
+    let _ = block;
+    let detached = anchor.detach_from_parent(&m);
+    let printed_before = format!("{m}");
+    let refused = IrBuilder::new_for::<Dyn>(&m).position_before(&detached.as_view());
+    assert!(
+        matches!(refused, Err(IrError::InstructionHasNoParent)),
+        "an anchor in no block must be refused"
+    );
+    assert_eq!(
+        format!("{m}"),
+        printed_before,
+        "a refused positioning must not mutate the module"
+    );
+    Ok(())
+}
+
+/// `Instruction::moveBefore` and `Instruction::insertBefore`
+/// (`lib/IR/Instruction.cpp`) both read `InsertPos->getParent()` — null for an
+/// anchor that is in no block. llvmkit refuses with
+/// [`IrError::InstructionHasNoParent`], and the refusal happens before the
+/// moved instruction leaves its own block, so a rejected move strands nothing.
+///
+/// llvmkit-specific, as above: the anchored moves in
+/// `self_anchored_instruction_moves_are_no_ops` are the positive control for
+/// the same entry points.
+#[test]
+fn a_move_or_insert_refuses_an_anchor_in_no_block_without_mutating() -> Result<(), IrError> {
+    let m = module_new!("move-detached-anchor")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let _x = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
+    let _y = b.int_add::<i32, _, _, _>(i32_ty.const_int(3_u32), i32_ty.const_int(4_u32), "y")?;
+    let block = b.into_insert_block();
+    let (anchor, cursor) = BlockCursor::at_start(block).step().expect("entry holds %x");
+    let (mover, cursor) = cursor.step().expect("entry holds %y");
+    let block = cursor.into_block();
+    let detached_anchor = anchor.detach_from_parent(&m);
+    let printed_before = format!("{m}");
+
+    let refused = mover.move_before(&m, &detached_anchor.as_view());
+    assert!(
+        matches!(refused, Err(IrError::InstructionHasNoParent)),
+        "moving before an anchor in no block must be refused"
+    );
+    assert_eq!(
+        format!("{m}"),
+        printed_before,
+        "a refused move must leave the mover in its block"
+    );
+
+    let (mover, cursor) = BlockCursor::at_start(block).step().expect("entry holds %y");
+    let _ = cursor.into_block();
+    let refused = mover.move_after(&m, &detached_anchor.as_view());
+    assert!(
+        matches!(refused, Err(IrError::InstructionHasNoParent)),
+        "moving after an anchor in no block must be refused"
+    );
+    assert_eq!(format!("{m}"), printed_before, "still unmoved");
+    Ok(())
+}

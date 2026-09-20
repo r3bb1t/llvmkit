@@ -421,7 +421,9 @@ pub fn is_guaranteed_to_execute_for_every_iteration<'ctx, B: ModuleBrand + 'ctx>
     instruction: &InstructionView<'ctx, B>,
     loop_header: BasicBlockView<'ctx, B>,
 ) -> bool {
-    if instruction.parent() != loop_header.id() {
+    // `I->getParent() != Header` — an instruction in no block is in no header
+    // either, and takes the same early return.
+    if instruction.parent() != Some(loop_header.id()) {
         return false;
     }
     for candidate in loop_header.instructions() {
@@ -1159,8 +1161,9 @@ fn scan_origin<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<(ValueSlot, ScanStart)> {
     match &value.data().kind {
+        // An instruction in no block has no block to scan.
         ValueKindData::Instruction(instruction) => Some((
-            instruction.parent.get(),
+            instruction.parent.get()?,
             ScanStart::AfterInstruction(value.slot_trusting_same_module()),
         )),
         ValueKindData::Argument { parent_fn, .. } => {
@@ -1413,7 +1416,8 @@ fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
     let ValueKindData::Instruction(data) = &instruction.data().kind else {
         return None;
     };
-    let block = value_from_slot(instruction, data.parent.get());
+    // In no block, so in no function.
+    let block = value_from_slot(instruction, data.parent.get()?);
     let ValueKindData::BasicBlock(block_data) = &block.data().kind else {
         return None;
     };

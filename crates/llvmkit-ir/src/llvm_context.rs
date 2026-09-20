@@ -714,7 +714,18 @@ impl Context {
     pub(crate) fn set_instruction_parent(&self, inst_id: ValueSlot, new_parent: ValueSlot) {
         let data = self.value_data(inst_id);
         if let ValueKindData::Instruction(idata) = &data.kind {
-            idata.parent.set(new_parent);
+            idata.parent.set(Some(new_parent));
+        }
+    }
+
+    /// Record that the instruction stored at `inst_id` is in no block, as
+    /// `Instruction::removeFromParent` does with `Parent = nullptr`. No-op if
+    /// the value at that id is not an instruction. Crate-internal, like
+    /// [`Self::set_instruction_parent`].
+    pub(crate) fn clear_instruction_parent(&self, inst_id: ValueSlot) {
+        let data = self.value_data(inst_id);
+        if let ValueKindData::Instruction(idata) = &data.kind {
+            idata.parent.set(None);
         }
     }
 

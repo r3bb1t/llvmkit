@@ -76,14 +76,18 @@ use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 /// [`ValueKindData::Instruction`](crate::value::ValueKindData::Instruction).
 #[derive(Debug)]
 pub(super) struct InstructionData {
-    pub(super) parent: core::cell::Cell<ValueSlot>,
+    /// The block this instruction is in, or `None` while it is in none —
+    /// mirrors `Instruction::getParent`, which is null for an instruction
+    /// that was created without an insert position or removed from its
+    /// block (`Instruction::removeFromParent` sets `Parent = nullptr`).
+    pub(super) parent: core::cell::Cell<Option<ValueSlot>>,
     pub(super) kind: InstructionKindData,
     pub(super) metadata: core::cell::RefCell<MetadataAttachmentSet<StoredBrand>>,
     pub(super) debug_records: core::cell::RefCell<Vec<DebugRecord<StoredBrand>>>,
 }
 
 impl InstructionData {
-    pub(super) fn new(parent: ValueSlot, kind: InstructionKindData) -> Self {
+    pub(super) fn new(parent: Option<ValueSlot>, kind: InstructionKindData) -> Self {
         Self {
             parent: core::cell::Cell::new(parent),
             kind,
@@ -821,16 +825,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
         self.to_erased().clear_name(module_token);
     }
 
-    /// Containing basic block label.
-    pub fn parent(&self) -> BlockId<Dyn, B> {
-        BlockId::<Dyn, B>::from_raw(self.module.id(), self.parent_slot())
+    /// Containing basic block label, or `None` while this instruction is in
+    /// no block. Ports `Instruction::getParent`, which is null for an
+    /// instruction created without an insert position and for one
+    /// `Instruction::removeFromParent` has taken out of its block.
+    pub fn parent(&self) -> Option<BlockId<Dyn, B>> {
+        self.parent_slot()
+            .map(|slot| BlockId::<Dyn, B>::from_raw(self.module.id(), slot))
     }
 
     /// Crate-internal: the containing block's slot in this instruction's own
     /// module — the slot-level twin of [`Self::parent`] for the crate's own
     /// CFG reads, which would otherwise mint an id only to strip it again.
     #[inline]
-    pub(crate) fn parent_slot(&self) -> ValueSlot {
+    pub(crate) fn parent_slot(&self) -> Option<ValueSlot> {
         self.data().parent.get()
     }
 
@@ -1132,9 +1140,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         }
     }
 
-    /// Containing basic block label.
+    /// Containing basic block label. Total where
+    /// [`InstructionView::parent`] is not: the `Attached` typestate is minted
+    /// only by the routines that put the instruction in a block — the
+    /// builder's append and the insertion primitives below — so
+    /// `Instruction::getParent`'s null case is unrepresentable on this handle
+    /// (D1).
     pub fn parent(&self) -> BlockId<Dyn, B> {
-        self.as_view().parent()
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.parent_slot())
+    }
+
+    /// Crate-internal: the containing block's slot, the slot-level twin of
+    /// [`Self::parent`] and total for the same reason.
+    #[inline]
+    pub(crate) fn parent_slot(&self) -> ValueSlot {
+        self.as_view()
+            .parent_slot()
+            .unwrap_or_else(|| unreachable!("an attached instruction is in a block"))
     }
 
     // ---- Mutation API (Phase G / T1) ----
@@ -1233,7 +1255,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let module = module_token.core_ref();
         remove_local_name_from_parent(self.to_erased());
         deregister_operand_uses(self_id, &self.data().kind, module);
-        let parent_block_id = self.data().parent.get();
+        let parent_block_id = self.parent_slot();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
@@ -1243,6 +1265,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
                 .slot_trusting_same_module(),
         );
         bb.remove_instruction(self_id);
+        // The instruction is in no block now, and `getParent` answers that.
+        module.context().clear_instruction_parent(self_id);
     }
 
     /// Remove this instruction from its parent block but leave its
@@ -1257,7 +1281,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let module = module_token.core_ref();
         let self_id = self.id;
         remove_local_name_from_parent(self.to_erased());
-        let parent_block_id = self.data().parent.get();
+        let parent_block_id = self.parent_slot();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
@@ -1267,8 +1291,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
                 .slot_trusting_same_module(),
         );
         bb.remove_instruction(self_id);
-        // Clear the parent pointer so iteration over orphan instructions
-        // can detect detachment without consulting the block list.
+        // `Instruction::removeFromParent` ends with `Parent = nullptr`, so a
+        // detached instruction names no block rather than the one that no
+        // longer lists it.
+        module.context().clear_instruction_parent(self_id);
         Instruction {
             id: self.id,
             module: self.module,
@@ -1295,13 +1321,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         if self_id == other_id {
             return Ok(());
         }
+        // The anchor's block, read before this instruction leaves its own: an
+        // anchor in no block must not strand `self` out of one.
+        let new_parent = other.parent_slot().ok_or(IrError::InstructionHasNoParent)?;
         let old_parent_fn = self.to_erased().local_parent_function_id();
         let new_parent_fn = other.to_erased().local_parent_function_id();
         if old_parent_fn != new_parent_fn {
             remove_local_name_from_parent(self.to_erased());
         }
         // Remove from current parent.
-        let cur_parent = self.data().parent.get();
+        let cur_parent = self.parent_slot();
         let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             cur_parent,
             module,
@@ -1312,7 +1341,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         );
         cur_bb.remove_instruction(self_id);
         // Insert before other in other's parent.
-        let new_parent = other.data().parent.get();
         let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             new_parent,
             module,
@@ -1348,12 +1376,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         if self_id == other_id {
             return Ok(());
         }
+        // As in `move_before`: the anchor's block is read before this
+        // instruction leaves its own.
+        let new_parent = other.parent_slot().ok_or(IrError::InstructionHasNoParent)?;
         let old_parent_fn = self.to_erased().local_parent_function_id();
         let new_parent_fn = other.to_erased().local_parent_function_id();
         if old_parent_fn != new_parent_fn {
             remove_local_name_from_parent(self.to_erased());
         }
-        let cur_parent = self.data().parent.get();
+        let cur_parent = self.parent_slot();
         let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             cur_parent,
             module,
@@ -1363,7 +1394,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
                 .slot_trusting_same_module(),
         );
         cur_bb.remove_instruction(self_id);
-        let new_parent = other.data().parent.get();
         let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             new_parent,
             module,
@@ -1398,7 +1428,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
-        let parent_id = other.data().parent.get();
+        // The anchor's block, which an anchor in none cannot name.
+        let parent_id = other.parent_slot().ok_or(IrError::InstructionHasNoParent)?;
         let parent_fn_id = other.to_erased().local_parent_function_id();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_id,
@@ -1429,7 +1460,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
         let module = module_token.core_ref();
-        let parent_id = other.data().parent.get();
+        // The anchor's block, which an anchor in none cannot name.
+        let parent_id = other.parent_slot().ok_or(IrError::InstructionHasNoParent)?;
         let parent_fn_id = other.to_erased().local_parent_function_id();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_id,
@@ -2339,7 +2371,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
 /// the given parent block and kind payload.
 pub(super) fn build_instruction_value(
     ty: TypeSlot,
-    parent_bb: ValueSlot,
+    parent_bb: Option<ValueSlot>,
     kind: InstructionKindData,
     name: Option<String>,
 ) -> ValueData {
@@ -2358,14 +2390,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InstructionView<'ctx, B
     /// for instruction-category values.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let module = self.module.module();
-        let parent_id = self.data().parent.get();
         let label_ty = module
             .label_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        let parent =
-            BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(parent_id, self.module, label_ty);
-        let slots = match parent.parent_id() {
+        // An instruction in no block has no function to number its locals,
+        // exactly as one whose block has no parent function: upstream's
+        // `Instruction::print` takes the same fallback when `getParent()` is
+        // null.
+        let parent_fn_id = self.parent_slot().and_then(|parent_id| {
+            BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(parent_id, self.module, label_ty)
+                .parent_id()
+        });
+        let slots = match parent_fn_id {
             Some(parent_fn_id) => {
                 let parent_fn =
                     FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_fn_id, self.module);
