@@ -179,15 +179,16 @@ Implemented today:
   `APFloatTest.cpp` (seven modeled semantics; `Float8*` / `Float6*` / `Float4*`
   / `TF32` are out of scope). `ConstantRange` covers all but `castOp`,
   `shlWithNoWrap` and the signedness-flipping helpers. **`KnownBits.h` is
-  complete** — the ledger asserts an *empty* gap list. `ValueTracking.h` is at
-  **93 of 101 entry points**, spread over `value_tracking.rs`,
-  `select_pattern.rs`, `pointer_analysis.rs`, `speculation.rs`,
+  complete** — the ledger asserts an *empty* gap list. `ValueTracking.h` is
+  modeled except for the symbols `VALUE_TRACKING_GAPS` lists, spread over
+  `value_tracking.rs`, `select_pattern.rs`, `pointer_analysis.rs`, `speculation.rs`,
   `assumptions.rs`, `implied_conditions.rs`, and the floating-point trio
   `fp_class.rs` / `known_fp_class.rs` / `fp_predicate.rs`.
 
   **The parity ledger is the authority, not this file.**
   `crates/llvmkit-ir/tests/value_tracking_parity.rs` is symbol-keyed and
-  asserts `modeled + gaps == 101`, so a symbol cannot be silently neither;
+  asserts `MODELED_VALUE_TRACKING.len() + VALUE_TRACKING_GAPS.len()` equals
+  `VALUE_TRACKING_SURFACE_AUDITED`, so a symbol cannot be silently neither;
   every gap carries its own recorded reason. Read it before claiming anything
   in this area is missing — and note that `computeKnownFPClass` counts as one
   modeled entry point while its opcode dispatch is deliberately partial, with
