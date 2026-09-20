@@ -950,10 +950,12 @@ rather than a scope decision:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after the residue port (2026-08-04):** 93 of 101 entry
-points modeled, 8 gaps, all symbol-keyed in
-`crates/llvmkit-ir/tests/value_tracking_parity.rs` and asserted to sum to the
-audited surface.
+**Status after the residue port (2026-08-04):** the header's entry points were
+modeled except for a handful of symbol-keyed gaps in
+`crates/llvmkit-ir/tests/value_tracking_parity.rs`, asserted to sum to the
+audited surface. That was a snapshot and the set has moved since, so read
+`VALUE_TRACKING_GAPS` for the gaps as they stand rather than any figure written
+here or in `README.md` / `ROADMAP.md` / `AGENTS.md`.
 
 `computeKnownFPClass` is modeled but its **dispatch is partial** — the entry
 point exists and every unported arm is named in `known_fp_class.rs`'s header.

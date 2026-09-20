@@ -19,6 +19,41 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Documentation — four stale or overclaiming statements corrected
+
+- **`README.md`'s D11 no longer claims every test is traced.** It said every
+  `#[test]` in the workspace is traced in `UPSTREAM.md`; the frozen debt list at
+  `crates/llvmkit-ir/tests/fixtures/upstream_provenance_debt.txt` says otherwise
+  for the tests that predate the registry. D11 now states the rule for a test
+  being *added*, names the debt list, and explains the ratchet that
+  `tests/upstream_registry_drift.rs` enforces — a test with neither a row nor a
+  debt line fails, and so does a debt line that no longer names an unrowed test.
+- **`UPSTREAM.md`'s header** carried the same overclaim in its opening sentence,
+  contradicting its own "Registry coverage is not total" section further down,
+  and cited `local://LLVMKIT_TYPE_SAFETY_SWEEP.md`, a file that does not exist in
+  this repository. Both fixed.
+- **The `ValueTracking` parity figure is no longer stored anywhere.** "93 of 101
+  entry points, eight gaps" was written into `README.md`, `ROADMAP.md`,
+  `AGENTS.md` and `docs/future-work.md`, and had gone stale in all of them — a
+  gap closed after the 2026-08-04 audit and no copy followed. Every site now
+  points at `VALUE_TRACKING_GAPS` in
+  `crates/llvmkit-ir/tests/value_tracking_parity.rs`, which CI asserts sums with
+  the modeled table to the audited surface, so the ledger is the only place the
+  answer lives.
+- **"86 compile-fail fixtures"** in `README.md` was stale. The sentence now
+  describes what the fixtures *are* and where they are registered instead of
+  counting them, and notes that the parser crate keeps its own pair.
+
+### Documentation — the docs index is complete again
+
+- `docs/README.md` was missing `leftover-api-rewrite-work.md` and
+  `design/parse-error-algebraic-design.md`, so two tracked documents had no
+  discovery path. Both are listed, and the design section now says one of its
+  records has not shipped.
+- The index also gained a table for the three repository-root documents it never
+  named — `AGENTS.md`, `UPSTREAM.md` and `ROADMAP.md` — each with the kind of
+  question it answers.
+
 ### Added — a block walk mints placement witnesses without a check
 
 - `BasicBlock::placed_instructions` and `BasicBlockView::placed_instructions`

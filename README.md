@@ -99,9 +99,13 @@ Shipped today:
   (`crates/llvmkit-ir/tests/value_tracking_parity.rs`) asserts an *empty* gap
   list, so a regression or a newly-synced upstream method has to be
   acknowledged rather than absorbed.
-- **ValueTracking — 93 of 101 entry points**, tracked symbol-by-symbol in the
-  same ledger, which asserts that modeled plus gaps equals the audited surface
-  so a symbol cannot be silently neither. Beyond `compute_known_bits` itself
+- **ValueTracking — every `ValueTracking.h` entry point but a short, named gap
+  list**, tracked symbol-by-symbol in the same ledger, which asserts that
+  modeled plus gaps equals the audited surface so a symbol cannot be silently
+  neither. No figure is written here on purpose: read `VALUE_TRACKING_GAPS` in
+  `crates/llvmkit-ir/tests/value_tracking_parity.rs` for the gaps as they stand
+  and the reason each is open — a stored count went stale once already, in
+  every file that had copied it. Beyond `compute_known_bits` itself
   (with `KnownBitsAnalysis`, `ValueTrackingQuery`, recursion budgeting,
   dominator-tree hooks and a reusable per-analysis cache) this covers the
   select-pattern vocabulary and matching (`select_pattern.rs`), pointer and
@@ -113,8 +117,8 @@ Shipped today:
   `fcmpImpliesClass` (`fp_predicate.rs`). `computeKnownFPClass`'s opcode
   dispatch is deliberately partial; its module header names every arm that is
   not yet consulted, and an unconsulted arm only ever weakens an answer.
-  The remaining eight gaps each carry a recorded reason —
-  see [`docs/future-work.md`](docs/future-work.md).
+  Each gap carries its reason in its own ledger row, and the wider
+  not-yet-modeled picture is in [`docs/future-work.md`](docs/future-work.md).
 - **Represented intrinsic signatures and facts** — shipped for the modeled
   `llvm.*` signature families listed in `ROADMAP.md`: `assume`; integer or
   fixed-vector overloads of `abs`, bit permutations, counts, funnel shifts,
@@ -150,8 +154,8 @@ Not shipped yet:
   `absolute_symbol`, debug/use-list, and `returned` facts**
 - **Bitcode reader / writer**
 - **Full ValueTracking / DemandedBits / SimplifyDemandedBits parity** — the
-  ledger is closed for `KnownBits.h` and open for the eight remaining
-  `ValueTracking.h` entry points, some `ValueTracking.cpp` operator arms
+  ledger is closed for `KnownBits.h` and open for the `ValueTracking.h` entry
+  points `VALUE_TRACKING_GAPS` names, some `ValueTracking.cpp` operator arms
   (notably `computeKnownFPClass`'s dispatch), demanded-bit rules, and
   `InstCombineSimplifyDemanded` transforms.
 - **Additional or currently unrepresented `llvm.*` intrinsic IDs, signatures,
@@ -520,7 +524,12 @@ and no runtime check to reach. Upstream accepts each of these as `Value *` and
 reports them from `Verifier.cpp`, later, if verification runs at all. The
 mapping from each upstream verifier message to the llvmkit type that forecloses
 it is tabulated in [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md),
-and 86 compile-fail fixtures lock the guarantees.
+and `trybuild` compile-fail fixtures lock them: each is a small program that
+*must not* compile, and its blessed `.stderr` pins the diagnostic a user would
+actually see. The type-safety ones live in `crates/llvmkit-ir/tests/compile_fail/`,
+registered in `tests/typestate_compile_fail.rs`; the parser crate keeps its own
+pair. In both, the registration list rather than the directory is what runs — an
+unregistered fixture silently does not.
 
 **3. Verification is a typestate, not a function you must remember to call.**
 `Module::verify(self)` consumes `Module<B, Unverified>` and returns
@@ -1011,10 +1020,21 @@ locks.
 - **D10. No undefined behavior, by design.** Legal API calls must produce
   defined IR behavior; deferred traps and invalid combinations surface as typed
   errors or explicit IR states, not silent UB.
-- **D11. Tests and fixtures are ported, not invented.** Every `#[test]` in the
-  workspace is traced in [UPSTREAM.md](UPSTREAM.md) to an upstream unit test,
-  verifier fixture, assembler fixture, or explicitly-labeled example lock; the
-  fixture and runtime paths do not depend on `orig_cpp`.
+- **D11. Tests and fixtures are ported, not invented.** A test's expectations
+  come from an upstream unit test, verifier fixture, or assembler fixture —
+  never from an oracle computed by another route, which would test the
+  derivation instead of LLVM's answer — and its source is recorded in
+  [UPSTREAM.md](UPSTREAM.md) in the commit that adds it. A genuinely
+  llvmkit-specific test (an internal representation choice, a parse/print
+  idempotence law, a compile-fail lock) is legitimate, but its row has to *say*
+  it has no upstream counterpart rather than implying one.
+  **Coverage of the existing suite is a ratchet, not a finished job:** tests
+  predating the registry are listed in
+  `crates/llvmkit-ir/tests/fixtures/upstream_provenance_debt.txt`, and
+  `tests/upstream_registry_drift.rs` fails when a test has neither a row nor a
+  line there — so the debt can be paid down but never grown. A line in that
+  file means missing *provenance*, never "no upstream counterpart". The fixture
+  and runtime paths do not depend on `orig_cpp`.
 
 ## References
 

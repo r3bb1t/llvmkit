@@ -1,10 +1,19 @@
 # Upstream Test Provenance Registry
 
-Per Doctrine D11 (see `local://LLVMKIT_TYPE_SAFETY_SWEEP.md`), every llvmkit test
-cites the upstream LLVM test, fixture, or reference it ports. When the
-upstream tree has no equivalent (a typestate compile-fail that LLVM checks
-at runtime, or an AsmWriter byte-for-byte parity check), the row is
-marked `llvmkit-specific` with the closest functional reference.
+Per Doctrine D11 (stated in `README.md` § *Type-Safety Doctrine*), an llvmkit test
+cites the upstream LLVM test, fixture, or reference it ports, and that citation
+lands here in the same commit as the test. When the upstream tree has no
+equivalent (a typestate compile-fail that LLVM checks at runtime, or an
+AsmWriter byte-for-byte parity check), the row is marked `llvmkit-specific`
+with the closest functional reference.
+
+**That is the rule for a test being added; it is not a claim about the suite as
+it stands.** Coverage is incomplete — see
+[Registry coverage is not total](#registry-coverage-is-not-total) below for why,
+and `crates/llvmkit-ir/tests/fixtures/upstream_provenance_debt.txt` for the
+tests that still carry no row. `crates/llvmkit-ir/tests/upstream_registry_drift.rs`
+is what holds the line: a test with neither a row here nor a line there fails
+it, and so does a debt line that no longer names an unrowed test.
 
 Audit rule: a `mirror` row means the Rust test is a 1:1 translation of the cited upstream LLVM test's logic. For upstream `.ll` tests, keep a checked-in fixture copied from the upstream file or exact relevant excerpt and load it with `include_bytes!` / `include_str!`; do not rewrite the IR by hand unless the row says `llvmkit-specific subset`. For upstream gtests, translate the same setup and assertions; do not replace them with opcode-presence, broad substring, `is_ok`, or `is_err` smoke checks.
 
