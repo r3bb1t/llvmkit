@@ -284,7 +284,7 @@ pub use instr_types::{
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
-    TerminatorKind,
+    PlacedInstruction, TerminatorKind,
 };
 pub use instructions::{
     AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AshrInst, AtomicCmpXchgInst, AtomicRmwInst,

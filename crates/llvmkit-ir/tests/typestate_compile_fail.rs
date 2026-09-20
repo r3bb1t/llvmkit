@@ -89,6 +89,9 @@ fn typestate_compile_fail() {
     // Task 24 fix round 1 (D7): `ValueSlot` is crate-private too, and the
     // hidden `CallArgs::lower` hands its slots back opaque.
     t.compile_fail("tests/compile_fail/value_slot_is_crate_private.rs");
+    // Task 24 (D1): the insert and move entries take a `PlacedInstruction`,
+    // so an instruction that was never in a block cannot reach them.
+    t.compile_fail("tests/compile_fail/position_before_needs_a_placed_instruction.rs");
     // Task 24 fix round 2 (D7): a function pass's report keeps its brand.
     t.compile_fail("tests/compile_fail/fn_report_keeps_its_brand.rs");
     t.compile_fail("tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs");

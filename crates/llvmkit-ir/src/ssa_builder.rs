@@ -1818,10 +1818,15 @@ where
             // builder never emits a terminator, so the return-marker
             // parameter carries no real invariant here.
             // `anchor` is this block's own first instruction, read a line
-            // above, so neither refusal `position_before` can raise applies.
+            // above, so the witness names the block it came out of and
+            // neither refusal `position_before` can raise applies.
+            let placed = super::instruction::PlacedInstruction::in_block(
+                anchor,
+                BlockId::<Dyn, B>::from_raw(module.id(), block),
+            );
             let builder: super::ir_builder::IrBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
                 super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
-                    .position_before(&anchor)?;
+                    .position_before(placed)?;
             build_typed_phi(&builder, var_category, var_ty, module, &var_name)?
         } else {
             // Empty: end-of-block IS head-of-block, and an empty block

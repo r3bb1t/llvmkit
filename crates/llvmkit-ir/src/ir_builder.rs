@@ -88,8 +88,8 @@ use super::instr_types::{
     UnaryOpcode,
 };
 use super::instruction::{
-    Instruction, InstructionKind, InstructionKindData, InstructionView, build_instruction_value,
-    state::Attached,
+    Instruction, InstructionKind, InstructionKindData, InstructionView, PlacedInstruction,
+    build_instruction_value, state::Attached,
 };
 use super::instructions::FenceInst;
 use super::instructions::{
@@ -757,18 +757,25 @@ where
     /// Mirrors `IRBuilder::SetInsertPoint(Instruction *I)` in `IRBuilder.h`,
     /// which sets `BB = I->getParent(); InsertPt = I->getIterator();`.
     ///
+    /// Takes a [`PlacedInstruction`], so an instruction that was never in a
+    /// block cannot reach this call at all (D1); mint one with
+    /// [`InstructionView::placed`] or [`Instruction::placed`].
+    ///
     /// Errors with [`IrError::ForeignValueId`] if `anchor` belongs to another
-    /// module, and with [`IrError::InstructionHasNoParent`] if it is in no
-    /// block — the null `getParent()` upstream dereferences.
+    /// module, and with [`IrError::InstructionHasNoParent`] if the anchor was
+    /// detached after the witness was made — the one case the witness cannot
+    /// rule out.
     pub fn position_before(
         self,
-        anchor: &InstructionView<'ctx, B>,
+        anchor: PlacedInstruction<'ctx, B>,
     ) -> IrResult<IrBuilder<'m, 'ctx, B, F, Positioned, R>> {
+        let anchor = anchor.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let anchor_id = anchor.slot_in(self.module.id())?;
         // `IRBuilderBase::SetInsertPoint(Instruction *I)` reads `I->getParent()`
-        // and inserts there; an anchor in no block names none, which upstream
-        // dereferences and llvmkit refuses (D10).
+        // and inserts there. The current block is read rather than the
+        // witness's, so a detach between the mint and this call is refused
+        // instead of inserting into a block the anchor has left (D10).
         let parent_block_id = anchor
             .parent_slot()
             .ok_or(IrError::InstructionHasNoParent)?;
