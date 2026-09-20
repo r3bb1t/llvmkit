@@ -19,6 +19,54 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## A placement witness proves *was placed*, not *is placed* — the layout session that would close it (found 2026-09-20, error-surface cleanup Task 24)
+
+`PlacedInstruction<'ctx, B>` (`crates/llvmkit-ir/src/instruction.rs`) pairs an
+instruction with the block it was in, and the five entries that insert or move
+relative to an instruction take it, so "this instruction was never in a block"
+is a compile error. What it cannot rule out is *staleness*.
+
+[`leftover-api-rewrite-work.md`](leftover-api-rewrite-work.md) §1 records the
+same hole from the rewrite's side, with the shape of the type and the mutation
+check. This entry is the backlog half: what closing it would cost, and why that
+is not scheduled. Read that one first; the summary here is deliberately short.
+
+```rust
+let witness = view.placed().ok_or(IrError::InstructionHasNoParent)?;
+anchor.detach_from_parent(&m);            // nothing in the type system stops this
+builder.position_before(witness)?;        // must still refuse, at run time
+```
+
+llvmkit mutates through `&Module<B, Unverified>` plus a linear handle, never
+`&mut`, so no borrow ends when the anchor leaves its block. The five entries
+therefore re-read the anchor's current block and return
+`IrError::InstructionHasNoParent` for the stale case — the only way to reach
+that variant there. A mutation check pins that the re-read is load-bearing:
+making `IrBuilder::position_before` trust the witness's stored block fails
+`mutation_basic::position_before_refuses_an_anchor_in_no_block_without_mutating`.
+
+**What would close it, and why it is not built.** Only exclusive access freezes
+mutable state in Rust, so the witness would have to be scoped to a session that
+holds the function's layout by `&mut`:
+
+```rust
+let mut layout = function.layout_mut(&m);   // exclusive over this function's layout
+let placed = layout.first(block)?;          // proof scoped to the session
+layout.detach(placed);                      // a structural edit needs &mut layout
+builder.position_before(placed);            // cannot compile after a detach: the borrow ended
+```
+
+`iter::BlockCursor` is already this shape in miniature (it consumes the block
+handle and threads it), and it is how Cranelift's `Layout` works, so there is
+precedent in-crate and out. The cost is the mutation model itself: every
+structural edit would move from `&Module` plus a linear handle to a session
+token, which touches `Instruction`'s lifecycle methods, `BasicBlock::split_at` /
+`splice_into`, `FnReshape`, and the `IrBuilder` positioning surface. That is its
+own program, not a rider on the witness, and it is **not scheduled**. Recorded
+here so the run-time refusal is known-deferred rather than mistaken for an
+oversight; the guarantee as it stands is stated in `README.md` § *Instruction
+lifecycle safety* and in `docs/type-safety-vs-llvm.md`.
+
 ## LLParser diagnostics — 46 real gaps left of 516 messages (recounted 2026-08-16, LLParser parity W14d; 8 closed since, see below)
 
 The parity ledger was regenerated at this commit. Of the **516 exact message

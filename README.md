@@ -638,6 +638,29 @@ lifecycle capability cannot be reused. Copyable discovery APIs return
 read-only inspection without minting a new mutation handle. Cursor-driven
 mutation uses `BlockCursor::step` on an unterminated block.
 
+An instruction can also be in *no* block — `InstructionView::parent` answers
+`Option`, porting the null `Instruction::getParent` of an instruction built
+without an insert position or taken out by `removeFromParent`. The entries that
+need a block therefore do not take a bare view: `IrBuilder::position_before`
+and `Instruction::move_before` / `move_after` / `insert_before` / `insert_after`
+take a `PlacedInstruction<'ctx, B>`, an instruction paired with the block it
+was in. It has no public constructor, and the three mints are
+
+```rust
+let w = view.placed().ok_or(IrError::InstructionHasNoParent)?; // checked
+let w = attached.placed();                    // total: Attached is minted in a block
+for w in block.placed_instructions() { /* … */ }   // checkless: the block is the walk's
+```
+
+so "this instruction was never in a block" is a compile error rather than a
+run-time refusal. What a witness proves is *was placed*, never *is placed*:
+llvmkit mutates through `&Module` with interior mutability, so nothing stops a
+`detach_from_parent` between the mint and the call. The five entries re-read
+the anchor's current block and refuse a stale witness with
+`IrError::InstructionHasNoParent` — which is now the only way to reach that
+variant there. Making staleness unrepresentable needs exclusive access to a
+function's layout; that design is recorded in `docs/future-work.md`, not built.
+
 Run the examples:
 
 ```bash

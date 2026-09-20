@@ -71,9 +71,12 @@ pub struct PlacedInstruction<'ctx, B: ModuleBrand> {
 ```
 
 There is no public constructor. It is minted by `InstructionView::placed`
-(checked, returns `Option`) or `Instruction::placed` on the `Attached`
-typestate (total, because that state is only minted in a block). It is `Copy`,
-from the default `#[derive(Branded)]` set.
+(checked, returns `Option`), `Instruction::placed` on the `Attached` typestate
+(total, because that state is only minted in a block), or
+`BasicBlock::placed_instructions` / `BasicBlockView::placed_instructions`, which
+need no check because the block is the one being walked (added after this
+section was written, closing the third mint the design called for). It is
+`Copy`, from the default `#[derive(Branded)]` set.
 
 But llvmkit mutates through `&Module` with interior mutability, so nothing stops
 a detach between the mint and the use:
@@ -98,7 +101,10 @@ trust the witness's stored block failed
 the lifetime of the witness, so no detach can interleave. That is a different
 design from the one shipped — it changes who may hold a `&Module` while a
 witness is alive — and it was not attempted. Until then the runtime refusal is
-the guarantee, and the type is a narrowing, not a proof.
+the guarantee, and the type is a narrowing, not a proof. The sketch of that
+design, its blast radius and its in-crate precedent are in
+[`future-work.md`](future-work.md) under "A placement witness proves *was
+placed*, not *is placed*"; it is recorded there, not scheduled.
 
 ---
 

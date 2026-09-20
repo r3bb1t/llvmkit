@@ -117,6 +117,61 @@ fn instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Result<(), I
     Ok(())
 }
 
+/// The same law for the placement-witness walk: `placed_instructions()`
+/// `flat_map`s across a function's blocks, outlives the block it came from, and
+/// yields the same instructions as `instructions()` in the same order.
+///
+/// No upstream counterpart — see the module docs. The extra claim over
+/// [`instructions_flat_map_across_blocks_compiles_and_is_ordered`] is that the
+/// witness each element carries names the block it was walked from, which is
+/// what makes this mint checkless.
+#[test]
+fn placed_instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Result<(), IrError> {
+    let m = module_new!("view-iter-placed-flatmap")?;
+    let expected_named = two_block_function(&m)?;
+    let f = m.as_view().functions().next().expect("@f exists");
+
+    // The composition the witness exists for. Binding it proves the iterator
+    // outlives the `block` it came from, exactly as the view walk does.
+    let walk: Vec<_> = f
+        .basic_blocks()
+        .flat_map(|block| block.placed_instructions())
+        .collect();
+
+    let named: Vec<String> = walk
+        .iter()
+        .filter_map(|placed| placed.instruction().name())
+        .collect();
+    assert_eq!(named, expected_named, "program order across blocks");
+
+    assert_eq!(
+        walk.iter()
+            .map(|placed| placed.instruction().to_erased().id())
+            .collect::<Vec<_>>(),
+        f.basic_blocks()
+            .flat_map(|block| block.instructions())
+            .map(|instruction| instruction.to_erased().id())
+            .collect::<Vec<_>>(),
+        "the witness walk and the view walk agree element for element"
+    );
+
+    // Every witness names the block it was walked from, so no element of this
+    // walk could have needed a check.
+    let mut walked = walk.iter();
+    for block in f.basic_blocks() {
+        for _ in 0..block.instructions().len() {
+            let placed = walked.next().expect("one witness per instruction");
+            assert_eq!(
+                placed.block(),
+                block.id(),
+                "a witness names the block it was walked from"
+            );
+        }
+    }
+    assert!(walked.next().is_none(), "the walk yields nothing extra");
+    Ok(())
+}
+
 /// An `instructions()` iterator outlives the block view that produced it.
 ///
 /// The block is dropped before the iterator is consumed; this only type-checks

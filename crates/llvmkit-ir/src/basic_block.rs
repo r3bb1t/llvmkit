@@ -24,7 +24,9 @@ use super::block_state::{BlockTerminationState, Terminated, Unterminated};
 use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
-use super::instruction::{InstructionKindData, InstructionView, absorb_debug_records};
+use super::instruction::{
+    InstructionKindData, InstructionView, PlacedInstruction, absorb_debug_records,
+};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
@@ -784,6 +786,47 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let ids = self.instruction_ids();
         ids.into_iter()
             .map(move |id| InstructionView::from_parts(id, module))
+    }
+
+    /// Iterate this block's instructions in program order, each already paired
+    /// with this block as a [`PlacedInstruction`] — the witness the entries
+    /// that insert or move relative to an instruction take.
+    ///
+    /// The mint that needs no check. [`instructions`](Self::instructions)
+    /// yields bare views, and turning one into a witness costs an
+    /// [`InstructionView::placed`] that answers `Option` because it reads the
+    /// instruction's own parent field. Here the block is the one being walked,
+    /// so every element of this list is in it by construction and there is
+    /// nothing to refuse.
+    ///
+    /// A snapshot, exactly as [`instructions`](Self::instructions) is: the ids
+    /// are read out once and the iterator owns them, so an edit during the walk
+    /// cannot disturb it. That is also the limit of the proof — a witness says
+    /// *was placed*, never *is placed*, so detaching an instruction mid-walk
+    /// leaves the witnesses already yielded stale, and the entries that take
+    /// one re-read the current block and refuse a stale one with
+    /// [`IrError::InstructionHasNoParent`].
+    ///
+    /// Carries the same `use<..>` bound as
+    /// [`instructions`](Self::instructions), and for the same reason:
+    /// `blocks.flat_map(|block| block.placed_instructions())` would not
+    /// borrow-check without it.
+    ///
+    /// No upstream counterpart: `BasicBlock::iterator` yields `Instruction &`,
+    /// whose `getParent()` upstream's callers dereference without asking
+    /// whether it is null.
+    pub fn placed_instructions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = PlacedInstruction<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, R, Term, B, Params> {
+        let module = self.module;
+        let block = BlockId::<Dyn, B>::from_raw(module.id(), self.id);
+        let ids = self.instruction_ids();
+        ids.into_iter().map(move |id| {
+            PlacedInstruction::in_block(InstructionView::from_parts(id, module), block)
+        })
     }
 
     /// `true` if the block currently has no instructions.

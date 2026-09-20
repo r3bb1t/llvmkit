@@ -71,7 +71,9 @@ use super::error::IrError;
 use super::function::{FunctionBasicBlocks, FunctionValue};
 use super::instr_types::BranchKind;
 use super::instruction::InstructionKindData;
-use super::instruction::{Instruction, InstructionView, NonTerminator, TerminatorKind, state};
+use super::instruction::{
+    Instruction, InstructionView, NonTerminator, PlacedInstruction, TerminatorKind, state,
+};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{InsertPoint, IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
@@ -167,6 +169,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
         let ids = self.as_basic_block().instruction_ids();
         ids.into_iter()
             .map(move |id| InstructionView::from_parts(id, module))
+    }
+
+    /// Instructions in program order, each already paired with this block as a
+    /// [`PlacedInstruction`] — the mint that needs no check, since the block is
+    /// the one being walked.
+    ///
+    /// The view twin of
+    /// [`BasicBlock::placed_instructions`](crate::BasicBlock::placed_instructions),
+    /// and it exists for the same reason [`Self::instructions`] does: this is
+    /// the block surface the read-only walk from
+    /// [`ModuleView::functions`](crate::ModuleView::functions) hands out, so
+    /// without it that walk would have to fall back to
+    /// [`InstructionView::placed`]'s `Option` to reach the insert and move
+    /// entries. Read the `BasicBlock` method's docs for what the witness does
+    /// and does not prove.
+    #[inline]
+    pub fn placed_instructions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = PlacedInstruction<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, B> {
+        self.as_basic_block().placed_instructions()
     }
 
     /// `true` if the block currently has no instructions.
