@@ -271,9 +271,19 @@ impl DominatorTree {
         // boundary (F2): Task 27
         let user_id = user.slot_trusting_same_module();
 
+        // `isReachableFromEntry(nullptr)` is false, since `getNode(nullptr)`
+        // is null: an instruction in no block is in no reachable block, so a
+        // use there is dominated ("any unreachable use is dominated") and a
+        // definition there dominates nothing.
+        let Some(use_bb) = use_bb else {
+            return true;
+        };
         if !self.is_reachable_from_entry(use_bb) {
             return true;
         }
+        let Some(def_bb) = def_bb else {
+            return false;
+        };
         if !self.is_reachable_from_entry(def_bb) {
             return false;
         }
@@ -310,6 +320,11 @@ impl DominatorTree {
         if !self.reachable.contains(&use_bb_id) {
             return true;
         }
+        // As in `dominates_instruction`: a definition in no block is in no
+        // reachable block, and `isReachableFromEntry(nullptr)` is false.
+        let Some(def_bb) = def_bb else {
+            return false;
+        };
         if !self.is_reachable_from_entry(def_bb) {
             return false;
         }

@@ -3697,7 +3697,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         else {
             return None;
         };
-        let parent = data.parent.get();
+        // An instruction in no block is in none of `f`'s blocks either.
+        let parent = data.parent.get()?;
         f.basic_blocks()
             .find(|bb| bb.to_erased().slot_trusting_same_module() == parent)
             .map(BasicBlock::retag_termination::<Unterminated>)
@@ -5648,10 +5649,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         instruction.kind.is_terminator().then_some(last)
     }
 
-    /// `Instruction::getParent()` as a value id.
+    /// `Instruction::getParent()` as a value id — `None` for a value that is
+    /// not an instruction, and for an instruction that is in no block.
     fn parent_block_of(&self, instruction: ValueSlot) -> Option<ValueSlot> {
         match &self.module.context().value_data(instruction).kind {
-            ValueKindData::Instruction(data) => Some(data.parent.get()),
+            ValueKindData::Instruction(data) => data.parent.get(),
             _ => None,
         }
     }
@@ -6804,7 +6806,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             // must be strictly less than `index_in_block`.
             if let ValueKindData::Instruction(op_inst) =
                 &self.module.context().value_data(op_id).kind
-                && op_inst.parent.get() == bb.to_erased().slot_trusting_same_module()
+                && op_inst.parent.get() == Some(bb.to_erased().slot_trusting_same_module())
             {
                 // Find op_id's index in block.
                 if let Some(op_idx) = block_instructions
@@ -7231,7 +7233,7 @@ mod tests {
         kind: InstructionKindData,
     ) -> ValueSlot {
         let m = m.core_ref();
-        let v = build_instruction_value(result_ty, bb_id, kind, None);
+        let v = build_instruction_value(result_ty, Some(bb_id), kind, None);
         // `IrBuilder::append_instruction`'s use registration, verbatim —
         // `operand_ids()` extended with `block_operand_ids()`. Fabricating
         // without it left the block use-lists empty, so a `br` built here was

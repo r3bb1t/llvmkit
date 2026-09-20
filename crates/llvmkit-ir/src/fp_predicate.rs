@@ -765,7 +765,8 @@ fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
     let ValueKindData::Instruction(data) = &value.data().kind else {
         return None;
     };
-    let block = value_from_slot(value, data.parent.get());
+    // In no block, so in no function.
+    let block = value_from_slot(value, data.parent.get()?);
     let ValueKindData::BasicBlock(block_data) = &block.data().kind else {
         return None;
     };

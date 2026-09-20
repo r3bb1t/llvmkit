@@ -1817,9 +1817,11 @@ where
             // linear handle required. Pinned to `Dyn` -- this throwaway
             // builder never emits a terminator, so the return-marker
             // parameter carries no real invariant here.
+            // `anchor` is this block's own first instruction, read a line
+            // above, so neither refusal `position_before` can raise applies.
             let builder: super::ir_builder::IrBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
                 super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
-                    .position_before(&anchor);
+                    .position_before(&anchor)?;
             build_typed_phi(&builder, var_category, var_ty, module, &var_name)?
         } else {
             // Empty: end-of-block IS head-of-block, and an empty block
@@ -1929,9 +1931,8 @@ where
             )
         }
         // Internal: a phi this session created, read through its own module.
-        let block_id = Instruction::<Attached, B>::from_parts(phi, module)
-            .as_view()
-            .parent_slot();
+        // Total: the handle is `Attached`, so the phi is in a block.
+        let block_id = Instruction::<Attached, B>::from_parts(phi, module).parent_slot();
         // Recover which declared variable this phi belongs to via
         // `phi_var`, populated alongside `created_phis` in
         // `emit_operandless_phi` (the one place that KNOWS which

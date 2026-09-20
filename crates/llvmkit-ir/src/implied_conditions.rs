@@ -817,7 +817,9 @@ fn dom_predecessor_condition<'ctx, B: ModuleBrand + 'ctx>(
     context: &InstructionView<'ctx, B>,
 ) -> Option<(Value<'ctx, B>, bool)> {
     let anchor = context.to_erased();
-    let context_block = context.parent_slot();
+    // A context instruction in no block has no predecessor block to read a
+    // branch condition from.
+    let context_block = context.parent_slot()?;
     let predecessor = single_predecessor(value_from_slot(anchor, context_block))?;
 
     let terminator = terminator_of_block(anchor, predecessor)?;

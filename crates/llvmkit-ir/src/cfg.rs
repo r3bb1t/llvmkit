@@ -240,7 +240,8 @@ pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(
             if !instruction.kind.is_terminator() {
                 return None;
             }
-            Some(instruction.parent.get())
+            // A terminator in no block is in no CFG either.
+            instruction.parent.get()
         })
         .collect()
 }

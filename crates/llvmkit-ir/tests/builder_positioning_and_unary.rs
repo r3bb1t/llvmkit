@@ -30,7 +30,7 @@ fn position_before_inserts_between_prev_and_anchor() -> Result<(), IrError> {
     let a = b.int_add(n, 1_i32, "a")?;
     let (sealed_block, ret_inst) = b.ret(a)?;
     let _ = sealed_block;
-    let b2 = IrBuilder::new_for::<i32>(&m).position_before(&ret_inst.as_view());
+    let b2 = IrBuilder::new_for::<i32>(&m).position_before(&ret_inst.as_view())?;
     let _ = b2.int_sub(a, 0_i32, "noop")?;
     let text = format!("{m}");
     let pos_a = text.find("%a = add").expect("%a present");

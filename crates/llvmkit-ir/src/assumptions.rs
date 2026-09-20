@@ -309,12 +309,18 @@ pub fn is_valid_assume_for_context<'ctx, B: ModuleBrand + 'ctx>(
     dominator_tree: Option<&DominatorTree>,
     allow_ephemerals: bool,
 ) -> bool {
+    // An assume or context instruction in no block has no block layout to
+    // reason about; upstream's callers only ever pass instructions that are in
+    // one, and a missing block cannot establish the assumption.
+    let (Some(assume_block), Some(context_block)) = (assume.parent(), context.parent()) else {
+        return false;
+    };
     // boundary (F2): Task 27
     // The two caller instructions' parent block ids: compared with each other,
     // and `context_block` is read through `assume`'s module below.
-    let assume_block = assume.parent().slot_unchecked_at_marked_boundary();
+    let assume_block = assume_block.slot_unchecked_at_marked_boundary();
     // boundary (F2): Task 27
-    let context_block = context.parent().slot_unchecked_at_marked_boundary();
+    let context_block = context_block.slot_unchecked_at_marked_boundary();
     let anchor = assume.to_erased();
     // boundary (F2): Task 27
     // `assume` and `context` are both the caller's; their slots are compared
@@ -370,11 +376,15 @@ pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
     context: &InstructionView<'ctx, B>,
 ) -> bool {
     let anchor = assume.to_erased();
+    // As in `is_valid_assume_for_context`: no block, no layout to scan.
+    let (Some(assume_block), Some(context_block)) = (assume.parent(), context.parent()) else {
+        return false;
+    };
     // boundary (F2): Task 27
     // As in `is_valid_assume_for_context`: two caller instructions' blocks.
-    let assume_block = assume.parent().slot_unchecked_at_marked_boundary();
+    let assume_block = assume_block.slot_unchecked_at_marked_boundary();
     // boundary (F2): Task 27
-    let context_block = context.parent().slot_unchecked_at_marked_boundary();
+    let context_block = context_block.slot_unchecked_at_marked_boundary();
     // boundary (F2): Task 27
     // As in `is_valid_assume_for_context`: two caller instructions.
     let assume_slot = assume.slot_trusting_same_module();

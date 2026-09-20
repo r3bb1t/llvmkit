@@ -59,7 +59,13 @@ impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
             // itself as an operand." llvmkit walks a flat instruction worklist
             // rather than upstream's block loop, so the block gate is asked per
             // instruction, of the instruction's parent.
-            if !dominators.is_reachable_from_entry(view.parent()) {
+            // An instruction the worklist still holds but that is in no block
+            // is in none of the function's blocks, so it is skipped for the
+            // same reason an unreachable block's instructions are.
+            let Some(parent) = view.parent() else {
+                continue;
+            };
+            if !dominators.is_reachable_from_entry(parent) {
                 continue;
             }
             // Upstream runImpl only simplifies instructions with uses (!use_empty);

@@ -2322,21 +2322,34 @@ where
         // (3) SSA dominance. `dt` borrows `&mut self`, so settle every verdict
         // into owned ids and drop the borrow BEFORE any IR mutation runs.
         let mut dom_failure: Option<(ValueSlot, ValueSlot)> = None;
+        let mut unplaced_incoming = false;
+        let module_id = self.patch.module_mut().id();
         {
             let dt = self.analysis_repaired::<DominatorTreeAnalysis, _>();
             for (value, pred) in incomings {
                 // Only instruction operands carry a dominance obligation; a
                 // parameter / constant / global dominates every block.
                 if let Ok(inst) = InstructionView::try_from(*value) {
-                    let def_block = inst.parent();
+                    // An incoming instruction that is in no block has no
+                    // block to dominate the edge from, and none to name in
+                    // the diagnostic.
+                    let Some(def_block_slot) = inst.parent_slot() else {
+                        unplaced_incoming = true;
+                        break;
+                    };
+                    // Internal: `value` and `pred` were both resolved against
+                    // this module above, so the block it names is this
+                    // module's.
+                    let def_block = BlockId::<Dyn, B>::from_raw(module_id, def_block_slot);
                     if !dt.dominates_block(def_block, *pred) {
-                        // Internal: `value` and `pred` were both resolved
-                        // against this module above.
-                        dom_failure = Some((inst.parent_slot(), pred.slot_trusting_same_module()));
+                        dom_failure = Some((def_block_slot, pred.slot_trusting_same_module()));
                         break;
                     }
                 }
             }
+        }
+        if unplaced_incoming {
+            return Err(IrError::InstructionHasNoParent);
         }
         if let Some((value_block, pred_block)) = dom_failure {
             let module = self.patch.module_mut().module_ref();

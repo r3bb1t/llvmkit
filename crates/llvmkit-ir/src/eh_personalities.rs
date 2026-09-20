@@ -252,7 +252,7 @@ fn parent_block<'ctx, B: ModuleBrand + 'ctx>(
     slot: ValueSlot,
 ) -> Option<ValueSlot> {
     match &anchor.module().core_ref().context().value_data(slot).kind {
-        ValueKindData::Instruction(instruction) => Some(instruction.parent.get()),
+        ValueKindData::Instruction(instruction) => instruction.parent.get(),
         _ => None,
     }
 }

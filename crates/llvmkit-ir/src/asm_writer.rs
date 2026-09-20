@@ -644,9 +644,10 @@ fn predict_use_list_order(
             continue;
         }
         let parent = match &data.kind {
-            ValueKindData::Instruction(instruction) => {
-                block_parent_function(m, instruction.parent.get())
-            }
+            ValueKindData::Instruction(instruction) => instruction
+                .parent
+                .get()
+                .and_then(|parent| block_parent_function(m, parent)),
             ValueKindData::Argument { parent_fn, .. } => Some(*parent_fn),
             ValueKindData::BasicBlock(_) => block_parent_function(m, value),
             _ => None,

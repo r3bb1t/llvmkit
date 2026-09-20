@@ -19,6 +19,31 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — an instruction in no block says so *(breaking)*
+
+- **Breaking (llvmkit-ir):** `InstructionView::parent` returns
+  `Option<BlockId<Dyn, B>>`. It ports `Instruction::getParent`, which is null
+  for an instruction created without an insert position and for one
+  `Instruction::removeFromParent` took out of its block. The stored
+  `InstructionData.parent` is `Cell<Option<ValueSlot>>` to match.
+  `Instruction<Attached>::parent` stays total: that typestate is minted only
+  where the instruction is in a block (D1).
+- **Fixed (llvmkit-ir):** `detach_from_parent` now clears the parent, as
+  `Instruction::removeFromParent`'s `Parent = nullptr` does. It previously left
+  the old block's slot in place — its own comment claimed otherwise — so a
+  detached instruction reported the block that no longer listed it, and
+  `position_before` on it reached an `unreachable!` in the append path.
+  `erase_from_parent` clears it too.
+- **Breaking (llvmkit-ir):** `IrBuilder::position_before` returns
+  `IrResult<..>`. It refuses an anchor in no block with the new
+  `IrError::InstructionHasNoParent` (blame `UsageError`) — the null
+  `getParent()` `IRBuilderBase::SetInsertPoint(Instruction *)` dereferences —
+  and an anchor from another module with `ForeignValueId`, which removes the
+  last two `// boundary (F1)` markers on the positioning path (F1 = 29 → 27,
+  `rg -c "boundary \(F1\)" crates/` summed, at this commit).
+  `Instruction::move_before` / `move_after` / `insert_before` / `insert_after`
+  refuse the same anchor, before the moved instruction leaves its own block.
+
 ### Fixed — `hasFnAttr` reads attribute groups, from one port
 
 - **Fixed (llvmkit-ir):** `will_not_free_between` answered `false` when a

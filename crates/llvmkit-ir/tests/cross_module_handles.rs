@@ -1872,6 +1872,71 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     }
 }
 
+/// `position_before` refuses an anchor instruction from another module: it
+/// would otherwise read that instruction's block slot in this module's arena
+/// and insert there. Positive control: an anchor of `home` positions the
+/// builder and the instruction it emits lands in `home`.
+///
+/// No upstream counterpart: `IRBuilderBase::SetInsertPoint(Instruction *I)`
+/// (`IR/IRBuilder.h`) takes a `Value *`, whose identity is its address.
+#[test]
+fn position_before_rejects_an_anchor_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    // Parameters, so no folder turns either anchor into a constant.
+    let (home_builder, home_parameters) = builder_with_parameters(&home, "f");
+    let home_anchor = home_builder
+        .int_binop_erased(
+            BinaryOpcode::Add,
+            home_parameters[0],
+            home_parameters[0],
+            IntBinOpFlags::default(),
+            "home.anchor",
+        )
+        .expect("home anchor");
+    let (foreign_builder, foreign_parameters) = builder_with_parameters(&foreign, "g");
+    let foreign_anchor = foreign_builder
+        .int_binop_erased(
+            BinaryOpcode::Add,
+            foreign_parameters[0],
+            foreign_parameters[0],
+            IntBinOpFlags::default(),
+            "foreign.anchor",
+        )
+        .expect("foreign anchor");
+
+    let foreign_view =
+        InstructionView::try_from(foreign.view(foreign_anchor)).expect("an add is an instruction");
+    let home_view =
+        InstructionView::try_from(home.view(home_anchor)).expect("an add is an instruction");
+
+    let home_before = format!("{home}");
+    let refused = IrBuilder::new_for::<Dyn>(&home).position_before(&foreign_view);
+    assert!(
+        matches!(refused, Err(IrError::ForeignValueId)),
+        "{refused:?}"
+    );
+    assert_eq!(
+        format!("{home}"),
+        home_before,
+        "a rejected positioning must not mutate"
+    );
+
+    let positioned = IrBuilder::new_for::<Dyn>(&home)
+        .position_before(&home_view)
+        .expect("a home anchor positions the builder");
+    positioned
+        .int_binop_erased(
+            BinaryOpcode::Add,
+            home_parameters[0],
+            home_parameters[0],
+            IntBinOpFlags::default(),
+            "home.before",
+        )
+        .expect("the positive control emits");
+    assert!(format!("{home}").contains("%home.before = add"), "{home}");
+}
+
 /// `restore_insert_point` refuses an `InsertPoint` saved from another
 /// module's builder: the snapshot's block id carries that module's tag.
 ///
