@@ -19,6 +19,31 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — the verifier checks an ifunc's resolver and attachments
+
+- **`Verifier::visitGlobalIFunc` is ported past its linkage check.** An ifunc
+  whose resolver, once pointer casts and aliases are stripped
+  (`Value::stripPointerCastsAndAliases`), is no `Function` ("IFunc must have a
+  Function resolver"), is a declaration or `available_externally` ("IFunc
+  resolver must be a definition"), does not return a pointer ("IFunc resolver
+  must return a pointer"), or is not a `ptr` of the ifunc's address space
+  ("IFunc resolver has incorrect type") used to verify; so did an ifunc
+  carrying `!dbg` or `!prof` ("an ifunc may not have a !dbg attachment" / "…
+  !prof attachment"). Each is a verifier failure now, in upstream's order,
+  locked by `test/Verifier/ifunc.ll` and `ifunc-opaque.ll`, ported whole.
+  *Breaking:* two new `VerifierRule` variants, `IfuncMetadataAttachment` and
+  `IfuncInvalidResolver`. Not ported: the `visitGlobalValue` call and the
+  attachment loop's `visitMDNode` (`docs/divergences.md`, entry 138).
+- **Fixed: `extern_weak` was accepted as an ifunc and an alias linkage.**
+  `global_ifunc::is_valid_ifunc_linkage` and
+  `global_alias::is_valid_alias_linkage` listed it, where
+  `GlobalIFunc::isValidLinkage` and `GlobalAlias::isValidLinkage` do not —
+  their `isWeakLinkage` is `weak` / `weak_odr` only. Both are ported clause by
+  clause now: an `extern_weak` ifunc fails verification ("IFunc should have
+  … linkage!", `test/Verifier/ifunc.ll`'s `@inval_linkage`), and an
+  `extern_weak` alias is the parse error "invalid linkage type for alias" (and
+  refused by `GlobalAliasBuilder::build`).
+
 ### Changed — a verified module's globals and functions are read-only by type *(breaking)*
 
 - **`GlobalVariable`, `GlobalAlias`, `GlobalIfunc`, `FunctionValue`,
@@ -36,8 +61,8 @@ cut, entries accumulate under **Unreleased**.
   builds a descriptor at its overloads' capability. Spellings that omit `C`
   keep meaning `Mutable`.
 - **Fixed, for the routes that reach a global or function without passing
-  through a block: a verified module's globals and functions could be
-  changed.** Every setter on these handles asked only for *a*
+  through a block or instruction: a verified module's globals and functions
+  could be changed.** Every setter on these handles asked only for *a*
   `&Module<B, Unverified>` token, and two modules that share a brand (every
   `Module::dynamic` is `DynBrand`) type-check against each other's — so
   `a.view(g).set_linkage(&b, …)` changed a verified `a`. Every mutator now
@@ -50,7 +75,9 @@ cut, entries accumulate under **Unreleased**.
   closed:** routes through blocks and instructions still hand back `Mutable`
   handles — `entry_block()` / `basic_blocks()` → `parent_function()`, a
   call's `callee()` → `FunctionValue::try_from`, an instruction operand →
-  `GlobalVariable::try_from` — and so reach every setter; they stay `Mutable`
+  `GlobalVariable::try_from`, and `Value::users()` → an instruction → its
+  operand → `GlobalVariable::try_from`, which reaches a global from the global
+  itself without a block — and so reach every setter; they stay `Mutable`
   until the block and instruction family carries a capability and Task 6 of
   the capability-typestate program removes the `laundered until` markers.
 - **Breaking: `FunctionBody::as_function` returns a `ReadOnly` function**, and
@@ -68,12 +95,30 @@ cut, entries accumulate under **Unreleased**.
     `IrStruct` derive emits for them) carry no capability, so its values are
     `Mutable` handles a `ReadOnly` function cannot mint. The erased
     `FunctionValue::param` / `params` answer at either capability.
-  - `DominatorTree::new`, `FunctionCfg::new` and `Module::no_cfi` take a
-    `Mutable` `FunctionValue`, so `DominatorTree::new(verified.view(f))` and
-    `FunctionCfg::new(verified.view(f))`, which compiled while `view` handed
-    out `Mutable` functions, no longer do, and `Module::no_cfi` refuses a
-    `ReadOnly` function such as `FunctionBody::as_function()` at compile time.
-    Analyses run through a pass context are unaffected.
+  - every public entry that takes a `Mutable` global or function handle as
+    an operand refuses a `ReadOnly` one at compile time — a verified module's
+    `view(f)` / `view(g)`, `FunctionBody::as_function()` — where it compiled
+    while `view` handed out `Mutable` handles. Read and analysis entries:
+    `DominatorTree::new` / `recalculate`, `FunctionCfg::new`,
+    `color_eh_funclets`, `check_function_phi_coherence`, `get_vscale_range`,
+    `fcmp_implies_class`, `fcmp_implies_class_of_constant`,
+    `fcmp_implies_class_of_class`, `fcmp_to_class_test`,
+    `fcmp_to_class_test_of_constant`, and in `llvmkit-asmparser`
+    `AsmParserContext::function_location` / `add_function_location` and
+    `GlobalRef`'s `From` for a function, global variable, alias and ifunc.
+    Authoring entries, which a `ReadOnly` function of an unverified module
+    such as `FunctionBody::as_function()` no longer reaches: `Module::block_address`,
+    `dso_local_equivalent`, `no_cfi`; `SsaState::for_function`,
+    `SsaBuilder::for_function`, `with_folder_for_function`; and
+    `IrBuilder::position_past_allocas`, `append_block_with_params`,
+    `append_block_with_named_params`, `append_block_typed`, `call_builder`,
+    `invoke_dyn`, `invoke_dyn_with_config`, `invoke_dyn_with_args`,
+    `callbr_with_config`. Analyses the pass manager runs are unaffected; a
+    pass that calls one of these on `as_function()` is not. Derivation:
+    rust-analyzer `findReferences` on `FunctionValue`, `GlobalVariable`,
+    `GlobalAlias`, `GlobalIfunc` and `ComdatRef` at `bac8293`, filtered to
+    parameter positions of public functions and trait impls, then checked
+    against this commit.
 - **Operands of any capability are admitted.** `IntoCallee`,
   `IntoTypedCallee` and `IntoVarArgsCallee` accept a function or facade of
   either capability, check it belongs to the builder's module
@@ -89,6 +134,13 @@ cut, entries accumulate under **Unreleased**.
   it with the new **`IrError::ForeignComdat`** (*breaking*: a new variant) and
   changes nothing; the builders refuse at `build`. `ComdatRef::read_only`
   lowers a comdat to `ReadOnly`.
+- **`IntrinsicDescriptor::function_type` and `IntrinsicId::function_type`
+  intern at the capability the module's state grants** (*breaking*: the
+  return type is `FunctionType<'ctx, B, S::Capability>`, and
+  `IntrinsicId::function_type` takes its overloads at that capability — the
+  types the module mints, so a verified module's caller passes `ReadOnly`
+  ones). They used to mint a `Mutable` signature from a
+  `Module<B, Verified>`.
 - **Breaking: `Module::add_global_uninitialized`, `add_external_global`,
   `global_builder`, `alias_builder` and `ifunc_builder` take their value type
   as any `IrType`** (was `Into<Type>` for the first three and a concrete

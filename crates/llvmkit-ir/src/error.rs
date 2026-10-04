@@ -632,6 +632,17 @@ pub enum VerifierRule {
     /// (`if (IsAlias && ...)`), so `@i = appending ifunc ...` parses and is
     /// caught later.
     IfuncInvalidLinkage,
+    /// `ifunc` carries a `!dbg` or `!prof` attachment. Mirrors the
+    /// attachment loop of `Verifier::visitGlobalIFunc` ("an ifunc may not have
+    /// a !dbg attachment", "an ifunc may not have a !prof attachment").
+    IfuncMetadataAttachment,
+    /// `ifunc` resolver is not a `Function` once pointer casts and aliases
+    /// are stripped, is not a definition, does not return a pointer, or is not
+    /// a pointer in the ifunc's address space. Mirrors the resolver checks of
+    /// `Verifier::visitGlobalIFunc` ("IFunc must have a Function resolver",
+    /// "IFunc resolver must be a definition", "IFunc resolver must return a
+    /// pointer", "IFunc resolver has incorrect type").
+    IfuncInvalidResolver,
     /// `!range` attached to an instruction kind other than load/call/invoke.
     /// Mirrors `Verifier::visitInstruction`.
     RangeMetadataInvalidAttachment,
@@ -877,6 +888,10 @@ impl fmt::Display for VerifierRule {
             Self::GlobalScalableType => "globals cannot contain scalable types",
             Self::IfuncInvalidLinkage => {
                 "IFunc should have private, internal, linkonce, weak, linkonce_odr, weak_odr, or external linkage!"
+            }
+            Self::IfuncMetadataAttachment => "ifunc carries a !dbg or !prof attachment",
+            Self::IfuncInvalidResolver => {
+                "ifunc resolver is not a defined function returning a pointer in the ifunc's address space"
             }
             Self::RangeMetadataInvalidAttachment => {
                 "range metadata is only valid on loads, calls, and invokes"

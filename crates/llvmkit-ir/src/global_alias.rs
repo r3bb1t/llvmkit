@@ -573,20 +573,22 @@ fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> O
     }
 }
 
+/// Ports `GlobalAlias::isValidLinkage` (`IR/GlobalAlias.h`):
+/// `isExternalLinkage(L) || isLocalLinkage(L) || isWeakLinkage(L) ||
+/// isLinkOnceLinkage(L) || isAvailableExternallyLinkage(L)`. `isWeakLinkage`
+/// is `weak` / `weak_odr` only, so `extern_weak` is not valid for an alias.
 #[inline]
 pub const fn is_valid_alias_linkage(linkage: Linkage) -> bool {
-    matches!(
-        linkage,
-        Linkage::External
-            | Linkage::AvailableExternally
-            | Linkage::LinkOnceAny
-            | Linkage::LinkOnceOdr
-            | Linkage::WeakAny
-            | Linkage::WeakOdr
-            | Linkage::Internal
-            | Linkage::Private
-            | Linkage::ExternalWeak
-    )
+    // `isExternalLinkage(L)`
+    matches!(linkage, Linkage::External)
+        // `isLocalLinkage(L)` — internal or private.
+        || matches!(linkage, Linkage::Internal | Linkage::Private)
+        // `isWeakLinkage(L)` — `isWeakAnyLinkage` or `isWeakODRLinkage`.
+        || matches!(linkage, Linkage::WeakAny | Linkage::WeakOdr)
+        // `isLinkOnceLinkage(L)` — `isLinkOnceAnyLinkage` or `isLinkOnceODRLinkage`.
+        || matches!(linkage, Linkage::LinkOnceAny | Linkage::LinkOnceOdr)
+        // `isAvailableExternallyLinkage(L)`
+        || matches!(linkage, Linkage::AvailableExternally)
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for GlobalAlias<'ctx, B, C> {

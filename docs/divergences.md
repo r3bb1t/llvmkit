@@ -760,6 +760,47 @@ Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
 
+### 138. `Verifier::visitGlobalValue` and `visitGlobalAlias` are unported, and so is `visitGlobalIFunc`'s attachment walk
+
+**Severity:** accepts-invalid (derived by reading; no fixture exhibits it — a
+hypothesis until one does)
+**Where:** `crates/llvmkit-ir/src/verifier.rs` — `Verifier::run`,
+`Verifier::visit_global_variable`, `Verifier::visit_global_ifunc`,
+`Verifier::visit_function`.
+
+- **LLVM:** `Verifier::visitGlobalVariable`, `visitGlobalAlias`,
+  `visitGlobalIFunc` and `visitFunction` each call `visitGlobalValue(GV)`,
+  whose `Check`s every global value meets — "Global is external, but doesn't
+  have external or weak linkage!", the `!associated` metadata shape, the
+  `dllimport` / `dso_local` rules, "Global is referenced in a different
+  module!" and the rest. `Verifier::verify` also walks `M.aliases()` through
+  `visitGlobalAlias` ("Alias should have private, internal, linkonce, weak,
+  linkonce_odr, weak_odr, external, or available_externally linkage!", the
+  aliasee walk). And `visitGlobalIFunc`'s attachment loop calls
+  `visitMDNode(*I.second, AreDebugLocsAllowed::No)` on every attachment after
+  its `!dbg` / `!prof` checks.
+- **llvmkit:** no `visit_global_value` exists, so none of its `Check`s runs for
+  any global; `Verifier::run` walks globals, ifuncs, the module flags and
+  functions, but not aliases; and `visit_global_ifunc` ports the `!dbg` /
+  `!prof` checks, the linkage check and the four resolver checks, but not the
+  `visitMDNode` call. A module that fails only one of these verifies.
+- **Found:** 2026-10-04, porting `Verifier::visitGlobalIFunc`'s resolver and
+  attachment checks (capability-typestate Task 4, fix round 2), whose first
+  statement is `visitGlobalValue(GI)`.
+  `git grep -n -E "visitGlobalValue|visit_global_value|visitGlobalAlias|visit_global_alias" 2eff2e7 -- crates/llvmkit-ir/src/verifier.rs docs`
+  returned nothing (exit 1) before this entry. The `visitMDNode` half is the
+  metadata walk the `visitDIExpression` entry under *Model gaps* already names
+  as missing; this entry records the ifunc call site of it.
+- **Why not in the same change:** `visitGlobalValue` is a routine of its own,
+  shared by four visitors and reaching the metadata, linkage and module
+  provenance subsystems; porting it, and `visitGlobalAlias` with it, wants its
+  own arm table and its own `test/Verifier` fixtures. `visitMDNode` is the whole
+  metadata-verification subsystem.
+- **Fix:** port `visitGlobalValue` whole and call it first from each of the four
+  visitors; port `visitGlobalAlias` and walk `M.aliases()` in `Verifier::run`
+  in upstream's order; then call the ported `visitMDNode` from the ifunc
+  attachment loop.
+
 ### 132. `Verifier::visitIntrinsicCall`'s signature split, its `MetadataAsValue` walk and all but one arm of its `switch` are unported — **NARROWED (W9)**
 
 *verifier — call family* — crates/llvmkit-ir/src/verifier.rs (`check_intrinsic_call`)

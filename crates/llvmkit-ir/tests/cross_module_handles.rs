@@ -26,8 +26,8 @@ use llvmkit_ir::{
     InstructionView, IntCastFlags, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
     IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
     PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind,
-    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, iter::BlockCursor,
-    run_function_pass,
+    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, comdat::SelectionKind,
+    iter::BlockCursor, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -578,11 +578,13 @@ fn a_global_builder_rejects_a_value_type_from_another_module() {
 
 /// `set_comdat` on a global variable and on a function, and the global and
 /// function builders' `comdat`, refuse a comdat another module minted with
-/// `IrError::ForeignComdat` and change nothing: a global stores its comdat by
-/// name, and that name names nothing in this module's comdat table, so the
-/// attachment would have vanished from the printed module. Positive control:
-/// this module's own comdat of the same name is attached, read back and
-/// printed.
+/// `IrError::ForeignComdat` and change nothing. A global stores its comdat by
+/// name, so the foreign comdat's name would bind to *this* module's comdat of
+/// the same name — which exists here before the refusals, with a different
+/// selection kind, so a name stored before a refusal would read back through
+/// `comdat()` and print. Positive control: this module's own comdat is
+/// attached by each of the four entries, read back from each — with its own
+/// selection kind — and printed.
 ///
 /// No upstream counterpart: `GlobalObject::setComdat` (`lib/IR/Globals.cpp`)
 /// takes a `Comdat *`, whose identity is its address.
@@ -591,6 +593,8 @@ fn a_comdat_from_another_module_is_refused() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let foreign_comdat = foreign.get_or_insert_comdat("c");
+    foreign_comdat.set_selection_kind(&foreign, SelectionKind::Largest);
+    let own = home.get_or_insert_comdat("c");
     let i32_ty = home.i32_type();
     let void_fn = home.function_type_no_parameters(home.void_type());
     let g = home.add_global("g", i32_ty.const_int(0i32)).expect("g");
@@ -640,20 +644,30 @@ fn a_comdat_from_another_module_is_refused() {
         "a refused comdat must not mutate"
     );
 
-    let own = home.get_or_insert_comdat("c");
     home.view(g).set_comdat(&home, own).expect("own comdat");
     home.view(f).set_comdat(&home, own).expect("own comdat");
-    home.global_builder("built", i32_ty)
+    let built = home
+        .global_builder("built", i32_ty)
         .initializer(i32_ty.const_int(1i32))
         .comdat(own)
         .build()
         .expect("own comdat");
-    home.function_builder::<(), _>("built_fn", void_fn)
+    let built_fn = home
+        .function_builder::<(), _>("built_fn", void_fn)
         .comdat(own)
         .build()
         .expect("own comdat");
-    assert_eq!(home.view(g).comdat().map(|c| c.name()), Some("c"));
-    assert_eq!(home.view(f).comdat().map(|c| c.name()), Some("c"));
+    let read_back = [
+        home.view(g).comdat(),
+        home.view(f).comdat(),
+        home.view(built).comdat(),
+        home.view(built_fn).comdat(),
+    ];
+    for comdat in read_back {
+        let comdat = comdat.expect("the own comdat is attached");
+        assert_eq!(comdat.name(), "c");
+        assert_eq!(comdat.selection_kind(), SelectionKind::Any);
+    }
     let text = format!("{home}");
     assert!(text.contains("$c = comdat any"), "got:\n{text}");
     assert!(

@@ -583,19 +583,21 @@ fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> O
     }
 }
 
+/// Ports `GlobalIFunc::isValidLinkage` (`IR/GlobalIFunc.h`):
+/// `isExternalLinkage(L) || isLocalLinkage(L) || isWeakLinkage(L) ||
+/// isLinkOnceLinkage(L)`. `isWeakLinkage` is `weak` / `weak_odr` only, so
+/// `extern_weak` is not valid for an ifunc (`test/Verifier/ifunc.ll`'s
+/// `@inval_linkage`).
 #[inline]
 pub const fn is_valid_ifunc_linkage(linkage: Linkage) -> bool {
-    matches!(
-        linkage,
-        Linkage::External
-            | Linkage::LinkOnceAny
-            | Linkage::LinkOnceOdr
-            | Linkage::WeakAny
-            | Linkage::WeakOdr
-            | Linkage::Internal
-            | Linkage::Private
-            | Linkage::ExternalWeak
-    )
+    // `isExternalLinkage(L)`
+    matches!(linkage, Linkage::External)
+        // `isLocalLinkage(L)` — internal or private.
+        || matches!(linkage, Linkage::Internal | Linkage::Private)
+        // `isWeakLinkage(L)` — `isWeakAnyLinkage` or `isWeakODRLinkage`.
+        || matches!(linkage, Linkage::WeakAny | Linkage::WeakOdr)
+        // `isLinkOnceLinkage(L)` — `isLinkOnceAnyLinkage` or `isLinkOnceODRLinkage`.
+        || matches!(linkage, Linkage::LinkOnceAny | Linkage::LinkOnceOdr)
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for GlobalIfunc<'ctx, B, C> {

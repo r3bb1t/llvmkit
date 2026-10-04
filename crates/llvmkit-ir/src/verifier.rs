@@ -250,25 +250,134 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// invariants, scalable-type rejection). The intrinsic-globals
     /// (`llvm.global_ctors` / `llvm.used` / etc.) and metadata
     /// attachment rules are deferred -- they need the metadata layer.
-    /// Mirrors the linkage arm of `Verifier::visitGlobalIFunc`.
+    /// Mirrors `Verifier::visitGlobalIFunc`, in its order: the attachment
+    /// loop, the linkage, then the resolver — a `Function`, a definition,
+    /// returning a pointer, held through a pointer of the ifunc's address
+    /// space. Single-shot like the rest of this verifier: the first failing
+    /// `Check` returns where upstream's `CheckFailed` accumulates.
     ///
-    /// It lives here, not in the parser, because upstream's parser has no such
-    /// check: `parseAliasOrIFunc` guards `isValidLinkage` with
-    /// `if (IsAlias && ...)`, so an ifunc with a bad linkage *parses* and is
-    /// caught at verify time. llvmkit used to reject it at parse time and
+    /// Two of upstream's statements are unported, recorded as
+    /// `docs/divergences.md` entry 138: the leading `visitGlobalValue(GI)` —
+    /// llvmkit's verifier has no `visitGlobalValue` for any global — and the
+    /// `visitMDNode(*I.second, AreDebugLocsAllowed::No)` inside the loop.
+    ///
+    /// The linkage check lives here, not in the parser, because upstream's
+    /// parser has no such check: `parseAliasOrIFunc` guards `isValidLinkage`
+    /// with `if (IsAlias && ...)`, so an ifunc with a bad linkage *parses* and
+    /// is caught at verify time. llvmkit used to reject it at parse time and
     /// again in `GlobalIfuncBuilder::build`, which made the upstream
     /// diagnostic unreachable.
     fn visit_global_ifunc(&self, i: crate::GlobalIfunc<'ctx, B>) -> IrResult<()> {
+        let fail = |rule: VerifierRule, message: &str| IrError::VerifierFailure {
+            rule,
+            subject: VerifierSubject::GlobalIfunc {
+                name: i.name().unwrap_or_default(),
+            },
+            message: message.to_owned(),
+        };
+
+        // `GI.getAllMetadata(MDs)` — `Value::getAllMetadata`, whose
+        // `MDAttachments::getAll` stable-sorts the attachments by kind id. A custom kind's id is
+        // assigned past every fixed one at run time, so keying it past them
+        // and keeping its insertion order is the same order for the two
+        // checks below, neither of which a custom kind can fail.
+        let mut kinds: Vec<MetadataAttachmentKind> = i
+            .metadata_stored()
+            .iter()
+            .map(|(kind, _)| kind.clone())
+            .collect();
+        kinds.sort_by_key(|kind| kind.fixed_id().unwrap_or(u32::MAX));
+        for kind in &kinds {
+            // `CheckDI(I.first != LLVMContext::MD_dbg, …)`. A `CheckDI`
+            // failure is broken *debug info*, which `verifyModule` reports as
+            // an error when its caller passes no `BrokenDebugInfo` out-flag —
+            // the only mode `Module::verify` has.
+            if *kind == MetadataAttachmentKind::Dbg {
+                return Err(fail(
+                    VerifierRule::IfuncMetadataAttachment,
+                    "an ifunc may not have a !dbg attachment",
+                ));
+            }
+            // `Check(I.first != LLVMContext::MD_prof, …)`.
+            if *kind == MetadataAttachmentKind::Prof {
+                return Err(fail(
+                    VerifierRule::IfuncMetadataAttachment,
+                    "an ifunc may not have a !prof attachment",
+                ));
+            }
+            // `visitMDNode(*I.second, AreDebugLocsAllowed::No)` — unported
+            // (entry 138).
+        }
+
         if !crate::global_ifunc::is_valid_ifunc_linkage(i.linkage()) {
-            return Err(IrError::VerifierFailure {
-                rule: VerifierRule::IfuncInvalidLinkage,
-                subject: VerifierSubject::GlobalIfunc {
-                    name: i.name().unwrap_or_default(),
-                },
-                message: "IFunc should have private, internal, linkonce, weak, linkonce_odr, \
-                          weak_odr, or external linkage!"
-                    .to_owned(),
+            return Err(fail(
+                VerifierRule::IfuncInvalidLinkage,
+                "IFunc should have private, internal, linkonce, weak, linkonce_odr, \
+                 weak_odr, or external linkage!",
+            ));
+        }
+
+        // `const Function *Resolver = GI.getResolverFunction();` —
+        // `dyn_cast<Function>(getResolver()->stripPointerCastsAndAliases())`.
+        let resolver = i.resolver().as_erased();
+        let stripped = crate::pointer_analysis::strip_pointer_casts_and_aliases(resolver);
+        let ValueKindData::Function(resolver_function) = &stripped.data().kind else {
+            return Err(fail(
+                VerifierRule::IfuncInvalidResolver,
+                "IFunc must have a Function resolver",
+            ));
+        };
+        // `Check(!Resolver->isDeclarationForLinker(), …)` —
+        // `hasAvailableExternallyLinkage() || isDeclaration()`, and a
+        // function's `isDeclaration()` is an empty block list.
+        if *resolver_function.linkage.borrow() == Linkage::AvailableExternally
+            || resolver_function.basic_blocks.borrow().is_empty()
+        {
+            return Err(fail(
+                VerifierRule::IfuncInvalidResolver,
+                "IFunc resolver must be a definition",
+            ));
+        }
+
+        // `const Type *ResolverTy = GI.getResolver()->getType();`
+        let resolver_ty = self.module.context().type_data(self.value_type(
+            // Internal: the ifunc's own resolver operand.
+            resolver.slot_trusting_same_module(),
+        ));
+
+        // `Check(isa<PointerType>(Resolver->getFunctionType()->getReturnType()), …)`
+        let returns_pointer = self
+            .module
+            .context()
+            .type_data(resolver_function.signature)
+            .as_function()
+            .is_some_and(|(ret, ..)| {
+                matches!(
+                    self.module.context().type_data(ret),
+                    TypeData::Pointer { .. }
+                )
             });
+        if !returns_pointer {
+            return Err(fail(
+                VerifierRule::IfuncInvalidResolver,
+                "IFunc resolver must return a pointer",
+            ));
+        }
+
+        // `Check(ResolverTy == PointerType::get(Context, GI.getAddressSpace()), …)`.
+        // No llvmkit construction path reaches it today (derived by reading):
+        // `GlobalIfuncBuilder` takes the ifunc's address space from its
+        // resolver and refuses a resolver that is not an opaque `ptr`, and
+        // `GlobalIfunc::set_resolver` refuses one of another address space.
+        // Ported anyway, so a path that stops agreeing is caught here.
+        if !matches!(
+            resolver_ty,
+            TypeData::Pointer { addr_space } if *addr_space == i.address_space()
+        ) {
+            return Err(fail(
+                VerifierRule::IfuncInvalidResolver,
+                "IFunc resolver has incorrect type",
+            ));
         }
         Ok(())
     }

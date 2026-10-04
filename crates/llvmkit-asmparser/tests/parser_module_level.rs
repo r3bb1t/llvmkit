@@ -417,6 +417,201 @@ fn an_ifunc_linkage_is_a_verifier_rule_not_a_parse_rule() {
     assert!(err.contains("invalid linkage type for alias"), "got: {err}");
 }
 
+/// One `CHECK:` of a `llvm-as`-rejects verifier fixture, with the
+/// `CHECK-NEXT:` that follows it when there is one.
+struct VerifierCheck {
+    message: String,
+    next: Option<String>,
+}
+
+/// The `; CHECK:` / `; CHECK-NEXT:` lines of a fixture, in order.
+fn verifier_checks(fixture: &str) -> Vec<VerifierCheck> {
+    let mut checks: Vec<VerifierCheck> = Vec::new();
+    for line in fixture.lines() {
+        if let Some(message) = line.strip_prefix("; CHECK: ") {
+            checks.push(VerifierCheck {
+                message: message.to_owned(),
+                next: None,
+            });
+        } else if let Some(next) = line.strip_prefix("; CHECK-NEXT: ") {
+            checks
+                .last_mut()
+                .expect("a CHECK-NEXT follows a CHECK")
+                .next = Some(next.to_owned());
+        }
+    }
+    checks
+}
+
+/// FileCheck's match of one `CHECK` pattern against a line: the literal
+/// parts between `{{.*}}` regexes appear in order. The only regex these
+/// fixtures use is `{{.*}}`.
+fn file_check_matches(pattern: &str, line: &str) -> bool {
+    let mut rest = line;
+    for part in pattern.split("{{.*}}") {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+/// Each ifunc of a `Verifier::visitGlobalIFunc` fixture, verified alone, must
+/// fail with that ifunc's `CHECK` message, naming the ifunc its `CHECK-NEXT`
+/// names.
+///
+/// The fixture is per-ifunc here for the reason
+/// `parser_calls.rs::upstream_musttail_invalid_fixture_messages_match` is
+/// per-function: `Module::verify_borrowed` reports the *first* failure, where
+/// upstream's `Verifier` accumulates. Each case is the whole fixture with every
+/// other ifunc line removed, so every resolver, global and function the
+/// fixture defines is still there. Upstream's `CHECK-NEXT` line is
+/// `Verifier::Write(&GI)`'s operand print of the ifunc (`@name`, or
+/// `ptr @name`); llvmkit carries that as the failure's subject, so the line's
+/// `@name` is compared with the subject's name.
+fn assert_ifunc_verifier_fixture(fixture: &str) {
+    let lines: Vec<&str> = fixture.lines().collect();
+    let is_ifunc = |line: &&str| line.starts_with('@') && line.contains(" ifunc ");
+    let ifuncs: Vec<&str> = lines.iter().copied().filter(is_ifunc).collect();
+    let checks = verifier_checks(fixture);
+    assert_eq!(
+        ifuncs.len(),
+        checks.len(),
+        "one CHECK per ifunc in the fixture"
+    );
+    for (&ifunc, check) in ifuncs.iter().zip(&checks) {
+        let source: String = lines
+            .iter()
+            .copied()
+            .filter(|line| !is_ifunc(line) || *line == ifunc)
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let module = llvmkit_ir::Module::dynamic("ifunc_verifier_fixture");
+        parse_into(&source, &module);
+        let Err(err) = module.verify_borrowed() else {
+            panic!("{ifunc}: `llvm-as` rejects every ifunc in this fixture, but it verified");
+        };
+        let llvmkit_ir::IrError::VerifierFailure {
+            message, subject, ..
+        } = err
+        else {
+            panic!("{ifunc}: expected a verifier failure, got {err:?}");
+        };
+        assert!(
+            file_check_matches(&check.message, &message),
+            "{ifunc}: {message:?} does not match CHECK {:?}",
+            check.message
+        );
+        let ifunc_name = ifunc
+            .split(" = ")
+            .next()
+            .and_then(|name| name.strip_prefix('@'))
+            .expect("an ifunc line opens on its name");
+        assert_eq!(
+            subject,
+            llvmkit_ir::VerifierSubject::GlobalIfunc {
+                name: ifunc_name.to_owned()
+            },
+            "{ifunc}"
+        );
+        if let Some(next) = &check.next {
+            let named = next.rsplit(' ').next().unwrap_or(next);
+            assert_eq!(
+                named,
+                format!("@{ifunc_name}"),
+                "{ifunc}: CHECK-NEXT {next:?}"
+            );
+        }
+    }
+}
+
+/// Ports `test/Verifier/ifunc.ll` whole: each `Check` of
+/// `Verifier::visitGlobalIFunc` the fixture reaches — the linkage, a resolver
+/// that is no `Function`, a declaration, an `available_externally`
+/// definition, and a resolver returning `i32` — with its message and the ifunc
+/// it names.
+#[test]
+fn upstream_ifunc_verifier_fixture_messages_match() {
+    assert_ifunc_verifier_fixture(include_str!("fixtures/upstream/Verifier/ifunc.ll"));
+}
+
+/// Ports `test/Verifier/ifunc-opaque.ll` whole: a resolver behind a
+/// non-zero-index `getelementptr`, and one behind `inttoptr (add (ptrtoint …))`,
+/// are no `Function` once `Value::stripPointerCastsAndAliases` stops at them.
+#[test]
+fn upstream_ifunc_opaque_verifier_fixture_messages_match() {
+    assert_ifunc_verifier_fixture(include_str!("fixtures/upstream/Verifier/ifunc-opaque.ll"));
+}
+
+/// `Verifier::visitGlobalIFunc`'s attachment loop refuses `!dbg` and `!prof`
+/// on an ifunc, each with its `Check` literal. The attachments are visited in
+/// kind-id order — `MDAttachments::getAll` stable-sorts them — so with
+/// both written `!prof` first, `!dbg` (kind 0) is the finding reported, not
+/// `!prof` (kind 2). Positive control: the same ifunc carrying a custom
+/// attachment verifies.
+///
+/// No upstream fixture: `llvm/test/Verifier/` exercises neither message
+/// (`rg -l "ifunc may not have" llvm/test llvm/unittests` in the vendored tree
+/// returns nothing). llvmkit-specific lock on the two ported `Check`s.
+#[test]
+fn an_ifunc_may_carry_neither_a_dbg_nor_a_prof_attachment() {
+    let source = |attachments: &str| {
+        format!(
+            "define ptr @r() {{\n  ret ptr null\n}}\n@i = ifunc void (), ptr @r, {attachments}\n!0 = !{{}}\n"
+        )
+    };
+    for (attachments, expected) in [
+        ("!dbg !0", "an ifunc may not have a !dbg attachment"),
+        ("!prof !0", "an ifunc may not have a !prof attachment"),
+        (
+            "!prof !0, !dbg !0",
+            "an ifunc may not have a !dbg attachment",
+        ),
+    ] {
+        let m = llvmkit_ir::Module::dynamic("ifunc_attachment");
+        parse_into(&source(attachments), &m);
+        let err = m.verify_borrowed().expect_err("the verifier rejects it");
+        let llvmkit_ir::IrError::VerifierFailure { message, .. } = err else {
+            panic!("{attachments}: expected a verifier failure, got {err:?}");
+        };
+        assert_eq!(message, expected, "{attachments}");
+    }
+
+    let m = llvmkit_ir::Module::dynamic("ifunc_custom_attachment");
+    parse_into(&source("!custom !0"), &m);
+    m.verify_borrowed()
+        .expect("a custom attachment on an ifunc verifies");
+}
+
+/// `extern_weak` is no valid alias linkage: `GlobalAlias::isValidLinkage`'s
+/// `isWeakLinkage` is `weak` / `weak_odr` only, so `parseAliasOrIFunc`
+/// reports `invalid linkage type for alias` at the alias's name. llvmkit's
+/// `is_valid_alias_linkage` listed `extern_weak` and accepted it. Positive
+/// control: `weak_odr`, which `isWeakLinkage` does take, parses. The ifunc
+/// half of the same predicate fault is `test/Verifier/ifunc.ll`'s
+/// `@inval_linkage`, ported above.
+///
+/// No upstream fixture writes an `extern_weak` alias (`rg -l -e "= extern_weak
+/// .*alias " -e "= extern_weak alias" llvm/test` in the vendored tree returns
+/// nothing); llvmkit-specific lock on the ported predicate and its
+/// diagnostic's anchor.
+#[test]
+fn extern_weak_is_no_valid_alias_linkage() {
+    let source = "@g = global i32 0\n@a = extern_weak alias i32, ptr @g\n";
+    let m = llvmkit_ir::Module::dynamic("extern_weak_alias");
+    let err = Parser::new(source.as_bytes(), &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("`parseAliasOrIFunc` rejects an extern_weak alias");
+    assert_eq!(err.to_string(), "invalid linkage type for alias");
+    assert_eq!(reported_line_and_column(source.as_bytes(), &err), (2, 1));
+
+    let m = llvmkit_ir::Module::dynamic("weak_odr_alias");
+    parse_into("@g = global i32 0\n@a = weak_odr alias i32, ptr @g\n", &m);
+    m.verify_borrowed().expect("a weak_odr alias verifies");
+}
+
 /// The module-entity diagnostics that name a *property*, each verbatim.
 ///
 /// Three of them are prose that does not begin with "expected", and llvmkit

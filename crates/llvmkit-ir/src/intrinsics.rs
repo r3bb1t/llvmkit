@@ -9,7 +9,7 @@ use crate::Branded;
 use crate::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, CaptureInfo, MemoryEffects,
 };
-use crate::capability::{Capability, CapabilityOf, Mutable};
+use crate::capability::{Capability, CapabilityOf, ModuleState, Mutable};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
 use crate::module::{Module, ModuleBrand, ModuleId, ModuleRef};
@@ -545,7 +545,10 @@ impl IntrinsicId {
         }
     }
 
-    /// The intrinsic's function type in `module` for `overloads`.
+    /// The intrinsic's function type in `module` for `overloads`, at the
+    /// capability `module`'s state grants (D8): `Mutable` while unverified,
+    /// `ReadOnly` once verified. The overloads are at that capability too —
+    /// what the module mints, so `&[]` needs no annotation.
     ///
     /// # Errors
     ///
@@ -555,15 +558,17 @@ impl IntrinsicId {
     pub fn function_type<'ctx, B, S>(
         self,
         module: &'ctx Module<B, S>,
-        overloads: &[Type<'ctx, B>],
-    ) -> IrResult<FunctionType<'ctx, B>>
+        overloads: &[Type<'ctx, B, S::Capability>],
+    ) -> IrResult<FunctionType<'ctx, B, S::Capability>>
     where
         B: ModuleBrand + 'ctx,
+        S: ModuleState,
     {
         // Boundary: the caller's overload types, admitted against `module`
         // before the descriptor validates them or a signature is interned.
         admit_overload_types(overloads, module.id())?;
-        IntrinsicDescriptor::new(self, overloads.to_vec())?.function_type_ref(module.module_ref())
+        IntrinsicDescriptor::new(self, overloads.to_vec())?
+            .function_type_ref(module.capability_ref())
     }
 
     /// The descriptor whose generated signature is `fn_ty` in `module`.
@@ -673,18 +678,26 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntrinsicDescriptor<'ctx, B, C>
         Ok(name)
     }
 
-    /// This descriptor's function type in `module`.
+    /// This descriptor's function type in `module`, at the capability
+    /// `module`'s state grants (D8): `Mutable` while unverified, `ReadOnly`
+    /// once verified.
     ///
     /// # Errors
     ///
     /// [`IrError::ForeignType`] if an overload type belongs to another module,
     /// before anything is interned; [`IrError::IntrinsicSignatureMismatch`] if
     /// the generated signature cannot be built.
-    pub fn function_type<S>(&self, module: &'ctx Module<B, S>) -> IrResult<FunctionType<'ctx, B>> {
+    pub fn function_type<S>(
+        &self,
+        module: &'ctx Module<B, S>,
+    ) -> IrResult<FunctionType<'ctx, B, S::Capability>>
+    where
+        S: ModuleState,
+    {
         // Boundary: the descriptor's overload types, admitted against
         // `module` before a signature is interned from them.
         self.admit_overloads(module.id())?;
-        self.function_type_ref(module.module_ref())
+        self.function_type_ref(module.capability_ref())
     }
 
     /// The checked door for a descriptor's overload types: each admitted
@@ -706,9 +719,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntrinsicDescriptor<'ctx, B, C>
         // Internal: every caller admitted the overloads against `module` or
         // holds a descriptor minted there — `IntrinsicId::function_type`,
         // `Self::function_type` and the module's intrinsic declaration admit
-        // them first (the call builder's descriptor went through the last),
-        // and `descriptor_for_callee` built its descriptor in the callee's own
-        // module. Each is re-minted at `module`'s capability.
+        // them first (the call builder's descriptor went through the last);
+        // `descriptor_for_callee` built its descriptor in the callee's own
+        // module, and the verifier's `check_intrinsic_call` asks with the one
+        // `descriptor_for_callee` gave it; and
+        // `ModuleCore::intrinsic_descriptor_from_signature` built
+        // its descriptor with `descriptor_for_name` on the same module
+        // reference it passes here. Each is re-minted at `module`'s
+        // capability.
         let overloads: Box<[Type<'ctx, B, ModuleCapability>]> = self
             .overloads
             .iter()

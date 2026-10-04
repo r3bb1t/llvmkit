@@ -1201,6 +1201,117 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
+/// Ports `Value::stripPointerCastsAndAliases` (`llvm/lib/IR/Value.cpp`) — the
+/// `PSK_ZeroIndicesAndAliases` instantiation of `stripPointerCastsAndOffsets`,
+/// in that template's own arm order.
+///
+/// `GlobalIFunc::getResolverFunction` is its one caller upstream that llvmkit
+/// ports (`Verifier::visitGlobalIFunc`).
+///
+/// One spelling difference, house doctrine rather than a divergence: llvmkit's
+/// interned `ptr @g` constant (`ConstantData::GlobalValueRef`) *is* upstream's
+/// `GlobalValue` (`docs/divergences.md` D3), so every value this walk reaches
+/// is read as the global it names before an arm looks at it.
+pub(crate) fn strip_pointer_casts_and_aliases<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Value<'ctx, B> {
+    // `if (!V->getType()->isPointerTy()) return V;` — `isPointerTy` is the
+    // opaque `PointerTyID` only; a `TypedPointerType` is not one.
+    if !matches!(value.ty().kind(), TypeKind::Pointer { .. }) {
+        return value;
+    }
+    let mut current = global_value_or_self(value);
+    let mut visited: HashSet<ValueSlot> = HashSet::new();
+    visited.insert(current.slot_trusting_same_module());
+    loop {
+        let next = match operator_opcode(current) {
+            // `if (auto *GEP = dyn_cast<GEPOperator>(V)) { case
+            //    PSK_ZeroIndicesAndAliases: if (!GEP->hasAllZeroIndices())
+            //    return V; … V = GEP->getPointerOperand(); }`
+            Some(Opcode::GetElementPtr) => match gep_operator_zero_index_base(current) {
+                Some(base) => base,
+                None => return current,
+            },
+            // `else if (Operator::getOpcode(V) == Instruction::BitCast) {
+            //    Value *NewV = cast<Operator>(V)->getOperand(0);
+            //    if (!NewV->getType()->isPointerTy()) return V; V = NewV; }`
+            Some(Opcode::BitCast) => match operator_operand(current, 0) {
+                Some(next) if matches!(next.ty().kind(), TypeKind::Pointer { .. }) => next,
+                _ => return current,
+            },
+            // `else if (StripKind != PSK_ZeroIndicesSameRepresentation &&
+            //    Operator::getOpcode(V) == Instruction::AddrSpaceCast)
+            //    V = cast<Operator>(V)->getOperand(0);`
+            Some(Opcode::AddrSpaceCast) => match operator_operand(current, 0) {
+                Some(next) => next,
+                None => return current,
+            },
+            _ => match &current.data().kind {
+                // `else if (StripKind == PSK_ZeroIndicesAndAliases &&
+                //    isa<GlobalAlias>(V)) V = cast<GlobalAlias>(V)->getAliasee();`
+                ValueKindData::GlobalAlias(alias) => value_from_slot(current, alias.aliasee.get()),
+                // `else { if (const auto *Call = dyn_cast<CallBase>(V)) { if
+                //    (const Value *RV = Call->getReturnedArgOperand()) { V =
+                //    RV; continue; } … } return V; }` — the `PHINode` and
+                //    `launder`/`strip.invariant.group` arms are
+                //    `PSK_ForAliasAnalysis` only.
+                _ => match returned_arg_operand(current) {
+                    Some(returned) => returned,
+                    None => return current,
+                },
+            },
+        };
+        current = global_value_or_self(next);
+        // `while (Visited.insert(V).second);`
+        if !visited.insert(current.slot_trusting_same_module()) {
+            return current;
+        }
+    }
+}
+
+/// The global an interned `ptr @g` constant names, or `value` itself — the
+/// D3 reading [`strip_pointer_casts_and_aliases`] applies at every step.
+fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, B> {
+    match &value.data().kind {
+        ValueKindData::Constant(ConstantData::GlobalValueRef { value: global }) => {
+            value_from_slot(value, *global)
+        }
+        _ => value,
+    }
+}
+
+/// `GEPOperator::hasAllZeroIndices` and `getPointerOperand` for an instruction
+/// or a constant-expression GEP: the pointer operand when every index is a
+/// zero `ConstantInt`, `None` otherwise.
+fn gep_operator_zero_index_base<'ctx, B: ModuleBrand + 'ctx>(
+    gep: Value<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
+    if let Some(InstructionKindData::Gep(data)) = instruction_kind(gep) {
+        return gep_has_all_zero_indices(gep, data).then(|| value_from_slot(gep, data.ptr.get()));
+    }
+    match &gep.data().kind {
+        // llvmkit's compact `getelementptr inbounds (i8, ptr @g, i64 off)`:
+        // its one index is `off`.
+        ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
+            (*off == 0).then(|| value_from_slot(gep, *base_id))
+        }
+        ValueKindData::Constant(ConstantData::Expr(expr)) => {
+            let (pointer, indices) = expr.operands.split_first()?;
+            indices
+                .iter()
+                .all(|index| {
+                    matches!(
+                        &value_from_slot(gep, *index).data().kind,
+                        ValueKindData::Constant(ConstantData::Int(words))
+                            if words.iter().all(|word| *word == 0)
+                    )
+                })
+                .then(|| value_from_slot(gep, *pointer))
+        }
+        _ => None,
+    }
+}
+
 /// Ports `Value::stripPointerCastsSameRepresentation` (`llvm/lib/IR/Value.cpp`),
 /// the narrower sibling of [`strip_pointer_casts`] used by
 /// `isGuaranteedNotToBeUndefOrPoison` before its allocated-object test.

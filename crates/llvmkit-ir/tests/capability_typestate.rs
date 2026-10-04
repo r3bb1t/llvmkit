@@ -6,8 +6,8 @@
 
 use core::any::TypeId;
 use llvmkit_ir::{
-    CapabilityOf, Dyn, DynBrand, IrBuilder, IrError, Linkage, Module, ModuleState, Mutable,
-    NoFolder, ReadOnly, Unverified, Value, Verified,
+    CapabilityOf, Dyn, DynBrand, IntrinsicDescriptor, IntrinsicId, IrBuilder, IrError, Linkage,
+    Module, ModuleState, Mutable, NoFolder, ReadOnly, Unverified, Value, Verified,
 };
 
 fn capability_of<S: ModuleState>() -> TypeId {
@@ -137,8 +137,26 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
             Linkage::External,
         )
         .expect("f");
+    // A resolver `Verifier::visitGlobalIFunc` accepts: a definition that
+    // returns `ptr`, held through a `ptr` of the ifunc's address space.
+    let resolver = m
+        .add_function_dyn(
+            "resolver",
+            m.function_type_no_parameters(m.ptr_type(0)),
+            Linkage::Internal,
+        )
+        .expect("resolver");
+    let resolver_entry = m.view(resolver).append_basic_block(&m, "entry");
+    IrBuilder::with_folder(&m, NoFolder)
+        .position_at_end(resolver_entry)
+        .ret(m.ptr_type(0).const_null())
+        .expect("ret");
     let ifunc = m
-        .ifunc_builder("i", m.ptr_type(0), m.view(f).as_global_constant_ptr())
+        .ifunc_builder(
+            "i",
+            m.function_type_no_parameters(m.void_type()),
+            m.view(resolver).as_global_constant_ptr(),
+        )
         .build()
         .expect("i");
     let typed = m
@@ -200,6 +218,47 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
     let descriptor = m.view(abs).intrinsic_descriptor().expect("descriptor");
     assert_eq!(capability(descriptor.overloads()[0]), read_only);
     assert_eq!(capability(descriptor), read_only);
+}
+
+/// `IntrinsicDescriptor::function_type` and `IntrinsicId::function_type`
+/// intern the signature at the capability the module's state grants: a
+/// verified module's is `ReadOnly`. Positive control: the unverified module's
+/// is `Mutable`. llvmkit-specific (D1, D8).
+#[test]
+fn an_intrinsic_signature_takes_the_modules_capability() {
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type().as_type();
+    let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty]).expect("descriptor");
+    let mutable = TypeId::of::<Mutable>();
+    assert_eq!(
+        capability(descriptor.function_type(&m).expect("signature")),
+        mutable
+    );
+    assert_eq!(
+        capability(
+            IntrinsicId::ABS
+                .function_type(&m, &[i32_ty])
+                .expect("signature")
+        ),
+        mutable
+    );
+
+    let m = m.verify().expect("verifies");
+    let i32_ty = m.as_view().i32_type().as_type();
+    let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty]).expect("descriptor");
+    let read_only = TypeId::of::<ReadOnly>();
+    assert_eq!(
+        capability(descriptor.function_type(&m).expect("signature")),
+        read_only
+    );
+    assert_eq!(
+        capability(
+            IntrinsicId::ABS
+                .function_type(&m, &[i32_ty])
+                .expect("signature")
+        ),
+        read_only
+    );
 }
 
 /// A value type is an operand, not something mutated: `global_builder`,
