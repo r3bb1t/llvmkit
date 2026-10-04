@@ -2556,6 +2556,32 @@ mod tests {
         }
     }
 
+    /// `sample`, widened to `<4 x T>` where the overload slot it was drawn
+    /// for admits a vector. A scalar integer or floating-point sample comes
+    /// only from an `llvm_any_ty`, `llvm_anyint_ty` or `llvm_anyfloat_ty` slot
+    /// (`sample_for_overload_slot` in `llvmkit-tablegen`), and
+    /// `matchIntrinsicType` (`llvm/lib/IR/Intrinsics.cpp`) admits a vector for
+    /// each: `AK_Any` matches anything, `AK_AnyInteger` asks
+    /// `isIntOrIntVectorTy`, `AK_AnyFloat` asks `isFPOrFPVectorTy`. A pointer
+    /// sample stays scalar — `AK_AnyPointer` asks `isa<PointerType>` — and a
+    /// vector sample is already one.
+    fn widened_sample_type<'ctx, B>(
+        module: ModuleRef<'ctx, B>,
+        sample: &IntrinsicSampleType,
+    ) -> Type<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        match sample {
+            IntrinsicSampleType::Int(_) | IntrinsicSampleType::Float(_) => {
+                fixed_vector_type(module, sample_type(module, sample), 4)
+            }
+            IntrinsicSampleType::Pointer(_) | IntrinsicSampleType::FixedVector { .. } => {
+                sample_type(module, sample)
+            }
+        }
+    }
+
     fn preview_entries(entries: &[u8]) -> &[u8] {
         let preview_len = entries.len().min(32);
         &entries[..preview_len]
@@ -2684,6 +2710,69 @@ mod tests {
                     )
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// Every generated sample overload declares again with each sample whose
+    /// slot admits a vector widened to `<4 x T>` (`widened_sample_type`).
+    /// `generated_all_intrinsic_names_lookup_and_decode` declares the scalar
+    /// samples only, which is how a vector `llvm.scmp` went undeclarable
+    /// unnoticed: `getIntrinsicArgAttributeSet` (emitted by
+    /// `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp`) sizes `int_scmp`'s
+    /// `Range<RetIndex, -1, 2>` by `ArgType->getScalarSizeInBits()`, and
+    /// llvmkit asked for a scalar integer. Every widened descriptor must build
+    /// and declare, as the scalar ones must. llvmkit-specific: no upstream
+    /// unit test declares every intrinsic. Positive control: `llvm.scmp` and
+    /// `llvm.ucmp` are among the declared.
+    #[test]
+    fn generated_sample_overloads_declare_with_vector_samples() -> IrResult<()> {
+        let module = crate::module_new!("generated-vector-samples")?;
+        let module_ref = module.module_ref();
+        let mut declared = Vec::new();
+        for sample in generated::SAMPLE_OVERLOADS {
+            if !sample.overloads.iter().any(|overload| {
+                matches!(
+                    overload,
+                    IntrinsicSampleType::Int(_) | IntrinsicSampleType::Float(_)
+                )
+            }) {
+                continue;
+            }
+            let id = IntrinsicId::from_raw(sample.raw_id).ok_or(IrError::InvalidOperation {
+                message: "generated sample intrinsic id is out of range",
+            })?;
+            let overloads = sample
+                .overloads
+                .iter()
+                .map(|overload| widened_sample_type(module_ref, overload))
+                .collect::<Vec<_>>();
+            let descriptor = IntrinsicDescriptor::new(id, overloads).unwrap_or_else(|err| {
+                panic!(
+                    "{}#{} widened sample descriptor failed: {err}",
+                    id.enum_name(),
+                    id.raw()
+                )
+            });
+            module
+                .get_or_insert_intrinsic_declaration(&descriptor)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "{}#{} widened sample declaration failed: {err}",
+                        id.enum_name(),
+                        id.raw()
+                    )
+                });
+            declared.push(id);
+        }
+        for name in ["llvm.scmp", "llvm.ucmp"] {
+            let id = IntrinsicId::lookup(name).ok_or(IrError::UnknownIntrinsic {
+                name: name.to_owned(),
+            })?;
+            assert!(
+                declared.contains(&id),
+                "{name}'s widened sample was not declared"
+            );
         }
         Ok(())
     }

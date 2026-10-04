@@ -618,14 +618,20 @@ fn declaring_an_intrinsic_over_a_same_typed_definition_leaves_its_arguments_alon
 }
 
 /// A refused declaration leaves a mismatched holder of the intrinsic's name
-/// exactly as it was. `getOrInsertIntrinsicDeclarationImpl` cannot fail, so
-/// llvmkit runs every check that can refuse before the `.invalid` arm renames
-/// anything; here the request's overload type belongs to another module, and
-/// the refusal (`IrError::ForeignType`) comes before the lookup. Positive
-/// control: the same request with this module's `i32` renames the holder
-/// `llvm.ctpop.i32.invalid` and declares `llvm.ctpop.i32`. llvmkit-specific: the
-/// refusal has no upstream counterpart, and the renaming is derived from that
-/// routine.
+/// exactly as it was, and an admitted one renames it `.invalid`.
+///
+/// **This test does not tell the orders apart.** Its refusal
+/// (`IrError::ForeignType`, the request's overload type belonging to another
+/// module) comes before the lookup in any order, so it would pass if a refusal
+/// could follow the `.invalid` rename. That cannot be written: the arm's
+/// mutations run in `ModuleCore::rename_invalid_and_redeclare`, whose
+/// signature returns no `IrResult`, so the ordering is guaranteed by that
+/// signature and checked by the compiler, not by this test.
+///
+/// Positive control: the same request with this module's `i32` renames the
+/// holder `llvm.ctpop.i32.invalid` and declares `llvm.ctpop.i32`, as
+/// `getOrInsertIntrinsicDeclarationImpl` does. llvmkit-specific: the refusal has
+/// no upstream counterpart, since upstream's routine cannot fail.
 #[test]
 fn a_refused_intrinsic_declaration_leaves_a_mismatched_holder_alone() -> Result<(), IrError> {
     let m = Module::dynamic("m");

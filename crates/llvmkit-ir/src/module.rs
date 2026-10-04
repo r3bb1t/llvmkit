@@ -111,7 +111,8 @@ use super::r#type::{
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse,
+    AdmittedRename, GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess,
+    ValueUse,
 };
 use super::value_id::{
     FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
@@ -2353,20 +2354,31 @@ impl<'ctx> ModuleCore {
         // which both `Intrinsic::getOrInsertDeclaration` overloads end in.
         // `Name` is `Intrinsic::getName(id[, Tys, M, FT])`; `FT` is the
         // descriptor's function type.
+        //
+        // Upstream's control flow and branch order are kept. What is llvmkit's
+        // alone is where the refusals sit: upstream's routine cannot fail, and
+        // llvmkit's can, so every value a step that can refuse produces — the
+        // name, the signature, the attributes, and in the `.invalid` arm the
+        // admitted rename — is computed before the step that uses it. The
+        // first `getOrInsertFunction` declares only when no global value holds
+        // the name, and then nothing after it can refuse (the cast sees a
+        // function, of the intrinsic's type and identity). The `.invalid` arm's
+        // mutations run in `rename_invalid_and_redeclare`, whose signature
+        // returns no `IrResult`: an error after the rename is not a state this
+        // routine avoids but one it cannot express.
         let name = descriptor.mangled_name()?;
         let signature = descriptor.function_type_ref(ModuleRef::<B>::new(self))?;
-        // The `Intrinsic::getAttributes` that `Function`'s constructor gives a
-        // declaration `getOrInsertFunction` creates. Upstream's cannot fail;
-        // llvmkit's `declaration_attributes` can refuse an attribute its model
-        // cannot build, so it runs here, before anything below mutates: the
-        // `.invalid` arm renames before it declares, and nothing may refuse
-        // after that rename.
+        // The `Intrinsic::getAttributes` and the id that `Function`'s
+        // constructor gives a declaration `getOrInsertFunction` creates.
+        // Upstream's cannot fail; llvmkit's `declaration_attributes` can refuse
+        // an attribute its model cannot build, so it runs here.
         let attributes = descriptor.declaration_attributes(signature)?;
+        let identity = descriptor.to_function_data();
         // `Function *F = cast<Function>(M->getOrInsertFunction(Name,
         // FT).getCallee());` — the cast refuses before anything is declared,
         // since a declaration it would see is a function.
         let function = self.function_holding_intrinsic_name(
-            self.get_or_insert_intrinsic_function(&name, signature, descriptor, &attributes),
+            self.get_or_insert_intrinsic_function(&name, signature, &identity, &attributes),
             &name,
         )?;
         // `if (F->getFunctionType() == FT) return F;` — a definition included.
@@ -2389,35 +2401,51 @@ impl<'ctx> ModuleCore {
         }
         // "It's possible that a declaration for this intrinsic already exists
         // with an incorrect signature … rename the invalid declaration and
-        // insert a new one with the correct signature."
-        // `F->setName(F->getName() + ".invalid");` — the one `setName` port,
-        // tail included. Its refusals (`set_name_impl`) all come before it
-        // renames anything.
+        // insert a new one with the correct signature." The `.invalid` name's
+        // refusals — `setNameImpl`'s guards — are made here, by
+        // `admit_rename`; its uniquing, which cannot fail, happens when the
+        // rename is applied, as `createValueName` uniques at insertion.
         let invalid_name = format!("{}.invalid", function.name().unwrap_or_default());
-        function.as_erased().rename(&invalid_name)?;
+        let rename = function.as_erased().admit_rename(&invalid_name)?;
+        Ok(self.rename_invalid_and_redeclare(rename, &name, signature, &identity, &attributes))
+    }
+
+    /// The `.invalid` arm's mutations, from values its caller has already
+    /// computed: `F->setName(F->getName() + ".invalid")`, then
+    /// `return cast<Function>(M->getOrInsertFunction(Name, FT).getCallee())`.
+    /// Infallible by signature — the reason this step is a function of its
+    /// own: an error after the rename cannot be written here.
+    fn rename_invalid_and_redeclare<B: ModuleBrand + 'ctx>(
+        &'ctx self,
+        rename: AdmittedRename<'ctx, B, Mutable>,
+        name: &str,
+        signature: FunctionType<'ctx, B>,
+        identity: &IntrinsicFunctionData,
+        attributes: &AttributeStorage,
+    ) -> FunctionValue<'ctx, Dyn, B> {
+        // `F->setName(F->getName() + ".invalid");` — the one `setName` port,
+        // `updateAfterNameChange` tail included.
+        rename.apply();
         // `return cast<Function>(M->getOrInsertFunction(Name,
-        // FT).getCallee());` — and nothing from here can refuse. The rename
-        // moved `F`, the one holder of `Name`, so `getOrInsertFunction`
-        // reaches `Function::Create` and the cast holds by construction.
-        let declared =
-            self.get_or_insert_intrinsic_function(&name, signature, descriptor, &attributes);
-        Ok(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
-            declared,
-            ModuleRef::<B>::new(self),
-        ))
+        // FT).getCallee());`. The rename moved `F`, the one holder of `Name`,
+        // to a name that is not `Name` (it ends in `.invalid`, uniqued or not),
+        // so `getOrInsertFunction` reaches `Function::Create` and the cast
+        // holds by construction.
+        let declared = self.get_or_insert_intrinsic_function(name, signature, identity, attributes);
+        FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(declared, ModuleRef::<B>::new(self))
     }
 
     /// `Module::getOrInsertFunction(Name, FT)` as
     /// `getOrInsertIntrinsicDeclarationImpl` calls it: the global value
     /// `getNamedValue(Name)` answers — of any kind — or else a fresh
     /// declaration, `Function::Create(FT, ExternalLinkage, …, Name, M)`, whose
-    /// constructor gives an intrinsic its id and `attributes`
-    /// (`Intrinsic::getAttributes`, computed by the caller).
+    /// constructor gives an intrinsic its `identity` and `attributes`
+    /// (`Intrinsic::getAttributes`), both computed by the caller.
     fn get_or_insert_intrinsic_function<B: ModuleBrand + 'ctx>(
         &'ctx self,
         name: &str,
         signature: FunctionType<'ctx, B>,
-        descriptor: &IntrinsicDescriptor<'ctx, B>,
+        identity: &IntrinsicFunctionData,
         attributes: &AttributeStorage,
     ) -> ValueSlot {
         if let Some(existing) = self.named_value(name) {
@@ -2428,7 +2456,7 @@ impl<'ctx> ModuleCore {
             signature,
             Linkage::External,
             crate::CallingConv::default(),
-            Some(descriptor.to_function_data()),
+            Some(identity.clone()),
             Some(attributes.clone()),
         )
         .slot_trusting_same_module()

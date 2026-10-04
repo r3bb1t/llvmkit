@@ -535,28 +535,34 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
     /// `Value::setName`: [`Self::set_name_impl`], then
     /// `Function::updateAfterNameChange` on a function — which upstream runs
     /// however `setNameImpl` returned. A refusal changes nothing, so it skips
-    /// the tail. Crate-visible for `getOrInsertIntrinsicDeclarationImpl`'s
-    /// `F->setName(F->getName() + ".invalid")`.
-    pub(crate) fn rename(self, requested: &str) -> IrResult<()>
+    /// the tail.
+    fn rename(self, requested: &str) -> IrResult<()>
     where
         C: CanMutate,
     {
-        self.set_name_impl(requested)?;
-        self.update_after_name_change();
+        self.admit_rename(requested)?.apply();
         Ok(())
     }
 
-    /// `Value::setNameImpl`, its guards in upstream's order. The
+    /// `Value::setNameImpl`'s guards, in upstream's order, without its
+    /// update: every refusal is made here, and the [`AdmittedRename`] that
+    /// comes back performs the rest, which cannot fail. The
     /// `shouldDiscardValueNames` fast path has no counterpart: llvmkit keeps
-    /// every name, so `NeedNewName` is always true.
-    fn set_name_impl(self, requested: &str) -> IrResult<()>
+    /// every name, so `NeedNewName` is always true. Crate-visible for
+    /// `getOrInsertIntrinsicDeclarationImpl`'s
+    /// `F->setName(F->getName() + ".invalid")`, which must not fail once it
+    /// has renamed.
+    pub(crate) fn admit_rename(self, requested: &str) -> IrResult<AdmittedRename<'ctx, B, C>>
     where
         C: CanMutate,
     {
         let current = self.name();
         // `if (NewName.isTriviallyEmpty() && !hasName()) return;`
         if requested.is_empty() && current.is_none() {
-            return Ok(());
+            return Ok(AdmittedRename {
+                value: self,
+                step: AdmittedNameStep::Return,
+            });
         }
         // `assert(!NameRef.contains(0) && "Null bytes are not allowed in
         // names")`, hardened to a refusal.
@@ -568,7 +574,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         }
         // `if (getName() == NameRef) return;`
         if current.as_deref().unwrap_or_default() == requested {
-            return Ok(());
+            return Ok(AdmittedRename {
+                value: self,
+                step: AdmittedNameStep::Return,
+            });
         }
         // `assert(!getType()->isVoidTy() && "Cannot assign a name to void
         // values!")`, hardened to a refusal.
@@ -602,8 +611,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             | ValueKindData::GlobalAlias(_)
             | ValueKindData::GlobalIfunc(_) => {}
         }
-        self.update_symbol_table(Some(requested).filter(|name| !name.is_empty()));
-        Ok(())
+        Ok(AdmittedRename {
+            value: self,
+            step: AdmittedNameStep::Update(
+                Some(requested)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+            ),
+        })
     }
 
     /// The rest of `Value::setNameImpl`, on the table `getSymTab` answers:
@@ -1068,6 +1083,40 @@ pub(crate) trait ValueSlotAccess<'ctx, B: ModuleBrand>: IsValue<'ctx, B> {
 }
 
 impl<'ctx, B: ModuleBrand, T: IsValue<'ctx, B>> ValueSlotAccess<'ctx, B> for T {}
+
+/// A rename `Value::setNameImpl` has admitted: every guard that can refuse
+/// has run ([`Value::admit_rename`]), and what is left — the table update,
+/// then `Value::setName`'s `Function::updateAfterNameChange` tail — cannot
+/// fail. [`Self::apply`] performs it. The split is llvmkit's, not upstream's:
+/// it lets a caller make its own refusals between the two, so that nothing it
+/// does after renaming can fail.
+#[must_use = "an admitted rename does nothing until it is applied"]
+pub(crate) struct AdmittedRename<'ctx, B: ModuleBrand, C: Capability> {
+    value: Value<'ctx, B, C>,
+    step: AdmittedNameStep,
+}
+
+/// What `Value::setNameImpl` does once its guards have passed.
+enum AdmittedNameStep {
+    /// One of its early returns: an empty name for an unnamed value, or the
+    /// name the value already has.
+    Return,
+    /// Its table update: to this name — uniqued against the table when it is
+    /// applied, as `createValueName` does — or, for `None`, to no name.
+    Update(Option<String>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> AdmittedRename<'ctx, B, C> {
+    /// Perform the admitted rename: the rest of `Value::setNameImpl`, then
+    /// `Value::setName`'s tail, which upstream runs however `setNameImpl`
+    /// returned. Infallible.
+    pub(crate) fn apply(self) {
+        if let AdmittedNameStep::Update(requested) = self.step {
+            self.value.update_symbol_table(requested.as_deref());
+        }
+        self.value.update_after_name_change();
+    }
+}
 
 /// Sealed accessor trait: anything that has an IR type. Implemented by
 /// every value handle; the type comes back at the handle's capability.

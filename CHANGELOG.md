@@ -72,7 +72,8 @@ cut, entries accumulate under **Unreleased**.
   returned, where it used to be refused. A holder of the right type without
   the intrinsic's identity is still refused — `docs/divergences.md`, entry 138.
   Every refusal now comes before the first mutation, so a refused call leaves
-  the module as it was; the `.invalid` arm cannot fail once it has renamed.
+  the module as it was; the `.invalid` arm's rename and declaration run in a
+  step whose signature cannot return an error.
 - **Breaking: `get_or_insert_intrinsic_declaration*` names no argument.** The
   declaration's arguments used to take TableGen's `ArgName`s (`kind`,
   `fill_mode`, …), and with the definition arm above that would have renamed a
@@ -83,7 +84,9 @@ cut, entries accumulate under **Unreleased**.
   integer result, so `declare <4 x i8> @llvm.scmp.v4i8.v4i32(<4 x i32>, <4 x i32>)`
   was refused as an intrinsic signature mismatch. The range is now sized by the
   element type (`range(i8 -1, 2)`), as `getIntrinsicArgAttributeSet`'s
-  `ArgType->getScalarSizeInBits()` sizes it.
+  `ArgType->getScalarSizeInBits()` sizes it. The sample-overload sweep, which
+  declared scalar samples only and so never met a vector `scmp`, now also
+  declares every sample with its vector-admitting overloads widened.
 - **Breaking: `FunctionValue::is_intrinsic` mirrors `Function::isIntrinsic`**
   — whether the name starts with `llvm.` — where it used to answer whether
   `intrinsic_id()` does. A function named `llvm.` plus a name no intrinsic has
