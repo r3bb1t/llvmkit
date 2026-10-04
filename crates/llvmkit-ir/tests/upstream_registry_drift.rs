@@ -248,3 +248,61 @@ fn every_test_carries_a_registry_row_or_a_line_in_the_frozen_debt_list() {
             .join("\n")
     );
 }
+
+/// No row cites upstream by line number.
+///
+/// **No upstream counterpart** — this is `CLAUDE.md`'s house rule ("Cite
+/// upstream by symbol, never line number ... Line numbers rot the moment the
+/// vendored tree moves") made mechanical for the one file that carried the
+/// most of them.
+///
+/// Nothing checked it, and the registry had accumulated 148 such rows by
+/// `485cc7d`. They were not merely stale-able: a line range is also a *worse*
+/// citation, because it says where a thing sat rather than what it is. The
+/// cleanup replaced each with the symbol the range pointed at — the enclosing
+/// `@global` or `define` for a `.ll` fixture, the function or the named arm
+/// for a C++ one.
+///
+/// The pattern is deliberately narrow: it matches `line N` / `lines N-M`
+/// following a citation, not every digit in the file, because rows legitimately
+/// quote upstream text containing numbers. It is also written so it cannot
+/// match this test's own prose — the words and the digits never sit adjacent
+/// above.
+#[test]
+fn no_registry_row_cites_upstream_by_line_number() {
+    let offenders: Vec<(usize, &str)> = REGISTRY
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with("| `"))
+        .filter(|(_, line)| {
+            line.split_whitespace()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|w| {
+                    let word = w[0].trim_matches(|c: char| !c.is_ascii_alphabetic());
+                    (word == "line" || word == "lines")
+                        && w[1]
+                            .trim_start_matches('`')
+                            .starts_with(|c: char| c.is_ascii_digit())
+                })
+        })
+        .map(|(index, line)| (index + 1, line))
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "cite upstream by symbol, never line number (CLAUDE.md) — {} row(s) \
+         name a line instead of the thing at it. Replace each with the \
+         enclosing symbol: the `@global` / `define` for a `.ll` fixture, the \
+         function or its named arm for a C++ one:\n{}",
+        offenders.len(),
+        offenders
+            .iter()
+            .map(|(number, line)| format!(
+                "  UPSTREAM.md:{number}: {}",
+                &line[..line.len().min(140)]
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}

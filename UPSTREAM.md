@@ -22,9 +22,9 @@ Categories:
 - `mirror` --- lifts an upstream `.ll` fixture or rule shape.
 - `example` --- locks output of an `examples/*.rs` binary.
 - `llvmkit-specific` / `llvmkit-specific subset` --- llvmkit-only or intentionally
-  narrower test (typestate compile-fail, format-stability, Rust-API ergonomics,
-  missing upstream API surface, or exact llvmkit diagnostics) with the closest
-  upstream functional reference cited.
+ narrower test (typestate compile-fail, format-stability, Rust-API ergonomics,
+ missing upstream API surface, or exact llvmkit diagnostics) with the closest
+ upstream functional reference cited.
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
@@ -95,16 +95,16 @@ upstream counterpart exists.
 Two failure modes are worth naming, because both have shipped:
 
 - **Rows citing a test that moved file.** Eleven rows pointed at
-  `crates/llvmkit-ir/tests/{builder_typestate_termination,constant_folding_analysis,verifier_basic}.rs`
-  for tests living in `crates/llvmkit-ir/src/phi_raw_tests/`, and survived
-  earlier sweeps because each sat beside siblings that still resolved. Repaired
-  2026-08-22, and now mechanically checked:
-  `crates/llvmkit-ir/tests/upstream_registry_drift.rs` fails if any row names a
-  file that is not in the tree, or a test the cited file does not define.
+ `crates/llvmkit-ir/tests/{builder_typestate_termination,constant_folding_analysis,verifier_basic}.rs`
+ for tests living in `crates/llvmkit-ir/src/phi_raw_tests/`, and survived
+ earlier sweeps because each sat beside siblings that still resolved. Repaired
+ 2026-08-22, and now mechanically checked:
+ `crates/llvmkit-ir/tests/upstream_registry_drift.rs` fails if any row names a
+ file that is not in the tree, or a test the cited file does not define.
 - **Rows citing an upstream fixture that does not exist.** That check is *not*
-  mechanical and the drift test says nothing about it; it is tracked as a
-  finding in `docs/fixture-coverage.md`, which also explains why no count is
-  given for it.
+ mechanical and the drift test says nothing about it; it is tracked as a
+ finding in `docs/fixture-coverage.md`, which also explains why no count is
+ given for it.
 
 
 | llvmkit test | upstream reference | category |
@@ -140,10 +140,10 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_try_value_from_ir_wraps_raw_struct` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_try_value_from_ir_rejects_wrong_schema` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_fields_unpacks_manual_schema_into_params` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_extracts_and_inserts_typed_fields` | `test/Bitcode/compatibility.ll` lines 1549 and 1558 | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_extracts_and_inserts_typed_fields` | `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops` (`extractvalue { i8, i32 }`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_extract_field_mismatch_does_not_append_instruction` | `IRBuilder::CreateExtractValue` validation-before-insertion contract | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_can_be_function_return` | `unittests/IR/AsmWriterTest.cpp` aggregate return printing | llvmkit-specific |
-| `crates/llvmkit-ir/tests/struct_schema.rs::nested_struct_schema_accessors_return_nested_wrapper` | `test/Bitcode/compatibility.ll` line 1555 | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::nested_struct_schema_accessors_return_nested_wrapper` | `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops` (the nested `extractvalue { i8, { i32 } }`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_builds_nested_named_structs_and_accessors` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)`; `test/Bitcode/compatibility.ll` aggregate `extractvalue` / `insertvalue` forms | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_try_from_raw_ir_values` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
 | `crates/llvmkit-ir/src/struct_schema.rs::derive_emits_into_call_arg_for_struct_schema` | `unittests/IR/InstructionsTest.cpp` `CallInst` operand construction | llvmkit-specific |
@@ -178,8 +178,8 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/builder_typed_call.rs::typed_call_void_result_is_unit` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_typed_call.rs::typed_call_pointer_result_feeds_ret` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_typed_call.rs::typed_call_float_result_feeds_fadd_and_ret` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/builder_typed_call.rs::typed_invoke_wires_multiple_argument_operands_in_order` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, InvokeInst)` line 114 | port |
-| `crates/llvmkit-ir/tests/builder_typed_call.rs::build_varargs_call_printf_shape_two_fixed_args_and_int_tail` | `test/Feature/varargs.ll` line 14; `test/Bitcode/compatibility.ll` lines 1900-1904 | mirror |
+| `crates/llvmkit-ir/tests/builder_typed_call.rs::typed_invoke_wires_multiple_argument_operands_in_order` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, InvokeInst)` | port |
+| `crates/llvmkit-ir/tests/builder_typed_call.rs::build_varargs_call_printf_shape_two_fixed_args_and_int_tail` | `test/Feature/varargs.ll`'s `@test`; `test/Bitcode/compatibility.ll`'s `@intrinsics.localescape` | mirror |
 | `crates/llvmkit-ir/tests/builder_typed_call.rs::typed_call_full_module_print_equals_dyn_call_full_module_print` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_typed_call.rs::typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_print` | `unittests/IR/IRBuilderTest.cpp` opaque-pointer indirect call construction; `llvm/lib/IR/IRBuilder.cpp::IRBuilderBase::CreateCall(FunctionType*, Value*, ...)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_typed_call.rs::build_call_dyn_rejects_wrong_argument_count` | `llvm/lib/IR/Instructions.cpp::CallInst::init` bad-signature assertion; `llvm/lib/IR/Verifier.cpp::visitCallBase` arity check | mirror |
@@ -273,9 +273,9 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/mutation_basic.rs::detached_set_name_updates_carried_name_without_old_parent_binding` | `llvm/lib/IR/Value.cpp::Value::setNameImpl`; `llvm/lib/IR/ValueSymbolTable.cpp::ValueSymbolTable::removeValueName`; `llvm/lib/IR/ValueSymbolTable.cpp::ValueSymbolTable::reinsertValue` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/mutation_basic.rs::erase_deregisters_from_operand_use_lists` | `-` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/mutation_basic.rs::self_anchored_instruction_moves_are_no_ops` | `lib/IR/Instruction.cpp::Instruction::moveBefore`; `lib/IR/Instruction.cpp::Instruction::moveAfter` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/mutation_basic.rs::metadata_constant_operand_counts_as_structural_value_use` | `llvm/test/Assembler/metadata-use-uselistorder.ll` lines 5-13 | port |
-| `crates/llvmkit-ir/tests/mutation_basic.rs::debug_record_value_operand_counts_as_structural_use_and_erases` | `llvm/test/Assembler/metadata-use-uselistorder.ll` lines 10-13 | port |
-| `crates/llvmkit-ir/tests/mutation_basic.rs::debug_record_value_operand_is_rewritten_by_rauw` | `llvm/test/Assembler/metadata-use-uselistorder.ll` lines 10-13; `lib/IR/Value.cpp::Value::replaceAllUsesWith` | port |
+| `crates/llvmkit-ir/tests/mutation_basic.rs::metadata_constant_operand_counts_as_structural_value_use` | `llvm/test/Assembler/metadata-use-uselistorder.ll`'s stated rule (uses inside metadata operands count toward use-list order) | port |
+| `crates/llvmkit-ir/tests/mutation_basic.rs::debug_record_value_operand_counts_as_structural_use_and_erases` | `llvm/test/Assembler/metadata-use-uselistorder.ll`'s debug-records note (a debug record still uses `ValueAsMetadata`, so its operand is a use) | port |
+| `crates/llvmkit-ir/tests/mutation_basic.rs::debug_record_value_operand_is_rewritten_by_rauw` | `llvm/test/Assembler/metadata-use-uselistorder.ll`'s debug-records note (a debug record still uses `ValueAsMetadata`, so its operand is a use); `lib/IR/Value.cpp::Value::replaceAllUsesWith` | port |
 | `crates/llvmkit-ir/tests/mutation_basic.rs::split_at_refuses_an_instruction_of_another_block_without_mutating` | no upstream counterpart — `lib/IR/BasicBlock.cpp::BasicBlock::splitBasicBlock` takes the split point as an iterator into the block's own instruction list, so it has no error path for a split point from another block (it asserts only that the block is terminated and that the iterator is not `end()`); pins that llvmkit's `InvalidOperation` refusal happens before the new block is appended | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/mutation_basic.rs::split_at_refuses_a_block_without_a_terminator_without_mutating` | no upstream counterpart — `lib/IR/BasicBlock.cpp::BasicBlock::splitBasicBlock` asserts `getTerminator()` ("Can't use splitBasicBlock on degenerate BB!") rather than returning; pins that llvmkit returns that text as `InvalidOperation` before anything is created or moved, since a `Terminated` handle from `FunctionValue::basic_blocks` does not prove a terminator | llvmkit-specific |
 | `crates/llvmkit-ir/tests/mutation_basic.rs::split_before_refuses_a_block_without_a_terminator_without_mutating` | no upstream counterpart — `lib/IR/BasicBlock.cpp::BasicBlock::splitBasicBlockBefore` asserts `getTerminator()` ("Can't use splitBasicBlockBefore on degenerate BB!") rather than returning; pins that llvmkit returns that text as `InvalidOperation` before anything is created, moved or retargeted | llvmkit-specific |
@@ -517,23 +517,23 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::fneg_with_fmf_prints_canonical_form` | `test/Bitcode/compatibility.ll::fastmathflags_unop` | mirror |
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::fneg_double_no_flags_unnamed_result` | `test/Bitcode/compatibility.ll::instructions.unops` | mirror |
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::freeze_i8_round_trip` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, FreezeInst)` | port |
-| `crates/llvmkit-ir/tests/builder_unary_ops.rs::freeze_int_and_pointer_print_forms` | `test/Bitcode/compatibility.ll` lines 1732-1741 | mirror |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::freeze_int_and_pointer_print_forms` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (the `freeze` family) | mirror |
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::verifier_accepts_freeze_int` | `unittests/IR/VerifierTest.cpp::TEST(VerifierTest, Freeze)` | port |
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::va_arg_int_round_trip` | `test/Bitcode/variableArgumentIntrinsic.3.2.ll` | mirror |
-| `crates/llvmkit-ir/tests/builder_unary_ops.rs::va_arg_print_keyword_and_destination_type` | `test/Bitcode/compatibility.ll` line 1815 | mirror |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::va_arg_print_keyword_and_destination_type` | `test/Bitcode/compatibility.ll`'s `@instructions.va_arg` (`va_arg ptr`) | mirror |
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::verifier_accepts_va_arg_pointer_source` | `test/Verifier/tbaa-allowed.ll` | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_struct_field0` | `test/Bitcode/compatibility.ll` line 1549 | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_array_index` | `test/Bitcode/compatibility.ll` line 1553 | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_nested_indices` | `test/Bitcode/compatibility.ll` line 1555 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_struct_field0` | `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops` (`extractvalue { i8, i32 }`) | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_array_index` | `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops` (`extractvalue [3 x i8]`) | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_nested_indices` | `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops` (the nested `extractvalue { i8, { i32 } }`) | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_dyn_rejects_empty_indices` | `llvm/lib/IR/Instructions.cpp::ExtractValueInst::init`; `test/Assembler/extractvalue-no-idx.ll` (closest assembler-diagnostic anchor for the runtime check `extract_value_dyn` keeps -- the typed `extract_value`'s `const { assert!(N > 0) }` upgrades this to compile time, D3) | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_rejects_out_of_range_array_index` | `test/Assembler/extractvalue-invalid-idx.ll` (PR4170); `llvm/lib/IR/Instructions.cpp::ExtractValueInst::getIndexedType` | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_rejects_out_of_range_struct_index` | `test/Assembler/extractvalue-invalid-idx.ll` (PR4170); `llvm/lib/IR/Instructions.cpp::ExtractValueInst::getIndexedType` | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_struct_field0` | `test/Bitcode/compatibility.ll` line 1558 | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_array_index_zero` | `test/Bitcode/compatibility.ll` line 1562 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_struct_field0` | `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops` (`insertvalue { i8, i32 }`) | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_array_index_zero` | `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops` (`insertvalue [3 x i8]`) | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_dyn_rejects_empty_indices` | `llvm/lib/IR/Instructions.cpp::InsertValueInst::init`; `test/Assembler/extractvalue-no-idx.ll` (closest assembler-diagnostic anchor for the runtime check `insert_value_dyn` keeps -- the typed `insert_value`'s `const { assert!(N > 0) }` upgrades this to compile time, D3) | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_element_vector_i8_index` | `test/Bitcode/compatibility.ll` line 1535 | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_element_vector_float_at_i8` | `test/Bitcode/compatibility.ll` lines 1537-1538 | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_zeroinitializer_mask` | `test/Bitcode/compatibility.ll` line 1539 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_element_vector_i8_index` | `test/Bitcode/compatibility.ll`'s `@instructions.vectorops` (`extractelement`) | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_element_vector_float_at_i8` | `test/Bitcode/compatibility.ll`'s `@instructions.vectorops` (`insertelement`) | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_zeroinitializer_mask` | `test/Bitcode/compatibility.ll`'s `@instructions.vectorops` (`shufflevector`) | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_explicit_mask_print` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, ShuffleMaskQueries)` | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_zero_mask_splat` | `test/Bitcode/vscale-round-trip.ll::@non_const_shufflevector`, built through the builder; `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable branch and the `ArrayRef<int>` constructor's result type | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_poison_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable branch's `Mask[0] != PoisonMaskElem` half and `ShuffleVectorInst::convertShuffleMaskForBitcode`'s scalable `PoisonValue::get` arm; no upstream `.ll` fixture writes a scalable poison mask | mirror |
@@ -543,23 +543,23 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_scalable_constant_operand_survives_folding` | `test/Assembler/constant-splat.ll::@ret_scalable_vector_ptr`, whose CHECK pins the expanded `shufflevector (... insertelement ..., poison, <vscale x 4 x i32> zeroinitializer)`, built through the builder's folder instead of the parser; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction` scalable fall-through and `llvm/lib/IR/AsmWriter.cpp::printShuffleMask` | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_operands_reject_a_mask_from_another_module` | **No upstream counterpart.** `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` takes three `Value *`s from one `LLVMContext` and has no module-identity check to port; the `ModuleId` tag guarding the mask is llvmkit's own invariant, backstopping the shared `DynBrand` that makes the mistake compile. Locks that `Context::value_data`'s cross-module `unreachable!` stays unreachable | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::the_three_aggregate_index_walks_agree_at_the_u32_boundary` | **No upstream counterpart.** `llvm/lib/IR/Instructions.cpp::ExtractValueInst::getIndexedType` is one routine LLVM's parser, builder and verifier all call, so upstream cannot have this bug and has no fixture for it. llvmkit keeps three copies (`llvmkit_ir::indexed_aggregate_type`, `ir_builder.rs::walk_aggregate_for_builder`, `verifier.rs::walk_aggregate_path`), and this test is the law that they agree. The boundary it drives is upstream's `Index >= AT->getNumElements()` -- an `unsigned` index against a `uint64_t` count, hence a 64-bit comparison -- which the verifier copy used to narrow to `u32` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::fence_system_scope_orderings` | `test/Bitcode/compatibility.ll` lines 893-898 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::fence_singlethread_seq_cst` | `test/Bitcode/compatibility.ll` line 899 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::cmpxchg_no_align_monotonic_monotonic` | `test/Bitcode/compatibility.ll` line 810 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::cmpxchg_weak_volatile_singlethread` | `test/Bitcode/compatibility.ll` line 824 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_xchg_monotonic` | `test/Bitcode/compatibility.ll` line 846 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_volatile_min_monotonic` | `test/Bitcode/compatibility.ll` line 862 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_umax_singlethread` | `test/Bitcode/compatibility.ll` line 864 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_fmaximum_monotonic` | `test/Bitcode/compatibility.ll` line 935 (`@fp_atomics`); `llvm/include/llvm/IR/Instructions.h::AtomicRMWInst::BinOp::FMaximum` (LLVM 21 IEEE-754 `maximum` atomicrmw op) | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_fminimum_monotonic` | `test/Bitcode/compatibility.ll` line 938 (`@fp_atomics`); `llvm/include/llvm/IR/Instructions.h::AtomicRMWInst::BinOp::FMinimum` (LLVM 21 IEEE-754 `minimum` atomicrmw op) | mirror |
-| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::switch_three_cases_print_form` | `test/Bitcode/compatibility.ll` lines 1302-1310 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::fence_system_scope_orderings` | `test/Bitcode/compatibility.ll`'s `@atomics` (the `fence` family) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::fence_singlethread_seq_cst` | `test/Bitcode/compatibility.ll`'s `@atomics` (the syncscoped `fence`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::cmpxchg_no_align_monotonic_monotonic` | `test/Bitcode/compatibility.ll`'s `@atomics` (`%cmpxchg_no_align.0`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::cmpxchg_weak_volatile_singlethread` | `test/Bitcode/compatibility.ll`'s `@atomics` (`%cmpxchg_no_align.7`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_xchg_monotonic` | `test/Bitcode/compatibility.ll`'s `@atomics` (`%atomicrmw_no_align.xchg`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_volatile_min_monotonic` | `test/Bitcode/compatibility.ll`'s `@atomics` (`%atomicrmw_no_align.min`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_umax_singlethread` | `test/Bitcode/compatibility.ll`'s `@atomics` (`%atomicrmw_no_align.umax`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_fmaximum_monotonic` | `test/Bitcode/compatibility.ll`'s `@fp_atomics`; `llvm/include/llvm/IR/Instructions.h::AtomicRMWInst::BinOp::FMaximum` (LLVM 21 IEEE-754 `maximum` atomicrmw op) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_fminimum_monotonic` | `test/Bitcode/compatibility.ll`'s `@fp_atomics`; `llvm/include/llvm/IR/Instructions.h::AtomicRMWInst::BinOp::FMinimum` (LLVM 21 IEEE-754 `minimum` atomicrmw op) | mirror |
+| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::switch_three_cases_print_form` | `test/Bitcode/compatibility.ll`'s `@instructions.terminators` (`switch`) | mirror |
 | `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::switch_no_cases_only_default` | `test/Assembler/2003-05-15-SwitchBug.ll` | mirror |
-| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_single_destination` | `test/Bitcode/compatibility.ll` line 1320 | mirror |
-| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_multiple_destinations` | `test/Bitcode/compatibility.ll` line 1322 | mirror |
-| `crates/llvmkit-ir/tests/builder_eh_calls.rs::invoke_void_to_unwind` | `test/Bitcode/compatibility.ll` line 1325 | mirror |
+| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_single_destination` | `test/Bitcode/compatibility.ll`'s `@instructions.terminators` (the single-destination `indirectbr`) | mirror |
+| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_multiple_destinations` | `test/Bitcode/compatibility.ll`'s `@instructions.terminators` (the repeated-destination `indirectbr`) | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::invoke_void_to_unwind` | `test/Bitcode/compatibility.ll`'s `@instructions.terminators` (`invoke fastcc`) | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_calls.rs::typed_invoke_derives_return_marker_from_callee` | `llvm/lib/IR/IRBuilder.cpp::IRBuilderBase::CreateInvoke` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_void_with_one_indirect_dest` | `test/Assembler/callbr.ll` lines 8-13 | mirror |
-| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_two_indirect_dests_print_form` | `test/Assembler/inline-asm-constraint-error.ll` line 65 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_void_with_one_indirect_dest` | `test/Assembler/callbr.ll`'s `@test_kill` | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_two_indirect_dests_print_form` | `test/Assembler/inline-asm-constraint-error.ll`'s `@foo` (`callbr void`) | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_data.rs::landingpad_cleanup_only` | `test/Bitcode/compatibility.ll::@f.no_personality` block `exception:` -- `%cleanup = landingpad i8 cleanup` | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_data.rs::landingpad_cleanup_plus_catch` | `test/Bitcode/compatibility.ll::@instructions.landingpad` block `catch2:` -- `cleanup` + `catch ptr null` | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_data.rs::resume_i32_undef` | `test/Bitcode/compatibility.ll::@instructions.terminators` block `exc:` -- `resume i32 undef` | mirror |
@@ -569,13 +569,13 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/builder_funclet.rs::cleanuppad_within_none_empty_args` | `test/Bitcode/compatibility.ll::@instructions.win_eh.1` block `cleanuppad1:` -- `%clean.1 = cleanuppad within none []` | mirror |
 | `crates/llvmkit-ir/tests/builder_funclet.rs::cleanupret_unwind_to_caller` | `test/Bitcode/compatibility.ll::@instructions.win_eh.2` block `cleanup:` -- `cleanupret from %clean unwind to caller` | mirror |
 | `crates/llvmkit-ir/tests/builder_funclet.rs::catchret_to_label` | `test/Bitcode/compatibility.ll::@instructions.win_eh.2` block `body:` -- `catchret from %catch to label %return` | mirror |
-| `crates/llvmkit-ir/tests/concurrent_counter_example.rs::concurrent_counter_example_emits_locked_ir` | `https://llvm.org/docs/Atomics.html` (fence-based decomposition) + `test/Bitcode/compatibility.ll` lines 848 / 893-895 / 1302-1310 | example |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_monotonic_align4` | `test/Bitcode/compatibility.ll` line 902 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_volatile_acquire_align8` | `test/Bitcode/compatibility.ll` line 904 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_volatile_singlethread_seq_cst_align16` | `test/Bitcode/compatibility.ll` line 906 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_monotonic_align4` | `test/Bitcode/compatibility.ll` line 909 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_volatile_monotonic_align4` | `test/Bitcode/compatibility.ll` line 911 | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_volatile_singlethread_monotonic` | `test/Bitcode/compatibility.ll` line 913 | mirror |
+| `crates/llvmkit-ir/tests/concurrent_counter_example.rs::concurrent_counter_example_emits_locked_ir` | `https://llvm.org/docs/Atomics.html` (fence-based decomposition) + `test/Bitcode/compatibility.ll`'s `@atomics` (`%atomicrmw_no_align.add`) / 893-895 / 1302-1310 | example |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_monotonic_align4` | `test/Bitcode/compatibility.ll`'s `@atomics` (`%ld.1`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_volatile_acquire_align8` | `test/Bitcode/compatibility.ll`'s `@atomics` (`%ld.2`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_volatile_singlethread_seq_cst_align16` | `test/Bitcode/compatibility.ll`'s `@atomics` (`%ld.3`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_monotonic_align4` | `test/Bitcode/compatibility.ll`'s `@atomics` (`store atomic i32`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_volatile_monotonic_align4` | `test/Bitcode/compatibility.ll`'s `@atomics` (`store atomic volatile i32`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_volatile_singlethread_monotonic` | `test/Bitcode/compatibility.ll`'s `@atomics` (the syncscoped `store atomic volatile`) | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_release_ordering` | `lib/IR/Verifier.cpp::Verifier::visitLoadInst` ("Load cannot have Release ordering") | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_store_acquire_ordering` | `lib/IR/Verifier.cpp::Verifier::visitStoreInst` ("Store cannot have Acquire ordering") | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_non_power_of_two_size` | `lib/IR/Verifier.cpp::Verifier::checkAtomicMemAccessSize` | mirror |
@@ -585,71 +585,71 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::position_past_allocas_anchors_after_alloca_prefix` | `IRBuilder.h::IRBuilder::SetInsertPointPastAllocas` (no upstream `TEST_F`; live use in `lib/Frontend/OpenMP/OMPIRBuilder.cpp`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::save_and_restore_insert_point_before_terminator` | `unittests/Frontend/OpenMPIRBuilderTest.cpp`'s `Builder.saveIP()` / `Builder.restoreIP` uses | mirror |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::restore_insert_point_rejects_terminated_block` | `Verifier::visitBasicBlock` terminator invariant (`lib/IR/Verifier.cpp`); Rust typestate regression for stale saved insert points | llvmkit-specific |
-| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_int_neg_emits_sub_zero` | `IRBuilder.h::IRBuilder::CreateNeg` + `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` line 128 (`; CHECK-DAG: ... = sub i32 0, %a`) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_int_neg_emits_sub_zero` | `IRBuilder.h::IRBuilder::CreateNeg` + `test/Assembler/auto_upgrade_nvvm_intrinsics.ll`'s `@abs` (`; CHECK-DAG: ... = sub i32 0, %a`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_int_neg_nsw_emits_sub_nsw` | `IRBuilder.h::IRBuilder::CreateNSWNeg` + closest `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_int_not_emits_xor_minus_one` | `IRBuilder.h::IRBuilder::CreateNot` (no upstream `TEST_F`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_pointer_cast_same_addrspace_emits_bitcast` | `IRBuilder.h::IRBuilder::CreatePointerBitCastOrAddrSpaceCast` + live use in `unittests/Frontend/OpenMPIRBuilderTest.cpp` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_is_null_emits_icmp_eq_null` | `IRBuilder.h::IRBuilder::CreateIsNull` (no dedicated `TEST_F`; sibling `CreateIsNotNull` used in `unittests/Frontend/OpenMPIRBuilderTest.cpp`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_is_not_null_emits_icmp_ne_null` | `unittests/Frontend/OpenMPIRBuilderTest.cpp`'s `Builder.CreateIsNotNull(F->arg_begin())` use | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_from_builder_to_fadd` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 596-620 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::clear_fast_math_flags_drops_flags_from_subsequent_ops` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 622-628 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_allow_reciprocal_propagates_to_fdiv` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 630-640 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_to_fcmp_oeq` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 642-658 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_oeq_emits_oeq` | `test/Bitcode/compatibility.ll` line 1677 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ogt_emits_ogt` | `test/Bitcode/compatibility.ll` line 1679 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_oge_emits_oge` | `test/Bitcode/compatibility.ll` line 1681 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_olt_emits_olt` | `test/Bitcode/compatibility.ll` line 1683 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ole_emits_ole` | `test/Bitcode/compatibility.ll` line 1685 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ord_emits_ord` | `test/Bitcode/compatibility.ll` line 1689 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_uno_emits_uno` | `test/Bitcode/compatibility.ll` line 1703 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ueq_emits_ueq` | `test/Bitcode/compatibility.ll` line 1691 | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fp_phi_emits_phi_with_double_kind` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, FPMathOperator)` line 539 (`Builder.CreatePHI(getDoubleTy(), 0)`) | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_pointer_phi_emits_phi_with_ptr` | `test/Verifier/inalloca2.ll` line 35 (`%args = phi ptr [ %a, %if ], [ %b, %else ]`) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_from_builder_to_fadd` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`'s all-flags-set block (`FMF.setFast()`, then `CreateFAdd`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::clear_fast_math_flags_drops_flags_from_subsequent_ops` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`'s `clearFastMathFlags` block | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_allow_reciprocal_propagates_to_fdiv` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`'s individual-flag block (`setAllowReciprocal`, then `CreateFDiv`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_to_fcmp_oeq` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`'s `CreateFCmpOEQ` block | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_oeq_emits_oeq` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (`fcmp oeq`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ogt_emits_ogt` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (`fcmp ogt`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_oge_emits_oge` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (`fcmp oge`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_olt_emits_olt` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (`fcmp olt`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ole_emits_ole` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (`fcmp ole`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ord_emits_ord` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (`fcmp ord`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_uno_emits_uno` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (`fcmp uno`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ueq_emits_ueq` | `test/Bitcode/compatibility.ll`'s `@instructions.other` (`fcmp ueq`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fp_phi_emits_phi_with_double_kind` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, FPMathOperator)` (`Builder.CreatePHI(getDoubleTy(), 0)`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_pointer_phi_emits_phi_with_ptr` | `test/Verifier/inalloca2.ll`'s `@c` (`%args = phi ptr [ %a, %if ], [ %b, %else ]`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_convenience.rs::build_vector_splat_expands_to_insertelement_plus_shuffle` | `unittests/Analysis/VectorUtilsTest.cpp`'s `IRB.CreateVectorSplat(5, ScalarC)` use + `lib/IR/IRBuilder.cpp::IRBuilderBase::CreateVectorSplat` | mirror |
 | `crates/llvmkit-ir/tests/builder_convenience.rs::build_ptr_add_emits_gep_i8` | `unittests/Analysis/MemorySSATest.cpp`'s `B.CreatePtrAdd(Foo, B.getInt64(1), "bar")` use + `test/Assembler/opaque-ptr.ll` | mirror |
-| `crates/llvmkit-ir/tests/builder_convenience.rs::build_inbounds_ptr_add_emits_gep_inbounds_i8` | `test/Assembler/flags.ll` line 322 (`getelementptr inbounds i8, ptr %p, i64 %idx`) + `IRBuilder.h::CreateInBoundsPtrAdd` | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_struct_operand` | `test/Verifier/atomics.ll` lines 1-15; `llvm/lib/IR/Verifier.cpp::Verifier::visitLoadInst`'s `atomic load operand must have integer, pointer, floating point, or vector type!` (the `visitStoreInst` twin differs only in the noun). The string this row used to quote, `atomic load/store operand must have …`, is llvmkit's `VerifierRule` label, not upstream's `Check` literal | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_save_and_restore_round_trip` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, RAIIHelpersTest)` lines 833-844 (FastMathFlagGuard arm) | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fneg_emits_default_then_fmf_form` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)` lines 535-555 (`CreateUnOp(FNeg)` + `CreateFNegFMF`) | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_accumulates_contract_approx_reassoc_on_fmul` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 662-697 (AllowContract / ApproxFunc / AllowReassoc arm) | mirror |
+| `crates/llvmkit-ir/tests/builder_convenience.rs::build_inbounds_ptr_add_emits_gep_inbounds_i8` | `test/Assembler/flags.ll`'s `@gep_inbounds_nusw` (`getelementptr inbounds i8, ptr %p, i64 %idx`) + `IRBuilder.h::CreateInBoundsPtrAdd` | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_struct_operand` | `test/Verifier/atomics.ll`'s `@foo` / `@bar`; `llvm/lib/IR/Verifier.cpp::Verifier::visitLoadInst`'s `atomic load operand must have integer, pointer, floating point, or vector type!` (the `visitStoreInst` twin differs only in the noun). The string this row used to quote, `atomic load/store operand must have …`, is llvmkit's `VerifierRule` label, not upstream's `Check` literal | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_save_and_restore_round_trip` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, RAIIHelpersTest)` (FastMathFlagGuard arm) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fneg_emits_default_then_fmf_form` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)` (`CreateUnOp(FNeg)` + `CreateFNegFMF`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_accumulates_contract_approx_reassoc_on_fmul` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` (AllowContract / ApproxFunc / AllowReassoc arm) | mirror |
 | `crates/llvmkit-ir/tests/builder_vector_binop_dyn.rs::vector_binops_emit_elementwise_ir` | `lib/IR/Verifier.cpp::Verifier::visitBinaryOperator` vector operand type rule | mirror |
 | `crates/llvmkit-ir/tests/builder_vector_binop_dyn.rs::scalar_binop_dyn_still_works` | `lib/IR/Verifier.cpp::Verifier::visitBinaryOperator` scalar operand type rule | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_i32_zero` | `test/Bitcode/compatibility.ll` line 88-89 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_constant_i32_zero` | `test/Bitcode/compatibility.ll` line 90-91 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::external_declaration_global` | `test/Bitcode/compatibility.ll` line 114-115 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_private` | `test/Bitcode/compatibility.ll` line 94-95 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_internal` | `test/Bitcode/compatibility.ll` line 96-97 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_available_externally` | `test/Bitcode/compatibility.ll` line 98-99 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_linkonce` | `test/Bitcode/compatibility.ll` line 100-101 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_linkonce_odr` | `test/Bitcode/compatibility.ll` line 110-111 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_weak` | `test/Bitcode/compatibility.ll` line 102-103 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_weak_odr` | `test/Bitcode/compatibility.ll` line 112-113 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_extern_weak_declaration` | `test/Bitcode/compatibility.ll` line 108-109 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_common_zero_init` | `test/Bitcode/compatibility.ll` line 104-105 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::visibility_hidden` | `test/Bitcode/compatibility.ll` line 120-121 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::visibility_protected` | `test/Bitcode/compatibility.ll` line 122-123 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::dll_export` | `test/Bitcode/compatibility.ll` line 130-131 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::dll_import_declaration` | `test/Bitcode/compatibility.ll` line 128-129 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::tls_general_dynamic` | `test/Bitcode/compatibility.ll` line 136-137 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::tls_local_dynamic` | `test/Bitcode/compatibility.ll` line 138-139 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::tls_initial_exec` | `test/Bitcode/compatibility.ll` line 140-141 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::tls_local_exec` | `test/Bitcode/compatibility.ll` line 142-143 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::unnamed_addr_global` | `test/Bitcode/compatibility.ll` line 146-147 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::unnamed_addr_local` | `test/Bitcode/compatibility.ll` line 148-149 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::address_space_one` | `test/Bitcode/compatibility.ll` line 152-153 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::externally_initialized_declaration` | `test/Bitcode/compatibility.ll` line 156-157 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::section_attribute` | `test/Bitcode/compatibility.ll` line 160-161 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::partition_attribute` | `test/Bitcode/compatibility.ll` line 164-165 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::align_attribute` | `test/Bitcode/compatibility.ll` line 188-189 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_i32_zero` | `test/Bitcode/compatibility.ll`'s `@g1` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_constant_i32_zero` | `test/Bitcode/compatibility.ll`'s `@g2` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::external_declaration_global` | `test/Bitcode/compatibility.ll`'s `@g.external` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_private` | `test/Bitcode/compatibility.ll`'s `@g.private` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_internal` | `test/Bitcode/compatibility.ll`'s `@g.internal` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_available_externally` | `test/Bitcode/compatibility.ll`'s `@g.available_externally` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_linkonce` | `test/Bitcode/compatibility.ll`'s `@g.linkonce` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_linkonce_odr` | `test/Bitcode/compatibility.ll`'s `@g.linkonce_odr` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_weak` | `test/Bitcode/compatibility.ll`'s `@g.weak` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_weak_odr` | `test/Bitcode/compatibility.ll`'s `@g.weak_odr` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_extern_weak_declaration` | `test/Bitcode/compatibility.ll`'s `@g.extern_weak` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_common_zero_init` | `test/Bitcode/compatibility.ll`'s `@g.common` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::visibility_hidden` | `test/Bitcode/compatibility.ll`'s `@g.hidden` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::visibility_protected` | `test/Bitcode/compatibility.ll`'s `@g.protected` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::dll_export` | `test/Bitcode/compatibility.ll`'s `@g.dllexport` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::dll_import_declaration` | `test/Bitcode/compatibility.ll`'s `@g.dllimport` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::tls_general_dynamic` | `test/Bitcode/compatibility.ll`'s `@g.generaldynamic` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::tls_local_dynamic` | `test/Bitcode/compatibility.ll`'s `@g.localdynamic` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::tls_initial_exec` | `test/Bitcode/compatibility.ll`'s `@g.initialexec` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::tls_local_exec` | `test/Bitcode/compatibility.ll`'s `@g.localexec` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::unnamed_addr_global` | `test/Bitcode/compatibility.ll`'s `@g.unnamed_addr` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::unnamed_addr_local` | `test/Bitcode/compatibility.ll`'s `@g.local_unnamed_addr` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::address_space_one` | `test/Bitcode/compatibility.ll`'s `@g.addrspace` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::externally_initialized_declaration` | `test/Bitcode/compatibility.ll`'s `@g.externally_initialized` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::section_attribute` | `test/Bitcode/compatibility.ll`'s `@g.section` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::partition_attribute` | `test/Bitcode/compatibility.ll`'s `@g.partition` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::align_attribute` | `test/Bitcode/compatibility.ll`'s `@g.align` | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::comdat_any_emission` | `test/Bitcode/compatibility.ll`'s `$comdat.any = comdat any` together with the `@comdat.any = global i32 0, comdat` that references it — `AssemblyWriter`'s constructor prints only comdats reached from `Module::global_objects()` | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_all_selection_kinds` | `test/Bitcode/compatibility.ll` line 22-31 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_attached_implicit_name` | `test/Bitcode/compatibility.ll` line 168-169 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_attached_explicit_name_with_section` | `test/Bitcode/compatibility.ll` line 182-185 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::const_struct_initializer` | `test/Bitcode/compatibility.ll` line 47 + `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, AsInstructionsTest)` | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::const_array_i32_initializer` | `test/Bitcode/compatibility.ll` line 55-56 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_all_selection_kinds` | `test/Bitcode/compatibility.ll`'s `$comdat.any` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_attached_implicit_name` | `test/Bitcode/compatibility.ll`'s `@comdat.any` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_attached_explicit_name_with_section` | `test/Bitcode/compatibility.ll`'s `@g.comdat1` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::const_struct_initializer` | `test/Bitcode/compatibility.ll`'s `@const.struct` + `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, AsInstructionsTest)` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::const_array_i32_initializer` | `test/Bitcode/compatibility.ll`'s `@constant.array.i32` | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::const_array_i8_prints_as_cstring` | `test/Bitcode/compatibility.ll`'s `@constant.array.i8` + `lib/IR/AsmWriter.cpp::ConstantDataArray::isString` arm | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::appending_global_cstring` | `test/Bitcode/compatibility.ll` line 106-107 | mirror |
-| `crates/llvmkit-ir/tests/globals_basic.rs::const_vector_initializer` | `test/Bitcode/compatibility.ll` line 70-71 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::appending_global_cstring` | `test/Bitcode/compatibility.ll`'s `@g.appending` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::const_vector_initializer` | `test/Bitcode/compatibility.ll`'s `@constant.vector.i32` | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::function_pointer_global_initializer_verifies` | `include/llvm/IR/GlobalValue.h::GlobalValue`; `GlobalValue::getType`; `GlobalValue::getValueType` | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::function_pointer_aggregate_initializer_prints_ptr_base` | `include/llvm/IR/GlobalValue.h::GlobalValue`; `lib/IR/Constants.cpp::ConstantExpr::getGetElementPtr` | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::global_pointer_global_initializer_verifies` | `include/llvm/IR/GlobalValue.h::GlobalValue`; `GlobalValue::getType`; `GlobalValue::getValueType` | mirror |
@@ -971,7 +971,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::extractelement_round_trips` | `test/Bitcode/vectorInstructions.3.2.ll`; `LLParser::parseExtractElement` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::insertelement_round_trips` | `test/Bitcode/vectorInstructions.3.2.ll`; `LLParser::parseInsertElement` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::shufflevector_round_trips` | `test/Bitcode/vectorInstructions.3.2.ll`; `LLParser::parseShuffleVector` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::shufflevector_zeroinitializer_mask_operand_round_trips` | `test/Bitcode/compatibility.ll` line 1539; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseShuffleVector` typed mask operand | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::shufflevector_zeroinitializer_mask_operand_round_trips` | `test/Bitcode/compatibility.ll`'s `@instructions.vectorops` (`shufflevector`); `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseShuffleVector` typed mask operand | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::extractvalue_round_trips` | `test/Assembler/insertextractvalue.ll` opaque-pointer excerpt; `LLParser::parseExtractValue` | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::insertvalue_round_trips` | `test/Assembler/insertextractvalue.ll` opaque-pointer excerpt; `LLParser::parseInsertValue` | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::phi_int_round_trips` | `test/Assembler/zero-input-phi.ll`; `LLParser::parsePHI` | mirror |
@@ -983,7 +983,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::cmpxchg_round_trips` | `test/Assembler/opaque-ptr.ll`; `LLParser::parseCmpXchg` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::cmpxchg_operand_must_be_integer_or_pointer_and_power_of_two_sized` | `Verifier::visitAtomicCmpXchgInst` and `Verifier::checkAtomicMemAccessSize` (`lib/IR/Verifier.cpp`); no `llvm/test` fixture pins either message, so the two reproducers are llvmkit's | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::atomicrmw_round_trips` | `test/Assembler/atomicrmw.ll`; `LLParser::parseAtomicRMW` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::atomicrmw_fmaximum_fminimum_round_trips` | `test/Bitcode/compatibility.ll` lines 935/938 (`@fp_atomics`); `LLParser::parseAtomicRMW` `Keyword::Fmaximum`/`Keyword::Fminimum` arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::atomicrmw_fmaximum_fminimum_round_trips` | `test/Bitcode/compatibility.ll`'s `@fp_atomics` (`%atomicrmw.fmaximum`)/938 (`@fp_atomics`); `LLParser::parseAtomicRMW` `Keyword::Fmaximum`/`Keyword::Fminimum` arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_string_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneMetadata`; `LLParser::parseMDString` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_with_inline_string` | `test/Assembler/metadata.ll`; `lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneMetadata` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_empty_tuple` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
@@ -1166,12 +1166,12 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_forward_reference_type_disagreement_matches_upstream_text` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionHeader`'s `type of definition and forward reference of '@N' disagree` error, verbatim; `grep -ran` for that text over the vendored `test/` returns nothing, so the routine is the anchor | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_alignment_asserts_are_ported_as_diagnostics` | `llvm/include/llvm/Support/Alignment.h`'s `Align(uint64_t)` and `MaybeAlign(uint64_t)` assertions, and `llvm/lib/IR/Attributes.cpp::AttrBuilder::addStackAlignmentAttr`'s `assert(*Align <= 0x100)`, reached from `LLParser::parseFnAttributeValuePairs`'s `align = N` / `alignstack = N` arms. No upstream `.ll` pins any of them — they are assertions, not `error()`s | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::array_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::scalable_vector_splat_constant_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::ValID::t_ConstantSplat` lines 6617-6625; `llvm/lib/IR/AsmWriter.cpp::printConstant` vector splat spelling | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::scalable_vector_splat_constant_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::ValID::t_ConstantSplat`; `llvm/lib/IR/AsmWriter.cpp::printConstant` vector splat spelling | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::struct_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::getelementptr_constant_expr_initializer_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_getelementptr` global-initializer shape | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_casts_round_trip` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` cast constant-expression arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_fold_full_vector_gep_and_bitcast_fixture` | `test/Assembler/ConstantExprFold.ll` lines 9-50 and FileCheck lines 32-43 | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_fold_cast_fixture_matches_upstream` | `test/Assembler/ConstantExprFoldCast.ll` lines 11-29 and FileCheck lines 6-9 | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_fold_full_vector_gep_and_bitcast_fixture` | `test/Assembler/ConstantExprFold.ll`'s `@A` and its `CHECK` block (the folded `@gep1`-`@gep4` / `@bitcast1` / `@bitcast2` forms) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_fold_cast_fixture_matches_upstream` | `test/Assembler/ConstantExprFoldCast.ll`'s `@A` and its `CHECK` block (`CHECK-NOT: bitcast` / `CHECK-NOT: trunc`, then two `addrspacecast`) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` general `kw_getelementptr` constant-expression shape | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_vector_gep_round_trips` | `test/Assembler/opaque-ptr.ll::gep_constexpr_vec1` scalar pointer + vector index constant-expression GEP/FileCheck case | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_flags_match_upstream_flags_fixture` | `test/Assembler/flags.ll` constant-expression GEP flag/FileCheck cases | mirror |
@@ -1281,7 +1281,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::no_cfi_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `no_cfi` global-initializer shape | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` token branch | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::token_zeroinitializer_is_the_token_none_constant` | `llvm/lib/IR/Constants.cpp::Constant::getNullValue`'s `case Type::TokenTyID` (`ConstantTokenNone::get`), reached through `LLParser::convertValIDToValue`'s `t_Zero` arm; no upstream `.ll` spells `token zeroinitializer` | llvmkit-specific (rule anchor) |
-| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_bitcast_round_trips` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` lines 139-141 null-cast shortcut before PPC_FP128 bitcast no-fold checks | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_bitcast_round_trips` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` null-cast shortcut before PPC_FP128 bitcast no-fold checks | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip` | `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid` pointer bitcast scalar/one-lane fixed-vector rule | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_round_trips` | `test/Assembler/pr119818.ll`; `test/Assembler/uselistorder_bb.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_uses_function_address_space` | `llvm/lib/IR/Constants.cpp::BlockAddress::get(Function*, BasicBlock*)` uses the parent function pointer type | mirror |
@@ -1318,7 +1318,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::the_upstream_uselistorder_fixture_parses_clean` | `test/Assembler/uselistorder.ll` -- its `RUN` line asserts a clean `llvm-as`; its `@b = alias i1, getelementptr (...)` is `LLParser::parseAliasOrIFunc`'s bare-`parseValID` aliasee branch | mirror |
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::plain_display_emits_no_directives` | No upstream counterpart: `Module::print`'s `ShouldPreserveUseListOrder = false` default is selected on upstream `RUN` lines (`llvm-dis` vs `opt -preserve-ll-uselistorder`), so no single fixture pins it | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrtoaddr_constant_expr_round_trips` | AS0 constant-expression subset of `test/Assembler/ptrtoaddr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrtoaddr` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrtoaddr_as1_constant_expr_round_trips` | Exact addrspace(1) global-constant excerpt of `llvm/test/Assembler/ptrtoaddr.ll` lines 7-9 | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrtoaddr_as1_constant_expr_round_trips` | Exact addrspace(1) global-constant excerpt of `llvm/test/Assembler/ptrtoaddr.ll`'s `@i_as1` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::unsupported_constant_expr_opcodes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` unsupported constexpr diagnostics | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::none_is_token_only` | `Constants.cpp::ConstantTargetNone::get`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` token branch | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::target_ext_zeroinitializer_requires_zero_init_property` | `test/Assembler/target-types.ll`; `llvm/lib/IR/Type.cpp::getTargetTypeInfo` | llvmkit-specific subset |
@@ -1629,19 +1629,19 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/constant_fold.rs::compare_scalable_vector_splats_fold_before_scalable_bailout` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` splat fast path before scalable-vector bailout | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::scalar_all_ones_bitcast_to_vector_splat_folds` | `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` all-ones fold before scalar-to-vector bitcast canonicalization | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::fp_all_ones_bitcast_to_vector_splat_folds` | `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` all-ones fold; `llvm/lib/IR/Constants.cpp::Constant::isAllOnesValue` floating bit-pattern handling | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::scalar_int_bitcast_to_vector_canonicalizes_as_vector_bitcast` | `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` lines 70-76 scalar-to-vector bitcast canonicalization | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::same_lane_vector_ptrtoint_cast_builds_lane_constant_exprs` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` lines 153-182 same-lane vector casts use `foldMaybeUndesirableCast` per lane | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::scalar_int_bitcast_to_vector_canonicalizes_as_vector_bitcast` | `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` scalar-to-vector bitcast canonicalization | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::same_lane_vector_ptrtoint_cast_builds_lane_constant_exprs` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` same-lane vector casts use `foldMaybeUndesirableCast` per lane | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_from_insertelement_constant_expr_folds_inserted_lane` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` insertelement constant-expression extraction rule | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_from_insertelement_matches_indices_across_widths` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` lines 374-381 uses `APSInt::isSameValue` for insert/extract index comparison | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_from_insertelement_matches_wide_indices` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` lines 374-381 uses `APSInt::isSameValue` without host-width truncation | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::extract_insert_poison_indices_and_zero_insert_fold_like_llvm` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` lines 338-341; `ConstantFoldInsertElementInstruction` lines 398-407 | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_from_insertelement_matches_indices_across_widths` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` uses `APSInt::isSameValue` for insert/extract index comparison | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_from_insertelement_matches_wide_indices` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` uses `APSInt::isSameValue` without host-width truncation | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::extract_insert_poison_indices_and_zero_insert_fold_like_llvm` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction`'s poison-value / undef-index early returns; `ConstantFoldInsertElementInstruction`'s undef-index and all-zeros-with-null-element arms | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::extractvalue_undef_and_poison_aggregates_fold_to_typed_elements` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractValueInstruction` `getAggregateElement` on undef/poison aggregates | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::i1_constant_expr_binary_special_cases_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` i1 special cases on non-`ConstantInt` constants | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::vector_splat_desirable_binop_builds_splat_constant_expr` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` vector splat desirable-binop constant-expression path | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::scalable_vector_fp_undef_binary_folds_to_nan_splat` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` scalar/scalable undef FP binop rules | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::scalable_vector_fsub_negative_zero_pattern_controls_undef_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 693-696; `llvm/include/llvm/IR/PatternMatch.h::m_NegZeroFP` poison-lane matching and undef-lane rejection | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::scalable_vector_fsub_negative_zero_pattern_controls_undef_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction`; `llvm/include/llvm/IR/PatternMatch.h::m_NegZeroFP` poison-lane matching and undef-lane rejection | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constant_fold.rs::compare_constant_expr_edge_cases_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` null shortcut, i1 EQ/NE rewrite, and same-FP fallback | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::compare_null_lhs_constant_expr_rhs_commutes_to_rhs_null_shortcut` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` lines 1298-1305 null-left / ConstantExpr-right swapped retry | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::compare_null_lhs_constant_expr_rhs_commutes_to_rhs_null_shortcut` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` null-left / ConstantExpr-right swapped retry | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constant_fold.rs::compare_vector_constant_expr_operands_fold_by_extracting_lanes` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` fixed-vector ConstantExpr lane extraction | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::select_vector_shortcuts_and_constant_expr_arms_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldSelectInstruction` vector condition shortcuts and ConstantExpr arm extraction | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_vector_gep_nonzero_index_builds_vector_expr` | `llvm/include/llvm/IR/ConstantFolder.h::FoldGEP`; `llvm/lib/IR/Constants.cpp::ConstantExpr::getGetElementPtr` vector result type computation | llvmkit-specific subset |
@@ -1665,53 +1665,53 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_fixed_vector_out_of_range_returns_poison` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` fixed-vector out-of-range poison behavior | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_fixed_vector_undef_index_returns_poison` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` undef-index poison behavior | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::constant_expr_trunc_folds_before_interning` | `llvm/lib/IR/Constants.cpp::ConstantExpr::get`; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` trunc fold-before-interning behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::constant_expr_ptrtoaddr_uses_distinct_opcode` | Exact global-constant excerpt of `llvm/test/Assembler/ptrtoaddr.ll` lines 2-9 | mirror |
+| `crates/llvmkit-ir/tests/constant_fold.rs::constant_expr_ptrtoaddr_uses_distinct_opcode` | Exact global-constant excerpt of `llvm/test/Assembler/ptrtoaddr.ll`'s `@i_as0` | mirror |
 | `crates/llvmkit-ir/tests/constant_fold.rs::frem_uses_modulo_not_ieee_remainder` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` `frem` uses APFloat `mod`/C fmod behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::associative_constant_expr_binary_reassociates_folded_rhs` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 907-924 associative ConstantExpr reassociation and commuted RHS ConstantExpr retry | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 783-789 constant-int LHS commutation to desirable ConstantExpr | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::insertelement_fixed_vector_replaces_lane` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertElementInstruction` lines 398-438 fixed-vector in-range index rebuild behavior and undef-only poison-vector index rule | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::shufflevector_fixed_mask_selects_lanes` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction` lines 448-479 individual poison-mask elements become undef; all-poison mask returns poison vector | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::associative_constant_expr_binary_reassociates_folded_rhs` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` associative ConstantExpr reassociation and commuted RHS ConstantExpr retry | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` constant-int LHS commutation to desirable ConstantExpr | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::insertelement_fixed_vector_replaces_lane` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertElementInstruction` fixed-vector in-range index rebuild behavior and undef-only poison-vector index rule | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::shufflevector_fixed_mask_selects_lanes` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction` individual poison-mask elements become undef; all-poison mask returns poison vector | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::shufflevector_scalable_all_poison_mask_folds` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction` all-poison masks fold before scalable-vector iteration bailout | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constant_fold.rs::insertvalue_array_replaces_element` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertValueInstruction` aggregate rebuild behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::undef_cast_rules_fold_to_zero_or_undef` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` lines 129-136 undef cast rules | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::fp_undef_binary_rules_fold_to_undef_or_nan` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 693-712 FP undef rules | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::compare_global_pointer_relations_fold` | `llvm/lib/IR/ConstantFold.cpp::evaluateICmpRelation` lines 957-1094; `ConstantFoldCompareInstruction` lines 1210-1305 | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::compare_ifunc_linkage_relations_match_globalvalue_rules` | `llvm/lib/IR/ConstantFold.cpp::areGlobalsPotentiallyEqual` lines 957-979 and `evaluateICmpRelation` lines 1027-1044 ifunc `GlobalValue` linkage behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::compare_globals_with_recursive_empty_value_type_declines` | `llvm/lib/IR/Type.cpp::Type::isEmptyTy` lines 180-194 as consumed by `llvm/lib/IR/ConstantFold.cpp::areGlobalsPotentiallyEqual` | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::compare_local_unnamed_addr_globals_still_fold_not_equal` | `llvm/lib/IR/ConstantFold.cpp::areGlobalsPotentiallyEqual` lines 959-961; `llvm/include/llvm/IR/GlobalValue.h::hasGlobalUnnamedAddr` global-vs-local unnamed-addr behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::compare_undef_rules_fold_scalar_and_vector_results` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` lines 1096-1131 and 1167-1199 scalar/vector undef compare behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::select_undef_poison_and_equal_arm_rules_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldSelectInstruction` lines 256-331 undef/poison/equal-arm behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::select_undef_arm_with_direct_global_arm_folds_to_global` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldSelectInstruction` lines 307-329 not-poison direct global select arm fold | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::select_vector_undef_poison_and_equal_lanes_rebuild_result` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldSelectInstruction` lines 262-289 vector lane undef/poison/equal-arm behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::vector_and_aggregate_rebuilders_materialize_constants` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertElementInstruction` lines 398-438; `ConstantFoldShuffleVectorInstruction` lines 440-497; `ConstantFoldInsertValueInstruction` lines 511-538 constant rebuilding behavior | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::vector_rebuilders_extract_lanes_from_non_aggregate_constants` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertElementInstruction` lines 423-437; `ConstantFoldShuffleVectorInstruction` lines 481-492 synthesize `ConstantExpr::getExtractElement` lanes | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::constants_test_integer_i1_binary_folds` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, Integer_i1)` lines 62-132 | port |
-| `crates/llvmkit-ir/tests/constant_fold.rs::constant_fold_unary_fneg_undef_and_vector_elements` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldUnaryInstruction` lines 540-596 | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::undef_cast_rules_fold_to_zero_or_undef` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` undef cast rules | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::fp_undef_binary_rules_fold_to_undef_or_nan` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` FP undef rules | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::compare_global_pointer_relations_fold` | `llvm/lib/IR/ConstantFold.cpp::evaluateICmpRelation`; `ConstantFoldCompareInstruction`'s `evaluateICmpRelation` switch | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::compare_ifunc_linkage_relations_match_globalvalue_rules` | `llvm/lib/IR/ConstantFold.cpp::areGlobalsPotentiallyEqual` and `evaluateICmpRelation` ifunc `GlobalValue` linkage behavior | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::compare_globals_with_recursive_empty_value_type_declines` | `llvm/lib/IR/Type.cpp::Type::isEmptyTy` as consumed by `llvm/lib/IR/ConstantFold.cpp::areGlobalsPotentiallyEqual` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::compare_local_unnamed_addr_globals_still_fold_not_equal` | `llvm/lib/IR/ConstantFold.cpp::areGlobalsPotentiallyEqual`; `llvm/include/llvm/IR/GlobalValue.h::hasGlobalUnnamedAddr` global-vs-local unnamed-addr behavior | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::compare_undef_rules_fold_scalar_and_vector_results` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` scalar/vector undef compare behavior | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::select_undef_poison_and_equal_arm_rules_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldSelectInstruction` undef/poison/equal-arm behavior | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::select_undef_arm_with_direct_global_arm_folds_to_global` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldSelectInstruction` not-poison direct global select arm fold | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::select_vector_undef_poison_and_equal_lanes_rebuild_result` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldSelectInstruction` vector lane undef/poison/equal-arm behavior | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::vector_and_aggregate_rebuilders_materialize_constants` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertElementInstruction`; `ConstantFoldShuffleVectorInstruction`; `ConstantFoldInsertValueInstruction` constant rebuilding behavior | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::vector_rebuilders_extract_lanes_from_non_aggregate_constants` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertElementInstruction`; `ConstantFoldShuffleVectorInstruction` synthesize `ConstantExpr::getExtractElement` lanes | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::constants_test_integer_i1_binary_folds` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, Integer_i1)` | port |
+| `crates/llvmkit-ir/tests/constant_fold.rs::constant_fold_unary_fneg_undef_and_vector_elements` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldUnaryInstruction` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::cast_of_cast_ptrtoint_trunc_folds_to_narrow_ptrtoint` | `llvm/lib/IR/ConstantFold.cpp::foldConstantCastPair`; `llvm/lib/IR/Instructions.cpp::CastInst::isEliminableCastPair` ptrtoint+trunc table case | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::bitcast_negative_zero_float_preserves_sign_bit` | `llvm/lib/IR/Constants.cpp::ConstantFP::isNullValue`; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` negative-zero bitcast behavior | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::vector_trunc_cast_folds_elementwise` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` lines 153-183 vector element-wise cast folding | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::vector_trunc_cast_folds_elementwise` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` vector element-wise cast folding | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::vector_integer_binary_folds_elementwise` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` fixed-length vector element-wise folding | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::vector_div_by_zero_splat_folds_to_vector_poison` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 927-947 vector division/remainder by zero returns poison | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::scalable_vector_undef_binary_folds_before_bailout` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 620-621 scalar/scalable-vector undef handling before fixed-vector lane folding | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::fixed_vector_undef_binary_folds_per_lane` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 620-621 fixed-length vectors evaluated per element instead of scalar/scalable undef shortcut | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::scalable_vector_trunc_splat_folds` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` lines 153-170 scalable vector splat cast before bailout | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::vector_div_by_zero_splat_folds_to_vector_poison` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` vector division/remainder by zero returns poison | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::scalable_vector_undef_binary_folds_before_bailout` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` scalar/scalable-vector undef handling before fixed-vector lane folding | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::fixed_vector_undef_binary_folds_per_lane` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` fixed-length vectors evaluated per element instead of scalar/scalable undef shortcut | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::scalable_vector_trunc_splat_folds` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` scalable vector splat cast before bailout | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constant_fold.rs::vector_bitcast_all_ones_to_float_splat_folds` | `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` all-ones constant handling; `llvm/lib/IR/Constants.cpp::Constant::getAllOnesValue` | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::constant_fold_gep_poison_undef_and_noop_indices` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldGetElementPtr` lines 1310-1340 | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::constant_fold_gep_inrange_noop_does_not_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldGetElementPtr` lines 1324-1334 | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::constant_fold_gep_poison_undef_and_noop_indices` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldGetElementPtr` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::constant_fold_gep_inrange_noop_does_not_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldGetElementPtr`'s `IsNoOp` lambda, which declines when `InRange` is set | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::function_pointer_and_mask_folds_from_alignment` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, FoldFunctionPtrAlignUnknownAnd2)`, `DontFoldFunctionPtrAlignUnknownAnd4`, `FoldFunctionPtrAlign4`, `DontFoldFunctionPtrAlign1`, `FoldFunctionAlign4PtrAlignMultiple`, `DontFoldFunctionAlign4PtrAlignIndependent` | port |
-| `crates/llvmkit-ir/tests/constant_fold.rs::commuted_global_pointer_mask_folds_to_null` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 740-779 commuted global-pointer low-bit mask folding | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::global_pointer_zero_mask_folds_without_alignment` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 724-742 `and` zero absorber before pointer-alignment fold | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_fold.rs::global_variable_ptrtoint_and_ptrtoaddr_and_mask_fold_to_null` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, FoldGlobalVariablePtr)` lines 559-579 | port |
-| `crates/llvmkit-ir/tests/constant_fold.rs::global_variable_ptrtoint_mask_uses_implicit_datalayout_alignment` | `llvm/lib/IR/Value.cpp::Value::getPointerAlignment` lines 974-988 as reached from `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` global-pointer mask folding | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::commuted_global_pointer_mask_folds_to_null` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` commuted global-pointer low-bit mask folding | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::global_pointer_zero_mask_folds_without_alignment` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` `and` zero absorber before pointer-alignment fold | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::global_variable_ptrtoint_and_ptrtoaddr_and_mask_fold_to_null` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, FoldGlobalVariablePtr)` | port |
+| `crates/llvmkit-ir/tests/constant_fold.rs::global_variable_ptrtoint_mask_uses_implicit_datalayout_alignment` | `llvm/lib/IR/Value.cpp::Value::getPointerAlignment` as reached from `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` global-pointer mask folding | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_folds_fneg_constant_without_instruction` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldUnOpFMF`; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldUnaryInstruction` | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_folds_udiv_by_zero_to_poison_without_instruction` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldBinOp`; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` | llvmkit-specific regression |
-| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldExactBinOp` lines 56-67 delegates non-desirable binops to plain `ConstantFoldBinaryInstruction` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldExactBinOp` delegates non-desirable binops to plain `ConstantFoldBinaryInstruction` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_no_wrap_mul_delegates_to_binary_constant_fold` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldNoWrapBinOp`; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_no_wrap_shl_delegates_to_binary_constant_fold` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldNoWrapBinOp`; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldNoWrapBinOp` lines 69-85; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 598-955 | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_binary_intrinsic_declines` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldBinaryIntrinsic` lines 184-188 | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_folder_builder.rs::default_builder_folds_insert_extract_element_chain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, InsertExtractElement)` lines 1127-1138 | port |
-| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts` | `llvm/lib/IR/Constants.cpp::ConstantExpr::getPointerCast` / `getPointerBitCastOrAddrSpaceCast` lines 2277-2300; `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid` lines 3374-3395 | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldNoWrapBinOp`'s two sides (`xor` is desirable so it takes `ConstantExpr::get`; `and` is not, so it delegates); `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_binary_intrinsic_declines` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldBinaryIntrinsic` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_folder_builder.rs::default_builder_folds_insert_extract_element_chain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, InsertExtractElement)` | port |
+| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts` | `llvm/lib/IR/Constants.cpp::ConstantExpr::getPointerCast` / `getPointerBitCastOrAddrSpaceCast`; `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::custom_folder_no_wrap_hook_receives_mul` | `llvm/include/llvm/IR/IRBuilder.h::IRBuilder::CreateMul`; `llvm/include/llvm/IR/IRBuilderFolder.h::FoldNoWrapBinOp` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::custom_folder_no_wrap_hook_receives_shl` | `llvm/include/llvm/IR/IRBuilder.h::IRBuilder::CreateShl`; `llvm/include/llvm/IR/IRBuilderFolder.h::FoldNoWrapBinOp` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::no_folder_names_add_instruction_exactly` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, NoFolderNames)` | port |
@@ -1756,9 +1756,9 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::function_denormal_f32_attribute_overrides_generic_mode` | `llvm/lib/Analysis/ConstantFolding.cpp::getInstrDenormalMode`; `llvm/lib/IR/Function.cpp::Function::getDenormalMode` f32 denormal attribute override | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::function_denormal_attribute_group_overrides_generic_mode` | `llvm/lib/Analysis/ConstantFolding.cpp::getInstrDenormalMode`; `llvm/lib/IR/Function.cpp::Function::getDenormalMode` numbered attribute-group lookup | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folding_analysis.rs::determinism_deny_declines_host_libm_but_keeps_apfloat_sqrt` | `llvm/lib/Analysis/ConstantFolding.cpp::canConstantFoldCallTo`; `ConstantFoldScalarCall`; `ConstantFoldFP` host-libm determinism boundary | llvmkit-specific subset |
-| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_ptrtoaddr_instruction_distinct_from_ptrtoint` | Exact scalar AS0 instruction excerpt of `llvm/test/Assembler/ptrtoaddr.ll` lines 11-15 | mirror |
-| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_ptrtoaddr_as1_scalar_instruction` | Exact scalar AS1 instruction excerpt of `llvm/test/Assembler/ptrtoaddr.ll` lines 17-21 | mirror |
-| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_ptrtoaddr_as1_vector_instruction` | Exact vector AS1 instruction excerpt of `llvm/test/Assembler/ptrtoaddr.ll` lines 23-27 | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_ptrtoaddr_instruction_distinct_from_ptrtoint` | Exact scalar AS0 instruction excerpt of `llvm/test/Assembler/ptrtoaddr.ll`'s `@test_as0` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_ptrtoaddr_as1_scalar_instruction` | Exact scalar AS1 instruction excerpt of `llvm/test/Assembler/ptrtoaddr.ll`'s `@test_as1` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_ptrtoaddr_as1_vector_instruction` | Exact vector AS1 instruction excerpt of `llvm/test/Assembler/ptrtoaddr.ll`'s `@test_vec_as1` | mirror |
 | `crates/llvmkit-ir/tests/known_bits.rs::display_prints_msb_to_lsb_with_conflict_marker` | `llvm/lib/Support/KnownBits.cpp::KnownBits::print` | mirror |
 | `crates/llvmkit-ir/tests/known_bits.rs::unary_not_and_abs_are_exact_for_four_bit_known_bits` | `llvm/unittests/Support/KnownBitsTest.cpp::TEST(KnownBitsTest, UnaryExhaustive)` | port |
 | `crates/llvmkit-ir/tests/known_bits.rs::bitwise_transfers_are_exact_for_four_bit_known_bits` | `llvm/unittests/Support/KnownBitsTest.cpp::TEST(KnownBitsTest, BinaryExhaustive)` | port |
@@ -1944,9 +1944,9 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/pass_pipeline_data.rs::scoped_pass_name_rejects_invalid_text` | `llvm/include/llvm/Passes/PassBuilder.h::PassBuilder::parsePassPipeline`'s documented textual grammar; scoped Rust names preserve pass-manager layer | llvmkit-specific |
 | `crates/llvmkit-ir/tests/pass_pipeline_data.rs::pass_pipeline_parser_preserves_nested_shape` | `llvm/include/llvm/Passes/PassBuilder.h::PassBuilder::parsePassPipeline`; `llvm/lib/Passes/PassBuilder.cpp::parsePipelineText` | mirror |
 | `crates/llvmkit-ir/tests/pass_pipeline_data.rs::pass_pipeline_parser_rejects_invalid_or_empty_pipelines` | `llvm/lib/Passes/PassBuilder.cpp::parsePipelineText` | mirror |
-| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::roadmap_recipes_are_typed_data_only` | `ROADMAP.md` lines 348-356; `llvm/lib/Passes/PassRegistry.def` lines 259-264 | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/compile_fail/default_pipeline_o2_not_supported.rs` | `ROADMAP.md` data-only O1 milestone boundary; `llvm/lib/Passes/PassRegistry.def` lines 259-264 are broader than this subset | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/compile_fail/module_pipeline_step_rejects_raw_string.rs` | `ROADMAP.md` lines 348-356; D3 typed recipe boundary rejects raw strings | llvmkit-specific |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::roadmap_recipes_are_typed_data_only` | `ROADMAP.md`; `llvm/lib/Passes/PassRegistry.def` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/compile_fail/default_pipeline_o2_not_supported.rs` | `ROADMAP.md` data-only O1 milestone boundary; `llvm/lib/Passes/PassRegistry.def` are broader than this subset | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/compile_fail/module_pipeline_step_rejects_raw_string.rs` | `ROADMAP.md`; D3 typed recipe boundary rejects raw strings | llvmkit-specific |
 | `crates/llvmkit-ir/tests/compile_fail/folder_typed_wrong_width.rs` | `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract (C++ has no static analog for the width-pinning check) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/src/ir_builder.rs::tests::hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int` | `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract; in-crate sibling of the `folder_typed_wrong_width.rs` example-lock above -- locks the `accept_folded_int` type check (`ir_builder.rs`) at the erased `IntDyn` marker as defense-in-depth against an in-crate folder bug reachable only via the crate-internal `from_value_unchecked` constructor, since external folders are already compiler-blocked from this shape. The check is unconditional: it was once keyed on `W::static_bits().is_none()`, which trusted the folder's own claim that `W` matched its payload -- the claim the check exists to verify -- so this test now covers only the dyn half of the marker space, with `..._rejected_at_static_width` below covering the other | llvmkit-specific |
 | `crates/llvmkit-ir/src/ir_builder.rs::tests::hostile_native_typed_override_wrong_width_rejected_at_static_width` | `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract; static-width sibling of `..._rejected_by_accept_folded_int` above -- locks the half `accept_folded_int`'s deleted `W::static_bits().is_none() &&` short-circuit let through, where a native typed-hook override's 64-bit payload was accepted as `IntValue<'ctx, i32, B>` and a mistyped handle escaped into user code. A static `W` is only as honest as the in-crate caller that wrote it (`from_value_unchecked` consults no runtime type), so the marker is not self-guaranteeing and the acceptor checks it too | llvmkit-specific |
@@ -2442,6 +2442,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/upstream_registry_drift.rs::every_registry_row_names_a_file_in_the_tree` | none -- LLVM keeps no per-test provenance registry, so it has nothing to keep honest. Closest functional reference: `llvm/utils/lit`, which resolves a test path before running it and errors on a missing file | llvmkit-specific |
 | `crates/llvmkit-ir/tests/upstream_registry_drift.rs::every_registry_row_names_a_test_its_cited_file_defines` | none -- as above. Written after eleven rows were found naming tests that had moved to `crates/llvmkit-ir/src/phi_raw_tests/`, a drift no earlier sweep caught | llvmkit-specific |
 | `crates/llvmkit-ir/tests/upstream_registry_drift.rs::every_test_carries_a_registry_row_or_a_line_in_the_frozen_debt_list` | none -- the other direction of D11, tree to registry: a `#[test]` with no row must be listed in the frozen `tests/fixtures/upstream_provenance_debt.txt`, so the backlog `docs/divergences.md` entry 98 tracks can shrink but not grow | llvmkit-specific |
+| `crates/llvmkit-ir/tests/upstream_registry_drift.rs::no_registry_row_cites_upstream_by_line_number` | none -- LLVM has no provenance registry and so no citation style to enforce. Makes `CLAUDE.md`'s "cite upstream by symbol, never line number" mechanical for this file, which had accumulated 148 line-citing rows before nothing was checking it | llvmkit-specific |
 | `crates/llvmkit-ir/tests/boundary_door_drift.rs::every_block_id_exception_door_call_sits_under_a_boundary_marker` | no upstream counterpart -- LLVM's `BasicBlock *` carries no module tag, so there is no door to pin. Every call of `BlockId::slot_unchecked_at_marked_boundary` must sit directly under a `// boundary (F1)` / `// boundary (F2)` marker; a synthetic-source positive control checks the scanner | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/di_expression.rs::is_valid` | `llvm/unittests/IR/MetadataTest.cpp::TEST_F(DIExpressionTest, isValid)` — every `EXPECT_VALID` / `EXPECT_INVALID` element array, verbatim, against the port of `llvm/lib/IR/DebugInfoMetadata.cpp::DIExpression::isValid` | port |
 | `crates/llvmkit-ir/tests/di_expression.rs::operand_spellings_map_to_upstream_elements` | none — upstream's `DIExpression` stores `uint64_t` elements, so it has no spelling-to-element step; this pins the one llvmkit adds (`DwarfExpressionOperand::element`) against the encodings `llvm/lib/AsmParser/LLParser.cpp::parseDIExpressionBody` obtains from `dwarf::getOperationEncoding` / `getAttributeEncoding` | llvmkit-specific |
