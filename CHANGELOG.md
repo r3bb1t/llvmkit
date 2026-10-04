@@ -60,10 +60,21 @@ cut, entries accumulate under **Unreleased**.
   - the crate's own build, for the rest — `set_name` / `clear_name`,
     `remove_incoming`, `with_operand_bundles`, `splice_into`, `split_at` /
     `split_before` and the `call` builders — whose bodies call
-    `proven_mutable()` or another `CanMutate`-bounded routine. No fixture
-    calls them on a `ReadOnly` handle; for the `BasicBlock` ones a fixture
-    becomes writable at the integration step, when a function's blocks come
-    back `ReadOnly`.
+    `proven_mutable()` or another `CanMutate`-bounded routine. Where the
+    receiver can be `ReadOnly` today, a compile-fail fixture also fails if a
+    bound is dropped and its body routed around it:
+    `compile_fail/verified_block_label_call_is_read_only`
+    (`BasicBlockLabel::call`),
+    `compile_fail/verified_instruction_name_is_read_only`
+    (`InstructionView::set_name` / `clear_name`),
+    `compile_fail/verified_phi_incoming_removal_is_read_only`
+    (`remove_incoming` on `PhiKind` and the four phi handles) and
+    `compile_fail/verified_call_operand_bundles_are_read_only`
+    (`with_operand_bundles` on the call, invoke and `callbr` handles). Only
+    the `BasicBlock` receivers — a block's `set_name` / `clear_name`,
+    `splice_into`, `split_at` / `split_before` and `call` — wait for the
+    integration step for theirs, when a function's blocks come back
+    `ReadOnly`.
 
   `capability_typestate`'s
   `a_verified_modules_blocks_and_instructions_are_read_only` locks the
@@ -84,7 +95,7 @@ cut, entries accumulate under **Unreleased**.
 - **Breaking: a `BasicBlockView` hands out `ReadOnly` handles** —
   `instructions()`, `placed_instructions()` and its `IntoIterator` — so the
   instructions of a walk an `Inspect` pass receives, and what they narrow to,
-  are `ReadOnly`. One route from them to a setter stays open until the
+  are `ReadOnly`. A route from them to a setter stays open until the
   integration step, when functions carry the capability: an operand that is
   an argument hands out `Argument::parent_function` at `Mutable`, and that
   function's `entry_block` leads to `Mutable` instructions and the tokenless

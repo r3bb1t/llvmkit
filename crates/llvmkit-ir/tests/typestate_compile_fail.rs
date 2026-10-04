@@ -266,4 +266,11 @@ fn typestate_compile_fail() {
     // only their `C: CanMutate` bound between a `ReadOnly` handle and the
     // module; this fixture is what fails if one of those bounds goes.
     t.compile_fail("tests/compile_fail/verified_instruction_mutators_are_read_only.rs");
+    // The mutators whose bodies do need the `Mutable` reference their bound
+    // licenses: dropping such a bound alone breaks the build, so each of these
+    // fixtures is what fails if the bound goes and the body is routed around it.
+    t.compile_fail("tests/compile_fail/verified_block_label_call_is_read_only.rs");
+    t.compile_fail("tests/compile_fail/verified_instruction_name_is_read_only.rs");
+    t.compile_fail("tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs");
+    t.compile_fail("tests/compile_fail/verified_call_operand_bundles_are_read_only.rs");
 }

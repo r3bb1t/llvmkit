@@ -1,0 +1,109 @@
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs:34:29
+   |
+34 |                 let _ = phi.remove_incoming(&other, 0);
+   |                             ^^^^^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `PhiKind::<'ctx, B, C>::remove_incoming`
+  --> src/instruction.rs
+   |
+   |     pub fn remove_incoming(
+   |            --------------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `PhiKind::<'ctx, B, C>::remove_incoming`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs:37:37
+   |
+37 |                         let _ = phi.remove_incoming(&other, 0);
+   |                                     ^^^^^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `PhiInst::<'ctx, W, B, C>::remove_incoming`
+  --> src/instructions.rs
+   |
+   |     pub fn remove_incoming(
+   |            --------------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `PhiInst::<'ctx, W, B, C>::remove_incoming`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs:40:37
+   |
+40 |                         let _ = phi.remove_incoming(&other, 0);
+   |                                     ^^^^^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `FpPhiInst::<'ctx, K, B, C>::remove_incoming`
+  --> src/instructions.rs
+   |
+   |     pub fn remove_incoming(
+   |            --------------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `FpPhiInst::<'ctx, K, B, C>::remove_incoming`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs:43:37
+   |
+43 |                         let _ = phi.remove_incoming(&other, 0);
+   |                                     ^^^^^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `PointerPhiInst::<'ctx, B, C>::remove_incoming`
+  --> src/instructions.rs
+   |
+   |     pub fn remove_incoming(
+   |            --------------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `PointerPhiInst::<'ctx, B, C>::remove_incoming`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs:46:37
+   |
+46 |                         let _ = phi.remove_incoming(&other, 0);
+   |                                     ^^^^^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `OtherPhiInst::<'ctx, B, C>::remove_incoming`
+  --> src/instructions.rs
+   |
+   |     pub fn remove_incoming(
+   |            --------------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `OtherPhiInst::<'ctx, B, C>::remove_incoming`
