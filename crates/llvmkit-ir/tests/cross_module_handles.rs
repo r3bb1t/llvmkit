@@ -20,13 +20,14 @@
 //! llvmkit gives each module its own type arena.
 
 use llvmkit_ir::{
-    Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallSiteConfig,
-    CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags, FloatDyn, FloatValue, FnCx,
-    FnReport, FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions, InstructionView,
-    IntCastFlags, IntDyn, IntValue, IrBuilder, IrError, IrResult, IrStruct, Linkage, Module,
-    OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody, PointerValue, Positioned,
-    ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags,
-    Unterminated, Value, ValueId, ZextFlags, iter::BlockCursor, run_function_pass,
+    Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallInst,
+    CallSiteConfig, CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags, FloatDyn,
+    FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions,
+    InstructionView, IntCastFlags, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
+    IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
+    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind,
+    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, iter::BlockCursor,
+    run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -1874,6 +1875,243 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
             &vec![*input],
             "{label}: the bundle does not read back"
         );
+    }
+}
+
+/// The call sites created in no block — `CallInst::create_detached`,
+/// `InvokeInst::create_detached` — and the `with_operand_bundles` copies of
+/// all three call sites take every operand through the checked door, as the
+/// builders do: a function type of another module is refused with
+/// `ForeignType`, and a callee, argument, bundle input or destination with
+/// `ForeignValueId`. A bundle's foreign input is its *second*, so a check of
+/// the first alone would let it through.
+///
+/// A refusal creates nothing. A detached instruction is in no block, so the
+/// printed module cannot show one; what it does change is its operands' use
+/// lists, so the witness is the home callee's use count, which every entry
+/// here would raise. Positive controls: the same constructions given home
+/// operands succeed, each raising that count by one, and `drop_detached`
+/// lowers it again.
+///
+/// No upstream counterpart: the `Value *` and `BasicBlock *` upstream's
+/// constructors take carry no module to compare.
+#[test]
+fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let home_fn_ty = home.function_type(home.i32_type().as_type(), [home.i32_type().as_type()]);
+    let foreign_fn_ty =
+        foreign.function_type(foreign.i32_type().as_type(), [foreign.i32_type().as_type()]);
+    let h = home
+        .add_function_dyn("h", home_fn_ty, Linkage::External)
+        .expect("h");
+    let g = foreign
+        .add_function_dyn("g", foreign_fn_ty, Linkage::External)
+        .expect("g");
+    let callee = home.view(h).as_erased();
+    let foreign_callee = foreign.view(g).as_erased();
+    let home_arg = home.i32_type().const_int(1i32).as_erased();
+    let foreign_arg = foreign.i32_type().const_int(3i32).as_erased();
+    let mixed = || {
+        OperandBundleDef::new(
+            OperandBundleTag::Deopt,
+            [
+                home.i32_type().const_int(2i32).as_erased(),
+                foreign.i32_type().const_int(7i32).as_erased(),
+            ],
+        )
+    };
+    let home_bundle = || {
+        OperandBundleDef::new(
+            OperandBundleTag::Deopt,
+            [home.i32_type().const_int(2i32).as_erased()],
+        )
+    };
+    let normal = BasicBlock::create_orphan(&home, "normal");
+    let unwind = BasicBlock::create_orphan(&home, "unwind");
+    let elsewhere = BasicBlock::create_orphan(&foreign, "elsewhere");
+
+    // An attached call, invoke and callbr of home operands, to copy.
+    let (b, _, _) = builder_with_targets(&home, "c");
+    let call = home.view(
+        b.call_dyn::<Dyn, _, _, _, _>(home.view(h), [home_arg], "c")
+            .expect("call"),
+    );
+    let (b, first, second) = builder_with_targets(&home, "i");
+    let (_, invoke) = b
+        .invoke_dyn::<Dyn, _, _, _, _, _>(home.view(h), [home_arg], &first, &second, "i")
+        .expect("invoke");
+    let (b, first, second) = builder_with_targets(&home, "cb");
+    let (_, call_br) = b
+        .callbr::<Dyn, _, _, _, _, _, _, _>(home.view(h), [home_arg], &first, [&second], "cb")
+        .expect("callbr");
+
+    let uses_before = callee.num_uses();
+    let home_before = format!("{home}");
+    let outcomes = vec![
+        (
+            "CallInst::create_detached function type",
+            IrError::ForeignType,
+            without_value(CallInst::<Dyn, _>::create_detached(
+                &home,
+                foreign_fn_ty,
+                callee,
+                [home_arg],
+                CallSiteConfig::new("r"),
+            )),
+        ),
+        (
+            "CallInst::create_detached callee",
+            IrError::ForeignValueId,
+            without_value(CallInst::<Dyn, _>::create_detached(
+                &home,
+                home_fn_ty,
+                foreign_callee,
+                [home_arg],
+                CallSiteConfig::new("r"),
+            )),
+        ),
+        (
+            "CallInst::create_detached argument",
+            IrError::ForeignValueId,
+            without_value(CallInst::<Dyn, _>::create_detached(
+                &home,
+                home_fn_ty,
+                callee,
+                [foreign_arg],
+                CallSiteConfig::new("r"),
+            )),
+        ),
+        (
+            "CallInst::create_detached bundle input",
+            IrError::ForeignValueId,
+            without_value(CallInst::<Dyn, _>::create_detached(
+                &home,
+                home_fn_ty,
+                callee,
+                [home_arg],
+                CallSiteConfig::new("r").operand_bundles([mixed()]),
+            )),
+        ),
+        (
+            "InvokeInst::create_detached normal destination",
+            IrError::ForeignValueId,
+            without_value(InvokeInst::<Dyn, _>::create_detached(
+                &home,
+                home_fn_ty,
+                callee,
+                &elsewhere,
+                &unwind,
+                [home_arg],
+                CallSiteConfig::new("r"),
+            )),
+        ),
+        (
+            "InvokeInst::create_detached unwind destination",
+            IrError::ForeignValueId,
+            without_value(InvokeInst::<Dyn, _>::create_detached(
+                &home,
+                home_fn_ty,
+                callee,
+                &normal,
+                &elsewhere,
+                [home_arg],
+                CallSiteConfig::new("r"),
+            )),
+        ),
+        (
+            "InvokeInst::create_detached bundle input",
+            IrError::ForeignValueId,
+            without_value(InvokeInst::<Dyn, _>::create_detached(
+                &home,
+                home_fn_ty,
+                callee,
+                &normal,
+                &unwind,
+                [home_arg],
+                CallSiteConfig::new("r").operand_bundles([mixed()]),
+            )),
+        ),
+        (
+            "CallInst::with_operand_bundles",
+            IrError::ForeignValueId,
+            without_value(call.with_operand_bundles(&home, [mixed()])),
+        ),
+        (
+            "InvokeInst::with_operand_bundles",
+            IrError::ForeignValueId,
+            without_value(invoke.with_operand_bundles(&home, [mixed()])),
+        ),
+        (
+            "CallBrInst::with_operand_bundles",
+            IrError::ForeignValueId,
+            without_value(call_br.with_operand_bundles(&home, [mixed()])),
+        ),
+    ];
+    let let_through = not_refused_as_expected(outcomes);
+    assert!(let_through.is_empty(), "{let_through:#?}");
+    assert_eq!(
+        callee.num_uses(),
+        uses_before,
+        "a refused construction must create nothing"
+    );
+    assert_eq!(format!("{home}"), home_before);
+
+    // Positive controls: each construction with home operands creates one
+    // detached call site naming the callee, and dropping it releases the use.
+    let (created, _) = CallInst::<Dyn, _>::create_detached(
+        &home,
+        home_fn_ty,
+        callee,
+        [home_arg],
+        CallSiteConfig::new("r").operand_bundles([home_bundle()]),
+    )
+    .expect("a detached call of home operands");
+    assert_eq!(callee.num_uses(), uses_before + 1);
+    created.drop_detached(&home);
+    assert_eq!(callee.num_uses(), uses_before);
+
+    let (created, _) = InvokeInst::<Dyn, _>::create_detached(
+        &home,
+        home_fn_ty,
+        callee,
+        &normal,
+        &unwind,
+        [home_arg],
+        CallSiteConfig::new("r").operand_bundles([home_bundle()]),
+    )
+    .expect("a detached invoke of home operands");
+    assert_eq!(callee.num_uses(), uses_before + 1);
+    created.drop_detached(&home);
+    assert_eq!(callee.num_uses(), uses_before);
+
+    for (label, copy) in [
+        (
+            "call",
+            without_value(
+                call.with_operand_bundles(&home, [home_bundle()])
+                    .map(|(copy, _)| copy.drop_detached(&home)),
+            ),
+        ),
+        (
+            "invoke",
+            without_value(
+                invoke
+                    .with_operand_bundles(&home, [home_bundle()])
+                    .map(|(copy, _)| copy.drop_detached(&home)),
+            ),
+        ),
+        (
+            "callbr",
+            without_value(
+                call_br
+                    .with_operand_bundles(&home, [home_bundle()])
+                    .map(|(copy, _)| copy.drop_detached(&home)),
+            ),
+        ),
+    ] {
+        assert!(copy.is_ok(), "{label}: a copy with a home bundle: {copy:?}");
+        assert_eq!(callee.num_uses(), uses_before, "{label}: the dropped copy");
     }
 }
 

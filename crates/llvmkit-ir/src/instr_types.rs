@@ -2506,12 +2506,16 @@ pub(crate) struct CallInstData {
     pub(crate) fn_ty: crate::r#type::TypeSlot,
     pub(crate) args: Box<[Cell<ValueSlot>]>,
     pub(crate) calling_conv: crate::CallingConv,
-    pub(crate) tail_kind: TailCallKind,
+    /// `CallInst::setTailCallKind` replaces it after creation, through the
+    /// shared view, so it is a `Cell`.
+    pub(crate) tail_kind: Cell<TailCallKind>,
     /// The call's fast-math flags — upstream's `SubclassOptionalData` on a
     /// call that is an `FPMathOperator`, kept on the instruction rather than
     /// in its attribute list.
     pub(crate) fmf: FastMathFlags,
-    pub(crate) attrs: CallAttributesSlot,
+    /// `CallBase::setAttributes` swaps the interned list after creation,
+    /// through the shared view, so the slot is a `Cell`.
+    pub(crate) attrs: Cell<CallAttributesSlot>,
     pub(crate) operand_bundles: Box<[OperandBundleData]>,
 }
 
@@ -2537,9 +2541,9 @@ impl CallInstData {
             fn_ty,
             args: args.into_iter().map(Cell::new).collect(),
             calling_conv,
-            tail_kind,
+            tail_kind: Cell::new(tail_kind),
             fmf,
-            attrs,
+            attrs: Cell::new(attrs),
             operand_bundles,
         }
     }
@@ -2551,9 +2555,9 @@ impl Clone for CallInstData {
             fn_ty: self.fn_ty,
             args: self.args.iter().map(|c| Cell::new(c.get())).collect(),
             calling_conv: self.calling_conv,
-            tail_kind: self.tail_kind,
+            tail_kind: Cell::new(self.tail_kind.get()),
             fmf: self.fmf,
-            attrs: self.attrs,
+            attrs: Cell::new(self.attrs.get()),
             operand_bundles: self.operand_bundles.clone(),
         }
     }
@@ -2563,9 +2567,9 @@ impl PartialEq for CallInstData {
         if self.callee.get() != other.callee.get()
             || self.fn_ty != other.fn_ty
             || self.calling_conv != other.calling_conv
-            || self.tail_kind != other.tail_kind
+            || self.tail_kind.get() != other.tail_kind.get()
             || self.fmf != other.fmf
-            || self.attrs != other.attrs
+            || self.attrs.get() != other.attrs.get()
             || self.operand_bundles != other.operand_bundles
             || self.args.len() != other.args.len()
         {
@@ -2586,9 +2590,9 @@ impl core::hash::Hash for CallInstData {
             arg.get().hash(h);
         }
         self.calling_conv.hash(h);
-        self.tail_kind.hash(h);
+        self.tail_kind.get().hash(h);
         self.fmf.bits().hash(h);
-        self.attrs.hash(h);
+        self.attrs.get().hash(h);
         self.operand_bundles.hash(h);
     }
 }
@@ -3257,7 +3261,8 @@ pub(crate) struct InvokeInstData {
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) normal_dest: Cell<ValueSlot>,
     pub(crate) unwind_dest: Cell<ValueSlot>,
-    pub(crate) attrs: CallAttributesSlot,
+    /// A `Cell` for `CallBase::setAttributes`, as on [`CallInstData`].
+    pub(crate) attrs: Cell<CallAttributesSlot>,
     pub(crate) operand_bundles: Box<[OperandBundleData]>,
 }
 
@@ -3285,7 +3290,7 @@ impl InvokeInstData {
             calling_conv,
             normal_dest: Cell::new(normal_dest),
             unwind_dest: Cell::new(unwind_dest),
-            attrs,
+            attrs: Cell::new(attrs),
             operand_bundles,
         }
     }
@@ -3299,7 +3304,7 @@ impl Clone for InvokeInstData {
             calling_conv: self.calling_conv,
             normal_dest: Cell::new(self.normal_dest.get()),
             unwind_dest: Cell::new(self.unwind_dest.get()),
-            attrs: self.attrs,
+            attrs: Cell::new(self.attrs.get()),
             operand_bundles: self.operand_bundles.clone(),
         }
     }
@@ -3311,7 +3316,7 @@ impl PartialEq for InvokeInstData {
             || self.calling_conv != other.calling_conv
             || self.normal_dest.get() != other.normal_dest.get()
             || self.unwind_dest.get() != other.unwind_dest.get()
-            || self.attrs != other.attrs
+            || self.attrs.get() != other.attrs.get()
             || self.operand_bundles != other.operand_bundles
             || self.args.len() != other.args.len()
         {
@@ -3334,7 +3339,7 @@ impl core::hash::Hash for InvokeInstData {
         self.calling_conv.hash(h);
         self.normal_dest.get().hash(h);
         self.unwind_dest.get().hash(h);
-        self.attrs.hash(h);
+        self.attrs.get().hash(h);
         self.operand_bundles.hash(h);
     }
 }
@@ -3350,7 +3355,8 @@ pub(crate) struct CallBrInstData {
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) default_dest: Cell<ValueSlot>,
     pub(crate) indirect_dests: Box<[Cell<ValueSlot>]>,
-    pub(crate) attrs: CallAttributesSlot,
+    /// A `Cell` for `CallBase::setAttributes`, as on [`CallInstData`].
+    pub(crate) attrs: Cell<CallAttributesSlot>,
     pub(crate) operand_bundles: Box<[OperandBundleData]>,
 }
 
@@ -3379,7 +3385,7 @@ impl CallBrInstData {
             calling_conv,
             default_dest: Cell::new(default_dest),
             indirect_dests: indirect_dests.into_iter().map(Cell::new).collect(),
-            attrs,
+            attrs: Cell::new(attrs),
             operand_bundles,
         }
     }
@@ -3397,7 +3403,7 @@ impl Clone for CallBrInstData {
                 .iter()
                 .map(|c| Cell::new(c.get()))
                 .collect(),
-            attrs: self.attrs,
+            attrs: Cell::new(self.attrs.get()),
             operand_bundles: self.operand_bundles.clone(),
         }
     }
@@ -3408,7 +3414,7 @@ impl PartialEq for CallBrInstData {
             || self.fn_ty != other.fn_ty
             || self.calling_conv != other.calling_conv
             || self.default_dest.get() != other.default_dest.get()
-            || self.attrs != other.attrs
+            || self.attrs.get() != other.attrs.get()
             || self.operand_bundles != other.operand_bundles
             || self.args.len() != other.args.len()
             || self.indirect_dests.len() != other.indirect_dests.len()
@@ -3439,7 +3445,7 @@ impl core::hash::Hash for CallBrInstData {
         for d in self.indirect_dests.iter() {
             d.get().hash(h);
         }
-        self.attrs.hash(h);
+        self.attrs.get().hash(h);
         self.operand_bundles.hash(h);
     }
 }

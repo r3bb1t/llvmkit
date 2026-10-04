@@ -2232,7 +2232,7 @@ fn fmt_call(
     c: &CallInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
-    if let Some(kw) = c.tail_kind.keyword() {
+    if let Some(kw) = c.tail_kind.get().keyword() {
         write!(f, "{} ", kw)?;
     }
     f.write_str("call")?;
@@ -2254,7 +2254,7 @@ fn fmt_call(
         write!(f, " {}", c.calling_conv)?;
     }
     let module = inst.module();
-    let attrs = module.context().call_attributes(c.attrs);
+    let attrs = module.context().call_attributes(c.attrs.get());
     if attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
@@ -2311,7 +2311,7 @@ fn fmt_call(
     // A musttail call in a varargs function forwards the varargs with a
     // trailing `...` (AsmWriter's CallInst arm:
     // `isMustTailCall() && getParent()->getParent()->isVarArg()`).
-    if matches!(c.tail_kind, TailCallKind::MustTail) {
+    if matches!(c.tail_kind.get(), TailCallKind::MustTail) {
         let enclosing_varargs = inst
             .as_erased()
             .local_parent_function_id()
@@ -2711,7 +2711,7 @@ fn fmt_invoke(
         write!(f, " {}", d.calling_conv)?;
     }
     let module = inst.module();
-    let attrs = module.context().call_attributes(d.attrs);
+    let attrs = module.context().call_attributes(d.attrs.get());
     if attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
@@ -2789,7 +2789,7 @@ fn fmt_callbr(
         write!(f, "{} ", d.calling_conv)?;
     }
     let module = inst.module();
-    let attrs = module.context().call_attributes(d.attrs);
+    let attrs = module.context().call_attributes(d.attrs.get());
     fmt_attribute_set(f, attrs.return_attrs(), AttrIndex::Return, false, module)?;
     if attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;

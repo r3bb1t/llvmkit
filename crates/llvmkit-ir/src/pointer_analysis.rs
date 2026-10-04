@@ -1435,9 +1435,9 @@ fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx>(
     call: Value<'ctx, B>,
 ) -> Option<&'ctx [AttributeStored]> {
     let attrs = match instruction_kind(call)? {
-        InstructionKindData::Call(data) => data.attrs,
-        InstructionKindData::Invoke(data) => data.attrs,
-        InstructionKindData::CallBr(data) => data.attrs,
+        InstructionKindData::Call(data) => data.attrs.get(),
+        InstructionKindData::Invoke(data) => data.attrs.get(),
+        InstructionKindData::CallBr(data) => data.attrs.get(),
         _ => return None,
     };
     call.module

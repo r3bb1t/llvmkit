@@ -14394,9 +14394,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
         // `LLParser::parseCall`'s FMF guard. Upstream builds the `CallInst`
         // first and runs `if (FMF.any()) { if (!isa<FPMathOperator>(CI)) {
-        // CI->deleteValue(); return error(CallLoc, …); } }`. llvmkit has no
-        // orphan-then-delete — `append_instruction` attaches — so the guard
-        // runs before construction instead. Observably identical: nothing
+        // CI->deleteValue(); return error(CallLoc, …); } }`. This parser builds
+        // every instruction through `IrBuilder`, which attaches as it creates
+        // (`CallInst::create_detached` is the orphan form, unused here), so
+        // the guard runs before construction instead. Observably identical: nothing
         // between the two points can fail, and this guard still precedes the
         // `llvm.dbg` guard exactly as upstream's does. The anchor is
         // upstream's `CallLoc`, not the current token.

@@ -288,15 +288,16 @@ pub use instruction::{
 };
 pub use instructions::{
     AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AshrInst, AtomicCmpXchgInst, AtomicRmwInst,
-    BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
-    CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
-    FaddInst, FcmpInst, FdivInst, FenceInst, FmulInst, FnegInst, FpExtInst, FpPhiInst, FpToSiInst,
-    FpToUiInst, FpTruncInst, FreezeInst, FremInst, FsubInst, GepInst, IcmpInst, IndirectBrInst,
-    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LandingPadInst, LoadInst,
-    LshrInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
-    ResumeInst, RetInst, SdivInst, SelectInst, SextInst, ShlInst, ShuffleVectorInst, SiToFpInst,
-    SremInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UdivInst, UiToFpInst,
-    UnreachableInst, UremInst, VaArgInst, XorInst, ZextInst,
+    BinaryOp, BitCastInst, BranchInst, CallBase, CallBrInst, CallInst, Callee, CatchPadInst,
+    CatchReturnInst, CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, DetachedCallSite,
+    ExtractElementInst, ExtractValueInst, FaddInst, FcmpInst, FdivInst, FenceInst, FmulInst,
+    FnegInst, FpExtInst, FpPhiInst, FpToSiInst, FpToUiInst, FpTruncInst, FreezeInst, FremInst,
+    FsubInst, GepInst, IcmpInst, IndirectBrInst, InsertElementInst, InsertValueInst, IntToPtrInst,
+    InvokeInst, LandingPadInst, LoadInst, LshrInst, MulInst, OrInst, OtherPhiInst, PhiInst,
+    PointerPhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst, SdivInst, SelectInst,
+    SextInst, ShlInst, ShuffleVectorInst, SiToFpInst, SremInst, StoreInst, SubInst, SwitchInst,
+    TruncInst, TypedCallInst, UdivInst, UiToFpInst, UnreachableInst, UremInst, VaArgInst, XorInst,
+    ZextInst,
 };
 pub use instructions::{cast_is_valid, indexed_aggregate_type, indexed_gep_type};
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};

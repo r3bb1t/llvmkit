@@ -89,7 +89,7 @@ use super::instr_types::{
 };
 use super::instruction::{
     Instruction, InstructionKind, InstructionKindData, InstructionView, PlacedInstruction,
-    build_instruction_value, state::Attached,
+    build_instruction_value, push_instruction, state::Attached,
 };
 use super::instructions::FenceInst;
 use super::instructions::{
@@ -397,6 +397,136 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallSiteConfig<'ctx, B> {
             },
         ))
     }
+}
+
+/// Crate-internal: the `CallInst::init` / `CallBrInst::init` assertion
+/// ("Calling a function with a bad signature!", `lib/IR/Instructions.cpp`) and
+/// `Verifier::visitCallBase`'s arity/type check, at creation: the argument
+/// count must equal the parameter count exactly (or be at least the parameter
+/// count for a vararg callee), and each fixed argument's type must equal the
+/// parameter type at that position exactly. `fn_ty` and every argument must
+/// already be admitted into `module`.
+pub(crate) fn validate_call_site_args<'ctx, B: ModuleBrand + 'ctx>(
+    module: &'ctx ModuleCore,
+    fn_ty: FunctionType<'ctx, B>,
+    args: &[ValueSlot],
+) -> IrResult<()> {
+    let params: Vec<Type<'ctx, B>> = fn_ty.params().collect();
+    let expected = u32::try_from(params.len())
+        .unwrap_or_else(|_| unreachable!("parameter count bounded by u32"));
+    let got =
+        u32::try_from(args.len()).unwrap_or_else(|_| unreachable!("argument count bounded by u32"));
+    let count_ok = if fn_ty.is_var_arg() {
+        got >= expected
+    } else {
+        got == expected
+    };
+    if !count_ok {
+        return Err(IrError::CallArgumentCountMismatch { expected, got });
+    }
+    for (i, (&arg, param_ty)) in args.iter().zip(params.iter()).enumerate() {
+        let arg_ty_id = module.context().value_data(arg).ty;
+        // Internal: every caller admits `fn_ty` before validating.
+        if arg_ty_id != param_ty.slot_trusting_same_module() {
+            let arg_ty = Type::<'ctx, B>::new(arg_ty_id, ModuleRef::<B>::new(module));
+            return Err(IrError::CallArgumentTypeMismatch {
+                index: u32::try_from(i)
+                    .unwrap_or_else(|_| unreachable!("argument index bounded by u32")),
+                expected: param_ty.to_string(),
+                got: arg_ty.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Crate-internal: the operands of a call site with an erased callee, each
+/// admitted into its module and checked against the resolved call-site type.
+/// Built only by [`admit_erased_call_operands`].
+pub(crate) struct ErasedCallOperands<'ctx, B: ModuleBrand> {
+    /// The call site's own function type (`CallBase::getFunctionType`).
+    pub(crate) fn_ty: FunctionType<'ctx, B>,
+    /// `fn_ty`'s return type: the instruction's type.
+    pub(crate) return_ty: TypeSlot,
+    /// The called operand (`CallBase::getCalledOperand`).
+    pub(crate) callee: ValueSlot,
+    /// The arguments, in order.
+    pub(crate) args: Vec<ValueSlot>,
+}
+
+/// Crate-internal: everything a call site with an erased callee checks before
+/// it exists, shared by [`IrBuilder::call_erased`] and the detached call-site
+/// constructors so the two cannot disagree. In order: `fn_ty` and `callee`
+/// are admitted into `module`; the call-site type is resolved against
+/// `config` ([`resolve_erased_call_site_type`]); the caller's return marker
+/// `R` must describe its return type ([`IrError::ReturnTypeMismatch`]); every
+/// argument is admitted, then all of them checked against the type
+/// ([`validate_call_site_args`] — `CallInst::init`'s "Calling a function with
+/// a bad signature!" assertion). Nothing is created.
+pub(crate) fn admit_erased_call_operands<'ctx, R, B, I, V>(
+    module: &'ctx ModuleCore,
+    fn_ty: FunctionType<'ctx, B>,
+    callee: Value<'ctx, B>,
+    args: I,
+    config: &CallSiteConfig<'ctx, B>,
+) -> IrResult<ErasedCallOperands<'ctx, B>>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = V>,
+    V: IntoErasedValue<'ctx, B>,
+{
+    // Boundary: the caller's spelled function type and callee, admitted
+    // before either is read.
+    fn_ty.slot_in(module.id())?;
+    let callee = callee.slot_in(module.id())?;
+    let (fn_ty, return_ty) = resolve_erased_call_site_type(module, fn_ty, config)?;
+    let ret_data = module.context().type_data(return_ty);
+    if !crate::function::signature_matches_marker::<R>(ret_data) {
+        return Err(IrError::ReturnTypeMismatch {
+            expected: crate::marker::marker_kind_label::<R>()
+                .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
+            got: fn_ty.return_type().kind_label(),
+        });
+    }
+    let mut arg_ids: Vec<ValueSlot> = Vec::new();
+    for arg in args {
+        let v = arg.into_erased_value(ModuleRef::new(module))?;
+        arg_ids.push(v.slot_trusting_same_module());
+    }
+    validate_call_site_args(module, fn_ty, &arg_ids)?;
+    Ok(ErasedCallOperands {
+        fn_ty,
+        return_ty,
+        callee,
+        args: arg_ids,
+    })
+}
+
+/// Crate-internal: the `(function_type, return_type)` a call site with an
+/// erased callee carries. `spelled_fn_ty` is the caller's explicit type — the
+/// `FunctionType *` half of `IRBuilder::CreateCall(FunctionType*, Value*, …)`,
+/// which is the only source available when the callee is a bare [`Value`]
+/// with no declaration to read — and the caller has already admitted it. A
+/// [`CallSiteConfig::call_site_type`] override still wins, admitted into
+/// `module` here, so the field is never silently ignored; that is the same
+/// precedence `IrBuilder::resolve_call_site_type` applies for a declared
+/// callee.
+pub(crate) fn resolve_erased_call_site_type<'ctx, B: ModuleBrand + 'ctx>(
+    module: &'ctx ModuleCore,
+    spelled_fn_ty: FunctionType<'ctx, B>,
+    config: &CallSiteConfig<'ctx, B>,
+) -> IrResult<(FunctionType<'ctx, B>, TypeSlot)> {
+    let fn_ty = match config.call_site_fn_ty() {
+        Some(fn_ty) => {
+            // Boundary: the caller's `call_site_type` override.
+            fn_ty.slot_in(module.id())?;
+            fn_ty
+        }
+        // Internal: the caller admitted the spelled type at its entry.
+        None => spelled_fn_ty,
+    };
+    Ok((fn_ty, fn_ty.return_type().slot_trusting_same_module()))
 }
 
 /// Crate-internal: admit every input of `bundles` into `owner` through the
@@ -5470,39 +5600,15 @@ where
     /// must equal the parameter count exactly (or be at least the
     /// parameter count for a vararg callee), and each fixed argument's
     /// type must equal the parameter type at that position exactly.
-    /// Shared by every dyn call/invoke/callbr/inline-asm builder path.
+    /// Shared by every dyn call/invoke/callbr/inline-asm builder path; the
+    /// check itself is [`validate_call_site_args`], which the detached
+    /// call-site constructors share too.
     fn validate_call_site_args(
         &self,
         fn_ty: FunctionType<'ctx, B>,
         args: &[ValueSlot],
     ) -> IrResult<()> {
-        let params: Vec<Type<'ctx, B>> = fn_ty.params().collect();
-        let expected = u32::try_from(params.len())
-            .unwrap_or_else(|_| unreachable!("parameter count bounded by u32"));
-        let got = u32::try_from(args.len())
-            .unwrap_or_else(|_| unreachable!("argument count bounded by u32"));
-        let count_ok = if fn_ty.is_var_arg() {
-            got >= expected
-        } else {
-            got == expected
-        };
-        if !count_ok {
-            return Err(IrError::CallArgumentCountMismatch { expected, got });
-        }
-        for (i, (&arg, param_ty)) in args.iter().zip(params.iter()).enumerate() {
-            let arg_ty_id = self.module.context().value_data(arg).ty;
-            // Internal: every caller admits `fn_ty` before validating.
-            if arg_ty_id != param_ty.slot_trusting_same_module() {
-                let arg_ty = Type::<'ctx, B>::new(arg_ty_id, ModuleRef::<B>::new(self.module));
-                return Err(IrError::CallArgumentTypeMismatch {
-                    index: u32::try_from(i)
-                        .unwrap_or_else(|_| unreachable!("argument index bounded by u32")),
-                    expected: param_ty.to_string(),
-                    got: arg_ty.to_string(),
-                });
-            }
-        }
-        Ok(())
+        validate_call_site_args(self.module, fn_ty, args)
     }
 
     // ---- Call ----
@@ -5853,7 +5959,7 @@ where
     ///
     /// `fn_ty` is the call site's function type; a
     /// [`CallSiteConfig::call_site_type`] override still wins over it, per
-    /// `resolve_call_site_type_for_erased_callee`, so the field is never
+    /// `resolve_erased_call_site_type`, so the field is never
     /// silently ignored here. The caller picks the return marker `R2` to match
     /// the resolved return type; a mismatch fails with
     /// [`IrError::ReturnTypeMismatch`], the same gate
@@ -5882,25 +5988,12 @@ where
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
     {
-        // Boundary: the caller's spelled function type and callee, admitted
-        // before either is read.
-        fn_ty.slot_in(self.module.id())?;
-        let callee = callee.slot_in(self.module.id())?;
-        let (fn_ty, return_ty) = self.resolve_call_site_type_for_erased_callee(fn_ty, &config)?;
-        let ret_data = self.module.context().type_data(return_ty);
-        if !crate::function::signature_matches_marker::<R2>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: crate::marker::marker_kind_label::<R2>()
-                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got: fn_ty.return_type().kind_label(),
-            });
-        }
-        let mut arg_ids: Vec<ValueSlot> = Vec::new();
-        for arg in args {
-            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.slot_trusting_same_module());
-        }
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
+        let ErasedCallOperands {
+            fn_ty,
+            return_ty,
+            callee,
+            args: arg_ids,
+        } = admit_erased_call_operands::<R2, B, I, V>(self.module, fn_ty, callee, args, &config)?;
         // `CallInst::setFastMathFlags` asserts `isa<FPMathOperator>(this)`,
         // whose `Call` arm is `isSupportedFloatingPointType(getType())`.
         // `LLParser::parseCall` asks the same question before it sets the
@@ -8850,31 +8943,6 @@ where
         }
     }
 
-    /// The `(function_type, return_type)` a call site with an **erased** callee
-    /// should carry. `spelled_fn_ty` is the caller's explicit type — the
-    /// `FunctionType *` half of `IRBuilder::CreateCall(FunctionType*, Value*, …)`,
-    /// which is the only source available when the callee is a bare
-    /// [`Value`] with no declaration to read. A
-    /// [`CallSiteConfig::call_site_type`] override still wins, so the field is
-    /// never silently ignored; that is the same precedence
-    /// `resolve_call_site_type` applies for a declared callee.
-    fn resolve_call_site_type_for_erased_callee(
-        &self,
-        spelled_fn_ty: FunctionType<'ctx, B>,
-        config: &CallSiteConfig<'ctx, B>,
-    ) -> IrResult<(FunctionType<'ctx, B>, TypeSlot)> {
-        let fn_ty = match config.call_site_fn_ty() {
-            Some(fn_ty) => {
-                // Boundary: the caller's `call_site_type` override.
-                fn_ty.slot_in(self.module.id())?;
-                fn_ty
-            }
-            // Internal: `call_erased` admitted the spelled type at its entry.
-            None => spelled_fn_ty,
-        };
-        Ok((fn_ty, fn_ty.return_type().slot_trusting_same_module()))
-    }
-
     /// Produce `invoke` with explicit call-site configuration.
     ///
     /// Both destinations are guarded against **parameterised** blocks exactly
@@ -9791,32 +9859,10 @@ where
         // cannot refuse a block of another module.
         // boundary (F1): refused by Task 26
         let bb_id = bb.to_erased().slot_trusting_same_module();
-        let value = build_instruction_value(ty, Some(bb_id), kind, None);
-        // Snapshot operand ids before the value is moved into the arena;
-        // we need them to register the new instruction in each operand's
-        // reverse use-list. Mirrors `User::setOperand` in
-        // `llvm/lib/IR/User.cpp`, which threads each `Use` into its
-        // operand's use-list at construction time.
-        let operand_ids = match &value.kind {
-            ValueKindData::Instruction(i) => {
-                // Block successors are `Use`s upstream (`BranchInst`,
-                // `SwitchInst`, `InvokeInst`, …), so they are registered here
-                // too — after the value operands, which is the operand-index
-                // order every one of those constructors uses.
-                let mut ids = i.kind.operand_ids();
-                ids.extend(i.kind.block_operand_ids());
-                ids
-            }
-            // append_instruction always builds an Instruction-kind value.
-            _ => unreachable!("append_instruction built non-instruction value"),
-        };
-        let id = self.module.context().push_value(value);
-        for op in operand_ids {
-            self.module
-                .context()
-                .value_data(op)
-                .add_use(ValueUse::Instruction(id));
-        }
+        // The operands' uses are registered as the instruction is created,
+        // and its name is entered in the function's table below, once it is
+        // in a block.
+        let id = push_instruction(self.module, ty, Some(bb_id), kind, None);
         match self.insert_before {
             Some(anchor) => {
                 // Mirrors `IRBuilder::SetInsertPoint(Instruction*)`: new

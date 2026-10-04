@@ -19,6 +19,39 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — call sites created in no block, and copied with other bundles
+
+- **`CallInst::create_detached` / `InvokeInst::create_detached`** port
+  `CallInst::Create(Ty, Func, Args, Bundles, Name)` and
+  `InvokeInst::Create(Ty, Func, IfNormal, IfException, Args, Bundles, Name)`
+  with no insert position. They return a `DetachedCallSite<'ctx, C, B>` — the
+  linear `Instruction<'ctx, Detached, B>`, to insert with `insert_before` /
+  `insert_after` / `append_to` or discard with `drop_detached`, beside `C`, the
+  typed view. A `CallSiteConfig` carries the name and bundles. Every operand
+  takes the checked door, an argument list that does not fit is refused where
+  upstream asserts, and a refusal creates nothing; `IrBuilder::call_erased` now
+  runs the very same checks before it inserts.
+- **`BasicBlock::create_orphan`** ports `BasicBlock::Create(Context, Name)` with
+  no parent: a block in no function, which today serves as a detached call
+  site's destination. It cannot yet join a function — `BasicBlock::insertInto`
+  is not ported, recorded in `docs/future-work.md`.
+- **The sealed `CallBase` trait**, over `CallInst`, `InvokeInst` and
+  `CallBrInst`. `with_operand_bundles` ports `CallBase::Create(CallBase *CB,
+  ArrayRef<OperandBundleDef>, InsertPosition)` and the three per-class copies it
+  switches to, statement for statement: same function type, callee, arguments,
+  destinations (`callbr`'s indirect ones included) and name, then tail-call
+  kind, calling convention, fast-math flags, attribute list and debug location,
+  with only the bundles replaced. Upstream's `llvm_unreachable("Unknown CallBase
+  sub-class!")` arm has no counterpart, since nothing else implements the trait
+  (D1). Each type also has the method inherently.
+- **Setters:** `CallInst::set_tail_call_kind` ports `CallInst::setTailCallKind`,
+  and `set_attributes` on all three call sites ports `CallBase::setAttributes`:
+  it replaces the attribute list and leaves the fast-math flags and bundles
+  alone, as upstream's does.
+- **Two upstream tests port whole:** `InstructionsTest.AlterCallBundles` and
+  `InstructionsTest.AlterInvokeBundles`, which `docs/future-work.md` had listed
+  as unportable. `AsmWriterTest.PrintNullOperandBundle` stays N/A by model.
+
 ### Changed — a call site's attribute list holds attributes only
 
 - **Breaking (llvmkit-ir): `CallAttributeData` loses `fast_math_flags` and

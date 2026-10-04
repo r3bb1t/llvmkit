@@ -876,7 +876,10 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             CallKnownBitsInputs {
                 callee_id: data.callee.get(),
                 args: &data.args,
-                return_attrs: value.module.call_attributes(data.attrs).return_attrs(),
+                return_attrs: value
+                    .module
+                    .call_attributes(data.attrs.get())
+                    .return_attrs(),
                 instruction: inst,
             },
             query,
@@ -888,7 +891,10 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             CallKnownBitsInputs {
                 callee_id: data.callee.get(),
                 args: &data.args,
-                return_attrs: value.module.call_attributes(data.attrs).return_attrs(),
+                return_attrs: value
+                    .module
+                    .call_attributes(data.attrs.get())
+                    .return_attrs(),
                 instruction: inst,
             },
             query,
@@ -1123,9 +1129,9 @@ pub(crate) fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Option<Value<'ctx, B>> {
     // `dyn_cast<CallBase>`.
     let (args, callee, attrs) = match instruction_kind(call)? {
-        InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs),
-        InstructionKindData::Invoke(data) => (&data.args, data.callee.get(), data.attrs),
-        InstructionKindData::CallBr(data) => (&data.args, data.callee.get(), data.attrs),
+        InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs.get()),
+        InstructionKindData::Invoke(data) => (&data.args, data.callee.get(), data.attrs.get()),
+        InstructionKindData::CallBr(data) => (&data.args, data.callee.get(), data.attrs.get()),
         _ => return None,
     };
     let arg_attrs = call.module.call_attributes(attrs).arg_attrs();
@@ -5015,9 +5021,9 @@ fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx>(
     kind: &InstructionKindData,
 ) -> Option<&'ctx [AttributeStored]> {
     let attrs = match kind {
-        InstructionKindData::Call(data) => data.attrs,
-        InstructionKindData::Invoke(data) => data.attrs,
-        InstructionKindData::CallBr(data) => data.attrs,
+        InstructionKindData::Call(data) => data.attrs.get(),
+        InstructionKindData::Invoke(data) => data.attrs.get(),
+        InstructionKindData::CallBr(data) => data.attrs.get(),
         _ => return None,
     };
     anchor

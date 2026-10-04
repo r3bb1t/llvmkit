@@ -159,7 +159,7 @@ impl<'a> CallBaseParts<'a> {
             callee: c.callee.get(),
             fn_ty: c.fn_ty,
             args: &c.args,
-            attrs: context.call_attributes(c.attrs),
+            attrs: context.call_attributes(c.attrs.get()),
             operand_bundles: &c.operand_bundles,
         }
     }
@@ -170,7 +170,7 @@ impl<'a> CallBaseParts<'a> {
             callee: i.callee.get(),
             fn_ty: i.fn_ty,
             args: &i.args,
-            attrs: context.call_attributes(i.attrs),
+            attrs: context.call_attributes(i.attrs.get()),
             operand_bundles: &i.operand_bundles,
         }
     }
@@ -181,7 +181,7 @@ impl<'a> CallBaseParts<'a> {
             callee: c.callee.get(),
             fn_ty: c.fn_ty,
             args: &c.args,
-            attrs: context.call_attributes(c.attrs),
+            attrs: context.call_attributes(c.attrs.get()),
             operand_bundles: &c.operand_bundles,
         }
     }
@@ -3493,7 +3493,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
         // `void Verifier::visitCallInst(CallInst &CI) { visitCallBase(CI);
         //  if (CI.isMustTailCall()) verifyMustTailCall(CI); }`
-        if matches!(c.tail_kind, crate::instr_types::TailCallKind::MustTail) {
+        if matches!(
+            c.tail_kind.get(),
+            crate::instr_types::TailCallKind::MustTail
+        ) {
             self.verify_must_tail_call(f, bb, inst, c, position)?;
         }
 
@@ -4465,7 +4468,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             for index in 0..callee_params.len() {
                 let abi_attrs = parameter_abi_attributes_of_call_site(
-                    self.module.context().call_attributes(c.attrs),
+                    self.module.context().call_attributes(c.attrs.get()),
                     index,
                 );
                 self.verify_tail_cc_must_tail_attrs(
@@ -4519,7 +4522,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         for index in 0..caller_params.len() {
             let caller_abi_attrs = parameter_abi_attributes_of_function(&caller_attrs, index);
             let callee_abi_attrs = parameter_abi_attributes_of_call_site(
-                self.module.context().call_attributes(c.attrs),
+                self.module.context().call_attributes(c.attrs.get()),
                 index,
             );
             if !caller_abi_attrs.index_has_same_attributes(&callee_abi_attrs, AttrIndex::Param(0)) {
@@ -5870,7 +5873,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         && crate::instr_types::call_site_has_fn_attr(
                             ModuleRef::<B>::new(self.module),
                             callee,
-                            self.module.context().call_attributes(invoke.attrs),
+                            self.module.context().call_attributes(invoke.attrs.get()),
                             AttrKind::NoUnwind,
                         )
                         && !crate::intrinsic_inst::may_lower_to_function_call(id)

@@ -1218,9 +1218,9 @@ fn may_have_side_effects<'ctx, B: ModuleBrand + 'ctx>(
 /// The callee and call-site attributes of a call-like instruction.
 fn call_parts(kind: &InstructionKindData) -> Option<(ValueSlot, CallAttributesSlot)> {
     match kind {
-        InstructionKindData::Call(data) => Some((data.callee.get(), data.attrs)),
-        InstructionKindData::Invoke(data) => Some((data.callee.get(), data.attrs)),
-        InstructionKindData::CallBr(data) => Some((data.callee.get(), data.attrs)),
+        InstructionKindData::Call(data) => Some((data.callee.get(), data.attrs.get())),
+        InstructionKindData::Invoke(data) => Some((data.callee.get(), data.attrs.get())),
+        InstructionKindData::CallBr(data) => Some((data.callee.get(), data.attrs.get())),
         _ => None,
     }
 }

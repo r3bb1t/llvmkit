@@ -218,7 +218,7 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
             // Hoisting may change which values the operands hold, so the
             // attributes that make particular operand values UB matter again.
             options.ignores_ub_implying_attrs()
-                || !has_ub_implying_attrs(module_ref(anchor).call_attributes(data.attrs))
+                || !has_ub_implying_attrs(module_ref(anchor).call_attributes(data.attrs.get()))
         }
         // Upstream's `default: return true`.
         Opcode::Fneg
@@ -982,7 +982,7 @@ fn may_throw<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Call(data) => !call_site_has_fn_attr(
             module_ref(anchor),
             data.callee.get(),
-            module_ref(anchor).call_attributes(data.attrs),
+            module_ref(anchor).call_attributes(data.attrs.get()),
             AttrKind::NoUnwind,
         ),
         // `unwindsToCaller()` is "no unwind destination".
@@ -1290,17 +1290,17 @@ fn call_parts<'a, 'ctx: 'a, B: ModuleBrand + 'ctx>(
         InstructionKindData::Call(data) => Some(CallParts {
             callee: &data.callee,
             args: &data.args,
-            attrs: module.call_attributes(data.attrs),
+            attrs: module.call_attributes(data.attrs.get()),
         }),
         InstructionKindData::Invoke(data) => Some(CallParts {
             callee: &data.callee,
             args: &data.args,
-            attrs: module.call_attributes(data.attrs),
+            attrs: module.call_attributes(data.attrs.get()),
         }),
         InstructionKindData::CallBr(data) => Some(CallParts {
             callee: &data.callee,
             args: &data.args,
-            attrs: module.call_attributes(data.attrs),
+            attrs: module.call_attributes(data.attrs.get()),
         }),
         _ => None,
     }

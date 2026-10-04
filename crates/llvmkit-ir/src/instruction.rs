@@ -2450,6 +2450,87 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
     }
 }
 
+/// Crate-internal: put a new instruction into `module`'s value arena, in
+/// block `parent` (or in none), and register it in each operand's use list —
+/// the arena half of every `Instruction` constructor. Upstream's constructors
+/// thread each `Use` into its operand's use list as they fill the operands
+/// (`User::setOperand`, `lib/IR/User.cpp`), and a block successor is a `Use`
+/// too (`BranchInst`, `SwitchInst`, `InvokeInst`, …), so the successors are
+/// registered after the value operands, which is the operand-index order
+/// every one of those constructors uses.
+///
+/// [`IrBuilder`](crate::IrBuilder) links the result into its insertion block;
+/// the detached constructors leave it in none, as `Instruction::Create` with
+/// no insert position does. `name` is stored on the value itself, which is
+/// where a parentless instruction keeps one until it joins a function.
+pub(crate) fn push_instruction(
+    module: &ModuleCore,
+    ty: TypeSlot,
+    parent: Option<ValueSlot>,
+    kind: InstructionKindData,
+    name: Option<String>,
+) -> ValueSlot {
+    let mut operand_ids = kind.operand_ids();
+    operand_ids.extend(kind.block_operand_ids());
+    let id = module
+        .context()
+        .push_value(build_instruction_value(ty, parent, kind, name));
+    for operand in operand_ids {
+        module
+            .context()
+            .value_data(operand)
+            .add_use(ValueUse::Instruction(id));
+    }
+    id
+}
+
+/// Crate-internal: create `kind` named `name` in no block, as an `Instruction`
+/// constructor with no insert position does, and hand back the linear handle,
+/// which the caller must insert or drop. A `void` instruction is left
+/// unnamed, as every naming path leaves one ([`Value::set_name`]); upstream's
+/// `Value::setName` asserts instead.
+pub(crate) fn create_detached_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    module: ModuleRef<'ctx, B>,
+    ty: TypeSlot,
+    kind: InstructionKindData,
+    name: &str,
+) -> Instruction<'ctx, state::Detached, B> {
+    let named = !name.is_empty() && !Type::<B>::new(ty, module).is_void();
+    let id = push_instruction(
+        module.module(),
+        ty,
+        None,
+        kind,
+        named.then(|| name.to_owned()),
+    );
+    Instruction {
+        id,
+        module,
+        ty,
+        _state: core::marker::PhantomData,
+    }
+}
+
+/// Crate-internal: `To->setDebugLoc(From->getDebugLoc())` — copy `from`'s
+/// `!dbg` attachment, and no other, onto `to`. An instruction's debug location
+/// is its `!dbg` attachment in llvmkit (the `DebugLoc` handle on a value is
+/// reserved and always empty), so this is the whole of the upstream statement.
+/// Both are instructions of `module`.
+pub(crate) fn copy_debug_location(module: &ModuleCore, from: ValueSlot, to: ValueSlot) {
+    let (ValueKindData::Instruction(from), ValueKindData::Instruction(to)) = (
+        &module.context().value_data(from).kind,
+        &module.context().value_data(to).kind,
+    ) else {
+        unreachable!("copy_debug_location invariant: both slots name instructions")
+    };
+    let location = from.metadata.borrow().get(&MetadataAttachmentKind::Dbg);
+    if let Some(location) = location {
+        to.metadata
+            .borrow_mut()
+            .insert(MetadataAttachmentKind::Dbg, location);
+    }
+}
+
 /// Crate-internal helper: create a `ValueData` for an instruction with
 /// the given parent block and kind payload.
 pub(super) fn build_instruction_value(
