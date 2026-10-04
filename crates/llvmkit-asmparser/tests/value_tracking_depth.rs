@@ -31,7 +31,7 @@ fn known_leading_zeros(source: &str, function: &str, name: &str) -> u32 {
     let f = module
         .as_view()
         .functions()
-        .find(|f| f.name() == function)
+        .find(|f| f.name().as_deref() == Some(function))
         .unwrap_or_else(|| panic!("fixture defines @{function}"));
     let value = f
         .basic_blocks()

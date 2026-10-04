@@ -254,7 +254,7 @@ where
         return None;
     };
     let module = ModuleRef::<B>::new(callee.module().core_ref());
-    if let Some(data) = &function.intrinsic {
+    if let Some(data) = function.intrinsic.borrow().as_ref() {
         let overloads = data
             .overloads
             .iter()
@@ -262,8 +262,9 @@ where
             .collect::<Box<[_]>>();
         return IntrinsicDescriptor::new(data.id, overloads).ok();
     }
-    let id = IntrinsicId::lookup(&function.name)?;
-    let descriptor = descriptor_for_name(module, id, &function.name).ok()?;
+    let name = callee.name().unwrap_or_default();
+    let id = IntrinsicId::lookup(&name)?;
+    let descriptor = descriptor_for_name(module, id, &name).ok()?;
     let expected = descriptor.function_type_ref(module).ok()?;
     (expected.as_type().slot_trusting_same_module() == function.signature).then_some(descriptor)
 }
@@ -698,8 +699,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
     pub(crate) fn to_function_data(&self) -> IntrinsicFunctionData {
         IntrinsicFunctionData {
             id: self.id,
-            // Internal: the one caller, `get_or_insert_intrinsic_declaration`,
-            // admitted every overload against the declaring module first.
+            // Internal: both callers hold overloads of the declaring module —
+            // `get_or_insert_intrinsic_declaration` admitted every one first,
+            // and `FunctionValue::update_after_name_change` minted its
+            // descriptor from the function's own module and signature.
             overloads: self
                 .overloads
                 .iter()

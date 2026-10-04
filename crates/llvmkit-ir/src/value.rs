@@ -463,9 +463,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
     }
 
     /// Optional textual name. `None` for slot-numbered (`%0`, `%1`)
-    /// values.
+    /// values. The interned `ptr @g` constant answers the name of the global
+    /// it stands for, as `getName` on `@g` does (`docs/divergences.md` D3).
     pub fn name(self) -> Option<String> {
-        self.data().name.borrow().clone()
+        let named = self.global_value_slot().unwrap_or(self.id);
+        self.module.value_data(named).name.borrow().clone()
     }
 
     /// Set the textual name. Mirrors `Value::setName`.
@@ -480,24 +482,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             "set_name: the module token belongs to a different module than this value"
         );
         let requested = name.into();
-        if self.ty().is_void() {
-            self.set_name_internal(None);
-            return;
-        }
-        if let Some(parent_fn_id) = self.local_parent_function_id() {
-            let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
-                parent_fn_id,
-                self.module.proven_mutable(),
-            );
-            parent_fn.set_local_value_name(self.id, Some(requested.as_str()));
-            return;
-        }
-        if self.is_parentless_local_nameable() {
-            self.set_name_internal((!requested.is_empty()).then_some(requested));
-        }
+        self.rename(Some(requested.as_str()));
     }
 
-    /// Clear the textual name.
+    /// Clear the textual name. Mirrors `Value::setName("")`.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
     where
         C: CanMutate,
@@ -507,6 +495,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             self.module.id(),
             "clear_name: the module token belongs to a different module than this value"
         );
+        self.rename(None);
+    }
+
+    /// The body `set_name` and `clear_name` share: `Value::setName`, which is
+    /// `Value::setNameImpl` — dispatched on the table `getSymTab` answers —
+    /// followed by `Function::updateAfterNameChange` for a function.
+    fn rename(self, requested: Option<&str>)
+    where
+        C: CanMutate,
+    {
         if self.ty().is_void() {
             self.set_name_internal(None);
             return;
@@ -516,11 +514,46 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
                 parent_fn_id,
                 self.module.proven_mutable(),
             );
-            parent_fn.set_local_value_name(self.id, None);
+            parent_fn.set_local_value_name(self.id, requested);
+            return;
+        }
+        // `getSymTab`'s `GlobalValue` arm: the parent module's table. The
+        // interned `ptr @g` constant renames the global it stands for, since
+        // upstream's `GlobalValue` *is* that constant.
+        if let Some(global) = self.global_value_slot() {
+            let module = self.module.module();
+            module.set_global_value_name(global, requested);
+            if matches!(
+                module.context().value_data(global).kind,
+                ValueKindData::Function(_)
+            ) {
+                FunctionValue::<Dyn, B>::from_parts_unchecked(global, self.module.proven_mutable())
+                    .update_after_name_change();
+            }
             return;
         }
         if self.is_parentless_local_nameable() {
-            self.set_name_internal(None);
+            self.set_name_internal(requested.filter(|name| !name.is_empty()).map(str::to_owned));
+        }
+    }
+
+    /// The global value this value is or stands for: a function, global
+    /// variable, alias or ifunc itself, or the interned `ptr @g` constant
+    /// that names one (`docs/divergences.md` D3 — upstream's `GlobalValue` is
+    /// that constant). [`None`] for every other value.
+    fn global_value_slot(self) -> Option<ValueSlot> {
+        match &self.data().kind {
+            ValueKindData::Function(_)
+            | ValueKindData::GlobalVariable(_)
+            | ValueKindData::GlobalAlias(_)
+            | ValueKindData::GlobalIfunc(_) => Some(self.id),
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Some(*value),
+            ValueKindData::Constant(_)
+            | ValueKindData::Argument { .. }
+            | ValueKindData::BasicBlock(_)
+            | ValueKindData::Instruction(_)
+            | ValueKindData::MetadataAsValue(_)
+            | ValueKindData::InlineAsm(_) => None,
         }
     }
 

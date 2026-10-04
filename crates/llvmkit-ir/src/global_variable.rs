@@ -24,8 +24,8 @@ use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot,
-    ValueSlotAccess, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueKindData,
+    ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::GlobalId;
 use crate::Branded;
@@ -114,7 +114,6 @@ pub struct SanitizerMetadata {
 /// portion of `class GlobalVariable` in `IR/GlobalVariable.h`.
 #[derive(Debug)]
 pub(super) struct GlobalVariableData {
-    pub(super) name: String,
     /// Type of the data the global holds (the *pointee* type). The
     /// outer [`crate::value::ValueData::ty`] is the *pointer* type
     /// (`ptr addrspace(N)`).
@@ -332,10 +331,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self.data().address_space
     }
 
-    /// Symbol name (without the leading `@`).
+    /// Symbol name (without the leading `@`); [`None`] for an unnamed global,
+    /// which the printer numbers. Mirrors `Value::getName`, which answers the
+    /// empty string there.
     #[inline]
-    pub fn name(self) -> &'ctx str {
-        &self.data().name
+    pub fn name(self) -> Option<String> {
+        self.as_erased().name()
+    }
+
+    /// Rename this global through its module's symbol table. Mirrors
+    /// `Value::setName` on a `GlobalVariable`: a name another global value
+    /// holds is uniqued (`name.1`, or `name1` on an NVPTX module).
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        self.as_erased().set_name(module_token, name);
+    }
+
+    /// Leave this global unnamed. Mirrors `Value::setName("")`.
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        self.as_erased().clear_name(module_token);
     }
 
     /// `true` if this was declared with `constant` (vs `global`).
@@ -699,12 +715,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalVariable<'ctx, B> {
         Type::new(self.ty, self.module)
     }
 }
-// No `SetName`: a global participates in the module's name table, and
-// llvmkit has no path that renames it and keeps the table consistent; the
-// impl that stood here was a silent no-op.
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
     fn name(self) -> Option<String> {
         self.as_erased().name()
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for GlobalVariable<'ctx, B> {
+    #[inline]
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        GlobalVariable::set_name(self, module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        GlobalVariable::clear_name(self, module_token);
     }
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalVariable<'_, B> {
@@ -977,7 +1003,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             comdat,
         } = self;
         let data = GlobalVariableData {
-            name: name.clone(),
             value_type,
             address_space,
             is_constant,

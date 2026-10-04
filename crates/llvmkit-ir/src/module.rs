@@ -117,6 +117,7 @@ use super::value_id::{
     FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
     ValueId, ViewIn,
 };
+use super::value_symbol_table::ValueSymbolTable;
 use super::vec_len::{Len, LenDyn};
 use super::verifier::Verifier;
 
@@ -1019,7 +1020,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn name(self) -> &'ctx str {
+    pub fn name(self) -> Option<String> {
         self.global.name()
     }
 
@@ -1132,7 +1133,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
     }
 
     #[inline]
-    pub fn name(self) -> &'ctx str {
+    pub fn name(self) -> Option<String> {
         self.alias.name()
     }
 
@@ -1210,7 +1211,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncView<'ctx, B> {
     }
 
     #[inline]
-    pub fn name(self) -> &'ctx str {
+    pub fn name(self) -> Option<String> {
         self.ifunc.name()
     }
 
@@ -1892,18 +1893,16 @@ pub(super) struct ModuleCore {
     /// constructors can mutate while the same `&'ctx self` borrow is
     /// held by call sites.
     functions: core::cell::RefCell<Vec<ValueSlot>>,
-    /// Module-level name -> function value-id table.
-    function_by_name: core::cell::RefCell<std::collections::HashMap<String, ValueSlot>>,
     /// Globals defined in this module, in declaration order.
     /// Mirrors `Module::GlobalList`. Stored under the same shape as
     /// `functions` so the AsmWriter can iterate in source order.
     globals: core::cell::RefCell<Vec<ValueSlot>>,
-    /// Module-level name -> global value-id table.
-    global_by_name: core::cell::RefCell<std::collections::HashMap<String, ValueSlot>>,
     aliases: core::cell::RefCell<Vec<ValueSlot>>,
-    alias_by_name: core::cell::RefCell<std::collections::HashMap<String, ValueSlot>>,
     ifuncs: core::cell::RefCell<Vec<ValueSlot>>,
-    ifunc_by_name: core::cell::RefCell<std::collections::HashMap<String, ValueSlot>>,
+    /// The one name table for every global value — functions, global
+    /// variables, aliases and ifuncs share it, so they share one namespace
+    /// and one unique-name counter. Mirrors `Module::ValSymTab`.
+    symbol_table: ValueSymbolTable,
     /// Module-level COMDAT entries. Mirrors `Module::ComdatSymTab`.
     /// Stored in a `boxcar::Vec` for stable `&ComdatData` references
     /// under `&self`, so [`ComdatRef`](ComdatRef) can
@@ -2054,13 +2053,10 @@ impl<'ctx> ModuleCore {
             source_filename: core::cell::RefCell::new(None),
             ctx: Context::new(),
             functions: core::cell::RefCell::new(Vec::new()),
-            function_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             globals: core::cell::RefCell::new(Vec::new()),
-            global_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             aliases: core::cell::RefCell::new(Vec::new()),
-            alias_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             ifuncs: core::cell::RefCell::new(Vec::new()),
-            ifunc_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
+            symbol_table: ValueSymbolTable::new(),
             comdats: boxcar::Vec::new(),
             comdat_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             data_layout: core::cell::RefCell::new(DataLayout::default()),
@@ -2212,7 +2208,7 @@ impl<'ctx> ModuleCore {
     {
         let name = name.as_ref();
         reject_reserved_intrinsic_name(name)?;
-        if !name.is_empty() && self.global_name_exists(name) {
+        if !name.is_empty() && self.named_value(name).is_some() {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
             });
@@ -2257,16 +2253,12 @@ impl<'ctx> ModuleCore {
         // (`add_function_dyn`, `FunctionBuilder::build`) or minted it here.
         let signature_id = signature.slot_trusting_same_module();
 
-        let fn_data = FunctionData::new(
-            name.to_owned(),
-            signature_id,
-            linkage,
-            calling_conv,
-            intrinsic,
-        );
+        // `intrinsic` is the identity `Function`'s constructor computes from
+        // the name; the one caller that passes one minted it for this name.
+        let fn_data = FunctionData::new(signature_id, linkage, calling_conv, intrinsic);
         let fn_id = self.ctx.push_value(ValueData {
             ty: signature_id,
-            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.to_owned())),
+            name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Function(Box::new(fn_data)),
             use_list: core::cell::RefCell::new(Vec::new()),
@@ -2304,11 +2296,8 @@ impl<'ctx> ModuleCore {
         }
 
         self.functions.borrow_mut().push(fn_id);
-        if !name.is_empty() {
-            self.function_by_name
-                .borrow_mut()
-                .insert(name.to_owned(), fn_id);
-        }
+        // `GlobalValue`'s constructor ends in `setName(Name)`.
+        self.set_global_value_name(fn_id, Some(name));
         Ok(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
             fn_id,
             ModuleRef::<B>::new(self),
@@ -2358,7 +2347,19 @@ impl<'ctx> ModuleCore {
         let name = descriptor.mangled_name()?;
         let module_ref = ModuleRef::<B>::new(self);
         let signature = descriptor.function_type_ref(module_ref)?;
-        if let Some(existing_id) = self.function_by_name.borrow().get(&name).copied() {
+        // `Module::getOrInsertFunction` asks `getNamedValue(Name)`, which
+        // answers any kind of global value.
+        if let Some(existing_id) = self.named_value(&name) {
+            // `Intrinsic::getOrInsertDeclaration` then `cast<Function>`s what
+            // it got back — an assertion when a global variable, alias or
+            // ifunc holds the name. Refused here instead: hardening of an
+            // assert, not a divergence.
+            if !matches!(
+                self.ctx.value_data(existing_id).kind,
+                ValueKindData::Function(_)
+            ) {
+                return Err(IrError::DuplicateFunctionName { name });
+            }
             let existing =
                 FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(existing_id, module_ref);
             if existing.signature() != signature
@@ -2485,14 +2486,14 @@ impl<'ctx> ModuleCore {
         data: GlobalVariableData,
         address_space: u32,
     ) -> IrResult<GlobalVariable<'ctx, B>> {
-        if !name.is_empty() && self.global_name_exists(&name) {
+        if !name.is_empty() && self.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let seeded_initializer = data.initializer.get();
         let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
-            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
+            name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalVariable(data),
             use_list: core::cell::RefCell::new(Vec::new()),
@@ -2506,9 +2507,8 @@ impl<'ctx> ModuleCore {
             seeded_initializer,
         );
         self.globals.borrow_mut().push(value_id);
-        if !name.is_empty() {
-            self.global_by_name.borrow_mut().insert(name, value_id);
-        }
+        // `GlobalValue`'s constructor ends in `setName(Name)`.
+        self.set_global_value_name(value_id, Some(&name));
         Ok(GlobalVariable::from_parts_unchecked(
             value_id,
             ModuleRef::<B>::new(self),
@@ -2524,14 +2524,14 @@ impl<'ctx> ModuleCore {
         data: GlobalAliasData,
         address_space: u32,
     ) -> IrResult<GlobalAlias<'ctx, B>> {
-        if !name.is_empty() && self.global_name_exists(&name) {
+        if !name.is_empty() && self.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let seeded_aliasee = data.aliasee.get();
         let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
-            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
+            name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalAlias(data),
             use_list: core::cell::RefCell::new(Vec::new()),
@@ -2543,9 +2543,8 @@ impl<'ctx> ModuleCore {
             Some(seeded_aliasee),
         );
         self.aliases.borrow_mut().push(value_id);
-        if !name.is_empty() {
-            self.alias_by_name.borrow_mut().insert(name, value_id);
-        }
+        // `GlobalValue`'s constructor ends in `setName(Name)`.
+        self.set_global_value_name(value_id, Some(&name));
         Ok(GlobalAlias::from_parts_unchecked(
             value_id,
             ModuleRef::<B>::new(self),
@@ -2561,14 +2560,14 @@ impl<'ctx> ModuleCore {
         data: GlobalIfuncData,
         address_space: u32,
     ) -> IrResult<GlobalIfunc<'ctx, B>> {
-        if !name.is_empty() && self.global_name_exists(&name) {
+        if !name.is_empty() && self.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let seeded_resolver = data.resolver.get();
         let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
-            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
+            name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalIfunc(data),
             use_list: core::cell::RefCell::new(Vec::new()),
@@ -2580,9 +2579,8 @@ impl<'ctx> ModuleCore {
             Some(seeded_resolver),
         );
         self.ifuncs.borrow_mut().push(value_id);
-        if !name.is_empty() {
-            self.ifunc_by_name.borrow_mut().insert(name, value_id);
-        }
+        // `GlobalValue`'s constructor ends in `setName(Name)`.
+        self.set_global_value_name(value_id, Some(&name));
         Ok(GlobalIfunc::from_parts_unchecked(
             value_id,
             ModuleRef::<B>::new(self),
@@ -2590,11 +2588,53 @@ impl<'ctx> ModuleCore {
         ))
     }
 
-    fn global_name_exists(&self, name: &str) -> bool {
-        self.function_by_name.borrow().contains_key(name)
-            || self.global_by_name.borrow().contains_key(name)
-            || self.alias_by_name.borrow().contains_key(name)
-            || self.ifunc_by_name.borrow().contains_key(name)
+    /// The global value named `name`, of any kind. Mirrors
+    /// `Module::getNamedValue`, a `lookup` in the module's one symbol table.
+    pub(crate) fn named_value(&self, name: &str) -> Option<ValueSlot> {
+        self.symbol_table.lookup(name)
+    }
+
+    /// The global value named `name` if `is_kind` accepts its kind:
+    /// `dyn_cast_or_null<Kind>(getNamedValue(Name))`, the body of
+    /// `Module::getFunction`, `getNamedGlobal`, `getNamedAlias` and
+    /// `getNamedIFunc`.
+    fn named_value_of_kind(
+        &self,
+        name: &str,
+        is_kind: impl Fn(&ValueKindData) -> bool,
+    ) -> Option<ValueSlot> {
+        self.named_value(name)
+            .filter(|&slot| is_kind(&self.ctx.value_data(slot).kind))
+    }
+
+    /// Name the global value `id` `requested` through this module's symbol
+    /// table, returning the name it ends up with. Ports `Value::setNameImpl`
+    /// for the values `getSymTab` answers the parent module's table for:
+    /// `createValueName` takes the name or uniques a clash, the old name is
+    /// removed, and an absent or empty name leaves the value unnamed.
+    /// `ValueSymbolTable::makeUniqueName` marks a uniqued global value with a
+    /// dot unless the module targets NVPTX.
+    pub(crate) fn set_global_value_name(
+        &self,
+        id: ValueSlot,
+        requested: Option<&str>,
+    ) -> Option<String> {
+        let append_dot = !self.targets_nvptx();
+        self.symbol_table
+            .set_value_name(self.ctx.value_data(id), id, requested, append_dot)
+    }
+
+    /// `M->getTargetTriple().isNVPTX()`. `Triple::isNVPTX` asks for the
+    /// architecture `nvptx` or `nvptx64`; `Triple::Triple` parses the
+    /// architecture from the first `-`-separated component, and `parseArch`
+    /// matches those two spellings exactly. A module with no triple has an
+    /// empty one, whose architecture is unknown.
+    fn targets_nvptx(&self) -> bool {
+        self.target_triple
+            .borrow()
+            .as_deref()
+            .and_then(|triple| triple.split('-').next())
+            .is_some_and(|arch| matches!(arch, "nvptx" | "nvptx64"))
     }
 
     // ---- DataLayout / target triple / module asm ----
@@ -3662,7 +3702,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// The id borrows nothing, so this takes `&self` rather than `&'ctx self` —
     /// a lookup can be interleaved with other borrows of the module.
     pub fn function_dyn(&self, name: &str) -> Option<FunctionId<Dyn, B>> {
-        let slot = self.core().function_by_name.borrow().get(name).copied()?;
+        let slot = self
+            .core()
+            .named_value_of_kind(name, |kind| matches!(kind, ValueKindData::Function(_)))?;
         Some(FunctionId::from_raw(self.core().id, slot))
     }
 
@@ -3676,14 +3718,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     where
         R: ReturnMarker,
     {
-        let Some(id) = self.core().function_by_name.borrow().get(name).copied() else {
+        let Some(id) = self.core().named_value(name) else {
             return Ok(None);
         };
-        let value_data = self.core().ctx.value_data(id);
-        let signature_id = match &value_data.kind {
-            ValueKindData::Function(f) => f.signature,
-            _ => unreachable!("function_by_name table only stores function ids"),
+        // `Module::getFunction` is `dyn_cast_or_null<Function>`: a name
+        // another kind of global value holds is no function.
+        let ValueKindData::Function(function) = &self.core().ctx.value_data(id).kind else {
+            return Ok(None);
         };
+        let signature_id = function.signature;
         let ret_id = self
             .core()
             .ctx
@@ -3790,7 +3833,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     ///
     /// The id borrows nothing, so this takes `&self`.
     pub fn global(&self, name: &str) -> Option<GlobalId<B>> {
-        let slot = self.core().global_by_name.borrow().get(name).copied()?;
+        let slot = self.core().named_value_of_kind(name, |kind| {
+            matches!(kind, ValueKindData::GlobalVariable(_))
+        })?;
         Some(GlobalId::from_raw(self.core().id, slot))
     }
 
@@ -3798,14 +3843,18 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// [`GlobalAliasId`]. Symmetric with
     /// [`alias_builder`](Self::alias_builder)'s `build()`.
     pub fn alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
-        let slot = self.core().alias_by_name.borrow().get(name).copied()?;
+        let slot = self
+            .core()
+            .named_value_of_kind(name, |kind| matches!(kind, ValueKindData::GlobalAlias(_)))?;
         Some(GlobalAliasId::from_raw(self.core().id, slot))
     }
 
     /// Look up an ifunc by name, returning its storable [`GlobalIfuncId`].
     /// Symmetric with [`ifunc_builder`](Self::ifunc_builder)'s `build()`.
     pub fn ifunc(&self, name: &str) -> Option<GlobalIfuncId<B>> {
-        let slot = self.core().ifunc_by_name.borrow().get(name).copied()?;
+        let slot = self
+            .core()
+            .named_value_of_kind(name, |kind| matches!(kind, ValueKindData::GlobalIfunc(_)))?;
         Some(GlobalIfuncId::from_raw(self.core().id, slot))
     }
 
@@ -4493,7 +4542,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         R: ReturnMarker,
     {
         reject_reserved_intrinsic_name(name)?;
-        if !name.is_empty() && self.core().global_name_exists(name) {
+        if !name.is_empty() && self.core().named_value(name).is_some() {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
             });

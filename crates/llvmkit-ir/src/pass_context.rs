@@ -288,9 +288,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
         self.function.id()
     }
 
-    /// Function name.
+    /// Function name; [`None`] for an unnamed function.
     #[inline]
-    pub fn name(self) -> &'ctx str {
+    pub fn name(self) -> Option<String> {
         self.function.name()
     }
 
@@ -450,9 +450,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
         self.function.id()
     }
 
-    /// Function name.
+    /// Function name; [`None`] for an unnamed function.
     #[inline]
-    pub fn name(self) -> &'ctx str {
+    pub fn name(self) -> Option<String> {
         self.function.name()
     }
 
@@ -4208,10 +4208,13 @@ mod tests {
         m.add_function_dyn("third", fn_ty, Linkage::External)?;
 
         let module = ModuleView::from(&m);
-        let named: Vec<&str> = module.functions().map(|f| f.name()).collect();
+        let named: Vec<String> = module
+            .functions()
+            .map(|f| f.name().unwrap_or_default())
+            .collect();
         let mut walked = Vec::new();
         for f in module {
-            walked.push(f.name());
+            walked.push(f.name().unwrap_or_default());
         }
         assert_eq!(walked, named);
         assert_eq!(walked, ["first", "second", "third"]);

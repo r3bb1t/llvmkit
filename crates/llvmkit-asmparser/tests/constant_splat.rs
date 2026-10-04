@@ -18,7 +18,7 @@ fn initializer<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Cons
     module
         .as_view()
         .globals()
-        .find(|global| global.name() == name)
+        .find(|global| global.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines @{name}"))
         .initializer()
         .unwrap_or_else(|| panic!("@{name} has an initializer"))

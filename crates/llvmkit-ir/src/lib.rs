@@ -391,7 +391,7 @@ pub use r#use::Use;
 pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
-    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, UseListOrderError, Value,
+    IntoPointerValue, IsValue, PointerValue, SetName, StructValue, Typed, UseListOrderError, Value,
     ValueCategory, VectorValue,
 };
 pub use value_id::{

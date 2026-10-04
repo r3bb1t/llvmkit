@@ -61,8 +61,8 @@ use super::pass_context::FunctionView;
 use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData,
-    ValueSlot, ValueSlotAccess, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueData,
+    ValueKindData, ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::ViewIn;
 use super::value_id::{FunctionId, TypedFunctionId};
@@ -77,7 +77,6 @@ use crate::Branded;
 /// [`ValueKindData::Function`](crate::value::ValueKindData::Function).
 #[derive(Debug)]
 pub(super) struct FunctionData {
-    pub(super) name: String,
     pub(super) signature: TypeSlot,
     pub(super) linkage: RefCell<Linkage>,
     pub(super) visibility: RefCell<Visibility>,
@@ -103,20 +102,21 @@ pub(super) struct FunctionData {
     pub(super) attributes: RefCell<AttributeStorage>,
     pub(super) function_attr_groups: RefCell<Vec<u32>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
-    pub(super) intrinsic: Option<IntrinsicFunctionData>,
+    /// The intrinsic this function's name and signature declare, if any —
+    /// upstream's `IntID`, recomputed on a rename as
+    /// `Function::updateAfterNameChange` does.
+    pub(super) intrinsic: RefCell<Option<IntrinsicFunctionData>>,
     pub(super) symbol_table: ValueSymbolTable,
 }
 
 impl FunctionData {
     pub(super) fn new(
-        name: String,
         signature: TypeSlot,
         linkage: Linkage,
         calling_conv: CallingConv,
         intrinsic: Option<IntrinsicFunctionData>,
     ) -> Self {
         Self {
-            name,
             signature,
             linkage: RefCell::new(linkage),
             visibility: RefCell::new(Visibility::Default),
@@ -138,7 +138,7 @@ impl FunctionData {
             attributes: RefCell::new(AttributeStorage::new()),
             function_attr_groups: RefCell::new(Vec::new()),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
-            intrinsic,
+            intrinsic: RefCell::new(intrinsic),
             symbol_table: ValueSymbolTable::new(),
         }
     }
@@ -265,10 +265,55 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         }
     }
 
-    /// Function name.
+    /// Function name; [`None`] for an unnamed function, which the printer
+    /// numbers. Mirrors `Value::getName`, which answers the empty string there.
     #[inline]
-    pub fn name(self) -> &'ctx str {
-        &self.data().name
+    pub fn name(self) -> Option<String> {
+        self.as_erased().name()
+    }
+
+    /// Rename this function through its module's symbol table. Mirrors
+    /// `Value::setName` on a `Function`: a name another global value holds is
+    /// uniqued (`name.1`, or `name1` on an NVPTX module), and the intrinsic
+    /// identity is recomputed from the new name
+    /// (`Function::updateAfterNameChange`).
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        self.as_erased().set_name(module_token, name);
+    }
+
+    /// Leave this function unnamed. Mirrors `Value::setName("")`.
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        self.as_erased().clear_name(module_token);
+    }
+
+    /// Recompute the intrinsic identity from the current name. Ports
+    /// `Function::updateAfterNameChange`: a name without the `llvm.` prefix is
+    /// no intrinsic (`IntID = Intrinsic::not_intrinsic`), and otherwise
+    /// upstream sets `IntID = Intrinsic::lookupIntrinsicID(Name)`. llvmkit's
+    /// identity carries the overload types the signature determines, so it is
+    /// stored only when this function's signature is the one the name declares
+    /// — a name-only identity has no spelling here (`docs/divergences.md`,
+    /// the `updateAfterNameChange` entry). `LibFuncCache` and
+    /// `HasLLVMReservedName` have no stored counterpart: llvmkit caches no
+    /// library-function classification on a function, and reads the reserved
+    /// prefix from the name where it is asked.
+    pub(crate) fn update_after_name_change(self) {
+        let name = self.name().unwrap_or_default();
+        let intrinsic = if name.starts_with("llvm.") {
+            // An error here is the answer "no intrinsic matches this name and
+            // signature", not a failure of the rename.
+            self.module
+                .module()
+                .intrinsic_descriptor_from_signature::<B>(&name, self.signature())
+                .ok()
+                .map(|descriptor| descriptor.to_function_data())
+        } else {
+            None
+        };
+        *self.data().intrinsic.borrow_mut() = intrinsic;
     }
 
     /// Owning module reference.
@@ -283,15 +328,17 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         FunctionType::new(self.signature, self.module)
     }
 
-    /// Generated intrinsic identity, when this function is an intrinsic declaration.
+    /// Generated intrinsic identity, when this function's name and signature
+    /// declare an intrinsic.
     #[inline]
     pub fn intrinsic_id(self) -> Option<IntrinsicId> {
-        self.data().intrinsic.as_ref().map(|data| data.id)
+        self.data().intrinsic.borrow().as_ref().map(|data| data.id)
     }
 
     /// Generated intrinsic descriptor, including overload types, when present.
     pub fn intrinsic_descriptor(self) -> Option<IntrinsicDescriptor<'ctx, B>> {
-        let data = self.data().intrinsic.as_ref()?;
+        let intrinsic = self.data().intrinsic.borrow();
+        let data = intrinsic.as_ref()?;
         let overloads = data
             .overloads
             .iter()
@@ -300,7 +347,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         IntrinsicDescriptor::new(data.id, overloads).ok()
     }
 
-    /// Whether this function was created through the intrinsic declaration API.
+    /// Whether this function's name and signature declare an intrinsic —
+    /// whether [`Self::intrinsic_id`] answers.
     #[inline]
     pub fn is_intrinsic(self) -> bool {
         self.intrinsic_id().is_some()
@@ -1054,13 +1102,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         requested: Option<&str>,
     ) -> Option<String> {
         let value = self.module.module().context().value_data(id);
-        let current = value.name.borrow().clone();
-        let final_name =
-            self.data()
-                .symbol_table
-                .rename_value(current.as_deref(), requested, id, false);
-        *value.name.borrow_mut() = final_name.clone();
-        final_name
+        // `makeUniqueName` appends a dot only for a `GlobalValue`, which a
+        // function-local value never is.
+        self.data()
+            .symbol_table
+            .set_value_name(value, id, requested, false)
     }
 
     pub(super) fn remove_local_value_name(self, id: ValueSlot) {
@@ -1252,13 +1298,23 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionVa
         Type::new(self.signature, self.module)
     }
 }
-// No `SetName`: renaming a function goes through the module's symbol table,
-// which llvmkit has no path for yet, and the trait impl that stood here did
-// nothing — a silent no-op, now a compile error instead.
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn name(self) -> Option<String> {
         self.as_erased().name()
+    }
+}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> SetName<'ctx, B> for FunctionValue<'ctx, R, B> {
+    #[inline]
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        FunctionValue::set_name(self, module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        FunctionValue::clear_name(self, module_token);
     }
 }
 impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {

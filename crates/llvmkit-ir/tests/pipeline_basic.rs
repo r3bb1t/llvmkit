@@ -131,7 +131,7 @@ impl<B: ModuleBrand> FunctionPass<B> for LoggingMutator {
     {
         self.visited
             .borrow_mut()
-            .push(cx.function().name().to_owned());
+            .push(cx.function().name().unwrap_or_default());
         let patch = cx.mutate();
         Ok(patch.done())
     }

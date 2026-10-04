@@ -983,7 +983,7 @@ define i32 @test(i32 %x) nosync {
     let declaration = module
         .as_view()
         .functions()
-        .find(|function| function.name() == "llvm.assume")
+        .find(|function| function.name().as_deref() == Some("llvm.assume"))
         .expect("the fixture declares @llvm.assume");
     module
         .view(declaration.id())

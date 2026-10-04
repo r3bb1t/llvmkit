@@ -3645,11 +3645,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// through `GlobalValue::getGUID`: the value's own linkage and the module's
     /// source file name decide the identifier.
     fn guid_of_global(&self, global: GlobalRef<'ctx, B>) -> Guid {
+        // `GlobalValue::getName`, the empty string for an unnamed global.
         let (name, linkage) = match global {
-            GlobalRef::Function(f) => (f.name().to_owned(), f.linkage()),
-            GlobalRef::Variable(g) => (g.name().to_owned(), g.linkage()),
-            GlobalRef::Alias(a) => (a.name().to_owned(), a.linkage()),
-            GlobalRef::Ifunc(i) => (i.name().to_owned(), i.linkage()),
+            GlobalRef::Function(f) => (f.name().unwrap_or_default(), f.linkage()),
+            GlobalRef::Variable(g) => (g.name().unwrap_or_default(), g.linkage()),
+            GlobalRef::Alias(a) => (a.name().unwrap_or_default(), a.linkage()),
+            GlobalRef::Ifunc(i) => (i.name().unwrap_or_default(), i.linkage()),
         };
         let source_filename = self
             .module
@@ -11695,10 +11696,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // `define void @0() comdat`.
             let name = match comdat_name {
                 Some(name) => name,
-                None if f.name().is_empty() => {
-                    return Err(self.message("comdat cannot be unnamed"));
-                }
-                None => f.name().to_owned(),
+                None => match f.name() {
+                    Some(name) => name,
+                    None => return Err(self.message("comdat cannot be unnamed")),
+                },
             };
             let comdat = self.comdat_ref(&name, decl_loc);
             f.set_comdat(self.module, comdat)
@@ -11901,10 +11902,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // `define void @0() comdat`.
             let name = match comdat_name {
                 Some(name) => name,
-                None if f.name().is_empty() => {
-                    return Err(self.message("comdat cannot be unnamed"));
-                }
-                None => f.name().to_owned(),
+                None => match f.name() {
+                    Some(name) => name,
+                    None => return Err(self.message("comdat cannot be unnamed")),
+                },
             };
             let comdat = self.comdat_ref(&name, decl_loc);
             f.set_comdat(self.module, comdat)

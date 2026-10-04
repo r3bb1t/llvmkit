@@ -755,7 +755,7 @@ define float @ret_plain(float %x) {
         let view = module.as_view();
         let function = view
             .functions()
-            .find(|f| f.name() == function_name)
+            .find(|f| f.name().as_deref() == Some(function_name))
             .unwrap_or_else(|| panic!("fixture defines @{function_name}"));
         let terminator = function
             .basic_blocks()

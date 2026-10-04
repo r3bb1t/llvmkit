@@ -483,7 +483,7 @@ where
         };
         let function =
             FunctionValue::<Dyn, B>::from_parts_unchecked(call.callee.get(), value.module());
-        let Some(lib_func) = tli.lib_func_for_name(function.name()) else {
+        let Some(lib_func) = tli.lib_func_for_name(&function.name().unwrap_or_default()) else {
             return Ok(None);
         };
         let mut args = Vec::with_capacity(call.args.len());
@@ -780,7 +780,7 @@ where
             };
             let function =
                 FunctionValue::<Dyn, B>::from_parts_unchecked(call.callee.get(), value.module());
-            let Some(lib_func) = tli.lib_func_for_name(function.name()) else {
+            let Some(lib_func) = tli.lib_func_for_name(&function.name().unwrap_or_default()) else {
                 return Ok(None);
             };
             let args = if operands.len() == call.args.len() {

@@ -49,7 +49,7 @@ fn global_initializer<'m>(
 ) -> Value<'m, DynBrand> {
     module
         .globals()
-        .find(|global| global.name() == name)
+        .find(|global| global.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines @{name}"))
         .initializer()
         .unwrap_or_else(|| panic!("@{name} has an initializer"))
@@ -61,7 +61,7 @@ fn global_initializer<'m>(
 fn global_pointer<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
     module
         .globals()
-        .find(|global| global.name() == name)
+        .find(|global| global.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines @{name}"))
         .as_erased()
 }
@@ -628,7 +628,7 @@ define void @test(ptr %p) {
     let p = module
         .view(
             view.functions()
-                .find(|function| function.name() == "test")
+                .find(|function| function.name().as_deref() == Some("test"))
                 .expect("fixture defines @test")
                 .id(),
         )

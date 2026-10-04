@@ -727,7 +727,7 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
     let view = module.as_view();
     let call = view
         .functions()
-        .find(|function| function.name() == "f3")
+        .find(|function| function.name().as_deref() == Some("f3"))
         .expect("the fixture defines @f3")
         .basic_blocks()
         .flat_map(|block| block.instructions())
@@ -813,7 +813,7 @@ fn invoke_operand_bundles_read_back() {
     let view = module.as_view();
     let invokes = |name: &str| {
         view.functions()
-            .find(|function| function.name() == name)
+            .find(|function| function.name().as_deref() == Some(name))
             .expect("the fixture defines the function")
             .basic_blocks()
             .flat_map(|block| block.instructions())
@@ -926,7 +926,9 @@ fn callbr_operand_bundles_read_back() {
     let view = module.as_view();
     let callbr = view
         .functions()
-        .find(|function| function.name() == "test_callbr_intrinsic_no_operand_bundles")
+        .find(|function| {
+            function.name().as_deref() == Some("test_callbr_intrinsic_no_operand_bundles")
+        })
         .expect("the fixture defines the function")
         .basic_blocks()
         .flat_map(|block| block.instructions())
@@ -3184,7 +3186,7 @@ attributes #0 = { nounwind }
     let view = module.as_view();
     let instructions: Vec<_> = view
         .functions()
-        .find(|function| function.name() == "f")
+        .find(|function| function.name().as_deref() == Some("f"))
         .expect("the source defines @f")
         .basic_blocks()
         .flat_map(|block| block.instructions())
@@ -3269,7 +3271,7 @@ attributes #0 = { speculatable }
     let view = module.as_view();
     let call = |name: &str| {
         view.functions()
-            .find(|function| function.name() == "f")
+            .find(|function| function.name().as_deref() == Some("f"))
             .expect("the source defines @f")
             .basic_blocks()
             .flat_map(|block| block.instructions())

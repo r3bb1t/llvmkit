@@ -1,21 +1,22 @@
-//! Per-function name → value lookup. Mirrors the public face of
+//! Name → value lookup. Mirrors the public face of
 //! `llvm/include/llvm/IR/ValueSymbolTable.h`.
 //!
 //! Storage shape is a flat `HashMap<String, ValueSlot>`. The upstream C++ class
 //! layers a `StringMap` on top of `Value::ValueName` slots to amortise renames;
 //! llvmkit keeps the simpler flat map while mirroring LLVM's `createValueName`,
-//! `removeValueName`, and local `LastUnique` suffix behavior.
+//! `removeValueName`, `lookup`, and `LastUnique` suffix behavior. The name a
+//! value ends up with lives on its `ValueData::name`, which stands for the
+//! `ValueName` upstream keeps on the value.
 //!
-//! The map is only ever consulted via the owning [`FunctionValue`]; it has no
-//! module-level analog yet (Module-scope name lookup will land with the
-//! global-value layer).
-//!
-//! [`FunctionValue`]: crate::function::FunctionValue
+//! Two kinds of table exist, as upstream: one per function for its locals
+//! (`Function::getValueSymbolTable`), and one per module for every global
+//! value — functions, global variables, aliases and ifuncs alike
+//! (`Module::getValueSymbolTable`).
 
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::value::ValueSlot;
+use crate::value::{ValueData, ValueSlot};
 
 /// Flat name → value-id table. Wrapped in `RefCell` so the same
 /// `&'ctx Function<'ctx>` borrow can read and write it.
@@ -59,6 +60,32 @@ impl ValueSymbolTable {
                 return candidate;
             }
         }
+    }
+
+    /// The value named `name`, if any. Mirrors `ValueSymbolTable::lookup`;
+    /// llvmkit's tables carry no `MaxNameSize`, so there is no truncation to
+    /// mirror.
+    pub(crate) fn lookup(&self, name: &str) -> Option<ValueSlot> {
+        self.by_name.borrow().get(name).copied()
+    }
+
+    /// Rename `value` (slot `id`) through this table and store the name it
+    /// ends up with: `Value::setNameImpl`'s symbol-table arm, with the
+    /// `ValueName` it keeps on the value spelled as [`ValueData::name`]. The
+    /// one routine both kinds of table run — a function's for its locals, the
+    /// module's for its global values; `append_dot` is
+    /// `ValueSymbolTable::makeUniqueName`'s choice, which the caller knows.
+    pub(crate) fn set_value_name(
+        &self,
+        value: &ValueData,
+        id: ValueSlot,
+        requested: Option<&str>,
+        append_dot: bool,
+    ) -> Option<String> {
+        let current = value.name.borrow().clone();
+        let final_name = self.rename_value(current.as_deref(), requested, id, append_dot);
+        *value.name.borrow_mut() = final_name.clone();
+        final_name
     }
 
     pub(crate) fn remove_value_name(&self, name: &str, id: ValueSlot) {

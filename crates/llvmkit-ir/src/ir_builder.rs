@@ -5900,7 +5900,7 @@ where
             callee
                 .intrinsic_descriptor()
                 .ok_or_else(|| IrError::IntrinsicSignatureMismatch {
-                    name: callee.name().to_owned(),
+                    name: callee.name().unwrap_or_default(),
                 })?;
         self.intrinsic_call_builder(&descriptor)
     }

@@ -14,14 +14,13 @@ use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot,
-    ValueSlotAccess, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueKindData,
+    ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::GlobalAliasId;
 
 #[derive(Debug)]
 pub(super) struct GlobalAliasData {
-    pub(super) name: String,
     pub(super) value_type: TypeSlot,
     pub(super) address_space: u32,
     pub(super) aliasee: Cell<ValueSlot>,
@@ -105,9 +104,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         self.data().address_space
     }
 
+    /// Symbol name (without the leading `@`); [`None`] for an unnamed alias,
+    /// which the printer numbers. Mirrors `Value::getName`, which answers the
+    /// empty string there.
     #[inline]
-    pub fn name(self) -> &'ctx str {
-        &self.data().name
+    pub fn name(self) -> Option<String> {
+        self.as_erased().name()
+    }
+
+    /// Rename this alias through its module's symbol table. Mirrors
+    /// `Value::setName` on a `GlobalAlias`: a name another global value holds
+    /// is uniqued (`name.1`, or `name1` on an NVPTX module).
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        self.as_erased().set_name(module_token, name);
+    }
+
+    /// Leave this alias unnamed. Mirrors `Value::setName("")`.
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        self.as_erased().clear_name(module_token);
     }
 
     pub fn aliasee(self) -> Constant<'ctx, B> {
@@ -276,11 +293,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalAlias<'ctx, B> {
         Type::new(self.ty, self.module)
     }
 }
-// No `SetName`: a global is renamed through the module's symbol table, which
-// llvmkit has no path for yet; the impl that stood here was a silent no-op.
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalAlias<'ctx, B> {
     fn name(self) -> Option<String> {
         self.as_erased().name()
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for GlobalAlias<'ctx, B> {
+    #[inline]
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        GlobalAlias::set_name(self, module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        GlobalAlias::clear_name(self, module_token);
     }
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalAlias<'_, B> {
@@ -473,7 +501,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
             partition,
         } = self;
         let data = GlobalAliasData {
-            name: name.clone(),
             value_type,
             address_space,
             aliasee: Cell::new(aliasee),

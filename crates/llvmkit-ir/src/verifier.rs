@@ -263,7 +263,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return Err(IrError::VerifierFailure {
                 rule: VerifierRule::IfuncInvalidLinkage,
                 subject: VerifierSubject::GlobalIfunc {
-                    name: i.name().to_owned(),
+                    name: i.name().unwrap_or_default(),
                 },
                 message: "IFunc should have private, internal, linkonce, weak, linkonce_odr, \
                           weak_odr, or external linkage!"
@@ -275,12 +275,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn visit_global_variable(&self, g: GlobalVariable<'ctx, B>) -> IrResult<()> {
         let value_ty = g.value_type();
+        // `GlobalValue::getName`, the empty string for an unnamed global.
+        let name = g.name().unwrap_or_default();
 
         if type_contains_scalable(self.module, value_ty.slot_trusting_same_module()) {
             return Err(self.fail_global(
                 g,
                 VerifierRule::GlobalScalableType,
-                format!("Globals cannot contain scalable types (@{})", g.name()),
+                format!("Globals cannot contain scalable types (@{})", name),
             ));
         }
 
@@ -291,7 +293,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     VerifierRule::GlobalInitializerTypeMismatch,
                     format!(
                         "Global variable initializer type does not match global variable type! (@{}: initializer type {}, value type {})",
-                        g.name(),
+                        name,
                         init.ty().kind_label(),
                         value_ty.kind_label(),
                     ),
@@ -301,7 +303,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 return Err(self.fail_global(
                     g,
                     VerifierRule::GlobalInitializerUnsized,
-                    format!("Global variable initializer must be sized (@{})", g.name()),
+                    format!("Global variable initializer must be sized (@{})", name),
                 ));
             }
             if g.linkage() == Linkage::Common {
@@ -320,27 +322,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     return Err(self.fail_global(
                         g,
                         VerifierRule::CommonLinkageInvariantViolated,
-                        format!(
-                            "'common' global must have a zero initializer! (@{})",
-                            g.name()
-                        ),
+                        format!("'common' global must have a zero initializer! (@{})", name),
                     ));
                 }
                 if g.is_constant() {
                     return Err(self.fail_global(
                         g,
                         VerifierRule::CommonLinkageInvariantViolated,
-                        format!(
-                            "'common' global may not be marked constant! (@{})",
-                            g.name()
-                        ),
+                        format!("'common' global may not be marked constant! (@{})", name),
                     ));
                 }
                 if g.comdat().is_some() {
                     return Err(self.fail_global(
                         g,
                         VerifierRule::CommonLinkageInvariantViolated,
-                        format!("'common' global may not be in a Comdat! (@{})", g.name()),
+                        format!("'common' global may not be in a Comdat! (@{})", name),
                     ));
                 }
             }
@@ -553,7 +549,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         IrError::VerifierFailure {
             rule,
             subject: VerifierSubject::GlobalVariable {
-                name: g.name().to_owned(),
+                name: g.name().unwrap_or_default(),
             },
             message,
         }
@@ -1110,7 +1106,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     }
 
     fn verify_intrinsic_function(&self, f: FunctionValue<'ctx, Dyn, B>) -> IrResult<()> {
-        let name = f.name();
+        let name_buffer = f.name().unwrap_or_default();
+        let name = name_buffer.as_str();
         match crate::intrinsics::resolve_intrinsic_name(name) {
             IntrinsicNameResolution::NonIntrinsic => return Ok(()),
             IntrinsicNameResolution::UnknownIntrinsic => {
@@ -1180,8 +1177,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Module::isMaterialized()` is always true here: llvmkit has no lazy
     /// bitcode loader, so a module's use lists are always complete.
     fn verify_intrinsic_address_not_taken(&self, f: FunctionValue<'ctx, Dyn, B>) -> IrResult<()> {
+        let name = f.name().unwrap_or_default();
         if matches!(
-            crate::intrinsics::resolve_intrinsic_name(f.name()),
+            crate::intrinsics::resolve_intrinsic_name(&name),
             IntrinsicNameResolution::NonIntrinsic
         ) {
             return Ok(());
@@ -1191,9 +1189,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         }
         Err(IrError::VerifierFailure {
             rule: VerifierRule::IntrinsicAddressTaken,
-            subject: VerifierSubject::Function {
-                name: f.name().to_owned(),
-            },
+            subject: VerifierSubject::Function { name },
             message: "Invalid user of intrinsic instruction!".to_owned(),
         })
     }
@@ -4181,7 +4177,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             ));
         };
         let input_data = self.module.context().value_data(*input);
-        let ValueKindData::Function(input_function) = &input_data.kind else {
+        let ValueKindData::Function(_) = &input_data.kind else {
             return Err(self.fail(
                 f,
                 bb,
@@ -4191,14 +4187,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     .to_owned(),
             ));
         };
+        let input_function = Value::<B>::from_parts(*input, self.module, input_data.ty);
 
         // `Intrinsic::ID IID = Fn->getIntrinsicID(); if (IID) … else …`
-        let intrinsic_id = crate::intrinsics::descriptor_for_callee(Value::<B>::from_parts(
-            *input,
-            self.module,
-            input_data.ty,
-        ))
-        .map(|descriptor| descriptor.id());
+        let intrinsic_id = crate::intrinsics::descriptor_for_callee(input_function)
+            .map(|descriptor| descriptor.id());
         match intrinsic_id {
             Some(id) => self.verifier_check(
                 f,
@@ -4210,7 +4203,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 "invalid function argument",
             ),
             None => {
-                let name = input_function.name.as_str();
+                // `Fn->getName()`, the empty string for an unnamed function.
+                let name = input_function.name().unwrap_or_default();
                 self.verifier_check(
                     f,
                     bb,
@@ -6859,7 +6853,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         IrError::VerifierFailure {
             rule,
             subject: VerifierSubject::Block {
-                function: f.name().to_owned(),
+                function: f.name().unwrap_or_default(),
                 block: bb.name(),
             },
             message,

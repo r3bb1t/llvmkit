@@ -99,7 +99,7 @@ fn folded_result(module: &Module<DynBrand, Unverified>, function: &str) -> Optio
     let f = module
         .as_view()
         .functions()
-        .find(|f| f.name() == function)
+        .find(|f| f.name().as_deref() == Some(function))
         .unwrap_or_else(|| panic!("fixture defines @{function}"));
     let result = f
         .basic_blocks()
@@ -160,7 +160,7 @@ fn every_fixture_function_is_covered() {
     let module = parsed();
     let mut uncovered: Vec<String> = Vec::new();
     for f in module.as_view().functions() {
-        let name = f.name().to_string();
+        let name = f.name().unwrap_or_default();
         let checked = UPSTREAM_CHECKS.iter().any(|(known, _)| *known == name);
         let gap = UPSTREAM_GAPS.iter().any(|(known, _, _)| *known == name);
         assert!(!(checked && gap), "@{name} is in both tables");

@@ -67,7 +67,7 @@ pub fn is_scoped_eh_personality(personality: EhPersonality) -> bool {
 /// difference, not a rule.
 fn global_value_name_and_type<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-) -> Option<(&'ctx str, TypeSlot)> {
+) -> Option<(String, TypeSlot)> {
     let value = match &value.data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value: referent }) => {
             let module = value.module().core_ref();
@@ -75,11 +75,13 @@ fn global_value_name_and_type<'ctx, B: ModuleBrand + 'ctx>(
         }
         _ => value,
     };
+    // `GlobalValue::getName`, the empty string for an unnamed global.
+    let name = || value.name().unwrap_or_default();
     match &value.data().kind {
-        ValueKindData::Function(data) => Some((data.name.as_str(), data.signature)),
-        ValueKindData::GlobalVariable(data) => Some((data.name.as_str(), data.value_type)),
-        ValueKindData::GlobalAlias(data) => Some((data.name.as_str(), data.value_type)),
-        ValueKindData::GlobalIfunc(data) => Some((data.name.as_str(), data.value_type)),
+        ValueKindData::Function(data) => Some((name(), data.signature)),
+        ValueKindData::GlobalVariable(data) => Some((name(), data.value_type)),
+        ValueKindData::GlobalAlias(data) => Some((name(), data.value_type)),
+        ValueKindData::GlobalIfunc(data) => Some((name(), data.value_type)),
         _ => None,
     }
 }
@@ -96,7 +98,7 @@ pub fn classify_eh_personality<'ctx, B: ModuleBrand + 'ctx>(
     //  if (!F || !F->getValueType() || !F->getValueType()->isFunctionTy())
     //    return EHPersonality::Unknown;`
     let stripped = strip_pointer_casts(personality);
-    let Some((name, value_type)) = global_value_name_and_type(stripped) else {
+    let Some((global_name, value_type)) = global_value_name_and_type(stripped) else {
         return EhPersonality::Unknown;
     };
     if stripped
@@ -118,6 +120,7 @@ pub fn classify_eh_personality<'ctx, B: ModuleBrand + 'ctx>(
     // AArch64SubArch_arm64ec`, and `arm64ec` is the single architecture
     // spelling `Triple::parseArch` / `parseSubArch` map to that pair, so the
     // architecture component alone decides it.
+    let name = global_name.as_str();
     let name = match stripped.module().core_ref().target_triple() {
         Some(triple) if triple.split('-').next() == Some("arm64ec") => {
             name.strip_prefix('#').unwrap_or(name)

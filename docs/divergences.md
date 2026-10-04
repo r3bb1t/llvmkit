@@ -1848,38 +1848,72 @@ is a function": `crates/llvmkit-ir/src/verifier.rs` (the
   its signature slot equals the call's `fn_ty`), called from all four sites,
   with a mismatched-signature fixture per consequence.
 
-### 135. `Value::set_name` on a global value leaves the name unchanged
+### 136. A renamed function keeps its intrinsic identity only when its signature matches the name
 
 **Severity:** model-gap (derived by reading; no test exhibits it — a
 hypothesis until one does)
-**Where:** `crates/llvmkit-ir/src/value.rs` — `Value::set_name` /
-`Value::clear_name`, reached for a global through its erased handle
-(`as_erased()`).
+**Where:** `crates/llvmkit-ir/src/function.rs` —
+`FunctionValue::update_after_name_change`, the port of
+`Function::updateAfterNameChange` that `Value::set_name` runs after renaming
+a function.
 
-- **LLVM:** `Value::setNameImpl` (`IR/Value.cpp`) asks the file-static
-  `getSymTab` for the table to update; its `GlobalValue` arm answers the
-  parent `Module`'s `getValueSymbolTable()`, so renaming a function, global
-  variable, alias or ifunc goes through the module symbol table (uniquing a
-  clash). Only a `Constant` answers "no name is setable" and returns
-  unchanged.
-- **llvmkit:** `Value::set_name` has three arms — a void value, a local with a
-  parent function (`local_parent_function_id`: arguments, blocks,
-  instructions), and a parentless block or instruction
-  (`is_parentless_local_nameable`) — and a global matches none, so the call
-  returns with the name unchanged and no error. The typed handles' own
-  setters were the same no-op until the capability-typestate program's value
-  task removed `SetName` from functions, global variables, aliases and ifuncs;
-  the erased route remains.
-- **Found:** 2026-10-04, capability-typestate program, Task 3, while splitting
-  `HasName` into `HasName` / `SetName` — the function and global
-  `HasName::set_name` bodies were empty, and reading `Value::set_name`'s arms
-  showed the erased path ends the same way. `rg -n "set_name|setName"
-  docs/divergences.md docs/future-work.md` returned no entry for it before
-  this one.
-- **Fix:** a module-level rename for globals that goes through the module's
-  name table the way `setNameImpl`'s `GlobalValue` arm does, reached from
-  `Value::set_name`'s global case, with a test that renames each global kind
-  and one that renames onto an existing name.
+- **LLVM:** `Function::updateAfterNameChange` (`IR/Function.cpp`) sets
+  `IntID = Intrinsic::lookupIntrinsicID(Name)` for any `llvm.`-prefixed name —
+  from the name alone. A function renamed to `llvm.trap` with the wrong
+  signature answers `getIntrinsicID() == Intrinsic::trap`, and the verifier
+  then judges the signature.
+- **llvmkit:** the stored identity (`IntrinsicFunctionData`) carries the
+  overload types the signature determines, so it can only be built from a
+  matching signature: `update_after_name_change` stores it when
+  `intrinsic_descriptor_from_signature(name, signature)` succeeds and stores
+  nothing otherwise. A function renamed to an intrinsic's name with a
+  mismatched signature answers `intrinsic_id() == None` where upstream answers
+  the id. The verifier still rejects that function by name
+  (`Verifier::verify_intrinsic_function` resolves every `llvm.`-prefixed name
+  and compares its signature), so the difference shows in `intrinsic_id` and
+  the queries built on it, not in a verdict.
+- **Found:** 2026-10-04, porting `Value::setName`'s `GlobalValue` arm —
+  `updateAfterNameChange` is the first llvmkit route that names an existing
+  function after an intrinsic; creation refuses such names (entry 137) and the
+  parser checks the signature before it declares one.
+- **Fix:** an identity that can hold an id without overload types — the
+  name-only half of `IntID` — beside the descriptor, or a decision recorded
+  here that a mismatched intrinsic name is refused at rename as at creation.
+
+### 137. Creating a global value refuses a taken name, and a function refuses an `llvm.` name
+
+**Severity:** model-gap (derived by reading; no test exhibits the upstream
+answer — a hypothesis until one does)
+**Where:** `crates/llvmkit-ir/src/module.rs` — `Module::declare_function` and
+`ModuleCore::add_function_checked` (`DuplicateFunctionName`,
+`reject_reserved_intrinsic_name`), and `ModuleCore::install_global_variable`,
+`install_global_alias`, `install_global_ifunc` (`DuplicateGlobalName`).
+
+- **LLVM:** the `GlobalValue` constructor (`IR/GlobalValue.h`) ends in
+  `setName(Name)`, so creating a function, global variable, alias or ifunc
+  under a name another global value holds takes the uniqued name
+  `ValueSymbolTable::makeUniqueName` gives it (`name.1`). `Function::Create`
+  accepts an `llvm.`-prefixed name: `Function`'s constructor records
+  `HasLLVMReservedName`, `Value::setName` sets `IntID`, and the verifier
+  judges the declaration.
+- **llvmkit:** each creation path checks `ModuleCore::named_value` first and
+  returns `DuplicateFunctionName` / `DuplicateGlobalName` instead of
+  uniquing; a function whose name resolves to a known or unknown intrinsic is
+  refused with `ReservedIntrinsicName` / `UnknownIntrinsic` — intrinsic
+  declarations come only from `get_or_insert_intrinsic_declaration`. Renaming
+  does neither: `set_name` uniques a clash and accepts an `llvm.` name, as
+  upstream does, so the two entry points answer the same request differently.
+  The `.ll` parser is unaffected: `LLParser` reports a redefinition before it
+  would create a second global.
+- **Found:** 2026-10-04, porting `Value::setName`'s `GlobalValue` arm, which
+  made creation and renaming share one routine and one table.
+  `rg -n "ReservedIntrinsicName|DuplicateGlobalName|DuplicateFunctionName|makeUniqueName"
+  docs/divergences.md docs/future-work.md docs/fixture-coverage.md` returned
+  nothing before this entry.
+- **Fix:** let the creation paths take the name `set_global_value_name`
+  returns, as the `GlobalValue` constructor does — a breaking change for any
+  caller that relies on the refusal — or record the refusal as deliberate
+  hardening.
 
 ## Coverage, tooling and provenance
 

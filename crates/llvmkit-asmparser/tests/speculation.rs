@@ -122,7 +122,7 @@ define void @f(ptr %p) {
     let view = module.as_view();
     let entry = view
         .functions()
-        .find(|function| function.name() == "f")
+        .find(|function| function.name().as_deref() == Some("f"))
         .expect("fixture defines @f")
         .basic_blocks()
         .next()

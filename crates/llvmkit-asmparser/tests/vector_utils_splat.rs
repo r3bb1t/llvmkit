@@ -33,7 +33,7 @@ fn instruction_a<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynB
     module
         .as_view()
         .functions()
-        .find(|function| function.name() == "test")
+        .find(|function| function.name().as_deref() == Some("test"))
         .expect("@test must have a function named @test")
         .basic_blocks()
         .flat_map(|block| block.instructions())

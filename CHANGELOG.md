@@ -19,6 +19,42 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — global values rename through the module's symbol table *(breaking)*
+
+- **Fixed: renaming a function, global variable, alias or ifunc did
+  nothing.** `HasName::set_name` / `clear_name` on those handles were empty,
+  and `Value::set_name` on one fell through every arm — the call compiled and
+  the name never changed. They now port `Value::setName`'s `GlobalValue` arm:
+  the module has one symbol table for every global value
+  (`Module::ValSymTab`), `createValueName` takes the name or uniques a clash
+  with the module's counter — `name.1`, or `name1` on a module whose target
+  triple is NVPTX (`ValueSymbolTable::makeUniqueName`) — and the old name is
+  freed. `FunctionValue`, `GlobalVariable`, `GlobalAlias` and `GlobalIfunc`
+  gain inherent `set_name` / `clear_name` and implement `SetName` again.
+  Renaming through the `ptr @g` constant renames the global, and that
+  constant's `name()` answers the global's, as upstream's `GlobalValue` is
+  that constant (`docs/divergences.md` D3).
+- **Renaming a function recomputes its intrinsic identity**, as
+  `Function::updateAfterNameChange` does: a name without the `llvm.` prefix
+  clears it, and an intrinsic's name on a function with that intrinsic's
+  signature sets it. A mismatched signature stores none, where upstream keeps
+  the id (`docs/divergences.md`, entry 136).
+- **Breaking: `name()` on `FunctionValue`, `GlobalVariable`, `GlobalAlias`,
+  `GlobalIfunc`, `GlobalVariableView`, `GlobalAliasView`,
+  `GlobalIfuncView`, `FunctionView` and `FunctionBody` returns
+  `Option<String>`**, like every other value handle's: a global's name lives
+  on the value, once, instead of in a second copy the rename would have had
+  to keep in step. `None` is an unnamed global; `.unwrap_or_default()` is
+  upstream's `getName()`.
+- **Fixed: a global variable holding an intrinsic's name made
+  `get_or_insert_intrinsic_declaration*` declare a second global under the
+  same name**, because each kind of global kept its own name map. The
+  declaration is now refused with `IrError::DuplicateFunctionName`; upstream
+  `cast<Function>`s the variable and asserts.
+- Creation still refuses a taken name, and a function still refuses an
+  `llvm.` name, where upstream uniques the one and accepts the other —
+  `docs/divergences.md`, entry 137.
+
 ### Changed — value handles carry their capability *(breaking)*
 
 - **Every value handle takes a trailing `C: Capability = Mutable`** —
@@ -45,16 +81,10 @@ cut, entries accumulate under **Unreleased**.
   module's values are `ReadOnly`.
 - **Breaking: `HasName` is split.** It keeps `name` and is implemented at
   every capability; `set_name` / `clear_name` move to the new sealed trait
-  **`SetName`**, implemented for `Mutable` value handles, blocks and
-  instructions. Generic code that renamed through `HasName` bounds on
-  `SetName`.
-- **Breaking: `SetName` is not implemented for functions, global variables,
-  aliases or ifuncs.** Their `HasName::set_name` / `clear_name` were silent
-  no-ops — the call compiled and the name did not change. A global is renamed
-  through the module's symbol table, which no entry point does yet; calling
-  the setter on one is now a compile error rather than a lost write. Not yet:
-  `Value::set_name` on a global's *erased* handle still leaves the name
-  unchanged, as it did before (`docs/divergences.md`, entry 135).
+  **`SetName`** (exported beside `HasName`), implemented for `Mutable` value
+  handles, blocks, instructions and — see the section above — the four
+  kinds of global value. Generic code that renamed through `HasName` bounds
+  on `SetName`.
 - **Breaking: `IsValue`, `Typed` and `IsConstant` read the capability from
   their `CapabilityOf` supertrait**: `as_erased`, `ty` and `as_constant`
   return at `Self::Capability`. Generic code that returned
