@@ -348,7 +348,7 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
     let r_label = r.id();
     let join_label = join.id();
 
-    m.view(f).param(0)?.set_name(&m, "c");
+    m.view(f).param(0)?.set_name(&m, "c")?;
     let c: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     // entry: cond_br -> l, r
@@ -404,7 +404,7 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
     let loop_label = loop_bb.id();
     let exit_label = exit.id();
 
-    m.view(f).param(0)?.set_name(&m, "v0");
+    m.view(f).param(0)?.set_name(&m, "v0")?;
     let v0: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     // entry: br loop(%v0)
@@ -458,8 +458,8 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
     let r_label = r.id();
     let join_label = join.id();
 
-    m.view(f).param(0)?.set_name(&m, "a");
-    m.view(f).param(1)?.set_name(&m, "b");
+    m.view(f).param(0)?.set_name(&m, "a")?;
+    m.view(f).param(1)?.set_name(&m, "b")?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bparam: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 

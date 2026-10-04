@@ -1128,7 +1128,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let descriptor = self
             .module
             .intrinsic_descriptor_from_signature::<B>(name, f.signature())?;
-        if f.is_intrinsic() && f.intrinsic_descriptor().as_ref() != Some(&descriptor) {
+        if f.intrinsic_id().is_some() && f.intrinsic_descriptor().as_ref() != Some(&descriptor) {
             return Err(IrError::IntrinsicSignatureMismatch {
                 name: name.to_owned(),
             });
@@ -1144,6 +1144,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `declaration_attributes` normalises every internal failure to
         // `IntrinsicSignatureMismatch` at its own `self.id` boundary now, so
         // there is nothing left here to renormalise either.
+        //
+        // The attribute check below is llvmkit's alone: upstream's `Verifier`
+        // never consults `Intrinsic::getAttributes`, so it accepts an
+        // intrinsic declaration without them (`docs/divergences.md`, the
+        // intrinsic declaration attributes entry).
         let expected_attrs = descriptor.declaration_attributes(f.signature())?;
         let Some(actual_attrs) = self.function_attrs_with_groups(f) else {
             return Err(IrError::InvalidOperation {
@@ -7352,9 +7357,12 @@ mod tests {
         }
     }
 
-    /// Mirrors `Verifier::visitFunction`: generated intrinsic declarations
-    /// must carry the generated declaration attributes, not a subset with
-    /// silently missing `immarg` / memory attributes.
+    /// Pins llvmkit's own rule that a generated intrinsic declaration carries
+    /// its generated declaration attributes, not a subset with silently
+    /// missing `immarg` / memory attributes. No upstream counterpart:
+    /// `Verifier::visitFunction` never consults `Intrinsic::getAttributes`, so
+    /// upstream accepts this module (`docs/divergences.md`, the intrinsic
+    /// declaration attributes entry).
     #[test]
     fn intrinsic_declaration_missing_generated_attrs_is_rejected() {
         let err = {
@@ -7375,8 +7383,11 @@ mod tests {
         }
     }
 
-    /// Mirrors `Verifier::visitFunction`: intrinsic declaration attribute
-    /// groups must resolve before generated attributes can be checked.
+    /// Pins llvmkit's own rule that an intrinsic declaration's attribute
+    /// groups resolve before its generated attributes are checked. No upstream
+    /// counterpart: `Verifier::visitFunction` never consults
+    /// `Intrinsic::getAttributes` (`docs/divergences.md`, the intrinsic
+    /// declaration attributes entry).
     #[test]
     fn intrinsic_declaration_extra_attr_group_is_rejected() {
         let err = {

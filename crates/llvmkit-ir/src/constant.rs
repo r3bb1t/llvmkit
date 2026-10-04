@@ -978,11 +978,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for Constant<'
 }
 impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {

@@ -54,6 +54,36 @@ cut, entries accumulate under **Unreleased**.
 - Creation still refuses a taken name, and a function still refuses an
   `llvm.` name, where upstream uniques the one and accepts the other —
   `docs/divergences.md`, entry 137.
+- **Breaking: `set_name` returns `IrResult<()>`** — on `Value`, on `SetName`,
+  and on every handle's inherent `set_name` — and refuses with the new
+  `IrError::InvalidValueName` variant (breaking: a new `IrError` variant)
+  what `Value::setNameImpl` asserts against, the value keeping its name. Its
+  `InvalidValueNameReason` says which: `ContainsNul` (a NUL byte, which printed
+  as a `\00` escape the lexer will not read back), `VoidValue` (a name for a
+  `void` value, which used to be dropped without a word), and `InlineAsm` /
+  `MetadataAsValue` (values `getSymTab` asserts are not constants, which
+  used to be ignored). `clear_name` stays infallible. Creation does not run
+  these checks yet — `docs/divergences.md`, entry 140.
+- **`get_or_insert_intrinsic_declaration*` ports the rest of
+  `getOrInsertIntrinsicDeclarationImpl`.** A function of another type that
+  holds the intrinsic's name is renamed `<name>.invalid` and the intrinsic is
+  declared afresh, where it used to be refused with
+  `IntrinsicSignatureMismatch`; a definition of the intrinsic's type is
+  returned, where it used to be refused. A holder of the right type without
+  the intrinsic's identity is still refused — `docs/divergences.md`, entry 138.
+- **Breaking: `FunctionValue::is_intrinsic` mirrors `Function::isIntrinsic`**
+  — whether the name starts with `llvm.` — where it used to answer whether
+  `intrinsic_id()` does. A function named `llvm.` plus a name no intrinsic has
+  is now `true`, as upstream.
+- The unique-name counter wraps past `u32::MAX` to 0, as upstream's
+  `uint32_t` `LastUnique` does, where it used to panic.
+- Fixed before release: an unnamed global or function in a comdat named `""`
+  printed ` comdat($)`, a regression of this section's `Option<String>`
+  names; it prints a bare ` comdat`, as `maybePrintComdat` does.
+- The verifier's demand that an intrinsic declaration carry its generated
+  attributes is recorded as llvmkit's own (`docs/divergences.md`, entry 139):
+  upstream's `Verifier` never consults `Intrinsic::getAttributes`, and the
+  four tests that called it a mirror of `visitFunction` are relabelled.
 
 ### Changed — value handles carry their capability *(breaking)*
 

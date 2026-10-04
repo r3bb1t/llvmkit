@@ -125,9 +125,12 @@ fn verify_all_fixed_signature_intrinsic_declarations() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `llvm/lib/IR/Verifier.cpp::visitFunction`: generated intrinsic
-/// declarations must retain TableGen-emitted function attributes such as
-/// `nounwind`, `willreturn`, `speculatable`, and `memory(none)`.
+/// Pins llvmkit's own rule that a generated intrinsic declaration retains its
+/// TableGen-emitted function attributes such as `nounwind`, `willreturn`,
+/// `speculatable`, and `memory(none)`. No upstream counterpart:
+/// `llvm/lib/IR/Verifier.cpp::visitFunction` never consults
+/// `Intrinsic::getAttributes`, so upstream accepts this module
+/// (`docs/divergences.md`, the intrinsic declaration attributes entry).
 #[test]
 fn intrinsic_declaration_missing_generated_function_attrs_is_rejected() -> Result<(), IrError> {
     let m = module_new!("intrinsic-missing-function-attrs")?;
@@ -146,9 +149,12 @@ fn intrinsic_declaration_missing_generated_function_attrs_is_rejected() -> Resul
     Ok(())
 }
 
-/// Mirrors `llvm/lib/IR/Verifier.cpp::visitFunction`: generated intrinsic
-/// declarations must retain indexed argument attributes from Intrinsics.td;
-/// `llvm.abs.*` marks its `is_int_min_poison` argument as `immarg`.
+/// Pins llvmkit's own rule that a generated intrinsic declaration retains its
+/// indexed argument attributes from Intrinsics.td; `llvm.abs.*` marks its
+/// `is_int_min_poison` argument as `immarg`. No upstream counterpart:
+/// `llvm/lib/IR/Verifier.cpp::visitFunction` never consults
+/// `Intrinsic::getAttributes` (`docs/divergences.md`, the intrinsic
+/// declaration attributes entry).
 #[test]
 fn intrinsic_declaration_missing_generated_argument_attr_is_rejected() -> Result<(), IrError> {
     let m = module_new!("intrinsic-missing-argument-attrs")?;

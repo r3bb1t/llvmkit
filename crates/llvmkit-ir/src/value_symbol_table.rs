@@ -45,9 +45,9 @@ impl ValueSymbolTable {
         }
 
         loop {
-            let next_unique = self.last_unique.get().checked_add(1).unwrap_or_else(|| {
-                unreachable!("ValueSymbolTable unique-name counter exceeded u32::MAX")
-            });
+            // `S << ++LastUnique;` on a `uint32_t`, which wraps to 0 past
+            // `UINT32_MAX` and keeps searching.
+            let next_unique = self.last_unique.get().wrapping_add(1);
             self.last_unique.set(next_unique);
 
             let mut candidate = requested.to_owned();
@@ -81,11 +81,10 @@ impl ValueSymbolTable {
         id: ValueSlot,
         requested: Option<&str>,
         append_dot: bool,
-    ) -> Option<String> {
+    ) {
         let current = value.name.borrow().clone();
         let final_name = self.rename_value(current.as_deref(), requested, id, append_dot);
-        *value.name.borrow_mut() = final_name.clone();
-        final_name
+        *value.name.borrow_mut() = final_name;
     }
 
     pub(crate) fn remove_value_name(&self, name: &str, id: ValueSlot) {
@@ -123,5 +122,40 @@ impl ValueSymbolTable {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ValueSymbolTable;
+    use crate::value::ValueSlot;
+
+    /// The uniquing counter wraps past `u32::MAX` instead of stopping.
+    /// `ValueSymbolTable::makeUniqueName` writes `++LastUnique`, and
+    /// `LastUnique` is a `uint32_t` (`llvm/include/llvm/IR/ValueSymbolTable.h`),
+    /// so the increment after `UINT32_MAX` is 0 and the search goes on. No
+    /// upstream unit test drives the counter that far; the expected names are
+    /// derived from that routine. Positive control: below the limit the
+    /// counter steps by one.
+    #[test]
+    fn the_unique_name_counter_wraps_like_upstreams_uint32_t() {
+        let table = ValueSymbolTable::new();
+        assert_eq!(
+            table.create_value_name("a", ValueSlot::from_index(0), true),
+            "a"
+        );
+
+        table.last_unique.set(41);
+        assert_eq!(
+            table.create_value_name("a", ValueSlot::from_index(1), true),
+            "a.42"
+        );
+
+        table.last_unique.set(u32::MAX);
+        assert_eq!(
+            table.create_value_name("a", ValueSlot::from_index(2), true),
+            "a.0"
+        );
+        assert_eq!(table.last_unique.get(), 0);
     }
 }

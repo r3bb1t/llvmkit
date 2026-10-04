@@ -757,11 +757,15 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Set or clear the textual name.
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.to_erased().set_name(module_token, name);
+        self.to_erased().set_name(module_token, name)
     }
 
     /// Clear the textual name.
@@ -1560,11 +1564,11 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     SetName<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params>
 {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        BasicBlock::set_name(&self, module_token, name);
+        BasicBlock::set_name(&self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {

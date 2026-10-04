@@ -115,14 +115,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     /// Rename this alias through its module's symbol table. Mirrors
     /// `Value::setName` on a `GlobalAlias`: a name another global value holds
     /// is uniqued (`name.1`, or `name1` on an NVPTX module).
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name containing a NUL byte, which
+    /// `Value::setNameImpl` asserts against; the alias keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this alias's module — reachable with
+    /// two modules of one brand, such as two [`Module::dynamic`] values.
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
 
     /// Leave this alias unnamed. Mirrors `Value::setName("")`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this alias's module — reachable with
+    /// two modules of one brand, such as two [`Module::dynamic`] values.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.as_erased().clear_name(module_token);
     }
@@ -300,11 +319,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalAlias<'ctx, B> {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for GlobalAlias<'ctx, B> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        GlobalAlias::set_name(self, module_token, name);
+        GlobalAlias::set_name(self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {

@@ -3457,7 +3457,9 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
     }
     if let Some(c) = func.comdat() {
         f.write_str(" comdat")?;
-        if Some(c.name()) != func.name().as_deref() {
+        // `maybePrintComdat`: `if (GO.getName() == C->getName()) return;`,
+        // where an unnamed object's `getName()` is `""`.
+        if c.name() != func.name().unwrap_or_default() {
             f.write_str("(")?;
             fmt_llvm_name(f, "$", c.name())?;
             f.write_str(")")?;
@@ -4277,7 +4279,9 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     }
     if let Some(c) = g.comdat() {
         f.write_str(", comdat")?;
-        if Some(c.name()) != g.name().as_deref() {
+        // `maybePrintComdat`: `if (GO.getName() == C->getName()) return;`,
+        // where an unnamed object's `getName()` is `""`.
+        if c.name() != g.name().unwrap_or_default() {
             f.write_str("(")?;
             fmt_llvm_name(f, "$", c.name())?;
             f.write_str(")")?;

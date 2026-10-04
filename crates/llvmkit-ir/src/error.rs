@@ -229,6 +229,41 @@ impl fmt::Display for ValueCategoryLabel {
     }
 }
 
+/// Why [`IrError::InvalidValueName`] refused a name: which assertion of
+/// `Value::setNameImpl` (`lib/IR/Value.cpp`) the request breaks, in the order
+/// upstream checks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InvalidValueNameReason {
+    /// The name contains a NUL byte: `assert(!NameRef.contains(0) && "Null
+    /// bytes are not allowed in names")`. Printed, such a name is a quoted
+    /// `"\00"` escape that `LLLexer` refuses to read back.
+    ContainsNul,
+    /// The value's type is `void`: `assert(!getType()->isVoidTy() && "Cannot
+    /// assign a name to void values!")`.
+    VoidValue,
+    /// The value is an inline-assembly value, which no symbol table holds:
+    /// `getSymTab` reaches its last arm and asserts `isa<Constant>(V) &&
+    /// "Unknown value type!"` — `InlineAsm` is a `Value`, not a `Constant`.
+    InlineAsm,
+    /// The value is metadata wrapped as a value, which no symbol table holds:
+    /// the same `getSymTab` assertion — `MetadataAsValue` is a `Value`, not a
+    /// `Constant`.
+    MetadataAsValue,
+}
+
+impl fmt::Display for InvalidValueNameReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            InvalidValueNameReason::ContainsNul => "null bytes are not allowed in names",
+            InvalidValueNameReason::VoidValue => "cannot assign a name to void values",
+            InvalidValueNameReason::InlineAsm => "cannot assign a name to an inline-asm value",
+            InvalidValueNameReason::MetadataAsValue => {
+                "cannot assign a name to a metadata-as-value value"
+            }
+        })
+    }
+}
+
 /// Categorical discriminator over the verifier-rule set.
 ///
 /// One variant per rule the verifier can enforce. Tests pattern-match
@@ -1427,6 +1462,18 @@ pub enum IrError {
         name: String,
     },
 
+    /// [`Value::set_name`](crate::Value::set_name) was handed a name for a
+    /// value `Value::setNameImpl` asserts no name may be given to, or a name
+    /// it asserts no value may carry. llvmkit refuses where upstream asserts,
+    /// and the value keeps the name it had.
+    #[error("{reason}: {name:?}")]
+    InvalidValueName {
+        /// The name the caller asked for.
+        name: String,
+        /// Which of `setNameImpl`'s assertions the request breaks.
+        reason: InvalidValueNameReason,
+    },
+
     /// [`GlobalAliasBuilder::build`](crate::GlobalAliasBuilder::build) found
     /// the type this module's arena records for the aliasee different from the
     /// type the aliasee's handle carried.
@@ -1970,10 +2017,12 @@ impl IrError {
             | Self::MissingVarArgsSignature
             | Self::PhiArgArityMismatch { .. } => Blame::UsageError,
 
-            // A name the caller chose is taken, reserved, or unknown, or its
-            // signature does not match the intrinsic it names.
+            // A name the caller chose is taken, reserved, unknown or one
+            // `setNameImpl` asserts against, or its signature does not match
+            // the intrinsic it names.
             Self::DuplicateFunctionName { .. }
             | Self::DuplicateGlobalName { .. }
+            | Self::InvalidValueName { .. }
             | Self::UnknownIntrinsic { .. }
             | Self::ReservedIntrinsicName { .. }
             | Self::IntrinsicSignatureMismatch { .. } => Blame::UsageError,

@@ -756,6 +756,98 @@ Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously
   needs, and the two should land together. Reproducing the truncation without it
   would trade a wrong rejection for a silent wrong value, which is worse.
 
+### 138. `getOrInsertIntrinsicDeclarationImpl` refuses a same-typed holder that lacks the intrinsic's identity
+
+**Severity:** rejects-valid (derived by reading; no test exhibits it — a
+hypothesis until one does)
+**Where:** `crates/llvmkit-ir/src/module.rs` —
+`ModuleCore::get_or_insert_intrinsic_declaration`, inside its
+`F->getFunctionType() == FT` arm.
+
+- **LLVM:** `getOrInsertIntrinsicDeclarationImpl` (`IR/Intrinsics.cpp`)
+  returns the function holding the name when `F->getFunctionType() == FT`. The
+  type is the only condition: `F`'s `IntID` is derived from its name, which is
+  the intrinsic's, so upstream's `F` here is always the intrinsic.
+- **llvmkit:** a holder of the right type whose stored identity is not the
+  requested descriptor is refused with `IrError::IntrinsicSignatureMismatch`.
+  The stored identity is recomputed from name *and* signature
+  (`update_after_name_change`), so a holder with the right name and type
+  lacks it only when the name's overload suffix does not demangle back to the
+  descriptor's overloads — entry 136's gap, reached by a rename. The guard is
+  kept rather than dropped because `IntrinsicCallBuilder::build` emits its
+  call and only then checks `IntrinsicInst::from_call`: a callee without the
+  identity would turn that check into an error after a mutation. The two
+  sibling guards it shipped with — a definition refused, and the mismatched
+  type refused instead of renamed — are gone: the arm returns a definition and
+  the `.invalid` arm is ported.
+- **Found:** 2026-10-04, the rename port's review (I1); the guard predates the
+  port (`git show 458e9ce:crates/llvmkit-ir/src/module.rs` carries it).
+  `rg -n "getOrInsertIntrinsicDeclarationImpl|\.invalid" docs/divergences.md
+  docs/future-work.md` found only an unrelated parser-sweep entry before this
+  one.
+- **Fix:** closes with entry 136 — a name-only identity makes the holder the
+  intrinsic, as upstream — or with `IntrinsicCallBuilder::build` checking its
+  callee before it emits.
+
+### 139. The verifier requires an intrinsic declaration to carry the intrinsic's attributes
+
+**Severity:** rejects-valid (exhibited by a probe; evidence below)
+**Where:** `crates/llvmkit-ir/src/verifier.rs` —
+`Verifier::verify_intrinsic_function`, the
+`declaration_attributes(..).is_subset_of(..)` check and the attribute-group
+check beside it.
+
+- **LLVM:** the `Verifier` never consults `Intrinsic::getAttributes`
+  (`rg -n "Intrinsic::getAttributes" llvm/lib/IR/Verifier.cpp` is empty);
+  `visitFunction` passes `F.isIntrinsic()` to `verifyFunctionAttrs` only to
+  allow `immarg`. A function gets an intrinsic's attributes from `Function`'s
+  constructor when it is created under the name with a valid signature;
+  `setName` adds none and `setAttributes` may remove them, and the module
+  verifies either way.
+- **llvmkit:** refuses with `InvalidOperation { message: "intrinsic
+  declaration modifier" }` unless the declaration carries every attribute of
+  `IntrinsicDescriptor::declaration_attributes`. A plain `declare void
+  @plain()` renamed to `llvm.debugtrap` fails `verify`; the declaration
+  `get_or_insert_intrinsic_declaration_by_name` makes, which carries
+  `nounwind`, passes. Four tests pin the check, and until this entry their
+  doc comments and `UPSTREAM.md` rows called them a `mirror` of
+  `visitFunction`; they are relabelled llvmkit-specific:
+  `verifier.rs::tests::intrinsic_declaration_missing_generated_attrs_is_rejected`
+  and `::intrinsic_declaration_extra_attr_group_is_rejected`,
+  `tests/verifier_basic.rs::intrinsic_declaration_missing_generated_function_attrs_is_rejected`
+  and `::intrinsic_declaration_missing_generated_argument_attr_is_rejected`.
+- **Found:** 2026-10-04, the rename port's review (M8): renaming made a
+  natural trigger for a check already reachable through `set_attributes`.
+  `rg -n "declaration_attributes|is_subset_of|intrinsic declaration modifier"
+  docs/divergences.md docs/future-work.md` found nothing before this entry.
+- **Fix:** delete the check and the four tests' assertions of it, with an
+  upstream `.ll` fixture of an intrinsic declaration stripped of its
+  attributes as the regression test.
+
+<details><summary>Probe (2026-10-04, branch <code>rename-fix</code> on <code>bac8293</code>)</summary>
+
+A temporary test, deleted after the run, built `declare void @plain()` with
+`add_function_dyn`, renamed it `llvm.debugtrap`, printed the module and ran
+`verify_borrowed`, then did the same for a module whose declaration came from
+`get_or_insert_intrinsic_declaration_by_name("llvm.debugtrap")`. Output:
+
+```text
+PROBE renamed text:
+; ModuleID = 'm'
+
+declare void @llvm.debugtrap()
+
+PROBE renamed verify: Err(InvalidOperation { message: "intrinsic declaration modifier" })
+PROBE control text:
+; ModuleID = 'control'
+
+declare void @llvm.debugtrap() nounwind
+
+PROBE control verify: Ok(())
+```
+
+</details>
+
 ## Accepts invalid input
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
@@ -956,6 +1048,35 @@ llvmkit-only remainder as attribute keywords.
   upstream bug into `llvmkit-tablegen`. The keyword is the last thing to go and
   nothing has moved ahead of it, so this stays an extension. Recorded here so
   the next wave does not re-derive the same three dead ends.
+
+### 140. Names given at creation skip `setNameImpl`'s assertions
+
+**Severity:** accepts-invalid, wrong-output (derived by reading; no test
+exhibits it — a hypothesis until one does)
+**Where:** the routes that name a value without `Value::set_name`:
+`crates/llvmkit-ir/src/module.rs` (`ModuleCore::push_function`,
+`install_global_variable`, `install_global_alias`, `install_global_ifunc`,
+which call `set_global_value_name`), `crates/llvmkit-ir/src/function.rs`
+(`FunctionValue::set_local_value_name`, which the builders and
+`append_basic_block` call), and `crates/llvmkit-ir/src/instruction.rs`
+(`create_detached_instruction`).
+
+- **LLVM:** every constructor that takes a name runs `Value::setName`, so
+  `Value::setNameImpl`'s assertions — no NUL byte in a name, no name on a
+  `void` value — bind at creation as at a rename. An `IRBuilder` call that
+  names a `void` instruction asserts.
+- **llvmkit:** `Value::set_name` refuses both with
+  `IrError::InvalidValueName`, as hardening of the assertions. Creation does
+  not run it: a name with a NUL byte is stored as given — and printed as a
+  quoted `\00` escape that `LLLexer` rejects ("NUL character is not allowed in
+  names") — and a name a builder is given for a `void` instruction is dropped
+  without a word.
+- **Found:** 2026-10-04, the rename port's review (M5), when `set_name` began
+  refusing. Before it, nothing in the IR crate inspected a name for NUL:
+  `rg -n -F "'\0'" crates/llvmkit-ir/src` was empty at `bac8293`.
+- **Fix:** run the refusal at each creation entry before anything is pushed —
+  the global creators already return `IrResult` — and give the builders'
+  dropped `void` name the same answer.
 
 ## Different diagnostic text
 
@@ -1850,8 +1971,9 @@ is a function": `crates/llvmkit-ir/src/verifier.rs` (the
 
 ### 136. A renamed function keeps its intrinsic identity only when its signature matches the name
 
-**Severity:** model-gap (derived by reading; no test exhibits it — a
-hypothesis until one does)
+**Severity:** model-gap (exhibited by
+`crates/llvmkit-ir/tests/global_value_names.rs::a_rename_onto_an_intrinsic_name_with_another_signature_stores_no_identity`,
+which pins llvmkit's answer and flips when this closes)
 **Where:** `crates/llvmkit-ir/src/function.rs` —
 `FunctionValue::update_after_name_change`, the port of
 `Function::updateAfterNameChange` that `Value::set_name` runs after renaming
@@ -1861,21 +1983,28 @@ a function.
   `IntID = Intrinsic::lookupIntrinsicID(Name)` for any `llvm.`-prefixed name —
   from the name alone. A function renamed to `llvm.trap` with the wrong
   signature answers `getIntrinsicID() == Intrinsic::trap`, and the verifier
-  then judges the signature.
+  then judges the signature. `lookupIntrinsicID` also accepts a prefix match
+  for an overloaded intrinsic, so the `<name>.invalid` that
+  `getOrInsertIntrinsicDeclarationImpl` gives a stale declaration of one
+  (`llvm.memcpy.p0.p0.i64.invalid`) still answers `Intrinsic::memcpy`.
 - **llvmkit:** the stored identity (`IntrinsicFunctionData`) carries the
   overload types the signature determines, so it can only be built from a
   matching signature: `update_after_name_change` stores it when
   `intrinsic_descriptor_from_signature(name, signature)` succeeds and stores
-  nothing otherwise. A function renamed to an intrinsic's name with a
-  mismatched signature answers `intrinsic_id() == None` where upstream answers
-  the id. The verifier still rejects that function by name
+  nothing otherwise — a mismatched signature, or an overload suffix that does
+  not demangle, as `.invalid` does not. A function renamed to an intrinsic's
+  name with a mismatched signature answers `intrinsic_id() == None` where
+  upstream answers the id. The verifier still rejects that function by name
   (`Verifier::verify_intrinsic_function` resolves every `llvm.`-prefixed name
-  and compares its signature), so the difference shows in `intrinsic_id` and
-  the queries built on it, not in a verdict.
+  and compares its signature), so the difference shows in `intrinsic_id`,
+  `intrinsic_descriptor` and the queries built on them, not in a verdict.
+  `is_intrinsic` reads the `llvm.` prefix, as upstream's `isIntrinsic` does,
+  and is not one of them.
 - **Found:** 2026-10-04, porting `Value::setName`'s `GlobalValue` arm —
   `updateAfterNameChange` is the first llvmkit route that names an existing
   function after an intrinsic; creation refuses such names (entry 137) and the
-  parser checks the signature before it declares one.
+  parser checks the signature before it declares one. The rename port's review
+  fix added the test above and the `.invalid` arm, a second route here.
 - **Fix:** an identity that can hold an id without overload types — the
   name-only half of `IntID` — beside the descriptor, or a decision recorded
   here that a mismatched intrinsic name is refused at rename as at creation.
@@ -1889,13 +2018,19 @@ answer — a hypothesis until one does)
 `reject_reserved_intrinsic_name`), and `ModuleCore::install_global_variable`,
 `install_global_alias`, `install_global_ifunc` (`DuplicateGlobalName`).
 
-- **LLVM:** the `GlobalValue` constructor (`IR/GlobalValue.h`) ends in
-  `setName(Name)`, so creating a function, global variable, alias or ifunc
-  under a name another global value holds takes the uniqued name
-  `ValueSymbolTable::makeUniqueName` gives it (`name.1`). `Function::Create`
-  accepts an `llvm.`-prefixed name: `Function`'s constructor records
-  `HasLLVMReservedName`, `Value::setName` sets `IntID`, and the verifier
-  judges the declaration.
+- **LLVM:** a function, global variable, alias or ifunc enters its module's
+  list as it is constructed (`getFunctionList().push_back(this)` in
+  `Function`'s constructor, `Module::insertGlobalVariable`, `insertAlias`,
+  `insertIFunc`), and `SymbolTableListTraits::addNodeToList` then runs
+  `ValueSymbolTable::reinsertValue` (`IR/SymbolTableListTraitsImpl.h`,
+  `IR/ValueSymbolTable.cpp`), which inserts the name or, under a name
+  another global value holds, takes the uniqued name
+  `ValueSymbolTable::makeUniqueName` gives it (`name.1`). The `GlobalValue`
+  constructor's own `setName(Name)` (`IR/GlobalValue.h`) runs before the value
+  has a parent, so `getSymTab` hands it no table and only the raw name is
+  stored. `Function::Create` accepts an `llvm.`-prefixed name: `Function`'s
+  constructor records `HasLLVMReservedName`, `Value::setName` sets `IntID`, and
+  the verifier judges the declaration.
 - **llvmkit:** each creation path checks `ModuleCore::named_value` first and
   returns `DuplicateFunctionName` / `DuplicateGlobalName` instead of
   uniquing; a function whose name resolves to a known or unknown intrinsic is
@@ -1906,12 +2041,15 @@ answer — a hypothesis until one does)
   The `.ll` parser is unaffected: `LLParser` reports a redefinition before it
   would create a second global.
 - **Found:** 2026-10-04, porting `Value::setName`'s `GlobalValue` arm, which
-  made creation and renaming share one routine and one table.
+  made creation and renaming share one table.
   `rg -n "ReservedIntrinsicName|DuplicateGlobalName|DuplicateFunctionName|makeUniqueName"
   docs/divergences.md docs/future-work.md docs/fixture-coverage.md` returned
-  nothing before this entry.
-- **Fix:** let the creation paths take the name `set_global_value_name`
-  returns, as the `GlobalValue` constructor does — a breaking change for any
+  nothing before this entry. Corrected the same day (the port's review, M1):
+  this entry first credited the uniquing to the constructor's `setName`.
+- **Fix:** drop the pre-check and let creation unique the clash through
+  `set_global_value_name` — the table step `reinsertValue` takes for the
+  module's table, whose `MaxNameSize` is -1 — reading the final name back off
+  the value, as upstream's list insertion does — a breaking change for any
   caller that relies on the refusal — or record the refusal as deliberate
   hardening.
 

@@ -687,11 +687,15 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.as_view().set_name(module_token, name);
+        self.as_view().set_name(module_token, name)
     }
 
     /// Clear the textual name.
@@ -859,11 +863,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.to_erased().set_name(module_token, name);
+        self.to_erased().set_name(module_token, name)
     }
 
     /// Clear the textual name.
@@ -1958,11 +1966,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for InstructionView<'ctx, B> 
 }
 impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        InstructionView::set_name(&self, module_token, name);
+        InstructionView::set_name(&self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
@@ -2017,11 +2025,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Instruction<'ctx, state::
 }
 impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for Instruction<'ctx, state::Attached, B> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        Instruction::set_name(&self, module_token, name);
+        Instruction::set_name(&self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
@@ -2502,8 +2510,9 @@ pub(crate) fn push_instruction(
 /// Crate-internal: create `kind` named `name` in no block, as an `Instruction`
 /// constructor with no insert position does, and hand back the linear handle,
 /// which the caller must insert or drop. A `void` instruction is left
-/// unnamed, as every naming path leaves one ([`Value::set_name`]); upstream's
-/// `Value::setName` asserts instead.
+/// unnamed, as the builders leave one; upstream's `Value::setName` asserts
+/// instead, and [`Value::set_name`] refuses (`docs/divergences.md`, the
+/// `setNameImpl` assertions entry).
 pub(crate) fn create_detached_instruction<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
     ty: TypeSlot,

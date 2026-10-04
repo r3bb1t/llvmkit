@@ -13,6 +13,7 @@ fn set_name_shrink() {
     let f = m.view(m.function_dyn("f1").expect("@f1 is declared"));
     let mut name = f.name().unwrap_or_default();
     name.pop();
-    f.set_name(&m, name);
+    f.set_name(&m, name)
+        .expect("the shortened name is accepted");
     assert_eq!(f.name().unwrap_or_default(), "f");
 }

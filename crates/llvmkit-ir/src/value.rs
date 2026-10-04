@@ -38,7 +38,7 @@ use super::debug_loc::DebugLoc;
 use super::derived_types::{
     ArrayType, FloatType, FunctionType, IntType, PointerType, StructType, VectorType,
 };
-use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
+use super::error::{InvalidValueNameReason, IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::function::FunctionData;
 use super::instruction::{Instruction, InstructionData, InstructionView, state::Attached};
 use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified};
@@ -470,8 +470,26 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         self.module.value_data(named).name.borrow().clone()
     }
 
-    /// Set the textual name. Mirrors `Value::setName`.
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    /// Set the textual name. Mirrors `Value::setName`: a name another value
+    /// in the same symbol table holds is uniqued, and an empty name leaves the
+    /// value unnamed.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a request `Value::setNameImpl`
+    /// asserts against, and the value keeps its name: a name containing a NUL
+    /// byte, a name for a `void` value, or a name for an inline-asm or
+    /// metadata value, which no symbol table holds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module — reachable with
+    /// two modules of one brand, such as two [`Module::dynamic`] values.
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
@@ -482,10 +500,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             "set_name: the module token belongs to a different module than this value"
         );
         let requested = name.into();
-        self.rename(Some(requested.as_str()));
+        self.rename(&requested)
     }
 
     /// Clear the textual name. Mirrors `Value::setName("")`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module — reachable with
+    /// two modules of one brand, such as two [`Module::dynamic`] values.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
     where
         C: CanMutate,
@@ -495,20 +518,103 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             self.module.id(),
             "clear_name: the module token belongs to a different module than this value"
         );
-        self.rename(None);
+        // `setNameImpl("")`. The fast path returns for an unnamed value. For a
+        // named one, the NUL assertion has nothing to find in `""` and the
+        // unchanged-name return cannot fire, since the current name is not
+        // empty. That leaves the `void` assertion, which only a void value
+        // carrying a name reaches — a state no naming path builds:
+        // `set_name` refuses one, and the builders leave a void instruction
+        // unnamed. A clear assigns no name, so llvmkit skips that assertion
+        // rather than refusing, and the value ends up unnamed either way.
+        if self.name().is_some() {
+            self.update_symbol_table(None);
+        }
+        self.update_after_name_change();
     }
 
-    /// The body `set_name` and `clear_name` share: `Value::setName`, which is
-    /// `Value::setNameImpl` — dispatched on the table `getSymTab` answers —
-    /// followed by `Function::updateAfterNameChange` for a function.
-    fn rename(self, requested: Option<&str>)
+    /// `Value::setName`: [`Self::set_name_impl`], then
+    /// `Function::updateAfterNameChange` on a function — which upstream runs
+    /// however `setNameImpl` returned. A refusal changes nothing, so it skips
+    /// the tail. Crate-visible for `getOrInsertIntrinsicDeclarationImpl`'s
+    /// `F->setName(F->getName() + ".invalid")`.
+    pub(crate) fn rename(self, requested: &str) -> IrResult<()>
     where
         C: CanMutate,
     {
-        if self.ty().is_void() {
-            self.set_name_internal(None);
-            return;
+        self.set_name_impl(requested)?;
+        self.update_after_name_change();
+        Ok(())
+    }
+
+    /// `Value::setNameImpl`, its guards in upstream's order. The
+    /// `shouldDiscardValueNames` fast path has no counterpart: llvmkit keeps
+    /// every name, so `NeedNewName` is always true.
+    fn set_name_impl(self, requested: &str) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
+        let current = self.name();
+        // `if (NewName.isTriviallyEmpty() && !hasName()) return;`
+        if requested.is_empty() && current.is_none() {
+            return Ok(());
         }
+        // `assert(!NameRef.contains(0) && "Null bytes are not allowed in
+        // names")`, hardened to a refusal.
+        if requested.contains('\0') {
+            return Err(IrError::InvalidValueName {
+                name: requested.to_owned(),
+                reason: InvalidValueNameReason::ContainsNul,
+            });
+        }
+        // `if (getName() == NameRef) return;`
+        if current.as_deref().unwrap_or_default() == requested {
+            return Ok(());
+        }
+        // `assert(!getType()->isVoidTy() && "Cannot assign a name to void
+        // values!")`, hardened to a refusal.
+        if self.ty().is_void() {
+            return Err(IrError::InvalidValueName {
+                name: requested.to_owned(),
+                reason: InvalidValueNameReason::VoidValue,
+            });
+        }
+        // `getSymTab`'s last arm asserts `isa<Constant>(V)`: inline asm and
+        // metadata are `Value`s outside every symbol table. Refused, as above.
+        match &self.data().kind {
+            ValueKindData::InlineAsm(_) => {
+                return Err(IrError::InvalidValueName {
+                    name: requested.to_owned(),
+                    reason: InvalidValueNameReason::InlineAsm,
+                });
+            }
+            ValueKindData::MetadataAsValue(_) => {
+                return Err(IrError::InvalidValueName {
+                    name: requested.to_owned(),
+                    reason: InvalidValueNameReason::MetadataAsValue,
+                });
+            }
+            ValueKindData::Constant(_)
+            | ValueKindData::Argument { .. }
+            | ValueKindData::BasicBlock(_)
+            | ValueKindData::Function(_)
+            | ValueKindData::Instruction(_)
+            | ValueKindData::GlobalVariable(_)
+            | ValueKindData::GlobalAlias(_)
+            | ValueKindData::GlobalIfunc(_) => {}
+        }
+        self.update_symbol_table(Some(requested).filter(|name| !name.is_empty()));
+        Ok(())
+    }
+
+    /// The rest of `Value::setNameImpl`, on the table `getSymTab` answers:
+    /// take `requested` (or uniquify it), drop the old name, and leave the
+    /// value unnamed for [`None`].
+    fn update_symbol_table(self, requested: Option<&str>)
+    where
+        C: CanMutate,
+    {
+        // `getSymTab`'s `Instruction`, `BasicBlock` and `Argument` arms: the
+        // parent function's table.
         if let Some(parent_fn_id) = self.local_parent_function_id() {
             let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
                 parent_fn_id,
@@ -521,19 +627,36 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         // interned `ptr @g` constant renames the global it stands for, since
         // upstream's `GlobalValue` *is* that constant.
         if let Some(global) = self.global_value_slot() {
-            let module = self.module.module();
-            module.set_global_value_name(global, requested);
-            if matches!(
-                module.context().value_data(global).kind,
-                ValueKindData::Function(_)
-            ) {
-                FunctionValue::<Dyn, B>::from_parts_unchecked(global, self.module.proven_mutable())
-                    .update_after_name_change();
-            }
+            self.module
+                .module()
+                .set_global_value_name(global, requested);
             return;
         }
+        // An instruction or block in no function: `getSymTab` hands back no
+        // table, and `setNameImpl`'s `if (!ST)` arm sets the name directly.
         if self.is_parentless_local_nameable() {
-            self.set_name_internal(requested.filter(|name| !name.is_empty()).map(str::to_owned));
+            self.set_name_internal(requested.map(str::to_owned));
+        }
+        // Anything else is a constant: `getSymTab` returns `true` and
+        // `setNameImpl` returns ("Cannot set a name on this value (e.g.
+        // constant)") — upstream's silent answer, not an assertion.
+    }
+
+    /// `Value::setName`'s tail: `if (Function *F = dyn_cast<Function>(this))
+    /// F->updateAfterNameChange();`. The interned `ptr @f` constant is the
+    /// function here too (`docs/divergences.md` D3).
+    fn update_after_name_change(self)
+    where
+        C: CanMutate,
+    {
+        if let Some(global) = self.global_value_slot()
+            && matches!(
+                self.module.value_data(global).kind,
+                ValueKindData::Function(_)
+            )
+        {
+            FunctionValue::<Dyn, B>::from_parts_unchecked(global, self.module.proven_mutable())
+                .update_after_name_change();
         }
     }
 
@@ -963,9 +1086,23 @@ pub trait HasName<'ctx, B: ModuleBrand>: sealed::Sealed {
 /// cannot carry a bound its trait does not declare, and reading a name must
 /// stay available to a [`ReadOnly`](crate::ReadOnly) handle.
 pub trait SetName<'ctx, B: ModuleBrand>: sealed::Sealed {
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    /// [`Value::set_name`] on this value.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] as [`Value::set_name`] documents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module.
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>;
+    /// [`Value::clear_name`] on this value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module.
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>);
 }
 
@@ -996,11 +1133,11 @@ impl<'ctx, B: ModuleBrand, C: Capability> HasName<'ctx, B> for Value<'ctx, B, C>
 }
 impl<'ctx, B: ModuleBrand, C: CanMutate> SetName<'ctx, B> for Value<'ctx, B, C> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        Value::set_name(self, module_token, name);
+        Value::set_name(self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
@@ -1196,13 +1333,17 @@ macro_rules! decl_value_handle {
                 self.as_erased().name()
             }
 
-            /// Set the textual name.
-            pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+            /// Set the textual name. [`Value::set_name`] on this value.
+            pub fn set_name<Name>(
+                self,
+                module_token: &'ctx Module<B, Unverified>,
+                name: Name,
+            ) -> IrResult<()>
             where
                 Name: Into<String>,
                 C: CanMutate,
             {
-                self.as_erased().set_name(module_token, name);
+                self.as_erased().set_name(module_token, name)
             }
 
             /// Clear the textual name.
@@ -1246,7 +1387,11 @@ macro_rules! decl_value_handle {
         }
         impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for $name<'ctx, B, C> {
             #[inline]
-            fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+            fn set_name<Name>(
+                self,
+                module_token: &'ctx Module<B, Unverified>,
+                name: Name,
+            ) -> IrResult<()>
             where
                 Name: Into<String>,
             {
@@ -1468,12 +1613,16 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability>
         self.as_erased().name()
     }
     /// Set the textual name.
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
@@ -1561,7 +1710,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: CanMutate> SetName
     for ArrayValue<'ctx, E, L, B, C>
 {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
@@ -1766,12 +1915,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructValue<'ctx, B, C> {
     }
 
     /// Set the textual name.
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
 
     /// Clear the textual name.
@@ -1819,7 +1972,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for StructValu
 }
 impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for StructValue<'ctx, B, C> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
@@ -2026,12 +2179,16 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
         self.as_erased().name()
     }
     /// Set the textual name.
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
@@ -2091,7 +2248,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'
     for VectorValue<'ctx, E, L, B, C>
 {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
@@ -2385,12 +2542,16 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntValue<'ctx, W, 
         self.as_erased().name()
     }
     /// Set the textual name.
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
@@ -2460,7 +2621,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B>
     for IntValue<'ctx, W, B, C>
 {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
@@ -2793,12 +2954,16 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> FloatValue<'ctx, 
     pub fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
     where
@@ -2862,7 +3027,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B>
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B>
     for FloatValue<'ctx, K, B, C>
 {
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
