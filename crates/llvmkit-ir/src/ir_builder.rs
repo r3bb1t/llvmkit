@@ -9071,7 +9071,12 @@ where
     /// [`Self::invoke_dyn_with_config`]): the call-site function type
     /// is supplied explicitly, mirroring `IRBuilder::CreateInvoke(FunctionType*,
     /// Value* Callee, ...)`. Used by the parser for `invoke ... %fp(...)`.
-    /// Arguments are validated against the spelled `fn_ty`.
+    ///
+    /// The operands go through the checks [`call_erased`](Self::call_erased)
+    /// runs: a [`CallSiteConfig::call_site_type`] override wins over the
+    /// spelled `fn_ty`, the arguments are validated against whichever type
+    /// that leaves, and the marker `R2` must describe its return type or the
+    /// build fails with [`IrError::ReturnTypeMismatch`].
     ///
     /// Both destinations are guarded against **parameterised** blocks like
     /// every other plain terminator edge. There is no argument-carrying twin
@@ -9097,23 +9102,23 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        // Boundary: the caller's spelled function type.
-        fn_ty.slot_in(self.module.id())?;
+        let ErasedCallOperands {
+            fn_ty,
+            return_ty: ret_ty,
+            callee,
+            args: arg_ids,
+        } = admit_erased_call_operands::<R2, B, I, V>(
+            self.module,
+            fn_ty,
+            IsValue::as_erased(callee),
+            args,
+            &config,
+        )?;
         let normal_dest = self.plain_edge_target(normal_dest)?;
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
-        let callee_v = IsValue::as_erased(callee);
-        let ret_ty = fn_ty.return_type().slot_trusting_same_module();
         let (name, parts) = config.into_parts(self.module)?;
-        let arg_ids: Vec<ValueSlot> = args
-            .into_iter()
-            .map(|a| {
-                a.into_erased_value(ModuleRef::new(self.module))
-                    .map(|v| v.slot_trusting_same_module())
-            })
-            .collect::<IrResult<_>>()?;
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = InvokeInstData::new(
-            callee_v.slot_trusting_same_module(),
+            callee,
             fn_ty.slot_trusting_same_module(),
             arg_ids,
             normal_dest.slot_trusting_same_module(),
@@ -9162,6 +9167,11 @@ where
 
     /// Produce an inline-assembly `invoke` with explicit call-site configuration.
     ///
+    /// The call site's type is the asm's own function type unless a
+    /// [`CallSiteConfig::call_site_type`] override says otherwise, which wins
+    /// as it does in [`call_erased`](Self::call_erased); the arguments and the
+    /// marker `R2` are checked against the type that leaves.
+    ///
     /// Both destinations are guarded against **parameterised** blocks like
     /// every other plain terminator edge; as with the indirect-callee form
     /// there is no argument-carrying twin for an inline-asm callee.
@@ -9183,28 +9193,23 @@ where
         // Boundary: the caller's inline-asm handle, admitted before its
         // function type is read.
         asm.as_erased().slot_in(self.module.id())?;
+        let ErasedCallOperands {
+            fn_ty,
+            return_ty: ret_ty,
+            callee,
+            args: arg_ids,
+        } = admit_erased_call_operands::<R2, B, I, V>(
+            self.module,
+            asm.function_type(),
+            asm.as_erased(),
+            args,
+            &config,
+        )?;
         let normal_dest = self.plain_edge_target(normal_dest)?;
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
-        let asm_v = asm.as_erased();
-        let fn_ty = asm.function_type();
-        let ret_ty = fn_ty.return_type().slot_trusting_same_module();
-        let ret_data = self.module.context().type_data(ret_ty);
-        if !crate::function::signature_matches_marker::<R2>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: crate::marker::marker_kind_label::<R2>()
-                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got: fn_ty.return_type().kind_label(),
-            });
-        }
-        let mut arg_ids: Vec<ValueSlot> = Vec::new();
-        for arg in args {
-            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.slot_trusting_same_module());
-        }
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let (name, parts) = config.into_parts(self.module)?;
         let payload = InvokeInstData::new(
-            asm_v.slot_trusting_same_module(),
+            callee,
             fn_ty.slot_trusting_same_module(),
             arg_ids,
             normal_dest.slot_trusting_same_module(),
@@ -9335,6 +9340,10 @@ where
     /// `Verifier::visitCallBrInst`'s question — `Check(CBI.getCalledFunction(),
     /// "Callbr: indirect function / invalid signature")` — not the builder's.
     ///
+    /// A [`CallSiteConfig::call_site_type`] override wins over the spelled
+    /// `fn_ty`, as in [`call_erased`](Self::call_erased), and the arguments are
+    /// validated against whichever type that leaves.
+    ///
     /// Every destination is guarded against **parameterised** blocks, exactly
     /// as in [`callbr_with_config`](Self::callbr_with_config).
     pub fn indirect_callbr_with_config<I, V, Default, Indirects, Indirect, Callee>(
@@ -9355,20 +9364,21 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        // Boundary: the caller's spelled function type.
-        fn_ty.slot_in(self.module.id())?;
+        // A `callbr` view carries no return marker, so `Dyn` asks nothing of
+        // the return type.
+        let ErasedCallOperands {
+            fn_ty,
+            return_ty: ret_ty,
+            callee,
+            args: arg_ids,
+        } = admit_erased_call_operands::<Dyn, B, I, V>(
+            self.module,
+            fn_ty,
+            IsValue::as_erased(callee),
+            args,
+            &config,
+        )?;
         let default_dest = self.plain_edge_target(default_dest)?;
-        let callee_v = IsValue::as_erased(callee);
-        let ret_ty = fn_ty.return_type().slot_trusting_same_module();
-        let (name, parts) = config.into_parts(self.module)?;
-        let arg_ids: Vec<ValueSlot> = args
-            .into_iter()
-            .map(|a| {
-                a.into_erased_value(ModuleRef::new(self.module))
-                    .map(|v| v.slot_trusting_same_module())
-            })
-            .collect::<IrResult<_>>()?;
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
             .map(|d| {
@@ -9376,8 +9386,9 @@ where
                     .map(|l| l.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
+        let (name, parts) = config.into_parts(self.module)?;
         let payload = CallBrInstData::new(
-            callee_v.slot_trusting_same_module(),
+            callee,
             fn_ty.slot_trusting_same_module(),
             arg_ids,
             default_dest.slot_trusting_same_module(),
@@ -9426,6 +9437,11 @@ where
 
     /// Produce an inline-assembly `callbr` with explicit call-site configuration.
     ///
+    /// The call site's type is the asm's own function type unless a
+    /// [`CallSiteConfig::call_site_type`] override says otherwise, which wins
+    /// as it does in [`call_erased`](Self::call_erased); the arguments and the
+    /// marker `R2` are checked against the type that leaves.
+    ///
     /// Every destination is guarded against **parameterised** blocks, exactly
     /// as in [`callbr_with_config`](Self::callbr_with_config).
     pub fn inline_asm_callbr_with_config<R2, I, V, Default, Indirects, Indirect>(
@@ -9447,24 +9463,19 @@ where
         // Boundary: the caller's inline-asm handle, admitted before its
         // function type is read.
         asm.as_erased().slot_in(self.module.id())?;
+        let ErasedCallOperands {
+            fn_ty,
+            return_ty: ret_ty,
+            callee,
+            args: arg_ids,
+        } = admit_erased_call_operands::<R2, B, I, V>(
+            self.module,
+            asm.function_type(),
+            asm.as_erased(),
+            args,
+            &config,
+        )?;
         let default_dest = self.plain_edge_target(default_dest)?;
-        let asm_v = asm.as_erased();
-        let fn_ty = asm.function_type();
-        let ret_ty = fn_ty.return_type().slot_trusting_same_module();
-        let ret_data = self.module.context().type_data(ret_ty);
-        if !crate::function::signature_matches_marker::<R2>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: crate::marker::marker_kind_label::<R2>()
-                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got: fn_ty.return_type().kind_label(),
-            });
-        }
-        let mut arg_ids: Vec<ValueSlot> = Vec::new();
-        for arg in args {
-            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
-            arg_ids.push(v.slot_trusting_same_module());
-        }
-        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
             .map(|d| {
@@ -9474,7 +9485,7 @@ where
             .collect::<IrResult<_>>()?;
         let (name, parts) = config.into_parts(self.module)?;
         let payload = CallBrInstData::new(
-            asm_v.slot_trusting_same_module(),
+            callee,
             fn_ty.slot_trusting_same_module(),
             arg_ids,
             default_dest.slot_trusting_same_module(),

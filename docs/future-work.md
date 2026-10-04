@@ -605,34 +605,6 @@ left is the mechanical half: each of the two remaining `match`es reaches three
 and `callbr` through one erased-callee constructor apiece, the way
 `call_erased` already serves `parse_call`. That is its own commit.
 
-## IR builder — three call-site builders accept a `call_site_type` override and ignore it (found 2026-08-21, divergence-closing task 6)
-
-`IrBuilder::indirect_invoke_dyn_with_config`,
-`IrBuilder::inline_asm_invoke_with_config` and
-`IrBuilder::inline_asm_callbr_with_config` each take a `CallSiteConfig`, which
-carries an optional call-site function type set by
-`CallSiteConfig::call_site_type`. None of the three reads it: the
-indirect-invoke form uses its own `fn_ty` parameter and the two inline-asm
-forms use `asm.function_type()`. A caller that sets the override gets no error
-and no effect — the exact shape `CLAUDE.md` bans ("never a silent no-op or
-swallowed error"). The declared-callee siblings `invoke_dyn_seeded` and
-`callbr_with_config` do honour it, through `resolve_call_site_type`, and
-`call_erased` honours it through `resolve_erased_call_site_type`, as the
-detached `CallInst::create_detached` / `InvokeInst::create_detached` do.
-
-This is llvmkit's own API surface rather than an upstream behaviour, and no
-caller in the tree sets `call_site_type` on those three paths — `parse_invoke`
-and `parse_callbr` pass the call-site type positionally — so it is recorded
-here rather than in [`divergences.md`](divergences.md). It is reachable by any
-external caller.
-
-**The fix:** route the three through `resolve_erased_call_site_type`, with
-`asm.function_type()` as the fallback for the two inline-asm forms.
-
-**Why it is deferred:** that is a behaviour change for any caller that was
-setting the field, on three entry points unrelated to the `call` construction
-the same commit rewrote. It wants its own commit rather than a rider.
-
 ## An upstream calling-convention bug, reproduced (found 2026-08-13, LLParser parity W6)
 
 Found by the round-trip drift lock in `calling_conv_drift.rs`, so the choice is
