@@ -1334,6 +1334,15 @@ macro_rules! decl_value_handle {
             }
 
             /// Set the textual name. [`Value::set_name`] on this value.
+            ///
+            /// # Errors
+            ///
+            /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl`
+            /// asserts against; the value keeps its name.
+            ///
+            /// # Panics
+            ///
+            /// Panics if `module_token` is not this value's module.
             pub fn set_name<Name>(
                 self,
                 module_token: &'ctx Module<B, Unverified>,
@@ -1612,7 +1621,16 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability>
     pub fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    /// Set the textual name.
+    /// Set the textual name. [`Value::set_name`] on this value.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the value keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module.
     pub fn set_name<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,
@@ -1914,7 +1932,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructValue<'ctx, B, C> {
         self.as_erased().name()
     }
 
-    /// Set the textual name.
+    /// Set the textual name. [`Value::set_name`] on this value.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the value keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module.
     pub fn set_name<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,
@@ -2178,7 +2205,16 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
     pub fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    /// Set the textual name.
+    /// Set the textual name. [`Value::set_name`] on this value.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the value keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module.
     pub fn set_name<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,
@@ -2541,7 +2577,16 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntValue<'ctx, W, 
     pub fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    /// Set the textual name.
+    /// Set the textual name. [`Value::set_name`] on this value.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the value keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module.
     pub fn set_name<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,
@@ -2954,6 +2999,16 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> FloatValue<'ctx, 
     pub fn name(self) -> Option<String> {
         self.as_erased().name()
     }
+    /// Set the textual name. [`Value::set_name`] on this value.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the value keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module.
     pub fn set_name<Name>(
         self,
         module_token: &'ctx Module<B, Unverified>,

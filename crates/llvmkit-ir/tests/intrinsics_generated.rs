@@ -192,9 +192,13 @@ fn binary_intrinsic_mapping_is_narrow() {
     );
 }
 
-/// Mirrors `llvm/lib/IR/Verifier.cpp::visitFunction`: intrinsic declarations
-/// must carry generated attributes, but verifier-valid extra function
-/// attributes are accepted by the generic function-attribute verifier.
+/// An intrinsic declaration with a function attribute beyond its generated
+/// ones verifies. Upstream accepts it too, but not by the same route:
+/// `llvm/lib/IR/Verifier.cpp::visitFunction` never consults
+/// `Intrinsic::getAttributes`, so it has no generated set to compare with.
+/// This exercises llvmkit's own declaration-attribute check, which demands the
+/// generated attributes and admits more (`docs/divergences.md`, the intrinsic
+/// declaration attributes entry). llvmkit-specific.
 #[test]
 fn verifier_accepts_extra_valid_intrinsic_declaration_attribute() -> Result<(), IrError> {
     let m = module_new!("intrinsic-extra-attr")?;
@@ -638,6 +642,34 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
     let text = format!("{m}");
     assert!(
         text.contains("/* fill_mode=OOB-NaN fill */ i32 1"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// A vector `llvm.scmp` declares, its `Range` return attribute sized by the
+/// element type. `int_scmp` (`llvm/include/llvm/IR/Intrinsics.td`) carries
+/// `Range<RetIndex, -1, 2>` on an `llvm_anyint_ty` result, and
+/// `getIntrinsicArgAttributeSet` (emitted by
+/// `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp`) builds the range at
+/// `ArgType->getScalarSizeInBits()`, so `<4 x i8>` gets `range(i8 -1, 2)`.
+/// llvmkit refused the declaration outright (`IntrinsicSignatureMismatch`),
+/// asking for a scalar integer. llvmkit-specific: derived from that routine,
+/// as no upstream unit test asks a vector `scmp`'s attributes. Positive
+/// control: the scalar `llvm.scmp.i8.i32` carries the same range on `i8`.
+#[test]
+fn a_vector_scmp_declaration_ranges_over_its_element_type() -> Result<(), IrError> {
+    let m = module_new!("vector-scmp")?;
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.scmp.i8.i32")?;
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.scmp.v4i8.v4i32")?;
+
+    let text = format!("{m}");
+    assert!(
+        text.contains("range(i8 -1, 2) i8 @llvm.scmp.i8.i32("),
+        "{text}"
+    );
+    assert!(
+        text.contains("range(i8 -1, 2) <4 x i8> @llvm.scmp.v4i8.v4i32("),
         "{text}"
     );
     Ok(())

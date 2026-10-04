@@ -685,7 +685,17 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().push_debug_record(module_token, record)
     }
 
-    /// Set the textual name.
+    /// Set the textual name. [`crate::Value::set_name`] on this instruction.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against — a `void` instruction refuses any non-empty name; the
+    /// instruction keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this instruction's module.
     #[inline]
     pub fn set_name<Name>(
         &self,
@@ -861,7 +871,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
         Ok(())
     }
 
-    /// Set the textual name.
+    /// Set the textual name. [`crate::Value::set_name`] on this instruction.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against — a `void` instruction refuses any non-empty name; the
+    /// instruction keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this instruction's module.
     #[inline]
     pub fn set_name<Name>(
         &self,

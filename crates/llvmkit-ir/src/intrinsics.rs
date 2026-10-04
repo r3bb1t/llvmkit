@@ -725,15 +725,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         Ok(storage)
     }
 
-    pub(crate) fn argument_names(&self) -> impl Iterator<Item = (u32, &'static str)> + '_ {
-        self.id
-            .record()
-            .pretty_print
-            .iter()
-            .filter(|arg| !arg.name.is_empty())
-            .map(|arg| (arg.arg_index, arg.name))
-    }
-
     pub(crate) fn pretty_print_arg(&self, arg_index: usize) -> Option<PrettyPrintArg> {
         let arg_index = u32::try_from(arg_index).ok()?;
         self.id
@@ -819,7 +810,10 @@ fn add_indexed_attr<B: ModuleBrand>(
             Attribute::<B>::Int(AttrKind::Dereferenceable, bytes)
         }
         IntrinsicArgAttr::Range { lower, upper } => {
-            let ty = type_for_attribute_index(fn_ty, indexed.index)?;
+            // `getIntrinsicArgAttributeSet` sizes the range by
+            // `ArgType->getScalarSizeInBits()`, so a vector argument's range
+            // is over its element type (`range(i8 -1, 2)` on `<4 x i8>`).
+            let ty = type_for_attribute_index(fn_ty, indexed.index)?.scalar_type();
             let TypeData::Integer { bits } = ty.data() else {
                 return Err(intrinsic_mismatch());
             };

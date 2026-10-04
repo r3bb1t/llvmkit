@@ -64,13 +64,26 @@ cut, entries accumulate under **Unreleased**.
   `MetadataAsValue` (values `getSymTab` asserts are not constants, which
   used to be ignored). `clear_name` stays infallible. Creation does not run
   these checks yet — `docs/divergences.md`, entry 140.
-- **`get_or_insert_intrinsic_declaration*` ports the rest of
+- **Breaking: `get_or_insert_intrinsic_declaration*` ports the rest of
   `getOrInsertIntrinsicDeclarationImpl`.** A function of another type that
   holds the intrinsic's name is renamed `<name>.invalid` and the intrinsic is
   declared afresh, where it used to be refused with
   `IntrinsicSignatureMismatch`; a definition of the intrinsic's type is
   returned, where it used to be refused. A holder of the right type without
   the intrinsic's identity is still refused — `docs/divergences.md`, entry 138.
+  Every refusal now comes before the first mutation, so a refused call leaves
+  the module as it was; the `.invalid` arm cannot fail once it has renamed.
+- **Breaking: `get_or_insert_intrinsic_declaration*` names no argument.** The
+  declaration's arguments used to take TableGen's `ArgName`s (`kind`,
+  `fill_mode`, …), and with the definition arm above that would have renamed a
+  caller's own function's arguments. Upstream names none: `ArgName` is
+  pretty-printer data, still read at each call site.
+- **Fixed: a vector `llvm.scmp` / `llvm.ucmp` could not be declared or
+  parsed.** Building their `Range<RetIndex, -1, 2>` attribute demanded a scalar
+  integer result, so `declare <4 x i8> @llvm.scmp.v4i8.v4i32(<4 x i32>, <4 x i32>)`
+  was refused as an intrinsic signature mismatch. The range is now sized by the
+  element type (`range(i8 -1, 2)`), as `getIntrinsicArgAttributeSet`'s
+  `ArgType->getScalarSizeInBits()` sizes it.
 - **Breaking: `FunctionValue::is_intrinsic` mirrors `Function::isIntrinsic`**
   — whether the name starts with `llvm.` — where it used to answer whether
   `intrinsic_id()` does. A function named `llvm.` plus a name no intrinsic has
@@ -83,7 +96,8 @@ cut, entries accumulate under **Unreleased**.
 - The verifier's demand that an intrinsic declaration carry its generated
   attributes is recorded as llvmkit's own (`docs/divergences.md`, entry 139):
   upstream's `Verifier` never consults `Intrinsic::getAttributes`, and the
-  four tests that called it a mirror of `visitFunction` are relabelled.
+  five tests that called it a mirror of `visitFunction` are relabelled (the
+  entry lists them and the search that finds them).
 
 ### Changed — value handles carry their capability *(breaking)*
 

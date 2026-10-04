@@ -754,8 +754,16 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         self.to_erased().name()
     }
 
-    /// Set or clear the textual name.
-    /// Set the textual name.
+    /// Set the textual name. [`crate::Value::set_name`] on this block.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the block keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this block's module.
     #[inline]
     pub fn set_name<Name>(
         &self,

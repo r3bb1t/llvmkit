@@ -573,3 +573,90 @@ fn inline_asm_and_metadata_values_refuse_a_name() -> Result<(), IrError> {
     assert_eq!(five.name(), None);
     Ok(())
 }
+
+/// Declaring an intrinsic over a same-typed definition that holds its name
+/// returns the definition and leaves its arguments as they were.
+/// `getOrInsertIntrinsicDeclarationImpl` returns `F` at `F->getFunctionType()
+/// == FT` and names no argument; TableGen's `ArgName` is pretty-printer data.
+/// The intrinsic here, `llvm.nvvm.tensormap.replace.fill.mode`, gives its
+/// argument 1 the `ArgName` `fill_mode`, which llvmkit used to write onto the
+/// returned function's argument. Derived from that routine; no upstream unit
+/// test declares an intrinsic over a definition. Positive control: the
+/// definition carries the intrinsic's identity, so this is the
+/// `getFunctionType() == FT` arm.
+#[test]
+fn declaring_an_intrinsic_over_a_same_typed_definition_leaves_its_arguments_alone()
+-> Result<(), IrError> {
+    let m = Module::dynamic("m");
+    let ptr_ty = m.ptr_type(0);
+    let f = m.add_function_dyn(
+        "f",
+        m.function_type(m.void_type(), [ptr_ty.as_type(), m.i32_type().as_type()]),
+        Linkage::External,
+    )?;
+    m.view(f).param(0)?.set_name(&m, "p")?;
+    m.view(f).param(1)?.set_name(&m, "mode")?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(entry)
+        .ret_void()?;
+    m.view(f)
+        .set_name(&m, "llvm.nvvm.tensormap.replace.fill.mode.p0")?;
+    let id = m
+        .view(f)
+        .intrinsic_id()
+        .expect("the definition is the intrinsic");
+    let before = format!("{m}");
+
+    let declared = m.get_or_insert_intrinsic_declaration_by_id(id, [ptr_ty.as_type()])?;
+
+    assert_eq!(declared, f);
+    assert_eq!(m.view(f).param(0)?.name().as_deref(), Some("p"));
+    assert_eq!(m.view(f).param(1)?.name().as_deref(), Some("mode"));
+    assert_eq!(format!("{m}"), before);
+    Ok(())
+}
+
+/// A refused declaration leaves a mismatched holder of the intrinsic's name
+/// exactly as it was. `getOrInsertIntrinsicDeclarationImpl` cannot fail, so
+/// llvmkit runs every check that can refuse before the `.invalid` arm renames
+/// anything; here the request's overload type belongs to another module, and
+/// the refusal (`IrError::ForeignType`) comes before the lookup. Positive
+/// control: the same request with this module's `i32` renames the holder
+/// `llvm.ctpop.i32.invalid` and declares `llvm.ctpop.i32`. llvmkit-specific: the
+/// refusal has no upstream counterpart, and the renaming is derived from that
+/// routine.
+#[test]
+fn a_refused_intrinsic_declaration_leaves_a_mismatched_holder_alone() -> Result<(), IrError> {
+    let m = Module::dynamic("m");
+    let other = Module::dynamic("other");
+    let holder = m.add_function_dyn(
+        "holder",
+        m.function_type_no_parameters(m.void_type()),
+        Linkage::External,
+    )?;
+    m.view(holder).set_name(&m, "llvm.ctpop.i32")?;
+    let before = format!("{m}");
+
+    let refused = m.get_or_insert_intrinsic_declaration_by_id(
+        IntrinsicId::CTPOP,
+        [other.i32_type().as_type()],
+    );
+    assert!(matches!(refused, Err(IrError::ForeignType)), "{refused:?}");
+    assert_eq!(
+        format!("{m}"),
+        before,
+        "a refused declaration must not mutate"
+    );
+    assert_eq!(m.view(holder).name().as_deref(), Some("llvm.ctpop.i32"));
+
+    let ctpop =
+        m.get_or_insert_intrinsic_declaration_by_id(IntrinsicId::CTPOP, [m.i32_type().as_type()])?;
+    assert_ne!(ctpop, holder);
+    assert_eq!(
+        m.view(holder).name().as_deref(),
+        Some("llvm.ctpop.i32.invalid")
+    );
+    assert_eq!(m.view(ctpop).name().as_deref(), Some("llvm.ctpop.i32"));
+    Ok(())
+}

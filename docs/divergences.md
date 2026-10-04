@@ -772,14 +772,20 @@ hypothesis until one does)
   requested descriptor is refused with `IrError::IntrinsicSignatureMismatch`.
   The stored identity is recomputed from name *and* signature
   (`update_after_name_change`), so a holder with the right name and type
-  lacks it only when the name's overload suffix does not demangle back to the
-  descriptor's overloads — entry 136's gap, reached by a rename. The guard is
-  kept rather than dropped because `IntrinsicCallBuilder::build` emits its
-  call and only then checks `IntrinsicInst::from_call`: a callee without the
-  identity would turn that check into an error after a mutation. The two
-  sibling guards it shipped with — a definition refused, and the mismatched
-  type refused instead of renamed — are gone: the arm returns a definition and
-  the `.invalid` arm is ported.
+  differs from the descriptor in one of three ways, and the guard refuses all
+  three:
+
+  | holder | what `IntrinsicCallBuilder::build` would do with it |
+  |---|---|
+  | no identity, because the name's overload suffix does not demangle, or demangles to another type | `IntrinsicInst::from_call` → `descriptor_for_callee`, whose by-name fallback fails the same way: `build` emits its call, then refuses — an error after a mutation |
+  | no identity only because `intrinsic_descriptor_from_signature`'s `mangled_name() != name` round trip failed | the fallback, which skips that round trip, finds one: `build` succeeds |
+  | a different stored identity | `from_call` reads it: `build` succeeds, with that id |
+
+  The guard is kept for the first row only; for the other two it refuses a
+  request upstream answers with `F` and that llvmkit's builder could also
+  serve. The two sibling guards it shipped with — a definition refused, and
+  the mismatched type refused instead of renamed — are gone: the arm returns a
+  definition and the `.invalid` arm is ported.
 - **Found:** 2026-10-04, the rename port's review (I1); the guard predates the
   port (`git show 458e9ce:crates/llvmkit-ir/src/module.rs` carries it).
   `rg -n "getOrInsertIntrinsicDeclarationImpl|\.invalid" docs/divergences.md
@@ -809,13 +815,19 @@ check beside it.
   `IntrinsicDescriptor::declaration_attributes`. A plain `declare void
   @plain()` renamed to `llvm.debugtrap` fails `verify`; the declaration
   `get_or_insert_intrinsic_declaration_by_name` makes, which carries
-  `nounwind`, passes. Four tests pin the check, and until this entry their
-  doc comments and `UPSTREAM.md` rows called them a `mirror` of
-  `visitFunction`; they are relabelled llvmkit-specific:
+  `nounwind`, passes. Five tests exercise the check — four its refusal, one
+  its acceptance of an extra attribute — and until this entry their doc
+  comments and `UPSTREAM.md` rows called them a `mirror` of `visitFunction`;
+  they are relabelled llvmkit-specific:
   `verifier.rs::tests::intrinsic_declaration_missing_generated_attrs_is_rejected`
   and `::intrinsic_declaration_extra_attr_group_is_rejected`,
   `tests/verifier_basic.rs::intrinsic_declaration_missing_generated_function_attrs_is_rejected`
-  and `::intrinsic_declaration_missing_generated_argument_attr_is_rejected`.
+  and `::intrinsic_declaration_missing_generated_argument_attr_is_rejected`,
+  `tests/intrinsics_generated.rs::verifier_accepts_extra_valid_intrinsic_declaration_attribute`.
+  The list is the `crates/llvmkit-ir` rows that
+  ``git show bac8293:UPSTREAM.md | rg -F 'Verifier.cpp::visitFunction` intrinsic declaration'``
+  returns; the same search also returns five `llvmkit-asmparser` rows, which
+  pin the parser's own intrinsic-declaration refusals rather than this check.
 - **Found:** 2026-10-04, the rename port's review (M8): renaming made a
   natural trigger for a check already reachable through `set_attributes`.
   `rg -n "declaration_attributes|is_subset_of|intrinsic declaration modifier"

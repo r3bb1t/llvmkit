@@ -2227,14 +2227,14 @@ impl<'ctx> ModuleCore {
             });
         }
 
-        self.push_function(
+        Ok(self.push_function(
             name,
             signature,
             linkage,
             crate::CallingConv::default(),
             None,
             None,
-        )
+        ))
     }
 
     fn push_function<B: ModuleBrand + 'ctx, R>(
@@ -2245,10 +2245,12 @@ impl<'ctx> ModuleCore {
         calling_conv: crate::CallingConv,
         intrinsic: Option<IntrinsicFunctionData>,
         attributes: Option<AttributeStorage>,
-    ) -> IrResult<FunctionValue<'ctx, R, B>>
+    ) -> FunctionValue<'ctx, R, B>
     where
         R: ReturnMarker,
     {
+        // Infallible: every check — the name, the signature, the attributes —
+        // is the caller's, made before this pushes anything.
         // Internal: every caller admitted `signature` against this module
         // (`add_function_dyn`, `FunctionBuilder::build`) or minted it here.
         let signature_id = signature.slot_trusting_same_module();
@@ -2304,10 +2306,7 @@ impl<'ctx> ModuleCore {
         // table.) Every caller refused a taken name against this same table,
         // so the name is taken as given.
         self.set_global_value_name(fn_id, Some(name));
-        Ok(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
-            fn_id,
-            ModuleRef::<B>::new(self),
-        ))
+        FunctionValue::<'ctx, R, B>::from_parts_unchecked(fn_id, ModuleRef::<B>::new(self))
     }
 
     pub(crate) fn intrinsic_descriptor_from_signature<B: ModuleBrand + 'ctx>(
@@ -2356,22 +2355,33 @@ impl<'ctx> ModuleCore {
         // descriptor's function type.
         let name = descriptor.mangled_name()?;
         let signature = descriptor.function_type_ref(ModuleRef::<B>::new(self))?;
+        // The `Intrinsic::getAttributes` that `Function`'s constructor gives a
+        // declaration `getOrInsertFunction` creates. Upstream's cannot fail;
+        // llvmkit's `declaration_attributes` can refuse an attribute its model
+        // cannot build, so it runs here, before anything below mutates: the
+        // `.invalid` arm renames before it declares, and nothing may refuse
+        // after that rename.
+        let attributes = descriptor.declaration_attributes(signature)?;
         // `Function *F = cast<Function>(M->getOrInsertFunction(Name,
-        // FT).getCallee());`
+        // FT).getCallee());` — the cast refuses before anything is declared,
+        // since a declaration it would see is a function.
         let function = self.function_holding_intrinsic_name(
-            self.get_or_insert_intrinsic_function(&name, signature, descriptor)?,
+            self.get_or_insert_intrinsic_function(&name, signature, descriptor, &attributes),
             &name,
         )?;
         // `if (F->getFunctionType() == FT) return F;` — a definition included.
         if function.signature() == signature {
-            // llvmkit-only, and no upstream arm: refuse a same-named
-            // function of the right type that lacks this intrinsic's
-            // identity. Upstream's identity is the name alone, so its `F`
-            // here is always the intrinsic; llvmkit's also needs the name's
-            // overload suffix to demangle to this signature, and
-            // `IntrinsicCallBuilder::build` emits its call before it checks
-            // that the callee is an intrinsic (`docs/divergences.md`, the
-            // `getOrInsertIntrinsicDeclarationImpl` entry).
+            // llvmkit-only, and no upstream arm: refuse a same-named function
+            // of the right type whose stored identity is not this descriptor.
+            // Upstream's identity is the name alone, so its `F` here is always
+            // the intrinsic. Where the holder lacks the identity because its
+            // name's overload suffix does not demangle to this signature,
+            // `IntrinsicCallBuilder::build` could not recover one either
+            // (`descriptor_for_callee`'s by-name fallback fails the same way),
+            // and it emits its call before it checks: returning the holder
+            // would turn that check into an error after a mutation
+            // (`docs/divergences.md`, the `getOrInsertIntrinsicDeclarationImpl`
+            // entry, which also records what else this guard refuses).
             if function.intrinsic_descriptor().as_ref() != Some(descriptor) {
                 return Err(IrError::IntrinsicSignatureMismatch { name });
             }
@@ -2381,41 +2391,47 @@ impl<'ctx> ModuleCore {
         // with an incorrect signature … rename the invalid declaration and
         // insert a new one with the correct signature."
         // `F->setName(F->getName() + ".invalid");` — the one `setName` port,
-        // tail included.
+        // tail included. Its refusals (`set_name_impl`) all come before it
+        // renames anything.
         let invalid_name = format!("{}.invalid", function.name().unwrap_or_default());
         function.as_erased().rename(&invalid_name)?;
         // `return cast<Function>(M->getOrInsertFunction(Name,
-        // FT).getCallee());`
-        self.function_holding_intrinsic_name(
-            self.get_or_insert_intrinsic_function(&name, signature, descriptor)?,
-            &name,
-        )
+        // FT).getCallee());` — and nothing from here can refuse. The rename
+        // moved `F`, the one holder of `Name`, so `getOrInsertFunction`
+        // reaches `Function::Create` and the cast holds by construction.
+        let declared =
+            self.get_or_insert_intrinsic_function(&name, signature, descriptor, &attributes);
+        Ok(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
+            declared,
+            ModuleRef::<B>::new(self),
+        ))
     }
 
     /// `Module::getOrInsertFunction(Name, FT)` as
     /// `getOrInsertIntrinsicDeclarationImpl` calls it: the global value
     /// `getNamedValue(Name)` answers — of any kind — or else a fresh
     /// declaration, `Function::Create(FT, ExternalLinkage, …, Name, M)`, whose
-    /// constructor gives an intrinsic its id and `Intrinsic::getAttributes`.
+    /// constructor gives an intrinsic its id and `attributes`
+    /// (`Intrinsic::getAttributes`, computed by the caller).
     fn get_or_insert_intrinsic_function<B: ModuleBrand + 'ctx>(
         &'ctx self,
         name: &str,
         signature: FunctionType<'ctx, B>,
         descriptor: &IntrinsicDescriptor<'ctx, B>,
-    ) -> IrResult<ValueSlot> {
+        attributes: &AttributeStorage,
+    ) -> ValueSlot {
         if let Some(existing) = self.named_value(name) {
-            return Ok(existing);
+            return existing;
         }
-        let attributes = descriptor.declaration_attributes(signature)?;
         self.push_function::<B, Dyn>(
             name,
             signature,
             Linkage::External,
             crate::CallingConv::default(),
             Some(descriptor.to_function_data()),
-            Some(attributes),
+            Some(attributes.clone()),
         )
-        .map(|function| function.slot_trusting_same_module())
+        .slot_trusting_same_module()
     }
 
     /// `cast<Function>` on what `getOrInsertFunction` returned: an assertion
@@ -4604,14 +4620,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
                 name: name.to_owned(),
             });
         }
-        self.core().push_function(
+        Ok(self.core().push_function(
             name,
             signature,
             linkage,
             crate::CallingConv::default(),
             None,
             None,
-        )
+        ))
     }
 
     /// Add a function whose return marker is erased to [`Dyn`].
@@ -4660,7 +4676,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// function of the intrinsic's type that holds the name is returned, a
     /// definition included; a function of another type is renamed
     /// `<name>.invalid` (uniqued on a clash) and a fresh declaration takes the
-    /// name.
+    /// name. No argument is named: the TableGen `ArgName`s are pretty-printer
+    /// data, which the printer reads at each call site.
     ///
     /// # Errors
     ///
@@ -4674,14 +4691,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         &'ctx self,
         descriptor: &IntrinsicDescriptor<'ctx, B>,
     ) -> IrResult<FunctionId<Dyn, B>> {
-        let function = self
-            .core()
-            .get_or_insert_intrinsic_declaration::<B>(descriptor)?;
-        for (arg_index, name) in descriptor.argument_names() {
-            let arg = function.param(arg_index)?;
-            arg.set_name(self, name)?;
-        }
-        Ok(function.id())
+        self.core()
+            .get_or_insert_intrinsic_declaration::<B>(descriptor)
+            .map(|function| function.id())
     }
 
     pub fn get_or_insert_intrinsic_declaration_by_id<Overloads>(

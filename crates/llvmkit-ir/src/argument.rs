@@ -91,7 +91,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Argument<'ctx, B, C> {
         self.as_erased().name()
     }
 
-    /// Set the textual name.
+    /// Set the textual name. [`crate::Value::set_name`] on this argument.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the argument keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this argument's module.
     #[inline]
     pub fn set_name<Name>(
         self,
