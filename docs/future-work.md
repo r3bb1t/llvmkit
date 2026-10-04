@@ -2887,9 +2887,23 @@ entirely, from
 Fix round 3 converted 19 of them — nine `UPSTREAM.md` rows, nine rustdoc twins
 and one inline comment, all naming `test/Bitcode/compatibility.ll` blocks that
 the funclet commit had just vendored, which is what made the rewrite mechanical
-and risk-free. **That opens the class, it does not close it.** The header of
-`docs/divergences.md` now discloses the debt rather than implying the file is
-clean.
+and risk-free. That opened the class.
+
+**Closed 2026-10-04, and enforced rather than swept.** `UPSTREAM.md` went to
+zero coordinates in both spellings, Rust comments went to four (all in
+`parser_corpus.rs`, where line numbering is the subject rather than a locator),
+and the live `.md` pages were already clean. Three cases in
+`crates/llvmkit-ir/tests/upstream_registry_drift.rs` now fail on a new one.
+The analysis above was right about the shape of the debt and right that the
+`file:N` spelling "falls outside that grep entirely" — a guard written from the
+`line N` grep alone inherited exactly that blind spot and missed five
+`UPSTREAM.md` rows plus seven source comments until the matcher was widened.
+
+**The `docs/divergences.md` evidence blocks are not part of this debt and were
+never swept.** They are dated snapshots of one verification pass, so their
+coordinates are the record of what was checked; the guard exempts them by rule,
+as it does `CHANGELOG.md`'s released sections and all of `docs/design/`. That
+file's header now says so instead of promising a sweep.
 
 ## Docs — `mirror` rows that hand-write their IR (found 2026-08-20, fix round 3)
 

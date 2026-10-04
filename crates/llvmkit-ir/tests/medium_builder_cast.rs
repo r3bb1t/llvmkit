@@ -156,7 +156,7 @@ fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Assembler/flags.ll:224-225` (`%res = zext nneg i32 %a to
+/// Mirrors `test/Assembler/flags.ll`'s `@test_zext` (`%res = zext nneg i32 %a to
 /// i64`). Typed operands, no `_dyn` erasure needed to spell the `nneg` flag.
 /// The `Dst: WiderThan<Src>` bound is the same one `zext` uses.
 #[test]
@@ -179,7 +179,7 @@ fn typed_zext_nneg_prints_flag() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Assembler/flags.ll:254-258` (`test_trunc_both`:
+/// Mirrors `test/Assembler/flags.ll`'s `@test_trunc_both` (
 /// `%res = trunc nuw nsw i64 %a to i32`). Typed operands, no `_dyn` erasure
 /// needed to spell `nuw`/`nsw`. Upstream `IRBuilder::CreateTrunc` returns `V`
 /// unchanged (silently dropping any requested nuw/nsw) when `SrcTy ==
@@ -205,7 +205,7 @@ fn typed_trunc_nuw_nsw_prints_flags() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Assembler/flags.ll:230-231` (`%res = uitofp nneg i32 %a to
+/// Mirrors `test/Assembler/flags.ll`'s `@test_uitofp` (`%res = uitofp nneg i32 %a to
 /// float`). Typed operands, no `_dyn` erasure needed to spell the `nneg`
 /// flag.
 #[test]

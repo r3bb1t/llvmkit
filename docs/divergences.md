@@ -30,13 +30,20 @@ marker, and this paragraph would then be counting its own quotation of it.
 Treat a row **and its evidence** as a hypothesis with a citation. When you re-verify an entry, date
 the block you are trusting or replacing — on its `<summary>` line.
 
-Entry prose cites upstream **by symbol, never by line number** (repo law: line
-numbers rot the moment the vendored tree moves). The `Correction from
-verification` and `<details>` blocks predate that rule and still carry
-`File.cpp:LINE` pointers.
-Treat those coordinates as valid only against the vendored 22.1.4 tree, and
-re-derive the symbol before quoting one. The sweep is recorded in
-[`future-work.md`](future-work.md).
+Entry prose cites **by symbol, never by line number** — upstream and our own
+tree alike (repo law: an upstream coordinate rots when the vendored tree moves,
+and one into our own files rots by the next refactor). Every entry bullet here
+already satisfies that, and a test now keeps it so:
+`crates/llvmkit-ir/tests/upstream_registry_drift.rs::no_live_doc_page_cites_a_line_number`.
+
+The `Correction from verification` and `<details>` blocks are **deliberately
+exempt**, and that is not a backlog item. They are dated snapshots of one
+verification pass, so their coordinates are the *record of what was checked*,
+not a claim about where something lives; rewriting them would be falsifying the
+record. Treat those coordinates as valid only against the vendored 22.1.4 tree
+and against the commit the block was written at, and re-derive the symbol before
+quoting one anywhere else. The guard knows about this exemption, so do not
+"clean up" an evidence block to make a test pass — it already passes.
 
 Severities:
 

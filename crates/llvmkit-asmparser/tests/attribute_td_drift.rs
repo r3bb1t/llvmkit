@@ -4,7 +4,8 @@
 //! Milestone 0's ~21 missing keywords went unnoticed: nothing tied the table to
 //! its source. Upstream does not have this problem because its lexer and parser
 //! both `#include` the TableGen-generated `Attributes.inc`
-//! (`LLLexer.cpp:701-704`, `LLParser.cpp:1547-1551`), so their list *cannot*
+//! (each through its own `GET_ATTR_NAMES` / `ATTRIBUTE_ENUM` block), so their
+//! list *cannot*
 //! drift.
 //!
 //! Full generation is the wrong shape here: llvmkit deliberately models a

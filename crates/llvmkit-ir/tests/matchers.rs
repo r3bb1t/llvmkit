@@ -13,7 +13,7 @@ fn view_of<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
     llvmkit_ir::InstructionView::try_from(v).expect("value is an instruction")
 }
 
-/// `InstCombineAddSub.cpp:878` — `add (sub X, Y), -1`. The pattern
+/// `InstCombineAddSub.cpp`'s `add (sub X, Y), -1 --> add (not Y), X` fold. The pattern
 /// `m_add(m_one_use(m_sub(m_value(), m_value())), m_all_ones())` binds
 /// `(X, Y)` in order.
 #[test]
