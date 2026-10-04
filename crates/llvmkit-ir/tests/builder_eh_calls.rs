@@ -4,7 +4,7 @@
 
 use llvmkit_ir::{
     CallSiteConfig, CallingConv, Dyn, InlineAsmOptions, IntValue, IrBuilder, IrError, Linkage,
-    module_new,
+    PointerValue, module_new,
 };
 
 // --------------------------------------------------------------------------
@@ -185,5 +185,151 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
         ),
         "got:\n{text}"
     );
+    Ok(())
+}
+
+// --------------------------------------------------------------------------
+// The indirect and inline-asm forms run `call_erased`'s checks
+// --------------------------------------------------------------------------
+
+/// `IrBuilder::indirect_invoke_dyn_with_config` checks the caller's return
+/// marker against the call site's type, as `call_erased` and the inline-asm
+/// forms do: an `i32` marker on a `void` invoke is refused with
+/// `IrError::ReturnTypeMismatch`, where it used to hand back an
+/// `InvokeInst<i32>` describing a result that does not exist. The refusal
+/// leaves the module as it was.
+///
+/// **llvmkit-specific**: return markers are llvmkit's own. The positive
+/// control is the same invoke under the `Dyn` marker.
+#[test]
+fn an_indirect_invoke_refuses_a_return_marker_its_type_does_not_have() -> Result<(), IrError> {
+    let m = module_new!("a")?;
+    let void_ty = m.void_type();
+    let ptr_ty = m.ptr_type(0);
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
+    let first = m.view(caller).append_basic_block(&m, "first");
+    let second = m.view(caller).append_basic_block(&m, "second");
+    let normal = m.view(caller).append_basic_block(&m, "normal");
+    let unwind = m.view(caller).append_basic_block(&m, "unwind");
+    let fp = PointerValue::try_from(m.view(caller).param(0)?)?;
+
+    let before = format!("{m}");
+    let refused = IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(first)
+        .indirect_invoke_dyn_with_config::<i32, _, _, _, _, _>(
+            fp,
+            callee_ty,
+            Vec::<llvmkit_ir::Value<'_, _>>::new(),
+            &normal,
+            &unwind,
+            CallSiteConfig::new(""),
+        )
+        .err();
+    assert!(
+        matches!(refused, Some(IrError::ReturnTypeMismatch { .. })),
+        "an `i32` marker on a `void` invoke: {refused:?}"
+    );
+    assert_eq!(format!("{m}"), before, "a refusal must not mutate");
+
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(second)
+        .indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
+            fp,
+            callee_ty,
+            Vec::<llvmkit_ir::Value<'_, _>>::new(),
+            &normal,
+            &unwind,
+            CallSiteConfig::new(""),
+        )?;
+    assert!(format!("{m}").contains("invoke void %0()"), "{m}");
+    Ok(())
+}
+
+/// The indirect and inline-asm `invoke` / `callbr` builders honour a
+/// `CallSiteConfig::call_site_type` override over the type they would
+/// otherwise use — the spelled `fn_ty`, or the asm's own — as `call_erased`
+/// does, where they used to take the override in a config they never read.
+///
+/// The override is chosen so that dropping it cannot pass silently: the type
+/// each builder falls back to takes no parameters and returns `void`, the
+/// override takes one `i32` and returns `i32`, and one argument is supplied.
+/// Without the override every builder fails `CallArgumentCountMismatch`
+/// rather than printing a differently-typed call site.
+///
+/// **No upstream unit-test counterpart**: upstream has no `CallSiteConfig`.
+/// The rule it stands for is `CallBase` carrying its own `FunctionType`, the
+/// `FunctionType *` argument of `InvokeInst::Create` and `CallBrInst::Create`.
+#[test]
+fn the_indirect_and_inline_asm_call_sites_honour_a_call_site_type_override() -> Result<(), IrError>
+{
+    let m = module_new!("a")?;
+    let void_ty = m.void_type();
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fallback = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let override_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let asm = m.inline_asm(fallback, "nop", "", InlineAsmOptions::new());
+    let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type(), i32_ty.as_type()]);
+    let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
+    let fp = PointerValue::try_from(m.view(caller).param(0)?)?;
+    let v = m.view(caller).param(1)?;
+    let function = m.view(caller);
+    let (e0, e1, e2, e3) = (
+        function.append_basic_block(&m, "e0"),
+        function.append_basic_block(&m, "e1"),
+        function.append_basic_block(&m, "e2"),
+        function.append_basic_block(&m, "e3"),
+    );
+    let normal = function.append_basic_block(&m, "normal");
+    let unwind = function.append_basic_block(&m, "unwind");
+    let indirect = function.append_basic_block(&m, "indirect");
+    let config = |name: &str| CallSiteConfig::new(name).call_site_type(override_ty);
+
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(e0)
+        .indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
+            fp,
+            fallback,
+            [v],
+            &normal,
+            &unwind,
+            config("ii"),
+        )?;
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(e1)
+        .inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
+            asm,
+            [v],
+            &normal,
+            &unwind,
+            config("ai"),
+        )?;
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(e2)
+        .indirect_callbr_with_config(fp, fallback, [v], &normal, [&indirect], config("ic"))?;
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(e3)
+        .inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
+            asm,
+            [v],
+            &normal,
+            [&indirect],
+            config("ac"),
+        )?;
+
+    let text = format!("{m}");
+    for expected in [
+        "%ii = invoke i32 %0(i32 %1)",
+        r#"%ai = invoke i32 asm "nop", ""(i32 %1)"#,
+        "%ic = callbr i32 %0(i32 %1)",
+        r#"%ac = callbr i32 asm "nop", ""(i32 %1)"#,
+    ] {
+        assert!(
+            text.contains(expected),
+            "the override decides the call-site type; missing `{expected}`:\n{text}"
+        );
+    }
     Ok(())
 }

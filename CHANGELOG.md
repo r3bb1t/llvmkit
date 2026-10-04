@@ -19,6 +19,26 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — the indirect and inline-asm `invoke` / `callbr` builders check what `call_erased` checks
+
+- **`IrBuilder::indirect_invoke_dyn_with_config` checks its return marker.** It
+  retagged its result to the caller's `R2` without asking whether `R2`
+  describes the call-site type, so `::<i32>` on a `void` invoke handed back an
+  `InvokeInst<i32>` for a result that does not exist. It now fails with
+  `IrError::ReturnTypeMismatch`, as `call_erased` and the inline-asm forms
+  already did.
+- **Four builders honour a `CallSiteConfig::call_site_type` override** they
+  used to accept and ignore: `indirect_invoke_dyn_with_config`,
+  `indirect_callbr_with_config`, `inline_asm_invoke_with_config` and
+  `inline_asm_callbr_with_config`. The override now wins over the spelled
+  `fn_ty` or the asm's own type, as it does in `call_erased`, and the arguments
+  are validated against the type it leaves. `docs/future-work.md` recorded
+  three of the four; `indirect_callbr_with_config` landed after that entry was
+  written and repeated the shape. All four now share `call_erased`'s
+  admission routine, so the five cannot drift apart again. A caller that set
+  the override and relied on it being ignored builds a different call site —
+  a behaviour change, and the intended one.
+
 ### Added — call sites created in no block, and copied with other bundles
 
 - **`CallInst::create_detached` / `InvokeInst::create_detached`** port
