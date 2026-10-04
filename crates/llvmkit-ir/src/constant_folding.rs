@@ -1152,7 +1152,7 @@ fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
     }
     let signed_predicate = predicate.flip_signedness();
     let result = compare_ap_int_with_predicate(signed_predicate, &lhs_offset, &rhs_offset);
-    let module = lhs.as_erased().module();
+    let module = lhs.as_erased().module;
     Some(module.bool_type().const_int(result).as_constant())
 }
 

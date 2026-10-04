@@ -284,6 +284,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f64 {
 // IntoFloatValue: ergonomic operand input for the float IrBuilder
 // --------------------------------------------------------------------------
 
+use super::capability::Capability;
 use super::module::{ModuleBrand, ModuleRef};
 use super::value::{FloatValue, Value, ValueSlotAccess};
 
@@ -402,8 +403,11 @@ pub trait StaticFloatKind: FloatKind {
     /// Usable as `K::STATIC_BITS` in `const { ... }` assertions.
     const STATIC_BITS: u32;
 
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>)
-    -> FloatType<'ctx, Self, B>;
+    /// Project the marker into the matching [`FloatType`] from the
+    /// caller's module, at that module reference's capability.
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+    ) -> FloatType<'ctx, Self, B, C>;
 }
 
 macro_rules! impl_static_float_kind {
@@ -411,10 +415,10 @@ macro_rules! impl_static_float_kind {
         impl StaticFloatKind for $ty {
             const STATIC_BITS: u32 = $bits;
             #[inline]
-            fn ir_type<'ctx, B: ModuleBrand + 'ctx>(
-                module: ModuleRef<'ctx, B>,
-            ) -> FloatType<'ctx, Self, B> {
-                FloatType::<Self, B>::new(
+            fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                module: ModuleRef<'ctx, B, C>,
+            ) -> FloatType<'ctx, Self, B, C> {
+                FloatType::<Self, B, C>::new(
                     module
                         .module()
                         .$method::<B>()

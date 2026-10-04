@@ -19,6 +19,7 @@ use super::align::Align;
 use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
 use super::ap_int::{ApInt, Signedness};
 use super::array_len::ArrLenDyn;
+use super::capability::Capability;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
@@ -35,7 +36,7 @@ use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode}
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
-use super::r#type::{Type, TypeData, TypeSlotAccess};
+use super::r#type::{IrType, Type, TypeData, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
@@ -1838,13 +1839,13 @@ pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
     if rhs.ty() != lhs.ty() {
         return Ok(None);
     }
-    let element_ty = Type::new(element_ty, lhs.as_erased().module());
+    let module = lhs.as_erased().module;
+    let element_ty = Type::new(element_ty, module);
     let Ok(result_lanes) = u32::try_from(mask.len()) else {
         return Ok(None);
     };
     let result_ty =
-        vector_type_with_scalability(lhs.as_erased().module(), element_ty, result_lanes, scalable)
-            .as_type();
+        vector_type_with_scalability(module, element_ty, result_lanes, scalable).as_type();
     if mask
         .iter()
         .all(|element| *element == ShuffleMaskElem::Poison)
@@ -1855,12 +1856,7 @@ pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
         .iter()
         .all(|element| *element == ShuffleMaskElem::Lane(0))
     {
-        let index = lhs
-            .as_erased()
-            .module()
-            .i32_type()
-            .const_zero()
-            .as_constant();
+        let index = lhs.as_erased().module.i32_type().const_zero().as_constant();
         if let Some(element) =
             constant_fold_extract_element_instruction_trusting_same_module(lhs, index)?
             && (!scalable || constant_is_null_value(element) || is_undef_or_poison(element))
@@ -2083,11 +2079,11 @@ pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx>(
             message: "invalid getelementptr constant expression",
         });
     };
-    let scalar_ptr_ty = pointer_ty.module().ptr_type(addr_space).as_type();
+    let scalar_ptr_ty = pointer_ty.module.ptr_type(addr_space).as_type();
     let Some((lanes, scalable)) = gep_operand_vector_shape(pointer_ty, indices)? else {
         return Ok(scalar_ptr_ty);
     };
-    Ok(vector_type_with_scalability(pointer_ty.module(), scalar_ptr_ty, lanes, scalable).as_type())
+    Ok(vector_type_with_scalability(pointer_ty.module, scalar_ptr_ty, lanes, scalable).as_type())
 }
 
 fn gep_operand_vector_shape<'ctx, B: ModuleBrand + 'ctx>(
@@ -2576,7 +2572,7 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx>(
         && (ConstantIntValue::<IntDyn, B>::try_from(operand).is_ok()
             || ConstantFloatValue::<FloatDyn, B>::try_from(operand).is_ok())
     {
-        let vector_ty = operand.as_erased().module().vector_type(operand.ty(), 1);
+        let vector_ty = operand.as_erased().module.vector_type(operand.ty(), 1);
         let vector = vector_ty.const_vector::<Constant<'ctx, B>, _>([operand])?;
         return match operand.as_erased().module().core_ref().constant_expr(
             dest_ty,
@@ -2748,7 +2744,7 @@ fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(ptr_ty.const_null().as_constant()));
     }
     if let Some((element_ty, lanes, scalable)) = ty.data().as_vector() {
-        let module = ty.module();
+        let module = ty.module;
         let element_ty = Type::new(element_ty, module);
         let Some(element) = null_constant_for_type(element_ty)? else {
             return Ok(None);
@@ -2843,8 +2839,8 @@ fn fold_undef_float_binary<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn compare_result_type<'ctx, B: ModuleBrand + 'ctx>(operand_ty: Type<'ctx, B>) -> Type<'ctx, B> {
-    let module = operand_ty.module();
-    let bool_ty: IntType<'ctx, bool, B> = IntType::new(module.context().int_type(1), module);
+    let module = operand_ty.module;
+    let bool_ty = module.bool_type();
     if let Some((_, lanes, scalable)) = operand_ty.data().as_vector() {
         vector_type_with_scalability(module, bool_ty.as_type(), lanes, scalable).as_type()
     } else {
@@ -2975,7 +2971,7 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some((0..lane_count).map(|_| fill).collect()));
     }
 
-    let i32_ty = vector.as_erased().module().i32_type();
+    let i32_ty = vector.as_erased().module.i32_type();
     let mut elements = Vec::with_capacity(lane_count);
     for index in 0..lanes {
         let Ok(index) = i32::try_from(index) else {
@@ -3062,7 +3058,7 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(float_ty.const_ap_float(&value)?.as_constant()));
     }
     if let Some((element_ty, lanes, scalable)) = ty.data().as_vector() {
-        let module = ty.module();
+        let module = ty.module;
         let element_ty = Type::new(element_ty, module);
         let Some(element) = all_ones_constant_for_type(element_ty)? else {
             return Ok(None);
@@ -3367,17 +3363,18 @@ fn poison_for<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Constant<'ctx, 
 /// or analyzed vectors carry `scalable` as data, so this dispatches between
 /// [`ModuleView::vector_type`] and [`ModuleView::scalable_vector_type`].
 ///
-/// This is the view-level spelling of `VectorType::get(Type *ElementType,
-/// unsigned NumElements, bool Scalable)` (`DerivedTypes.h`). The slot-level
-/// twin, used by the builder, is `Context::vector_type_with_scalability`.
-fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, T>(
-    module: ModuleView<'ctx, B>,
+/// This is the handle-level spelling of `VectorType::get(Type *ElementType,
+/// unsigned NumElements, bool Scalable)` (`DerivedTypes.h`), minting at the
+/// capability of the reference it is given. The slot-level twin, used by the
+/// builder, is `Context::vector_type_with_scalability`.
+fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, C: Capability, T>(
+    module: ModuleRef<'ctx, B, C>,
     element: T,
     lanes: u32,
     scalable: bool,
-) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+) -> VectorType<'ctx, ElemDyn, LenDyn, B, C>
 where
-    T: Into<Type<'ctx, B>>,
+    T: IrType<'ctx, B>,
 {
     if scalable {
         module.scalable_vector_type(element, lanes)

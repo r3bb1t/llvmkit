@@ -1,7 +1,7 @@
 use llvmkit_ir::{
-    Constant, Dyn, IntValue, IntoIrField, IrBuilder, IrError, IrField, Linkage, Module,
-    ModuleBrand, ModuleView, StructFields, StructSchema, StructSchemaValue, StructValue, Type,
-    ValidatedStructValue, Value, module_new,
+    Capability, Constant, Dyn, IntValue, IntoIrField, IrBuilder, IrError, IrField, Linkage, Module,
+    ModuleBrand, ModuleView, ReadOnly, StructFields, StructSchema, StructSchemaValue, StructValue,
+    Type, ValidatedStructValue, Value, module_new,
 };
 use llvmkit_macros::Branded;
 
@@ -67,7 +67,9 @@ impl StructSchema for Point {
 
     const NAME: &'static str = "Point";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -77,7 +79,7 @@ impl StructSchema for Point {
         ])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -105,14 +107,16 @@ impl StructSchema for BadPoint {
 
     const NAME: &'static str = "Point";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
         Ok(vec![<i64 as IrField>::ir_type(module)?])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -140,7 +144,9 @@ impl StructSchema for RecursiveNode {
 
     const NAME: &'static str = "RecursiveNode";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -149,7 +155,7 @@ impl StructSchema for RecursiveNode {
         ])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -175,14 +181,16 @@ impl StructSchema for EmptyName {
 
     const NAME: &'static str = "";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
         Ok(vec![<i32 as IrField>::ir_type(module)?])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -246,7 +254,9 @@ impl StructSchema for Rect {
 
     const NAME: &'static str = "Rect";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -256,7 +266,7 @@ impl StructSchema for Rect {
         ])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -343,7 +353,7 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
     let (point,) = m.view(f).params();
     let _: PointValue<'_, _> = point;
     assert_eq!(
-        point.as_struct_value().ty().as_type(),
+        point.as_struct_value().ty().as_type().read_only(),
         <Point as StructSchema>::ir_type(m.as_view())?.as_type()
     );
     Ok(())
@@ -359,7 +369,7 @@ fn struct_schema_try_value_from_ir_wraps_raw_struct() -> Result<(), IrError> {
     let f = m.add_function_dyn("raw_take_point", fn_ty, Linkage::External)?;
     let point = Point::try_value_from_ir(m.view(f).param(0)?)?;
     assert_eq!(
-        point.as_struct_value().ty().as_type(),
+        point.as_struct_value().ty().as_type().read_only(),
         <Point as StructSchema>::ir_type(m.as_view())?.as_type()
     );
     Ok(())

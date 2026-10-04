@@ -30,6 +30,7 @@
 //! The base trait is **sealed** — the set of leaf element markers is closed,
 //! not an extension point.
 
+use crate::capability::Capability;
 use crate::float_kind::{Bfloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
 use crate::int_width::StaticIntWidth;
 use crate::module::{ModuleBrand, ModuleRef};
@@ -95,8 +96,8 @@ pub trait StaticVecElem<'ctx, B: ModuleBrand>: VecElem {
     type Value: IsValue<'ctx, B> + IntoErasedValue<'ctx, B> + Copy;
 
     /// Project the marker into the matching erased element [`Type`] from the
-    /// caller's module.
-    fn element_ir_type(module: ModuleRef<'ctx, B>) -> Type<'ctx, B>;
+    /// caller's module, at that module reference's capability.
+    fn element_ir_type<C: Capability>(module: ModuleRef<'ctx, B, C>) -> Type<'ctx, B, C>;
 
     /// Wrap a [`Value`] known-by-construction to have this element type into
     /// the typed scalar handle. Unchecked — the [`WrapWitness`] gates this to
@@ -115,7 +116,7 @@ macro_rules! impl_vec_elem_int {
         impl<'ctx, B: ModuleBrand + 'ctx> StaticVecElem<'ctx, B> for $ty {
             type Value = IntValue<'ctx, $ty, B>;
             #[inline]
-            fn element_ir_type(module: ModuleRef<'ctx, B>) -> Type<'ctx, B> {
+            fn element_ir_type<C: Capability>(module: ModuleRef<'ctx, B, C>) -> Type<'ctx, B, C> {
                 <$ty as StaticIntWidth>::ir_type(module).as_type()
             }
             #[inline]
@@ -135,7 +136,7 @@ macro_rules! impl_vec_elem_float {
         impl<'ctx, B: ModuleBrand + 'ctx> StaticVecElem<'ctx, B> for $ty {
             type Value = FloatValue<'ctx, $ty, B>;
             #[inline]
-            fn element_ir_type(module: ModuleRef<'ctx, B>) -> Type<'ctx, B> {
+            fn element_ir_type<C: Capability>(module: ModuleRef<'ctx, B, C>) -> Type<'ctx, B, C> {
                 <$ty as StaticFloatKind>::ir_type(module).as_type()
             }
             #[inline]

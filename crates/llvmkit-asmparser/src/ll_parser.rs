@@ -17007,8 +17007,8 @@ fn function_type_with_variadic<'ctx, B, I, R, T>(
 where
     B: ModuleBrand + 'ctx,
     I: IntoIterator<Item = T>,
-    R: Into<llvmkit_ir::Type<'ctx, B>>,
-    T: Into<llvmkit_ir::Type<'ctx, B>>,
+    R: llvmkit_ir::IrType<'ctx, B>,
+    T: llvmkit_ir::IrType<'ctx, B>,
 {
     if var_args {
         module.variadic_function_type(return_type, parameters)

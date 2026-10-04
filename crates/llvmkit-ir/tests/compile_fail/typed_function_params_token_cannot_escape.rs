@@ -3,21 +3,21 @@
 //! llvmkit keeps the validated-params capability scoped to one facade call.
 
 use llvmkit_ir::function_signature::token::ValidatedFunctionParams;
-use llvmkit_ir::{Argument, FunctionParam, IrResult, ModuleBrand, ModuleView, Type, Value};
+use llvmkit_ir::{Argument, Capability, FunctionParam, IrResult, ModuleBrand, ModuleView, ReadOnly, Type, Value};
 
 struct Leaker;
 
 impl FunctionParam for Leaker {
     type Value<'ctx, B: ModuleBrand + 'ctx> = ();
 
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
         Ok(module.i32_type().as_type())
     }
 
-    fn matches_ir_type<'ctx, B>(_ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(_ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {

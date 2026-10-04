@@ -19,22 +19,27 @@
 use core::fmt;
 
 use crate::Branded;
+use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 
 /// Typed pointer (`<elem>*`, `<elem> addrspace(N)*`).
 #[derive(Branded)]
-pub struct TypedPointerType<'ctx, B: ModuleBrand> {
+pub struct TypedPointerType<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     id: TypeSlot,
-    pub(crate) module: ModuleRef<'ctx, B>,
+    pub(crate) module: ModuleRef<'ctx, B, C>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for TypedPointerType<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TypedPointerType<'ctx, B, C> {
     #[inline]
     pub(crate) fn new<M>(id: TypeSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -48,12 +53,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
     }
 
     #[inline]
-    pub fn as_type(self) -> Type<'ctx, B> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
     }
 
     /// Pointee type. Mirrors `TypedPointerType::getElementType`.
-    pub fn pointee(self) -> Type<'ctx, B> {
+    pub fn pointee(self) -> Type<'ctx, B, C> {
         let (pointee, _) = self
             .data()
             .as_typed_pointer()
@@ -71,31 +76,42 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand> crate::r#type::sealed::Sealed for TypedPointerType<'ctx, B> {}
+impl<'ctx, B: ModuleBrand, C: Capability> crate::r#type::sealed::Sealed
+    for TypedPointerType<'ctx, B, C>
+{
+}
 
-impl<'ctx, B: ModuleBrand + 'ctx> crate::r#type::IrType<'ctx, B> for TypedPointerType<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> crate::r#type::IrType<'ctx, B>
+    for TypedPointerType<'ctx, B, C>
+{
+    type Capability = C;
+
     #[inline]
-    fn as_type(self) -> Type<'ctx, B> {
+    fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
     }
 }
 
-impl<'ctx, B: ModuleBrand> fmt::Display for TypedPointerType<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for TypedPointerType<'ctx, B, C> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_type().fmt(f)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> From<TypedPointerType<'ctx, B>> for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<TypedPointerType<'ctx, B, C>>
+    for Type<'ctx, B, C>
+{
     #[inline]
-    fn from(t: TypedPointerType<'ctx, B>) -> Self {
+    fn from(t: TypedPointerType<'ctx, B, C>) -> Self {
         t.as_type()
     }
 }
 
-impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for TypedPointerType<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for TypedPointerType<'ctx, B, C>
+{
     type Error = IrError;
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
         if t.data().as_typed_pointer().is_some() {
             Ok(Self {
                 // Internal: a re-wrap that keeps `t`'s own module.

@@ -106,7 +106,7 @@ use super::struct_body_state::StructBodyDyn;
 use super::struct_body_state::{BodySet, Opaque};
 use super::struct_schema::StructSchema;
 use super::r#type::{
-    MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
+    IrType, MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
 };
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
@@ -557,6 +557,360 @@ impl<'ctx, B: ModuleBrand, C: Capability> ModuleRef<'ctx, B, C> {
         slot: crate::instr_types::CallAttributesSlot,
     ) -> &'ctx crate::instr_types::CallAttributeData {
         self.core.context().call_attributes(slot)
+    }
+}
+
+// ---- Type constructors shared by `Module<B, Unverified>` and `ModuleView` ----
+//
+// One body each, minting at this reference's capability: the unverified
+// module calls them on its `Mutable` reference, the view on its `ReadOnly` one,
+// and crate code on the reference of the handle it starts from, so a type it
+// mints keeps that handle's capability. Interning a type is
+// preservation-neutral (see `ModuleView`'s constructor section), so the front
+// ends differ only in what their handles may do.
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
+    /// `void`.
+    pub(crate) fn void_type(self) -> VoidType<'ctx, B, C> {
+        VoidType::new(self.core.ctx.void(), self)
+    }
+
+    /// `label`.
+    pub(crate) fn label_type(self) -> LabelType<'ctx, B, C> {
+        LabelType::new(self.core.ctx.label(), self)
+    }
+
+    /// `metadata`.
+    pub(crate) fn metadata_type(self) -> MetadataType<'ctx, B, C> {
+        MetadataType::new(self.core.ctx.metadata(), self)
+    }
+
+    /// `token`.
+    pub(crate) fn token_type(self) -> TokenType<'ctx, B, C> {
+        TokenType::new(self.core.ctx.token(), self)
+    }
+
+    /// `half`.
+    pub(crate) fn half_type(self) -> FloatType<'ctx, Half, B, C> {
+        FloatType::new(self.core.ctx.half(), self)
+    }
+
+    /// `bfloat`.
+    pub(crate) fn bfloat_type(self) -> FloatType<'ctx, Bfloat, B, C> {
+        FloatType::new(self.core.ctx.bfloat(), self)
+    }
+
+    /// `float` (32-bit IEEE 754).
+    pub(crate) fn f32_type(self) -> FloatType<'ctx, f32, B, C> {
+        FloatType::new(self.core.ctx.float(), self)
+    }
+
+    /// `double` (64-bit IEEE 754).
+    pub(crate) fn f64_type(self) -> FloatType<'ctx, f64, B, C> {
+        FloatType::new(self.core.ctx.double(), self)
+    }
+
+    /// `fp128`.
+    pub(crate) fn fp128_type(self) -> FloatType<'ctx, Fp128, B, C> {
+        FloatType::new(self.core.ctx.fp128(), self)
+    }
+
+    /// `x86_fp80`.
+    pub(crate) fn x86_fp80_type(self) -> FloatType<'ctx, X86Fp80, B, C> {
+        FloatType::new(self.core.ctx.x86_fp80(), self)
+    }
+
+    /// `ppc_fp128`.
+    pub(crate) fn ppc_fp128_type(self) -> FloatType<'ctx, PpcFp128, B, C> {
+        FloatType::new(self.core.ctx.ppc_fp128(), self)
+    }
+
+    /// `x86_amx`.
+    pub(crate) fn x86_amx_type(self) -> Type<'ctx, B, C> {
+        Type::new(self.core.ctx.x86_amx(), self)
+    }
+
+    /// `exnref`.
+    pub(crate) fn wasm_exnref_type(self) -> Type<'ctx, B, C> {
+        Type::new(self.core.ctx.wasm_exnref(), self)
+    }
+
+    /// `i1`.
+    pub(crate) fn bool_type(self) -> IntType<'ctx, bool, B, C> {
+        IntType::new(self.core.ctx.int_type(1), self)
+    }
+
+    /// `i8`.
+    pub(crate) fn i8_type(self) -> IntType<'ctx, i8, B, C> {
+        IntType::new(self.core.ctx.int_type(8), self)
+    }
+
+    /// `i16`.
+    pub(crate) fn i16_type(self) -> IntType<'ctx, i16, B, C> {
+        IntType::new(self.core.ctx.int_type(16), self)
+    }
+
+    /// `i32`.
+    pub(crate) fn i32_type(self) -> IntType<'ctx, i32, B, C> {
+        IntType::new(self.core.ctx.int_type(32), self)
+    }
+
+    /// `i64`.
+    pub(crate) fn i64_type(self) -> IntType<'ctx, i64, B, C> {
+        IntType::new(self.core.ctx.int_type(64), self)
+    }
+
+    /// `i128`.
+    pub(crate) fn i128_type(self) -> IntType<'ctx, i128, B, C> {
+        IntType::new(self.core.ctx.int_type(128), self)
+    }
+
+    /// Run-time-width integer type. Errors when `bits` falls outside
+    /// `MIN_INT_BITS..=MAX_INT_BITS`.
+    pub(crate) fn custom_width_int_type(self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B, C>> {
+        if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
+            return Err(IrError::InvalidIntegerWidth { bits });
+        }
+        Ok(IntType::new(self.core.ctx.int_type(bits), self))
+    }
+
+    /// Const-generic integer type. Const-evaluated range check at
+    /// monomorphisation: `N` outside `MIN_INT_BITS..=MAX_INT_BITS` is a
+    /// compile error.
+    pub(crate) fn int_type_n<const N: u32>(self) -> IntType<'ctx, Width<N>, B, C> {
+        const {
+            assert!(
+                N >= MIN_INT_BITS && N <= MAX_INT_BITS,
+                "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
+            );
+        }
+        IntType::new(self.core.ctx.int_type(N), self)
+    }
+
+    /// Opaque pointer in address space `addr_space` (`0` = default).
+    pub(crate) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B, C> {
+        PointerType::new(self.core.ctx.ptr_type(addr_space), self)
+    }
+
+    /// Legacy typed pointer `T*` in address space `addr_space`.
+    pub(crate) fn typed_pointer_type<T>(
+        self,
+        pointee: T,
+        addr_space: u32,
+    ) -> TypedPointerType<'ctx, B, C>
+    where
+        T: IrType<'ctx, B>,
+    {
+        // boundary (F1): refused by Task 26
+        let pointee_id = pointee.as_type().slot_trusting_same_module();
+        TypedPointerType::new(
+            self.core.ctx.typed_pointer_type(pointee_id, addr_space),
+            self,
+        )
+    }
+
+    /// `[n x elem]`.
+    pub(crate) fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>
+    where
+        T: IrType<'ctx, B>,
+    {
+        // boundary (F1): refused by Task 26
+        let elem_id = elem.as_type().slot_trusting_same_module();
+        ArrayType::new(self.core.ctx.array_type(elem_id, n), self)
+    }
+
+    /// Const-generic typed array `[N x E]`; `N == 0` is permitted.
+    pub(crate) fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, C>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        let elem = E::element_ir_type(self);
+        let id = self
+            .core
+            .ctx
+            .array_type(elem.slot_trusting_same_module(), N);
+        ArrayType::new(id, self)
+    }
+
+    /// Const-generic typed vector `<N x E>`; `N == 0` is a compile error.
+    pub(crate) fn vector_type_n<E, const N: u32>(self) -> VectorType<'ctx, E, Len<N>, B, C>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        const {
+            assert!(N > 0, "vector length must be >= 1");
+        }
+        let elem = E::element_ir_type(self);
+        let id = self
+            .core
+            .ctx
+            .fixed_vector_type(elem.slot_trusting_same_module(), N);
+        VectorType::new(id, self)
+    }
+
+    /// Target extension type `target("name", type_params..., int_params...)`.
+    pub(crate) fn target_ext_type<Name, I, T, J>(
+        self,
+        name: Name,
+        type_params: I,
+        int_params: J,
+    ) -> TargetExtType<'ctx, B, C>
+    where
+        Name: Into<String>,
+        I: IntoIterator<Item = T>,
+        T: IrType<'ctx, B>,
+        J: IntoIterator<Item = u32>,
+    {
+        let name: String = name.into();
+        // boundary (F1): refused by Task 26
+        let type_params: Box<[TypeSlot]> = type_params
+            .into_iter()
+            .map(|t| t.as_type().slot_trusting_same_module())
+            .collect();
+        let int_params: Box<[u32]> = int_params.into_iter().collect();
+        TargetExtType::new(
+            self.core.ctx.target_ext_type(name, type_params, int_params),
+            self,
+        )
+    }
+
+    /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
+    pub(super) fn vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B, C>
+    where
+        T: IrType<'ctx, B>,
+    {
+        // boundary (F1): refused by Task 26
+        let id = self
+            .core
+            .ctx
+            .fixed_vector_type(elem.as_type().slot_trusting_same_module(), n);
+        VectorType::new(id, self)
+    }
+
+    /// Scalable `<vscale x n x elem>` vector. Mirrors
+    /// `ScalableVectorType::get`.
+    pub(super) fn scalable_vector_type<T>(
+        self,
+        elem: T,
+        n: u32,
+    ) -> VectorType<'ctx, ElemDyn, LenDyn, B, C>
+    where
+        T: IrType<'ctx, B>,
+    {
+        // boundary (F1): refused by Task 26
+        let id = self
+            .core
+            .ctx
+            .scalable_vector_type(elem.as_type().slot_trusting_same_module(), n);
+        VectorType::new(id, self)
+    }
+
+    /// Literal struct type, packed or not.
+    pub(super) fn literal_struct_type<I, T>(
+        self,
+        elements: I,
+        packed: bool,
+    ) -> StructType<'ctx, StructBodyDyn, B, C>
+    where
+        I: IntoIterator<Item = T>,
+        T: IrType<'ctx, B>,
+    {
+        // boundary (F1): refused by Task 26
+        let elems: Box<[TypeSlot]> = elements
+            .into_iter()
+            .map(|t| t.as_type().slot_trusting_same_module())
+            .collect();
+        StructType::new(self.core.ctx.literal_struct_type(elems, packed), self)
+    }
+
+    /// Function type, variadic or not.
+    pub(super) fn raw_function_type<I, R, T>(
+        self,
+        return_type: R,
+        parameters: I,
+        is_var_arg: bool,
+    ) -> FunctionType<'ctx, B, C>
+    where
+        I: IntoIterator<Item = T>,
+        R: IrType<'ctx, B>,
+        T: IrType<'ctx, B>,
+    {
+        // boundary (F1): refused by Task 26
+        let ret = return_type.as_type().slot_trusting_same_module();
+        // boundary (F1): refused by Task 26
+        let params: Box<[TypeSlot]> = parameters
+            .into_iter()
+            .map(|t| t.as_type().slot_trusting_same_module())
+            .collect();
+        FunctionType::new(self.core.ctx.function_type(ret, params, is_var_arg), self)
+    }
+
+    /// Get or create the identified struct type `%name`, body unset.
+    pub(super) fn get_or_insert_named_struct(
+        self,
+        name: &str,
+    ) -> StructType<'ctx, StructBodyDyn, B, C> {
+        let (id, _existed) = self.core.ctx.get_or_create_named_struct(name);
+        StructType::new(id, self)
+    }
+
+    /// A fresh identified struct with no name. Mirrors
+    /// `StructType::create(Context)` called without a name.
+    pub(super) fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B, C> {
+        let id = self.core.ctx.create_anonymous_identified_struct();
+        StructType::new(id, self)
+    }
+
+    /// An existing identified struct type by name, or `None`.
+    pub(super) fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B, C>> {
+        self.core
+            .ctx
+            .get_named_struct(name)
+            .map(|id| StructType::new(id, self))
+    }
+
+    /// Idempotently intern schema `S`'s named struct type; see
+    /// [`ModuleView::get_or_insert_struct_of`].
+    pub(super) fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B, C>>
+    where
+        S: StructSchema,
+    {
+        if S::NAME.is_empty() {
+            return Err(IrError::InvalidOperation {
+                message: "struct schema name must not be empty",
+            });
+        }
+        let field_types = S::field_types(ModuleView::<B>::new(self.core))?;
+        // Internal: the schema's field types were minted in this module.
+        let elements: Box<[TypeSlot]> = field_types
+            .iter()
+            .map(|t| t.slot_trusting_same_module())
+            .collect();
+        let (id, _existed) = self.core.ctx.get_or_create_named_struct(S::NAME);
+        let data = self
+            .core
+            .ctx
+            .type_data(id)
+            .as_struct()
+            .unwrap_or_else(|| unreachable!("named struct id stores struct data"));
+        {
+            let body = data.body.borrow();
+            if let Some(body) = body.as_ref() {
+                if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
+                    return Ok(StructType::<BodySet, B, C>::new(id, self));
+                }
+                return Err(IrError::StructBodyMismatch {
+                    name: S::NAME.to_owned(),
+                });
+            }
+        }
+        self.core.ctx.set_named_struct_body(
+            id,
+            StructBody {
+                elements,
+                packed: S::PACKED,
+            },
+        )?;
+        Ok(StructType::<BodySet, B, C>::new(id, self))
     }
 }
 
@@ -1024,186 +1378,165 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// `void`.
     #[inline]
-    pub fn void_type(self) -> VoidType<'ctx, B> {
-        VoidType::new(self.core.ctx.void(), ModuleRef::new(self.core))
+    pub fn void_type(self) -> VoidType<'ctx, B, ReadOnly> {
+        self.read_only_ref().void_type()
     }
 
     /// `label`.
     #[inline]
-    pub fn label_type(self) -> LabelType<'ctx, B> {
-        LabelType::new(self.core.ctx.label(), ModuleRef::new(self.core))
+    pub fn label_type(self) -> LabelType<'ctx, B, ReadOnly> {
+        self.read_only_ref().label_type()
     }
 
     /// `metadata`.
     #[inline]
-    pub fn metadata_type(self) -> MetadataType<'ctx, B> {
-        MetadataType::new(self.core.ctx.metadata(), ModuleRef::new(self.core))
+    pub fn metadata_type(self) -> MetadataType<'ctx, B, ReadOnly> {
+        self.read_only_ref().metadata_type()
     }
 
     /// `token`.
     #[inline]
-    pub fn token_type(self) -> TokenType<'ctx, B> {
-        TokenType::new(self.core.ctx.token(), ModuleRef::new(self.core))
+    pub fn token_type(self) -> TokenType<'ctx, B, ReadOnly> {
+        self.read_only_ref().token_type()
     }
 
     /// `half`.
     #[inline]
-    pub fn half_type(self) -> FloatType<'ctx, Half, B> {
-        FloatType::new(self.core.ctx.half(), ModuleRef::new(self.core))
+    pub fn half_type(self) -> FloatType<'ctx, Half, B, ReadOnly> {
+        self.read_only_ref().half_type()
     }
 
     /// `bfloat`.
     #[inline]
-    pub fn bfloat_type(self) -> FloatType<'ctx, Bfloat, B> {
-        FloatType::new(self.core.ctx.bfloat(), ModuleRef::new(self.core))
+    pub fn bfloat_type(self) -> FloatType<'ctx, Bfloat, B, ReadOnly> {
+        self.read_only_ref().bfloat_type()
     }
 
     /// `float` (32-bit IEEE 754).
     #[inline]
-    pub fn f32_type(self) -> FloatType<'ctx, f32, B> {
-        FloatType::new(self.core.ctx.float(), ModuleRef::new(self.core))
+    pub fn f32_type(self) -> FloatType<'ctx, f32, B, ReadOnly> {
+        self.read_only_ref().f32_type()
     }
 
     /// `double` (64-bit IEEE 754).
     #[inline]
-    pub fn f64_type(self) -> FloatType<'ctx, f64, B> {
-        FloatType::new(self.core.ctx.double(), ModuleRef::new(self.core))
+    pub fn f64_type(self) -> FloatType<'ctx, f64, B, ReadOnly> {
+        self.read_only_ref().f64_type()
     }
 
     /// `fp128`.
     #[inline]
-    pub fn fp128_type(self) -> FloatType<'ctx, Fp128, B> {
-        FloatType::new(self.core.ctx.fp128(), ModuleRef::new(self.core))
+    pub fn fp128_type(self) -> FloatType<'ctx, Fp128, B, ReadOnly> {
+        self.read_only_ref().fp128_type()
     }
 
     /// `x86_fp80`.
     #[inline]
-    pub fn x86_fp80_type(self) -> FloatType<'ctx, X86Fp80, B> {
-        FloatType::new(self.core.ctx.x86_fp80(), ModuleRef::new(self.core))
+    pub fn x86_fp80_type(self) -> FloatType<'ctx, X86Fp80, B, ReadOnly> {
+        self.read_only_ref().x86_fp80_type()
     }
 
     /// `ppc_fp128`.
     #[inline]
-    pub fn ppc_fp128_type(self) -> FloatType<'ctx, PpcFp128, B> {
-        FloatType::new(self.core.ctx.ppc_fp128(), ModuleRef::new(self.core))
+    pub fn ppc_fp128_type(self) -> FloatType<'ctx, PpcFp128, B, ReadOnly> {
+        self.read_only_ref().ppc_fp128_type()
     }
 
     /// `x86_amx`.
     #[inline]
-    pub fn x86_amx_type(self) -> Type<'ctx, B> {
-        Type::new(self.core.ctx.x86_amx(), ModuleRef::new(self.core))
+    pub fn x86_amx_type(self) -> Type<'ctx, B, ReadOnly> {
+        self.read_only_ref().x86_amx_type()
     }
 
     /// `exnref`.
     #[inline]
-    pub fn wasm_exnref_type(self) -> Type<'ctx, B> {
-        Type::new(self.core.ctx.wasm_exnref(), ModuleRef::new(self.core))
+    pub fn wasm_exnref_type(self) -> Type<'ctx, B, ReadOnly> {
+        self.read_only_ref().wasm_exnref_type()
     }
 
     /// `i1`.
     #[inline]
-    pub fn bool_type(self) -> IntType<'ctx, bool, B> {
-        IntType::new(self.core.ctx.int_type(1), ModuleRef::new(self.core))
+    pub fn bool_type(self) -> IntType<'ctx, bool, B, ReadOnly> {
+        self.read_only_ref().bool_type()
     }
 
     /// Alias for [`Self::bool_type`].
     #[inline]
-    pub fn i1_type(self) -> IntType<'ctx, bool, B> {
+    pub fn i1_type(self) -> IntType<'ctx, bool, B, ReadOnly> {
         self.bool_type()
     }
 
     /// `i8`.
     #[inline]
-    pub fn i8_type(self) -> IntType<'ctx, i8, B> {
-        IntType::new(self.core.ctx.int_type(8), ModuleRef::new(self.core))
+    pub fn i8_type(self) -> IntType<'ctx, i8, B, ReadOnly> {
+        self.read_only_ref().i8_type()
     }
 
     /// `i16`.
     #[inline]
-    pub fn i16_type(self) -> IntType<'ctx, i16, B> {
-        IntType::new(self.core.ctx.int_type(16), ModuleRef::new(self.core))
+    pub fn i16_type(self) -> IntType<'ctx, i16, B, ReadOnly> {
+        self.read_only_ref().i16_type()
     }
 
     /// `i32`.
     #[inline]
-    pub fn i32_type(self) -> IntType<'ctx, i32, B> {
-        IntType::new(self.core.ctx.int_type(32), ModuleRef::new(self.core))
+    pub fn i32_type(self) -> IntType<'ctx, i32, B, ReadOnly> {
+        self.read_only_ref().i32_type()
     }
 
     /// `i64`.
     #[inline]
-    pub fn i64_type(self) -> IntType<'ctx, i64, B> {
-        IntType::new(self.core.ctx.int_type(64), ModuleRef::new(self.core))
+    pub fn i64_type(self) -> IntType<'ctx, i64, B, ReadOnly> {
+        self.read_only_ref().i64_type()
     }
 
     /// `i128`.
     #[inline]
-    pub fn i128_type(self) -> IntType<'ctx, i128, B> {
-        IntType::new(self.core.ctx.int_type(128), ModuleRef::new(self.core))
+    pub fn i128_type(self) -> IntType<'ctx, i128, B, ReadOnly> {
+        self.read_only_ref().i128_type()
     }
 
     /// Run-time-width integer type. Errors when `bits` falls outside
     /// `MIN_INT_BITS..=MAX_INT_BITS`.
     #[inline]
-    pub fn custom_width_int_type(self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
-        if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
-            return Err(IrError::InvalidIntegerWidth { bits });
-        }
-        Ok(IntType::new(
-            self.core.ctx.int_type(bits),
-            ModuleRef::new(self.core),
-        ))
+    pub fn custom_width_int_type(self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B, ReadOnly>> {
+        self.read_only_ref().custom_width_int_type(bits)
     }
 
     /// Const-generic integer type. Const-evaluated range check at
     /// monomorphisation: `N` outside `MIN_INT_BITS..=MAX_INT_BITS` is a
     /// compile error.
     #[inline]
-    pub fn int_type_n<const N: u32>(self) -> IntType<'ctx, Width<N>, B> {
-        const {
-            assert!(
-                N >= MIN_INT_BITS && N <= MAX_INT_BITS,
-                "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
-            );
-        }
-        IntType::new(self.core.ctx.int_type(N), ModuleRef::new(self.core))
+    pub fn int_type_n<const N: u32>(self) -> IntType<'ctx, Width<N>, B, ReadOnly> {
+        self.read_only_ref().int_type_n::<N>()
     }
 
     /// Opaque pointer in address space `addr_space` (`0` = default).
     #[inline]
-    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B> {
-        PointerType::new(
-            self.core.ctx.ptr_type(addr_space),
-            ModuleRef::new(self.core),
-        )
+    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B, ReadOnly> {
+        self.read_only_ref().ptr_type(addr_space)
     }
 
     /// Legacy typed pointer `T*` in address space `addr_space`.
     #[inline]
-    pub fn typed_pointer_type<T>(self, pointee: T, addr_space: u32) -> TypedPointerType<'ctx, B>
+    pub fn typed_pointer_type<T>(
+        self,
+        pointee: T,
+        addr_space: u32,
+    ) -> TypedPointerType<'ctx, B, ReadOnly>
     where
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let pointee_id = pointee.into().slot_trusting_same_module();
-        TypedPointerType::new(
-            self.core.ctx.typed_pointer_type(pointee_id, addr_space),
-            ModuleRef::new(self.core),
-        )
+        self.read_only_ref().typed_pointer_type(pointee, addr_space)
     }
 
     /// `[n x elem]`.
     #[inline]
-    pub fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
+    pub fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B, ReadOnly>
     where
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let elem_id = elem.into().slot_trusting_same_module();
-        ArrayType::new(
-            self.core.ctx.array_type(elem_id, n),
-            ModuleRef::new(self.core),
-        )
+        self.read_only_ref().array_type(elem, n)
     }
 
     /// Const-generic typed array `[N x E]`. The element marker `E` projects
@@ -1211,116 +1544,84 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
     /// LLVM permits zero-length arrays `[0 x T]`.
     #[inline]
-    pub fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B>
+    pub fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, ReadOnly>
     where
         E: StaticVecElem<'ctx, B>,
     {
-        let elem = E::element_ir_type(ModuleRef::new(self.core));
-        let id = self
-            .core
-            .ctx
-            .array_type(elem.slot_trusting_same_module(), N);
-        ArrayType::new(id, ModuleRef::new(self.core))
+        self.read_only_ref().array_type_n::<E, N>()
     }
 
     /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
     #[inline]
-    pub fn vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    pub fn vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B, ReadOnly>
     where
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let id = self
-            .core
-            .ctx
-            .fixed_vector_type(elem.into().slot_trusting_same_module(), n);
-        VectorType::new(id, ModuleRef::new(self.core))
+        self.read_only_ref().vector_type(elem, n)
     }
 
     /// Scalable `<vscale x n x elem>` vector. Mirrors
     /// `ScalableVectorType::get`.
     #[inline]
-    pub fn scalable_vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    pub fn scalable_vector_type<T>(
+        self,
+        elem: T,
+        n: u32,
+    ) -> VectorType<'ctx, ElemDyn, LenDyn, B, ReadOnly>
     where
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let id = self
-            .core
-            .ctx
-            .scalable_vector_type(elem.into().slot_trusting_same_module(), n);
-        VectorType::new(id, ModuleRef::new(self.core))
+        self.read_only_ref().scalable_vector_type(elem, n)
     }
 
     /// Const-generic typed vector `<N x E>`. The element marker `E` projects
     /// the scalar element type and `N` pins the lane count.
     /// `const`-evaluated at monomorphisation: `N == 0` is a compile error.
     #[inline]
-    pub fn vector_type_n<E, const N: u32>(self) -> VectorType<'ctx, E, Len<N>, B>
+    pub fn vector_type_n<E, const N: u32>(self) -> VectorType<'ctx, E, Len<N>, B, ReadOnly>
     where
         E: StaticVecElem<'ctx, B>,
     {
-        const {
-            assert!(N > 0, "vector length must be >= 1");
-        }
-        let elem = E::element_ir_type(ModuleRef::new(self.core));
-        let id = self
-            .core
-            .ctx
-            .fixed_vector_type(elem.slot_trusting_same_module(), N);
-        VectorType::new(id, ModuleRef::new(self.core))
+        self.read_only_ref().vector_type_n::<E, N>()
     }
 
     /// Literal (unnamed) struct type `{ .. }`.
     #[inline]
-    pub fn struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    pub fn struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B, ReadOnly>
     where
         I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        self.literal_struct_type(elements, false)
+        self.read_only_ref().literal_struct_type(elements, false)
     }
 
     /// Packed literal struct type `<{ .. }>`.
     #[inline]
-    pub fn packed_struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
-    {
-        self.literal_struct_type(elements, true)
-    }
-
-    #[inline]
-    fn literal_struct_type<I, T>(
+    pub fn packed_struct_type<I, T>(
         self,
         elements: I,
-        packed: bool,
-    ) -> StructType<'ctx, StructBodyDyn, B>
+    ) -> StructType<'ctx, StructBodyDyn, B, ReadOnly>
     where
         I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let elems: Box<[TypeSlot]> = elements
-            .into_iter()
-            .map(|t| t.into().slot_trusting_same_module())
-            .collect();
-        StructType::new(
-            self.core.ctx.literal_struct_type(elems, packed),
-            ModuleRef::new(self.core),
-        )
+        self.read_only_ref().literal_struct_type(elements, true)
     }
 
     /// Function type `ret (params...)`.
     #[inline]
-    pub fn function_type<I, R, T>(self, return_type: R, parameters: I) -> FunctionType<'ctx, B>
+    pub fn function_type<I, R, T>(
+        self,
+        return_type: R,
+        parameters: I,
+    ) -> FunctionType<'ctx, B, ReadOnly>
     where
         I: IntoIterator<Item = T>,
-        R: Into<Type<'ctx, B>>,
-        T: Into<Type<'ctx, B>>,
+        R: IrType<'ctx, B>,
+        T: IrType<'ctx, B>,
     {
-        self.raw_function_type(return_type, parameters, false)
+        self.read_only_ref()
+            .raw_function_type(return_type, parameters, false)
     }
 
     /// Variadic function type `ret (params..., ...)`.
@@ -1329,38 +1630,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B>
+    ) -> FunctionType<'ctx, B, ReadOnly>
     where
         I: IntoIterator<Item = T>,
-        R: Into<Type<'ctx, B>>,
-        T: Into<Type<'ctx, B>>,
+        R: IrType<'ctx, B>,
+        T: IrType<'ctx, B>,
     {
-        self.raw_function_type(return_type, parameters, true)
-    }
-
-    #[inline]
-    fn raw_function_type<I, R, T>(
-        self,
-        return_type: R,
-        parameters: I,
-        is_var_arg: bool,
-    ) -> FunctionType<'ctx, B>
-    where
-        I: IntoIterator<Item = T>,
-        R: Into<Type<'ctx, B>>,
-        T: Into<Type<'ctx, B>>,
-    {
-        // boundary (F1): refused by Task 26
-        let ret = return_type.into().slot_trusting_same_module();
-        // boundary (F1): refused by Task 26
-        let params: Box<[TypeSlot]> = parameters
-            .into_iter()
-            .map(|t| t.into().slot_trusting_same_module())
-            .collect();
-        FunctionType::new(
-            self.core.ctx.function_type(ret, params, is_var_arg),
-            ModuleRef::new(self.core),
-        )
+        self.read_only_ref()
+            .raw_function_type(return_type, parameters, true)
     }
 
     /// A function type with no parameters. Avoids the empty-iterator
@@ -1370,31 +1647,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// `function_type_no_parameters(ret)` is exactly
     /// `function_type(ret, [] as [Type; 0])`.
     #[inline]
-    pub fn function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B>
+    pub fn function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B, ReadOnly>
     where
-        R: Into<Type<'ctx, B>>,
+        R: IrType<'ctx, B>,
     {
-        self.function_type(return_type, core::iter::empty::<Type<'ctx, B>>())
+        self.read_only_ref().raw_function_type(
+            return_type,
+            core::iter::empty::<Type<'ctx, B>>(),
+            false,
+        )
     }
 
     /// Variadic sibling of
     /// [`function_type_no_parameters`](Self::function_type_no_parameters):
     /// `ret (...)`.
     #[inline]
-    pub fn variadic_function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B>
+    pub fn variadic_function_type_no_parameters<R>(
+        self,
+        return_type: R,
+    ) -> FunctionType<'ctx, B, ReadOnly>
     where
-        R: Into<Type<'ctx, B>>,
+        R: IrType<'ctx, B>,
     {
-        self.variadic_function_type(return_type, core::iter::empty::<Type<'ctx, B>>())
+        self.read_only_ref().raw_function_type(
+            return_type,
+            core::iter::empty::<Type<'ctx, B>>(),
+            true,
+        )
     }
 
     /// Get or create the identified struct type `%name`, leaving its body
     /// unset. Pure type interning, so it belongs to the same
     /// preservation-neutral family as the primitive constructors above.
     #[inline]
-    pub fn get_or_insert_named_struct(self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
-        let (id, _existed) = self.core.ctx.get_or_create_named_struct(name);
-        StructType::new(id, ModuleRef::new(self.core))
+    pub fn get_or_insert_named_struct(
+        self,
+        name: &str,
+    ) -> StructType<'ctx, StructBodyDyn, B, ReadOnly> {
+        self.read_only_ref().get_or_insert_named_struct(name)
     }
 
     /// A fresh identified struct with no name — `%0 = type { i32 }`.
@@ -1405,18 +1695,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// written `type { i32 }`. Body-setting goes through the same
     /// `set_struct_body` path as a named one.
     #[inline]
-    pub fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B> {
-        let id = self.core.ctx.create_anonymous_identified_struct();
-        StructType::new(id, ModuleRef::new(self.core))
+    pub fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B, ReadOnly> {
+        self.read_only_ref().anonymous_identified_struct()
     }
 
     /// Look up an existing identified struct type by name, or `None`.
     #[inline]
-    pub fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
-        self.core
-            .ctx
-            .get_named_struct(name)
-            .map(|id| StructType::new(id, ModuleRef::new(self.core)))
+    pub fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B, ReadOnly>> {
+        self.read_only_ref().named_struct(name)
     }
 
     /// Idempotently intern the named LLVM struct type described by schema `S`,
@@ -1436,47 +1722,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// The *typestate* body setters — [`Module::set_struct_body`] and
     /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle
     /// to `BodySet` — stay on the token alone.
-    pub fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B>>
+    pub fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B, ReadOnly>>
     where
         S: StructSchema,
     {
-        if S::NAME.is_empty() {
-            return Err(IrError::InvalidOperation {
-                message: "struct schema name must not be empty",
-            });
-        }
-        let field_types = S::field_types(self)?;
-        // Internal: the schema's field types were minted in this module.
-        let elements: Box<[TypeSlot]> = field_types
-            .iter()
-            .map(|t| t.slot_trusting_same_module())
-            .collect();
-        let (id, _existed) = self.core.ctx.get_or_create_named_struct(S::NAME);
-        let data = self
-            .core
-            .ctx
-            .type_data(id)
-            .as_struct()
-            .unwrap_or_else(|| unreachable!("named struct id stores struct data"));
-        {
-            let body = data.body.borrow();
-            if let Some(body) = body.as_ref() {
-                if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
-                    return Ok(StructType::<BodySet, B>::new(id, ModuleRef::new(self.core)));
-                }
-                return Err(IrError::StructBodyMismatch {
-                    name: S::NAME.to_owned(),
-                });
-            }
-        }
-        self.core.ctx.set_named_struct_body(
-            id,
-            StructBody {
-                elements,
-                packed: S::PACKED,
-            },
-        )?;
-        Ok(StructType::<BodySet, B>::new(id, ModuleRef::new(self.core)))
+        self.read_only_ref().get_or_insert_struct_of::<S>()
     }
 
     /// Target extension type `target("name", type_params..., int_params...)`.
@@ -1486,24 +1736,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         name: Name,
         type_params: I,
         int_params: J,
-    ) -> TargetExtType<'ctx, B>
+    ) -> TargetExtType<'ctx, B, ReadOnly>
     where
         Name: Into<String>,
         I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
         J: IntoIterator<Item = u32>,
     {
-        let name: String = name.into();
-        // boundary (F1): refused by Task 26
-        let type_params: Box<[TypeSlot]> = type_params
-            .into_iter()
-            .map(|t| t.into().slot_trusting_same_module())
-            .collect();
-        let int_params: Box<[u32]> = int_params.into_iter().collect();
-        TargetExtType::new(
-            self.core.ctx.target_ext_type(name, type_params, int_params),
-            ModuleRef::new(self.core),
-        )
+        self.read_only_ref()
+            .target_ext_type(name, type_params, int_params)
     }
 
     /// Iterate functions in declaration order.
@@ -3770,85 +4011,85 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// `void`.
     #[inline]
     pub fn void_type(&'ctx self) -> VoidType<'ctx, B> {
-        VoidType::new(self.core().ctx.void(), self.module_ref())
+        self.module_ref().void_type()
     }
 
     /// `label`.
     #[inline]
     pub fn label_type(&'ctx self) -> LabelType<'ctx, B> {
-        LabelType::new(self.core().ctx.label(), self.module_ref())
+        self.module_ref().label_type()
     }
 
     /// `metadata`.
     #[inline]
     pub fn metadata_type(&'ctx self) -> MetadataType<'ctx, B> {
-        MetadataType::new(self.core().ctx.metadata(), self.module_ref())
+        self.module_ref().metadata_type()
     }
 
     /// `token`.
     #[inline]
     pub fn token_type(&'ctx self) -> TokenType<'ctx, B> {
-        TokenType::new(self.core().ctx.token(), self.module_ref())
+        self.module_ref().token_type()
     }
 
     /// `half`.
     #[inline]
     pub fn half_type(&'ctx self) -> FloatType<'ctx, Half, B> {
-        FloatType::new(self.core().ctx.half(), self.module_ref())
+        self.module_ref().half_type()
     }
 
     /// `bfloat`.
     #[inline]
     pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, Bfloat, B> {
-        FloatType::new(self.core().ctx.bfloat(), self.module_ref())
+        self.module_ref().bfloat_type()
     }
 
     /// `float` (32-bit IEEE 754).
     #[inline]
     pub fn f32_type(&'ctx self) -> FloatType<'ctx, f32, B> {
-        FloatType::new(self.core().ctx.float(), self.module_ref())
+        self.module_ref().f32_type()
     }
 
     /// `double` (64-bit IEEE 754).
     #[inline]
     pub fn f64_type(&'ctx self) -> FloatType<'ctx, f64, B> {
-        FloatType::new(self.core().ctx.double(), self.module_ref())
+        self.module_ref().f64_type()
     }
 
     /// `fp128`.
     #[inline]
     pub fn fp128_type(&'ctx self) -> FloatType<'ctx, Fp128, B> {
-        FloatType::new(self.core().ctx.fp128(), self.module_ref())
+        self.module_ref().fp128_type()
     }
 
     /// `x86_fp80`.
     #[inline]
     pub fn x86_fp80_type(&'ctx self) -> FloatType<'ctx, X86Fp80, B> {
-        FloatType::new(self.core().ctx.x86_fp80(), self.module_ref())
+        self.module_ref().x86_fp80_type()
     }
 
     /// `ppc_fp128`.
     #[inline]
     pub fn ppc_fp128_type(&'ctx self) -> FloatType<'ctx, PpcFp128, B> {
-        FloatType::new(self.core().ctx.ppc_fp128(), self.module_ref())
+        self.module_ref().ppc_fp128_type()
     }
 
     /// `x86_amx`.
     #[inline]
     pub fn x86_amx_type(&'ctx self) -> Type<'ctx, B> {
-        Type::new(self.core().ctx.x86_amx(), self.module_ref())
+        self.module_ref().x86_amx_type()
     }
 
     /// `exnref`.
     #[inline]
     pub fn wasm_exnref_type(&'ctx self) -> Type<'ctx, B> {
-        Type::new(self.core().ctx.wasm_exnref(), self.module_ref())
+        self.module_ref().wasm_exnref_type()
     }
 
     /// `i1`.
     #[inline]
     pub fn bool_type(&'ctx self) -> IntType<'ctx, bool, B> {
-        IntType::new(self.core().ctx.int_type(1), self.module_ref())
+        self.module_ref().bool_type()
     }
 
     /// Alias for [`Self::bool_type`].
@@ -3859,51 +4100,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     #[inline]
     pub fn i8_type(&'ctx self) -> IntType<'ctx, i8, B> {
-        IntType::new(self.core().ctx.int_type(8), self.module_ref())
+        self.module_ref().i8_type()
     }
 
     #[inline]
     pub fn i16_type(&'ctx self) -> IntType<'ctx, i16, B> {
-        IntType::new(self.core().ctx.int_type(16), self.module_ref())
+        self.module_ref().i16_type()
     }
 
     #[inline]
     pub fn i32_type(&'ctx self) -> IntType<'ctx, i32, B> {
-        IntType::new(self.core().ctx.int_type(32), self.module_ref())
+        self.module_ref().i32_type()
     }
 
     #[inline]
     pub fn i64_type(&'ctx self) -> IntType<'ctx, i64, B> {
-        IntType::new(self.core().ctx.int_type(64), self.module_ref())
+        self.module_ref().i64_type()
     }
 
     #[inline]
     pub fn i128_type(&'ctx self) -> IntType<'ctx, i128, B> {
-        IntType::new(self.core().ctx.int_type(128), self.module_ref())
+        self.module_ref().i128_type()
     }
 
     pub fn custom_width_int_type(&'ctx self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
-        if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
-            return Err(IrError::InvalidIntegerWidth { bits });
-        }
-        Ok(IntType::new(
-            self.core().ctx.int_type(bits),
-            self.module_ref(),
-        ))
+        self.module_ref().custom_width_int_type(bits)
     }
 
     pub fn int_type_n<const N: u32>(&'ctx self) -> IntType<'ctx, Width<N>, B> {
-        const {
-            assert!(
-                N >= MIN_INT_BITS && N <= MAX_INT_BITS,
-                "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
-            );
-        }
-        IntType::new(self.core().ctx.int_type(N), self.module_ref())
+        self.module_ref().int_type_n::<N>()
     }
 
     pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx, B> {
-        PointerType::new(self.core().ctx.ptr_type(addr_space), self.module_ref())
+        self.module_ref().ptr_type(addr_space)
     }
 
     pub fn typed_pointer_type<T>(
@@ -3912,23 +4141,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         addr_space: u32,
     ) -> TypedPointerType<'ctx, B>
     where
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let pointee_id = pointee.into().slot_trusting_same_module();
-        TypedPointerType::new(
-            self.core().ctx.typed_pointer_type(pointee_id, addr_space),
-            self.module_ref(),
-        )
+        self.module_ref().typed_pointer_type(pointee, addr_space)
     }
 
     pub fn array_type<T>(&'ctx self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
     where
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let elem_id = elem.into().slot_trusting_same_module();
-        ArrayType::new(self.core().ctx.array_type(elem_id, n), self.module_ref())
+        self.module_ref().array_type(elem, n)
     }
 
     /// Const-generic typed array `[N x E]`. The element marker `E` projects
@@ -3941,20 +4163,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         E: StaticVecElem<'ctx, B>,
     {
-        let elem = E::element_ir_type(self.module_ref());
-        let id = self
-            .core()
-            .ctx
-            .array_type(elem.slot_trusting_same_module(), N);
-        ArrayType::new(id, self.module_ref())
+        self.module_ref().array_type_n::<E, N>()
     }
 
     /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
     pub fn vector_type<T>(&'ctx self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
     where
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        self.as_view().vector_type(elem, n)
+        self.module_ref().vector_type(elem, n)
     }
 
     /// Scalable `<vscale x n x elem>` vector. Mirrors
@@ -3965,9 +4182,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         n: u32,
     ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
     where
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        self.as_view().scalable_vector_type(elem, n)
+        self.module_ref().scalable_vector_type(elem, n)
     }
 
     /// Const-generic typed vector `<N x E>`. The element marker `E`
@@ -3979,33 +4196,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         E: StaticVecElem<'ctx, B>,
     {
-        const {
-            assert!(N > 0, "vector length must be >= 1");
-        }
-        let elem = E::element_ir_type(self.module_ref());
-        let id = self
-            .core()
-            .ctx
-            .fixed_vector_type(elem.slot_trusting_same_module(), N);
-        VectorType::new(id, self.module_ref())
+        self.module_ref().vector_type_n::<E, N>()
     }
 
     /// Literal (unnamed) struct type `{ .. }`.
     pub fn struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
     where
         I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        self.as_view().struct_type(elements)
+        self.module_ref().literal_struct_type(elements, false)
     }
 
     /// Packed literal struct type `<{ .. }>`.
     pub fn packed_struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
     where
         I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        self.as_view().packed_struct_type(elements)
+        self.module_ref().literal_struct_type(elements, true)
     }
 
     /// Get or create the identified struct type `%name`, body unset.
@@ -4014,14 +4223,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Mirrors `StructType::create(Context)` called without a name.
     #[inline]
     pub fn anonymous_identified_struct(&'ctx self) -> StructType<'ctx, StructBodyDyn, B> {
-        self.as_view().anonymous_identified_struct()
+        self.module_ref().anonymous_identified_struct()
     }
 
     pub fn get_or_insert_named_struct(
         &'ctx self,
         name: &str,
     ) -> StructType<'ctx, StructBodyDyn, B> {
-        self.as_view().get_or_insert_named_struct(name)
+        self.module_ref().get_or_insert_named_struct(name)
     }
 
     pub fn opaque_struct(&'ctx self, name: &str) -> IrResult<StructType<'ctx, Opaque, B>> {
@@ -4045,17 +4254,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Look up an existing identified struct type by name. Delegates to
     /// [`ModuleView::named_struct`].
     pub fn named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
-        self.as_view().named_struct(name)
+        self.module_ref().named_struct(name)
     }
 
-    /// Idempotently intern schema `S`'s named struct type. Delegates to
-    /// [`ModuleView::get_or_insert_struct_of`], which is where the schema
-    /// traits reach it.
+    /// Idempotently intern schema `S`'s named struct type. Shares its body
+    /// with [`ModuleView::get_or_insert_struct_of`], which is where the
+    /// schema traits reach it.
     pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         S: StructSchema,
     {
-        self.as_view().get_or_insert_struct_of::<S>()
+        self.module_ref().get_or_insert_struct_of::<S>()
     }
 
     pub fn set_struct_body_dyn<I, T>(
@@ -4066,7 +4275,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ) -> IrResult<()>
     where
         I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
         // Boundary: the caller's struct and element types, admitted against
         // this module before the struct is read or its body set.
@@ -4074,7 +4283,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         let st_id = st.slot_in(owner)?;
         let elems = elements
             .into_iter()
-            .map(|t| t.into().slot_in(owner))
+            .map(|t| t.as_type().slot_in(owner))
             .collect::<IrResult<Box<[TypeSlot]>>>()?;
         let body = StructBody {
             elements: elems,
@@ -4105,7 +4314,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
         // Boundary: the caller's struct and element types, admitted against
         // this module before the body is set.
@@ -4113,7 +4322,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         let opaque_id = opaque.slot_in(owner)?;
         let elems = elements
             .into_iter()
-            .map(|t| t.into().slot_in(owner))
+            .map(|t| t.as_type().slot_in(owner))
             .collect::<IrResult<Box<[TypeSlot]>>>()?;
         let body = StructBody {
             elements: elems,
@@ -4131,10 +4340,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ) -> FunctionType<'ctx, B>
     where
         I: IntoIterator<Item = T>,
-        R: Into<Type<'ctx, B>>,
-        T: Into<Type<'ctx, B>>,
+        R: IrType<'ctx, B>,
+        T: IrType<'ctx, B>,
     {
-        self.as_view().function_type(return_type, parameters)
+        self.module_ref()
+            .raw_function_type(return_type, parameters, false)
     }
 
     /// Variadic function type `ret (params..., ...)`.
@@ -4145,11 +4355,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ) -> FunctionType<'ctx, B>
     where
         I: IntoIterator<Item = T>,
-        R: Into<Type<'ctx, B>>,
-        T: Into<Type<'ctx, B>>,
+        R: IrType<'ctx, B>,
+        T: IrType<'ctx, B>,
     {
-        self.as_view()
-            .variadic_function_type(return_type, parameters)
+        self.module_ref()
+            .raw_function_type(return_type, parameters, true)
     }
 
     /// A function type with no parameters. Avoids the empty-iterator
@@ -4157,9 +4367,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// [`ModuleView::function_type_no_parameters`].
     pub fn function_type_no_parameters<R>(&'ctx self, return_type: R) -> FunctionType<'ctx, B>
     where
-        R: Into<Type<'ctx, B>>,
+        R: IrType<'ctx, B>,
     {
-        self.as_view().function_type_no_parameters(return_type)
+        self.module_ref().raw_function_type(
+            return_type,
+            core::iter::empty::<Type<'ctx, B>>(),
+            false,
+        )
     }
 
     /// Variadic sibling of
@@ -4169,10 +4383,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         return_type: R,
     ) -> FunctionType<'ctx, B>
     where
-        R: Into<Type<'ctx, B>>,
+        R: IrType<'ctx, B>,
     {
-        self.as_view()
-            .variadic_function_type_no_parameters(return_type)
+        self.module_ref()
+            .raw_function_type(return_type, core::iter::empty::<Type<'ctx, B>>(), true)
     }
 
     /// Fixed-arity typed function type: `Ret (Params...)`.
@@ -4225,22 +4439,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         Name: Into<String>,
         I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
         J: IntoIterator<Item = u32>,
     {
-        let name: String = name.into();
-        // boundary (F1): refused by Task 26
-        let type_params: Box<[TypeSlot]> = type_params
-            .into_iter()
-            .map(|t| t.into().slot_trusting_same_module())
-            .collect();
-        let int_params: Box<[u32]> = int_params.into_iter().collect();
-        TargetExtType::new(
-            self.core()
-                .ctx
-                .target_ext_type(name, type_params, int_params),
-            self.module_ref(),
-        )
+        self.module_ref()
+            .target_ext_type(name, type_params, int_params)
     }
 
     /// Declare a typed function `Ret @name(Params...)`, returning its storable

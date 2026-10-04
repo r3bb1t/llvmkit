@@ -34,6 +34,7 @@
 use core::fmt;
 
 use super::ap_int::Signedness;
+use super::capability::Capability;
 use super::constants::ConstantIntValue;
 use super::module::{ModuleBrand, ModuleRef};
 use super::r#type::{TypeSlotAccess, sealed};
@@ -751,8 +752,10 @@ pub trait StaticIntWidth: IntWidth {
     /// monomorphisation time.
     const STATIC_BITS: u32;
     /// Project the marker into the matching [`IntType`] from the
-    /// caller's module.
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B>;
+    /// caller's module, at that module reference's capability.
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+    ) -> IntType<'ctx, Self, B, C>;
 }
 
 macro_rules! impl_static_int_width {
@@ -760,10 +763,10 @@ macro_rules! impl_static_int_width {
         impl StaticIntWidth for $ty {
             const STATIC_BITS: u32 = $bits;
             #[inline]
-            fn ir_type<'ctx, B: ModuleBrand + 'ctx>(
-                module: ModuleRef<'ctx, B>,
-            ) -> IntType<'ctx, Self, B> {
-                IntType::<Self, B>::new(
+            fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                module: ModuleRef<'ctx, B, C>,
+            ) -> IntType<'ctx, Self, B, C> {
+                IntType::<Self, B, C>::new(
                     module
                         .module()
                         .$method::<B>()
@@ -788,8 +791,10 @@ impl_static_int_width!(i128, i128_type, 128);
 impl<const N: u32> StaticIntWidth for Width<N> {
     const STATIC_BITS: u32 = N;
     #[inline]
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B> {
-        IntType::<Self, B>::new(
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+    ) -> IntType<'ctx, Self, B, C> {
+        IntType::<Self, B, C>::new(
             module
                 .module()
                 .int_type_n::<N, B>()

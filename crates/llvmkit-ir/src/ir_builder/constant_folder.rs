@@ -21,8 +21,7 @@ use super::folder::IrBuilderFolder;
 use super::{
     BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags,
     ConstantExprOpcode, ConstantExprOptions, FastMathFlags, FloatType, GepNoWrapFlags, IntType,
-    IrError, IrResult, ModuleBrand, ModuleRef, ModuleView, ShuffleMaskElem, Type, TypeData,
-    UnaryOpcode, Value,
+    IrError, IrResult, ModuleBrand, ModuleRef, ShuffleMaskElem, Type, TypeData, UnaryOpcode, Value,
 };
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::float_kind::FloatKind;
@@ -857,14 +856,12 @@ fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
     let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
         message: "shufflevector mask too large",
     })?;
-    let elem_ty = Type::new(elem, lhs_ty.module());
+    let module = lhs_ty.module;
+    let elem_ty = Type::new(elem, module);
     Ok(Some(if scalable {
-        lhs_ty
-            .module()
-            .scalable_vector_type(elem_ty, lanes)
-            .as_type()
+        module.scalable_vector_type(elem_ty, lanes).as_type()
     } else {
-        lhs_ty.module().vector_type(elem_ty, lanes).as_type()
+        module.vector_type(elem_ty, lanes).as_type()
     }))
 }
 
@@ -873,14 +870,7 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     mask: &[ShuffleMaskElem],
     scalable: bool,
 ) -> IrResult<Constant<'ctx, B>> {
-    let i32_ty = IntType::<i32, B>::new(
-        module
-            .module()
-            .i32_type::<B>()
-            .as_type()
-            .slot_trusting_same_module(),
-        module,
-    );
+    let i32_ty = module.i32_type();
     let mut elements = Vec::with_capacity(mask.len());
     for element in mask {
         match *element {
@@ -899,9 +889,9 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
         message: "shufflevector mask too large",
     })?;
     (if scalable {
-        ModuleView::<B>::new(module.module()).scalable_vector_type(i32_ty.as_type(), lanes)
+        module.scalable_vector_type(i32_ty.as_type(), lanes)
     } else {
-        ModuleView::<B>::new(module.module()).vector_type(i32_ty.as_type(), lanes)
+        module.vector_type(i32_ty.as_type(), lanes)
     })
     .const_vector(elements)
     .map(|constant| constant.as_constant())

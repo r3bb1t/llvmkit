@@ -30,6 +30,7 @@ use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
 
 use crate::TypeKindLabel;
+use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
 use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef, ModuleView};
@@ -321,32 +322,37 @@ pub(crate) struct TargetExtTypeData {
 /// reference. Equality and hashing compare the branded module reference by
 /// [`ModuleId`], so the handle remains cheap to copy and
 /// store in maps.
-pub struct Type<'ctx, B: ModuleBrand> {
+///
+/// `C` is the [`Capability`] of the module reference (D8): a type minted
+/// from an unverified [`Module`](crate::Module) is [`Mutable`], one minted
+/// through a [`ModuleView`] is [`ReadOnly`](crate::ReadOnly), and every type
+/// reached from it — an element, a return type, a scalar type — keeps it.
+pub struct Type<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     // Private to this module: the slot leaves a type handle only through the
     // two doors of `TypeSlotAccess`.
     id: TypeSlot,
-    pub(crate) module: ModuleRef<'ctx, B>,
+    pub(crate) module: ModuleRef<'ctx, B, C>,
 }
 
-impl<B: ModuleBrand> Clone for Type<'_, B> {
+impl<B: ModuleBrand, C: Capability> Clone for Type<'_, B, C> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<B: ModuleBrand> Copy for Type<'_, B> {}
+impl<B: ModuleBrand, C: Capability> Copy for Type<'_, B, C> {}
 
-impl<B: ModuleBrand> PartialEq for Type<'_, B> {
+impl<B: ModuleBrand, C: Capability> PartialEq for Type<'_, B, C> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module
     }
 }
 
-impl<B: ModuleBrand> Eq for Type<'_, B> {}
+impl<B: ModuleBrand, C: Capability> Eq for Type<'_, B, C> {}
 
-impl<B: ModuleBrand> Hash for Type<'_, B> {
+impl<B: ModuleBrand, C: Capability> Hash for Type<'_, B, C> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
@@ -354,19 +360,23 @@ impl<B: ModuleBrand> Hash for Type<'_, B> {
     }
 }
 
-impl<B: ModuleBrand> fmt::Debug for Type<'_, B> {
+impl<B: ModuleBrand, C: Capability> fmt::Debug for Type<'_, B, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Type").field("id", &self.id).finish()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for Type<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// Construct from raw parts. Crate-internal: a public Module method
     /// is the only path that hands out type handles.
     #[inline]
     pub(crate) fn new<M>(id: TypeSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -384,6 +394,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     #[inline]
     pub fn module(self) -> ModuleView<'ctx, B> {
         ModuleView::new(self.module.module())
+    }
+
+    /// This type at [`ReadOnly`](crate::ReadOnly). Always sound — reading is a
+    /// subset of mutating — and the way to compare a type minted through a
+    /// [`ModuleView`] with one minted from the module itself: equality is
+    /// defined within one capability.
+    #[inline]
+    pub fn read_only(self) -> Type<'ctx, B, crate::ReadOnly> {
+        Type {
+            id: self.id,
+            module: self.module.read_only(),
+        }
+    }
+
+    /// Crate-internal and temporary: this handle at [`Mutable`], for the
+    /// constant constructors, which mint `Mutable` constants until value
+    /// handles carry a capability of their own.
+    #[inline]
+    pub(crate) fn laundered_until_task_3(self) -> Type<'ctx, B> {
+        Type {
+            id: self.id,
+            // capability (proof): laundered until Task 3 — a constant's
+            // mutators still demand a `&Module<B, Unverified>` token.
+            module: self.module.mutable_at_marked_boundary(),
+        }
     }
 
     /// Require `got` to be exactly `self`, reporting the most precise
@@ -840,7 +875,7 @@ pub enum TypeKind {
 // Display
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
     /// IR-textual form. Placeholder until the full `AsmWriter.cpp` port
     /// lands; deterministic but not a faithful reproduction of every
     /// LLVM corner case (notably padding/alignment annotations).
@@ -1160,14 +1195,19 @@ pub(crate) mod sealed {
 /// when a function should accept any type without enumerating every
 /// concrete handle.
 pub trait IrType<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
-    /// Widen to the erased [`Type`] handle.
-    fn as_type(self) -> Type<'ctx, B>;
+    /// The capability this handle was minted with; widening keeps it.
+    type Capability: Capability;
+
+    /// Widen to the erased [`Type`] handle, at the same capability.
+    fn as_type(self) -> Type<'ctx, B, Self::Capability>;
 }
 
-impl<'ctx, B: ModuleBrand> sealed::Sealed for Type<'ctx, B> {}
-impl<'ctx, B: ModuleBrand> IrType<'ctx, B> for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for Type<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand, C: Capability> IrType<'ctx, B> for Type<'ctx, B, C> {
+    type Capability = C;
+
     #[inline]
-    fn as_type(self) -> Type<'ctx, B> {
+    fn as_type(self) -> Type<'ctx, B, C> {
         self
     }
 }

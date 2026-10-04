@@ -827,13 +827,29 @@ where
         ModuleView::new(self.module)
     }
 
+    /// A type handle of any capability, admitted against this builder's
+    /// module through the checked door and re-minted at the builder's own
+    /// reference — the type twin of how every value operand is lifted.
+    ///
+    /// A view mints [`ReadOnly`](crate::ReadOnly) types, and a schema trait
+    /// is caller code that may hand back a type of another module, so this
+    /// is the one route from either into a type the builder builds with.
+    #[inline]
+    fn admit_type<T>(&self, ty: T) -> IrResult<Type<'ctx, B>>
+    where
+        T: IrType<'ctx, B>,
+    {
+        let slot = ty.as_type().slot_in(self.module.id())?;
+        Ok(Type::new(slot, ModuleRef::new(self.module)))
+    }
+
     /// [`IrField::ir_type`] for `T`.
     #[inline]
     fn schema_ir_type<T>(&self) -> IrResult<Type<'ctx, B>>
     where
         T: IrField,
     {
-        T::ir_type(self.schema_view())
+        self.admit_type(T::ir_type(self.schema_view())?)
     }
 
     /// [`StructSchema::ir_type`] for `S`.
@@ -842,7 +858,8 @@ where
     where
         Sch: StructSchema,
     {
-        Ok(Sch::ir_type(self.schema_view())?.as_dyn())
+        let ty = self.admit_type(Sch::ir_type(self.schema_view())?)?;
+        Ok(StructType::new(ty.slot_trusting_same_module(), ty.module))
     }
 
     /// Position the builder at the end of the block named by a storable
@@ -2238,7 +2255,7 @@ where
     /// `<N x i1>` when `operand_ty` is a vector, `i1` when it is a scalar —
     /// the result type of a comparison over `operand_ty`.
     fn cmp_result_type(&self, operand_ty: Type<'ctx, B>) -> Type<'ctx, B> {
-        let i1 = ModuleView::<B>::new(self.module).bool_type().as_type();
+        let i1 = ModuleRef::<B>::new(self.module).bool_type().as_type();
         let id = match operand_ty.data() {
             TypeData::FixedVector { n, .. } => self
                 .module
@@ -3348,7 +3365,7 @@ where
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        let i1 = ModuleView::<B>::new(self.module).bool_type();
+        let i1 = ModuleRef::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return self.accept_folded_compare(folded).map(|folded| folded.id());
         }
@@ -3380,7 +3397,7 @@ where
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        let i1 = ModuleView::<B>::new(self.module).bool_type();
+        let i1 = ModuleRef::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return self.accept_folded_compare(folded).map(|folded| folded.id());
         }
@@ -4440,8 +4457,8 @@ where
                 got: n.ty().rendered(),
             });
         }
-        let module_view = ModuleView::<B>::new(self.module);
-        let result_ty = module_view.struct_type([c.ty(), module_view.bool_type().as_type()]);
+        let module = ModuleRef::<B>::new(self.module);
+        let result_ty = module.literal_struct_type([c.ty(), module.bool_type().as_type()], false);
         let payload = AtomicCmpXchgInstData::new(
             p.slot_trusting_same_module(),
             c.slot_trusting_same_module(),
@@ -5013,7 +5030,7 @@ where
         };
         let payload =
             AllocaInstData::new_with_flags(allocated_ty, num_elements, align, addr_space, flags);
-        let ptr_ty = ModuleView::<B>::new(self.module).ptr_type(addr_space);
+        let ptr_ty = ModuleRef::<B>::new(self.module).ptr_type(addr_space);
         Ok(self
             .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
             .id())
@@ -5241,7 +5258,7 @@ where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let ty = ModuleView::<B>::new(self.module).ptr_type(0);
+        let ty = ModuleRef::<B>::new(self.module).ptr_type(0);
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().slot_trusting_same_module(),
@@ -6219,7 +6236,7 @@ where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let i32_ty = ModuleView::<B>::new(self.module).i32_type();
+        let i32_ty = ModuleRef::<B>::new(self.module).i32_type();
         let zero = i32_ty.const_zero().as_dyn();
         let idx_val = i32_ty
             .const_int(i32::try_from(idx).map_err(|_| IrError::InvalidOperation {
@@ -6414,9 +6431,9 @@ where
         V: IntoErasedValue<'ctx, B>,
     {
         // `SourceElementType(PointeeType)`.
-        let source_ty = source_ty.as_type();
-        // Boundary: the caller's source element type.
-        let source_ty_id = source_ty.slot_in(self.module.id())?;
+        // Boundary: the caller's source element type, at any capability.
+        let source_ty = self.admit_type(source_ty)?;
+        let source_ty_id = source_ty.slot_trusting_same_module();
         // `init(Ptr, IdxList, NameStr)`'s operand lifting.
         let ptr_value = ptr.into_erased_value(ModuleRef::new(self.module))?;
         let mut index_ids = Vec::new();
@@ -6474,9 +6491,9 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
         N: AsRef<str>,
     {
-        let source_ty = source_ty.as_type();
-        // Boundary: the caller's source element type.
-        let source_ty_id = source_ty.slot_in(self.module.id())?;
+        // Boundary: the caller's source element type, at any capability.
+        let source_ty = self.admit_type(source_ty)?;
+        let source_ty_id = source_ty.slot_trusting_same_module();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let ptr_value = IsValue::as_erased(p);
         let mut idx_ids = Vec::new();
@@ -7336,7 +7353,7 @@ where
             lhs.slot_trusting_same_module(),
             rhs.slot_trusting_same_module(),
         );
-        let i1 = ModuleView::<B>::new(self.module).bool_type();
+        let i1 = ModuleRef::<B>::new(self.module).bool_type();
         Ok(self
             .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
@@ -7368,9 +7385,9 @@ where
         }
         let scalar_value = scalar.into_erased_value(ModuleRef::new(self.module))?;
         let elem_ty = scalar_value.ty();
-        let vec_ty = ModuleView::<B>::new(self.module).vector_type(elem_ty, count);
+        let vec_ty = ModuleRef::<B>::new(self.module).vector_type(elem_ty, count);
         let poison = vec_ty.as_type().poison();
-        let i64_ty = ModuleView::<B>::new(self.module).i64_type();
+        let i64_ty = ModuleRef::<B>::new(self.module).i64_type();
         let zero_idx = i64_ty.const_int(0_u32);
         let name_ref = name.as_ref();
         let insert_name = if name_ref.is_empty() {
@@ -7419,7 +7436,7 @@ where
         W: super::int_width::IntWidth,
         O: IntoIntValue<'ctx, W, B>,
     {
-        let i8_ty = ModuleView::<B>::new(self.module).i8_type();
+        let i8_ty = ModuleRef::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
         self.gep(i8_ty, p, core::iter::once(offset_v.as_dyn()), name)
@@ -7440,7 +7457,7 @@ where
         W: super::int_width::IntWidth,
         O: IntoIntValue<'ctx, W, B>,
     {
-        let i8_ty = ModuleView::<B>::new(self.module).i8_type();
+        let i8_ty = ModuleRef::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
         self.inbounds_gep(i8_ty, p, core::iter::once(offset_v.as_dyn()), name)
@@ -7473,7 +7490,7 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let i1 = ModuleView::<B>::new(self.module).bool_type();
+        let i1 = ModuleRef::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return self.accept_folded_compare(folded).map(|folded| folded.id());
         }
@@ -7512,7 +7529,7 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let i1 = ModuleView::<B>::new(self.module).bool_type();
+        let i1 = ModuleRef::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(predicate, lhs, rhs)? {
             return self.accept_folded_compare(folded).map(|folded| folded.id());
         }
@@ -7545,7 +7562,7 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let i1 = ModuleView::<B>::new(self.module).bool_type();
+        let i1 = ModuleRef::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return self.accept_folded_compare(folded).map(|folded| folded.id());
         }
@@ -11138,7 +11155,7 @@ where
     /// [`crate::IrBuilder::pointer_load`] documents.
     pub fn pointer(self, name: &str) -> IrResult<PointerValueId<B>> {
         let parent = self.parent;
-        let ty = ModuleView::<B>::new(parent.module).ptr_type(0);
+        let ty = ModuleRef::<B>::new(parent.module).ptr_type(0);
         let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
         parent.append_ptr_load(ty, payload, name).map(|v| v.id())
     }

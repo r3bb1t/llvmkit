@@ -25,6 +25,7 @@ use super::ap_int::ApInt;
 use super::array_len::ArrayLen;
 use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
+use super::capability::Capability;
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
     ForwardRefValue, IntoConstantValue, IsConstant,
@@ -592,7 +593,7 @@ impl_constant_float_static_try_from!(PpcFp128, PpcFp128, PpcFp128);
 // IntType: integer-constant constructors
 // --------------------------------------------------------------------------
 
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntType<'ctx, W, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, Cap: Capability> IntType<'ctx, W, B, Cap> {
     /// Construct an integer constant from raw 64-bit input. Mirrors
     /// `ConstantInt::get` with an explicit `sign_extend` flag.
     ///
@@ -630,7 +631,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntType<'ctx, W, B> {
     where
         V: IntoConstantInt<'ctx, W, B, Error = Infallible>,
     {
-        match v.into_constant_int(self) {
+        match v.into_constant_int(self.laundered_until_task_3()) {
             Ok(c) => c,
             Err(_e) => unreachable!("Infallible cannot be constructed"),
         }
@@ -641,7 +642,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntType<'ctx, W, B> {
     where
         V: IntoConstantInt<'ctx, W, B, Error = IrError>,
     {
-        v.into_constant_int(self)
+        v.into_constant_int(self.laundered_until_task_3())
     }
 
     pub fn const_ap_int(self, value: &ApInt) -> IrResult<ConstantIntValue<'ctx, W, B>> {
@@ -651,7 +652,10 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntType<'ctx, W, B> {
                 rhs: value.bit_width(),
             });
         }
-        Ok(intern_int_constant(self, value.words().into()))
+        Ok(intern_int_constant(
+            self.laundered_until_task_3(),
+            value.words().into(),
+        ))
     }
 
     /// Construct an integer constant from a precomputed
@@ -729,17 +733,17 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ConstantIntValue<'ctx, W, B> {
 // FloatType: float-constant constructors
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand + 'ctx> FloatType<'ctx, f64, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> FloatType<'ctx, f64, B, Cap> {
     /// Construct a `double` constant from an `f64`. Infallible.
     pub fn const_double(self, value: f64) -> ConstantFloatValue<'ctx, f64, B> {
-        intern_float_constant(self, u128::from(value.to_bits()))
+        intern_float_constant(self.laundered_until_task_3(), u128::from(value.to_bits()))
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FloatType<'ctx, f32, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> FloatType<'ctx, f32, B, Cap> {
     /// Construct a `float` constant from an `f32`. Infallible.
     pub fn const_float(self, value: f32) -> ConstantFloatValue<'ctx, f32, B> {
-        intern_float_constant(self, u128::from(value.to_bits()))
+        intern_float_constant(self.laundered_until_task_3(), u128::from(value.to_bits()))
     }
 }
 
@@ -794,7 +798,7 @@ pub fn float_value_is_valid_for_type<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatType<'ctx, K, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, Cap: Capability> FloatType<'ctx, K, B, Cap> {
     pub fn semantics(self) -> ApFloatSemantics {
         match self.as_type().data() {
             TypeData::Half => ApFloatSemantics::IeeeHalf,
@@ -829,7 +833,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatType<'ctx, K, B> {
                 bits: self.semantics().bit_width(),
             });
         };
-        Ok(intern_float_constant(self, bits))
+        Ok(intern_float_constant(self.laundered_until_task_3(), bits))
     }
 
     /// Construct a float constant directly from its bit pattern. Width
@@ -872,10 +876,10 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ConstantFloatValue<'ctx, K, B> {
 // PointerType: null
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand + 'ctx> PointerType<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> PointerType<'ctx, B, Cap> {
     /// `ptr null`. Mirrors `ConstantPointerNull::get`.
     pub fn const_null(self) -> ConstantPointerNull<'ctx, B> {
-        intern_pointer_null(self)
+        intern_pointer_null(self.laundered_until_task_3())
     }
 
     /// Same as [`Self::const_null`]; mirrors inkwell's `const_zero`.
@@ -889,7 +893,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerType<'ctx, B> {
 // Aggregate constructors
 // --------------------------------------------------------------------------
 
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, Cap: Capability>
+    ArrayType<'ctx, E, L, B, Cap>
+{
     /// `[N x T] [...]`. Each element must have type `T` exactly.
     /// Mirrors `ConstantArray::get`.
     pub fn const_array<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
@@ -897,14 +903,15 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
         I: IntoIterator<Item = C>,
         C: IntoConstantValue<'ctx, B>,
     {
-        let elem_ty = self.element().slot_trusting_same_module();
-        let expected_len = self.len();
+        let this = self.laundered_until_task_3();
+        let elem_ty = this.element().slot_trusting_same_module();
+        let expected_len = this.len();
         let mut ids = Vec::new();
         for elem in elements {
-            let value = elem.into_constant(self.module)?.as_erased();
+            let value = elem.into_constant(this.module)?.as_erased();
             if value.ty().slot_trusting_same_module() != elem_ty {
                 return Err(IrError::TypeIdentityMismatch {
-                    expected: self.element().rendered(),
+                    expected: this.element().rendered(),
                     got: value.ty().rendered(),
                 });
             }
@@ -918,11 +925,13 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
                 rhs: u32::try_from(ids.len()).unwrap_or(u32::MAX),
             });
         }
-        Ok(intern_aggregate(self.as_type(), ids.into_boxed_slice()))
+        Ok(intern_aggregate(this.as_type(), ids.into_boxed_slice()))
     }
 }
 
-impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, B> {
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, Cap: Capability>
+    StructType<'ctx, Body, B, Cap>
+{
     /// `T { ... }`. Element types must match the struct's declared
     /// body. Mirrors `ConstantStruct::get`.
     pub fn const_struct<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
@@ -930,13 +939,14 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
         I: IntoIterator<Item = C>,
         C: IntoConstantValue<'ctx, B>,
     {
+        let this = self.laundered_until_task_3();
         // The struct must already have a body (literal structs always
         // do; identified structs need `set_struct_body` first).
-        let count = self.field_count();
+        let count = this.field_count();
         let mut ids = Vec::new();
         for (i, elem) in elements.into_iter().enumerate() {
-            let value = elem.into_constant(self.module)?.as_erased();
-            let field = self.field_type(i).ok_or(IrError::OperandWidthMismatch {
+            let value = elem.into_constant(this.module)?.as_erased();
+            let field = this.field_type(i).ok_or(IrError::OperandWidthMismatch {
                 lhs: u32::try_from(count).unwrap_or(u32::MAX),
                 rhs: u32::try_from(i + 1).unwrap_or(u32::MAX),
             })?;
@@ -954,11 +964,13 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
                 rhs: u32::try_from(ids.len()).unwrap_or(u32::MAX),
             });
         }
-        Ok(intern_aggregate(self.as_type(), ids.into_boxed_slice()))
+        Ok(intern_aggregate(this.as_type(), ids.into_boxed_slice()))
     }
 }
 
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, Cap: Capability>
+    VectorType<'ctx, E, L, B, Cap>
+{
     /// `<N x T> < ... >`. Mirrors `ConstantVector::get`.
     ///
     /// **The scalable case has no `ConstantVector::get` to mirror.** Upstream's
@@ -980,20 +992,21 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
         I: IntoIterator<Item = C>,
         C: IntoConstantValue<'ctx, B>,
     {
-        let elem_ty = self.element().slot_trusting_same_module();
+        let this = self.laundered_until_task_3();
+        let elem_ty = this.element().slot_trusting_same_module();
         let mut ids = Vec::new();
         for elem in elements {
-            let value = elem.into_constant(self.module)?.as_erased();
+            let value = elem.into_constant(this.module)?.as_erased();
             if value.ty().slot_trusting_same_module() != elem_ty {
                 return Err(IrError::TypeIdentityMismatch {
-                    expected: self.element().rendered(),
+                    expected: this.element().rendered(),
                     got: value.ty().rendered(),
                 });
             }
             ids.push(value.slot_trusting_same_module());
         }
         let n = ids.len();
-        let expected = usize::try_from(self.min_len())
+        let expected = usize::try_from(this.min_len())
             .unwrap_or_else(|_| unreachable!("vector lane count fits in usize"));
         if n != expected {
             return Err(IrError::OperandWidthMismatch {
@@ -1001,7 +1014,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
                 rhs: u32::try_from(n).unwrap_or(u32::MAX),
             });
         }
-        if self.is_scalable()
+        if this.is_scalable()
             && let Some(first) = ids.first().copied()
             && ids.iter().any(|id| *id != first)
         {
@@ -1010,7 +1023,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
                           the same constant, as `ConstantVector::getSplat` builds it",
             });
         }
-        Ok(intern_aggregate(self.as_type(), ids.into_boxed_slice()))
+        Ok(intern_aggregate(this.as_type(), ids.into_boxed_slice()))
     }
 }
 
@@ -1530,15 +1543,15 @@ fn constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
 // Undef / Poison
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> Type<'ctx, B, Cap> {
     /// `undef <type>`. Mirrors `UndefValue::get`.
     pub fn undef(self) -> UndefValue<'ctx, B> {
-        intern_undef(self)
+        intern_undef(self.laundered_until_task_3())
     }
 
     /// `poison <type>`. Mirrors `PoisonValue::get`.
     pub fn poison(self) -> PoisonValue<'ctx, B> {
-        intern_poison(self)
+        intern_poison(self.laundered_until_task_3())
     }
 }
 

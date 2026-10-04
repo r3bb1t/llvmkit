@@ -3531,9 +3531,11 @@ mod tests {
         let patch = cx.mutate();
 
         // The read-only view carries the type constructors, and the type it
-        // hands back is the very same interned type the module named.
+        // hands back is the very same interned type the module named — at
+        // the view's read-only capability, so the module's is lowered to
+        // compare.
         let ty = patch.module().i32_type();
-        assert_eq!(ty.as_type(), i32_ty.as_type());
+        assert_eq!(ty.as_type(), i32_ty.as_type().read_only());
         // A constant mints against it with no module mutation at all.
         let seven = ty.const_int(7_u32);
         assert_eq!(seven.value_zext_u128(), Some(7));

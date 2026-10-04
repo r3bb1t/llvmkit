@@ -375,7 +375,9 @@ fn ir_type_trait_unifies_handles() {
     fn name<T>(_: T) -> &'static str {
         std::any::type_name::<T>()
     }
-    fn _accepts_any<'ctx, B: llvmkit_ir::ModuleBrand, T: IrType<'ctx, B>>(t: T) -> Type<'ctx, B> {
+    fn _accepts_any<'ctx, B: llvmkit_ir::ModuleBrand, T: IrType<'ctx, B>>(
+        t: T,
+    ) -> Type<'ctx, B, T::Capability> {
         t.as_type()
     }
 

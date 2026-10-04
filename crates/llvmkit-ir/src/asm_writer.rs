@@ -1104,7 +1104,7 @@ fn maybe_print_call_addr_space<B: ModuleBrand>(
 
 fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Type<'ctx, B> {
     match &value.data().kind {
-        ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
+        ValueKindData::Function(_) => value.module.ptr_type(0).as_type(),
         ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
         _ => value.ty(),
     }

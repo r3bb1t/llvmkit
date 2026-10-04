@@ -99,7 +99,8 @@ For `struct Point { x: i32, y: i32 }`, the derive creates:
 - `impl StructSchema for Point`: returns `%Point = type { i32, i32 }` in the
   target module, reusing an existing matching `%Point` body and rejecting a
   mismatched one with `IrError::StructBodyMismatch`. Its `ir_type` /
-  `field_types` take a `ModuleView<'ctx, B>`, not a `&Module`.
+  `field_types` take a `ModuleView<'ctx, B>`, not a `&Module`, and so return
+  `ReadOnly` types; its `matches_fields` reads field types of any capability.
 - Field accessors on `PointValue`, such as `x(&builder)` and `y(&builder)`,
   implemented with `IrBuilder::extract_field`.
 - `PointValue::build(module_view, &builder, x, y, name)` — the first argument is

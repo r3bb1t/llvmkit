@@ -19,6 +19,47 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — type handles carry their capability *(breaking)*
+
+- **Every type handle takes a trailing `C: Capability = Mutable`** —
+  `Type`, `IntType`, `FloatType`, `PointerType`, `FunctionType`,
+  `ArrayType`, `StructType`, `VectorType`, `VoidType`, `LabelType`,
+  `MetadataType`, `TokenType`, `TargetExtType`, `TypedPointerType`,
+  `SizedType`, and the `AnyTypeEnum` / `BasicTypeEnum` /
+  `BasicMetadataTypeEnum` / `AggregateType` refinements (D1, D8). A
+  type minted from an unverified `Module` is `Mutable`; one minted through a
+  `ModuleView` is `ReadOnly`; navigation (`element`, `return_type`,
+  `params`, `field_type`, conversions between handles) keeps the capability.
+  Spellings that omit `C` keep meaning `Mutable`.
+- **Breaking: `IrType` has an associated `Capability`**, and `as_type`
+  returns `Type<'ctx, B, Self::Capability>`. Generic code that returned
+  `t.as_type()` as `Type<'ctx, B>` names `Type<'ctx, B, T::Capability>`.
+  The refinement enums and `SizedType` now implement `IrType`.
+- **Breaking: type operands of the type constructors are bounded
+  `IrType<'ctx, B>`**, not `Into<Type<'ctx, B>>` — `array_type`,
+  `vector_type`, `struct_type`, `function_type`, `target_ext_type`,
+  `set_struct_body` and their siblings, on both `Module` and `ModuleView` —
+  so they accept a type of either capability. Every type handle implements
+  `IrType`; a caller that passed a non-handle `Into<Type>` value converts it
+  first.
+- **Breaking: `ModuleView`'s type constructors return `ReadOnly` types**,
+  and so do the schema traits that build through a view: `IrField::ir_type`,
+  `FunctionReturn::ir_type`, `FunctionParam::ir_type`,
+  `FunctionParamList::ir_types`, `StructSchema::field_types` and
+  `StructSchema::ir_type` return `Type<'ctx, B, ReadOnly>` (or the
+  `ReadOnly` struct type), and their `matches_ir_type` / `matches_fields`
+  readers are generic over the capability. A hand-written impl spells the
+  new signatures; `#[derive(IrStruct)]` emits them.
+- **`Type::read_only`** lowers a type to `ReadOnly`, for comparing a type
+  minted through a view with one minted from the module: equality is defined
+  within one capability.
+- Not yet: concretely typed operands — the builder's
+  `trunc(v, dst_ty: IntType<…>)`, the module's
+  `add_function_dyn(name, fn_ty, …)` and the like — still take `Mutable`
+  types, so a view-minted type passes only where the bound is `IrType`.
+  Constants minted from a type are still `Mutable` whatever the type's
+  capability.
+
 ### Added — a module reference carries a capability *(breaking, narrowly)*
 
 - **`Capability`, `Mutable`, `ReadOnly`, `CanMutate`, `CapabilityOf` and

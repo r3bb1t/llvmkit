@@ -90,6 +90,9 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
     let builder_param = Ident::new("__llvmkit_builder", Span::mixed_site());
     let name_param = Ident::new("__llvmkit_name", Span::mixed_site());
     let base_name_ident = Ident::new("__llvmkit_base_name", Span::mixed_site());
+    // Hygienic, so a field whose type is spelled `C` is not shadowed by the
+    // capability parameter of the generated `matches_fields`.
+    let capability_param = Ident::new("__LlvmkitCapability", Span::mixed_site());
     let value_steps = build_value_steps(
         &ident,
         &field_idents,
@@ -248,14 +251,16 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
             fn field_types<'ctx, B>(
                 module: #ir::ModuleView<'ctx, B>,
-            ) -> #ir::IrResult<::std::vec::Vec<#ir::Type<'ctx, B>>>
+            ) -> #ir::IrResult<::std::vec::Vec<#ir::Type<'ctx, B, #ir::ReadOnly>>>
             where
                 B: #ir::ModuleBrand + 'ctx,
             {
                 Ok(::std::vec![#(<#field_tys as #ir::IrField>::ir_type(module)?,)*])
             }
 
-            fn matches_fields<'ctx, B>(fields: &[#ir::Type<'ctx, B>]) -> bool
+            fn matches_fields<'ctx, B, #capability_param: #ir::Capability>(
+                fields: &[#ir::Type<'ctx, B, #capability_param>],
+            ) -> bool
             where
                 B: #ir::ModuleBrand + 'ctx,
             {
