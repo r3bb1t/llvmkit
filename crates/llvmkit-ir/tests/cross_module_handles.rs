@@ -576,6 +576,96 @@ fn a_global_builder_rejects_a_value_type_from_another_module() {
     );
 }
 
+/// `set_comdat` on a global variable and on a function, and the global and
+/// function builders' `comdat`, refuse a comdat another module minted with
+/// `IrError::ForeignComdat` and change nothing: a global stores its comdat by
+/// name, and that name names nothing in this module's comdat table, so the
+/// attachment would have vanished from the printed module. Positive control:
+/// this module's own comdat of the same name is attached, read back and
+/// printed.
+///
+/// No upstream counterpart: `GlobalObject::setComdat` (`lib/IR/Globals.cpp`)
+/// takes a `Comdat *`, whose identity is its address.
+#[test]
+fn a_comdat_from_another_module_is_refused() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_comdat = foreign.get_or_insert_comdat("c");
+    let i32_ty = home.i32_type();
+    let void_fn = home.function_type_no_parameters(home.void_type());
+    let g = home.add_global("g", i32_ty.const_int(0i32)).expect("g");
+    let f = home
+        .add_function_dyn("f", void_fn, Linkage::External)
+        .expect("f");
+    let before = format!("{home}");
+
+    let refused = home.view(g).set_comdat(&home, foreign_comdat);
+    assert!(
+        matches!(refused, Err(IrError::ForeignComdat)),
+        "{refused:?}"
+    );
+    let refused = home.view(f).set_comdat(&home, foreign_comdat);
+    assert!(
+        matches!(refused, Err(IrError::ForeignComdat)),
+        "{refused:?}"
+    );
+    let refused = home
+        .global_builder("built", i32_ty)
+        .comdat(foreign_comdat)
+        .build();
+    assert!(
+        matches!(refused, Err(IrError::ForeignComdat)),
+        "{refused:?}"
+    );
+    let refused = home
+        .function_builder::<(), _>("built_fn", void_fn)
+        .comdat(foreign_comdat)
+        .build();
+    assert!(
+        matches!(refused, Err(IrError::ForeignComdat)),
+        "{refused:?}"
+    );
+    assert!(
+        home.global("built").is_none(),
+        "a refused build installs nothing"
+    );
+    assert!(
+        home.function_dyn("built_fn").is_none(),
+        "a refused build installs nothing"
+    );
+    assert!(home.view(g).comdat().is_none() && home.view(f).comdat().is_none());
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a refused comdat must not mutate"
+    );
+
+    let own = home.get_or_insert_comdat("c");
+    home.view(g).set_comdat(&home, own).expect("own comdat");
+    home.view(f).set_comdat(&home, own).expect("own comdat");
+    home.global_builder("built", i32_ty)
+        .initializer(i32_ty.const_int(1i32))
+        .comdat(own)
+        .build()
+        .expect("own comdat");
+    home.function_builder::<(), _>("built_fn", void_fn)
+        .comdat(own)
+        .build()
+        .expect("own comdat");
+    assert_eq!(home.view(g).comdat().map(|c| c.name()), Some("c"));
+    assert_eq!(home.view(f).comdat().map(|c| c.name()), Some("c"));
+    let text = format!("{home}");
+    assert!(text.contains("$c = comdat any"), "got:\n{text}");
+    assert!(
+        text.contains("@g = global i32 0, comdat($c)"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("@built = global i32 1, comdat($c)"),
+        "got:\n{text}"
+    );
+}
+
 /// `alias_builder(..).build()` rejects a value type from another module and
 /// installs nothing, even with an aliasee this module owns.
 ///

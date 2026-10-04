@@ -342,6 +342,19 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         self.data().intrinsic.borrow().as_ref().map(|data| data.id)
     }
 
+    /// Generated intrinsic descriptor, including overload types, when present,
+    /// at this function's capability.
+    pub fn intrinsic_descriptor(self) -> Option<IntrinsicDescriptor<'ctx, B, C>> {
+        let intrinsic = self.data().intrinsic.borrow();
+        let data = intrinsic.as_ref()?;
+        let overloads = data
+            .overloads
+            .iter()
+            .map(|id| Type::new(*id, self.module))
+            .collect::<Box<[_]>>();
+        IntrinsicDescriptor::new(data.id, overloads).ok()
+    }
+
     /// Whether this function's name and signature declare an intrinsic —
     /// whether [`Self::intrinsic_id`] answers.
     #[inline]
@@ -689,8 +702,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         self.module.comdat(&name)
     }
 
-    /// Attach a comdat. Only its name is read, so a comdat of any capability
-    /// is accepted.
+    /// Attach a comdat. A comdat another module minted — one that shares
+    /// this brand, since a different brand is a type error — is refused with
+    /// [`IrError::ForeignComdat`] and the attachment stays as it was. Only the
+    /// comdat's name is read, so a comdat of any capability is accepted.
     pub fn set_comdat<ComdatCapability: Capability>(
         self,
         _module: &'ctx Module<B, Unverified>,
@@ -699,7 +714,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
     where
         C: CanMutate,
     {
-        *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
+        // Boundary: the caller's comdat, admitted against this function's
+        // module before its name is stored.
+        let name = comdat.name_in(self.module.id())?;
+        *self.data().comdat.borrow_mut() = Some(name.to_owned());
         Ok(())
     }
 
@@ -1119,8 +1137,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             .label_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        // capability (proof): laundered until Task 5 — a block's mutators
-        // still demand a `&Module<B, Unverified>` token.
+        // capability (proof): laundered until Task 5 — the block family
+        // carries no capability yet, so a block can only be minted `Mutable`;
+        // this edge stays `Mutable` until it migrates and Task 6 removes the
+        // marker.
         let block_module = self.module.mutable_at_marked_boundary();
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
@@ -1132,8 +1152,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         let module = self.module.module();
         Some(BasicBlock::from_parts(
             id,
-            // capability (proof): laundered until Task 5 — a block's mutators
-            // still demand a `&Module<B, Unverified>` token.
+            // capability (proof): laundered until Task 5 — the block family
+            // carries no capability yet, so a block can only be minted
+            // `Mutable`; this edge stays `Mutable` until it migrates and Task 6
+            // removes the marker.
             self.module.mutable_at_marked_boundary(),
             module
                 .label_type::<B>()
@@ -1257,8 +1279,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
     }
 }
 
-/// The members that take a [`Mutable`] receiver: the rename hook a mutator
-/// runs, and the one reader whose result carries no capability yet.
+/// The member that takes a [`Mutable`] receiver: the rename hook a mutator
+/// runs.
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B, Mutable> {
     /// Recompute the intrinsic identity from the current name. Ports
     /// `Function::updateAfterNameChange`: a name without the `llvm.` prefix is
@@ -1286,30 +1308,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B, Mut
         };
         *self.data().intrinsic.borrow_mut() = intrinsic;
     }
-
-    /// Generated intrinsic descriptor, including overload types, when present.
-    ///
-    /// Only on a [`Mutable`] handle: [`IntrinsicDescriptor`] carries no
-    /// capability, so its overload types are `Mutable` type handles, which a
-    /// [`ReadOnly`] function cannot mint (D8). [`Self::intrinsic_id`] answers
-    /// at every capability.
-    pub fn intrinsic_descriptor(self) -> Option<IntrinsicDescriptor<'ctx, B>> {
-        let intrinsic = self.data().intrinsic.borrow();
-        let data = intrinsic.as_ref()?;
-        let overloads = data
-            .overloads
-            .iter()
-            .map(|id| Type::new(*id, self.module))
-            .collect::<Box<[_]>>();
-        IntrinsicDescriptor::new(data.id, overloads).ok()
-    }
 }
 
 /// Iterator over the basic blocks of one function, in insertion order. The
 /// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
 /// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
 /// up front, so IR mutation during the walk does not disturb it. `C` is the
-/// capability of the function it walks.
+/// capability of the function it walks. The blocks it yields are `Mutable`
+/// whatever `C` is, until [`BasicBlock`] carries a capability of its own.
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability = Mutable> {
@@ -1333,8 +1339,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability>
     fn block(&self, id: ValueSlot) -> BasicBlock<'ctx, R, Terminated, B> {
         BasicBlock::from_parts(
             id,
-            // capability (proof): laundered until Task 5 — a block's mutators
-            // still demand a `&Module<B, Unverified>` token.
+            // capability (proof): laundered until Task 5 — the block family
+            // carries no capability yet, so a block can only be minted
+            // `Mutable`; this edge stays `Mutable` until it migrates and Task 6
+            // removes the marker.
             self.module.mutable_at_marked_boundary(),
             self.label_ty,
         )
@@ -1631,9 +1639,10 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     prefix_data: Option<Constant<'ctx, B, ReadOnly>>,
     prologue_data: Option<Constant<'ctx, B, ReadOnly>>,
     personality_fn: Option<Constant<'ctx, B, ReadOnly>>,
-    /// The comdat's name: a comdat of any capability is accepted, and only
-    /// its name is stored on the function.
-    comdat: Option<String>,
+    /// Kept at `ReadOnly` for the same reason — a comdat of any capability is
+    /// accepted — and admitted against the module at `build` before its name
+    /// is stored.
+    comdat: Option<ComdatRef<'ctx, B, ReadOnly>>,
     attributes: AttributeStorage,
     function_attr_groups: Vec<u32>,
     /// Pending `(slot, name)` pairs to apply after the function value
@@ -1777,11 +1786,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
-    /// Attach a comdat. Only its name is read, so a comdat of any capability
-    /// is accepted.
+    /// Attach a comdat. One minted by another module that shares the brand is
+    /// refused by [`build`](Self::build) with [`IrError::ForeignComdat`]. A
+    /// comdat of any capability is accepted.
     #[must_use]
     pub fn comdat<C: Capability>(mut self, comdat: ComdatRef<'ctx, B, C>) -> Self {
-        self.comdat = Some(comdat.name().to_owned());
+        self.comdat = Some(comdat.read_only());
         self
     }
 
@@ -1843,16 +1853,24 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// method, where the collected settings are applied.
     ///
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
-    /// return type does not match the chosen [`ReturnMarker`].
+    /// return type does not match the chosen [`ReturnMarker`], and
+    /// [`IrError::ForeignType`], [`IrError::ForeignValueId`] or
+    /// [`IrError::ForeignComdat`] if the signature, a constant or the comdat
+    /// was minted by another module sharing this brand; nothing is created.
     pub fn build(self) -> IrResult<FunctionId<R, B>> {
-        // Boundary: the caller's signature and constants, parked by the
-        // infallible setters, are admitted against this module before the
-        // function is created — `ForeignType` / `ForeignValueId`.
+        // Boundary: the caller's signature, constants and comdat, parked by
+        // the infallible setters, are admitted against this module before the
+        // function is created — `ForeignType` / `ForeignValueId` /
+        // `ForeignComdat`.
         let owner = self.module.id();
         self.signature.slot_in(owner)?;
         let prefix_data = self.prefix_data.map(|c| c.slot_in(owner)).transpose()?;
         let prologue_data = self.prologue_data.map(|c| c.slot_in(owner)).transpose()?;
         let personality_fn = self.personality_fn.map(|c| c.slot_in(owner)).transpose()?;
+        let comdat = self
+            .comdat
+            .map(|comdat| comdat.name_in(owner).map(str::to_owned))
+            .transpose()?;
         let f = self.module.module().add_function_checked::<B, R, _>(
             &self.name,
             self.signature,
@@ -1888,7 +1906,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             f.retarget_global_field_use(GlobalFieldKind::PersonalityFn, None, Some(personality_fn));
             f.data().personality_fn.set(Some(personality_fn));
         }
-        if let Some(comdat) = self.comdat {
+        if let Some(comdat) = comdat {
             *f.data().comdat.borrow_mut() = Some(comdat);
         }
         *f.data().attributes.borrow_mut() = self.attributes;

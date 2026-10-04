@@ -15,10 +15,10 @@
 //! of the module. Globals store the comdat by name (`Option<String>`)
 //! to avoid arena cross-references.
 
-use super::capability::{CanMutate, Capability, CapabilityOf, Mutable};
-use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
+use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, Unverified};
 use crate::Branded;
-use crate::error::IrError;
+use crate::error::{IrError, IrResult};
 use core::fmt;
 use core::str::FromStr;
 
@@ -134,7 +134,7 @@ impl ComdatData {
 ///
 /// `C` is the handle's [`Capability`] (D8): a comdat looked up through an
 /// unverified module is [`Mutable`]; one looked up through a verified module
-/// is [`ReadOnly`](crate::ReadOnly), and its selection kind cannot be changed.
+/// is [`ReadOnly`], and its selection kind cannot be changed.
 #[derive(Branded)]
 #[branded(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ComdatRef<'ctx, B: ModuleBrand, C: Capability = Mutable> {
@@ -158,6 +158,30 @@ impl<'ctx, B: ModuleBrand, C: Capability> ComdatRef<'ctx, B, C> {
         &self.data().name
     }
 
+    /// This comdat at [`ReadOnly`]. Always sound — reading is a subset of
+    /// mutating.
+    #[inline]
+    pub fn read_only(self) -> ComdatRef<'ctx, B, ReadOnly> {
+        ComdatRef {
+            module: self.module.read_only(),
+            id: self.id,
+        }
+    }
+
+    /// Crate-internal: the checked door. This comdat's name, if `owner`
+    /// minted it; [`IrError::ForeignComdat`] otherwise. A global stores its
+    /// comdat by name, so a name taken from another module's table would
+    /// name nothing in `owner`'s, or a different comdat — the boundary takes
+    /// this door before the name is stored.
+    #[inline]
+    pub(crate) fn name_in(self, owner: ModuleId) -> IrResult<&'ctx str> {
+        if self.module.id() == owner {
+            Ok(self.name())
+        } else {
+            Err(IrError::ForeignComdat)
+        }
+    }
+
     // No public `id()`. `ComdatId` is a bare `u32` index carrying neither a
     // `ModuleId` tag nor a brand, so it is not a member of the 2.0 id family
     // and `Module::view` cannot resolve it — which is exactly why
@@ -177,7 +201,7 @@ impl<'ctx, B: ModuleBrand, C: Capability> ComdatRef<'ctx, B, C> {
     /// crate, and needs a handle that [`CanMutate`]. The selection kind is
     /// printed (`$name = comdat <kind>`), and `Module::comdat` is
     /// state-generic, so a verified module does hand out a `ComdatRef` — a
-    /// [`ReadOnly`](crate::ReadOnly) one, which has no setter.
+    /// [`ReadOnly`] one, which has no setter.
     pub fn set_selection_kind(self, _module_token: &Module<B, Unverified>, kind: SelectionKind)
     where
         C: CanMutate,

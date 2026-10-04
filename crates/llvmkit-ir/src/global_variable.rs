@@ -703,9 +703,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
 
     /// Attach a comdat. The comdat must already exist in the owning module
     /// (use [`Module::get_or_insert_comdat`](crate::Module::get_or_insert_comdat)
-    /// to materialise one). The branded [`ComdatRef`] parameter statically
-    /// ties the comdat to the same module as this global; only its name is
-    /// read, so a comdat of any capability is accepted.
+    /// to materialise one). The brand on [`ComdatRef`] keeps out, at compile
+    /// time, a comdat of a module with a *different* brand; two modules that
+    /// share a brand (`DynBrand`, or a re-issued named brand) are told apart
+    /// by the module tag, so a comdat another module minted is refused with
+    /// [`IrError::ForeignComdat`] and the attachment stays as it was. Only the
+    /// comdat's name is read, so a comdat of any capability is accepted.
     pub fn set_comdat<ComdatCapability: Capability>(
         self,
         _module: &'ctx Module<B, Unverified>,
@@ -714,7 +717,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
     where
         C: CanMutate,
     {
-        *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
+        // Boundary: the caller's comdat, admitted against this global's module
+        // before its name is stored.
+        let name = comdat.name_in(self.module.id())?;
+        *self.data().comdat.borrow_mut() = Some(name.to_owned());
         Ok(())
     }
 
@@ -901,7 +907,10 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     align: MaybeAlign,
     section: Option<String>,
     partition: Option<String>,
-    comdat: Option<String>,
+    /// Kept as the caller's handle for the same reason, at `ReadOnly`: a
+    /// comdat of any capability is accepted, and `build` admits it before its
+    /// name is stored.
+    comdat: Option<ComdatRef<'ctx, B, ReadOnly>>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
@@ -1018,12 +1027,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// Attach a comdat. The branded [`ComdatRef`] parameter statically ties the
-    /// comdat to the builder's module; only its name is read, so a comdat of
-    /// any capability is accepted.
+    /// Attach a comdat. The brand on [`ComdatRef`] keeps out a comdat of a
+    /// module with a *different* brand at compile time; one minted by another
+    /// module that shares the brand is refused by [`build`](Self::build) with
+    /// [`IrError::ForeignComdat`]. A comdat of any capability is accepted.
     #[must_use]
     pub fn comdat<C: Capability>(mut self, comdat: ComdatRef<'ctx, B, C>) -> Self {
-        self.comdat = Some(comdat.name().to_owned());
+        self.comdat = Some(comdat.read_only());
         self
     }
 
@@ -1052,33 +1062,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     /// Resolve the id back into a borrowing [`GlobalVariable`] with
     /// [`Module::view`](crate::Module::view).
     ///
-    /// Errors with [`IrError::ForeignType`] when the value type, and with
-    /// [`IrError::ForeignValueId`] when the initializer, was minted by another
+    /// Errors with [`IrError::ForeignType`] when the value type, with
+    /// [`IrError::ForeignValueId`] when the initializer, and with
+    /// [`IrError::ForeignComdat`] when the comdat, was minted by another
     /// module sharing this brand; nothing is installed.
     pub fn build(self) -> IrResult<GlobalId<B>> {
         // Each handle's slot names a different type or value — or nothing — in
-        // another module's arena, so both are admitted before anything is
-        // installed.
+        // another module's arena, and a comdat's name a different comdat or
+        // none, so all three are admitted before anything is installed.
         let owner = self.module.id();
         let value_type = self.value_type.slot_in(owner)?;
         let initializer = self
             .initializer
             .map(|constant| constant.slot_in(owner))
             .transpose()?;
+        let comdat = self
+            .comdat
+            .map(|comdat| comdat.name_in(owner).map(str::to_owned))
+            .transpose()?;
         let module = self.module;
-        let (name, data, address_space) = self.into_data(value_type, initializer);
+        let (name, data, address_space) = self.into_data(value_type, initializer, comdat);
         module
             .module()
             .install_global_variable::<B>(name, data, address_space)
             .map(|g| g.id())
     }
 
-    /// Lower the builder to its storage payload, holding the slots `build`
+    /// Lower the builder to its storage payload, holding what `build`
     /// admitted rather than anything read off the handles again.
     fn into_data(
         self,
         value_type: TypeSlot,
         initializer: Option<ValueSlot>,
+        comdat: Option<String>,
     ) -> (String, GlobalVariableData, u32) {
         let GlobalBuilder {
             module: _,
@@ -1097,7 +1113,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             align,
             section,
             partition,
-            comdat,
+            comdat: _,
         } = self;
         let data = GlobalVariableData {
             value_type,

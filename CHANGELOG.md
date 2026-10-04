@@ -22,26 +22,37 @@ cut, entries accumulate under **Unreleased**.
 ### Changed — a verified module's globals and functions are read-only by type *(breaking)*
 
 - **`GlobalVariable`, `GlobalAlias`, `GlobalIfunc`, `FunctionValue`,
-  `TypedFunctionValue`, `TypedVarArgsFunctionValue`, `ComdatRef` and
-  `FunctionBasicBlocks` take a trailing `C: Capability = Mutable`** (D1, D8).
-  Viewed through an unverified `Module` they are `Mutable`; through a
-  `Module<B, Verified>` they are `ReadOnly`. `Module::globals` and
-  `Module::comdat` mint at the capability the module's state grants, as
-  `Module::view` does. What is read off a handle keeps its capability: a
-  global's `initializer`, `value_type`, `ty` and `comdat`, an alias's
-  `aliasee`, an ifunc's `resolver`, a function's `signature`, `return_type`,
-  `param` / `params`, prefix and prologue data and personality, and an
-  argument's `parent_function`. Spellings that omit `C` keep meaning
-  `Mutable`.
-- **Fixed: a verified module's globals and functions could be changed.**
-  Every setter on these handles asked only for *a* `&Module<B, Unverified>`
-  token, and two modules that share a brand (every `Module::dynamic` is
-  `DynBrand`) type-check against each other's — so
+  `TypedFunctionValue`, `TypedVarArgsFunctionValue`, `ComdatRef`,
+  `IntrinsicDescriptor` and `FunctionBasicBlocks` take a trailing
+  `C: Capability = Mutable`** (D1, D8). Viewed through an unverified `Module`
+  they are `Mutable`; through a `Module<B, Verified>` they are `ReadOnly`.
+  `Module::globals` and `Module::comdat` mint at the capability the module's
+  state grants, as `Module::view` does. What is read off a handle keeps its
+  capability: a global's `initializer`, `value_type`, `ty` and `comdat`, an
+  alias's `aliasee`, an ifunc's `resolver`, a function's `signature`,
+  `return_type`, `param` / `params`, prefix and prologue data, personality and
+  `intrinsic_descriptor` (whose overload types are at the function's
+  capability), and an argument's `parent_function`. `IntrinsicDescriptor::new`
+  builds a descriptor at its overloads' capability. Spellings that omit `C`
+  keep meaning `Mutable`.
+- **Fixed, for the routes that reach a global or function without passing
+  through a block: a verified module's globals and functions could be
+  changed.** Every setter on these handles asked only for *a*
+  `&Module<B, Unverified>` token, and two modules that share a brand (every
+  `Module::dynamic` is `DynBrand`) type-check against each other's — so
   `a.view(g).set_linkage(&b, …)` changed a verified `a`. Every mutator now
-  requires `C: CanMutate`, and a verified module's handles are `ReadOnly`,
-  so the call is a compile error carrying `CanMutate`'s own message (locked by
+  requires `C: CanMutate`, and a handle reached from a verified module through
+  `Module::view`, `Module::globals`, `Module::comdat`, or by navigation off
+  those that does not pass through a block or instruction, is `ReadOnly`, so
+  the call is a compile error carrying `CanMutate`'s own message (locked by
   `compile_fail/verified_global_cannot_be_mutated.rs`). The same holds for
-  `ComdatRef::set_selection_kind` on a verified module's comdat.
+  `ComdatRef::set_selection_kind` on a verified module's comdat. **Not yet
+  closed:** routes through blocks and instructions still hand back `Mutable`
+  handles — `entry_block()` / `basic_blocks()` → `parent_function()`, a
+  call's `callee()` → `FunctionValue::try_from`, an instruction operand →
+  `GlobalVariable::try_from` — and so reach every setter; they stay `Mutable`
+  until the block and instruction family carries a capability and Task 6 of
+  the capability-typestate program removes the `laundered until` markers.
 - **Breaking: `FunctionBody::as_function` returns a `ReadOnly` function**, and
   a `FunctionView` holds one: a function rung's body is mutated through its
   blocks and the rung's mutator, never through the function's own setters.
@@ -50,18 +61,34 @@ cut, entries accumulate under **Unreleased**.
   reads, so a facade of either capability is validated through them. A
   hand-written impl spells `Argument<'ctx, B, ReadOnly>` /
   `FunctionValue<'ctx, R, B, ReadOnly>`.
-- **Not at `ReadOnly` yet: `FunctionValue::intrinsic_descriptor` and the typed
-  facades' `params`.** Their results — `IntrinsicDescriptor`'s overload types
-  and a schema's `FunctionParam::Value` — carry no capability, so they are
-  `Mutable` handles a `ReadOnly` function cannot mint; both are on `Mutable`
-  handles only. `intrinsic_id` and the erased `param` answer at either
-  capability.
+- **Not at `ReadOnly` yet — a regression for a verified module until Task 6
+  of the capability-typestate program lifts them:**
+  - the typed facades' `params()` is on `Mutable` facades only: a schema's
+    `FunctionParam::Value` / `FunctionParamList::Values` (and what the
+    `IrStruct` derive emits for them) carry no capability, so its values are
+    `Mutable` handles a `ReadOnly` function cannot mint. The erased
+    `FunctionValue::param` / `params` answer at either capability.
+  - `DominatorTree::new`, `FunctionCfg::new` and `Module::no_cfi` take a
+    `Mutable` `FunctionValue`, so `DominatorTree::new(verified.view(f))` and
+    `FunctionCfg::new(verified.view(f))`, which compiled while `view` handed
+    out `Mutable` functions, no longer do, and `Module::no_cfi` refuses a
+    `ReadOnly` function such as `FunctionBody::as_function()` at compile time.
+    Analyses run through a pass context are unaffected.
 - **Operands of any capability are admitted.** `IntoCallee`,
   `IntoTypedCallee` and `IntoVarArgsCallee` accept a function or facade of
   either capability, check it belongs to the builder's module
   (`IrError::ForeignValueId` otherwise) and re-mint it there; `set_comdat` and
   the global and function builders' `comdat` accept a comdat of either
   capability, and `GlobalVariable::try_delta_from(_plus)` a global of either.
+- **Fixed: a comdat of another module was attached by name and then lost.**
+  `GlobalVariable::set_comdat`, `FunctionValue::set_comdat` and the global and
+  function builders' `comdat` stored only the comdat's name, so a comdat
+  minted by a same-brand module named nothing in this module's comdat table —
+  `comdat()` answered `None` and the printed module dropped the attachment —
+  or named this module's different comdat of the same name. Each now refuses
+  it with the new **`IrError::ForeignComdat`** (*breaking*: a new variant) and
+  changes nothing; the builders refuse at `build`. `ComdatRef::read_only`
+  lowers a comdat to `ReadOnly`.
 - **Breaking: `Module::add_global_uninitialized`, `add_external_global`,
   `global_builder`, `alias_builder` and `ifunc_builder` take their value type
   as any `IrType`** (was `Into<Type>` for the first three and a concrete

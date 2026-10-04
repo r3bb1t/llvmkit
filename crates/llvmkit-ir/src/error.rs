@@ -1774,6 +1774,23 @@ pub enum IrError {
     #[error("named metadata id belongs to a different Module")]
     ForeignNamedMetadataId,
 
+    /// A [`ComdatRef`](crate::ComdatRef) minted by one
+    /// [`Module`](crate::Module) was attached to a global variable or function
+    /// of another. A global stores its comdat by name, and that name names
+    /// nothing in this module's comdat table — so the attachment would vanish
+    /// from the printed module — or names a different comdat that happens to
+    /// share it.
+    ///
+    /// The comdat twin of [`ForeignValueId`](Self::ForeignValueId): two modules
+    /// sharing a brand (`DynBrand`, or a re-issued named brand) accept each
+    /// other's `ComdatRef` handles without a type error, and the module tag is
+    /// what refuses them. Raised by
+    /// [`GlobalVariable::set_comdat`](crate::GlobalVariable::set_comdat),
+    /// [`FunctionValue::set_comdat`](crate::FunctionValue::set_comdat) and the
+    /// `build` of the global and function builders.
+    #[error("comdat belongs to a different Module")]
+    ForeignComdat,
+
     /// [`crate::SsaState::for_function`] was given a function that
     /// already has a body. The layer must observe every CFG edge from
     /// birth (Braun's algorithm needs to see every `br` as it is
@@ -2035,7 +2052,8 @@ impl IrError {
             Self::ForeignValueId
             | Self::ForeignType
             | Self::ForeignMetadataId
-            | Self::ForeignNamedMetadataId => Blame::UsageError,
+            | Self::ForeignNamedMetadataId
+            | Self::ForeignComdat => Blame::UsageError,
 
             Self::Brand(error) => error.blame(),
             Self::DataLayout(error) => error.blame(),
