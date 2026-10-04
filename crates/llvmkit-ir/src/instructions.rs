@@ -918,23 +918,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx,
         Value::from_parts(id, self.module, data.ty)
     }
 
-    /// Split the callee into a direct call to a known [`FunctionValue`] or
-    /// an indirect call through a [`PointerValue`]. Mirrors the common
-    /// `CallBase::getCalledFunction()` "is this direct?" question, but the
-    /// answer is a typed enum instead of a nullable pointer.
-    pub fn classify_callee(self) -> Callee<'ctx, B, C> {
-        let callee = self.callee();
-        // capability (proof): laundered until Task 4 — `FunctionValue` carries
-        // no capability yet, so the direct callee is narrowed from a `Mutable`
-        // reference; its mutators still demand a `&Module<B, Unverified>` token.
-        let function_module = self.module.mutable_at_marked_boundary();
-        let callee_slot = self.payload().callee.get();
-        let callee_ty = function_module.value_data(callee_slot).ty;
-        match FunctionValue::try_from(Value::from_parts(callee_slot, function_module, callee_ty)) {
-            Ok(function) => Callee::Direct(function),
-            Err(_) => Callee::Indirect(PointerValue::from_value_unchecked(callee)),
-        }
-    }
     /// Function-type of the call (`FunctionType<'ctx, B, C>`).
     pub fn function_type(self) -> FunctionType<'ctx, B, C> {
         FunctionType::new(self.payload().fn_ty, self.module)
@@ -1005,6 +988,28 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx,
             None
         } else {
             Some(Value::from_parts(self.id, self.module, self.ty))
+        }
+    }
+}
+
+// Only on a `Mutable` call (the `C` default): `FunctionValue` carries no
+// capability yet, so a direct callee could only be handed out at `Mutable`,
+// and from a `ReadOnly` call that would launder its way back to `Mutable`
+// blocks and their setters. This becomes generic over `C` at the integration
+// step, once `FunctionValue` carries `C` and `Callee::Direct` keeps the
+// call's.
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
+    /// Split the callee into a direct call to a known [`FunctionValue`] or
+    /// an indirect call through a [`PointerValue`]. Mirrors the common
+    /// `CallBase::getCalledFunction()` "is this direct?" question, but the
+    /// answer is a typed enum instead of a nullable pointer.
+    ///
+    /// Only on a [`Mutable`] call for now; see the comment on this impl.
+    pub fn classify_callee(self) -> Callee<'ctx, B> {
+        let callee = self.callee();
+        match FunctionValue::try_from(callee) {
+            Ok(function) => Callee::Direct(function),
+            Err(_) => Callee::Indirect(PointerValue::from_value_unchecked(callee)),
         }
     }
 }
@@ -1845,10 +1850,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> PhiInst<'ctx, W, B
         C: CanMutate,
     {
         if !fmf.is_empty()
-            && !crate::operator::is_supported_floating_point_type(Type::new(
-                self.ty,
-                self.module.proven_mutable(),
-            ))
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
         {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
@@ -2121,10 +2123,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> FpPhiInst<'ctx, K
         C: CanMutate,
     {
         if !fmf.is_empty()
-            && !crate::operator::is_supported_floating_point_type(Type::new(
-                self.ty,
-                self.module.proven_mutable(),
-            ))
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
         {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
@@ -2571,10 +2570,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> OtherPhiInst<'ctx, B, C> {
         C: CanMutate,
     {
         if !fmf.is_empty()
-            && !crate::operator::is_supported_floating_point_type(Type::new(
-                self.ty,
-                self.module.proven_mutable(),
-            ))
+            && !crate::operator::is_supported_floating_point_type(self.as_view().ty())
         {
             return Err(IrError::InvalidOperation {
                 message: "fast-math flags require a floating-point phi result",
@@ -2973,7 +2969,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ShuffleVectorInst<'ctx, B, C> {
     pub fn mask(self) -> &'ctx [ShuffleMaskElem] {
         &self.payload().mask
     }
+}
 
+// The two operand predicates take no handle, so the impl's own capability
+// means nothing to them: each operand carries its own, and they sit on the
+// `Mutable` (default) impl so that `ShuffleVectorInst::is_valid_operands(..)`
+// infers its `Self` without a turbofish.
+impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
     /// Mirrors `ShuffleVectorInst::isValidOperands(const Value *V1, const
     /// Value *V2, ArrayRef<int> Mask)` (`Instructions.cpp`) — the
     /// **decoded-mask** overload. It is what the
@@ -3001,11 +3003,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ShuffleVectorInst<'ctx, B, C> {
     ///   step later anyway, since the constructor then calls
     ///   `VectorType::get(EltTy, 0, /*Scalable=*/true)`, whose own assertion
     ///   rejects a zero minimum element count.
-    pub fn is_valid_operands(
-        v1: Value<'ctx, B, C>,
-        v2: Value<'ctx, B, C>,
+    ///
+    /// The operands are read only, so each may be of any capability.
+    pub fn is_valid_operands<C1: Capability, C2: Capability>(
+        v1: Value<'ctx, B, C1>,
+        v2: Value<'ctx, B, C2>,
         mask: &[ShuffleMaskElem],
     ) -> bool {
+        // Read at one capability, so the operand types compare.
+        let (v1, v2) = (v1.read_only(), v2.read_only());
         // V1 and V2 must be vectors of the same type.
         //
         // The same read also yields upstream's
@@ -3061,11 +3067,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ShuffleVectorInst<'ctx, B, C> {
     /// `mask` is a `Value`, not a `Constant`, because upstream's is: a
     /// non-constant mask reaches the routine's closing `return false` rather
     /// than being refused earlier.
-    pub fn is_valid_operands_with_constant_mask(
-        v1: Value<'ctx, B, C>,
-        v2: Value<'ctx, B, C>,
-        mask: Value<'ctx, B, C>,
+    ///
+    /// The operands are read only, so each may be of any capability.
+    pub fn is_valid_operands_with_constant_mask<C1: Capability, C2: Capability, C3: Capability>(
+        v1: Value<'ctx, B, C1>,
+        v2: Value<'ctx, B, C2>,
+        mask: Value<'ctx, B, C3>,
     ) -> bool {
+        // Read at one capability, so the operand types compare.
+        let (v1, v2, mask) = (v1.read_only(), v2.read_only(), mask.read_only());
         // V1 and V2 must be vectors of the same type.
         let Some((_, v1_size, v1_scalable)) = v1.ty().data().as_vector() else {
             return false;

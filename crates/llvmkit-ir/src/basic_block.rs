@@ -541,11 +541,12 @@ pub struct BlockCall<R: ReturnMarker, B: ModuleBrand, Params: BlockParams = Bloc
     lowered: IrResult<Box<[ValueSlot]>>,
 }
 
-impl<'ctx, R, B, Params> BasicBlockLabel<'ctx, R, B, Params>
+impl<'ctx, R, B, Params, C> BasicBlockLabel<'ctx, R, B, Params, C>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
     Params: BlockParams + FunctionParamList,
+    C: Capability,
 {
     /// Bundle this typed branch target with the block-arguments that seed its
     /// leading head-phis, forming a [`BlockCall`] edge for
@@ -560,15 +561,16 @@ where
     /// lowering failure is deferred into the returned [`BlockCall`] and surfaces
     /// when the branch builder consumes it.
     ///
-    /// Only on a [`Mutable`] label: lowering admits the arguments into the
+    /// The label must [`CanMutate`]: lowering admits the arguments into the
     /// label's module, which is authoring an edge, not reading one.
     #[inline]
     pub fn call<A>(self, args: A) -> BlockCall<R, B, Params>
     where
         A: CallArgs<'ctx, Params, B>,
+        C: CanMutate,
     {
         let lowered = args
-            .lower(self.module, crate::CrateOnly(()))
+            .lower(self.module.proven_mutable(), crate::CrateOnly(()))
             .map(|lowered| lowered.0);
         BlockCall {
             target: self.id(),
@@ -577,22 +579,24 @@ where
     }
 }
 
-impl<'ctx, R, Term, B, Params> BasicBlock<'ctx, R, Term, B, Params>
+impl<'ctx, R, Term, B, Params, C> BasicBlock<'ctx, R, Term, B, Params, C>
 where
     R: ReturnMarker,
     Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
     Params: BlockParams + FunctionParamList,
+    C: Capability,
 {
     /// Convenience wrapper for `self.label().call(args)`: bundle this typed
     /// block as a branch target with the block-arguments that seed its head-phis.
     /// Borrows the block, so the handle stays usable (e.g. to reposition the
-    /// builder into it afterwards). See [`BasicBlockLabel::call`]; like it,
-    /// only on a [`Mutable`] block.
+    /// builder into it afterwards). See [`BasicBlockLabel::call`]; like it, the
+    /// block must [`CanMutate`].
     #[inline]
     pub fn call<A>(&self, args: A) -> BlockCall<R, B, Params>
     where
         A: CallArgs<'ctx, Params, B>,
+        C: CanMutate,
     {
         self.label().call(args)
     }
@@ -654,6 +658,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlock<'ctx, Dyn, Unterminated, B> {
             use_list: RefCell::new(Vec::new()),
         });
         Self::from_parts(id, module, label_ty)
+    }
+}
+
+// Only on a `Mutable` block (the `C` default): `FunctionValue` carries no
+// capability yet, so the parent could only be handed out at `Mutable`, and
+// from a `ReadOnly` block that would launder its way back to `Mutable` blocks
+// and their setters. This becomes generic over `C` at the integration step,
+// once `FunctionValue` carries `C` and the parent keeps the block's.
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
+    BasicBlock<'ctx, R, Term, B, Params>
+{
+    /// Parent function as a runtime-checked [`FunctionValue<Dyn>`](FunctionValue).
+    /// `None` if the block is an orphan (no parent attached). The
+    /// caller can narrow back to its static `R` via
+    /// [`crate::FunctionValue::as_dyn`] / `try_into` if needed.
+    ///
+    /// Only on a [`Mutable`] block for now; see the comment on this impl.
+    pub fn parent_function(&self) -> Option<FunctionValue<'ctx, Dyn, B>> {
+        let id = self.parent_id()?;
+        Some(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
+            id,
+            self.module,
+        ))
     }
 }
 
@@ -849,21 +876,6 @@ impl<
     /// Owning function value-id, or `None` if the block is an orphan.
     pub(super) fn parent_id(&self) -> Option<ValueSlot> {
         *self.data().parent.borrow()
-    }
-
-    /// Parent function as a runtime-checked [`FunctionValue<Dyn>`](FunctionValue).
-    /// `None` if the block is an orphan (no parent attached). The
-    /// caller can narrow back to its static `R` via
-    /// [`crate::FunctionValue::as_dyn`] / `try_into` if needed.
-    pub fn parent_function(&self) -> Option<FunctionValue<'ctx, Dyn, B>> {
-        let id = self.parent_id()?;
-        // capability (proof): laundered until Task 4 — `FunctionValue`
-        // carries no capability yet and its mutators still demand a
-        // `&Module<B, Unverified>` token.
-        let module = self.module.mutable_at_marked_boundary();
-        Some(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
-            id, module,
-        ))
     }
 
     /// Iterate the instruction value-ids in program order. Returns
@@ -1354,8 +1366,8 @@ impl<
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
-    BasicBlock<'ctx, R, Terminated, B, Params>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capability>
+    BasicBlock<'ctx, R, Terminated, B, Params, C>
 {
     /// Split this block in two at `before` and return the new block.
     ///
@@ -1372,8 +1384,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// bit is clear, which leaves them behind for the branch to adopt.
     ///
     /// `before` may be a view of any capability: naming the split point is not
-    /// mutating it, and it is admitted against this block's module. The split
-    /// itself exists only on a [`Mutable`] block.
+    /// mutating it, and it is admitted against this block's module. The block
+    /// split is the mutation, so it must [`CanMutate`].
     ///
     /// # Errors
     ///
@@ -1394,8 +1406,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     ) -> IrResult<BasicBlock<'ctx, R, Terminated, B>>
     where
         Name: Into<String>,
+        C: CanMutate,
         C2: Capability,
     {
+        let own = self.module.proven_mutable();
         // Boundary: the caller's split point, admitted before the block is
         // read or a new block created.
         let split_id = before.slot_in(self.module.id())?;
@@ -1439,14 +1453,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
 
         // BranchInst *BI = BranchInst::Create(New, this);
         let (_, branch) = IrBuilder::new_for::<R>(module_token)
-            .position_at_end(self.copy_handle().retag_termination::<Unterminated>())
+            .position_at_end(BasicBlock::<'ctx, R, Unterminated, B>::from_parts(
+                self.id, own, self.ty,
+            ))
             .br_to_slot_unchecked(new_id);
         // The splice left `I`'s records at this block's end, and inserting the
         // branch there adopts them (`Instruction::insertBefore`).
         // Internal: the branch was minted in this module just above.
         absorb_debug_records(module, split_id, branch.slot_trusting_same_module());
         // BI->setDebugLoc(Loc);
-        set_debug_location(self.module, branch.slot_trusting_same_module(), location);
+        set_debug_location(own, branch.slot_trusting_same_module(), location);
 
         // New->replaceSuccessorsPhiUsesWith(this, New);
         new_block.replace_successors_phi_uses_with(self.id, new_id);
@@ -1480,6 +1496,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     ///   edge (upstream's `assert(!isa<PHINode>(*I) || getSinglePredecessor())`),
     ///   or if this block has no parent function or is missing from its block
     ///   list.
+    ///
+    /// `before` may be a view of any capability, and the block must
+    /// [`CanMutate`], as on [`split_at`](Self::split_at).
     pub fn split_before<Name, C2>(
         self,
         module_token: &'ctx Module<B, Unverified>,
@@ -1488,8 +1507,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     ) -> IrResult<BasicBlock<'ctx, R, Terminated, B>>
     where
         Name: Into<String>,
+        C: CanMutate,
         C2: Capability,
     {
+        let own = self.module.proven_mutable();
         // Boundary: the caller's split point, admitted before the block is
         // read or a new block created.
         let split_id = before.slot_in(self.module.id())?;
@@ -1544,11 +1565,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
         let predecessors = crate::cfg::block_predecessors(self.to_erased());
         for predecessor in predecessors {
             // Instruction *TI = Pred->getTerminator();
-            let predecessor_block = BasicBlock::<'ctx, Dyn, Terminated, B>::from_parts(
-                predecessor,
-                self.module,
-                self.ty,
-            );
+            let predecessor_block =
+                BasicBlock::<'ctx, Dyn, Terminated, B>::from_parts(predecessor, own, self.ty);
             // A predecessor is found through a terminator that uses this block,
             // so it has one unless instructions follow that terminator. Upstream
             // would dereference a null `TI` there; llvmkit leaves such a
@@ -1560,8 +1578,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
             if let ValueKindData::Instruction(data) = &self.module.value_data(terminator).kind {
                 crate::cfg::replace_successor_with(&data.kind, self.id, new_id);
             }
-            crate::cfg::sync_block_uses(self.module, terminator, self.id);
-            crate::cfg::sync_block_uses(self.module, terminator, new_id);
+            crate::cfg::sync_block_uses(own, terminator, self.id);
+            crate::cfg::sync_block_uses(own, terminator, new_id);
             // this->replacePhiUsesWith(Pred, New);
             self.replace_phi_uses_with(predecessor, new_id);
         }
@@ -1575,8 +1593,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
         // Internal: the branch was minted in this module just above.
         absorb_debug_records(module, split_id, branch.slot_trusting_same_module());
         // BI->setDebugLoc(Loc);
-        set_debug_location(self.module, branch.slot_trusting_same_module(), location);
-        Ok(BasicBlock::from_parts(new_id, self.module, self.ty))
+        set_debug_location(own, branch.slot_trusting_same_module(), location);
+        Ok(BasicBlock::from_parts(new_id, own, self.ty))
     }
 }
 

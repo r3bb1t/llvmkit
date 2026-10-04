@@ -98,7 +98,7 @@ use super::worklist::Worklist;
 ///
 /// Read-only by type (D8): the block and instruction handles it hands out are
 /// [`ReadOnly`], so a walk reached through a pass context — an `Inspect` pass
-/// included — has no setter on them. A mutating rung edits through its
+/// included — cannot call a setter on them. A mutating rung edits through its
 /// context's own entries, which take ids and witnesses of any capability.
 #[derive(Branded)]
 pub struct BasicBlockView<'ctx, B: ModuleBrand> {

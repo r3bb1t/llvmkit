@@ -17,11 +17,11 @@ error[E0277]: argument tuple `(ConstantIntValue<'_, i32, DynBrand>,)` does not m
              `(V0, V1, V2, V3, V4, V5, V6)` implements `CallArgs<'_, (P0, P1, P2, P3, P4, P5, P6), B>`
              `(V0, V1, V2, V3, V4, V5, V6, V7)` implements `CallArgs<'_, (P0, P1, P2, P3, P4, P5, P6, P7), B>`
            and $N others
-note: required by a bound in `llvmkit_ir::BasicBlock::<'ctx, R, Term, B, Params>::call`
+note: required by a bound in `llvmkit_ir::BasicBlock::<'ctx, R, Term, B, Params, C>::call`
   --> src/basic_block.rs
    |
    |     pub fn call<A>(&self, args: A) -> BlockCall<R, B, Params>
    |            ---- required by a bound in this associated function
    |     where
    |         A: CallArgs<'ctx, Params, B>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `BasicBlock::<'ctx, R, Term, B, Params>::call`
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `BasicBlock::<'ctx, R, Term, B, Params, C>::call`

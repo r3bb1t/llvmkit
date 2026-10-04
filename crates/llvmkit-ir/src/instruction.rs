@@ -821,8 +821,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> InstructionView<'ctx, B, C> {
     ///
     /// The token alone is not the guard: two modules that share a brand
     /// type-check against each other's tokens. The view's own capability is —
-    /// a view a verified module mints is [`ReadOnly`](crate::ReadOnly) and
-    /// has no `set_metadata` at all (`compile_fail/verified_instruction_metadata_is_read_only`).
+    /// a view a verified module mints is [`ReadOnly`](crate::ReadOnly), and
+    /// this method's `C: CanMutate` bound refuses it before the token is
+    /// looked at (`compile_fail/verified_instruction_metadata_is_read_only`).
     pub fn set_metadata(
         &self,
         module_token: &'ctx Module<B, Unverified>,

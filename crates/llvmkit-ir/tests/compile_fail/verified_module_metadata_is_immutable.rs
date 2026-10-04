@@ -19,14 +19,14 @@
 //! attachments while the driver derives `Module<B, Verified>` and reports
 //! everything preserved.
 //!
-//! Since blocks and instructions carry their capability (D8), the call is
-//! refused twice, and both errors are the law this fixture holds: the
-//! instruction view a `ModuleView` walk hands out is `ReadOnly`, so
-//! `set_metadata`'s `C: CanMutate` bound refuses it (E0277), and the
-//! `Verified` module still cannot stand in for the `Unverified` token (E0308).
-//! `verified_instruction_metadata_is_read_only.rs` isolates the first: there a
-//! second, unverified module's token type-checks and only the capability
-//! refuses.
+//! The law held here is the token alone. Since blocks and instructions carry
+//! their capability (D8), a view a verified module or a `ModuleView` walk
+//! mints is `ReadOnly`, and `set_metadata`'s `C: CanMutate` bound refuses it
+//! before the token is looked at — `verified_instruction_metadata_is_read_only.rs`
+//! holds that law. So the view here comes from a second, unverified module of
+//! the same brand: it is `Mutable`, its capability does not refuse the call,
+//! and the one refusal left is the `Verified` module offered as the
+//! `Unverified` token (E0308).
 //!
 //! Upstream has no analogue: `Instruction::setMetadata` is a plain non-const
 //! method, `verifyModule` is a free function returning a bool a caller may
@@ -48,12 +48,24 @@ fn main() {
     // Consumes the `Unverified` token: `m` is moved into `verify`.
     let verified = m.verify().unwrap();
 
-    let view = verified.as_view();
-    let function = view.functions().next().unwrap();
-    let block = function.basic_blocks().next().unwrap();
-    let inst = block.instructions().next().unwrap();
+    // A `Mutable` view, from an unverified module of the same brand, so only
+    // the token can refuse the call below.
+    let n = Module::dynamic("n");
+    let g = n
+        .add_typed_function::<(), (), _>("g", Linkage::External)
+        .unwrap()
+        .as_function();
+    let n_entry = n.view(g).append_basic_block(&n, "entry");
+    llvmkit_ir::IrBuilder::at_end(n_entry).ret_void();
+    let inst = n
+        .view(g)
+        .entry_block()
+        .unwrap()
+        .instructions()
+        .next()
+        .unwrap();
 
-    // There is no `&Module<B, Unverified>` left in scope to pass, and the
-    // `Verified` module cannot supply one — so this call cannot be written.
+    // The `Verified` module cannot stand in for the `Unverified` token — so
+    // this call cannot be written with it.
     inst.set_metadata(&verified, MetadataAttachmentKind::Dbg, node);
 }

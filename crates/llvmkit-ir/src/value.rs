@@ -1071,9 +1071,9 @@ pub(crate) mod into_erased_value_sealed {
 /// This exists because [`IntoErasedValue`] cannot be blanket-implemented over
 /// [`IsValue`] without colliding with the id-family impls; see the trait docs.
 macro_rules! impl_into_erased_value_for_handle {
-    // A handle that does not carry a capability yet: functions, globals and
-    // instruction views until Tasks 4 and 5 of the capability plan, which
-    // move each to the arm below and then delete this one.
+    // A handle that does not carry a capability yet: functions and globals
+    // until Task 4 of the capability plan, which moves each to the arm below;
+    // this arm is deleted once nothing uses it.
     (capability_free: $( $name:ident $([$($mk:ident : $mkb:path),+ $(,)?])? ),+ $(,)?) => { $(
         impl<'ctx, $($($mk: $mkb,)+)? B: $crate::module::ModuleBrand + 'ctx>
             $crate::value::into_erased_value_sealed::Sealed

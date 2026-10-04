@@ -258,4 +258,8 @@ fn typestate_compile_fail() {
     // bound is its only guard: without it a verified module's phi flags could
     // be rewritten after `verify()`.
     t.compile_fail("tests/compile_fail/verified_phi_fast_math_flags_are_immutable.rs");
+    // A `ReadOnly` route never reaches a mutator, not even through a function:
+    // a verified call's callee, its entry block and an instruction there must
+    // not come back `Mutable`.
+    t.compile_fail("tests/compile_fail/verified_call_callee_is_not_a_mutable_route.rs");
 }

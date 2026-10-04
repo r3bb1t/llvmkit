@@ -42,17 +42,32 @@ cut, entries accumulate under **Unreleased**.
   unverified module of the same brand, `set_metadata` attached that module's
   node to the verified module's instruction (the token type-checked), and
   `set_fast_math_flags`, which takes no token, rewrote a verified phi's flags.
-  The setters on these handles — `set_metadata`, `push_debug_record`,
+  The mutators on these handles — `set_metadata`, `push_debug_record`,
   `set_name` / `clear_name`, `remove_incoming`, `set_fast_math_flags`,
   `set_value_operand`, `set_tail_call_kind`, `set_attributes`,
-  `with_operand_bundles` and `splice_into` — now require `C: CanMutate`, and
-  `split_at` / `split_before` exist only on a `Mutable` block; locked by
-  `compile_fail/verified_instruction_metadata_is_read_only` and
-  `compile_fail/verified_phi_fast_math_flags_are_immutable`.
+  `with_operand_bundles`, `splice_into`, `split_at` / `split_before` and the
+  blocks' `call` builders — now require `C: CanMutate`; locked by
+  `compile_fail/verified_instruction_metadata_is_read_only`,
+  `compile_fail/verified_phi_fast_math_flags_are_immutable` and, for the
+  routes that mint the handles, `capability_typestate`'s
+  `a_verified_modules_blocks_and_instructions_are_read_only`. Function
+  handles are not covered yet: `view` of a function id still mints a
+  `Mutable` `FunctionValue`, whose blocks and instructions are `Mutable`,
+  until functions carry the capability.
+- **Breaking: `CallInst::classify_callee` and `BasicBlock::parent_function`
+  exist only on a `Mutable` handle.** Both hand out a `FunctionValue`, which
+  carries no capability yet, so on a `ReadOnly` call or block they would lead
+  back to `Mutable` blocks and instructions; they become generic over the
+  capability once functions carry it. Locked by
+  `compile_fail/verified_call_callee_is_not_a_mutable_route`.
 - **Breaking: a `BasicBlockView` hands out `ReadOnly` handles** —
-  `instructions()`, `placed_instructions()` and its `IntoIterator` — so a walk
-  an `Inspect` pass receives reaches no setter. A mutating context's `erase`,
-  `replace_all_uses` and `split_block`, `IrBuilder::position_before`, the
+  `instructions()`, `placed_instructions()` and its `IntoIterator` — so the
+  handles of a walk an `Inspect` pass receives reach no setter (viewing a
+  function id still yields a `Mutable` function, as above). Until the
+  value-tracking analyses accept either capability, that walk cannot feed
+  them: they take `Mutable` values, so a caller holding the unverified module
+  walks `module.view(function.id()).basic_blocks()` instead. A mutating context's
+  `erase`, `replace_all_uses` and `split_block`, `IrBuilder::position_before`, the
   `Instruction` insert and move entries, and `BasicBlock::split_at` /
   `split_before` take handles and witnesses of either capability; the entry
   carries the authority, and naming an instruction is not mutating it.
@@ -65,18 +80,21 @@ cut, entries accumulate under **Unreleased**.
   `FunctionReturn::CallResult` names no capability (for a struct return it is
   the `IrStruct` derive's own value type); a `ReadOnly` call reads its result
   through `as_call_inst().return_value()`.
-- **Breaking: `BasicBlockLabel::call` / `BasicBlock::call`,
-  `BlockCursor::at_start` and `IrBuilder::position_at_end` take a `Mutable`
-  block**, and the open-terminator surfaces (`add_case`, `add_destination`,
+- **Breaking: `BlockCursor::at_start` and `IrBuilder::position_at_end` take a
+  `Mutable` block**, and the open-terminator surfaces (`add_case`, `add_destination`,
   `add_catch_clause`, `add_handler`) stay on the `Mutable` handles the builder
   mints.
 - **Read-only queries accept either capability**: `IntoBasicBlockLabel`
   re-mints a block or label of either capability at the receiving module; the
   dominator tree's block, instruction and use queries,
   `can_ignore_sign_bit_of_zero` / `_nan`,
-  `is_guaranteed_to_transfer_execution_to_successor` and
-  `descriptor_for_callee` are generic over it; and a `Value`, block or
-  instruction of either capability prints.
+  `is_guaranteed_to_transfer_execution_to_successor`, the
+  `OverflowingBinaryOperator` / `PossiblyExactOperator` impls on the
+  per-opcode views, `is_supported_floating_point_type`, and
+  `ShuffleVectorInst::is_valid_operands` /
+  `is_valid_operands_with_constant_mask` (each operand at its own) are
+  generic over it; and a `Value`, block or instruction of either capability
+  prints.
 
 ### Changed — global values rename through the module's symbol table *(breaking)*
 

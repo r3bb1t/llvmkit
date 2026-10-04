@@ -1,29 +1,7 @@
-error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
-  --> tests/compile_fail/verified_module_metadata_is_immutable.rs:58:10
-   |
-58 |     inst.set_metadata(&verified, MetadataAttachmentKind::Dbg, node);
-   |          ^^^^^^^^^^^^ this handle was minted read-only
-   |
-   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
-   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
-help: the trait `CanMutate` is implemented for `Mutable`
-  --> src/capability.rs
-   |
-   | impl CanMutate for Mutable {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
-note: required by a bound in `InstructionView::<'ctx, B, C>::set_metadata`
-  --> src/instruction.rs
-   |
-   |     pub fn set_metadata(
-   |            ------------ required by a bound in this associated function
-...
-   |         C: CanMutate,
-   |            ^^^^^^^^^ required by this bound in `InstructionView::<'ctx, B, C>::set_metadata`
-
 error[E0308]: mismatched types
-  --> tests/compile_fail/verified_module_metadata_is_immutable.rs:58:23
+  --> tests/compile_fail/verified_module_metadata_is_immutable.rs:70:23
    |
-58 |     inst.set_metadata(&verified, MetadataAttachmentKind::Dbg, node);
+70 |     inst.set_metadata(&verified, MetadataAttachmentKind::Dbg, node);
    |          ------------ ^^^^^^^^^ expected `&Module<DynBrand>`, found `&Module<DynBrand, Verified>`
    |          |
    |          arguments to this method are incorrect
