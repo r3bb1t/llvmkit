@@ -1848,6 +1848,39 @@ is a function": `crates/llvmkit-ir/src/verifier.rs` (the
   its signature slot equals the call's `fn_ty`), called from all four sites,
   with a mismatched-signature fixture per consequence.
 
+### 135. `Value::set_name` on a global value leaves the name unchanged
+
+**Severity:** model-gap (derived by reading; no test exhibits it — a
+hypothesis until one does)
+**Where:** `crates/llvmkit-ir/src/value.rs` — `Value::set_name` /
+`Value::clear_name`, reached for a global through its erased handle
+(`as_erased()`).
+
+- **LLVM:** `Value::setNameImpl` (`IR/Value.cpp`) asks the file-static
+  `getSymTab` for the table to update; its `GlobalValue` arm answers the
+  parent `Module`'s `getValueSymbolTable()`, so renaming a function, global
+  variable, alias or ifunc goes through the module symbol table (uniquing a
+  clash). Only a `Constant` answers "no name is setable" and returns
+  unchanged.
+- **llvmkit:** `Value::set_name` has three arms — a void value, a local with a
+  parent function (`local_parent_function_id`: arguments, blocks,
+  instructions), and a parentless block or instruction
+  (`is_parentless_local_nameable`) — and a global matches none, so the call
+  returns with the name unchanged and no error. The typed handles' own
+  setters were the same no-op until the capability-typestate program's value
+  task removed `SetName` from functions, global variables, aliases and ifuncs;
+  the erased route remains.
+- **Found:** 2026-10-04, capability-typestate program, Task 3, while splitting
+  `HasName` into `HasName` / `SetName` — the function and global
+  `HasName::set_name` bodies were empty, and reading `Value::set_name`'s arms
+  showed the erased path ends the same way. `rg -n "set_name|setName"
+  docs/divergences.md docs/future-work.md` returned no entry for it before
+  this one.
+- **Fix:** a module-level rename for globals that goes through the module's
+  name table the way `setNameImpl`'s `GlobalValue` arm does, reached from
+  `Value::set_name`'s global case, with a test that renames each global kind
+  and one that renames onto an existing name.
+
 ## Coverage, tooling and provenance
 
 Nothing changes for a well-formed module; these are gaps in what is measured, guarded or recorded.

@@ -12,26 +12,33 @@ use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
 use super::value::into_pointer_value_sealed::Sealed;
+use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::error::IrResult;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::struct_schema::IrField;
 use crate::value::{IntoPointerValue, PointerValue, Value};
 
 /// Opaque `ptr` value plus a phantom pointee schema `T`.
-pub struct TypedPointerValue<'ctx, T: IrField, B: ModuleBrand> {
-    ptr: PointerValue<'ctx, B>,
+pub struct TypedPointerValue<'ctx, T: IrField, B: ModuleBrand, C: Capability = Mutable> {
+    ptr: PointerValue<'ctx, B, C>,
     _pointee: PhantomData<fn() -> T>,
 }
 
-impl<'ctx, T: IrField, B: ModuleBrand> Clone for TypedPointerValue<'ctx, T, B> {
+impl<'ctx, T: IrField, B: ModuleBrand, C: Capability> Clone for TypedPointerValue<'ctx, T, B, C> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, T: IrField, B: ModuleBrand> Copy for TypedPointerValue<'ctx, T, B> {}
+impl<'ctx, T: IrField, B: ModuleBrand, C: Capability> Copy for TypedPointerValue<'ctx, T, B, C> {}
 
-impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> fmt::Display for TypedPointerValue<'ctx, T, B> {
+impl<T: IrField, B: ModuleBrand, C: Capability> CapabilityOf for TypedPointerValue<'_, T, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, T: IrField, B: ModuleBrand + 'ctx, C: Capability> fmt::Display
+    for TypedPointerValue<'ctx, T, B, C>
+{
     /// Print the operand form `ptr <ref>`. The pointee schema `T` is
     /// compile-time-only bookkeeping and does not appear in the output, so
     /// this is byte-identical to what the erased
@@ -41,23 +48,27 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> fmt::Display for TypedPointerValue
     }
 }
 
-impl<'ctx, T: IrField, B: ModuleBrand> PartialEq for TypedPointerValue<'ctx, T, B> {
+impl<'ctx, T: IrField, B: ModuleBrand, C: Capability> PartialEq
+    for TypedPointerValue<'ctx, T, B, C>
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.ptr == other.ptr
     }
 }
 
-impl<'ctx, T: IrField, B: ModuleBrand> Eq for TypedPointerValue<'ctx, T, B> {}
+impl<'ctx, T: IrField, B: ModuleBrand, C: Capability> Eq for TypedPointerValue<'ctx, T, B, C> {}
 
-impl<'ctx, T: IrField, B: ModuleBrand> Hash for TypedPointerValue<'ctx, T, B> {
+impl<'ctx, T: IrField, B: ModuleBrand, C: Capability> Hash for TypedPointerValue<'ctx, T, B, C> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.ptr.hash(state);
     }
 }
 
-impl<'ctx, T: IrField, B: ModuleBrand> fmt::Debug for TypedPointerValue<'ctx, T, B> {
+impl<'ctx, T: IrField, B: ModuleBrand, C: Capability> fmt::Debug
+    for TypedPointerValue<'ctx, T, B, C>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypedPointerValue")
             .field("ptr", &self.ptr)
@@ -65,9 +76,9 @@ impl<'ctx, T: IrField, B: ModuleBrand> fmt::Debug for TypedPointerValue<'ctx, T,
     }
 }
 
-impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> TypedPointerValue<'ctx, T, B> {
+impl<'ctx, T: IrField, B: ModuleBrand + 'ctx, C: Capability> TypedPointerValue<'ctx, T, B, C> {
     #[inline]
-    pub(crate) fn from_pointer(ptr: PointerValue<'ctx, B>) -> Self {
+    pub(crate) fn from_pointer(ptr: PointerValue<'ctx, B, C>) -> Self {
         Self {
             ptr,
             _pointee: PhantomData,
@@ -76,21 +87,24 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> TypedPointerValue<'ctx, T, B> {
 
     /// Erase the pointee schema (D3 opt-out).
     #[inline]
-    pub fn as_pointer_value(self) -> PointerValue<'ctx, B> {
+    pub fn as_pointer_value(self) -> PointerValue<'ctx, B, C> {
         self.ptr
     }
 
-    /// Widen to the erased [`Value`] handle.
+    /// Widen to the erased [`Value`] handle, at the same capability.
     #[inline]
-    pub fn as_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
         self.ptr.as_erased()
     }
 }
 
-impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> Sealed for TypedPointerValue<'ctx, T, B> {}
+impl<'ctx, T: IrField, B: ModuleBrand + 'ctx, C: Capability> Sealed
+    for TypedPointerValue<'ctx, T, B, C>
+{
+}
 
-impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B>
-    for TypedPointerValue<'ctx, T, B>
+impl<'ctx, T: IrField, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'ctx, B>
+    for TypedPointerValue<'ctx, T, B, C>
 {
     #[inline]
     fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
@@ -98,7 +112,7 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B>
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PointerValue<'ctx, B, C> {
     /// Attach a pointee schema. This is an *assertion*, not a checked
     /// conversion -- opaque pointers carry nothing to check against. A
     /// mis-assertion is exactly as unchecked as passing the wrong type
@@ -111,7 +125,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
     /// semantics, observable in the printed module, not UB in your
     /// compiler.
     #[inline]
-    pub fn with_pointee<T: IrField>(self) -> TypedPointerValue<'ctx, T, B> {
+    pub fn with_pointee<T: IrField>(self) -> TypedPointerValue<'ctx, T, B, C> {
         TypedPointerValue::from_pointer(self)
     }
 }

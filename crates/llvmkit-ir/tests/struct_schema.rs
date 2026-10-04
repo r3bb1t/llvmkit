@@ -278,7 +278,7 @@ impl StructSchema for Rect {
 
 fn poison_point<'ctx, B: ModuleBrand + 'ctx>(
     module: &'ctx Module<B>,
-) -> Result<Constant<'ctx, B>, IrError> {
+) -> Result<Constant<'ctx, B, ReadOnly>, IrError> {
     Ok(<Point as StructSchema>::ir_type(module.as_view())?
         .as_type()
         .poison()

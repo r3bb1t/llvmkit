@@ -22,7 +22,7 @@
 use core::fmt;
 
 use super::error::TypeKindLabel;
-use super::r#type::{TypeSlotAccess, sealed};
+use super::r#type::sealed;
 
 /// Sealed marker trait implemented by every IEEE-like float kind tag.
 pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
@@ -219,19 +219,21 @@ use core::convert::Infallible;
 /// kind-erased target.
 pub trait IntoConstantFloat<'ctx, K: FloatKind, B: ModuleBrand> {
     type Error;
-    fn into_constant_float(
+    /// Mint the constant at `ty`'s capability: a constant read through a
+    /// `ReadOnly` type is `ReadOnly` too.
+    fn into_constant_float<C: Capability>(
         self,
-        ty: FloatType<'ctx, K, B>,
-    ) -> Result<ConstantFloatValue<'ctx, K, B>, Self::Error>;
+        ty: FloatType<'ctx, K, B, C>,
+    ) -> Result<ConstantFloatValue<'ctx, K, B, C>, Self::Error>;
 }
 
 // f32 -> f32 (exact)
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f32, B> for f32 {
     type Error = Infallible;
-    fn into_constant_float(
+    fn into_constant_float<C: Capability>(
         self,
-        ty: FloatType<'ctx, f32, B>,
-    ) -> Result<ConstantFloatValue<'ctx, f32, B>, Infallible> {
+        ty: FloatType<'ctx, f32, B, C>,
+    ) -> Result<ConstantFloatValue<'ctx, f32, B, C>, Infallible> {
         Ok(ty.const_float(self))
     }
 }
@@ -239,10 +241,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f32, B> for f32 {
 // f64 -> f64 (exact)
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f64, B> for f64 {
     type Error = Infallible;
-    fn into_constant_float(
+    fn into_constant_float<C: Capability>(
         self,
-        ty: FloatType<'ctx, f64, B>,
-    ) -> Result<ConstantFloatValue<'ctx, f64, B>, Infallible> {
+        ty: FloatType<'ctx, f64, B, C>,
+    ) -> Result<ConstantFloatValue<'ctx, f64, B, C>, Infallible> {
         Ok(ty.const_double(self))
     }
 }
@@ -250,10 +252,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f64, B> for f64 {
 // f32 -> f64 (widen)
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f64, B> for f32 {
     type Error = Infallible;
-    fn into_constant_float(
+    fn into_constant_float<C: Capability>(
         self,
-        ty: FloatType<'ctx, f64, B>,
-    ) -> Result<ConstantFloatValue<'ctx, f64, B>, Infallible> {
+        ty: FloatType<'ctx, f64, B, C>,
+    ) -> Result<ConstantFloatValue<'ctx, f64, B, C>, Infallible> {
         Ok(ty.const_double(f64::from(self)))
     }
 }
@@ -261,10 +263,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f64, B> for f32 {
 // f32 -> FloatDyn (kind-erased)
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f32 {
     type Error = IrError;
-    fn into_constant_float(
+    fn into_constant_float<C: Capability>(
         self,
-        ty: FloatType<'ctx, FloatDyn, B>,
-    ) -> IrResult<ConstantFloatValue<'ctx, FloatDyn, B>> {
+        ty: FloatType<'ctx, FloatDyn, B, C>,
+    ) -> IrResult<ConstantFloatValue<'ctx, FloatDyn, B, C>> {
         Ok(ty.const_from_bits(u128::from(self.to_bits())))
     }
 }
@@ -272,10 +274,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f32 {
 // f64 -> FloatDyn (kind-erased)
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f64 {
     type Error = IrError;
-    fn into_constant_float(
+    fn into_constant_float<C: Capability>(
         self,
-        ty: FloatType<'ctx, FloatDyn, B>,
-    ) -> IrResult<ConstantFloatValue<'ctx, FloatDyn, B>> {
+        ty: FloatType<'ctx, FloatDyn, B, C>,
+    ) -> IrResult<ConstantFloatValue<'ctx, FloatDyn, B, C>> {
         Ok(ty.const_from_bits(u128::from(self.to_bits())))
     }
 }
@@ -286,7 +288,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f64 {
 
 use super::capability::Capability;
 use super::module::{ModuleBrand, ModuleRef};
-use super::value::{FloatValue, Value, ValueSlotAccess};
+use super::value::{FloatValue, Value};
 
 /// Inputs that can be lifted into a [`FloatValue<'ctx, K>`] operand
 /// for the IR builder. Mirrors the int-side [`crate::IntoIntValue`]
@@ -312,39 +314,43 @@ pub(crate) mod into_float_value_sealed {
     pub trait Sealed {}
 }
 
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> into_float_value_sealed::Sealed
-    for FloatValue<'ctx, K, B>
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> into_float_value_sealed::Sealed
+    for FloatValue<'ctx, K, B, C>
 {
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> into_float_value_sealed::Sealed
-    for ConstantFloatValue<'ctx, K, B>
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> into_float_value_sealed::Sealed
+    for ConstantFloatValue<'ctx, K, B, C>
 {
 }
 impl into_float_value_sealed::Sealed for f32 {}
 impl into_float_value_sealed::Sealed for f64 {}
 
 // Identity
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
-    for FloatValue<'ctx, K, B>
+//
+// Both lifts accept a handle of any capability: reading a value as an
+// operand is not mutating it. The handle is admitted against `module` and
+// re-minted at `module`'s capability.
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> IntoFloatValue<'ctx, K, B>
+    for FloatValue<'ctx, K, B, C>
 {
     #[inline]
     fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
         // Boundary: refuse a handle minted by another module.
-        self.slot_in(module.id())?;
-        Ok(self)
+        Ok(FloatValue::<K, B>::from_value_unchecked(
+            self.as_erased().admitted_at(module)?,
+        ))
     }
 }
 
 // ConstantFloatValue<K> -> FloatValue<K>
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
-    for ConstantFloatValue<'ctx, K, B>
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> IntoFloatValue<'ctx, K, B>
+    for ConstantFloatValue<'ctx, K, B, C>
 {
     #[inline]
     fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
         // Boundary: refuse a handle minted by another module.
-        self.slot_in(module.id())?;
         Ok(FloatValue::<K, B>::from_value_unchecked(
-            crate::value::IsValue::as_erased(self),
+            crate::value::IsValue::as_erased(self).admitted_at(module)?,
         ))
     }
 }
@@ -357,14 +363,7 @@ macro_rules! impl_into_float_value_static {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<FloatValue<'ctx, $marker, B>> {
-                let ty = FloatType::<$marker, B>::new(
-                    module
-                        .module()
-                        .$ty_method::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                    module,
-                );
+                let ty: FloatType<'ctx, $marker, B> = module.$ty_method();
                 match self.into_constant_float(ty) {
                     Ok(c) => Ok(FloatValue::<$marker, B>::from_value_unchecked(
                         crate::value::IsValue::as_erased(c),
@@ -418,14 +417,7 @@ macro_rules! impl_static_float_kind {
             fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 module: ModuleRef<'ctx, B, C>,
             ) -> FloatType<'ctx, Self, B, C> {
-                FloatType::<Self, B, C>::new(
-                    module
-                        .module()
-                        .$method::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                    module,
-                )
+                module.$method()
             }
         }
     };

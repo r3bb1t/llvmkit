@@ -22,24 +22,30 @@
 use super::module::ModuleBrand;
 use super::value::Value;
 use crate::Branded;
+use crate::capability::{Capability, CapabilityOf, Mutable};
 
 /// A read-only view of one operand-edge: "user `U` references value
 /// `V` at operand index `i`".
 ///
 /// Lifetimes match the originating [`User`](crate::user::User) borrow.
 /// The view is `Copy`; mutating the use-graph goes through `User`'s
-/// own (yet-to-land) editing methods.
+/// own (yet-to-land) editing methods. Both ends carry the capability `C`
+/// of the user the edge was read from.
 #[derive(Branded)]
-pub struct Use<'ctx, B: ModuleBrand> {
-    user: Value<'ctx, B>,
-    operand: Value<'ctx, B>,
+pub struct Use<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    user: Value<'ctx, B, C>,
+    operand: Value<'ctx, B, C>,
     index: u32,
 }
 
-impl<'ctx, B: ModuleBrand> Use<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for Use<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> Use<'ctx, B, C> {
     /// Crate-internal constructor.
     #[inline]
-    pub(super) fn new(user: Value<'ctx, B>, operand: Value<'ctx, B>, index: u32) -> Self {
+    pub(super) fn new(user: Value<'ctx, B, C>, operand: Value<'ctx, B, C>, index: u32) -> Self {
         Self {
             user,
             operand,
@@ -49,13 +55,13 @@ impl<'ctx, B: ModuleBrand> Use<'ctx, B> {
 
     /// The using-side of the edge.
     #[inline]
-    pub fn user(self) -> Value<'ctx, B> {
+    pub fn user(self) -> Value<'ctx, B, C> {
         self.user
     }
 
     /// The operand value.
     #[inline]
-    pub fn operand(self) -> Value<'ctx, B> {
+    pub fn operand(self) -> Value<'ctx, B, C> {
         self.operand
     }
 

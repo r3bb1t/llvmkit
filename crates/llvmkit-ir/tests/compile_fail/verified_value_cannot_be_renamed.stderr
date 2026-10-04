@@ -1,0 +1,21 @@
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_cannot_be_renamed.rs:31:17
+   |
+31 |     a.view(sum).set_name(&b, "renamed");
+   |                 ^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `IntValue::<'ctx, W, B, C>::set_name`
+  --> src/value.rs
+   |
+   |     pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+   |            -------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `IntValue::<'ctx, W, B, C>::set_name`

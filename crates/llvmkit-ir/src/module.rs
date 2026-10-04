@@ -55,7 +55,7 @@ use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn};
 use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
-use super::capability::{Capability, ModuleState, Mutable, ReadOnly};
+use super::capability::{CanMutate, Capability, ModuleState, Mutable, ReadOnly};
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
 use super::constant::{
     Constant, ConstantData, ConstantExprFlags, ConstantExprOpcode, ForwardRefValue,
@@ -557,6 +557,16 @@ impl<'ctx, B: ModuleBrand, C: Capability> ModuleRef<'ctx, B, C> {
         slot: crate::instr_types::CallAttributesSlot,
     ) -> &'ctx crate::instr_types::CallAttributeData {
         self.core.context().call_attributes(slot)
+    }
+}
+
+impl<'ctx, B: ModuleBrand, C: CanMutate> ModuleRef<'ctx, B, C> {
+    /// Crate-internal: this reference as [`Mutable`], by the [`CanMutate`]
+    /// bound's proof rather than the door — what a mutator body bounded
+    /// `C: CanMutate` hands to code that takes a `Mutable` reference.
+    #[inline]
+    pub(crate) fn proven_mutable(self) -> ModuleRef<'ctx, B, Mutable> {
+        C::proven_mutable(self)
     }
 }
 
@@ -2135,77 +2145,13 @@ impl<'ctx> ModuleCore {
         TokenType::new(self.ctx.token(), self)
     }
 
-    /// `half`.
-    pub fn half_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, Half, B> {
-        FloatType::new(self.ctx.half(), self)
-    }
-
-    /// `bfloat`.
-    pub fn bfloat_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, Bfloat, B> {
-        FloatType::new(self.ctx.bfloat(), self)
-    }
-
-    /// `float` (32-bit IEEE 754).
-    pub fn f32_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, f32, B> {
-        FloatType::new(self.ctx.float(), self)
-    }
-
-    /// `double` (64-bit IEEE 754).
-    pub fn f64_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, f64, B> {
-        FloatType::new(self.ctx.double(), self)
-    }
-
-    /// `fp128` (128-bit IEEE 754 binary128).
-    pub fn fp128_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, Fp128, B> {
-        FloatType::new(self.ctx.fp128(), self)
-    }
-
-    /// `x86_fp80` (80-bit X87 extended precision).
-    pub fn x86_fp80_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, X86Fp80, B> {
-        FloatType::new(self.ctx.x86_fp80(), self)
-    }
-
-    /// `ppc_fp128` (PowerPC double-double).
-    pub fn ppc_fp128_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, PpcFp128, B> {
-        FloatType::new(self.ctx.ppc_fp128(), self)
-    }
-
     // ---- Integer types ----
 
-    /// `i1`. Convenience for [`Self::custom_width_int_type`] with `bits = 1`.
-    pub fn bool_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, bool, B> {
-        IntType::new(self.ctx.int_type(1), self)
-    }
-    pub fn i8_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i8, B> {
-        IntType::new(self.ctx.int_type(8), self)
-    }
-    pub fn i16_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i16, B> {
-        IntType::new(self.ctx.int_type(16), self)
-    }
     pub fn i32_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i32, B> {
         IntType::new(self.ctx.int_type(32), self)
     }
     pub fn i64_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i64, B> {
         IntType::new(self.ctx.int_type(64), self)
-    }
-    pub fn i128_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i128, B> {
-        IntType::new(self.ctx.int_type(128), self)
-    }
-
-    /// Const-generic integer type. Returns [`IntType<'ctx, Width<N>>`](
-    /// crate::Width). Const-evaluated range check at monomorphisation:
-    /// `N` outside `MIN_INT_BITS..=MAX_INT_BITS` is a compile error.
-    /// Mirrors `Type::getIntNTy(C, N)`.
-    pub fn int_type_n<const N: u32, B: ModuleBrand + 'ctx>(
-        &'ctx self,
-    ) -> IntType<'ctx, Width<N>, B> {
-        const {
-            assert!(
-                N >= MIN_INT_BITS && N <= MAX_INT_BITS,
-                "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
-            );
-        }
-        IntType::new(self.ctx.int_type(N), self)
     }
 
     // ---- Pointer / typed-pointer ----

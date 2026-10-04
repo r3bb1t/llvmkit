@@ -1235,35 +1235,31 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
 }
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionValue<'ctx, R, B> {}
+// A function carries no capability until Task 4 of the capability plan.
+impl<R: ReturnMarker, B: ModuleBrand> crate::capability::CapabilityOf for FunctionValue<'_, R, B> {
+    type Capability = crate::capability::Mutable;
+}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn as_erased(self) -> Value<'ctx, B> {
         FunctionValue::as_erased(self)
     }
 }
-crate::value::impl_into_erased_value_for_handle!(FunctionValue[R: ReturnMarker]);
+crate::value::impl_into_erased_value_for_handle!(capability_free: FunctionValue[R: ReturnMarker]);
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
         Type::new(self.signature, self.module)
     }
 }
+// No `SetName`: renaming a function goes through the module's symbol table,
+// which llvmkit has no path for yet, and the trait impl that stood here did
+// nothing — a silent no-op, now a compile error instead.
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    #[inline]
-    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
-    where
-        Name: Into<String>,
-    {
-        // Renaming a function in place is its own diff: the symbol
-        // table needs updating, and external linkers care. Phase D
-        // adds the proper path; today this is a no-op.
-    }
-    #[inline]
-    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
     #[inline]
@@ -1392,9 +1388,11 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     partition: Option<String>,
     align: MaybeAlign,
     gc: Option<String>,
-    prefix_data: Option<Constant<'ctx, B>>,
-    prologue_data: Option<Constant<'ctx, B>>,
-    personality_fn: Option<Constant<'ctx, B>>,
+    // Kept at `ReadOnly` — a constant of any capability is accepted — and
+    // admitted against the module at `build`.
+    prefix_data: Option<Constant<'ctx, B, crate::capability::ReadOnly>>,
+    prologue_data: Option<Constant<'ctx, B, crate::capability::ReadOnly>>,
+    personality_fn: Option<Constant<'ctx, B, crate::capability::ReadOnly>>,
     comdat: Option<ComdatRef<'ctx, B>>,
     attributes: AttributeStorage,
     function_attr_groups: Vec<u32>,
@@ -1519,7 +1517,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     where
         C: IsConstant<'ctx, B>,
     {
-        self.prefix_data = Some(data.as_constant());
+        self.prefix_data = Some(data.as_constant().read_only());
         self
     }
 
@@ -1527,7 +1525,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     where
         C: IsConstant<'ctx, B>,
     {
-        self.prologue_data = Some(data.as_constant());
+        self.prologue_data = Some(data.as_constant().read_only());
         self
     }
 
@@ -1535,7 +1533,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     where
         C: IsConstant<'ctx, B>,
     {
-        self.personality_fn = Some(data.as_constant());
+        self.personality_fn = Some(data.as_constant().read_only());
         self
     }
 

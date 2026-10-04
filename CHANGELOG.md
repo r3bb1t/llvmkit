@@ -19,6 +19,65 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — value handles carry their capability *(breaking)*
+
+- **Every value handle takes a trailing `C: Capability = Mutable`** —
+  `Value`, `IntValue`, `FloatValue`, `PointerValue`, `ArrayValue`,
+  `StructValue`, `VectorValue`, `Argument`, `Constant`, `ConstantIntValue`,
+  `ConstantFloatValue`, `ConstantPointerNull`, `UndefValue`, `PoisonValue`,
+  `ConstantAggregate`, `InlineAsm`, `TypedPointerValue`, `Use` and
+  `OperandBundleUse` (D1, D8). A value viewed through an unverified `Module`
+  is `Mutable`; through a `Module<B, Verified>` or a `ModuleView`, `ReadOnly`.
+  A constant minted from a type (`const_int`, `const_float`, `const_null`,
+  `undef`, `poison`, ...) carries the type's capability, and a value's `ty()`
+  and `as_erased()` keep its own. Spellings that omit `C` keep meaning
+  `Mutable`.
+- **Renaming needs a mutable handle.** `set_name` and `clear_name` require
+  `C: CanMutate`; on a `ReadOnly` value each is a compile error carrying
+  `CanMutate`'s own message, even beside another module's
+  `&Module<B, Unverified>` token of the same brand — which used to compile
+  and reach a run-time module-id assertion.
+- **Fixed: a verified module's use-list order could be rewritten.**
+  `sort_use_list` and `sort_use_list_by` take no module token, so on a value
+  viewed from a `Module<B, Verified>` they compiled and reordered its uses —
+  the order `users()` walks and the printer's `uselistorder` directives
+  record — after `verify()`. They now require `C: CanMutate`, and a verified
+  module's values are `ReadOnly`.
+- **Breaking: `HasName` is split.** It keeps `name` and is implemented at
+  every capability; `set_name` / `clear_name` move to the new sealed trait
+  **`SetName`**, implemented for `Mutable` value handles, blocks and
+  instructions. Generic code that renamed through `HasName` bounds on
+  `SetName`.
+- **Breaking: `SetName` is not implemented for functions, global variables,
+  aliases or ifuncs.** Their `HasName::set_name` / `clear_name` were silent
+  no-ops — the call compiled and the name did not change. A global is renamed
+  through the module's symbol table, which no entry point does yet; calling
+  the setter on one is now a compile error rather than a lost write. Not yet:
+  `Value::set_name` on a global's *erased* handle still leaves the name
+  unchanged, as it did before (`docs/divergences.md`, entry 135).
+- **Breaking: `IsValue`, `Typed` and `IsConstant` read the capability from
+  their `CapabilityOf` supertrait**: `as_erased`, `ty` and `as_constant`
+  return at `Self::Capability`. Generic code that returned
+  `v.as_erased()` as `Value<'ctx, B>` names
+  `Value<'ctx, B, V::Capability>`.
+- **Operands of any capability are admitted.** The operand lifts —
+  `IntoIntValue`, `IntoFloatValue`, `IntoPointerValue`, `IntoErasedValue`,
+  `IntoIrField` and `IntoCallArg` — accept a handle of either capability; the
+  receiving builder checks it belongs to its own module
+  (`IrError::ForeignValueId` otherwise) and re-mints it there. Reading a value
+  as an operand is not mutating it. `FnReshape::insert_phi_dyn` likewise takes
+  its type as any `IrType`, and `verify_inline_asm` any `FunctionType`.
+- **Breaking: `IntoConstantInt::into_constant_int`,
+  `IntoConstantFloat::into_constant_float` and
+  `IntoConstantValue::into_constant` are generic over the capability** they
+  mint at; a hand-written impl spells the new signature.
+- **Breaking: `OperandBundleDef::inputs` yields `ReadOnly` values.** A bundle
+  stores its inputs read-only so it accepts an input of either capability;
+  the call-site builder admits each one.
+- **`Value::read_only` and `Constant::read_only`** lower a handle to
+  `ReadOnly`, for comparing a value reached through a read-only route with
+  one reached from the module.
+
 ### Changed — type handles carry their capability *(breaking)*
 
 - **Every type handle takes a trailing `C: Capability = Mutable`** —
@@ -57,8 +116,8 @@ cut, entries accumulate under **Unreleased**.
   `trunc(v, dst_ty: IntType<…>)`, the module's
   `add_function_dyn(name, fn_ty, …)` and the like — still take `Mutable`
   types, so a view-minted type passes only where the bound is `IrType`.
-  Constants minted from a type are still `Mutable` whatever the type's
-  capability.
+  (Constants minted from a type now carry its capability — see the value
+  entry above.)
 
 ### Added — a module reference carries a capability *(breaking, narrowly)*
 

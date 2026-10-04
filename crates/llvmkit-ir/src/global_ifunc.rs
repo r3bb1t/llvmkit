@@ -256,13 +256,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
 }
 
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalIfunc<'ctx, B> {}
+// A global carries no capability until Task 4 of the capability plan.
+impl<B: ModuleBrand> crate::capability::CapabilityOf for GlobalIfunc<'_, B> {
+    type Capability = crate::capability::Mutable;
+}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalIfunc<'ctx, B> {
     #[inline]
     fn as_erased(self) -> Value<'ctx, B> {
         GlobalIfunc::as_erased(self)
     }
 }
-crate::value::impl_into_erased_value_for_handle!(GlobalIfunc);
+crate::value::impl_into_erased_value_for_handle!(capability_free: GlobalIfunc);
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalIfunc<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
@@ -275,16 +279,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalIfunc<'ctx, B> {
         Type::new(self.ty, self.module)
     }
 }
+// No `SetName`: a global is renamed through the module's symbol table, which
+// llvmkit has no path for yet; the impl that stood here was a silent no-op.
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIfunc<'ctx, B> {
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
-    where
-        Name: Into<String>,
-    {
-    }
-    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalIfunc<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
@@ -332,8 +332,9 @@ pub struct GlobalIfuncBuilder<'ctx, B: ModuleBrand> {
     /// Kept as the caller's handle, not its slot: `build` admits it through
     /// the checked door, and only then does its slot enter this module.
     value_type: Type<'ctx, B>,
-    /// Kept as the caller's handle for the same reason.
-    resolver: Constant<'ctx, B>,
+    /// Kept as the caller's handle for the same reason, at `ReadOnly`: a
+    /// resolver of any capability is accepted, and `build` admits it.
+    resolver: Constant<'ctx, B, crate::capability::ReadOnly>,
     address_space: u32,
     linkage: Linkage,
     dso_locality: DsoLocality,
@@ -352,7 +353,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
         N: Into<String>,
     {
         let module = module.into();
-        let resolver = resolver.as_constant();
+        let resolver = resolver.as_constant().read_only();
         let address_space = pointer_address_space(resolver.ty()).unwrap_or(0);
         Self {
             module,
@@ -500,7 +501,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
 }
 
 #[inline]
-fn pointer_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand, C: crate::capability::Capability>(
+    ty: Type<'_, B, C>,
+) -> Option<u32> {
     match ty.kind() {
         TypeKind::Pointer { addr_space } => Some(addr_space),
         _ => None,

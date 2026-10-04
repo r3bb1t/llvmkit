@@ -634,7 +634,7 @@ pub trait ViewIn<'ctx, B: ModuleBrand>: Copy + sealed::Sealed {
 
 impl<B: ModuleBrand> sealed::Sealed for ValueId<B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for ValueId<B> {
-    type View<C: Capability> = Value<'ctx, B>;
+    type View<C: Capability> = Value<'ctx, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -643,9 +643,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for ValueId<B> {
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 3 — `Value`'s mutators
-        // still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
         let ty = module.value_data(slot).ty;
         Some(Value::from_parts(slot, module, ty))
@@ -654,7 +651,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for ValueId<B> {
 
 impl<W: IntWidth, B: ModuleBrand> sealed::Sealed for IntValueId<W, B> {}
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntValueId<W, B> {
-    type View<C: Capability> = IntValue<'ctx, W, B>;
+    type View<C: Capability> = IntValue<'ctx, W, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -663,9 +660,6 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntValueId<W,
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 3 — `IntValue`'s mutators
-        // still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
         let ty = module.value_data(slot).ty;
         debug_assert!(
@@ -683,7 +677,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntValueId<W,
 
 impl<K: FloatKind, B: ModuleBrand> sealed::Sealed for FloatValueId<K, B> {}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId<K, B> {
-    type View<C: Capability> = FloatValue<'ctx, K, B>;
+    type View<C: Capability> = FloatValue<'ctx, K, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -692,9 +686,6 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 3 — `FloatValue`'s mutators
-        // still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
         let ty = module.value_data(slot).ty;
         debug_assert!(
@@ -718,7 +709,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId
 
 impl<B: ModuleBrand> sealed::Sealed for PointerValueId<B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
-    type View<C: Capability> = PointerValue<'ctx, B>;
+    type View<C: Capability> = PointerValue<'ctx, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -727,9 +718,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 3 — `PointerValue`'s
-        // mutators still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
         let ty = module.value_data(slot).ty;
         debug_assert!(

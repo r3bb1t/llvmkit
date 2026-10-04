@@ -27,6 +27,7 @@ use core::marker::PhantomData;
 
 use super::value::ValueKindData;
 use crate::Branded;
+use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::derived_types::FunctionType;
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::TypeSlot;
@@ -158,16 +159,20 @@ pub(crate) struct InlineAsmData {
 /// / [`FunctionValue`](crate::function::FunctionValue): a `(ValueSlot,
 /// ModuleRef, TypeSlot)` triple plus the cached pointer type.
 #[derive(Branded)]
-pub struct InlineAsm<'ctx, B: ModuleBrand> {
+pub struct InlineAsm<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
-    pub(crate) module: ModuleRef<'ctx, B>,
+    pub(crate) module: ModuleRef<'ctx, B, C>,
     /// Cached pointer type id (`ptr`). The value's value-arena type is
     /// this pointer type; the wrapped function type lives in the payload.
     ty: TypeSlot,
     pub(crate) _ctx: PhantomData<&'ctx ()>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InlineAsm<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for InlineAsm<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for InlineAsm<'ctx, B, C> {
     /// Print the operand form `ptr asm [sideeffect] "<body>",
     /// "<constraints>"` -- the leading `ptr` is the value's IR type,
     /// matching LLVM's pointer typing of inline asm. Identical to what the
@@ -180,14 +185,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InlineAsm<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> InlineAsm<'ctx, B, C> {
     /// Construct from raw parts. Crate-internal: only
     /// [`Module::inline_asm`](crate::module::Module::inline_asm) hands
     /// these out, after pushing the value into the arena.
     #[inline]
     pub(crate) fn from_parts<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -197,10 +202,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
         }
     }
 
-    /// Widen to the erased [`Value`] handle. The widened value's type is
-    /// the `ptr` type, matching LLVM's pointer typing of inline asm.
+    /// Widen to the erased [`Value`] handle, at the same capability. The
+    /// widened value's type is the `ptr` type, matching LLVM's pointer typing
+    /// of inline asm.
     #[inline]
-    pub fn as_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -213,7 +219,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     /// The conceptual function type wrapped by this asm — the signature a
     /// `call` through it must match. Mirrors `InlineAsm::getFunctionType()`.
     #[inline]
-    pub fn function_type(self) -> FunctionType<'ctx, B> {
+    pub fn function_type(self) -> FunctionType<'ctx, B, C> {
         let fn_ty = self.payload().fn_ty;
         FunctionType::new(fn_ty, self.module)
     }
@@ -294,9 +300,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<InlineAsm<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<InlineAsm<'ctx, B, C>> for Value<'ctx, B, C> {
     #[inline]
-    fn from(v: InlineAsm<'ctx, B>) -> Self {
+    fn from(v: InlineAsm<'ctx, B, C>) -> Self {
         v.as_erased()
     }
 }
@@ -725,8 +731,8 @@ pub enum InlineAsmVerifyError {
 /// `NumLabels` is counted but not checked, exactly as upstream notes: the
 /// label count is compared against `callbr`'s indirect destinations by the
 /// caller that has them.
-pub fn verify_inline_asm<'ctx, B: ModuleBrand + 'ctx>(
-    fn_ty: FunctionType<'ctx, B>,
+pub fn verify_inline_asm<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    fn_ty: FunctionType<'ctx, B, C>,
     constraints: &str,
 ) -> Result<(), InlineAsmVerifyError> {
     if fn_ty.is_var_arg() {

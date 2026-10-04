@@ -24,6 +24,7 @@ use core::iter::FusedIterator;
 use super::asm_writer::{SlotTracker, fmt_instruction};
 use super::basic_block::BasicBlock;
 use super::block_state::Unterminated;
+use super::capability::{CapabilityOf, Mutable};
 use super::error::ValueCategoryLabel;
 use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
@@ -62,7 +63,7 @@ use super::r#type::{TypeSlot, TypeSlotAccess};
 use super::r#use::Use;
 use super::user::User;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot,
+    HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueData, ValueKindData, ValueSlot,
     ValueSlotAccess, ValueUse, sealed,
 };
 use super::value_id::BlockId;
@@ -1926,13 +1927,23 @@ fn update_instruction_parent(module: &ModuleCore, inst_id: ValueSlot, new_parent
 
 impl<'ctx, S: state::InstructionState, B: ModuleBrand> sealed::Sealed for Instruction<'ctx, S, B> {}
 impl<'ctx, B: ModuleBrand> sealed::Sealed for InstructionView<'ctx, B> {}
+// The linear lifecycle handle is minted only where mutation is authorised,
+// so it is `Mutable` by construction (capability rule R7).
+impl<S: state::InstructionState, B: ModuleBrand> CapabilityOf for Instruction<'_, S, B> {
+    type Capability = Mutable;
+}
+// An instruction view carries no capability until Task 5 of the capability
+// plan; until then it is always reached as `Mutable`.
+impl<B: ModuleBrand> CapabilityOf for InstructionView<'_, B> {
+    type Capability = Mutable;
+}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
     fn as_erased(self) -> Value<'ctx, B> {
         InstructionView::to_erased(&self)
     }
 }
-crate::value::impl_into_erased_value_for_handle!(InstructionView);
+crate::value::impl_into_erased_value_for_handle!(capability_free: InstructionView);
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -1944,6 +1955,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for InstructionView<'ctx, B> 
     fn name(self) -> Option<String> {
         InstructionView::name(&self)
     }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
     fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
@@ -2001,6 +2014,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Instruction<'ctx, state::
     fn name(self) -> Option<String> {
         Instruction::name(&self)
     }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for Instruction<'ctx, state::Attached, B> {
     #[inline]
     fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where

@@ -84,8 +84,6 @@ impl<'ctx, B: ModuleBrand, C: Capability> crate::r#type::sealed::Sealed
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> crate::r#type::IrType<'ctx, B>
     for TypedPointerType<'ctx, B, C>
 {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()

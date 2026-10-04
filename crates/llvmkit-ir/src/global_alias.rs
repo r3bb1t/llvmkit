@@ -253,13 +253,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
 }
 
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalAlias<'ctx, B> {}
+// A global carries no capability until Task 4 of the capability plan.
+impl<B: ModuleBrand> crate::capability::CapabilityOf for GlobalAlias<'_, B> {
+    type Capability = crate::capability::Mutable;
+}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalAlias<'ctx, B> {
     #[inline]
     fn as_erased(self) -> Value<'ctx, B> {
         GlobalAlias::as_erased(self)
     }
 }
-crate::value::impl_into_erased_value_for_handle!(GlobalAlias);
+crate::value::impl_into_erased_value_for_handle!(capability_free: GlobalAlias);
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalAlias<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
@@ -272,16 +276,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalAlias<'ctx, B> {
         Type::new(self.ty, self.module)
     }
 }
+// No `SetName`: a global is renamed through the module's symbol table, which
+// llvmkit has no path for yet; the impl that stood here was a silent no-op.
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalAlias<'ctx, B> {
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
-    where
-        Name: Into<String>,
-    {
-    }
-    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalAlias<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
@@ -329,8 +329,9 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     /// Kept as the caller's handle, not its slot: `build` admits it through
     /// the checked door, and only then does its slot enter this module.
     value_type: Type<'ctx, B>,
-    /// Kept as the caller's handle for the same reason.
-    aliasee: Constant<'ctx, B>,
+    /// Kept as the caller's handle for the same reason, at `ReadOnly`: an
+    /// aliasee of any capability is accepted, and `build` admits it.
+    aliasee: Constant<'ctx, B, crate::capability::ReadOnly>,
     address_space: u32,
     linkage: Linkage,
     dso_locality: DsoLocality,
@@ -349,7 +350,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         N: Into<String>,
     {
         let module = module.into();
-        let aliasee = aliasee.as_constant();
+        let aliasee = aliasee.as_constant().read_only();
         let address_space = pointer_address_space(aliasee.ty()).unwrap_or(0);
         Self {
             module,
@@ -490,7 +491,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
 }
 
 #[inline]
-fn pointer_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand, C: crate::capability::Capability>(
+    ty: Type<'_, B, C>,
+) -> Option<u32> {
     match ty.kind() {
         TypeKind::Pointer { addr_space } => Some(addr_space),
         _ => None,

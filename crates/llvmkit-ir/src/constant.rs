@@ -29,6 +29,7 @@
 //! [`ConstantIntValue`]: crate::constants::ConstantIntValue
 //! [`ConstantFloatValue`]: crate::constants::ConstantFloatValue
 
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::derived_types::{FloatType, IntType};
 use super::error::ValueCategoryLabel;
 use super::float_kind::IntoConstantFloat;
@@ -41,7 +42,7 @@ use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeKind, TypeSlot, TypeSlotAccess};
 use crate::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, ValueSlotAccess, sealed,
+    HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueSlot, ValueSlotAccess, sealed,
 };
 use crate::{DebugLoc, IrError, IrResult};
 
@@ -523,20 +524,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> ForwardRefValue<'ctx, B> {
 /// passes.
 ///
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
+///
+/// `C` is the [`Capability`] (D8). A constant reached from a `ReadOnly` value
+/// or type is `ReadOnly`, and so is every constant read out of it.
 #[derive(Branded)]
-pub struct Constant<'ctx, B: ModuleBrand> {
+pub struct Constant<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     // Private to this module: the slot leaves a handle only through the two
     // doors of `ValueSlotAccess`, and the cached type only as a `Type` handle.
     id: ValueSlot,
-    pub(crate) module: ModuleRef<'ctx, B>,
+    pub(crate) module: ModuleRef<'ctx, B, C>,
     ty: TypeSlot,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for Constant<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
     /// Construct from raw parts. Crate-internal: only the constant
     /// constructors hand these out.
     #[inline]
-    pub(crate) fn from_parts(value: Value<'ctx, B>) -> Self {
+    pub(crate) fn from_parts(value: Value<'ctx, B, C>) -> Self {
         // Internal: a re-wrap that keeps `value`'s own module.
         Self {
             id: value.slot_trusting_same_module(),
@@ -570,9 +578,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// The constant-*expression* splat form is handled, in a private helper
     /// below — though only a *scalable* vector ever reaches it, because the
     /// folder materialises a fixed one into an element list at construction.
-    pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B>> {
+    pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B, C>> {
         let (element_ty, _, _) = self.ty().data().as_vector()?;
-        let element_ty = Type::new(element_ty, self.as_erased().module());
+        let element_ty = Type::new(element_ty, self.module);
 
         match &self.as_erased().data().kind {
             ValueKindData::Constant(ConstantData::Poison) => {
@@ -594,13 +602,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         else {
             return None;
         };
-        let module = self.as_erased().module();
+        let module = self.module;
         let element_at = |slot: &ValueSlot| {
-            let data = module.context().value_data(*slot);
+            let data = module.value_data(*slot);
             Constant::from_parts(Value::from_parts(*slot, module, data.ty))
         };
 
-        let mut splat: Option<Constant<'ctx, B>> = None;
+        let mut splat: Option<Constant<'ctx, B, C>> = None;
         for slot in elements.iter() {
             let element = element_at(slot);
             let element_is_poison = matches!(
@@ -650,16 +658,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// `all_of(Mask, I == 0)` is upstream's test, and it is strict: an `undef`
     /// mask lane reads back as `-1` through `getShuffleMask`, so it fails.
     /// Every lane must be a defined zero.
-    fn constant_expression_splat_value(self) -> Option<Constant<'ctx, B>> {
-        let module = self.as_erased().module();
+    fn constant_expression_splat_value(self) -> Option<Constant<'ctx, B, C>> {
+        let module = self.module;
         let at = |slot: ValueSlot| {
-            Constant::from_parts(Value::from_parts(
-                slot,
-                module,
-                module.context().value_data(slot).ty,
-            ))
+            Constant::from_parts(Value::from_parts(slot, module, module.value_data(slot).ty))
         };
-        let is_undefined = |constant: Constant<'ctx, B>| {
+        let is_undefined = |constant: Constant<'ctx, B, C>| {
             // `isa<UndefValue>`, which catches `poison` upstream.
             matches!(
                 &constant.as_erased().data().kind,
@@ -778,12 +782,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
             ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
             ValueKindData::Constant(ConstantData::PointerNull) => true,
             ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-                let module = value.module();
+                let module = self.module;
                 elements.iter().all(|slot| {
                     Constant::from_parts(Value::from_parts(
                         *slot,
                         module,
-                        module.context().value_data(*slot).ty,
+                        module.value_data(*slot).ty,
                     ))
                     .is_null_value()
                 })
@@ -845,7 +849,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// `ConstantFP` splat forms have no llvmkit representation at all — a
     /// vector constant is always an element list — so those arms are
     /// unreachable rather than missing.
-    pub fn aggregate_element(self, index: u32) -> Option<Constant<'ctx, B>> {
+    pub fn aggregate_element(self, index: u32) -> Option<Constant<'ctx, B, C>> {
         let value = self.as_erased();
         let ValueKindData::Constant(constant) = &value.data().kind else {
             return None;
@@ -855,11 +859,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
             // handed back rather than rebuilt.
             ConstantData::Aggregate(elements) => {
                 let slot = *elements.get(usize::try_from(index).ok()?)?;
-                let module = value.module();
+                let module = self.module;
                 Some(Constant::from_parts(Value::from_parts(
                     slot,
                     module,
-                    module.context().value_data(slot).ty,
+                    module.value_data(slot).ty,
                 )))
             }
             // `dyn_cast<PoisonValue>` and `dyn_cast<UndefValue>`, which answer
@@ -881,8 +885,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// Ports the `getNumElements` / `getElementValue` pair that
     /// `UndefValue` and `PoisonValue` share, plus the `isa<ScalableVectorType>`
     /// bail-out that guards them.
-    fn aggregate_element_type(self, index: u32) -> Option<Type<'ctx, B>> {
-        let module = self.as_erased().module();
+    fn aggregate_element_type(self, index: u32) -> Option<Type<'ctx, B, C>> {
+        let module = self.module;
         let data = self.ty().data();
         let slot = if let Some((element, lanes, scalable)) = data.as_vector() {
             if scalable || index >= lanes {
@@ -901,16 +905,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         Some(Type::new(slot, module))
     }
 
-    /// Widen to the erased [`Value`] handle.
+    /// Widen to the erased [`Value`] handle, at the same capability.
     #[inline]
-    pub fn as_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// IR type of the constant.
+    /// IR type of the constant, at the constant's capability.
     #[inline]
-    pub fn ty(self) -> Type<'ctx, B> {
+    pub fn ty(self) -> Type<'ctx, B, C> {
         Type::new(self.ty, self.module)
+    }
+
+    /// This constant at [`ReadOnly`]. Always sound — reading is a subset of
+    /// mutating — and how a builder keeps a constant of any capability until
+    /// it admits it against its own module.
+    #[inline]
+    pub fn read_only(self) -> Constant<'ctx, B, ReadOnly> {
+        Constant {
+            id: self.id,
+            module: self.module.read_only(),
+            ty: self.ty,
+        }
     }
 }
 
@@ -932,7 +948,7 @@ fn float_format_bit_width(kind: TypeKind) -> Option<u32> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for Constant<'ctx, B, C> {
     /// Print the operand form `<type> <literal>`, identical to what the
     /// erased [`Value`] handle from [`Constant::as_erased`] prints.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -940,25 +956,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed for Constant<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsValue<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
-    fn as_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B, C> {
         Constant::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(Constant);
-impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Typed<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
-    fn ty(self) -> Type<'ctx, B> {
+    fn ty(self) -> Type<'ctx, B, C> {
         Constant::ty(self)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
+}
+impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
     fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
@@ -971,23 +989,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
         self.as_erased().clear_name(module_token);
     }
 }
-impl<B: ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
+impl<B: ModuleBrand + 'static, C: Capability> HasDebugLoc for Constant<'_, B, C> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_erased().debug_loc()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<Constant<'ctx, B, C>> for Value<'ctx, B, C> {
     #[inline]
-    fn from(c: Constant<'ctx, B>) -> Self {
+    fn from(c: Constant<'ctx, B, C>) -> Self {
         c.as_erased()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Value<'ctx, B, C>>
+    for Constant<'ctx, B, C>
+{
     type Error = IrError;
-    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B, C>) -> IrResult<Self> {
         if let ValueKindData::Constant(_) = v.data().kind {
             Ok(Self::from_parts(v))
         } else {
@@ -1008,13 +1028,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> 
 /// [`Constant`] itself. Bound generic code with this trait when a
 /// function should accept any constant.
 pub trait IsConstant<'ctx, B: ModuleBrand>: sealed::Sealed + IsValue<'ctx, B> {
-    /// Widen to the erased [`Constant`] handle.
-    fn as_constant(self) -> Constant<'ctx, B>;
+    /// Widen to the erased [`Constant`] handle, at the same capability.
+    fn as_constant(self) -> Constant<'ctx, B, Self::Capability>;
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsConstant<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
-    fn as_constant(self) -> Constant<'ctx, B> {
+    fn as_constant(self) -> Constant<'ctx, B, C> {
         self
     }
 }
@@ -1037,20 +1057,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
 /// [`IntoConstantInt`], floats through
 /// [`IntoConstantFloat`].
 pub trait IntoConstantValue<'ctx, B: ModuleBrand> {
-    /// Materialize `self` as an erased [`Constant`] owned by `module`.
+    /// Materialize `self` as an erased [`Constant`] owned by `module`, at
+    /// `module`'s capability.
     ///
     /// [`IrError::ForeignValueId`] when `self` is a constant handle another
     /// module minted.
-    fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>>;
+    fn into_constant<C: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> IrResult<Constant<'ctx, B, C>>;
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B> for C {
+impl<'ctx, B: ModuleBrand + 'ctx, K: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B> for K {
     #[inline]
-    fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
-        let constant = self.as_constant();
-        // Boundary: refuse a handle minted by another module.
-        constant.slot_in(module.id())?;
-        Ok(constant)
+    fn into_constant<C: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> IrResult<Constant<'ctx, B, C>> {
+        // Boundary: refuse a handle minted by another module; one of any
+        // capability is admitted and re-minted at `module`'s.
+        Ok(Constant::from_parts(
+            self.as_constant().as_erased().admitted_at(module)?,
+        ))
     }
 }
 
@@ -1058,15 +1086,11 @@ macro_rules! impl_into_constant_value_int {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
-            fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
-                let ty = IntType::<$marker, B>::new(
-                    module
-                        .module()
-                        .$ty_method::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                    module,
-                );
+            fn into_constant<C: Capability>(
+                self,
+                module: ModuleRef<'ctx, B, C>,
+            ) -> IrResult<Constant<'ctx, B, C>> {
+                let ty: IntType<'ctx, $marker, B, C> = module.$ty_method();
                 Ok(IntoConstantInt::into_constant_int(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
@@ -1094,15 +1118,11 @@ macro_rules! impl_into_constant_value_float {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
-            fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
-                let ty = FloatType::<$marker, B>::new(
-                    module
-                        .module()
-                        .$ty_method::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                    module,
-                );
+            fn into_constant<C: Capability>(
+                self,
+                module: ModuleRef<'ctx, B, C>,
+            ) -> IrResult<Constant<'ctx, B, C>> {
+                let ty: FloatType<'ctx, $marker, B, C> = module.$ty_method();
                 Ok(IntoConstantFloat::into_constant_float(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")

@@ -82,8 +82,6 @@ macro_rules! decl_type_handle {
 
         impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for $name<'ctx, B, C> {}
         impl<'ctx, B: ModuleBrand, C: Capability> IrType<'ctx, B> for $name<'ctx, B, C> {
-            type Capability = C;
-
             #[inline]
             fn as_type(self) -> Type<'ctx, B, C> { self.as_type() }
         }
@@ -234,21 +232,6 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability>
             _l: PhantomData,
         }
     }
-
-    /// Crate-internal and temporary: this handle at [`Mutable`], for the
-    /// constant constructors, which mint `Mutable` constants until value
-    /// handles carry a capability of their own.
-    #[inline]
-    pub(crate) fn laundered_until_task_3(self) -> ArrayType<'ctx, E, L, B> {
-        ArrayType {
-            id: self.id,
-            // capability (proof): laundered until Task 3 — a constant's
-            // mutators still demand a `&Module<B, Unverified>` token.
-            module: self.module.mutable_at_marked_boundary(),
-            _e: PhantomData,
-            _l: PhantomData,
-        }
-    }
 }
 
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> sealed::Sealed
@@ -258,8 +241,6 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> sealed::Seale
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B>
     for ArrayType<'ctx, E, L, B, C>
 {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
@@ -407,20 +388,6 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
     pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
     }
-
-    /// Crate-internal and temporary: this handle at [`Mutable`], for the
-    /// constant constructors, which mint `Mutable` constants until value
-    /// handles carry a capability of their own.
-    #[inline]
-    pub(crate) fn laundered_until_task_3(self) -> StructType<'ctx, Body, B> {
-        StructType {
-            id: self.id,
-            // capability (proof): laundered until Task 3 — a constant's
-            // mutators still demand a `&Module<B, Unverified>` token.
-            module: self.module.mutable_at_marked_boundary(),
-            _b: core::marker::PhantomData,
-        }
-    }
 }
 
 impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> sealed::Sealed
@@ -430,8 +397,6 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> sealed::Sealed
 impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B>
     for StructType<'ctx, Body, B, C>
 {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
@@ -575,21 +540,6 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
             _l: PhantomData,
         }
     }
-
-    /// Crate-internal and temporary: this handle at [`Mutable`], for the
-    /// constant constructors, which mint `Mutable` constants until value
-    /// handles carry a capability of their own.
-    #[inline]
-    pub(crate) fn laundered_until_task_3(self) -> VectorType<'ctx, E, L, B> {
-        VectorType {
-            id: self.id,
-            // capability (proof): laundered until Task 3 — a constant's
-            // mutators still demand a `&Module<B, Unverified>` token.
-            module: self.module.mutable_at_marked_boundary(),
-            _e: PhantomData,
-            _l: PhantomData,
-        }
-    }
 }
 
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> sealed::Sealed
@@ -599,8 +549,6 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> sealed::Sealed
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B>
     for VectorType<'ctx, E, L, B, C>
 {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
@@ -772,26 +720,10 @@ impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> IntType<'ctx, W, B, C> {
             _w: PhantomData,
         }
     }
-
-    /// Crate-internal and temporary: this handle at [`Mutable`], for the
-    /// constant constructors, which mint `Mutable` constants until value
-    /// handles carry a capability of their own.
-    #[inline]
-    pub(crate) fn laundered_until_task_3(self) -> IntType<'ctx, W, B> {
-        IntType {
-            id: self.id,
-            // capability (proof): laundered until Task 3 — a constant's
-            // mutators still demand a `&Module<B, Unverified>` token.
-            module: self.module.mutable_at_marked_boundary(),
-            _w: PhantomData,
-        }
-    }
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> sealed::Sealed for IntType<'ctx, W, B, C> {}
 impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> IrType<'ctx, B> for IntType<'ctx, W, B, C> {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
@@ -975,20 +907,6 @@ impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> FloatType<'ctx, K, B, C>
             _k: PhantomData,
         }
     }
-
-    /// Crate-internal and temporary: this handle at [`Mutable`], for the
-    /// constant constructors, which mint `Mutable` constants until value
-    /// handles carry a capability of their own.
-    #[inline]
-    pub(crate) fn laundered_until_task_3(self) -> FloatType<'ctx, K, B> {
-        FloatType {
-            id: self.id,
-            // capability (proof): laundered until Task 3 — a constant's
-            // mutators still demand a `&Module<B, Unverified>` token.
-            module: self.module.mutable_at_marked_boundary(),
-            _k: PhantomData,
-        }
-    }
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> sealed::Sealed
@@ -998,8 +916,6 @@ impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> sealed::Sealed
 impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> IrType<'ctx, B>
     for FloatType<'ctx, K, B, C>
 {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
@@ -1112,19 +1028,6 @@ impl<'ctx, B: ModuleBrand, C: Capability> PointerType<'ctx, B, C> {
             .type_data(self.id)
             .as_pointer()
             .expect("PointerType invariant: wraps Pointer")
-    }
-
-    /// Crate-internal and temporary: this handle at [`Mutable`], for the
-    /// constant constructors, which mint `Mutable` constants until value
-    /// handles carry a capability of their own.
-    #[inline]
-    pub(crate) fn laundered_until_task_3(self) -> PointerType<'ctx, B> {
-        PointerType {
-            id: self.id,
-            // capability (proof): laundered until Task 3 — a constant's
-            // mutators still demand a `&Module<B, Unverified>` token.
-            module: self.module.mutable_at_marked_boundary(),
-        }
     }
 }
 
@@ -1493,8 +1396,6 @@ impl<B: ModuleBrand, C: Capability> CapabilityOf for AnyTypeEnum<'_, B, C> {
 
 impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for AnyTypeEnum<'ctx, B, C> {}
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B> for AnyTypeEnum<'ctx, B, C> {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
@@ -1596,8 +1497,6 @@ impl<'ctx, B: ModuleBrand, C: Capability> SizedType<'ctx, B, C> {
 
 impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for SizedType<'ctx, B, C> {}
 impl<'ctx, B: ModuleBrand, C: Capability> IrType<'ctx, B> for SizedType<'ctx, B, C> {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.0
@@ -1649,8 +1548,6 @@ impl<B: ModuleBrand, C: Capability> CapabilityOf for BasicTypeEnum<'_, B, C> {
 
 impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for BasicTypeEnum<'ctx, B, C> {}
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B> for BasicTypeEnum<'ctx, B, C> {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
@@ -1740,8 +1637,6 @@ impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for BasicMetadataTypeEn
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B>
     for BasicMetadataTypeEnum<'ctx, B, C>
 {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
@@ -1825,8 +1720,6 @@ impl<B: ModuleBrand, C: Capability> CapabilityOf for AggregateType<'_, B, C> {
 
 impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for AggregateType<'ctx, B, C> {}
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B> for AggregateType<'ctx, B, C> {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()

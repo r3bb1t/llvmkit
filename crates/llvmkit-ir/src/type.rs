@@ -408,19 +408,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
         }
     }
 
-    /// Crate-internal and temporary: this handle at [`Mutable`], for the
-    /// constant constructors, which mint `Mutable` constants until value
-    /// handles carry a capability of their own.
-    #[inline]
-    pub(crate) fn laundered_until_task_3(self) -> Type<'ctx, B> {
-        Type {
-            id: self.id,
-            // capability (proof): laundered until Task 3 — a constant's
-            // mutators still demand a `&Module<B, Unverified>` token.
-            module: self.module.mutable_at_marked_boundary(),
-        }
-    }
-
     /// Require `got` to be exactly `self`, reporting the most precise
     /// error available when it is not.
     ///
@@ -1194,18 +1181,15 @@ pub(crate) mod sealed {
 /// not an extension point. Bound generic code with `T: IrType<'ctx>`
 /// when a function should accept any type without enumerating every
 /// concrete handle.
-pub trait IrType<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
-    /// The capability this handle was minted with; widening keeps it.
-    type Capability: Capability;
-
+pub trait IrType<'ctx, B: ModuleBrand>:
+    sealed::Sealed + Copy + Sized + core::fmt::Debug + CapabilityOf
+{
     /// Widen to the erased [`Type`] handle, at the same capability.
     fn as_type(self) -> Type<'ctx, B, Self::Capability>;
 }
 
 impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for Type<'ctx, B, C> {}
 impl<'ctx, B: ModuleBrand, C: Capability> IrType<'ctx, B> for Type<'ctx, B, C> {
-    type Capability = C;
-
     #[inline]
     fn as_type(self) -> Type<'ctx, B, C> {
         self

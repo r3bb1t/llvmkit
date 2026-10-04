@@ -3438,9 +3438,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let v = case_value.as_erased();
-        // Boundary: the caller's case value, admitted before it is validated.
-        v.slot_in(self.module.id())?;
+        // Boundary: the caller's case value, of any capability, admitted
+        // against this switch's module before it is validated.
+        let v = case_value.as_erased().admitted_at(self.module)?;
         self.push_case_checked(v, target)
     }
 }

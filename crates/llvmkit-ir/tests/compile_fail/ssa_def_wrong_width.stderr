@@ -10,8 +10,9 @@ help: the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `IntVal
       but trait `IntoIntValue<'_, i64, DynBrand>` is implemented for it
   --> src/int_width.rs
    |
-   | impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValue<'ctx, W, B> {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntoIntValue<'ctx, W, B>
+   | |     for IntValue<'ctx, W, B, C>
+   | |_______________________________^
    = help: for that trait implementation, expected `i64`, found `i32`
 note: required by a bound in `SsaBuilder::<'s, 'ctx, B, F, R>::def_int_var`
   --> src/ssa_builder.rs

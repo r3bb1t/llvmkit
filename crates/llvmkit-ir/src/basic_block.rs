@@ -21,6 +21,7 @@
 use super::asm_writer::SlotTracker;
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{BlockTerminationState, Terminated, Unterminated};
+use super::capability::{CapabilityOf, Mutable};
 use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
@@ -37,8 +38,8 @@ use super::metadata::{
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{TypeSlot, TypeSlotAccess};
 use super::value::{
-    HasDebugLoc, HasName, Typed, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess,
-    sealed,
+    HasDebugLoc, HasName, SetName, Typed, Value, ValueData, ValueKindData, ValueSlot,
+    ValueSlotAccess, sealed,
 };
 use super::value_id::BlockId;
 use super::value_id::ViewIn;
@@ -1532,6 +1533,13 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     sealed::Sealed for BasicBlock<'ctx, R, Term, B, Params>
 {
 }
+// A block carries no capability until Task 5 of the capability plan; it is
+// always reached from an unverified module today.
+impl<R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params: BlockParams> CapabilityOf
+    for BasicBlock<'_, R, Term, B, Params>
+{
+    type Capability = Mutable;
+}
 impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
     Typed<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params>
 {
@@ -1547,6 +1555,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     fn name(self) -> Option<String> {
         BasicBlock::name(&self)
     }
+}
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
+    SetName<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params>
+{
     #[inline]
     fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where

@@ -83,7 +83,7 @@ use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
 use super::phi_check::{check_phi_incoming, render_phi_violation};
-use super::r#type::{Type, TypeSlot, TypeSlotAccess};
+use super::r#type::{IrType, Type, TypeSlot, TypeSlotAccess};
 use super::value::{IntoErasedValue, IsValue, Typed, Value, ValueSlot, ValueSlotAccess};
 use super::value::{SealedValueSlot, ValueKindData, ValueUse};
 use super::value_id::{BlockId, FunctionId, ValueId, ViewIn};
@@ -2169,7 +2169,9 @@ where
     ) -> IrResult<Id>
     where
         Id: ViewIn<'m, B>,
-        Id::View<Mutable>: IsValue<'m, B> + Typed<'m, B> + TryFrom<Value<'m, B>, Error = IrError>,
+        Id::View<Mutable>: IsValue<'m, B, Capability = Mutable>
+            + Typed<'m, B>
+            + TryFrom<Value<'m, B>, Error = IrError>,
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
         let module_ref = self.patch.module_mut().module_ref();
@@ -2188,7 +2190,7 @@ where
             .resolve_in(module_ref)
             .ok_or(IrError::ForeignValueId)?
             .ty();
-        let phi = self.insert_phi_value::<I>(block, ty, &erased)?;
+        let phi = self.insert_phi_value::<I, _>(block, ty, &erased)?;
         // NOT total: `ty` matches `Id`'s type, but a narrow to `Id::View` is
         // type-driven only for the type-marker views (`IntValue<W>`,
         // `FloatValue<K>`, `PointerValue`, `VectorValue`, `ArrayValue`,
@@ -2245,20 +2247,25 @@ where
     /// unsatisfiable otherwise, so a pass that forgot it fails to compile — a
     /// type-level nudge rather than a runtime surprise.
     ///
+    /// `ty` may be a type of any capability — one read through
+    /// [`Self::module`] is [`ReadOnly`](crate::ReadOnly). Naming a type is not
+    /// mutating it; the type is admitted against this module.
+    ///
     /// Errors: [`IrError::ForeignType`] if `ty` belongs to another module;
     /// [`IrError::PhiIncomingNotDominating`] if some incoming value does
     /// not dominate its edge; a coherence [`IrError`] (mapped from the shared
     /// phi check) if the incomings are incomplete, mistyped, or carry a
     /// differing duplicate for one predecessor.
     #[inline]
-    pub fn insert_phi_dyn<I>(
+    pub fn insert_phi_dyn<I, T>(
         &mut self,
         block: BlockId<Dyn, B>,
-        ty: Type<'m, B>,
+        ty: T,
         incomings: &[(ValueId<B>, BlockId<Dyn, B>)],
     ) -> IrResult<ValueId<B>>
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+        T: IrType<'m, B>,
     {
         let module_ref = self.patch.module_mut().module_ref();
         // Resolve the caller's value ids to ephemeral handles (tag-checked)
@@ -2272,7 +2279,7 @@ where
                 *pred,
             ));
         }
-        self.insert_phi_value::<I>(block, ty, &resolved)
+        self.insert_phi_value::<I, _>(block, ty, &resolved)
             .map(|phi| phi.id())
     }
 
@@ -2281,18 +2288,19 @@ where
     /// as the ephemeral [`Value`] handle. Crate-private on purpose — the two
     /// public wrappers are what mint the storable id (typed and erased
     /// respectively), so the handle never escapes the module.
-    fn insert_phi_value<I>(
+    fn insert_phi_value<I, T>(
         &mut self,
         block: BlockId<Dyn, B>,
-        ty: Type<'m, B>,
+        ty: T,
         incomings: &[(Value<'m, B>, BlockId<Dyn, B>)],
     ) -> IrResult<Value<'m, B>>
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+        T: IrType<'m, B>,
     {
         // Boundary: the caller's phi type (from `insert_phi_dyn`), admitted
         // before any coherence, dominance or arena work reads it.
-        let ty_id = ty.slot_in(self.patch.module_mut().id())?;
+        let ty_id = ty.as_type().slot_in(self.patch.module_mut().id())?;
         let target_block = self.resolve_block(block)?.as_basic_block();
         // Internal: resolved against this module by `resolve_block`. The
         // incoming values below were resolved from tagged ids by both callers.

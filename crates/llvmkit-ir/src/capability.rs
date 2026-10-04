@@ -1,6 +1,6 @@
 //! What a handle may do with the module it was minted from (D1, D8).
 //!
-//! Every borrowing handle embeds a [`ModuleRef`](crate::module::ModuleRef), and
+//! Every borrowing handle embeds a [`ModuleRef`], and
 //! the reference carries a capability: [`Mutable`] when it was minted from
 //! `&Module<B, Unverified>`, [`ReadOnly`] when it was minted from a
 //! `Module<B, Verified>`, a [`ModuleView`](crate::ModuleView) or a read-only
@@ -11,6 +11,8 @@
 //!
 //! No upstream counterpart: LLVM has no verification typestate and no
 //! capability on a `Value *`.
+
+use crate::module::{ModuleBrand, ModuleRef};
 
 mod sealed {
     pub trait Sealed {}
@@ -42,12 +44,33 @@ impl Capability for ReadOnly {}
             unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass \
             context mint `ReadOnly` handles"
 )]
-pub trait CanMutate: Capability {}
-impl CanMutate for Mutable {}
+pub trait CanMutate: Capability {
+    /// The bound's proof, spelled as a conversion: a reference at a
+    /// capability that can mutate is a [`Mutable`] reference. The identity,
+    /// since `Mutable` is the only implementor; it exists because a generic
+    /// body bounded `C: CanMutate` cannot otherwise show the compiler that
+    /// `C` is `Mutable`.
+    fn proven_mutable<'ctx, B: ModuleBrand>(
+        module: ModuleRef<'ctx, B, Self>,
+    ) -> ModuleRef<'ctx, B, Mutable>
+    where
+        Self: Sized;
+}
+impl CanMutate for Mutable {
+    #[inline]
+    fn proven_mutable<'ctx, B: ModuleBrand>(
+        module: ModuleRef<'ctx, B, Mutable>,
+    ) -> ModuleRef<'ctx, B, Mutable> {
+        module
+    }
+}
 
 /// The capability a handle was minted with — a type-level read for tests and
 /// for generic code that has to name it. Every capability-carrying handle
-/// implements it.
+/// implements it, and it is the one place the associated type is declared:
+/// [`IrType`](crate::IrType), [`IsValue`](crate::IsValue) and
+/// [`Typed`](crate::Typed) take it as a supertrait, so `T::Capability` is never
+/// ambiguous under a bound naming more than one of them.
 pub trait CapabilityOf {
     type Capability: Capability;
 }

@@ -676,13 +676,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B>
 }
 
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalVariable<'ctx, B> {}
+// A global carries no capability until Task 4 of the capability plan.
+impl<B: ModuleBrand> crate::capability::CapabilityOf for GlobalVariable<'_, B> {
+    type Capability = crate::capability::Mutable;
+}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
     fn as_erased(self) -> Value<'ctx, B> {
         GlobalVariable::as_erased(self)
     }
 }
-crate::value::impl_into_erased_value_for_handle!(GlobalVariable);
+crate::value::impl_into_erased_value_for_handle!(capability_free: GlobalVariable);
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
@@ -695,19 +699,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalVariable<'ctx, B> {
         Type::new(self.ty, self.module)
     }
 }
+// No `SetName`: a global participates in the module's name table, and
+// llvmkit has no path that renames it and keeps the table consistent; the
+// impl that stood here was a silent no-op.
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
-    where
-        Name: Into<String>,
-    {
-        // GlobalVariable names are immutable through this interface
-        // -- they participate in the module's name table. Renaming
-        // requires a dedicated path that keeps the table consistent.
-    }
-    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalVariable<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
@@ -770,8 +768,9 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     address_space: u32,
     is_constant: bool,
     externally_initialized: bool,
-    /// Kept as the caller's handle for the same reason.
-    initializer: Option<Constant<'ctx, B>>,
+    /// Kept as the caller's handle for the same reason, at `ReadOnly`: an
+    /// initializer of any capability is accepted, and `build` admits it.
+    initializer: Option<Constant<'ctx, B, crate::capability::ReadOnly>>,
     linkage: Linkage,
     dso_locality: DsoLocality,
     visibility: Visibility,
@@ -921,7 +920,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     /// higher-level `Module::add_global` derives the value type from the
     /// initializer, so they always agree by construction).
     pub fn initializer<C: IsConstant<'ctx, B>>(mut self, init: C) -> Self {
-        self.initializer = Some(init.as_constant());
+        self.initializer = Some(init.as_constant().read_only());
         self
     }
 

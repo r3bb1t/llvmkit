@@ -10,9 +10,9 @@ help: the trait `IsConstant<'_, Right>` is not implemented for `ConstantIntValue
       but trait `IsConstant<'_, Left>` is implemented for it
   --> src/constants.rs
    |
-   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
-   | |     for ConstantIntValue<'ctx, W, B>
-   | |____________________________________^
+   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, Cap: Capability> IsConstant<'ctx, B>
+   | |     for ConstantIntValue<'ctx, W, B, Cap>
+   | |_________________________________________^
    = help: for that trait implementation, expected `Left`, found `Right`
    = note: required for `ConstantIntValue<'_, i32, Left>` to implement `IntoConstantValue<'_, Right>`
 note: required by a bound in `Module::<B>::add_global`

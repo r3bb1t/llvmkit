@@ -22,6 +22,7 @@ use crate::Branded;
 use crate::align::MaybeAlign;
 use crate::atomic_ordering::AtomicOrdering;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage};
+use crate::capability::{Capability, Mutable};
 use crate::error::{IrError, IrResult};
 use crate::fmf::FastMathFlags;
 use crate::function::FunctionValue;
@@ -2171,7 +2172,9 @@ pub enum OperandBundleTag {
 #[branded(Debug, Clone)]
 pub struct OperandBundleDef<'ctx, B: ModuleBrand> {
     tag: OperandBundleTag,
-    inputs: Vec<Value<'ctx, B>>,
+    /// At `ReadOnly`: an input of any capability is accepted, and the
+    /// call-site builder that receives the bundle admits each one.
+    inputs: Vec<Value<'ctx, B, crate::capability::ReadOnly>>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleDef<'ctx, B> {
@@ -2184,7 +2187,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleDef<'ctx, B> {
     {
         Self {
             tag,
-            inputs: inputs.into_iter().map(IsValue::as_erased).collect(),
+            inputs: inputs
+                .into_iter()
+                .map(|input| input.as_erased().read_only())
+                .collect(),
         }
     }
 
@@ -2193,8 +2199,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleDef<'ctx, B> {
         &self.tag
     }
 
-    /// The bundle's inputs, in order. Mirrors `OperandBundleDefT::inputs`.
-    pub fn inputs(&self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + '_ {
+    /// The bundle's inputs, in order, at `ReadOnly`. Mirrors
+    /// `OperandBundleDefT::inputs`.
+    pub fn inputs(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B, crate::capability::ReadOnly>> + '_ {
         self.inputs.iter().copied()
     }
 
@@ -2249,12 +2258,12 @@ impl OperandBundleData {
 /// `operand_bundle` lookups. Borrows the module, like every view.
 #[derive(Branded)]
 #[branded(Debug, Clone, Copy)]
-pub struct OperandBundleUse<'ctx, B: ModuleBrand> {
+pub struct OperandBundleUse<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     data: &'ctx OperandBundleData,
-    module: ModuleRef<'ctx, B>,
+    module: ModuleRef<'ctx, B, C>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> OperandBundleUse<'ctx, B, C> {
     /// The bundle's tag. Mirrors `OperandBundleUse::getTagName` /
     /// `getTagID`, which the tag enum carries together.
     pub fn tag(self) -> &'ctx OperandBundleTag {
@@ -2262,7 +2271,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
     }
 
     /// The bundle's inputs, in order. Mirrors `OperandBundleUse::Inputs`.
-    pub fn inputs(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
+    pub fn inputs(self) -> impl ExactSizeIterator<Item = Value<'ctx, B, C>> + 'ctx {
         let module = self.module;
         // `data` borrows the module's arena for `'ctx`, so its input cells are
         // read lazily, with nothing copied out first.
@@ -2275,7 +2284,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
     /// Every bundle a call site stores, in order.
     pub(crate) fn all(
         bundles: &'ctx [OperandBundleData],
-        module: ModuleRef<'ctx, B>,
+        module: ModuleRef<'ctx, B, C>,
     ) -> impl ExactSizeIterator<Item = Self> + 'ctx {
         bundles.iter().map(move |data| Self { data, module })
     }
@@ -2291,7 +2300,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
     /// question it did not ask.
     pub(crate) fn find(
         bundles: &'ctx [OperandBundleData],
-        module: ModuleRef<'ctx, B>,
+        module: ModuleRef<'ctx, B, C>,
         tag: &OperandBundleTag,
     ) -> IrResult<Option<Self>> {
         let mut matching = Self::all(bundles, module).filter(|bundle| bundle.data.tag == *tag);

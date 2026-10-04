@@ -241,4 +241,13 @@ fn typestate_compile_fail() {
     // reported everything preserved. The token is now required, matching the
     // metadata setters on `FunctionValue`/`GlobalVariable` and `set_name`.
     t.compile_fail("tests/compile_fail/verified_module_metadata_is_immutable.rs");
+    // Capability typestate (D1, D8): a verified module's value is `ReadOnly`,
+    // and a `ReadOnly` handle has no setter — even beside a second module's
+    // mutation token of the same brand, which the run-time id check alone
+    // used to stand between.
+    t.compile_fail("tests/compile_fail/verified_value_cannot_be_renamed.rs");
+    // `sort_use_list` takes no token at all, so the capability bound is its
+    // only guard: without it a verified module's use-list order could be
+    // rewritten after `verify()`.
+    t.compile_fail("tests/compile_fail/verified_value_use_list_is_immutable.rs");
 }

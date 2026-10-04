@@ -6,7 +6,7 @@
 
 use crate::CrateOnly;
 use crate::argument::Argument;
-use crate::capability::{Capability, ReadOnly};
+use crate::capability::{Capability, Mutable, ReadOnly};
 use crate::constant::Constant;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
@@ -20,9 +20,7 @@ use crate::int_width::{IntDyn, IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::{Type, TypeData};
-use crate::value::{
-    FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlotAccess,
-};
+use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value};
 
 #[doc(hidden)]
 pub mod token {
@@ -117,21 +115,35 @@ pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand>: Sized + Copy
     /// Validate a raw struct-typed value against schema `S` before wrapping it.
     #[inline]
     fn try_from_struct_value(raw: StructValue<'ctx, B>) -> IrResult<Self> {
-        let got = raw.ty().as_type();
-        if !<S as IrField>::matches_ir_type(got) {
-            // `matches_ir_type` compares the struct's *name*, not just its
-            // kind, so the common failure is one identified struct given
-            // where another was required — and `expected:
-            // TypeKindLabel::Struct` rendered that as "expected struct, got
-            // struct".
-            return Err(IrError::TypeIdentityMismatch {
-                expected: <S as IrField>::ir_type(got.module())?.rendered(),
-                got: got.rendered(),
-            });
-        }
+        check_struct_identity::<S, B, _>(raw)?;
         let validated = ValidatedStructValue::new();
         Ok(Self::from_struct_value(raw, &validated))
     }
+}
+
+/// The identity check behind [`StructSchemaValue::try_from_struct_value`]:
+/// `raw`'s type must be the struct schema `S` names. It reads `raw` only
+/// through its own module, so it runs on a handle of any capability — the
+/// operand lifts below check before they admit.
+fn check_struct_identity<'ctx, S, B, C>(raw: StructValue<'ctx, B, C>) -> IrResult<()>
+where
+    S: IrField,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+{
+    let got = raw.ty().as_type();
+    if !<S as IrField>::matches_ir_type(got) {
+        // `matches_ir_type` compares the struct's *name*, not just its
+        // kind, so the common failure is one identified struct given
+        // where another was required — and `expected:
+        // TypeKindLabel::Struct` rendered that as "expected struct, got
+        // struct".
+        return Err(IrError::TypeIdentityMismatch {
+            expected: <S as IrField>::ir_type(got.module())?.rendered(),
+            got: got.rendered(),
+        });
+    }
+    Ok(())
 }
 
 /// Lifetime-free schema token for an LLVM identified struct.
@@ -452,50 +464,73 @@ where
     }
 }
 
-macro_rules! impl_struct_into_field {
-    ($source:ty) => {
-        impl<'ctx, S, B> IntoIrField<'ctx, S, B> for $source
+/// The struct-schema operand lift behind every [`IntoIrField`] and
+/// [`IntoCallArg`] impl below: narrow `value` to a struct, check it is the
+/// struct `S` names, then admit it at `module`. The narrow and the check
+/// read `value` only through its own module; admission comes last.
+fn struct_operand<'ctx, S, B, C>(
+    value: Value<'ctx, B, C>,
+    module: ModuleRef<'ctx, B>,
+) -> IrResult<Value<'ctx, B>>
+where
+    S: StructSchema,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+{
+    let raw = StructValue::try_from(value)?;
+    check_struct_identity::<S, B, C>(raw)?;
+    // Boundary: refuse a value another module minted. A handle of any
+    // capability is admitted and re-minted at `module`'s, so reading a value
+    // as an operand is not mutating it.
+    raw.as_erased().admitted_at(module)
+}
+
+macro_rules! impl_struct_operand {
+    ($trait:ident :: $method:ident) => {
+        impl<'ctx, S, B, C> $trait<'ctx, S, B> for Value<'ctx, B, C>
+        where
+            S: StructSchema,
+            B: ModuleBrand + 'ctx,
+            C: Capability,
+        {
+            fn $method(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                struct_operand::<S, B, C>(self, module)
+            }
+        }
+        impl<'ctx, S, B, C> $trait<'ctx, S, B> for Argument<'ctx, B, C>
+        where
+            S: StructSchema,
+            B: ModuleBrand + 'ctx,
+            C: Capability,
+        {
+            fn $method(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                struct_operand::<S, B, C>(self.as_erased(), module)
+            }
+        }
+        impl<'ctx, S, B, C> $trait<'ctx, S, B> for Constant<'ctx, B, C>
+        where
+            S: StructSchema,
+            B: ModuleBrand + 'ctx,
+            C: Capability,
+        {
+            fn $method(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                struct_operand::<S, B, C>(self.as_erased(), module)
+            }
+        }
+        impl<'ctx, S, B> $trait<'ctx, S, B> for Instruction<'ctx, Attached, B>
         where
             S: StructSchema,
             B: ModuleBrand + 'ctx,
         {
-            fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                let value = S::try_value_from_ir(self)?.as_struct_value();
-                // Boundary: refuse a value another module minted. The schema
-                // narrow above reads it only through its own module.
-                value.slot_in(module.id())?;
-                Ok(value.as_erased())
+            fn $method(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                struct_operand::<S, B, Mutable>(Instruction::to_erased(&self), module)
             }
         }
     };
 }
 
-impl_struct_into_field!(Value<'ctx, B>);
-impl_struct_into_field!(Argument<'ctx, B>);
-impl_struct_into_field!(Constant<'ctx, B>);
-impl_struct_into_field!(Instruction<'ctx, Attached, B>);
-
-macro_rules! impl_struct_into_call_arg {
-    ($source:ty) => {
-        impl<'ctx, S, B> IntoCallArg<'ctx, S, B> for $source
-        where
-            S: StructSchema,
-            B: ModuleBrand + 'ctx,
-        {
-            fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                let value = S::try_value_from_ir(self)?.as_struct_value();
-                // Boundary: refuse a value another module minted. The schema
-                // narrow above reads it only through its own module.
-                value.slot_in(module.id())?;
-                Ok(value.as_erased())
-            }
-        }
-    };
-}
-impl_struct_into_call_arg!(Value<'ctx, B>);
-impl_struct_into_call_arg!(Argument<'ctx, B>);
-impl_struct_into_call_arg!(Constant<'ctx, B>);
-impl_struct_into_call_arg!(Instruction<'ctx, Attached, B>);
+impl_struct_operand!(IntoIrField::into_ir_field);
+impl_struct_operand!(IntoCallArg::into_call_arg);
 
 /// The `I`-th top-level field schema of a field tuple. Implemented for
 /// tuple arities 1..=16, one impl per (arity, index) pair, so an

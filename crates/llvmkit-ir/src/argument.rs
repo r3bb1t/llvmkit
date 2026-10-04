@@ -7,28 +7,34 @@
 //! The handle caches the parent-function id and parameter slot so the
 //! common accessors do not round-trip through the value arena.
 
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable};
 use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::marker::Dyn;
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::r#type::{Type, TypeSlot, TypeSlotAccess};
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess, sealed,
+    HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueKindData, ValueSlot,
+    ValueSlotAccess, sealed,
 };
 use super::{DebugLoc, IrError, IrResult};
 use crate::Branded;
 
-/// Typed handle for a function parameter.
+/// Typed handle for a function parameter. `C` is its [`Capability`] (D8).
 #[derive(Branded)]
-pub struct Argument<'ctx, B: ModuleBrand> {
+pub struct Argument<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     ty: TypeSlot,
     pub(super) parent_fn: ValueSlot,
     pub(super) slot: u32,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for Argument<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Argument<'ctx, B, C> {
     #[inline]
     pub(super) fn from_parts<M>(
         id: ValueSlot,
@@ -38,7 +44,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
         slot: u32,
     ) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -49,9 +55,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
         }
     }
 
-    /// Widen to the erased [`Value`] handle.
+    /// Widen to the erased [`Value`] handle, at the same capability.
     #[inline]
-    pub fn as_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -59,7 +65,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     /// Narrow with [`TryFrom`] when a typed handle is needed.
     #[inline]
     pub fn parent_function(self) -> FunctionValue<'ctx, Dyn, B> {
-        FunctionValue::from_parts_unchecked(self.parent_fn, self.module)
+        FunctionValue::from_parts_unchecked(
+            self.parent_fn,
+            // capability (proof): laundered until Task 4 — a function's
+            // mutators still demand a `&Module<B, Unverified>` token.
+            self.module.mutable_at_marked_boundary(),
+        )
     }
 
     /// 0-based parameter index.
@@ -68,9 +79,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
         self.slot
     }
 
-    /// Parameter type.
+    /// Parameter type, at this argument's capability.
     #[inline]
-    pub fn ty(self) -> Type<'ctx, B> {
+    pub fn ty(self) -> Type<'ctx, B, C> {
         Type::new(self.ty, self.module)
     }
 
@@ -85,18 +96,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
+        C: CanMutate,
     {
         self.as_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.as_erased().clear_name(module_token);
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Argument<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for Argument<'ctx, B, C> {
     /// Print the operand form `<type> %name`, identical to what the erased
     /// [`Argument::as_erased`] handle prints. An unnamed parameter has no
     /// slot number outside a function-wide numbering pass, so it prints as
@@ -106,25 +121,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Argument<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Argument<'ctx, B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Argument<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed for Argument<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsValue<'ctx, B> for Argument<'ctx, B, C> {
     #[inline]
-    fn as_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B, C> {
         Argument::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(Argument);
-impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Argument<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Typed<'ctx, B> for Argument<'ctx, B, C> {
     #[inline]
-    fn ty(self) -> Type<'ctx, B> {
+    fn ty(self) -> Type<'ctx, B, C> {
         Argument::ty(self)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Argument<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for Argument<'ctx, B, C> {
     #[inline]
     fn name(self) -> Option<String> {
         Argument::name(self)
     }
+}
+impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for Argument<'ctx, B, C> {
     #[inline]
     fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
@@ -137,23 +154,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Argument<'ctx, B> {
         Argument::clear_name(self, module_token);
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for Argument<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasDebugLoc for Argument<'ctx, B, C> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_erased().debug_loc()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<Argument<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<Argument<'ctx, B, C>> for Value<'ctx, B, C> {
     #[inline]
-    fn from(a: Argument<'ctx, B>) -> Self {
+    fn from(a: Argument<'ctx, B, C>) -> Self {
         a.as_erased()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Argument<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Value<'ctx, B, C>>
+    for Argument<'ctx, B, C>
+{
     type Error = IrError;
-    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B, C>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::Argument { parent_fn, slot } => Ok(Self {
                 // Internal: a re-wrap that keeps `v`'s own module.
