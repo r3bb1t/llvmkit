@@ -273,4 +273,11 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/verified_instruction_name_is_read_only.rs");
     t.compile_fail("tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs");
     t.compile_fail("tests/compile_fail/verified_call_operand_bundles_are_read_only.rs");
+    // The trait forms of those mutators, `SetName` and `CallBase`, are
+    // implemented only where `C: CanMutate`. Their bodies call the bounded
+    // inherent methods, so widening an impl alone breaks the build; these
+    // fixtures call the trait methods themselves, so each is what fails if an
+    // impl is widened and its bodies are routed around the inherent methods.
+    t.compile_fail("tests/compile_fail/verified_instruction_set_name_trait_is_read_only.rs");
+    t.compile_fail("tests/compile_fail/verified_call_base_trait_is_read_only.rs");
 }

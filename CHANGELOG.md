@@ -59,22 +59,26 @@ cut, entries accumulate under **Unreleased**.
     handle;
   - the crate's own build, for the rest — `set_name` / `clear_name`,
     `remove_incoming`, `with_operand_bundles`, `splice_into`, `split_at` /
-    `split_before` and the `call` builders — whose bodies call
-    `proven_mutable()` or another `CanMutate`-bounded routine. Where the
-    receiver can be `ReadOnly` today, a compile-fail fixture also fails if a
-    bound is dropped and its body routed around it:
+    `split_before`, the `call` builders, and the `SetName` and `CallBase`
+    impls on these handles (each bounded `C: CanMutate`) — whose bodies call
+    `proven_mutable()` or another `CanMutate`-bounded routine. Where the receiver can be `ReadOnly` today, a compile-fail
+    fixture also fails if a bound is dropped and its body routed around it:
     `compile_fail/verified_block_label_call_is_read_only`
     (`BasicBlockLabel::call`),
     `compile_fail/verified_instruction_name_is_read_only`
     (`InstructionView::set_name` / `clear_name`),
     `compile_fail/verified_phi_incoming_removal_is_read_only`
-    (`remove_incoming` on `PhiKind` and the four phi handles) and
+    (`remove_incoming` on `PhiKind` and the four phi handles),
     `compile_fail/verified_call_operand_bundles_are_read_only`
-    (`with_operand_bundles` on the call, invoke and `callbr` handles). Only
-    the `BasicBlock` receivers — a block's `set_name` / `clear_name`,
-    `splice_into`, `split_at` / `split_before` and `call` — wait for the
-    integration step for theirs, when a function's blocks come back
-    `ReadOnly`.
+    (`with_operand_bundles` on the call, invoke and `callbr` handles),
+    `compile_fail/verified_instruction_set_name_trait_is_read_only`
+    (`SetName::set_name` / `clear_name` on an instruction) and
+    `compile_fail/verified_call_base_trait_is_read_only`
+    (`CallBase::with_operand_bundles` / `set_attributes` on the call, invoke
+    and `callbr` handles). Only the `BasicBlock` receivers — a block's
+    `set_name` / `clear_name`, inherent or through `SetName`, `splice_into`,
+    `split_at` / `split_before` and `call` — wait for the integration step for
+    theirs, when a function's blocks come back `ReadOnly`.
 
   `capability_typestate`'s
   `a_verified_modules_blocks_and_instructions_are_read_only` locks the
@@ -112,6 +116,8 @@ cut, entries accumulate under **Unreleased**.
   `operand_bundles` / `operand_bundle` return `OperandBundleUse` at the call's.
 - **Breaking: `CallBase` is implemented only for call sites that
   `CanMutate`** — both of its operations mutate.
+  `compile_fail/verified_call_base_trait_is_read_only` calls both through
+  the trait on a verified module's `ReadOnly` call sites.
 - **Breaking: `TypedCallInst::result` exists only on a `Mutable` call.**
   `FunctionReturn::CallResult` names no capability (for a struct return it is
   the `IrStruct` derive's own value type); a `ReadOnly` call reads its result
