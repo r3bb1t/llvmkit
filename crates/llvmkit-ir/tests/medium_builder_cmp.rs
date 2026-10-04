@@ -116,7 +116,7 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Assembler/flags.ll:290-292` (`test_icmp_samesign`):
+/// Mirrors `test/Assembler/flags.ll`'s `@test_icmp_samesign`:
 /// `%res = icmp samesign ult i32 %a, %b`. Typed operands need no `_dyn`
 /// erasure to spell the `samesign` flag. Upstream sets `samesign` post-hoc
 /// via `IcmpInst::setSameSign` (landed in LLVM 20, `Instructions.h`; the

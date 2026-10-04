@@ -115,6 +115,88 @@ fn every_registry_row_names_a_test_its_cited_file_defines() {
     );
 }
 
+/// Does this prose point at a *line* rather than at the thing on it?
+///
+/// Two spellings, because the first guard shipped knowing only one of them and
+/// `UPSTREAM.md` kept five `file:N` rows through it —
+/// `docs/future-work.md` had even recorded that those five "fall outside that
+/// grep entirely", which is exactly the shape a guard written from a grep
+/// inherits:
+///
+/// - a backticked path or symbol (it contains `/` or `::`, or ends in a source
+///   extension) followed within a few characters by the word `line` or `lines`
+///   and a number. The locator test is what keeps ordinary prose — a sentence
+///   about which line a directive lands on — from matching.
+/// - a path ending in a source extension, then a colon, then a number, with an
+///   optional dash-range after it.
+///
+/// Both forms are described rather than written out, because a literal example
+/// here would make this comment match itself — the same reason
+/// `docs/divergences.md`'s header refuses to quote the marker it would then be
+/// counting.
+///
+/// It deliberately does **not** match a bare number, a count ("all 17 lines of
+/// it"), or `line` used as a noun about llvmkit's own output.
+fn cites_a_line(text: &str) -> bool {
+    fn is_locator(token: &str) -> bool {
+        token.contains('/')
+            || token.contains("::")
+            || [".rs", ".cpp", ".h", ".ll", ".def", ".td", ".inc", ".md"]
+                .iter()
+                .any(|ext| token.ends_with(ext))
+    }
+
+    // `path.ext:12`
+    let mut rest = text;
+    while let Some(at) = rest.find(':') {
+        let (before, after) = rest.split_at(at);
+        let after = &after[1..];
+        if after.starts_with(|c: char| c.is_ascii_digit()) {
+            let token: String = before
+                .chars()
+                .rev()
+                .take_while(|c| !c.is_whitespace() && *c != '`' && *c != '(')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if [".rs", ".cpp", ".h", ".ll", ".def", ".td", ".inc"]
+                .iter()
+                .any(|ext| token.ends_with(ext))
+            {
+                return true;
+            }
+        }
+        rest = after;
+    }
+
+    // `` `locator` line 12 ``
+    for (index, _) in text.match_indices("line") {
+        let after = &text[index..];
+        let tail = after
+            .strip_prefix("lines")
+            .or_else(|| after.strip_prefix("line"))
+            .unwrap_or("");
+        if !tail.starts_with(' ') || !tail.trim_start().starts_with(|c: char| c.is_ascii_digit()) {
+            continue;
+        }
+        let before = &text[..index];
+        let Some(close) = before.rfind('`') else {
+            continue;
+        };
+        if before.len() - close > 4 {
+            continue;
+        }
+        let Some(open) = before[..close].rfind('`') else {
+            continue;
+        };
+        if is_locator(&before[open + 1..close]) {
+            return true;
+        }
+    }
+    false
+}
+
 /// No comment in the workspace cites upstream by line number.
 ///
 /// **No upstream counterpart** — the sibling of
@@ -134,14 +216,6 @@ fn every_registry_row_names_a_test_its_cited_file_defines() {
 /// destroy the explanation.
 #[test]
 fn no_source_comment_cites_upstream_by_line_number() {
-    fn is_locator(token: &str) -> bool {
-        token.contains('/')
-            || token.contains("::")
-            || [".cpp", ".h", ".ll", ".def", ".td", ".inc"]
-                .iter()
-                .any(|ext| token.ends_with(ext))
-    }
-
     let root = repo_root();
     let mut offenders = Vec::new();
     for (path, source) in workspace_rust_sources(&root) {
@@ -153,32 +227,8 @@ fn no_source_comment_cites_upstream_by_line_number() {
             {
                 continue;
             }
-            for (index, _) in line.match_indices("line") {
-                let after = &line[index..];
-                let rest = after
-                    .strip_prefix("lines")
-                    .or_else(|| after.strip_prefix("line"))
-                    .unwrap_or("");
-                if !rest.starts_with(' ')
-                    || !rest.trim_start().starts_with(|c: char| c.is_ascii_digit())
-                {
-                    continue;
-                }
-                // The backticked token immediately before it must be a locator,
-                // and must sit within a few characters.
-                let before = &line[..index];
-                let Some(close) = before.rfind('`') else {
-                    continue;
-                };
-                if before.len() - close > 4 {
-                    continue;
-                }
-                let Some(open) = before[..close].rfind('`') else {
-                    continue;
-                };
-                if is_locator(&before[open + 1..close]) {
-                    offenders.push(format!("  {path}:{}: {}", at + 1, line.trim()));
-                }
+            if cites_a_line(line) {
+                offenders.push(format!("  {path}:{}: {}", at + 1, line.trim()));
             }
         }
     }
@@ -192,6 +242,96 @@ fn no_source_comment_cites_upstream_by_line_number() {
         offenders.len(),
         offenders.join("\n")
     );
+}
+
+/// No live documentation page cites a file by line number.
+///
+/// **No upstream counterpart.** The third surface of `CLAUDE.md`'s cite-by-symbol
+/// rule, after `UPSTREAM.md` and Rust comments. It covers the repository's
+/// *live* prose — the root `.md` files and `docs/` — and it covers
+/// **self-citation too**: one of our own source paths with a line appended rots
+/// exactly as fast as an upstream coordinate, faster in a repository that is
+/// being edited daily, and
+/// `docs/divergences.md` already records an instance of it ("cited 49-79 is
+/// minor line drift").
+///
+/// Two exemptions, and they are rules rather than conveniences:
+///
+/// - **`CHANGELOG.md` is frozen history.** A released entry records what was
+///   said at the time; correcting it would be falsifying a record. The
+///   `Unreleased` section is live prose and is checked.
+/// - **A dated evidence block is a snapshot, not a claim.** `docs/divergences.md`
+///   keeps coordinates inside `<details>` and `Correction from verification`
+///   blocks, which its own header defines as "dated snapshots of one
+///   verification pass … valid only against the vendored 22.1.4 tree". Stripping
+///   them would destroy the record of what was checked. Its *entry prose* —
+///   every `**LLVM:**` / `**llvmkit:**` / `**Why:**` / `**Fix:**` bullet — is
+///   live, is checked, and was already clean when this test was written.
+///
+/// `docs/design/**` is exempt for the same reason as frozen history: those are
+/// dated records of how a decision was reached, explicitly not maintained.
+#[test]
+fn no_live_doc_page_cites_a_line_number() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+
+    for relative in live_doc_pages(&root) {
+        let Ok(text) = std::fs::read_to_string(root.join(&relative)) else {
+            continue;
+        };
+        let frozen_changelog = relative == "CHANGELOG.md";
+        let mut in_evidence = 0usize;
+        let mut past_unreleased = false;
+        for (at, line) in text.lines().enumerate() {
+            let lower = line.to_ascii_lowercase();
+            if lower.contains("<details") {
+                in_evidence += 1;
+            }
+            // Everything below the first released heading is history.
+            if frozen_changelog && line.starts_with("## [") && !line.starts_with("## [Unreleased") {
+                past_unreleased = true;
+            }
+            if in_evidence == 0 && !past_unreleased && cites_a_line(line) {
+                offenders.push(format!("  {relative}:{}: {}", at + 1, line.trim()));
+            }
+            if lower.contains("</details") {
+                in_evidence = in_evidence.saturating_sub(1);
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "cite by symbol, never line number (CLAUDE.md) — {} line(s) of live \
+         documentation point at a coordinate instead of the thing there. Name \
+         the construct: the `@global` / `define` for a `.ll` fixture, the \
+         function or its named arm for C++ or Rust. If the number is genuinely \
+         the subject (a dated evidence block, frozen changelog history), it \
+         belongs in one of the exempt places this test already knows about:\n{}",
+        offenders.len(),
+        offenders.join("\n")
+    );
+}
+
+/// The repository's live prose: root `.md` files plus `docs/`, excluding the
+/// dated `docs/design/**` records and anything git does not track.
+fn live_doc_pages(root: &Path) -> Vec<String> {
+    let listed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "*.md"])
+        .output();
+    let Ok(listed) = listed else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .filter(|path| !path.is_empty())
+        .filter(|path| !path.starts_with("orig_cpp/"))
+        .filter(|path| !path.starts_with("docs/design/"))
+        .filter(|path| !path.contains('/') || path.starts_with("docs/"))
+        .collect()
 }
 
 /// Every `.rs` file under `crates/`, as `(path relative to the repo root, source)`.
@@ -384,18 +524,7 @@ fn no_registry_row_cites_upstream_by_line_number() {
         .lines()
         .enumerate()
         .filter(|(_, line)| line.starts_with("| `"))
-        .filter(|(_, line)| {
-            line.split_whitespace()
-                .collect::<Vec<_>>()
-                .windows(2)
-                .any(|w| {
-                    let word = w[0].trim_matches(|c: char| !c.is_ascii_alphabetic());
-                    (word == "line" || word == "lines")
-                        && w[1]
-                            .trim_start_matches('`')
-                            .starts_with(|c: char| c.is_ascii_digit())
-                })
-        })
+        .filter(|(_, line)| cites_a_line(line))
         .map(|(index, line)| (index + 1, line))
         .collect();
 

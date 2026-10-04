@@ -223,7 +223,7 @@ define i32 @f(i32 %a, i1 %c) {
 /// The incoming value is a function parameter of the matching vector type,
 /// flowing from a terminated predecessor (the merge-block shape). Previously
 /// the parser rejected any non-int/float/pointer phi result type at
-/// `ll_parser.rs:7328` ("phi result type must be int, float, or pointer").
+/// in `ll_parser.rs` ("phi result type must be int, float, or pointer").
 #[test]
 fn vector_phi_result_type_parses_and_verifies() {
     let src = "\
