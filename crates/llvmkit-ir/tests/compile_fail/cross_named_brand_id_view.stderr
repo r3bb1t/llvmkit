@@ -16,7 +16,7 @@ help: the trait `ViewIn<'_, Right>` is not implemented for `FunctionId<Dyn, Left
 note: required by a bound in `Module::<B, S>::view`
   --> src/module.rs
    |
-   |     pub fn view<I>(&'ctx self, id: I) -> I::View
+   |     pub fn view<I>(&'ctx self, id: I) -> I::View<S::Capability>
    |            ---- required by a bound in this associated function
    |     where
    |         I: ViewIn<'ctx, B>,
