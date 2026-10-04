@@ -559,6 +559,34 @@ impl<'ctx, B: ModuleBrand, C: Capability> ModuleRef<'ctx, B, C> {
     ) -> &'ctx crate::instr_types::CallAttributeData {
         self.core.context().call_attributes(slot)
     }
+
+    /// Crate-internal: the comdat named `name`, at this reference's
+    /// capability, or `None` when the module has none by that name. The one
+    /// body behind `Module::comdat` and the global handles' `comdat()`, so a
+    /// comdat keeps the capability of the route it was reached by.
+    pub(crate) fn comdat(self, name: &str) -> Option<ComdatRef<'ctx, B, C>> {
+        let id = *self.core.comdat_by_name.borrow().get(name)?;
+        Some(ComdatRef { module: self, id })
+    }
+
+    /// Crate-internal: the module's global variables in declaration order,
+    /// at this reference's capability. The one body behind `Module::globals`
+    /// and `ModuleCore::iter_globals`.
+    pub(crate) fn globals(
+        self,
+    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B, C>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx
+    where
+        B: 'ctx,
+    {
+        let ids: Vec<ValueSlot> = self.core.globals.borrow().clone();
+        ids.into_iter().map(move |id| {
+            let value_data = self.value_data(id);
+            GlobalVariable::from_parts_unchecked(id, self, value_data.ty)
+        })
+    }
 }
 
 impl<'ctx, B: ModuleBrand, C: CanMutate> ModuleRef<'ctx, B, C> {
@@ -2433,11 +2461,7 @@ impl<'ctx> ModuleCore {
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        let ids: Vec<ValueSlot> = self.globals.borrow().clone();
-        ids.into_iter().map(move |id| {
-            let value_data = self.ctx.value_data(id);
-            GlobalVariable::from_parts_unchecked(id, ModuleRef::<B>::new(self), value_data.ty)
-        })
+        ModuleRef::<B>::new(self).globals()
     }
 
     pub fn iter_aliases<B: ModuleBrand + 'ctx>(
@@ -3363,16 +3387,6 @@ impl<'ctx> ModuleCore {
         }
     }
 
-    /// Look up an existing comdat by name. Returns `None` when not
-    /// present.
-    pub fn comdat<B: ModuleBrand>(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
-        let id = *self.comdat_by_name.borrow().get(name)?;
-        Some(ComdatRef {
-            module: ModuleRef::new(self),
-            id,
-        })
-    }
-
     /// Crate-internal: borrow the underlying [`ComdatData`] by id.
     /// Mirrors `Module::comdat_at`.
     pub(super) fn comdat_at(&self, id: ComdatId) -> &ComdatData {
@@ -3639,14 +3653,19 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
         self.core().attribute_group(id)
     }
 
-    /// Iterate globals in declaration order with this module token's brand.
+    /// Iterate globals in declaration order with this module token's brand,
+    /// at the capability the module's state grants (D8): [`Mutable`] while
+    /// unverified, [`ReadOnly`] once verified.
     pub fn globals(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B, S::Capability>>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
-        self.core().iter_globals::<B>()
+    + 'ctx
+    where
+        S: ModuleState,
+    {
+        self.capability_ref().globals()
     }
 
     /// Total number of instructions across every block of every function
@@ -3817,11 +3836,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     // ---- By-name lookups ----
     //
     // State-generic since cycle E. These return either a capability-free
-    // `Copy + Send` id or, for comdats, a read-only handle — nothing that can
-    // mutate — so restricting them to `Module<B, Unverified>` bought no safety
-    // and left a verified module with no O(1) route to a symbol at all: the
-    // only alternative was a linear scan of `as_view().globals()` comparing
-    // names. `function` / `function_dyn` already lived here.
+    // `Copy + Send` id or, for comdats, a handle at the capability the
+    // module's state grants — `ReadOnly` once verified, so nothing that can
+    // mutate a verified module — so restricting them to `Module<B, Unverified>`
+    // bought no safety and left a verified module with no O(1) route to a
+    // symbol at all: the only alternative was a linear scan of
+    // `as_view().globals()` comparing names. `function` / `function_dyn`
+    // already lived here.
 
     /// Look up a global variable by name, returning its storable
     /// [`GlobalId`].
@@ -3867,8 +3888,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// family and [`view`](Self::view) cannot resolve it. Returning it here
     /// would hand back something strictly *weaker* than the handle — untagged,
     /// unbranded, and unresolvable — so the handle stays.
-    pub fn comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
-        self.core().comdat::<B>(name)
+    ///
+    /// The handle carries the capability the module's state grants (D8): a
+    /// verified module's comdat is [`ReadOnly`], so its selection kind cannot
+    /// be changed.
+    pub fn comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B, S::Capability>>
+    where
+        S: ModuleState,
+    {
+        self.capability_ref().comdat(name)
     }
 }
 
@@ -4681,9 +4709,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ///
     /// For the declaration-only case where there is no initializer to
     /// derive the type from. Unlike [`add_external_global`](Self::add_external_global),
-    /// this uses the module's default linkage. Accepts any
-    /// `impl Into<Type>` so a typed handle needn't be widened via
-    /// `.as_type()`.
+    /// this uses the module's default linkage. Accepts any [`IrType`] — a
+    /// typed handle of any capability, admitted against this module at
+    /// `build` — so it needn't be widened via `.as_type()`.
     pub fn add_global_uninitialized<N, T>(
         &'ctx self,
         name: N,
@@ -4691,17 +4719,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ) -> IrResult<GlobalId<B>>
     where
         N: Into<String>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        GlobalBuilder::<B>::new(self.module_ref(), name, value_type.into()).build()
+        GlobalBuilder::<B>::new(self.module_ref(), name, value_type).build()
     }
 
     pub fn add_external_global<N, T>(&'ctx self, name: N, value_type: T) -> IrResult<GlobalId<B>>
     where
         N: Into<String>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        GlobalBuilder::<B>::new(self.module_ref(), name, value_type.into())
+        GlobalBuilder::<B>::new(self.module_ref(), name, value_type)
             .linkage(Linkage::External)
             .build()
     }
@@ -4709,18 +4737,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     pub fn global_builder<N, T>(&'ctx self, name: N, value_type: T) -> GlobalBuilder<'ctx, B>
     where
         N: Into<String>,
-        T: Into<Type<'ctx, B>>,
+        T: IrType<'ctx, B>,
     {
-        GlobalBuilder::new(self.module_ref(), name, value_type.into())
+        GlobalBuilder::new(self.module_ref(), name, value_type)
     }
 
-    pub fn alias_builder<C, Name>(
+    pub fn alias_builder<T, C, Name>(
         &'ctx self,
         name: Name,
-        value_type: Type<'ctx, B>,
+        value_type: T,
         aliasee: C,
     ) -> GlobalAliasBuilder<'ctx, B>
     where
+        T: IrType<'ctx, B>,
         C: IsConstant<'ctx, B>,
         Name: Into<String>,
     {
@@ -4731,13 +4760,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().alias_empty()
     }
 
-    pub fn ifunc_builder<C, Name>(
+    pub fn ifunc_builder<T, C, Name>(
         &'ctx self,
         name: Name,
-        value_type: Type<'ctx, B>,
+        value_type: T,
         resolver: C,
     ) -> GlobalIfuncBuilder<'ctx, B>
     where
+        T: IrType<'ctx, B>,
         C: IsConstant<'ctx, B>,
         Name: Into<String>,
     {

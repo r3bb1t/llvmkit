@@ -7,13 +7,13 @@ error[E0277]: the trait bound `FunctionView<'_, Right>: From<FunctionView<'_, Le
    |                 required by a bound introduced by this call
    |
 help: the trait `From<FunctionView<'_, Left>>` is not implemented for `FunctionView<'_, Right>`
-      but trait `From<FunctionValue<'_, _, Right>>` is implemented for it
+      but trait `From<FunctionValue<'_, _, Right, _>>` is implemented for it
   --> src/pass_context.rs
    |
-   | / impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B>>
+   | / impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> From<FunctionValue<'ctx, R, B, C>>
    | |     for FunctionView<'ctx, B>
    | |_____________________________^
-   = help: for that trait implementation, expected `FunctionValue<'_, _, Right>`, found `FunctionView<'_, Left>`
+   = help: for that trait implementation, expected `FunctionValue<'_, _, Right, _>`, found `FunctionView<'_, Left>`
    = note: required for `FunctionView<'_, Left>` to implement `Into<FunctionView<'_, Right>>`
 note: required by a bound in `FunctionAnalysisManager::<'ctx, B>::result`
   --> src/analysis.rs

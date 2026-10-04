@@ -613,7 +613,7 @@ where
     }
 
     #[inline]
-    fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B>) -> IrResult<()>
+    fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B, ReadOnly>) -> IrResult<()>
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx,
@@ -719,7 +719,7 @@ where
         <S as IrField>::matches_ir_type(ty)
     }
 
-    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
+    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
     {

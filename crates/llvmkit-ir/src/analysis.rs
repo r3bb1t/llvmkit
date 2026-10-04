@@ -1371,7 +1371,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DominatorTreeAna
     where
         'ctx: 'v,
     {
-        Ok(DominatorTree::new(function.as_function()))
+        Ok(DominatorTree::new(function.function_for_analysis()))
     }
 }
 
@@ -1423,7 +1423,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
     where
         'ctx: 'v,
     {
-        *self = DominatorTree::new(function.as_function());
+        *self = DominatorTree::new(function.function_for_analysis());
         RepairOutcome::Repaired
     }
 
@@ -1432,7 +1432,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
     where
         'ctx: 'v,
     {
-        DominatorTree::new(function.as_function())
+        DominatorTree::new(function.function_for_analysis())
     }
 }
 
@@ -1873,7 +1873,7 @@ mod tests {
         let function: FunctionView<'_, _> = m.view(f).into();
 
         // Cache a dom tree before the edit: `entry` dominates `next`.
-        let mut dt = DominatorTree::new(function.as_function());
+        let mut dt = DominatorTree::new(m.view(f));
         assert!(dt.is_reachable_from_entry(next_label));
 
         // Edit the CFG: split the entry at its terminator. The `br next` (and
@@ -1897,7 +1897,7 @@ mod tests {
             dt.apply_updates(&updates, function),
             RepairOutcome::Repaired
         );
-        let fresh = DominatorTree::new(function.as_function());
+        let fresh = DominatorTree::new(m.view(f));
         assert_eq!(
             dt.dominates_block(new_label, next_label),
             fresh.dominates_block(new_label, next_label)

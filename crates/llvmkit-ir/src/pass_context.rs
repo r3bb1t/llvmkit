@@ -65,7 +65,7 @@ use super::analysis::{
 };
 use super::basic_block::IntoBasicBlockLabel;
 use super::block_state::Terminated;
-use super::capability::Mutable;
+use super::capability::{Capability, Mutable, ReadOnly};
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
@@ -263,22 +263,41 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for BasicBlockView<'ctx, B> {
     }
 }
 
-/// Read-only view of a function under its owning module brand.
+/// Read-only view of a function under its owning module brand. The function
+/// it holds is [`ReadOnly`] (D8), whatever route it was reached by.
 #[derive(Branded)]
 pub struct FunctionView<'ctx, B: ModuleBrand> {
-    function: FunctionValue<'ctx, Dyn, B>,
+    function: FunctionValue<'ctx, Dyn, B, ReadOnly>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
+    /// The view of `function`, read-only whatever its capability.
     #[inline]
-    pub(super) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
-        Self { function }
+    pub(super) fn new<C: Capability>(function: FunctionValue<'ctx, Dyn, B, C>) -> Self {
+        Self {
+            function: function.read_only(),
+        }
     }
 
-    /// Underlying typed function handle in erased-return form.
+    /// Underlying typed function handle in erased-return form, at
+    /// [`ReadOnly`].
     #[inline]
-    pub(super) fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
+    pub(super) fn as_function(self) -> FunctionValue<'ctx, Dyn, B, ReadOnly> {
         self.function
+    }
+
+    /// Crate-internal: the viewed function at [`Mutable`], for the analyses
+    /// (`DominatorTree`, `DemandedBits`) that still read through entry points
+    /// taking a `Mutable` handle. They only read.
+    #[inline]
+    pub(super) fn function_for_analysis(self) -> FunctionValue<'ctx, Dyn, B> {
+        FunctionValue::from_parts_unchecked(
+            self.function.slot_trusting_same_module(),
+            // capability (proof): laundered until Task 6 — the analyses take a
+            // `Mutable` function handle, and a function's mutators still
+            // demand a `&Module<B, Unverified>` token.
+            self.function.module.mutable_at_marked_boundary(),
+        )
     }
 
     /// Storable, module-tagged id for the viewed function. The lifetime-free
@@ -324,7 +343,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct FunctionBasicBlockViews<'ctx, B: ModuleBrand> {
-    inner: FunctionBasicBlocks<'ctx, Dyn, B>,
+    inner: FunctionBasicBlocks<'ctx, Dyn, B, ReadOnly>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Iterator for FunctionBasicBlockViews<'ctx, B> {
@@ -374,11 +393,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for FunctionView<'ctx, B> {
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B>>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> From<FunctionValue<'ctx, R, B, C>>
     for FunctionView<'ctx, B>
 {
     #[inline]
-    fn from(function: FunctionValue<'ctx, R, B>) -> Self {
+    fn from(function: FunctionValue<'ctx, R, B, C>) -> Self {
         Self::new(function.as_dyn())
     }
 }
@@ -412,7 +431,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoFunctionId<B> for FunctionView<'ctx, B> {
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoFunctionId<B> for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoFunctionId<B>
+    for FunctionValue<'ctx, R, B, C>
+{
     #[inline]
     fn into_function_id(self) -> FunctionId<Dyn, B> {
         self.as_dyn().id()
@@ -422,12 +443,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoFunctionId<B> for Functio
 /// Mutation-capable view of one function body.
 #[derive(Branded)]
 pub struct FunctionBody<'ctx, B: ModuleBrand> {
-    function: FunctionValue<'ctx, Dyn, B>,
+    function: FunctionValue<'ctx, Dyn, B, ReadOnly>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
     #[inline]
-    pub(super) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+    pub(super) fn new(function: FunctionValue<'ctx, Dyn, B, ReadOnly>) -> Self {
         Self { function }
     }
 
@@ -437,9 +458,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
         FunctionView::new(self.function)
     }
 
-    /// Underlying function handle for body-local mutation APIs.
+    /// The function itself, at [`ReadOnly`]: a body's mutation goes through
+    /// its blocks and the rung's mutator, never through the function's own
+    /// setters — linkage, attributes and the like are module-level state no
+    /// function rung's preservation floor accounts for (D8).
     #[inline]
-    pub fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
+    pub fn as_function(self) -> FunctionValue<'ctx, Dyn, B, ReadOnly> {
         self.function
     }
 
@@ -2248,7 +2272,7 @@ where
     /// type-level nudge rather than a runtime surprise.
     ///
     /// `ty` may be a type of any capability — one read through
-    /// [`Self::module`] is [`ReadOnly`](crate::ReadOnly). Naming a type is not
+    /// [`Self::module`] is [`ReadOnly`]. Naming a type is not
     /// mutating it; the type is admitted against this module.
     ///
     /// Errors: [`IrError::ForeignType`] if `ty` belongs to another module;

@@ -280,7 +280,7 @@ impl DemandedBits {
     ) -> IrResult<()> {
         let mut worklist = VecDeque::new();
         let mut queued = HashSet::new();
-        let anchor = function.as_function().as_erased();
+        let anchor = function.function_for_analysis().as_erased();
 
         for block in function.as_function().basic_blocks() {
             for inst in block.instructions() {

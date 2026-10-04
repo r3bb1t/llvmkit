@@ -24,7 +24,7 @@ impl FunctionParam for Leaker {
         true
     }
 
-    fn validate_argument<'ctx, B>(_arg: Argument<'ctx, B>) -> IrResult<()>
+    fn validate_argument<'ctx, B>(_arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
     {

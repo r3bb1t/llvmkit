@@ -250,4 +250,8 @@ fn typestate_compile_fail() {
     // only guard: without it a verified module's use-list order could be
     // rewritten after `verify()`.
     t.compile_fail("tests/compile_fail/verified_value_use_list_is_immutable.rs");
+    // The same law on a global (Task 25's stop condition): a second
+    // unverified module's token of the shared `DynBrand` used to unlock a
+    // verified module's global; a verified module's global is `ReadOnly`.
+    t.compile_fail("tests/compile_fail/verified_global_cannot_be_mutated.rs");
 }

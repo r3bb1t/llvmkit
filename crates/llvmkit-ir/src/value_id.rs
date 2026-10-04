@@ -732,7 +732,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
 
 impl<R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionId<R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FunctionId<R, B> {
-    type View<C: Capability> = FunctionValue<'ctx, R, B>;
+    type View<C: Capability> = FunctionValue<'ctx, R, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -741,9 +741,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FunctionI
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 4 — `FunctionValue`'s
-        // mutators still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
         let signature = match &module.value_data(slot).kind {
             ValueKindData::Function(f) => f.signature,
@@ -779,7 +776,7 @@ macro_rules! impl_view_in_for_typed_function_id {
             Params: FunctionParamList,
             B: ModuleBrand + 'ctx,
         {
-            type View<C: Capability> = $facade<'ctx, Ret, Params, B>;
+            type View<C: Capability> = $facade<'ctx, Ret, Params, B, C>;
 
             #[inline]
             fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -829,7 +826,7 @@ macro_rules! impl_view_in_for_global_id {
     ($( $name:ident => $handle:ident [$kind:ident] ),+ $(,)?) => { $(
         impl<B: ModuleBrand> sealed::Sealed for $name<B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for $name<B> {
-            type View<C: Capability> = $handle<'ctx, B>;
+            type View<C: Capability> = $handle<'ctx, B, C>;
 
             #[inline]
             fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -841,9 +838,6 @@ macro_rules! impl_view_in_for_global_id {
                 self,
                 module: ModuleRef<'ctx, B, C>,
             ) -> Option<Self::View<C>> {
-                // capability (proof): laundered until Task 4 — the global
-                // handles' mutators still demand a `&Module<B, Unverified>` token.
-                let module = module.mutable_at_marked_boundary();
                 let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
                 let data = module.value_data(slot);
                 if !matches!(data.kind, ValueKindData::$kind(_)) {

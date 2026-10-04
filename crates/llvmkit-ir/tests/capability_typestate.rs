@@ -6,8 +6,8 @@
 
 use core::any::TypeId;
 use llvmkit_ir::{
-    CapabilityOf, IrBuilder, IrError, Linkage, Module, ModuleState, Mutable, NoFolder, ReadOnly,
-    Unverified, Verified,
+    CapabilityOf, Dyn, DynBrand, IrBuilder, IrError, Linkage, Module, ModuleState, Mutable,
+    NoFolder, ReadOnly, Unverified, Value, Verified,
 };
 
 fn capability_of<S: ModuleState>() -> TypeId {
@@ -106,4 +106,121 @@ fn a_builder_admits_a_read_only_operand_and_refuses_a_foreign_one() {
     b.ret(m.view(sum)).expect("ret");
     let text = format!("{m}");
     assert!(text.contains("%s = add i32 1, 2"), "got:\n{text}");
+}
+
+/// A verified module mints `ReadOnly` globals, aliases, functions, typed
+/// function facades and comdats — through `view`, `globals` and `comdat` —
+/// and what is read off them (initializer, aliasee, value type, signature,
+/// parameters, attached comdat) keeps the capability. Positive control: the
+/// same handles through the unverified module are `Mutable`. llvmkit-specific
+/// (D1, D8).
+#[test]
+fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let comdat = m.get_or_insert_comdat("c");
+    let g = m
+        .global_builder("g", i32_ty)
+        .initializer(i32_ty.const_int(7_i32))
+        .comdat(comdat)
+        .build()
+        .expect("g");
+    let alias = m
+        .alias_builder("a", i32_ty, m.view(g).as_global_constant_ptr())
+        .build()
+        .expect("a");
+    let f = m
+        .add_function_dyn(
+            "f",
+            m.function_type(i32_ty, [i32_ty.as_type()]),
+            Linkage::External,
+        )
+        .expect("f");
+    let typed = m
+        .add_typed_function::<i32, (i32,), _>("t", Linkage::External)
+        .expect("t");
+
+    let mutable = TypeId::of::<Mutable>();
+    assert_eq!(capability(m.view(g)), mutable);
+    assert_eq!(capability(m.view(alias)), mutable);
+    assert_eq!(capability(m.view(f)), mutable);
+    assert_eq!(capability(m.view(typed)), mutable);
+    assert_eq!(capability(m.globals().next().expect("g")), mutable);
+    assert_eq!(capability(m.comdat("c").expect("c")), mutable);
+
+    let m = m.verify().expect("verifies");
+    let read_only = TypeId::of::<ReadOnly>();
+    let global = m.view(g);
+    assert_eq!(capability(global), read_only);
+    assert_eq!(capability(global.initializer().expect("init")), read_only);
+    assert_eq!(capability(global.value_type()), read_only);
+    assert_eq!(capability(global.comdat().expect("comdat")), read_only);
+    assert_eq!(capability(m.globals().next().expect("g")), read_only);
+    assert_eq!(capability(m.comdat("c").expect("c")), read_only);
+    assert_eq!(capability(m.view(alias)), read_only);
+    assert_eq!(capability(m.view(alias).aliasee()), read_only);
+    let function = m.view(f);
+    assert_eq!(capability(function), read_only);
+    assert_eq!(capability(function.signature()), read_only);
+    assert_eq!(capability(function.param(0).expect("param")), read_only);
+    assert_eq!(
+        capability(function.params().next().expect("param")),
+        read_only
+    );
+    assert_eq!(
+        capability(function.param(0).expect("param").parent_function()),
+        read_only
+    );
+    assert_eq!(capability(m.view(typed)), read_only);
+    assert_eq!(capability(m.view(typed).as_function()), read_only);
+}
+
+/// Naming a function as a callee is not mutating it: a builder admits a
+/// `ReadOnly` function of its own module and re-mints it, and still refuses a
+/// `ReadOnly` function of another module that shares the brand — refused
+/// before anything is built. llvmkit-specific (D1, D7).
+#[test]
+fn a_builder_admits_a_read_only_callee_and_refuses_a_foreign_one() {
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let callee = m
+        .add_function_dyn(
+            "callee",
+            m.function_type_no_parameters(i32_ty),
+            Linkage::External,
+        )
+        .expect("callee");
+    let f = m
+        .add_function_dyn(
+            "f",
+            m.function_type_no_parameters(i32_ty),
+            Linkage::External,
+        )
+        .expect("f");
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let read_only = m.view(callee).read_only();
+    assert_eq!(capability(read_only), TypeId::of::<ReadOnly>());
+    let other = Module::dynamic("other");
+    let other_callee = other
+        .add_function_dyn(
+            "callee",
+            other.function_type_no_parameters(other.i32_type()),
+            Linkage::External,
+        )
+        .expect("other callee");
+    let foreign = other.view(other_callee).read_only();
+
+    let before = format!("{m}");
+    let refused = b.call_dyn::<Dyn, _, _, _, _>(foreign, Vec::<Value<'_, DynBrand>>::new(), "bad");
+    assert!(
+        matches!(refused, Err(IrError::ForeignValueId)),
+        "{refused:?}"
+    );
+    assert_eq!(format!("{m}"), before, "a refused callee must not mutate");
+
+    b.call_dyn::<Dyn, _, _, _, _>(read_only, Vec::<Value<'_, DynBrand>>::new(), "r")
+        .expect("a read-only callee of this module is admitted");
+    let text = format!("{m}");
+    assert!(text.contains("%r = call i32 @callee()"), "got:\n{text}");
 }

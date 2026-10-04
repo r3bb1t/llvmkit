@@ -4,6 +4,7 @@ use crate::Branded;
 use core::cell::{Cell, RefCell};
 
 use super::DebugLoc;
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
@@ -11,7 +12,7 @@ use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeKind, TypeSlot, TypeSlotAccess};
+use super::r#type::{IrType, Type, TypeKind, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     GlobalFieldKind, HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueKindData,
@@ -34,18 +35,27 @@ pub(super) struct GlobalAliasData {
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
+/// Module-level global alias handle. Mirrors `GlobalAlias *`.
+///
+/// `C` is the handle's [`Capability`] (D8): an alias viewed through an
+/// unverified module is [`Mutable`]; one viewed through a verified module is
+/// [`ReadOnly`] and has no setters.
 #[derive(Branded)]
-pub struct GlobalAlias<'ctx, B: ModuleBrand> {
+pub struct GlobalAlias<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     ty: TypeSlot,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for GlobalAlias<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalAlias<'ctx, B, C> {
     #[inline]
     pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -54,8 +64,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         }
     }
 
+    /// Widen to the erased [`Value`] handle, at the same capability.
     #[inline]
-    pub fn as_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -68,12 +79,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn as_constant(self) -> Constant<'ctx, B> {
+    pub fn as_constant(self) -> Constant<'ctx, B, C> {
         Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
     }
 
     #[inline]
-    pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
+    pub fn as_global_constant_ptr(self) -> Constant<'ctx, B, C> {
         self.as_constant()
     }
 
@@ -90,12 +101,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B> {
+    pub fn ty(self) -> PointerType<'ctx, B, C> {
         crate::PointerType::new(self.ty, self.module)
     }
 
     #[inline]
-    pub fn value_type(self) -> Type<'ctx, B> {
+    pub fn value_type(self) -> Type<'ctx, B, C> {
         Type::new(self.data().value_type, self.module)
     }
 
@@ -118,26 +129,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
+        C: CanMutate,
     {
         self.as_erased().set_name(module_token, name);
     }
 
     /// Leave this alias unnamed. Mirrors `Value::setName("")`.
-    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.as_erased().clear_name(module_token);
     }
 
-    pub fn aliasee(self) -> Constant<'ctx, B> {
+    pub fn aliasee(self) -> Constant<'ctx, B, C> {
         let id = self.data().aliasee.get();
         let value_data = self.module.value_data(id);
         Constant::from_parts(Value::from_parts(id, self.module, value_data.ty))
     }
 
-    pub fn set_aliasee<C: IsConstant<'ctx, B>>(
+    pub fn set_aliasee<Aliasee: IsConstant<'ctx, B>>(
         self,
         _module: &'ctx Module<B, Unverified>,
-        aliasee: C,
-    ) -> IrResult<()> {
+        aliasee: Aliasee,
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
         let constant = aliasee.as_constant();
         // Only the slot is stored, so a constant from another module sharing
         // this brand would silently name a different value here.
@@ -176,12 +194,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     /// Set the DSO locality. Mirrors `GlobalValue::setDSOLocal`.
-    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, dso: DsoLocality) {
+    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, dso: DsoLocality)
+    where
+        C: CanMutate,
+    {
         self.data().dso_locality.set(dso);
     }
 
     #[inline]
-    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage)
+    where
+        C: CanMutate,
+    {
         self.data().linkage.set(linkage);
     }
 
@@ -191,7 +215,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility)
+    where
+        C: CanMutate,
+    {
         self.data().visibility.set(visibility);
     }
 
@@ -201,7 +228,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass)
+    where
+        C: CanMutate,
+    {
         self.data().dll_storage_class.set(cls);
     }
 
@@ -211,7 +241,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode) {
+    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode)
+    where
+        C: CanMutate,
+    {
         self.data().thread_local_mode.set(tlm);
     }
 
@@ -221,7 +254,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr)
+    where
+        C: CanMutate,
+    {
         self.data().unnamed_addr.set(value);
     }
 
@@ -247,7 +283,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         module: &'ctx Module<B, Unverified>,
         kind: MetadataAttachmentKind,
         id: MetadataId<B>,
-    ) -> IrResult<()> {
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
         let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
         Ok(())
@@ -260,45 +299,45 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
+        C: CanMutate,
     {
         *self.data().partition.borrow_mut() = Some(partition.into());
     }
 
-    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         *self.data().partition.borrow_mut() = None;
     }
 }
 
-impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalAlias<'ctx, B> {}
-// A global carries no capability until Task 4 of the capability plan.
-impl<B: ModuleBrand> crate::capability::CapabilityOf for GlobalAlias<'_, B> {
-    type Capability = crate::capability::Mutable;
-}
-impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalAlias<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for GlobalAlias<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsValue<'ctx, B> for GlobalAlias<'ctx, B, C> {
     #[inline]
-    fn as_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B, C> {
         GlobalAlias::as_erased(self)
     }
 }
-crate::value::impl_into_erased_value_for_handle!(capability_free: GlobalAlias);
-impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalAlias<'ctx, B> {
+crate::value::impl_into_erased_value_for_handle!(GlobalAlias);
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsConstant<'ctx, B> for GlobalAlias<'ctx, B, C> {
     #[inline]
-    fn as_constant(self) -> Constant<'ctx, B> {
+    fn as_constant(self) -> Constant<'ctx, B, C> {
         GlobalAlias::as_constant(self)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalAlias<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Typed<'ctx, B> for GlobalAlias<'ctx, B, C> {
     #[inline]
-    fn ty(self) -> Type<'ctx, B> {
+    fn ty(self) -> Type<'ctx, B, C> {
         Type::new(self.ty, self.module)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalAlias<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for GlobalAlias<'ctx, B, C> {
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for GlobalAlias<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for GlobalAlias<'ctx, B, C> {
     #[inline]
     fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
@@ -311,29 +350,35 @@ impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for GlobalAlias<'ctx, B> {
         GlobalAlias::clear_name(self, module_token);
     }
 }
-impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalAlias<'_, B> {
+impl<B: ModuleBrand + 'static, C: Capability> HasDebugLoc for GlobalAlias<'_, B, C> {
     fn debug_loc(self) -> Option<DebugLoc> {
         None
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalAlias<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<GlobalAlias<'ctx, B, C>>
+    for Value<'ctx, B, C>
+{
     #[inline]
-    fn from(a: GlobalAlias<'ctx, B>) -> Self {
+    fn from(a: GlobalAlias<'ctx, B, C>) -> Self {
         a.as_erased()
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalAlias<'ctx, B>> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<GlobalAlias<'ctx, B, C>>
+    for Constant<'ctx, B, C>
+{
     #[inline]
-    fn from(a: GlobalAlias<'ctx, B>) -> Self {
+    fn from(a: GlobalAlias<'ctx, B, C>) -> Self {
         a.as_constant()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Value<'ctx, B, C>>
+    for GlobalAlias<'ctx, B, C>
+{
     type Error = IrError;
 
-    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B, C>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::GlobalAlias(_) => Ok(Self {
                 // Internal: a re-wrap that keeps `v`'s own module.
@@ -354,12 +399,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, 
 pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    /// Kept as the caller's handle, not its slot: `build` admits it through
-    /// the checked door, and only then does its slot enter this module.
-    value_type: Type<'ctx, B>,
+    /// Kept as the caller's handle, not its slot, at `ReadOnly`: a type of
+    /// any capability is accepted, `build` admits it through the checked
+    /// door, and only then does its slot enter this module. Re-minting it at
+    /// this module before admission would skip the foreign-module check.
+    value_type: Type<'ctx, B, ReadOnly>,
     /// Kept as the caller's handle for the same reason, at `ReadOnly`: an
     /// aliasee of any capability is accepted, and `build` admits it.
-    aliasee: Constant<'ctx, B, crate::capability::ReadOnly>,
+    aliasee: Constant<'ctx, B, ReadOnly>,
     address_space: u32,
     linkage: Linkage,
     dso_locality: DsoLocality,
@@ -371,10 +418,11 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
-    pub(super) fn new<M, C, N>(module: M, name: N, value_type: Type<'ctx, B>, aliasee: C) -> Self
+    pub(super) fn new<M, T, A, N>(module: M, name: N, value_type: T, aliasee: A) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
-        C: IsConstant<'ctx, B>,
+        T: IrType<'ctx, B>,
+        A: IsConstant<'ctx, B>,
         N: Into<String>,
     {
         let module = module.into();
@@ -383,7 +431,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         Self {
             module,
             name: name.into(),
-            value_type,
+            value_type: value_type.as_type().read_only(),
             aliasee,
             address_space,
             linkage: Linkage::External,
@@ -518,9 +566,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
 }
 
 #[inline]
-fn pointer_address_space<B: ModuleBrand, C: crate::capability::Capability>(
-    ty: Type<'_, B, C>,
-) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> Option<u32> {
     match ty.kind() {
         TypeKind::Pointer { addr_space } => Some(addr_space),
         _ => None,
@@ -543,8 +589,16 @@ pub const fn is_valid_alias_linkage(linkage: Linkage) -> bool {
     )
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalAlias<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for GlobalAlias<'ctx, B, C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        crate::asm_writer::fmt_alias(f, *self)
+        let alias = GlobalAlias::<B>::from_parts_unchecked(
+            self.id,
+            // capability (proof): laundered until Task 5 — the AsmWriter reads
+            // through block and instruction handles that carry no capability
+            // yet; the handle never leaves this formatter.
+            self.module.mutable_at_marked_boundary(),
+            self.ty,
+        );
+        crate::asm_writer::fmt_alias(f, alias)
     }
 }

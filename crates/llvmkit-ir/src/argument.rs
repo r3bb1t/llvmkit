@@ -61,16 +61,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Argument<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Owning function as a runtime-checked [`FunctionValue<Dyn>`].
-    /// Narrow with [`TryFrom`] when a typed handle is needed.
+    /// Owning function as a runtime-checked [`FunctionValue<Dyn>`], at this
+    /// argument's capability. Narrow with [`TryFrom`] when a typed handle is
+    /// needed.
     #[inline]
-    pub fn parent_function(self) -> FunctionValue<'ctx, Dyn, B> {
-        FunctionValue::from_parts_unchecked(
-            self.parent_fn,
-            // capability (proof): laundered until Task 4 — a function's
-            // mutators still demand a `&Module<B, Unverified>` token.
-            self.module.mutable_at_marked_boundary(),
-        )
+    pub fn parent_function(self) -> FunctionValue<'ctx, Dyn, B, C> {
+        FunctionValue::from_parts_unchecked(self.parent_fn, self.module)
     }
 
     /// 0-based parameter index.
