@@ -196,7 +196,7 @@ impl InstructionKindData {
             Self::Call(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
-                for bundle in c.attrs.operand_bundles_slice() {
+                for bundle in c.operand_bundles.iter() {
                     v.extend(bundle.inputs());
                 }
                 v
@@ -230,7 +230,7 @@ impl InstructionKindData {
             Self::Invoke(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
-                for bundle in c.attrs.operand_bundles_slice() {
+                for bundle in c.operand_bundles.iter() {
                     v.extend(bundle.inputs());
                 }
                 v
@@ -238,7 +238,7 @@ impl InstructionKindData {
             Self::CallBr(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
-                for bundle in c.attrs.operand_bundles_slice() {
+                for bundle in c.operand_bundles.iter() {
                     v.extend(bundle.inputs());
                 }
                 v
@@ -1655,7 +1655,7 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot,
             for arg in c.args.iter() {
                 swap(arg);
             }
-            for bundle in c.attrs.operand_bundles_slice() {
+            for bundle in c.operand_bundles.iter() {
                 for input in bundle.input_cells() {
                     swap(input);
                 }
@@ -1727,7 +1727,7 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot,
             for arg in c.args.iter() {
                 swap(arg);
             }
-            for bundle in c.attrs.operand_bundles_slice() {
+            for bundle in c.operand_bundles.iter() {
                 for input in bundle.input_cells() {
                     swap(input);
                 }
@@ -1738,7 +1738,7 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot,
             for arg in c.args.iter() {
                 swap(arg);
             }
-            for bundle in c.attrs.operand_bundles_slice() {
+            for bundle in c.operand_bundles.iter() {
                 for input in bundle.input_cells() {
                     swap(input);
                 }

@@ -2239,9 +2239,8 @@ fn fmt_call(
     // `writeOptimizationInfo` runs straight after the opcode name, so the flags
     // land between `call` and the calling convention — the same place
     // `LLParser::parseCall` eats them.
-    let fmf = c.attrs.fast_math_flags_value();
-    if !fmf.is_empty() {
-        write!(f, " {fmf}")?;
+    if !c.fmf.is_empty() {
+        write!(f, " {}", c.fmf)?;
     }
     // Upstream's `CallInst` arm writes a *leading* space with each optional
     // piece — `if (…) { Out << " "; printCallingConv(…); }`,
@@ -2255,10 +2254,11 @@ fn fmt_call(
         write!(f, " {}", c.calling_conv)?;
     }
     let module = inst.module();
-    if c.attrs.return_attrs().get(AttrIndex::Return).is_some() {
+    let attrs = module.context().call_attributes(c.attrs);
+    if attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
-    fmt_attribute_set(f, c.attrs.return_attrs(), AttrIndex::Return, false, module)?;
+    fmt_attribute_set(f, attrs.return_attrs(), AttrIndex::Return, false, module)?;
     // Only print addrspace(N) if necessary:
     maybe_print_call_addr_space(f, module, c.callee.get())?;
     f.write_str(" ")?;
@@ -2300,7 +2300,7 @@ fn fmt_call(
             fmt_intrinsic_pretty_arg_comment(f, descriptor.pretty_print_arg(idx), av)?;
         }
         write!(f, "{} ", av.ty())?;
-        if let Some(arg_attr) = c.attrs.arg_attrs().get(idx) {
+        if let Some(arg_attr) = attrs.arg_attrs().get(idx) {
             fmt_attribute_set(f, arg_attr, AttrIndex::Param(0), false, module)?;
             if arg_attr.get(AttrIndex::Param(0)).is_some() {
                 f.write_str(" ")?;
@@ -2328,17 +2328,11 @@ fn fmt_call(
         }
     }
     f.write_str(")")?;
-    fmt_attribute_set(
-        f,
-        c.attrs.function_attrs(),
-        AttrIndex::Function,
-        true,
-        module,
-    )?;
-    for group in c.attrs.function_attr_groups_slice() {
+    fmt_attribute_set(f, attrs.function_attrs(), AttrIndex::Function, true, module)?;
+    for group in attrs.function_attr_groups_slice() {
         write!(f, " #{group}")?;
     }
-    fmt_operand_bundles(f, c.attrs.operand_bundles_slice(), module.core_ref(), slots)
+    fmt_operand_bundles(f, &c.operand_bundles, module.core_ref(), slots)
 }
 
 fn fmt_intrinsic_pretty_arg_comment<B: ModuleBrand>(
@@ -2717,10 +2711,11 @@ fn fmt_invoke(
         write!(f, " {}", d.calling_conv)?;
     }
     let module = inst.module();
-    if d.attrs.return_attrs().get(AttrIndex::Return).is_some() {
+    let attrs = module.context().call_attributes(d.attrs);
+    if attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
-    fmt_attribute_set(f, d.attrs.return_attrs(), AttrIndex::Return, false, module)?;
+    fmt_attribute_set(f, attrs.return_attrs(), AttrIndex::Return, false, module)?;
     // Only print addrspace(N) if necessary:
     maybe_print_call_addr_space(f, module, d.callee.get())?;
     f.write_str(" ")?;
@@ -2756,7 +2751,7 @@ fn fmt_invoke(
         let ad = module.context().value_data(aid);
         let av = Value::from_parts(aid, module, ad.ty);
         write!(f, "{} ", av.ty())?;
-        if let Some(arg_attr) = d.attrs.arg_attrs().get(idx) {
+        if let Some(arg_attr) = attrs.arg_attrs().get(idx) {
             fmt_attribute_set(f, arg_attr, AttrIndex::Param(0), false, module)?;
             if arg_attr.get(AttrIndex::Param(0)).is_some() {
                 f.write_str(" ")?;
@@ -2765,17 +2760,11 @@ fn fmt_invoke(
         fmt_operand_ref(f, av, Some(slots))?;
     }
     f.write_str(")")?;
-    fmt_attribute_set(
-        f,
-        d.attrs.function_attrs(),
-        AttrIndex::Function,
-        true,
-        module,
-    )?;
-    for group in d.attrs.function_attr_groups_slice() {
+    fmt_attribute_set(f, attrs.function_attrs(), AttrIndex::Function, true, module)?;
+    for group in attrs.function_attr_groups_slice() {
         write!(f, " #{group}")?;
     }
-    fmt_operand_bundles(f, d.attrs.operand_bundles_slice(), module.core_ref(), slots)?;
+    fmt_operand_bundles(f, &d.operand_bundles, module.core_ref(), slots)?;
     f.write_str("\n          to ")?;
     let nd = module.context().value_data(d.normal_dest.get());
     let nbb = Value::from_parts(d.normal_dest.get(), module, nd.ty);
@@ -2800,8 +2789,9 @@ fn fmt_callbr(
         write!(f, "{} ", d.calling_conv)?;
     }
     let module = inst.module();
-    fmt_attribute_set(f, d.attrs.return_attrs(), AttrIndex::Return, false, module)?;
-    if d.attrs.return_attrs().get(AttrIndex::Return).is_some() {
+    let attrs = module.context().call_attributes(d.attrs);
+    fmt_attribute_set(f, attrs.return_attrs(), AttrIndex::Return, false, module)?;
+    if attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
     // LLVM prints the callee function type for varargs call sites so the
@@ -2836,7 +2826,7 @@ fn fmt_callbr(
         let ad = module.context().value_data(aid);
         let av = Value::from_parts(aid, module, ad.ty);
         write!(f, "{} ", av.ty())?;
-        if let Some(arg_attr) = d.attrs.arg_attrs().get(idx) {
+        if let Some(arg_attr) = attrs.arg_attrs().get(idx) {
             fmt_attribute_set(f, arg_attr, AttrIndex::Param(0), false, module)?;
             if arg_attr.get(AttrIndex::Param(0)).is_some() {
                 f.write_str(" ")?;
@@ -2845,17 +2835,11 @@ fn fmt_callbr(
         fmt_operand_ref(f, av, Some(slots))?;
     }
     f.write_str(")")?;
-    fmt_attribute_set(
-        f,
-        d.attrs.function_attrs(),
-        AttrIndex::Function,
-        true,
-        module,
-    )?;
-    for group in d.attrs.function_attr_groups_slice() {
+    fmt_attribute_set(f, attrs.function_attrs(), AttrIndex::Function, true, module)?;
+    for group in attrs.function_attr_groups_slice() {
         write!(f, " #{group}")?;
     }
-    fmt_operand_bundles(f, d.attrs.operand_bundles_slice(), module.core_ref(), slots)?;
+    fmt_operand_bundles(f, &d.operand_bundles, module.core_ref(), slots)?;
     f.write_str("\n          to ")?;
     let dd = module.context().value_data(d.default_dest.get());
     let dbb = Value::from_parts(d.default_dest.get(), module, dd.ty);

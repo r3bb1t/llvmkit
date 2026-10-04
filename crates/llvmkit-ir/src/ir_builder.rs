@@ -83,9 +83,9 @@ use super::instr_types::{
     ZextFlags,
 };
 use super::instr_types::{
-    BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, ExactFlags,
-    LoadInstData, OperandBundleDef, OverflowFlags, ReturnOpData, ShuffleMaskElem, StoreInstData,
-    UnaryOpcode,
+    BinaryOpData, BinaryOpcode, CallAttributeData, CallSiteParts, CastOpData, CastOpcode,
+    ExactFlags, LoadInstData, OperandBundleData, OperandBundleDef, OverflowFlags, ReturnOpData,
+    ShuffleMaskElem, StoreInstData, UnaryOpcode,
 };
 use super::instruction::{
     Instruction, InstructionKind, InstructionKindData, InstructionView, PlacedInstruction,
@@ -380,26 +380,41 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallSiteConfig<'ctx, B> {
         &self.operand_bundles
     }
 
-    /// Consume the config into its name, calling convention and stored
-    /// attributes, admitting every operand-bundle input against `owner` — the
-    /// module of the call site being built — through the checked door. Each
-    /// consumer calls it before the call site is created, so a refused input
-    /// leaves the module unchanged.
-    pub(super) fn into_parts(
-        self,
-        owner: ModuleId,
-    ) -> IrResult<(String, CallingConv, CallAttributeData)> {
-        let bundles = self
-            .operand_bundles
-            .into_iter()
-            .map(|bundle| bundle.into_stored(owner))
-            .collect::<IrResult<Box<[_]>>>()?;
+    /// Consume the config into its name and the call site's stored parts,
+    /// admitting every operand-bundle input against `module` — the module of
+    /// the call site being built — through the checked door. Each consumer
+    /// calls it before the call site is created, so a refused input leaves the
+    /// module unchanged: the bundles are admitted before the attribute list is
+    /// interned.
+    pub(super) fn into_parts(self, module: &ModuleCore) -> IrResult<(String, CallSiteParts)> {
+        let operand_bundles = store_operand_bundles(self.operand_bundles, module.id())?;
         Ok((
             self.name,
-            self.calling_conv,
-            self.attrs.with_operand_bundles(bundles),
+            CallSiteParts {
+                calling_conv: self.calling_conv,
+                attrs: module.context().intern_call_attributes(self.attrs),
+                operand_bundles,
+            },
         ))
     }
+}
+
+/// Crate-internal: admit every input of `bundles` into `owner` through the
+/// checked door ([`OperandBundleDef::into_stored`]), in order, refusing the
+/// first input of another module with [`IrError::ForeignValueId`]. The one
+/// route from a caller's bundles to a call site's stored ones.
+pub(crate) fn store_operand_bundles<'ctx, B, Bundles>(
+    bundles: Bundles,
+    owner: ModuleId,
+) -> IrResult<Box<[OperandBundleData]>>
+where
+    B: ModuleBrand + 'ctx,
+    Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+{
+    bundles
+        .into_iter()
+        .map(|bundle| bundle.into_stored(owner))
+        .collect()
 }
 
 /// Builder for a chain of [`Instruction`]s appended to a
@@ -5529,8 +5544,9 @@ where
             f.slot_trusting_same_module(),
             f.signature().slot_trusting_same_module(),
             arg_ids,
-            f.calling_conv(),
             TailCallKind::None,
+            FastMathFlags::empty(),
+            CallSiteParts::plain(self.module, f.calling_conv()),
         );
         let inst = self.append_instruction(
             f.return_type().slot_trusting_same_module(),
@@ -5562,14 +5578,14 @@ where
             .into_typed_callee(ModuleRef::new(self.module))?
             .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module), CrateOnly(()))?.0;
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
-        let payload = CallInstData::new_with_attrs(
+        let (name, parts) = config.into_parts(self.module)?;
+        let payload = CallInstData::new(
             f.slot_trusting_same_module(),
             f.signature().slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             TailCallKind::None,
-            attrs,
+            FastMathFlags::empty(),
+            parts,
         );
         let inst = self.append_instruction(
             f.return_type().slot_trusting_same_module(),
@@ -5648,8 +5664,9 @@ where
             f.slot_trusting_same_module(),
             f.signature().slot_trusting_same_module(),
             arg_ids,
-            f.calling_conv(),
             TailCallKind::None,
+            FastMathFlags::empty(),
+            CallSiteParts::plain(self.module, f.calling_conv()),
         );
         let inst = self.append_instruction(
             f.return_type().slot_trusting_same_module(),
@@ -5828,7 +5845,11 @@ where
     /// built. It is a parameter rather than a [`CallSiteConfig`] field because
     /// `invoke` and `callbr` share that config and LLVM has no tail form for
     /// either, so a config field would be an option those builders accept and
-    /// ignore.
+    /// ignore. `fmf` is `CallInst::setFastMathFlags`, a parameter for the same
+    /// reason — an `invoke` or `callbr` is never an `FPMathOperator` — and
+    /// refused with [`IrError::InvalidOperation`] when non-empty on a call
+    /// whose return type is not floating-point, where upstream asserts. The
+    /// refusal carries `LLParser::parseCall`'s sentence for the same fault.
     ///
     /// `fn_ty` is the call site's function type; a
     /// [`CallSiteConfig::call_site_type`] override still wins over it, per
@@ -5853,6 +5874,7 @@ where
         callee: Value<'ctx, B>,
         args: I,
         tail_call_kind: TailCallKind,
+        fmf: FastMathFlags,
         config: CallSiteConfig<'ctx, B>,
     ) -> IrResult<CallInstId<R2, B>>
     where
@@ -5879,17 +5901,30 @@ where
             arg_ids.push(v.slot_trusting_same_module());
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
+        // `CallInst::setFastMathFlags` asserts `isa<FPMathOperator>(this)`,
+        // whose `Call` arm is `isSupportedFloatingPointType(getType())`.
+        // `LLParser::parseCall` asks the same question before it sets the
+        // flags and refuses with the sentence below, which this refusal
+        // carries verbatim so the parser and the builder cannot disagree.
+        if !fmf.is_empty()
+            && !crate::operator::is_supported_floating_point_type(fn_ty.return_type())
+        {
+            return Err(IrError::InvalidOperation {
+                message: "fast-math-flags specified for call without floating-point scalar or \
+                          vector return type",
+            });
+        }
         // `CallInst::Create` then `setTailCallKind` / `setCallingConv` /
-        // `setAttributes`: llvmkit's payload constructor takes all four at
-        // once, so the four upstream statements land as one.
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
-        let payload = CallInstData::new_with_attrs(
+        // `setFastMathFlags` / `setAttributes`: llvmkit's payload constructor
+        // takes all five at once, so the five upstream statements land as one.
+        let (name, parts) = config.into_parts(self.module)?;
+        let payload = CallInstData::new(
             callee,
             fn_ty.slot_trusting_same_module(),
             arg_ids.into_boxed_slice(),
-            calling_conv,
             tail_call_kind,
-            attrs,
+            fmf,
+            parts,
         );
         let inst = self.append_instruction(return_ty, InstructionKindData::Call(payload), name);
         Ok(CallInstId::from_raw(
@@ -5938,8 +5973,9 @@ where
             callee_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
             arg_ids,
-            crate::CallingConv::C,
             TailCallKind::None,
+            FastMathFlags::empty(),
+            CallSiteParts::plain(self.module, crate::CallingConv::C),
         );
         let inst = self.append_instruction(
             fn_ty.return_type().slot_trusting_same_module(),
@@ -5964,8 +6000,8 @@ where
     ///
     /// Forwards to [`call_erased`](Self::call_erased) with a default
     /// [`CallSiteConfig`]: no calling convention, no tail-call kind, no
-    /// attributes and no operand bundles. Reach for `call_erased` directly when
-    /// the call site carries any of those.
+    /// fast-math flags, no attributes and no operand bundles. Reach for
+    /// `call_erased` directly when the call site carries any of those.
     pub fn indirect_call_dyn<R2, I, V, Callee, Name>(
         &self,
         fn_ty: FunctionType<'ctx, B>,
@@ -5986,6 +6022,7 @@ where
             IsValue::as_erased(callee),
             args,
             TailCallKind::None,
+            FastMathFlags::empty(),
             CallSiteConfig::new(name.as_ref()),
         )
     }
@@ -6004,9 +6041,10 @@ where
     /// matching what LLVM emits for an inline-asm call.
     ///
     /// Forwards to [`call_erased`](Self::call_erased) with a default
-    /// [`CallSiteConfig`]: no tail-call kind, no attributes and no operand
-    /// bundles, and the `C` convention `CallSiteConfig::new` seeds. Reach for
-    /// `call_erased` directly when the call site carries any of those.
+    /// [`CallSiteConfig`]: no tail-call kind, no fast-math flags, no attributes
+    /// and no operand bundles, and the `C` convention `CallSiteConfig::new`
+    /// seeds. Reach for `call_erased` directly when the call site carries any
+    /// of those.
     pub fn inline_asm_call<R2, I, V, Name>(
         &self,
         asm: InlineAsm<'ctx, B>,
@@ -6025,6 +6063,7 @@ where
             asm.as_erased(),
             args,
             TailCallKind::None,
+            FastMathFlags::empty(),
             CallSiteConfig::new(name.as_ref()),
         )
     }
@@ -8734,15 +8773,14 @@ where
         let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let f = callee.as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module), CrateOnly(()))?.0;
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
-        let payload = InvokeInstData::new_with_attrs(
+        let (name, parts) = config.into_parts(self.module)?;
+        let payload = InvokeInstData::new(
             f.slot_trusting_same_module(),
             f.signature().slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             normal_dest.slot_trusting_same_module(),
             unwind_dest.slot_trusting_same_module(),
-            attrs,
+            parts,
         );
         let ret_ty = f.return_type().slot_trusting_same_module();
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -8930,7 +8968,7 @@ where
         let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let callee_v = callee.as_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config)?;
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
+        let (name, parts) = config.into_parts(self.module)?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -8939,14 +8977,13 @@ where
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new(
             callee_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             normal_dest.slot_trusting_same_module(),
             unwind_dest.slot_trusting_same_module(),
-            attrs,
+            parts,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -8998,7 +9035,7 @@ where
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
         let callee_v = IsValue::as_erased(callee);
         let ret_ty = fn_ty.return_type().slot_trusting_same_module();
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
+        let (name, parts) = config.into_parts(self.module)?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -9007,14 +9044,13 @@ where
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new(
             callee_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             normal_dest.slot_trusting_same_module(),
             unwind_dest.slot_trusting_same_module(),
-            attrs,
+            parts,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -9098,15 +9134,14 @@ where
             arg_ids.push(v.slot_trusting_same_module());
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
-        let payload = InvokeInstData::new_with_attrs(
+        let (name, parts) = config.into_parts(self.module)?;
+        let payload = InvokeInstData::new(
             asm_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             normal_dest.slot_trusting_same_module(),
             unwind_dest.slot_trusting_same_module(),
-            attrs,
+            parts,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -9182,7 +9217,7 @@ where
         let default_dest = self.plain_edge_target(default_dest)?;
         let callee_v = callee.as_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config)?;
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
+        let (name, parts) = config.into_parts(self.module)?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -9198,14 +9233,13 @@ where
                     .map(|l| l.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
-        let payload = CallBrInstData::new_with_attrs(
+        let payload = CallBrInstData::new(
             callee_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             default_dest.slot_trusting_same_module(),
             indirect_ids,
-            attrs,
+            parts,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -9258,7 +9292,7 @@ where
         let default_dest = self.plain_edge_target(default_dest)?;
         let callee_v = IsValue::as_erased(callee);
         let ret_ty = fn_ty.return_type().slot_trusting_same_module();
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
+        let (name, parts) = config.into_parts(self.module)?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -9274,14 +9308,13 @@ where
                     .map(|l| l.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
-        let payload = CallBrInstData::new_with_attrs(
+        let payload = CallBrInstData::new(
             callee_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             default_dest.slot_trusting_same_module(),
             indirect_ids,
-            attrs,
+            parts,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -9371,15 +9404,14 @@ where
                     .map(|l| l.slot_trusting_same_module())
             })
             .collect::<IrResult<_>>()?;
-        let (name, calling_conv, attrs) = config.into_parts(self.module.id())?;
-        let payload = CallBrInstData::new_with_attrs(
+        let (name, parts) = config.into_parts(self.module)?;
+        let payload = CallBrInstData::new(
             asm_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             default_dest.slot_trusting_same_module(),
             indirect_ids,
-            attrs,
+            parts,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -10560,20 +10592,26 @@ where
         let fn_ty = self.fn_ty.slot_in(module_id)?;
         // Boundary: every operand-bundle input, admitted before anything is
         // read or created.
-        let bundles = core::mem::take(&mut self.operand_bundles)
-            .into_iter()
-            .map(|bundle| bundle.into_stored(module_id))
-            .collect::<IrResult<Box<[_]>>>()?;
+        let operand_bundles =
+            store_operand_bundles(core::mem::take(&mut self.operand_bundles), module_id)?;
         self.validate_intrinsic_descriptor_args()?;
         self.parent
             .validate_call_site_args(self.fn_ty, &self.args)?;
-        let payload = CallInstData::new_with_attrs(
+        let payload = CallInstData::new(
             callee,
             fn_ty,
             self.args.into_boxed_slice(),
-            self.calling_conv,
             self.tail_kind,
-            self.attrs.with_operand_bundles(bundles),
+            FastMathFlags::empty(),
+            CallSiteParts {
+                calling_conv: self.calling_conv,
+                attrs: self
+                    .parent
+                    .module
+                    .context()
+                    .intern_call_attributes(self.attrs),
+                operand_bundles,
+            },
         );
         Ok(self.parent.append_instruction(
             // Internal: read from the callee or the override, both admitted above.
@@ -10751,20 +10789,23 @@ where
             .0;
         // Boundary: every operand-bundle input, admitted before the call is
         // created.
-        let module_id = self.parent.module.id();
-        let bundles = self
-            .operand_bundles
-            .into_iter()
-            .map(|bundle| bundle.into_stored(module_id))
-            .collect::<IrResult<Box<[_]>>>()?;
+        let operand_bundles = store_operand_bundles(self.operand_bundles, self.parent.module.id())?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
-        let payload = CallInstData::new_with_attrs(
+        let payload = CallInstData::new(
             f.slot_trusting_same_module(),
             f.signature().slot_trusting_same_module(),
             arg_ids,
-            calling_conv,
             self.tail_kind,
-            self.attrs.with_operand_bundles(bundles),
+            FastMathFlags::empty(),
+            CallSiteParts {
+                calling_conv,
+                attrs: self
+                    .parent
+                    .module
+                    .context()
+                    .intern_call_attributes(self.attrs),
+                operand_bundles,
+            },
         );
         let inst = self.parent.append_instruction(
             f.return_type().slot_trusting_same_module(),

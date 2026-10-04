@@ -14355,8 +14355,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             arg_attrs.into_boxed_slice(),
             function_attrs,
         )
-        .function_attr_groups(function_attr_groups.into_boxed_slice())
-        .fast_math_flags(fmf);
+        .function_attr_groups(function_attr_groups.into_boxed_slice());
         // `resolveFunctionType`: an explicit function type is used as written;
         // anything else is a bare *return* type and the signature is built
         // from the arguments — which is why the walk below only bites on the
@@ -14432,14 +14431,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `Value *Callee` and `parseCall` has no direct/indirect fork. The
         // three `ParsedCallee` variants differ only in how the operand is
         // erased, which is `convertValIDToValue`'s switch, not a second
-        // instruction shape. `setTailCallKind`, `setCallingConv` and
-        // `setAttributes` ride along.
+        // instruction shape. `setTailCallKind`, `setCallingConv`,
+        // `setFastMathFlags` and `setAttributes` ride along.
         let call = b
             .call_erased::<llvmkit_ir::Dyn, _, _>(
                 parsed_fn_ty,
                 callee.as_erased(),
                 args,
                 tail_kind,
+                fmf,
                 llvmkit_ir::CallSiteConfig::new(result_name.as_str())
                     .calling_conv(calling_conv)
                     .attrs(call_attrs)

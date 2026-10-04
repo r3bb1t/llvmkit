@@ -900,14 +900,19 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     /// half (`hasFnAttrImpl(Attribute::NoBuiltin)`) reads.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+        call_site_has_fn_attr(
+            self.module,
+            payload.callee.get(),
+            self.module.call_attributes(payload.attrs),
+            kind,
+        )
     }
     /// The call's operand bundles, in order. Mirrors reading
     /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
     pub fn operand_bundles(
         self,
     ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
-        OperandBundleUse::all(&self.payload().attrs, self.module)
+        OperandBundleUse::all(&self.payload().operand_bundles, self.module)
     }
     /// The call's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; a call carrying more than one bundle of
@@ -917,7 +922,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         self,
         tag: &OperandBundleTag,
     ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
-        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+        OperandBundleUse::find(&self.payload().operand_bundles, self.module, tag)
     }
     /// Return value, or `None` for a void-returning callee. Available
     /// on every `R`; the typed `return_int_value` /
@@ -3544,7 +3549,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn operand_bundles(
         self,
     ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
-        OperandBundleUse::all(&self.payload().attrs, self.module)
+        OperandBundleUse::all(&self.payload().operand_bundles, self.module)
     }
     /// The invoke's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; more than one bundle of the tag is
@@ -3554,14 +3559,19 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         self,
         tag: &OperandBundleTag,
     ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
-        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+        OperandBundleUse::find(&self.payload().operand_bundles, self.module, tag)
     }
     /// Whether this invoke, or the function it calls, has the function
     /// attribute `kind`. Mirrors `CallBase::hasFnAttr`, as
     /// [`CallInst::has_fn_attr`] does.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+        call_site_has_fn_attr(
+            self.module,
+            payload.callee.get(),
+            self.module.call_attributes(payload.attrs),
+            kind,
+        )
     }
     pub fn normal_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().normal_dest.get())
@@ -3622,7 +3632,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     pub fn operand_bundles(
         self,
     ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
-        OperandBundleUse::all(&self.payload().attrs, self.module)
+        OperandBundleUse::all(&self.payload().operand_bundles, self.module)
     }
     /// The callbr's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; more than one bundle of the tag is
@@ -3632,14 +3642,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
         self,
         tag: &OperandBundleTag,
     ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
-        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+        OperandBundleUse::find(&self.payload().operand_bundles, self.module, tag)
     }
     /// Whether this callbr, or the function it calls, has the function
     /// attribute `kind`. Mirrors `CallBase::hasFnAttr`, as
     /// [`CallInst::has_fn_attr`] does.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+        call_site_has_fn_attr(
+            self.module,
+            payload.callee.get(),
+            self.module.call_attributes(payload.attrs),
+            kind,
+        )
     }
     pub fn default_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_dest.get())

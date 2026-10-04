@@ -217,7 +217,8 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
             }
             // Hoisting may change which values the operands hold, so the
             // attributes that make particular operand values UB matter again.
-            options.ignores_ub_implying_attrs() || !has_ub_implying_attrs(&data.attrs)
+            options.ignores_ub_implying_attrs()
+                || !has_ub_implying_attrs(module_ref(anchor).call_attributes(data.attrs))
         }
         // Upstream's `default: return true`.
         Opcode::Fneg
@@ -913,7 +914,7 @@ where
         InstructionKindData::AtomicCmpXchg(data) => handle(data.ptr.get()),
         InstructionKindData::AtomicRmw(data) => handle(data.ptr.get()),
         InstructionKindData::Call(_) | InstructionKindData::Invoke(_) => {
-            let Some(call) = call_parts(kind) else {
+            let Some(call) = call_parts(instruction, kind) else {
                 return false;
             };
             // An indirect call's callee operand must be well defined.
@@ -981,7 +982,7 @@ fn may_throw<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Call(data) => !call_site_has_fn_attr(
             module_ref(anchor),
             data.callee.get(),
-            &data.attrs,
+            module_ref(anchor).call_attributes(data.attrs),
             AttrKind::NoUnwind,
         ),
         // `unwindsToCaller()` is "no unwind destination".
@@ -1056,7 +1057,7 @@ fn will_return<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Call(_)
         | InstructionKindData::Invoke(_)
         | InstructionKindData::CallBr(_) => {
-            let Some(call) = call_parts(kind) else {
+            let Some(call) = call_parts(anchor, kind) else {
                 return true;
             };
             call_site_has_fn_attr(
@@ -1092,7 +1093,7 @@ fn may_read_or_write_memory<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Call(_)
         | InstructionKindData::Invoke(_)
         | InstructionKindData::CallBr(_) => {
-            let Some(call) = call_parts(kind) else {
+            let Some(call) = call_parts(anchor, kind) else {
                 return true;
             };
             let effects = call_site_memory_effects(anchor, call.callee.get(), call.attrs);
@@ -1121,7 +1122,7 @@ fn may_write_to_memory<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Call(_)
         | InstructionKindData::Invoke(_)
         | InstructionKindData::CallBr(_) => {
-            let Some(call) = call_parts(kind) else {
+            let Some(call) = call_parts(anchor, kind) else {
                 return true;
             };
             !call_site_memory_effects(anchor, call.callee.get(), call.attrs).only_reads_memory()
@@ -1278,23 +1279,28 @@ struct CallParts<'a> {
 }
 
 /// Ports the `cast<CallBase>` that upstream reaches all three call forms
-/// through.
-fn call_parts(kind: &InstructionKindData) -> Option<CallParts<'_>> {
+/// through. `anchor` is any value of `kind`'s module, whose context holds the
+/// interned attribute list.
+fn call_parts<'a, 'ctx: 'a, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    kind: &'a InstructionKindData,
+) -> Option<CallParts<'a>> {
+    let module = module_ref(anchor);
     match kind {
         InstructionKindData::Call(data) => Some(CallParts {
             callee: &data.callee,
             args: &data.args,
-            attrs: &data.attrs,
+            attrs: module.call_attributes(data.attrs),
         }),
         InstructionKindData::Invoke(data) => Some(CallParts {
             callee: &data.callee,
             args: &data.args,
-            attrs: &data.attrs,
+            attrs: module.call_attributes(data.attrs),
         }),
         InstructionKindData::CallBr(data) => Some(CallParts {
             callee: &data.callee,
             args: &data.args,
-            attrs: &data.attrs,
+            attrs: module.call_attributes(data.attrs),
         }),
         _ => None,
     }
@@ -1436,7 +1442,7 @@ fn called_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
     instruction: Value<'ctx, B>,
 ) -> Option<IntrinsicId> {
     let kind = instruction_kind(instruction)?;
-    let call = call_parts(kind)?;
+    let call = call_parts(instruction, kind)?;
     let callee = value_from_slot(instruction, call.callee.get());
     Some(descriptor_for_callee(callee)?.id())
 }

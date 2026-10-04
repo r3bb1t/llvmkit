@@ -1435,12 +1435,15 @@ fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx>(
     call: Value<'ctx, B>,
 ) -> Option<&'ctx [AttributeStored]> {
     let attrs = match instruction_kind(call)? {
-        InstructionKindData::Call(data) => &data.attrs,
-        InstructionKindData::Invoke(data) => &data.attrs,
-        InstructionKindData::CallBr(data) => &data.attrs,
+        InstructionKindData::Call(data) => data.attrs,
+        InstructionKindData::Invoke(data) => data.attrs,
+        InstructionKindData::CallBr(data) => data.attrs,
         _ => return None,
     };
-    attrs.return_attrs().get(AttrIndex::Return)
+    call.module
+        .call_attributes(attrs)
+        .return_attrs()
+        .get(AttrIndex::Return)
 }
 
 /// The base name of the intrinsic `call` invokes directly.

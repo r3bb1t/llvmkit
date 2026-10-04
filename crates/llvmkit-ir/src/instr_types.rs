@@ -2272,18 +2272,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
         })
     }
 
-    /// Every bundle of a call site's stored attributes, in order.
+    /// Every bundle a call site stores, in order.
     pub(crate) fn all(
-        attrs: &'ctx CallAttributeData,
+        bundles: &'ctx [OperandBundleData],
         module: ModuleRef<'ctx, B>,
     ) -> impl ExactSizeIterator<Item = Self> + 'ctx {
-        attrs
-            .operand_bundles_slice()
-            .iter()
-            .map(move |data| Self { data, module })
+        bundles.iter().map(move |data| Self { data, module })
     }
 
-    /// The bundle tagged `tag` among a call site's stored attributes. Ports
+    /// The bundle tagged `tag` among the bundles a call site stores. Ports
     /// `CallBase::getOperandBundle`, whose precondition — at most one bundle
     /// of the tag, `assert(countOperandBundlesOfType(ID) < 2 && "Precondition
     /// violated!")` — is refused here with
@@ -2293,11 +2290,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> OperandBundleUse<'ctx, B> {
     /// tag is valid IR, and choosing one of them for the caller would answer a
     /// question it did not ask.
     pub(crate) fn find(
-        attrs: &'ctx CallAttributeData,
+        bundles: &'ctx [OperandBundleData],
         module: ModuleRef<'ctx, B>,
         tag: &OperandBundleTag,
     ) -> IrResult<Option<Self>> {
-        let mut matching = Self::all(attrs, module).filter(|bundle| bundle.data.tag == *tag);
+        let mut matching = Self::all(bundles, module).filter(|bundle| bundle.data.tag == *tag);
         let first = matching.next();
         if matching.next().is_some() {
             return Err(IrError::DuplicateOperandBundle { tag: tag.clone() });
@@ -2337,14 +2334,22 @@ impl core::hash::Hash for OperandBundleData {
     }
 }
 
+/// A call site's attribute list: its return, argument and function
+/// attributes, and the `#N` groups it names. The `AttributeList` a `CallBase`
+/// holds (`IR/InstrTypes.h`), and nothing else — a call's operand bundles are
+/// operands and its fast-math flags are `SubclassOptionalData`, so both live
+/// on the call site beside this list, as they do upstream, where
+/// `CallBase::setAttributes` replacing the list leaves them alone.
+///
+/// A call site stores its list interned in the module, as
+/// `AttributeList::get` uniques one in the `LLVMContext`: two call sites with
+/// equal lists share one copy, and the call site holds the slot naming it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallAttributeData {
     return_attrs: AttributeStorage,
     arg_attrs: Box<[AttributeStorage]>,
     function_attrs: AttributeStorage,
     function_attr_groups: Box<[u32]>,
-    operand_bundles: Box<[OperandBundleData]>,
-    fmf: FastMathFlags,
 }
 
 impl CallAttributeData {
@@ -2358,34 +2363,12 @@ impl CallAttributeData {
             arg_attrs,
             function_attrs,
             function_attr_groups: Box::new([]),
-            operand_bundles: Box::new([]),
-            fmf: FastMathFlags::empty(),
         }
     }
 
     #[must_use]
     pub fn function_attr_groups(mut self, groups: Box<[u32]>) -> Self {
         self.function_attr_groups = groups;
-        self
-    }
-
-    /// Crate-internal: attach bundles already admitted into the receiving
-    /// module ([`OperandBundleDef::into_stored`]). A caller hands bundles to
-    /// the call-site builder, beside the arguments, as upstream's
-    /// `CreateCall(…, Args, OpBundles, …)` takes them apart from the
-    /// `AttributeList`.
-    #[must_use]
-    pub(crate) fn with_operand_bundles(mut self, bundles: Box<[OperandBundleData]>) -> Self {
-        self.operand_bundles = bundles;
-        self
-    }
-
-    /// The call's fast-math flags. Mirrors `CallInst::setFastMathFlags`, which
-    /// upstream permits only on a call returning a floating-point scalar or
-    /// vector — `LLParser::parseCall` rejects every other case outright.
-    #[must_use]
-    pub fn fast_math_flags(mut self, fmf: FastMathFlags) -> Self {
-        self.fmf = fmf;
         self
     }
 
@@ -2403,14 +2386,6 @@ impl CallAttributeData {
 
     pub fn function_attr_groups_slice(&self) -> &[u32] {
         &self.function_attr_groups
-    }
-
-    pub(crate) fn operand_bundles_slice(&self) -> &[OperandBundleData] {
-        &self.operand_bundles
-    }
-
-    pub fn fast_math_flags_value(&self) -> FastMathFlags {
-        self.fmf
     }
 
     /// `Attrs.hasFnAttr(Kind)` — whether the call site's own attribute list
@@ -2476,6 +2451,53 @@ impl Default for CallAttributeData {
     }
 }
 
+/// Crate-internal: where a call site's [`CallAttributeData`] is interned in
+/// its module. The `AttributeList` a `CallBase` holds is a handle to a list
+/// uniqued in the `LLVMContext`, never a list of its own, so two call sites
+/// with equal lists hold equal slots — and slot equality is list equality,
+/// which is what the payloads' `PartialEq` compares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct CallAttributesSlot(usize);
+
+impl CallAttributesSlot {
+    #[inline]
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+
+    #[inline]
+    pub(crate) fn arena_index(self) -> usize {
+        self.0
+    }
+}
+
+/// Crate-internal: what every call site stores beside its callee, function
+/// type and arguments — `CallBase`'s calling convention, its interned
+/// attribute list and its operand bundles. One value so the three payload
+/// constructors take it whole, and so a builder that has admitted a
+/// [`CallSiteConfig`](crate::CallSiteConfig) hands all three on together.
+#[derive(Debug)]
+pub(crate) struct CallSiteParts {
+    pub(crate) calling_conv: crate::CallingConv,
+    pub(crate) attrs: CallAttributesSlot,
+    pub(crate) operand_bundles: Box<[OperandBundleData]>,
+}
+
+impl CallSiteParts {
+    /// The parts of a call site built with no configuration: `calling_conv`,
+    /// an empty attribute list and no bundles — what `CallInst::Create`
+    /// leaves before any `setCallingConv` / `setAttributes`.
+    pub(crate) fn plain(module: &ModuleCore, calling_conv: crate::CallingConv) -> Self {
+        Self {
+            calling_conv,
+            attrs: module
+                .context()
+                .intern_call_attributes(CallAttributeData::default()),
+            operand_bundles: Box::new([]),
+        }
+    }
+}
+
 /// Storage payload for `call`. Mirrors `CallInst`
 /// (`Instructions.h`).
 #[derive(Debug)]
@@ -2485,7 +2507,12 @@ pub(crate) struct CallInstData {
     pub(crate) args: Box<[Cell<ValueSlot>]>,
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) tail_kind: TailCallKind,
-    pub(crate) attrs: CallAttributeData,
+    /// The call's fast-math flags — upstream's `SubclassOptionalData` on a
+    /// call that is an `FPMathOperator`, kept on the instruction rather than
+    /// in its attribute list.
+    pub(crate) fmf: FastMathFlags,
+    pub(crate) attrs: CallAttributesSlot,
+    pub(crate) operand_bundles: Box<[OperandBundleData]>,
 }
 
 impl CallInstData {
@@ -2493,40 +2520,27 @@ impl CallInstData {
         callee: ValueSlot,
         fn_ty: crate::r#type::TypeSlot,
         args: Args,
-        calling_conv: crate::CallingConv,
         tail_kind: TailCallKind,
+        fmf: FastMathFlags,
+        parts: CallSiteParts,
     ) -> Self
     where
         Args: IntoIterator<Item = ValueSlot>,
     {
-        Self::new_with_attrs(
-            callee,
-            fn_ty,
-            args,
+        let CallSiteParts {
             calling_conv,
-            tail_kind,
-            CallAttributeData::default(),
-        )
-    }
-
-    pub(crate) fn new_with_attrs<Args>(
-        callee: ValueSlot,
-        fn_ty: crate::r#type::TypeSlot,
-        args: Args,
-        calling_conv: crate::CallingConv,
-        tail_kind: TailCallKind,
-        attrs: CallAttributeData,
-    ) -> Self
-    where
-        Args: IntoIterator<Item = ValueSlot>,
-    {
+            attrs,
+            operand_bundles,
+        } = parts;
         Self {
             callee: Cell::new(callee),
             fn_ty,
             args: args.into_iter().map(Cell::new).collect(),
             calling_conv,
             tail_kind,
+            fmf,
             attrs,
+            operand_bundles,
         }
     }
 }
@@ -2538,7 +2552,9 @@ impl Clone for CallInstData {
             args: self.args.iter().map(|c| Cell::new(c.get())).collect(),
             calling_conv: self.calling_conv,
             tail_kind: self.tail_kind,
-            attrs: self.attrs.clone(),
+            fmf: self.fmf,
+            attrs: self.attrs,
+            operand_bundles: self.operand_bundles.clone(),
         }
     }
 }
@@ -2548,7 +2564,9 @@ impl PartialEq for CallInstData {
             || self.fn_ty != other.fn_ty
             || self.calling_conv != other.calling_conv
             || self.tail_kind != other.tail_kind
+            || self.fmf != other.fmf
             || self.attrs != other.attrs
+            || self.operand_bundles != other.operand_bundles
             || self.args.len() != other.args.len()
         {
             return false;
@@ -2569,7 +2587,9 @@ impl core::hash::Hash for CallInstData {
         }
         self.calling_conv.hash(h);
         self.tail_kind.hash(h);
+        self.fmf.bits().hash(h);
         self.attrs.hash(h);
+        self.operand_bundles.hash(h);
     }
 }
 
@@ -3237,22 +3257,27 @@ pub(crate) struct InvokeInstData {
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) normal_dest: Cell<ValueSlot>,
     pub(crate) unwind_dest: Cell<ValueSlot>,
-    pub(crate) attrs: CallAttributeData,
+    pub(crate) attrs: CallAttributesSlot,
+    pub(crate) operand_bundles: Box<[OperandBundleData]>,
 }
 
 impl InvokeInstData {
-    pub(crate) fn new_with_attrs<Args>(
+    pub(crate) fn new<Args>(
         callee: ValueSlot,
         fn_ty: crate::r#type::TypeSlot,
         args: Args,
-        calling_conv: crate::CallingConv,
         normal_dest: ValueSlot,
         unwind_dest: ValueSlot,
-        attrs: CallAttributeData,
+        parts: CallSiteParts,
     ) -> Self
     where
         Args: IntoIterator<Item = ValueSlot>,
     {
+        let CallSiteParts {
+            calling_conv,
+            attrs,
+            operand_bundles,
+        } = parts;
         Self {
             callee: Cell::new(callee),
             fn_ty,
@@ -3261,6 +3286,7 @@ impl InvokeInstData {
             normal_dest: Cell::new(normal_dest),
             unwind_dest: Cell::new(unwind_dest),
             attrs,
+            operand_bundles,
         }
     }
 }
@@ -3273,7 +3299,8 @@ impl Clone for InvokeInstData {
             calling_conv: self.calling_conv,
             normal_dest: Cell::new(self.normal_dest.get()),
             unwind_dest: Cell::new(self.unwind_dest.get()),
-            attrs: self.attrs.clone(),
+            attrs: self.attrs,
+            operand_bundles: self.operand_bundles.clone(),
         }
     }
 }
@@ -3285,6 +3312,7 @@ impl PartialEq for InvokeInstData {
             || self.normal_dest.get() != other.normal_dest.get()
             || self.unwind_dest.get() != other.unwind_dest.get()
             || self.attrs != other.attrs
+            || self.operand_bundles != other.operand_bundles
             || self.args.len() != other.args.len()
         {
             return false;
@@ -3307,6 +3335,7 @@ impl core::hash::Hash for InvokeInstData {
         self.normal_dest.get().hash(h);
         self.unwind_dest.get().hash(h);
         self.attrs.hash(h);
+        self.operand_bundles.hash(h);
     }
 }
 
@@ -3321,23 +3350,28 @@ pub(crate) struct CallBrInstData {
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) default_dest: Cell<ValueSlot>,
     pub(crate) indirect_dests: Box<[Cell<ValueSlot>]>,
-    pub(crate) attrs: CallAttributeData,
+    pub(crate) attrs: CallAttributesSlot,
+    pub(crate) operand_bundles: Box<[OperandBundleData]>,
 }
 
 impl CallBrInstData {
-    pub(crate) fn new_with_attrs<Args, IndirectDests>(
+    pub(crate) fn new<Args, IndirectDests>(
         callee: ValueSlot,
         fn_ty: crate::r#type::TypeSlot,
         args: Args,
-        calling_conv: crate::CallingConv,
         default_dest: ValueSlot,
         indirect_dests: IndirectDests,
-        attrs: CallAttributeData,
+        parts: CallSiteParts,
     ) -> Self
     where
         Args: IntoIterator<Item = ValueSlot>,
         IndirectDests: IntoIterator<Item = ValueSlot>,
     {
+        let CallSiteParts {
+            calling_conv,
+            attrs,
+            operand_bundles,
+        } = parts;
         Self {
             callee: Cell::new(callee),
             fn_ty,
@@ -3346,6 +3380,7 @@ impl CallBrInstData {
             default_dest: Cell::new(default_dest),
             indirect_dests: indirect_dests.into_iter().map(Cell::new).collect(),
             attrs,
+            operand_bundles,
         }
     }
 }
@@ -3362,7 +3397,8 @@ impl Clone for CallBrInstData {
                 .iter()
                 .map(|c| Cell::new(c.get()))
                 .collect(),
-            attrs: self.attrs.clone(),
+            attrs: self.attrs,
+            operand_bundles: self.operand_bundles.clone(),
         }
     }
 }
@@ -3373,6 +3409,7 @@ impl PartialEq for CallBrInstData {
             || self.calling_conv != other.calling_conv
             || self.default_dest.get() != other.default_dest.get()
             || self.attrs != other.attrs
+            || self.operand_bundles != other.operand_bundles
             || self.args.len() != other.args.len()
             || self.indirect_dests.len() != other.indirect_dests.len()
         {
@@ -3403,6 +3440,7 @@ impl core::hash::Hash for CallBrInstData {
             d.get().hash(h);
         }
         self.attrs.hash(h);
+        self.operand_bundles.hash(h);
     }
 }
 

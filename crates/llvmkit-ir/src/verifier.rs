@@ -55,9 +55,9 @@ use super::instr_types::{
     CallInstData, CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
     CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FenceInstData,
     FnegInstData, FreezeInstData, IndirectBrInstData, InsertElementInstData, InsertValueInstData,
-    InvokeInstData, LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleTag,
-    ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData,
-    VaArgInstData,
+    InvokeInstData, LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleData,
+    OperandBundleTag, ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData,
+    SwitchInstData, VaArgInstData,
 };
 use super::instructions::ShuffleVectorInst;
 use super::intrinsics::{IntrinsicId, IntrinsicNameResolution};
@@ -76,6 +76,7 @@ use crate::instr_types::{
     GepInstData, PhiData, ReturnOpData,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
+use crate::llvm_context::Context;
 use crate::marker::Dyn;
 use crate::metadata::{
     MetadataAttachmentKind, MetadataId, MetadataKind, MetadataSlot, MetadataStore, StoredBrand,
@@ -143,8 +144,47 @@ struct CallBaseParts<'a> {
     fn_ty: TypeSlot,
     /// `CallBase::args()`.
     args: &'a [core::cell::Cell<ValueSlot>],
-    /// `CallBase::getAttributes()` plus the operand bundles.
+    /// `CallBase::getAttributes()`.
     attrs: &'a CallAttributeData,
+    /// The operand bundles, `CallBase::getOperandBundleAt(0 ..
+    /// getNumOperandBundles())`.
+    operand_bundles: &'a [OperandBundleData],
+}
+
+impl<'a> CallBaseParts<'a> {
+    /// A `call`, its attribute list resolved in `context`, the context of the
+    /// module that holds it.
+    fn of_call(context: &'a Context, c: &'a CallInstData) -> Self {
+        Self {
+            callee: c.callee.get(),
+            fn_ty: c.fn_ty,
+            args: &c.args,
+            attrs: context.call_attributes(c.attrs),
+            operand_bundles: &c.operand_bundles,
+        }
+    }
+
+    /// An `invoke`, as [`Self::of_call`].
+    fn of_invoke(context: &'a Context, i: &'a InvokeInstData) -> Self {
+        Self {
+            callee: i.callee.get(),
+            fn_ty: i.fn_ty,
+            args: &i.args,
+            attrs: context.call_attributes(i.attrs),
+            operand_bundles: &i.operand_bundles,
+        }
+    }
+
+    /// A `callbr`, as [`Self::of_call`].
+    fn of_call_br(context: &'a Context, c: &'a CallBrInstData) -> Self {
+        Self {
+            callee: c.callee.get(),
+            fn_ty: c.fn_ty,
+            args: &c.args,
+            attrs: context.call_attributes(c.attrs),
+            operand_bundles: &c.operand_bundles,
+        }
+    }
 }
 
 /// Where an instruction sits in its block: the position plus the block's
@@ -1228,7 +1268,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             // `if (IgnoreARCAttachedCall &&
             //      Call->isOperandBundleOfType(OB_clang_arc_attachedcall,
             //                                  U.getOperandNo())) continue;`
-            if call.attrs.operand_bundles_slice().iter().any(|bundle| {
+            if call.operand_bundles.iter().any(|bundle| {
                 bundle.tag() == &OperandBundleTag::ClangArcAttachedCall
                     && bundle
                         .inputs()
@@ -1244,29 +1284,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `dyn_cast<CallBase>(V)` — a `call`, `invoke` or `callbr`, projected
     /// onto the fields the `CallBase` interface exposes.
     fn as_call_base(&self, slot: ValueSlot) -> Option<CallBaseParts<'_>> {
-        let ValueKindData::Instruction(instruction) = &self.module.context().value_data(slot).kind
-        else {
+        let context = self.module.context();
+        let ValueKindData::Instruction(instruction) = &context.value_data(slot).kind else {
             return None;
         };
         match &instruction.kind {
-            InstructionKindData::Call(c) => Some(CallBaseParts {
-                callee: c.callee.get(),
-                fn_ty: c.fn_ty,
-                args: &c.args,
-                attrs: &c.attrs,
-            }),
-            InstructionKindData::Invoke(i) => Some(CallBaseParts {
-                callee: i.callee.get(),
-                fn_ty: i.fn_ty,
-                args: &i.args,
-                attrs: &i.attrs,
-            }),
-            InstructionKindData::CallBr(c) => Some(CallBaseParts {
-                callee: c.callee.get(),
-                fn_ty: c.fn_ty,
-                args: &c.args,
-                attrs: &c.attrs,
-            }),
+            InstructionKindData::Call(c) => Some(CallBaseParts::of_call(context, c)),
+            InstructionKindData::Invoke(i) => Some(CallBaseParts::of_invoke(context, i)),
+            InstructionKindData::CallBr(c) => Some(CallBaseParts::of_call_br(context, c)),
             _ => None,
         }
     }
@@ -3453,12 +3478,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
         }
-        let call = CallBaseParts {
-            callee: c.callee.get(),
-            fn_ty: c.fn_ty,
-            args: &c.args,
-            attrs: &c.attrs,
-        };
+        let call = CallBaseParts::of_call(self.module.context(), c);
         // `visitCallBase`'s `swifterror` loop, which sits between the
         // parameter-type loop above and the operand-bundle loop below.
         self.verify_call_swift_error_arguments(f, bb, call)?;
@@ -3575,18 +3595,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             //    SwiftErrorVal);` — a `callbr` user has already failed the
             // first `Check` above, so only `call` and `invoke` reach here.
             let call = match &instruction.kind {
-                InstructionKindData::Call(c) => Some(CallBaseParts {
-                    callee: c.callee.get(),
-                    fn_ty: c.fn_ty,
-                    args: &c.args,
-                    attrs: &c.attrs,
-                }),
-                InstructionKindData::Invoke(i) => Some(CallBaseParts {
-                    callee: i.callee.get(),
-                    fn_ty: i.fn_ty,
-                    args: &i.args,
-                    attrs: &i.attrs,
-                }),
+                InstructionKindData::Call(c) => {
+                    Some(CallBaseParts::of_call(self.module.context(), c))
+                }
+                InstructionKindData::Invoke(i) => {
+                    Some(CallBaseParts::of_invoke(self.module.context(), i))
+                }
                 _ => None,
             };
             if let Some(call) = call {
@@ -3878,7 +3892,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         call: CallBaseParts<'_>,
     ) -> IrResult<()> {
-        let CallBaseParts { callee, attrs, .. } = call;
+        let CallBaseParts {
+            callee,
+            operand_bundles,
+            ..
+        } = call;
         // `bool FoundDeoptBundle = false, FoundFuncletBundle = false, …;`
         let mut found_deopt = false;
         let mut found_funclet = false;
@@ -3890,7 +3908,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let mut found_kcfi = false;
         let mut found_attached_call = false;
 
-        for bundle in attrs.operand_bundles_slice() {
+        for bundle in operand_bundles {
             let inputs: Vec<ValueSlot> = bundle.inputs().collect();
             match bundle.tag() {
                 OperandBundleTag::Deopt => {
@@ -4446,7 +4464,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 )?;
             }
             for index in 0..callee_params.len() {
-                let abi_attrs = parameter_abi_attributes_of_call_site(&c.attrs, index);
+                let abi_attrs = parameter_abi_attributes_of_call_site(
+                    self.module.context().call_attributes(c.attrs),
+                    index,
+                );
                 self.verify_tail_cc_must_tail_attrs(
                     f,
                     bb,
@@ -4497,7 +4518,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         //  inreg, returned, preallocated, and inalloca, must match."
         for index in 0..caller_params.len() {
             let caller_abi_attrs = parameter_abi_attributes_of_function(&caller_attrs, index);
-            let callee_abi_attrs = parameter_abi_attributes_of_call_site(&c.attrs, index);
+            let callee_abi_attrs = parameter_abi_attributes_of_call_site(
+                self.module.context().call_attributes(c.attrs),
+                index,
+            );
             if !caller_abi_attrs.index_has_same_attributes(&callee_abi_attrs, AttrIndex::Param(0)) {
                 return Err(self.fail(
                     f,
@@ -4607,7 +4631,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             callee: callee_id,
             fn_ty,
             args,
-            attrs,
+            operand_bundles,
+            ..
         } = call;
         let callee_data = self.module.context().value_data(callee_id);
         let ValueKindData::Function(callee_function) = &callee_data.kind else {
@@ -4708,7 +4733,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
         }
-        self.verify_funclet_token(f, bb, descriptor_id, attrs, cx)
+        self.verify_funclet_token(f, bb, descriptor_id, operand_bundles, cx)
     }
 
     /// `Verifier::visitIntrinsicCall`'s `case Intrinsic::callbr_landingpad:`
@@ -4859,7 +4884,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         id: IntrinsicId,
-        attrs: &CallAttributeData,
+        operand_bundles: &[OperandBundleData],
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `if (IntrinsicInst::mayLowerToFunctionCall(ID)) {`
@@ -4905,7 +4930,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `bool HasToken = false;
         //  for (…) if (…getTagID() == LLVMContext::OB_funclet) HasToken = true;`
         let mut has_token = false;
-        for bundle in attrs.operand_bundles_slice() {
+        for bundle in operand_bundles {
             if matches!(bundle.tag(), OperandBundleTag::Funclet) {
                 has_token = true;
             }
@@ -5283,12 +5308,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 "Referring to a basic block in another function! (invoke destination)".into(),
             ));
         }
-        let call = CallBaseParts {
-            callee: d.callee.get(),
-            fn_ty: d.fn_ty,
-            args: &d.args,
-            attrs: &d.attrs,
-        };
+        let call = CallBaseParts::of_invoke(self.module.context(), d);
         self.verify_call_swift_error_arguments(f, bb, call)?;
         self.check_intrinsic_call(f, bb, inst.slot_trusting_same_module(), call, cx)?;
         self.visit_call_base_operand_bundles(f, bb, call)?;
@@ -5341,12 +5361,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         d: &CallBrInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
-        let call = CallBaseParts {
-            callee: d.callee.get(),
-            fn_ty: d.fn_ty,
-            args: &d.args,
-            attrs: &d.attrs,
-        };
+        let call = CallBaseParts::of_call_br(self.module.context(), d);
         let callee_data = self.module.context().value_data(d.callee.get());
         // `if (!CBI.isInlineAsm()) { … } else { … }`
         if let ValueKindData::InlineAsm(_) = &callee_data.kind {
@@ -5384,7 +5399,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             self.verifier_check(
                 f,
                 bb,
-                d.attrs.operand_bundles_slice().is_empty(),
+                d.operand_bundles.is_empty(),
                 VerifierRule::CallBrOperandBundle,
                 "Callbr for intrinsics currently doesn't support operand bundles",
             )?;
@@ -5855,7 +5870,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         && crate::instr_types::call_site_has_fn_attr(
                             ModuleRef::<B>::new(self.module),
                             callee,
-                            &invoke.attrs,
+                            self.module.context().call_attributes(invoke.attrs),
                             AttrKind::NoUnwind,
                         )
                         && !crate::intrinsic_inst::may_lower_to_function_call(id)
@@ -5867,8 +5882,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     //    FromPad = Bundle->Inputs[0];
                     //  else FromPad = ConstantTokenNone::get(II->getContext());`
                     invoke
-                        .attrs
-                        .operand_bundles_slice()
+                        .operand_bundles
                         .iter()
                         .find(|bundle| *bundle.tag() == OperandBundleTag::Funclet)
                         .and_then(|bundle| bundle.inputs().next())
@@ -7761,8 +7775,12 @@ mod tests {
                 m.view(callee).slot_trusting_same_module(),
                 callee_fn_ty.as_type().slot_trusting_same_module(),
                 [arg_id],
-                crate::CallingConv::default(),
                 crate::instr_types::TailCallKind::None,
+                crate::fmf::FastMathFlags::empty(),
+                crate::instr_types::CallSiteParts::plain(
+                    m.core_ref(),
+                    crate::CallingConv::default(),
+                ),
             )),
         );
         append_ret_void(&m, entry.slot_trusting_same_module());

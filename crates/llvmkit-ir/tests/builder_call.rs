@@ -8,8 +8,9 @@
 
 use llvmkit_ir::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, CallAttributeData, CallSiteConfig,
-    CallingConv, Dyn, DynBrand, FloatValue, InlineAsmOptions, IntValue, IntrinsicDescriptor,
-    IntrinsicId, IrBuilder, IrError, Linkage, Ptr, instr_types::TailCallKind, module_new,
+    CallingConv, Dyn, DynBrand, FastMathFlags, FloatValue, InlineAsmOptions, IntValue,
+    IntrinsicDescriptor, IntrinsicId, IrBuilder, IrError, Linkage, Ptr, instr_types::TailCallKind,
+    module_new,
 };
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)`
@@ -579,6 +580,7 @@ fn call_erased_carries_the_call_site_configuration_for_every_callee_shape() -> R
         m.view(g).as_erased(),
         [v],
         TailCallKind::Tail,
+        FastMathFlags::empty(),
         config(),
     )?;
     b.call_erased::<Dyn, _, _>(
@@ -586,9 +588,17 @@ fn call_erased_carries_the_call_site_configuration_for_every_callee_shape() -> R
         asm.as_erased(),
         [v],
         TailCallKind::Tail,
+        FastMathFlags::empty(),
         config(),
     )?;
-    b.call_erased::<Dyn, _, _>(callee_ty, fp.as_erased(), [v], TailCallKind::Tail, config())?;
+    b.call_erased::<Dyn, _, _>(
+        callee_ty,
+        fp.as_erased(),
+        [v],
+        TailCallKind::Tail,
+        FastMathFlags::empty(),
+        config(),
+    )?;
     b.ret_void()?;
 
     let text = format!("{m}");
@@ -641,6 +651,7 @@ fn call_erased_prefers_the_call_site_type_override() -> Result<(), IrError> {
         m.view(g).as_erased(),
         [v],
         TailCallKind::None,
+        FastMathFlags::empty(),
         CallSiteConfig::new("r").call_site_type(declared),
     )?;
     b.ret_void()?;
@@ -649,6 +660,78 @@ fn call_erased_prefers_the_call_site_type_override() -> Result<(), IrError> {
     assert!(
         text.contains("%r = call i32 @g(i32 %0)"),
         "the override should decide both the call-site arity and the result type; got:\n{text}"
+    );
+    Ok(())
+}
+
+/// `IrBuilder::call_erased` takes a call's fast-math flags — the
+/// `CallInst::setFastMathFlags` that `LLParser::parseCall` runs on the call it
+/// just built — and refuses them on a call whose return type is not
+/// floating-point, where upstream's `Instruction::setFastMathFlags` asserts
+/// `isa<FPMathOperator>(this)` ("setting fast-math flag on invalid op"). The
+/// refusal carries the sentence `LLParser::parseCall` reports for the same
+/// fault, verbatim, so the builder and the parser cannot disagree.
+///
+/// **llvmkit-specific**: upstream's builder answer is an assertion, so no
+/// upstream test reaches it. The positive control is the same flags on a
+/// `float` call, printed where `writeOptimizationInfo` puts them, straight
+/// after `call`; the refusal leaves the module as it was.
+#[test]
+fn call_erased_refuses_fast_math_flags_on_a_call_that_is_not_floating_point() -> Result<(), IrError>
+{
+    let m = module_new!("c")?;
+    let void_ty = m.void_type();
+    let i32_ty = m.i32_type();
+    let f32_ty = m.f32_type();
+    let int_fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let float_fn_ty = m.function_type(f32_ty.as_type(), [f32_ty.as_type()]);
+    let g = m.add_function_dyn("g", int_fn_ty, Linkage::External)?;
+    let h = m.add_function_dyn("h", float_fn_ty, Linkage::External)?;
+
+    let caller_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), f32_ty.as_type()]);
+    let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let int_arg = m.view(caller).param(0)?;
+    let float_arg = m.view(caller).param(1)?;
+
+    let printed_before = format!("{m}");
+    let refused = b.call_erased::<Dyn, _, _>(
+        int_fn_ty,
+        m.view(g).as_erased(),
+        [int_arg],
+        TailCallKind::None,
+        FastMathFlags::fast(),
+        CallSiteConfig::new("r"),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(IrError::InvalidOperation {
+                message: "fast-math-flags specified for call without floating-point scalar or vector return type"
+            })
+        ),
+        "fast-math flags on an `i32` call must be refused; got {refused:?}"
+    );
+    assert_eq!(
+        format!("{m}"),
+        printed_before,
+        "a refused call must leave the module unchanged"
+    );
+
+    b.call_erased::<Dyn, _, _>(
+        float_fn_ty,
+        m.view(h).as_erased(),
+        [float_arg],
+        TailCallKind::None,
+        FastMathFlags::fast(),
+        CallSiteConfig::new("y"),
+    )?;
+    b.ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%y = call fast float @h(float %1)"),
+        "the flags belong on a `float` call; got:\n{text}"
     );
     Ok(())
 }

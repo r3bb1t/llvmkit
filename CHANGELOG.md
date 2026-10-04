@@ -19,6 +19,28 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — a call site's attribute list holds attributes only
+
+- **Breaking (llvmkit-ir): `CallAttributeData` loses `fast_math_flags` and
+  `fast_math_flags_value`.** A call's fast-math flags are its
+  `SubclassOptionalData` upstream, not part of the `AttributeList` a `CallBase`
+  holds, and they now live on the call beside the list — as its operand bundles
+  do, which are operands. `CallAttributeData` is the `AttributeList` port and
+  nothing else, which is what lets replacing a call site's list leave its flags
+  and bundles alone, as `CallBase::setAttributes` does. The type was shared by
+  `invoke` and `callbr` too, so flags set there were stored where nothing read
+  them; that is now unspellable.
+- **Breaking (llvmkit-ir): `IrBuilder::call_erased` takes `fmf: FastMathFlags`**
+  after `tail_call_kind`, a parameter for the same reason that one is: neither
+  `invoke` nor `callbr` is an `FPMathOperator`, so a `CallSiteConfig` field
+  would be an option two of its three consumers ignore. Non-empty flags on a
+  call whose return type is not floating-point are refused with
+  `IrError::InvalidOperation` carrying `LLParser::parseCall`'s own sentence,
+  where upstream's `Instruction::setFastMathFlags` asserts. Before this, the
+  `CallAttributeData` setter accepted flags on any call and neither the builder
+  nor `verify()` refused them, so a call llvmkit's own parser rejects could be
+  built and printed.
+
 ### Documentation — four stale or overclaiming statements corrected
 
 - **`README.md`'s D11 no longer claims every test is traced.** It said every

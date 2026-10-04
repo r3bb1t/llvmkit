@@ -21,12 +21,12 @@
 
 use llvmkit_ir::{
     Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallSiteConfig,
-    CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FloatDyn, FloatValue, FnCx, FnReport,
-    FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions, InstructionView, IntCastFlags,
-    IntDyn, IntValue, IrBuilder, IrError, IrResult, IrStruct, Linkage, Module, OperandBundleDef,
-    OperandBundleTag, OperandBundleUse, PatchBody, PointerValue, Positioned, ReshapeCfg,
-    SsaBuilder, SsaState, SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated,
-    Value, ValueId, ZextFlags, iter::BlockCursor, run_function_pass,
+    CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags, FloatDyn, FloatValue, FnCx,
+    FnReport, FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions, InstructionView,
+    IntCastFlags, IntDyn, IntValue, IrBuilder, IrError, IrResult, IrStruct, Linkage, Module,
+    OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody, PointerValue, Positioned,
+    ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags,
+    Unterminated, Value, ValueId, ZextFlags, iter::BlockCursor, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -1259,6 +1259,7 @@ fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
                 own_callee,
                 no_args(),
                 TailCallKind::None,
+                FastMathFlags::empty(),
                 CallSiteConfig::new("r"),
             )
             .map(|_| ()),
@@ -1271,6 +1272,7 @@ fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
                 foreign.view(g).as_erased(),
                 no_args(),
                 TailCallKind::None,
+                FastMathFlags::empty(),
                 CallSiteConfig::new("r"),
             )
             .map(|_| ()),
@@ -1283,6 +1285,7 @@ fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
                 own_callee,
                 no_args(),
                 TailCallKind::None,
+                FastMathFlags::empty(),
                 CallSiteConfig::new("r").call_site_type(foreign_fn_ty),
             )
             .map(|_| ()),
@@ -1569,6 +1572,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
                 home.view(h).as_erased(),
                 no_args(),
                 TailCallKind::None,
+                FastMathFlags::empty(),
                 config(),
             )),
         ),
@@ -1723,6 +1727,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
             home.view(h).as_erased(),
             no_args(),
             TailCallKind::None,
+            FastMathFlags::empty(),
             home_config(bundle),
         )
         .expect("call_erased accepts a same-module bundle");
@@ -3309,8 +3314,8 @@ fn must_trigger_ub_matches_a_known_poison_value_in_its_own_module_only() {
 }
 
 use llvmkit_ir::{
-    BinaryOpcode, FastMathFlags, FloatKind, FloatType, IntBinOpFlags, IntPredicate, IntType,
-    IntWidth, IrBuilderFolder, OverflowFlags,
+    BinaryOpcode, FloatKind, FloatType, IntBinOpFlags, IntPredicate, IntType, IntWidth,
+    IrBuilderFolder, OverflowFlags,
 };
 
 /// A folder whose erased hooks answer with a value another module minted.
