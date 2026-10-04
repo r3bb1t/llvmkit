@@ -55,6 +55,7 @@ use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn};
 use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
+use super::capability::{Capability, ModuleState, Mutable, ReadOnly};
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
 use super::constant::{
     Constant, ConstantData, ConstantExprFlags, ConstantExprOpcode, ForwardRefValue,
@@ -462,19 +463,28 @@ macro_rules! module_new {
 /// The "one concept, one representation" principle in the README is about not
 /// implementing a *concept* twice, which is not what these do: there is exactly
 /// one module-storage concept here, exposed at two capability grades.
-pub struct ModuleRef<'ctx, B: ModuleBrand> {
+///
+/// # Capability
+///
+/// The third parameter is the [`Capability`] every handle embedding this
+/// reference inherits: [`Mutable`] when it was minted from
+/// `&Module<B, Unverified>`, [`ReadOnly`] from a `Module<B, Verified>`, a
+/// [`ModuleView`] or a read-only pass context. It is phantom, and equality and
+/// hashing ignore it: they read the module's id alone.
+pub struct ModuleRef<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     core: &'ctx ModuleCore,
     _brand: Invariant<B>,
+    _capability: PhantomData<C>,
 }
 
-impl<B: ModuleBrand> Clone for ModuleRef<'_, B> {
+impl<B: ModuleBrand, C: Capability> Clone for ModuleRef<'_, B, C> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<B: ModuleBrand> Copy for ModuleRef<'_, B> {}
+impl<B: ModuleBrand, C: Capability> Copy for ModuleRef<'_, B, C> {}
 
 impl<'ctx, B: ModuleBrand> ModuleRef<'ctx, B> {
     #[inline]
@@ -482,6 +492,34 @@ impl<'ctx, B: ModuleBrand> ModuleRef<'ctx, B> {
         Self {
             core,
             _brand: PhantomData,
+            _capability: PhantomData,
+        }
+    }
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> ModuleRef<'ctx, B, C> {
+    /// Drop to read-only. Always sound: reading is a subset of mutating.
+    #[inline]
+    pub fn read_only(self) -> ModuleRef<'ctx, B, ReadOnly> {
+        ModuleRef {
+            core: self.core,
+            _brand: PhantomData,
+            _capability: PhantomData,
+        }
+    }
+
+    /// Crate-internal: the one door from any capability to [`Mutable`]. Sound
+    /// only where the caller holds mutation authority over this very module —
+    /// a real `&Module<B, Unverified>` it has compared with [`Self::id`], or a
+    /// builder built from one. Every call sits under a
+    /// `// capability (proof): …` comment naming that authority;
+    /// `tests/capability_door_drift.rs` fails on a call without one.
+    #[inline]
+    pub(crate) fn mutable_at_marked_boundary(self) -> ModuleRef<'ctx, B, Mutable> {
+        ModuleRef {
+            core: self.core,
+            _brand: PhantomData,
+            _capability: PhantomData,
         }
     }
 
@@ -529,27 +567,31 @@ impl<'ctx, B: ModuleBrand> From<&'ctx ModuleCore> for ModuleRef<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, S> From<&'ctx Module<B, S>> for ModuleRef<'ctx, B> {
+/// A module's reference carries the capability its state grants: `Mutable` for
+/// an unverified module, `ReadOnly` for a verified one (D8).
+impl<'ctx, B: ModuleBrand + 'ctx, S: ModuleState> From<&'ctx Module<B, S>>
+    for ModuleRef<'ctx, B, S::Capability>
+{
     #[inline]
     fn from(module: &'ctx Module<B, S>) -> Self {
-        module.module_ref()
+        module.capability_ref()
     }
 }
 
-impl<B: ModuleBrand> PartialEq for ModuleRef<'_, B> {
+impl<B: ModuleBrand, C: Capability> PartialEq for ModuleRef<'_, B, C> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.core.id == other.core.id
     }
 }
-impl<B: ModuleBrand> Eq for ModuleRef<'_, B> {}
-impl<B: ModuleBrand> Hash for ModuleRef<'_, B> {
+impl<B: ModuleBrand, C: Capability> Eq for ModuleRef<'_, B, C> {}
+impl<B: ModuleBrand, C: Capability> Hash for ModuleRef<'_, B, C> {
     #[inline]
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.core.id.hash(h);
     }
 }
-impl<B: ModuleBrand> core::fmt::Debug for ModuleRef<'_, B> {
+impl<B: ModuleBrand, C: Capability> core::fmt::Debug for ModuleRef<'_, B, C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_tuple("ModuleRef").field(&self.core.id).finish()
     }
@@ -901,12 +943,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// Panics if the id belongs to a different module (foreign tag) or its slot
     /// is absent, exactly as [`Module::view`] does. Use
     /// [`try_view`](Self::try_view) for the fallible form.
+    ///
+    /// The handle is [`ReadOnly`]: a `ModuleView` is the read grade, whatever
+    /// the state of the module it was taken from (D8).
     #[inline]
-    pub fn view<I>(self, id: I) -> I::View
+    pub fn view<I>(self, id: I) -> I::View<ReadOnly>
     where
         I: ViewIn<'ctx, B>,
     {
-        id.resolve_in(self.into()).unwrap_or_else(|| {
+        id.resolve_in(self.read_only_ref()).unwrap_or_else(|| {
             panic!(
                 "ModuleView::view: id does not resolve in this module \
                  (foreign module tag or absent/tombstoned slot)"
@@ -916,13 +961,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// Fallible [`view`](Self::view): `None` when the id belongs to a different
     /// module (foreign tag) or its slot is absent. The `ModuleView` twin of
-    /// [`Module::try_view`].
+    /// [`Module::try_view`]; the handle is [`ReadOnly`].
     #[inline]
-    pub fn try_view<I>(self, id: I) -> Option<I::View>
+    pub fn try_view<I>(self, id: I) -> Option<I::View<ReadOnly>>
     where
         I: ViewIn<'ctx, B>,
     {
-        id.resolve_in(self.into())
+        id.resolve_in(self.read_only_ref())
+    }
+
+    /// Crate-internal: this view's module reference at the read grade.
+    #[inline]
+    fn read_only_ref(self) -> ModuleRef<'ctx, B, ReadOnly> {
+        ModuleRef::<B>::new(self.core).read_only()
     }
 
     /// Module identifier.
@@ -3299,6 +3350,21 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
         ModuleRef::new(self.core())
     }
 
+    /// Crate-internal: this module's reference at the capability its state
+    /// grants — [`Mutable`] while unverified, [`ReadOnly`] once verified (D8).
+    /// What [`Self::view`] and [`Self::try_view`] resolve against.
+    #[inline]
+    pub(super) fn capability_ref(&'ctx self) -> ModuleRef<'ctx, B, S::Capability>
+    where
+        S: ModuleState,
+    {
+        ModuleRef {
+            core: self.core(),
+            _brand: PhantomData,
+            _capability: PhantomData,
+        }
+    }
+
     /// `source_filename = "..."` directive.
     #[inline]
     pub fn source_filename(&self) -> Option<core::cell::Ref<'_, str>> {
@@ -3472,7 +3538,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// [`IntValue<W>`](crate::IntValue), a [`BlockId`](crate::BlockId) yields a
     /// copyable [`BasicBlockLabel`](crate::BasicBlockLabel)).
     ///
-    /// Works on both [`Unverified`] and [`Verified`] modules.
+    /// Works on both [`Unverified`] and [`Verified`] modules, and the handle
+    /// carries the capability the module's state grants (D8): an unverified
+    /// module mints [`Mutable`] handles, a verified one [`ReadOnly`] handles.
     ///
     /// # Panics
     ///
@@ -3486,11 +3554,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// tombstone-liveness detection is deferred (see the crate's `value_id`
     /// notes).
     #[inline]
-    pub fn view<I>(&'ctx self, id: I) -> I::View
+    pub fn view<I>(&'ctx self, id: I) -> I::View<S::Capability>
     where
         I: ViewIn<'ctx, B>,
+        S: ModuleState,
     {
-        id.resolve_in(self.module_ref()).unwrap_or_else(|| {
+        id.resolve_in(self.capability_ref()).unwrap_or_else(|| {
             panic!(
                 "Module::view: id does not resolve in this module \
                  (foreign module tag or absent/tombstoned slot)"
@@ -3504,13 +3573,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     ///
     /// Like [`view`](Self::view), this validates the module tag and arena range
     /// only; a tombstoned-but-in-range slot is not detected (no cheap liveness
-    /// flag exists). Works on both [`Unverified`] and [`Verified`] modules.
+    /// flag exists). Works on both [`Unverified`] and [`Verified`] modules, at
+    /// the capability the module's state grants.
     #[inline]
-    pub fn try_view<I>(&'ctx self, id: I) -> Option<I::View>
+    pub fn try_view<I>(&'ctx self, id: I) -> Option<I::View<S::Capability>>
     where
         I: ViewIn<'ctx, B>,
+        S: ModuleState,
     {
-        id.resolve_in(self.module_ref())
+        id.resolve_in(self.capability_ref())
     }
 
     // ---- By-name lookups ----

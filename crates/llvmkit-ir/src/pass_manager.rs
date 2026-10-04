@@ -101,6 +101,7 @@ use crate::analysis::{
     FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, ModuleAnalysisList,
     ModuleAnalysisManager, PreservedAnalyses,
 };
+use crate::capability::ModuleState;
 use crate::marker::Dyn;
 use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified};
 use crate::pass_access::{
@@ -290,6 +291,7 @@ fn view_in<'a, 'ctx, B, S>(
 ) -> FunctionView<'a, B>
 where
     B: ModuleBrand + 'ctx,
+    S: ModuleState,
     'ctx: 'a,
 {
     FunctionView::from(module.view(function))

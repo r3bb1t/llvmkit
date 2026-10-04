@@ -65,6 +65,7 @@ use super::analysis::{
 };
 use super::basic_block::IntoBasicBlockLabel;
 use super::block_state::Terminated;
+use super::capability::Mutable;
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
@@ -2168,7 +2169,7 @@ where
     ) -> IrResult<Id>
     where
         Id: ViewIn<'m, B>,
-        Id::View: IsValue<'m, B> + Typed<'m, B> + TryFrom<Value<'m, B>, Error = IrError>,
+        Id::View<Mutable>: IsValue<'m, B> + Typed<'m, B> + TryFrom<Value<'m, B>, Error = IrError>,
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
         let module_ref = self.patch.module_mut().module_ref();
@@ -2198,7 +2199,7 @@ where
         // so the narrow's own error is propagated unchanged: it already names
         // the category (or the type) required and the one supplied. Rewriting
         // it here replaced a matchable finding with prose.
-        Id::View::try_from(phi)?;
+        Id::View::<Mutable>::try_from(phi)?;
         // Internal: the phi was minted in this module just above.
         Ok(Id::id_from_raw(
             module_ref.id(),

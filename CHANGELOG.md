@@ -19,6 +19,24 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — a module reference carries a capability *(breaking, narrowly)*
+
+- **`Capability`, `Mutable`, `ReadOnly`, `CanMutate`, `CapabilityOf` and
+  `ModuleState`** (new module `capability`) name what a handle may do with the
+  module it reads (D1, D8). `ModuleRef<'ctx, B, C = Mutable>` gains the third
+  parameter, and `ModuleRef::read_only` drops a reference to `ReadOnly`. An
+  unverified module's state maps to `Mutable` and a verified one's to
+  `ReadOnly`; `CanMutate` is implemented by `Mutable` alone, and is the bound
+  a mutator will carry.
+- **`ViewIn::View` takes the capability as a parameter** — `I::View<C>` — so
+  the module an id resolves against, not the id, decides the capability of
+  the handle. `Module::view` / `try_view` return `I::View<S::Capability>`
+  and `ModuleView::view` / `try_view` return `I::View<ReadOnly>`.
+  **Breaking** only for code that names the associated type in a generic
+  bound or return (`I::View` becomes `I::View<C>`); every call of `view`
+  compiles unchanged, because no handle type carries the capability yet and
+  each still resolves to the handle it did before.
+
 ### Fixed — the indirect and inline-asm `invoke` / `callbr` builders check what `call_erased` checks
 
 - **`IrBuilder::indirect_invoke_dyn_with_config` checks its return marker.** It

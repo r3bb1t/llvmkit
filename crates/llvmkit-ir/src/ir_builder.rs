@@ -50,6 +50,7 @@ use super::basic_block::{
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
+use super::capability::Mutable;
 use super::cmp_predicate::CmpPredicate;
 use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
@@ -781,7 +782,7 @@ where
     /// Panics if the id belongs to a different module (foreign tag) or its slot
     /// is absent. Use [`try_view`](Self::try_view) for the fallible form.
     #[inline]
-    pub fn view<I>(&self, id: I) -> I::View
+    pub fn view<I>(&self, id: I) -> I::View<Mutable>
     where
         I: ViewIn<'ctx, B>,
     {
@@ -802,7 +803,7 @@ where
     /// only; a tombstoned-but-in-range slot is not detected (no cheap liveness
     /// flag exists).
     #[inline]
-    pub fn try_view<I>(&self, id: I) -> Option<I::View>
+    pub fn try_view<I>(&self, id: I) -> Option<I::View<Mutable>>
     where
         I: ViewIn<'ctx, B>,
     {

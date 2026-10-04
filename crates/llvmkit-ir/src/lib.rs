@@ -71,6 +71,7 @@ pub mod basic_block;
 pub mod block_params;
 pub mod block_state;
 pub mod calling_conv;
+pub mod capability;
 pub mod cfg;
 pub mod cfg_update;
 pub mod cmp_predicate;
@@ -202,6 +203,7 @@ pub use basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabe
 pub use block_params::{BlockParams, BlockParamsDyn};
 pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
+pub use capability::{CanMutate, Capability, CapabilityOf, ModuleState, Mutable, ReadOnly};
 pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cfg_update::{CfgEdge, CfgUpdate};
 pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate, PredicateWithSameSign};
