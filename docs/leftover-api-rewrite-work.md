@@ -19,14 +19,15 @@ Re-derive before quoting — the repo's docs are not checked by CI, and these
 numbers move with the code.
 
 **Each entry was re-checked against the tree on 2026-09-20, after the first
-draft.** Nothing was fully closed, but four entries were wrong about their own
-size or about what already exists, and each now says so inline: §2 (a `Detached`
-handle *is* obtainable), §3 and §4 (two method names are already taken by
-different things), §8 (five of seven readers were fixed by this program), §9
+draft.** Nothing was fully closed then, but four entries were wrong about their
+own size or about what already exists: §2 (a `Detached` handle *was*
+obtainable), §3 and §4 (two method names were already taken by different
+things), §8 (five of seven readers were fixed by this program), §9
 (`value_from_slot` has seven copies, not the two on record). The corrections all
 run the same direction — the residue is smaller than the draft implied in two
 places and larger in one — which is the reason to re-derive rather than trust
-this file.
+this file. §2–§4 have since closed and collapsed into one note; §8 and §9 still
+say so inline.
 
 ---
 
@@ -108,105 +109,40 @@ placed*, not *is placed*"; it is recorded there, not scheduled.
 
 ---
 
-## 2. There is no detached-creation primitive; the helper was deleted
+## 2–4. Closed: detached creation, the call-site copy and its setters
 
-`create_detached_instruction(module, ty, kind, name)` existed in `instruction.rs`
-during Task 24 and was **deleted** before the commit because it was dead code and
-`clippy -D warnings` refuses that. `rg -c 'create_detached_instruction' crates/`
-returns no files at `02ae334`.
+These three sections recorded what stood between llvmkit and porting
+`InstructionsTest.AlterCallBundles` and `AlterInvokeBundles` whole. Both now
+port whole (`crates/llvmkit-ir/tests/builder_call.rs`), so the sections
+graduated out; `CHANGELOG.md`'s *Added — call sites created in no block, and
+copied with other bundles* has the shipped surface. What each one recorded,
+and where it went:
 
-Its body is ~20 lines and is fully specified: `build_instruction_value(ty, None,
-kind, name)`, then snapshot `kind.operand_ids()` followed by
-`kind.block_operand_ids()`, `push_value`, and `add_use(ValueUse::Instruction(id))`
-for each — exactly what `IrBuilder::append_instruction` does, minus the block
-append and the symbol-table naming.
+- **§2, detached creation.** The primitive is `create_detached_instruction`
+  (`instruction.rs`), over a `push_instruction` that `IrBuilder::append_instruction`
+  now shares, so a detached and an attached instruction register their uses
+  through one routine. The three constructors are `CallInst::create_detached`,
+  `InvokeInst::create_detached` and `BasicBlock::create_orphan`.
+- **§3, the copy.** The sealed `CallBase` trait and `with_operand_bundles` on
+  all three call sites, as sketched — except for the result, which is a
+  `DetachedCallSite`, the linear `Instruction<Detached>` beside the typed view,
+  so a copy is read without narrowing an erased handle at run time. The name
+  collision this section warned about is gone: the payload-side
+  `with_operand_bundles` was deleted when the bundles left `CallAttributeData`.
+- **§4, the setters.** `CallInst::set_tail_call_kind`, and `set_attributes` on
+  all three. The interior mutability is a `Cell` per field, not the `RefCell`
+  recommended here. A call's attribute list is interned in the module, as
+  upstream's `AttributeList` is uniqued in the context, and the payload holds
+  the slot, so every reader keeps a plain `&'ctx` borrow and no setter can meet
+  an outstanding one. Ported over the old payload, `setAttributes` would also
+  have overwritten the fast-math flags, which lived inside `CallAttributeData`
+  until the same change moved them out. The debug location needed no setter:
+  llvmkit's is the `!dbg` attachment, which `set_metadata` already writes —
+  `ValueData.debug_loc` is a reserved slot no code fills (`rg -n "debug_loc:
+  Some|\.debug_loc =" crates/` finds nothing).
 
-Three constructors sit on top of it and do not exist either:
-
-- a detached `call` — port of the `InsertPosition`-less
-  `CallInst::Create(FTy, Callee, Args, Bundles, Name)`;
-- a detached `invoke` — port of
-  `InvokeInst::Create(FTy, Callee, IfNormal, IfException, Args, Bundles, Name)`;
-- a parentless block — port of `BasicBlock::Create(Context)`. The storage is
-  already there: `BasicBlockData.parent` is `RefCell<Option<…>>`, and the block
-  printer already has an "Orphan block" branch.
-
-**What already works, so the gap is not mistaken for a bigger one:** a
-`Detached` instruction *handle* is obtainable today —
-`Instruction::detach_from_parent` returns `Instruction<'ctx, state::Detached, B>`,
-and that is a port of `Instruction::removeFromParent`. What is missing is
-*creation*: making an instruction that was never in a block at all. Verified with
-`rg -n 'state::Detached, B>' crates/llvmkit-ir/src/instruction.rs`, whose only
-producing site is `detach_from_parent`.
-
-This is the foundation §3 needs, which is why it is listed first.
-
----
-
-## 3. No call site can be copied with different operand bundles
-
-Upstream's `CallBase::Create(CallBase *CB, ArrayRef<OperandBundleDef>, InsertPosition)`
-re-creates a call, invoke or callbr with its bundles replaced. llvmkit has no
-equivalent, and that blocks two whole-test ports.
-
-The shape settled during the rewrite: a **sealed public `CallBase` trait** over
-`CallInst` / `InvokeInst` / `CallBrInst`, with
-
-```rust
-fn with_operand_bundles(
-    &self,
-    module: &'ctx Module<B, Unverified>,
-    bundles: …,
-) -> IrResult<Instruction<'ctx, state::Detached, B>>;
-```
-
-**The name `with_operand_bundles` is already taken.** `instr_types.rs` has a
-`pub(crate) fn with_operand_bundles(self, bundles: Box<[OperandBundleData]>) -> Self`
-on the call attribute payload, reached from three `ir_builder.rs` sites. It is a
-builder-side setter on `CallAttributeData`, not a copy constructor, and it is
-*not* this item — but a grep for the name finds it and can read as "already
-done". Either the trait method takes a different name or the payload one does.
-
-Upstream's `llvm_unreachable` default arm is unrepresentable here, which is the
-D1 improvement the sealed trait buys. The four upstream bodies copy: arguments,
-called operand, function type, calling convention, tail-call kind (call only),
-`SubclassOptionalData` (llvmkit spells this as the fast-math flags inside
-`CallAttributeData`), attributes, debug location, name, and `NumIndirectDests`
-for callbr. Bundle inputs take the checked door, `OperandBundleDef::into_stored`.
-
-**What it unblocks:** `InstructionsTest.AlterCallBundles` and
-`InstructionsTest.AlterInvokeBundles` port whole. They are currently recorded as
-unportable in `docs/future-work.md` § *Operand bundles — three upstream unit
-tests not ported*; closing this deletes those two entries from that section and
-adds their `UPSTREAM.md` rows. The third, `AsmWriterTest.PrintNullOperandBundle`,
-stays N/A by model — a stored input is an arena slot and is never null, so the
-printer's `<null operand bundle!>` branch has no llvmkit state to reach.
-
----
-
-## 4. Three payloads have no interior mutability, so the setters cannot exist
-
-`CallInst::setTailCallKind` and `CallBase::setAttributes` have no llvmkit port,
-and §3's copy needs both.
-
-**A `set_attributes` does exist, on the wrong object.** `FunctionValue::set_attributes`
-(`function.rs`) sets a *function's* attributes; the call-site port of
-`CallBase::setAttributes` has no equivalent, and `rg -n 'fn set_tail_call_kind'
-crates/` returns nothing. As with §3's name collision, a grep finds the
-function-level one and can read as done.
-
-- `CallInstData.tail_kind` is a plain `pub(crate) tail_kind: TailCallKind` field
-  (`instr_types.rs`), and the attribute lists in the three call payloads are
-  plain fields too. The fix-round-2 recommendation is a `RefCell` per payload **with
-  the bundles moved out beside it**, so no public getter changes — `OperandBundleUse`
-  borrows `&'ctx OperandBundleData`, which is exactly why the bundles cannot go
-  inside the `RefCell`.
-- `ValueData.debug_loc` is `pub(super) debug_loc: Option<DebugLoc>` (`value.rs`),
-  read through a `debug_loc()` getter and never written after construction, so
-  copying a debug location needs either a setter or a context helper.
-
-Both setters take the `&Module<B, Unverified>` mutation token, per the rule that
-mutation requires the unverified capability.
+One piece of §2 stays open and moved to `docs/future-work.md`: an orphan block
+cannot join a function, because `BasicBlock::insertInto` is not ported.
 
 ---
 
@@ -400,12 +336,7 @@ All at `02ae334`. None of these is checked by CI; re-run rather than quote.
 | F2 boundary markers = **66** (§7) | `rg -c 'boundary \(F2\)' crates/ \| awk -F: '{s+=$2} END {print s}'` |
 | Unused module tokens = **74** in three spellings (§5) | `rg -o '_module\w*\s*:\s*&[^,)]*' crates/ --no-filename \| sort \| uniq -c \| sort -rn` |
 | No test pins the foreign token (§5) | `rg -n 'throwaway\|foreign token\|other module.*token\|another module.*token' crates/*/tests/` → 1 unrelated doc-comment hit |
-| `create_detached_instruction` is absent (§2) | `rg -c 'create_detached_instruction' crates/` → no files |
-| `detach_from_parent` is the only `Detached` producer (§2) | `rg -n 'state::Detached, B>' crates/llvmkit-ir/src/instruction.rs` |
 | `PlacedInstruction` is `Copy` (§1) | default `#[derive(Branded)]` set is `Clone, Copy, Debug, PartialEq, Eq, Hash` — `crates/llvmkit-macros/src/lib.rs`, `derive_branded` rustdoc |
-| No `CallBase` trait; `with_operand_bundles` is taken (§3) | `rg -n 'trait CallBase' crates/` → no match; `rg -n 'with_operand_bundles' crates/` → `instr_types.rs` (`pub(crate)`) + 3 `ir_builder.rs` callers |
-| No `set_tail_call_kind`; `set_attributes` is function-level (§4) | `rg -n 'fn set_tail_call_kind\|fn set_attributes' crates/` → `function.rs` only |
-| `tail_kind` and `debug_loc` are plain fields (§4) | `rg -n 'tail_kind\|debug_loc' crates/llvmkit-ir/src/instr_types.rs crates/llvmkit-ir/src/value.rs` |
 | `FnReshape::split_block_before` is absent (§9) | `rg -n 'fn split_' crates/llvmkit-ir/src/pass_context.rs` → `split_block` only |
 | `value_from_slot` has **7** copies (§9) | `rg -n 'fn value_from_slot' crates/llvmkit-ir/src/` |
 | Untracked specs = **15**, tracked design docs = **5** (§10) | `ls docs/superpowers/specs/ \| wc -l`; `ls docs/design/` |
@@ -417,17 +348,16 @@ backed by rust-analyzer's call graph. Each is an existence-or-count question, wh
 answers exactly; a claim about *reachability* (which §5 and §7 both turn on) is not, and is
 marked where it appears.
 
-Three things in this document come from the program's own `HANDOFF.md` rather
+Two things in this document come from the program's own `HANDOFF.md` rather
 than from a command run here, and each is marked where it appears:
 
 - the 21-commit span of Task 24 (§ frame) — re-derivable from `git log`;
-- the `create_detached_instruction` body sketch (§2) — re-derivable from
-  `IrBuilder::append_instruction`;
 - the statement that a foreign `DynBrand` token unlocks a verified module (§5) —
   **not** re-derivable by reading alone; it needs the reproduction §5 asks for.
 
-None of the three was re-derived for this document. The mutation check quoted in
-§1, and the design shapes in §3 and §4, likewise come from the program's task
-reports rather than from a run here; they describe work that was done, so they
-are history rather than premises, but a session acting on §3 or §4 should still
-read the payload definitions before trusting the recommended `RefCell` placement.
+Neither was re-derived for this document. The mutation check quoted in §1
+likewise comes from the program's task reports rather than from a run here; it
+describes work that was done, so it is history rather than a premise. (A third
+item, the detached-creation body sketch, left with §2 when it closed — and the
+`RefCell` placement §4 recommended was not what shipped, which is the case for
+re-deriving a recorded design before building on it.)

@@ -509,6 +509,17 @@ impl<'ctx, B: ModuleBrand> ModuleRef<'ctx, B> {
     pub(super) fn value_data(self, id: ValueSlot) -> &'ctx ValueData {
         self.core.context().value_data(id)
     }
+
+    /// Crate-internal: resolve a call site's
+    /// [`CallAttributesSlot`](crate::instr_types::CallAttributesSlot) to the
+    /// interned list via the owning module's context.
+    #[inline]
+    pub(super) fn call_attributes(
+        self,
+        slot: crate::instr_types::CallAttributesSlot,
+    ) -> &'ctx crate::instr_types::CallAttributeData {
+        self.core.context().call_attributes(slot)
+    }
 }
 
 impl<'ctx, B: ModuleBrand> From<&'ctx ModuleCore> for ModuleRef<'ctx, B> {

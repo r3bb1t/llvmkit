@@ -24,6 +24,7 @@ use std::collections::HashMap;
 
 use super::value::{GlobalFieldKind, ValueUse};
 use crate::constant::{ConstantData, ConstantExprData};
+use crate::instr_types::{CallAttributeData, CallAttributesSlot};
 use crate::r#type::{StructBody, TypeData, TypeSlot};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
 
@@ -87,6 +88,14 @@ pub(crate) struct Context {
     token_none_constant: Cell<Option<ValueSlot>>,
     target_ext_none_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     ptrauth_constants: RefCell<PtrauthConstantMap>,
+
+    // ---- Call-site attribute lists, uniqued as `LLVMContextImpl::AttrsLists`
+    // uniques an `AttributeListImpl`. A call site holds a slot into the arena,
+    // so `CallBase::setAttributes` swaps the slot and never edits a list
+    // another call site shares; the arena is append-only, so a reader's
+    // `&CallAttributeData` stays valid however many lists are added after it.
+    call_attribute_lists: boxcar::Vec<CallAttributeData>,
+    call_attribute_slots: RefCell<HashMap<CallAttributeData, CallAttributesSlot>>,
 }
 
 /// Intern key for [`ConstantData::Int`](crate::constant::ConstantData::Int):
@@ -191,6 +200,8 @@ impl Context {
             token_none_constant: Cell::new(None),
             target_ext_none_constants: RefCell::new(HashMap::new()),
             ptrauth_constants: RefCell::new(HashMap::new()),
+            call_attribute_lists: boxcar::Vec::new(),
+            call_attribute_slots: RefCell::new(HashMap::new()),
         }
     }
 
@@ -579,6 +590,31 @@ impl Context {
     pub(crate) fn push_value(&self, data: ValueData) -> ValueSlot {
         let idx = self.values.push(data);
         ValueSlot::from_index(idx)
+    }
+
+    // ---- Call-site attribute lists ----
+
+    /// The slot holding `attrs`, interning it on first sight. Mirrors
+    /// `AttributeList::getImpl`'s `FoldingSet` lookup in
+    /// `LLVMContextImpl::AttrsLists`: equal lists get one slot.
+    pub(crate) fn intern_call_attributes(&self, attrs: CallAttributeData) -> CallAttributesSlot {
+        if let Some(&slot) = self.call_attribute_slots.borrow().get(&attrs) {
+            return slot;
+        }
+        let slot = CallAttributesSlot::from_index(self.call_attribute_lists.push(attrs.clone()));
+        self.call_attribute_slots.borrow_mut().insert(attrs, slot);
+        slot
+    }
+
+    /// The attribute list a call site's slot names. Address is stable for the
+    /// lifetime of the owning module, as [`Self::value_data`]'s is.
+    pub(crate) fn call_attributes(&self, slot: CallAttributesSlot) -> &CallAttributeData {
+        match self.call_attribute_lists.get(slot.arena_index()) {
+            Some(attrs) => attrs,
+            None => unreachable!(
+                "invalid CallAttributesSlot: minted only by intern_call_attributes on this context"
+            ),
+        }
     }
 
     fn register_constant_operand_uses(&self, user: ValueSlot) {

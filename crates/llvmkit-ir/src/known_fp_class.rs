@@ -1207,11 +1207,8 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             // Upstream consults `nsz` on the call to decide whether the
             // denormal mode matters at all. It reads it through `Q.IIQ`, so a
             // query told to ignore instruction flags must not see it.
-            let has_no_signed_zeros = query.uses_instruction_info()
-                && data
-                    .attrs
-                    .fast_math_flags_value()
-                    .contains(FastMathFlags::NO_SIGNED_ZEROS);
+            let has_no_signed_zeros =
+                query.uses_instruction_info() && data.fmf.contains(FastMathFlags::NO_SIGNED_ZEROS);
             let mut known = KnownFpClass::sqrt(
                 known_source,
                 if has_no_signed_zeros {
@@ -1881,7 +1878,7 @@ fn fast_math_flags(kind: &InstructionKindData) -> Option<FastMathFlags> {
         | InstructionKindData::Frem(data) => Some(data.fmf),
         InstructionKindData::Fneg(data) => Some(data.fmf),
         InstructionKindData::Fcmp(data) => Some(data.fmf),
-        InstructionKindData::Call(data) => Some(data.attrs.fast_math_flags_value()),
+        InstructionKindData::Call(data) => Some(data.fmf),
         _ => None,
     }
 }

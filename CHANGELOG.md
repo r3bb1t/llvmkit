@@ -19,6 +19,61 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — call sites created in no block, and copied with other bundles
+
+- **`CallInst::create_detached` / `InvokeInst::create_detached`** port
+  `CallInst::Create(Ty, Func, Args, Bundles, Name)` and
+  `InvokeInst::Create(Ty, Func, IfNormal, IfException, Args, Bundles, Name)`
+  with no insert position. They return a `DetachedCallSite<'ctx, C, B>` — the
+  linear `Instruction<'ctx, Detached, B>`, to insert with `insert_before` /
+  `insert_after` / `append_to` or discard with `drop_detached`, beside `C`, the
+  typed view. A `CallSiteConfig` carries the name and bundles. Every operand
+  takes the checked door, an argument list that does not fit is refused where
+  upstream asserts, and a refusal creates nothing; `IrBuilder::call_erased` now
+  runs the very same checks before it inserts.
+- **`BasicBlock::create_orphan`** ports `BasicBlock::Create(Context, Name)` with
+  no parent: a block in no function, which today serves as a detached call
+  site's destination. It cannot yet join a function — `BasicBlock::insertInto`
+  is not ported, recorded in `docs/future-work.md`.
+- **The sealed `CallBase` trait**, over `CallInst`, `InvokeInst` and
+  `CallBrInst`. `with_operand_bundles` ports `CallBase::Create(CallBase *CB,
+  ArrayRef<OperandBundleDef>, InsertPosition)` and the three per-class copies it
+  switches to, statement for statement: same function type, callee, arguments,
+  destinations (`callbr`'s indirect ones included) and name, then tail-call
+  kind, calling convention, fast-math flags, attribute list and debug location,
+  with only the bundles replaced. Upstream's `llvm_unreachable("Unknown CallBase
+  sub-class!")` arm has no counterpart, since nothing else implements the trait
+  (D1). Each type also has the method inherently.
+- **Setters:** `CallInst::set_tail_call_kind` ports `CallInst::setTailCallKind`,
+  and `set_attributes` on all three call sites ports `CallBase::setAttributes`:
+  it replaces the attribute list and leaves the fast-math flags and bundles
+  alone, as upstream's does.
+- **Two upstream tests port whole:** `InstructionsTest.AlterCallBundles` and
+  `InstructionsTest.AlterInvokeBundles`, which `docs/future-work.md` had listed
+  as unportable. `AsmWriterTest.PrintNullOperandBundle` stays N/A by model.
+
+### Changed — a call site's attribute list holds attributes only
+
+- **Breaking (llvmkit-ir): `CallAttributeData` loses `fast_math_flags` and
+  `fast_math_flags_value`.** A call's fast-math flags are its
+  `SubclassOptionalData` upstream, not part of the `AttributeList` a `CallBase`
+  holds, and they now live on the call beside the list — as its operand bundles
+  do, which are operands. `CallAttributeData` is the `AttributeList` port and
+  nothing else, which is what lets replacing a call site's list leave its flags
+  and bundles alone, as `CallBase::setAttributes` does. The type was shared by
+  `invoke` and `callbr` too, so flags set there were stored where nothing read
+  them; that is now unspellable.
+- **Breaking (llvmkit-ir): `IrBuilder::call_erased` takes `fmf: FastMathFlags`**
+  after `tail_call_kind`, a parameter for the same reason that one is: neither
+  `invoke` nor `callbr` is an `FPMathOperator`, so a `CallSiteConfig` field
+  would be an option two of its three consumers ignore. Non-empty flags on a
+  call whose return type is not floating-point are refused with
+  `IrError::InvalidOperation` carrying `LLParser::parseCall`'s own sentence,
+  where upstream's `Instruction::setFastMathFlags` asserts. Before this, the
+  `CallAttributeData` setter accepted flags on any call and neither the builder
+  nor `verify()` refused them, so a call llvmkit's own parser rejects could be
+  built and printed.
+
 ### Documentation — four stale or overclaiming statements corrected
 
 - **`README.md`'s D11 no longer claims every test is traced.** It said every

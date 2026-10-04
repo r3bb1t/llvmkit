@@ -14355,8 +14355,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             arg_attrs.into_boxed_slice(),
             function_attrs,
         )
-        .function_attr_groups(function_attr_groups.into_boxed_slice())
-        .fast_math_flags(fmf);
+        .function_attr_groups(function_attr_groups.into_boxed_slice());
         // `resolveFunctionType`: an explicit function type is used as written;
         // anything else is a bare *return* type and the signature is built
         // from the arguments — which is why the walk below only bites on the
@@ -14395,9 +14394,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
         // `LLParser::parseCall`'s FMF guard. Upstream builds the `CallInst`
         // first and runs `if (FMF.any()) { if (!isa<FPMathOperator>(CI)) {
-        // CI->deleteValue(); return error(CallLoc, …); } }`. llvmkit has no
-        // orphan-then-delete — `append_instruction` attaches — so the guard
-        // runs before construction instead. Observably identical: nothing
+        // CI->deleteValue(); return error(CallLoc, …); } }`. This parser builds
+        // every instruction through `IrBuilder`, which attaches as it creates
+        // (`CallInst::create_detached` is the orphan form, unused here), so
+        // the guard runs before construction instead. Observably identical: nothing
         // between the two points can fail, and this guard still precedes the
         // `llvm.dbg` guard exactly as upstream's does. The anchor is
         // upstream's `CallLoc`, not the current token.
@@ -14432,14 +14432,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `Value *Callee` and `parseCall` has no direct/indirect fork. The
         // three `ParsedCallee` variants differ only in how the operand is
         // erased, which is `convertValIDToValue`'s switch, not a second
-        // instruction shape. `setTailCallKind`, `setCallingConv` and
-        // `setAttributes` ride along.
+        // instruction shape. `setTailCallKind`, `setCallingConv`,
+        // `setFastMathFlags` and `setAttributes` ride along.
         let call = b
             .call_erased::<llvmkit_ir::Dyn, _, _>(
                 parsed_fn_ty,
                 callee.as_erased(),
                 args,
                 tail_kind,
+                fmf,
                 llvmkit_ir::CallSiteConfig::new(result_name.as_str())
                     .calling_conv(calling_conv)
                     .attrs(call_attrs)

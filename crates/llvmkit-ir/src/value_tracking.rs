@@ -876,7 +876,10 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             CallKnownBitsInputs {
                 callee_id: data.callee.get(),
                 args: &data.args,
-                return_attrs: data.attrs.return_attrs(),
+                return_attrs: value
+                    .module
+                    .call_attributes(data.attrs.get())
+                    .return_attrs(),
                 instruction: inst,
             },
             query,
@@ -888,7 +891,10 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             CallKnownBitsInputs {
                 callee_id: data.callee.get(),
                 args: &data.args,
-                return_attrs: data.attrs.return_attrs(),
+                return_attrs: value
+                    .module
+                    .call_attributes(data.attrs.get())
+                    .return_attrs(),
                 instruction: inst,
             },
             query,
@@ -1122,16 +1128,13 @@ pub(crate) fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
     call: Value<'ctx, B>,
 ) -> Option<Value<'ctx, B>> {
     // `dyn_cast<CallBase>`.
-    let (args, callee, arg_attrs) = match instruction_kind(call)? {
-        InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs.arg_attrs()),
-        InstructionKindData::Invoke(data) => {
-            (&data.args, data.callee.get(), data.attrs.arg_attrs())
-        }
-        InstructionKindData::CallBr(data) => {
-            (&data.args, data.callee.get(), data.attrs.arg_attrs())
-        }
+    let (args, callee, attrs) = match instruction_kind(call)? {
+        InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs.get()),
+        InstructionKindData::Invoke(data) => (&data.args, data.callee.get(), data.attrs.get()),
+        InstructionKindData::CallBr(data) => (&data.args, data.callee.get(), data.attrs.get()),
         _ => return None,
     };
+    let arg_attrs = call.module.call_attributes(attrs).arg_attrs();
 
     // `if (Attrs.hasAttrSomewhere(Kind, &Index))`.
     let index = returned_parameter_index(arg_attrs.len(), |index| {
@@ -4891,7 +4894,7 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
         // would answer false — conservative in the safe direction.
         call @ (InstructionKindData::Call(_)
         | InstructionKindData::Invoke(_)
-        | InstructionKindData::CallBr(_)) => !call_returns_noundef(call),
+        | InstructionKindData::CallBr(_)) => !call_returns_noundef(value, call),
 
         // Out-of-range lane indices give poison.
         InstructionKindData::ExtractElement(data) => {
@@ -4985,8 +4988,11 @@ fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// True when the call/invoke/callbr's return carries `noundef`.
-fn call_returns_noundef(kind: &InstructionKindData) -> bool {
-    call_return_attrs(kind).is_some_and(|stored| {
+fn call_returns_noundef<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    kind: &InstructionKindData,
+) -> bool {
+    call_return_attrs(anchor, kind).is_some_and(|stored| {
         stored
             .iter()
             .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::NoUndef)))
@@ -5000,19 +5006,31 @@ fn call_returns_noundef(kind: &InstructionKindData) -> bool {
 /// which accepts all three because the two dereferenceability attributes imply
 /// `noundef`. [`call_returns_noundef`] is the narrower `canCreateUndefOrPoison`
 /// test, which reads only the first.
-fn call_return_is_well_defined(kind: &InstructionKindData) -> bool {
-    call_return_attrs(kind).is_some_and(|stored| stored.iter().any(is_well_defined_attribute))
+fn call_return_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    kind: &InstructionKindData,
+) -> bool {
+    call_return_attrs(anchor, kind)
+        .is_some_and(|stored| stored.iter().any(is_well_defined_attribute))
 }
 
-/// The return-position attributes of a call/invoke/callbr.
-fn call_return_attrs(kind: &InstructionKindData) -> Option<&[AttributeStored]> {
+/// The return-position attributes of a call/invoke/callbr. `anchor` is any
+/// value of `kind`'s module, whose context holds the interned attribute list.
+fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    kind: &InstructionKindData,
+) -> Option<&'ctx [AttributeStored]> {
     let attrs = match kind {
-        InstructionKindData::Call(data) => &data.attrs,
-        InstructionKindData::Invoke(data) => &data.attrs,
-        InstructionKindData::CallBr(data) => &data.attrs,
+        InstructionKindData::Call(data) => data.attrs.get(),
+        InstructionKindData::Invoke(data) => data.attrs.get(),
+        InstructionKindData::CallBr(data) => data.attrs.get(),
         _ => return None,
     };
-    attrs.return_attrs().get(AttrIndex::Return)
+    anchor
+        .module
+        .call_attributes(attrs)
+        .return_attrs()
+        .get(AttrIndex::Return)
 }
 
 /// Ports `llvm::propagatesPoison(const Use &)`: does poison in the
@@ -6007,7 +6025,7 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
     // Nor can a call whose return is annotated `noundef`, `dereferenceable` or
     // `dereferenceable_or_null` — the latter two imply the first.
-    if call_return_is_well_defined(operator) {
+    if call_return_is_well_defined(value, operator) {
         return Ok(true);
     }
 

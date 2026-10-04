@@ -617,7 +617,8 @@ forms use `asm.function_type()`. A caller that sets the override gets no error
 and no effect — the exact shape `CLAUDE.md` bans ("never a silent no-op or
 swallowed error"). The declared-callee siblings `invoke_dyn_seeded` and
 `callbr_with_config` do honour it, through `resolve_call_site_type`, and
-`call_erased` honours it through `resolve_call_site_type_for_erased_callee`.
+`call_erased` honours it through `resolve_erased_call_site_type`, as the
+detached `CallInst::create_detached` / `InvokeInst::create_detached` do.
 
 This is llvmkit's own API surface rather than an upstream behaviour, and no
 caller in the tree sets `call_site_type` on those three paths — `parse_invoke`
@@ -625,8 +626,8 @@ and `parse_callbr` pass the call-site type positionally — so it is recorded
 here rather than in [`divergences.md`](divergences.md). It is reachable by any
 external caller.
 
-**The fix:** route the three through `resolve_call_site_type_for_erased_callee`,
-with `asm.function_type()` as the fallback for the two inline-asm forms.
+**The fix:** route the three through `resolve_erased_call_site_type`, with
+`asm.function_type()` as the fallback for the two inline-asm forms.
 
 **Why it is deferred:** that is a behaviour change for any caller that was
 setting the field, on three entry points unrelated to the `call` construction
@@ -1839,33 +1840,40 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 - RAII-style `InsertPointGuard` / `FastMathFlagGuard` analogs (Rust shape:
   scoped closure `with_insert_point(bb, |b| ...)` rather than Drop guards).
 
-## Operand bundles — three upstream unit tests not ported (found 2026-09-19, Task 24 fix round 1)
+## Operand bundles — one upstream unit test not portable by model (found 2026-09-19, Task 24 fix round 1)
 
 The bundle split (`OperandBundleDef` in, `OperandBundleUse` out, as
 `IR/InstrTypes.h` has them) was checked against the three upstream unit tests
-that exercise bundles. None ports whole, for these reasons:
+that exercise bundles. Two now port whole —
+`InstructionsTest.AlterCallBundles` and `AlterInvokeBundles`, as
+`builder_call::alter_call_bundles` / `alter_invoke_bundles`, since
+`CallBase::Create(CallBase *CB, ArrayRef<OperandBundleDef>, InsertPosition)`
+has its port in the `CallBase` trait. The third does not:
 
-- `InstructionsTest.AlterCallBundles` and `InstructionsTest.AlterInvokeBundles`
-  (`unittests/IR/InstructionsTest.cpp`) build a call or invoke, then copy it
-  with its bundles replaced — `CallInst::Create(Call.get(), NewBundle)` /
-  `InvokeInst::Create(Invoke.get(), NewBundle)`, the `CallBase::Create(CallBase *CB,
-  ArrayRef<OperandBundleDef> Bundles, InsertPosition)` family — and compare the
-  copy's arguments, calling convention, tail kind, `cold` attribute, debug
-  location and bundle. llvmkit has no such copy constructor:
-  `rg -n "fn \w*(clone|bundles|create)\w*" crates/llvmkit-ir/src/instructions.rs crates/llvmkit-ir/src/instruction.rs`
-  finds only `Clone` impls of the copyable views and the new `operand_bundles`
-  readers. Closing it means a "re-create this call site with other bundles"
-  constructor (the upstream shape inserts the copy detached, which llvmkit's
-  typestate would spell as a `Detached` instruction). The two tests port whole
-  once it exists; until then the bundle round trip is pinned by
-  `cross_module_handles::an_operand_bundle_input_from_another_module_is_refused`
-  (positive control) and `parser_calls::operand_bundle_reads_back_and_refuses_a_duplicated_tag`,
-  neither of which claims to be these ports.
 - `AsmWriterTest.PrintNullOperandBundle` (`unittests/IR/AsmWriterTest.cpp`)
   nulls a bundle input with `dropAllReferences()` and checks the printer's
   `<null operand bundle!>`. Not portable by model: a stored input is an arena
   slot, never null, so the branch has no llvmkit state to print — recorded at
   `fmt_operand_bundles` in `asm_writer.rs` since the operand-bundle parity work.
+
+## A block in no function cannot join one (found 2026-10-04, Task 24 finding 8)
+
+`BasicBlock::create_orphan` ports `BasicBlock::Create(Context, Name)` with no
+parent, which `InstructionsTest.AlterInvokeBundles` needs for its two
+destinations. Upstream then lets such a block join a function with
+`BasicBlock::insertInto(Function *, BasicBlock *InsertBefore)`; llvmkit has no
+port of that (`rg -n "fn insert_into" crates/llvmkit-ir/src/` finds nothing),
+so an orphan today can only be named — as a detached call site's destination —
+and never placed. `FunctionValue::move_basic_block_to_end` takes a block that is
+already in a function, so it is not that port.
+
+**Why it is not done:** joining a function is more than appending to its block
+list. The block's name and every one of its instructions' names have to enter
+the function's value-symbol table and be uniqued there, as `insertInto`'s
+`SymbolTableListTraits::addNodeToList` does, and a block's instructions may
+already carry uses that the move must not disturb. No upstream test that
+llvmkit ports needs it yet; it wants its own port, test-first, rather than a
+rider on the bundle copy.
 
 ## Ergonomics backlog (from the core audit)
 

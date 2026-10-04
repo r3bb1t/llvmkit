@@ -670,6 +670,28 @@ the anchor's current block and refuse a stale witness with
 variant there. Making staleness unrepresentable needs exclusive access to a
 function's layout; that design is recorded in `docs/future-work.md`, not built.
 
+An instruction can also be *created* in no block, as upstream's `Create` with
+no insert position makes one. `CallInst::create_detached` and
+`InvokeInst::create_detached` return the linear `Instruction<Detached>` beside
+the typed view of the same call site, and any call site copies itself with
+other operand bundles through the sealed `CallBase` trait — the port of
+`CallBase::Create(CB, Bundles)`, whose `llvm_unreachable` default arm has
+nothing left to catch, since only `CallInst`, `InvokeInst` and `CallBrInst`
+implement it:
+
+```rust
+let bundle = OperandBundleDef::new(OperandBundleTag::Deopt, [v]);
+let (copy, copy_view) = call.with_operand_bundles(&m, [bundle])?;
+assert_eq!(copy_view.calling_conv(), call.calling_conv());
+// The copy is in no block until it is placed — or dropped.
+let anchor = call.as_view().placed().ok_or(IrError::InstructionHasNoParent)?;
+copy.insert_after(&m, anchor)?;
+```
+
+The copy keeps everything else upstream's does — arguments, tail-call kind,
+calling convention, fast-math flags, attribute list and debug location — and
+`set_tail_call_kind` / `set_attributes` change those afterwards.
+
 Run the examples:
 
 ```bash

@@ -4,7 +4,7 @@
 //! Each handle is a thin view onto an attached instruction in some basic
 //! block. Internally it stores the `(ValueSlot, ModuleRef, TypeSlot)` triple ---
 //! the same shape `Value` uses --- so it does not depend on
-//! [`Instruction`](crate::Instruction)'s `!Copy` lifecycle handle. Copyable handles expose
+//! [`Instruction`]'s `!Copy` lifecycle handle. Copyable handles expose
 //! [`InstructionView`] for read-only rediscovery;
 //! lifecycle mutation requires a builder-produced instruction or
 //! [`BlockCursor`](crate::iter::BlockCursor).
@@ -61,9 +61,18 @@ use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     LandingPadClauseKind, PhiData, ReturnOpData,
 };
-use super::instr_types::{OperandBundleTag, OperandBundleUse};
-use super::instruction::{InstructionKindData, InstructionView};
+use super::instr_types::{
+    CallAttributeData, CallSiteParts, OperandBundleDef, OperandBundleTag, OperandBundleUse,
+};
+use super::instruction::state::Detached as InstructionDetached;
+use super::instruction::{
+    Instruction, InstructionKindData, InstructionView, copy_debug_location,
+    create_detached_instruction,
+};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
+use super::ir_builder::{
+    CallSiteConfig, ErasedCallOperands, admit_erased_call_operands, store_operand_bundles,
+};
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
@@ -72,8 +81,8 @@ use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 #[cfg(test)]
 use super::value::IntoPointerValue;
 use super::value::{
-    FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueSlotAccess,
-    ValueUse,
+    FloatValue, IntValue, IntoErasedValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot,
+    ValueSlotAccess, ValueUse,
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
@@ -885,7 +894,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         self.payload().calling_conv
     }
     pub fn tail_call_kind(self) -> TailCallKind {
-        self.payload().tail_kind
+        self.payload().tail_kind.get()
     }
     /// Whether this call, or the function it calls, has the function
     /// attribute `kind`. Mirrors `CallBase::hasFnAttr(Attribute::AttrKind)`:
@@ -900,14 +909,19 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     /// half (`hasFnAttrImpl(Attribute::NoBuiltin)`) reads.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+        call_site_has_fn_attr(
+            self.module,
+            payload.callee.get(),
+            self.module.call_attributes(payload.attrs.get()),
+            kind,
+        )
     }
     /// The call's operand bundles, in order. Mirrors reading
     /// `CallBase::getOperandBundleAt(0 .. getNumOperandBundles())`.
     pub fn operand_bundles(
         self,
     ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
-        OperandBundleUse::all(&self.payload().attrs, self.module)
+        OperandBundleUse::all(&self.payload().operand_bundles, self.module)
     }
     /// The call's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; a call carrying more than one bundle of
@@ -917,7 +931,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         self,
         tag: &OperandBundleTag,
     ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
-        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+        OperandBundleUse::find(&self.payload().operand_bundles, self.module, tag)
     }
     /// Return value, or `None` for a void-returning callee. Available
     /// on every `R`; the typed `return_int_value` /
@@ -932,6 +946,168 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         } else {
             Some(Value::from_parts(self.id, self.module, self.ty))
         }
+    }
+
+    /// A `call` in no block. Port of `CallInst::Create(FunctionType *Ty,
+    /// Value *Func, ArrayRef<Value *> Args, ArrayRef<OperandBundleDef>
+    /// Bundles, const Twine &NameStr)` with no insert position
+    /// (`IR/Instructions.h`) — the creation half of
+    /// [`IrBuilder::call_erased`](crate::IrBuilder::call_erased), which runs
+    /// the same checks and then inserts.
+    ///
+    /// `config` carries `Create`'s last two parameters, the name and the
+    /// bundles, and may also carry a calling convention, attributes and a
+    /// [`call_site_type`](CallSiteConfig::call_site_type) override that wins
+    /// over `fn_ty` — the `setCallingConv` / `setAttributes` a caller would
+    /// otherwise run straight after. Left at [`CallSiteConfig::new`]'s
+    /// defaults it builds what `Create` does: the `C` convention, no
+    /// attributes, no tail-call kind and no fast-math flags.
+    /// [`set_tail_call_kind`](Self::set_tail_call_kind) and
+    /// [`set_attributes`](Self::set_attributes) change those afterwards, as
+    /// upstream's setters do.
+    ///
+    /// Returns the linear [`Instruction`] in the
+    /// [`Detached`](crate::instruction::state::Detached) state — insert it
+    /// with [`Instruction::insert_before`], [`Instruction::insert_after`] or
+    /// [`Instruction::append_to`], or discard it with
+    /// [`Instruction::drop_detached`] — beside the typed view of the same
+    /// call.
+    ///
+    /// Every operand takes the checked door: a function type of another
+    /// module is refused with [`IrError::ForeignType`], and a callee,
+    /// argument or bundle input with [`IrError::ForeignValueId`]. An argument
+    /// list that does not fit the call-site type is refused with
+    /// [`IrError::CallArgumentCountMismatch`] or
+    /// [`IrError::CallArgumentTypeMismatch`], where upstream asserts, and a
+    /// marker `R` that does not describe the return type with
+    /// [`IrError::ReturnTypeMismatch`]. A refusal creates nothing.
+    pub fn create_detached<I, V>(
+        module_token: &'ctx Module<B, Unverified>,
+        fn_ty: FunctionType<'ctx, B>,
+        callee: Value<'ctx, B>,
+        args: I,
+        config: CallSiteConfig<'ctx, B>,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+    {
+        let module = module_token.core_ref();
+        let ErasedCallOperands {
+            fn_ty,
+            return_ty,
+            callee,
+            args,
+        } = admit_erased_call_operands::<R, B, I, V>(module, fn_ty, callee, args, &config)?;
+        let (name, parts) = config.into_parts(module)?;
+        let payload = CallInstData::new(
+            callee,
+            fn_ty.slot_trusting_same_module(),
+            args,
+            TailCallKind::None,
+            FastMathFlags::empty(),
+            parts,
+        );
+        let instruction = create_detached_instruction(
+            ModuleRef::new(module),
+            return_ty,
+            InstructionKindData::Call(payload),
+            &name,
+        );
+        let call = Self::from_raw(instruction.slot_trusting_same_module(), module, return_ty);
+        Ok((instruction, call))
+    }
+
+    /// Replace the call's tail-call marker. Port of
+    /// `CallInst::setTailCallKind` (`IR/Instructions.h`), which checks
+    /// nothing; whether a `musttail` call is well formed is the verifier's
+    /// question (`Verifier::verifyMustTailCall`), as it is upstream.
+    ///
+    /// Takes the `Unverified` module token, like every other mutator on a
+    /// view, so a [`Module<B, Verified>`](crate::Module) cannot be changed
+    /// through one.
+    pub fn set_tail_call_kind(self, _module: &'ctx Module<B, Unverified>, kind: TailCallKind) {
+        self.payload().tail_kind.set(kind);
+    }
+
+    /// Replace the call's attribute list. Port of `CallBase::setAttributes`
+    /// (`IR/InstrTypes.h`). The list is interned in the module and the call
+    /// names it, as upstream's call holds a handle to a list uniqued in the
+    /// `LLVMContext`, so another call site with an equal list is untouched,
+    /// and so are this call's operand bundles and fast-math flags, which are
+    /// not part of the list.
+    ///
+    /// Takes the `Unverified` module token, as
+    /// [`set_tail_call_kind`](Self::set_tail_call_kind) does.
+    pub fn set_attributes(self, _module: &'ctx Module<B, Unverified>, attrs: CallAttributeData) {
+        let slot = self.module.module().context().intern_call_attributes(attrs);
+        self.payload().attrs.set(slot);
+    }
+
+    /// A copy of this call in no block, carrying `bundles` in place of its
+    /// operand bundles. Port of `CallInst::Create(CallInst *CI,
+    /// ArrayRef<OperandBundleDef> OpB, InsertPosition InsertPt)`
+    /// (`lib/IR/Instructions.cpp`) with no insert position, statement for
+    /// statement: a `call` of the same function type, callee and arguments
+    /// under this call's name, then its tail-call kind, calling convention,
+    /// fast-math flags (`SubclassOptionalData`), attribute list and debug
+    /// location. Any other metadata attachment stays behind, as upstream's
+    /// does.
+    ///
+    /// Returns the copy as [`create_detached`](Self::create_detached) does.
+    /// Every bundle input takes the checked door: one of another module is
+    /// refused with [`IrError::ForeignValueId`] before anything is created.
+    /// [`CallBase::with_operand_bundles`] dispatches here.
+    pub fn with_operand_bundles<Bundles>(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        bundles: Bundles,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        let original = self.payload();
+        let operand_bundles = store_operand_bundles(bundles, self.module.id())?;
+        // `std::vector<Value *> Args(CI->arg_begin(), CI->arg_end());
+        //  auto *NewCI = CallInst::Create(CI->getFunctionType(),
+        //      CI->getCalledOperand(), Args, OpB, CI->getName(), InsertPt);`
+        // and then, as llvmkit's payload takes them at creation:
+        // `NewCI->setTailCallKind(CI->getTailCallKind());
+        //  NewCI->setCallingConv(CI->getCallingConv());
+        //  NewCI->SubclassOptionalData = CI->SubclassOptionalData;
+        //  NewCI->setAttributes(CI->getAttributes());` — the last naming the
+        // same interned list, as upstream's copy shares the `AttributeList`.
+        let payload = CallInstData::new(
+            original.callee.get(),
+            original.fn_ty,
+            original.args.iter().map(core::cell::Cell::get),
+            original.tail_kind.get(),
+            original.fmf,
+            CallSiteParts {
+                calling_conv: original.calling_conv,
+                attrs: original.attrs.get(),
+                operand_bundles,
+            },
+        );
+        let name = self.as_view().name().unwrap_or_default();
+        let instruction = create_detached_instruction(
+            self.module,
+            self.ty,
+            InstructionKindData::Call(payload),
+            &name,
+        );
+        // `NewCI->setDebugLoc(CI->getDebugLoc());`
+        copy_debug_location(
+            self.module.module(),
+            self.id,
+            instruction.slot_trusting_same_module(),
+        );
+        let copy = Self::from_raw(
+            instruction.slot_trusting_same_module(),
+            self.module,
+            self.ty,
+        );
+        Ok((instruction, copy))
     }
 }
 
@@ -3544,7 +3720,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn operand_bundles(
         self,
     ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
-        OperandBundleUse::all(&self.payload().attrs, self.module)
+        OperandBundleUse::all(&self.payload().operand_bundles, self.module)
     }
     /// The invoke's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; more than one bundle of the tag is
@@ -3554,20 +3730,161 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         self,
         tag: &OperandBundleTag,
     ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
-        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+        OperandBundleUse::find(&self.payload().operand_bundles, self.module, tag)
     }
     /// Whether this invoke, or the function it calls, has the function
     /// attribute `kind`. Mirrors `CallBase::hasFnAttr`, as
     /// [`CallInst::has_fn_attr`] does.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+        call_site_has_fn_attr(
+            self.module,
+            payload.callee.get(),
+            self.module.call_attributes(payload.attrs.get()),
+            kind,
+        )
     }
     pub fn normal_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().normal_dest.get())
     }
     pub fn unwind_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().unwind_dest.get())
+    }
+
+    /// An `invoke` in no block. Port of `InvokeInst::Create(FunctionType *Ty,
+    /// Value *Func, BasicBlock *IfNormal, BasicBlock *IfException,
+    /// ArrayRef<Value *> Args, ArrayRef<OperandBundleDef> Bundles, const
+    /// Twine &NameStr)` with no insert position (`IR/Instructions.h`).
+    ///
+    /// Everything [`CallInst::create_detached`] says of `config`, the checks
+    /// and the result holds here. The destinations may be any blocks of this
+    /// module, including blocks in no function
+    /// ([`BasicBlock::create_orphan`](crate::BasicBlock::create_orphan)), as
+    /// upstream's may; one of another module is refused with
+    /// [`IrError::ForeignValueId`], and a parameterised one with
+    /// [`IrError::PhiArgArityMismatch`], since neither edge of an `invoke`
+    /// carries block arguments — the guard
+    /// [`IrBuilder::invoke_with_config`](crate::IrBuilder::invoke_with_config)
+    /// applies.
+    pub fn create_detached<I, V, Normal, Unwind, RN, RU>(
+        module_token: &'ctx Module<B, Unverified>,
+        fn_ty: FunctionType<'ctx, B>,
+        callee: Value<'ctx, B>,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
+        args: I,
+        config: CallSiteConfig<'ctx, B>,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+        RN: ReturnMarker,
+        RU: ReturnMarker,
+        Normal: IntoBasicBlockLabel<'ctx, RN, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, RU, B>,
+    {
+        let module = module_token.core_ref();
+        let module_ref = ModuleRef::<B>::new(module);
+        let ErasedCallOperands {
+            fn_ty,
+            return_ty,
+            callee,
+            args,
+        } = admit_erased_call_operands::<R, B, I, V>(module, fn_ty, callee, args, &config)?;
+        let normal_dest = normal_dest
+            .into_basic_block_label(module_ref)?
+            .slot_trusting_same_module();
+        require_no_block_parameters(module_ref, normal_dest)?;
+        let unwind_dest = unwind_dest
+            .into_basic_block_label(module_ref)?
+            .slot_trusting_same_module();
+        require_no_block_parameters(module_ref, unwind_dest)?;
+        let (name, parts) = config.into_parts(module)?;
+        let payload = InvokeInstData::new(
+            callee,
+            fn_ty.slot_trusting_same_module(),
+            args,
+            normal_dest,
+            unwind_dest,
+            parts,
+        );
+        let instruction = create_detached_instruction(
+            module_ref,
+            return_ty,
+            InstructionKindData::Invoke(payload),
+            &name,
+        );
+        let invoke = Self::from_raw(instruction.slot_trusting_same_module(), module, return_ty);
+        Ok((instruction, invoke))
+    }
+
+    /// Replace the invoke's attribute list. Port of `CallBase::setAttributes`,
+    /// as [`CallInst::set_attributes`] is.
+    pub fn set_attributes(self, _module: &'ctx Module<B, Unverified>, attrs: CallAttributeData) {
+        let slot = self.module.module().context().intern_call_attributes(attrs);
+        self.payload().attrs.set(slot);
+    }
+
+    /// A copy of this invoke in no block, carrying `bundles` in place of its
+    /// operand bundles. Port of `InvokeInst::Create(InvokeInst *II,
+    /// ArrayRef<OperandBundleDef> OpB, InsertPosition InsertPt)`
+    /// (`lib/IR/Instructions.cpp`) with no insert position, statement for
+    /// statement: an `invoke` of the same function type, callee, normal and
+    /// unwind destinations and arguments under this invoke's name, then its
+    /// calling convention, attribute list and debug location. An `invoke` is
+    /// never an `FPMathOperator`, so the `SubclassOptionalData` upstream copies
+    /// holds nothing llvmkit stores.
+    ///
+    /// Refuses a bundle input of another module as
+    /// [`CallInst::with_operand_bundles`] does.
+    pub fn with_operand_bundles<Bundles>(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        bundles: Bundles,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        let original = self.payload();
+        let operand_bundles = store_operand_bundles(bundles, self.module.id())?;
+        // `std::vector<Value *> Args(II->arg_begin(), II->arg_end());
+        //  auto *NewII = InvokeInst::Create(II->getFunctionType(),
+        //      II->getCalledOperand(), II->getNormalDest(), II->getUnwindDest(),
+        //      Args, OpB, II->getName(), InsertPt);
+        //  NewII->setCallingConv(II->getCallingConv());
+        //  NewII->SubclassOptionalData = II->SubclassOptionalData;
+        //  NewII->setAttributes(II->getAttributes());`
+        let payload = InvokeInstData::new(
+            original.callee.get(),
+            original.fn_ty,
+            original.args.iter().map(core::cell::Cell::get),
+            original.normal_dest.get(),
+            original.unwind_dest.get(),
+            CallSiteParts {
+                calling_conv: original.calling_conv,
+                attrs: original.attrs.get(),
+                operand_bundles,
+            },
+        );
+        let name = self.as_view().name().unwrap_or_default();
+        let instruction = create_detached_instruction(
+            self.module,
+            self.ty,
+            InstructionKindData::Invoke(payload),
+            &name,
+        );
+        // `NewII->setDebugLoc(II->getDebugLoc());`
+        copy_debug_location(
+            self.module.module(),
+            self.id,
+            instruction.slot_trusting_same_module(),
+        );
+        let copy = Self::from_raw(
+            instruction.slot_trusting_same_module(),
+            self.module,
+            self.ty,
+        );
+        Ok((instruction, copy))
     }
 }
 
@@ -3622,7 +3939,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     pub fn operand_bundles(
         self,
     ) -> impl ExactSizeIterator<Item = OperandBundleUse<'ctx, B>> + 'ctx {
-        OperandBundleUse::all(&self.payload().attrs, self.module)
+        OperandBundleUse::all(&self.payload().operand_bundles, self.module)
     }
     /// The callbr's bundle tagged `tag`, or `None`. Mirrors
     /// `CallBase::getOperandBundle`; more than one bundle of the tag is
@@ -3632,14 +3949,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
         self,
         tag: &OperandBundleTag,
     ) -> IrResult<Option<OperandBundleUse<'ctx, B>>> {
-        OperandBundleUse::find(&self.payload().attrs, self.module, tag)
+        OperandBundleUse::find(&self.payload().operand_bundles, self.module, tag)
     }
     /// Whether this callbr, or the function it calls, has the function
     /// attribute `kind`. Mirrors `CallBase::hasFnAttr`, as
     /// [`CallInst::has_fn_attr`] does.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(self.module, payload.callee.get(), &payload.attrs, kind)
+        call_site_has_fn_attr(
+            self.module,
+            payload.callee.get(),
+            self.module.call_attributes(payload.attrs.get()),
+            kind,
+        )
     }
     pub fn default_destination(self) -> BlockId<Dyn, B> {
         BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_dest.get())
@@ -3656,6 +3978,186 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
             .collect();
         ids.into_iter()
             .map(move |id| BlockId::<Dyn, B>::from_raw(self.module.id(), id))
+    }
+
+    /// Replace the callbr's attribute list. Port of `CallBase::setAttributes`,
+    /// as [`CallInst::set_attributes`] is.
+    pub fn set_attributes(self, _module: &'ctx Module<B, Unverified>, attrs: CallAttributeData) {
+        let slot = self.module.module().context().intern_call_attributes(attrs);
+        self.payload().attrs.set(slot);
+    }
+
+    /// A copy of this callbr in no block, carrying `bundles` in place of its
+    /// operand bundles. Port of `CallBrInst::Create(CallBrInst *CBI,
+    /// ArrayRef<OperandBundleDef> OpB, InsertPosition InsertPt)`
+    /// (`lib/IR/Instructions.cpp`) with no insert position, statement for
+    /// statement: a `callbr` of the same function type, callee, default and
+    /// indirect destinations and arguments under this callbr's name, then its
+    /// calling convention, attribute list and debug location. Upstream's last
+    /// statement, `NewCBI->NumIndirectDests = CBI->NumIndirectDests`, is the
+    /// indirect-destination count, which llvmkit's payload carries as the
+    /// destinations themselves; a `callbr` is never an `FPMathOperator`, so
+    /// the `SubclassOptionalData` upstream copies holds nothing llvmkit
+    /// stores.
+    ///
+    /// Refuses a bundle input of another module as
+    /// [`CallInst::with_operand_bundles`] does.
+    pub fn with_operand_bundles<Bundles>(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        bundles: Bundles,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        let original = self.payload();
+        let operand_bundles = store_operand_bundles(bundles, self.module.id())?;
+        // `std::vector<Value *> Args(CBI->arg_begin(), CBI->arg_end());
+        //  auto *NewCBI = CallBrInst::Create(CBI->getFunctionType(),
+        //      CBI->getCalledOperand(), CBI->getDefaultDest(),
+        //      CBI->getIndirectDests(), Args, OpB, CBI->getName(), InsertPt);
+        //  NewCBI->setCallingConv(CBI->getCallingConv());
+        //  NewCBI->SubclassOptionalData = CBI->SubclassOptionalData;
+        //  NewCBI->setAttributes(CBI->getAttributes());`
+        let payload = CallBrInstData::new(
+            original.callee.get(),
+            original.fn_ty,
+            original.args.iter().map(core::cell::Cell::get),
+            original.default_dest.get(),
+            original.indirect_dests.iter().map(core::cell::Cell::get),
+            CallSiteParts {
+                calling_conv: original.calling_conv,
+                attrs: original.attrs.get(),
+                operand_bundles,
+            },
+        );
+        let name = self.as_view().name().unwrap_or_default();
+        let instruction = create_detached_instruction(
+            self.module,
+            self.ty,
+            InstructionKindData::CallBr(payload),
+            &name,
+        );
+        // `NewCBI->setDebugLoc(CBI->getDebugLoc());`
+        copy_debug_location(
+            self.module.module(),
+            self.id,
+            instruction.slot_trusting_same_module(),
+        );
+        let copy = Self::from_raw(
+            instruction.slot_trusting_same_module(),
+            self.module,
+            self.ty,
+        );
+        Ok((instruction, copy))
+    }
+}
+
+// --------------------------------------------------------------------------
+// Call sites as one interface: `CallBase`
+// --------------------------------------------------------------------------
+
+/// A call site created in no block: the linear [`Instruction`] in the
+/// [`Detached`](crate::instruction::state::Detached) state, which must be
+/// inserted ([`Instruction::insert_before`], [`Instruction::insert_after`],
+/// [`Instruction::append_to`]) or discarded ([`Instruction::drop_detached`]),
+/// beside `C`, the typed view of the same instruction. Returned by the
+/// detached constructors ([`CallInst::create_detached`],
+/// [`InvokeInst::create_detached`]) and by every
+/// [`CallBase::with_operand_bundles`].
+pub type DetachedCallSite<'ctx, C, B> = (Instruction<'ctx, InstructionDetached, B>, C);
+
+mod call_base_sealed {
+    pub trait Sealed {}
+}
+
+/// The three call-site instructions — `call`, `invoke` and `callbr` — behind
+/// one interface, for the operations upstream defines once on `CallBase`
+/// (`IR/InstrTypes.h`) and dispatches on the opcode.
+///
+/// Sealed: [`CallInst`], [`InvokeInst`] and [`CallBrInst`] are its only
+/// implementors, so upstream's `llvm_unreachable("Unknown CallBase
+/// sub-class!")` default arm has no counterpart — a value that is not a call
+/// site cannot reach these methods (D1).
+pub trait CallBase<'ctx, B: ModuleBrand + 'ctx>: Copy + call_base_sealed::Sealed {
+    /// A copy of this call site in no block, carrying `bundles` in place of
+    /// its operand bundles. Port of `CallBase::Create(CallBase *CB,
+    /// ArrayRef<OperandBundleDef> Bundles, InsertPosition InsertPt)`
+    /// (`lib/IR/Instructions.cpp`), which switches on the opcode to
+    /// [`CallInst::with_operand_bundles`],
+    /// [`InvokeInst::with_operand_bundles`] and
+    /// [`CallBrInst::with_operand_bundles`]; the trait is that switch.
+    fn with_operand_bundles<Bundles>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        bundles: Bundles,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>;
+
+    /// Replace the call site's attribute list. Port of
+    /// `CallBase::setAttributes`.
+    fn set_attributes(self, module_token: &'ctx Module<B, Unverified>, attrs: CallAttributeData);
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> call_base_sealed::Sealed for CallInst<'ctx, R, B> {}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> call_base_sealed::Sealed for InvokeInst<'ctx, R, B> {}
+impl<'ctx, B: ModuleBrand> call_base_sealed::Sealed for CallBrInst<'ctx, B> {}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallBase<'ctx, B> for CallInst<'ctx, R, B> {
+    #[inline]
+    fn with_operand_bundles<Bundles>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        bundles: Bundles,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        CallInst::with_operand_bundles(self, module_token, bundles)
+    }
+
+    #[inline]
+    fn set_attributes(self, module_token: &'ctx Module<B, Unverified>, attrs: CallAttributeData) {
+        CallInst::set_attributes(self, module_token, attrs);
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallBase<'ctx, B> for InvokeInst<'ctx, R, B> {
+    #[inline]
+    fn with_operand_bundles<Bundles>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        bundles: Bundles,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        InvokeInst::with_operand_bundles(self, module_token, bundles)
+    }
+
+    #[inline]
+    fn set_attributes(self, module_token: &'ctx Module<B, Unverified>, attrs: CallAttributeData) {
+        InvokeInst::set_attributes(self, module_token, attrs);
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> CallBase<'ctx, B> for CallBrInst<'ctx, B> {
+    #[inline]
+    fn with_operand_bundles<Bundles>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        bundles: Bundles,
+    ) -> IrResult<DetachedCallSite<'ctx, Self, B>>
+    where
+        Bundles: IntoIterator<Item = OperandBundleDef<'ctx, B>>,
+    {
+        CallBrInst::with_operand_bundles(self, module_token, bundles)
+    }
+
+    #[inline]
+    fn set_attributes(self, module_token: &'ctx Module<B, Unverified>, attrs: CallAttributeData) {
+        CallBrInst::set_attributes(self, module_token, attrs);
     }
 }
 

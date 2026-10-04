@@ -32,7 +32,7 @@ use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    BinaryOpData, BranchKind, CallAttributeData, CastOpcode, SelectInstData, call_site_has_fn_attr,
+    BinaryOpData, BranchKind, CallAttributesSlot, CastOpcode, SelectInstData, call_site_has_fn_attr,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
@@ -448,7 +448,12 @@ fn has_no_free_calls<'ctx, B: ModuleBrand + 'ctx>(
             continue;
         };
         let module: ModuleRef<B> = ModuleRef::new(anchor.module().core_ref());
-        if !call_site_has_fn_attr(module, callee, attrs, AttrKind::NoFree) {
+        if !call_site_has_fn_attr(
+            module,
+            callee,
+            module.call_attributes(attrs),
+            AttrKind::NoFree,
+        ) {
             return false;
         }
     }
@@ -910,8 +915,7 @@ fn assume_bundle_operands<'ctx, B: ModuleBrand + 'ctx>(
     let Some(InstructionKindData::Call(data)) = instruction_kind(assume) else {
         return Vec::new();
     };
-    data.attrs
-        .operand_bundles_slice()
+    data.operand_bundles
         .iter()
         .map(|bundle| {
             bundle
@@ -1212,11 +1216,11 @@ fn may_have_side_effects<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The callee and call-site attributes of a call-like instruction.
-fn call_parts(kind: &InstructionKindData) -> Option<(ValueSlot, &CallAttributeData)> {
+fn call_parts(kind: &InstructionKindData) -> Option<(ValueSlot, CallAttributesSlot)> {
     match kind {
-        InstructionKindData::Call(data) => Some((data.callee.get(), &data.attrs)),
-        InstructionKindData::Invoke(data) => Some((data.callee.get(), &data.attrs)),
-        InstructionKindData::CallBr(data) => Some((data.callee.get(), &data.attrs)),
+        InstructionKindData::Call(data) => Some((data.callee.get(), data.attrs.get())),
+        InstructionKindData::Invoke(data) => Some((data.callee.get(), data.attrs.get())),
+        InstructionKindData::CallBr(data) => Some((data.callee.get(), data.attrs.get())),
         _ => None,
     }
 }

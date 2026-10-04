@@ -91,6 +91,12 @@ wins. (`CLAUDE.md` carries the same section under the same name, condensed.)
   and return borrowing handles, not ids: `br` / `cond_br` /
   `ret` yield `TerminatedBlockInst<'ctx, R, B>`, the type alias for
   `(BasicBlock<'ctx, R, Terminated, B>, Instruction<'ctx, Attached, B>)`.
+  Constructors that create in no block return linear handles too, since what
+  they make must be inserted or discarded exactly once:
+  `CallInst::create_detached` / `InvokeInst::create_detached` and every
+  `CallBase::with_operand_bundles` yield `DetachedCallSite<'ctx, C, B>`, the
+  alias for `(Instruction<'ctx, Detached, B>, C)` with `C` the typed view, and
+  `BasicBlock::create_orphan` yields a `BasicBlock<'ctx, Dyn, Unterminated, B>`.
 - Lookups are bare nouns (C-GETTER — no `get_` prefix), and each returns the
   same currency its `add_*` twin does:
   `global -> Option<GlobalId<B>>`, likewise `alias` / `ifunc`,

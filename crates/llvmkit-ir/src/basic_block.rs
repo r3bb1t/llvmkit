@@ -37,7 +37,8 @@ use super::metadata::{
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{TypeSlot, TypeSlotAccess};
 use super::value::{
-    HasDebugLoc, HasName, Typed, Value, ValueKindData, ValueSlot, ValueSlotAccess, sealed,
+    HasDebugLoc, HasName, Typed, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess,
+    sealed,
 };
 use super::value_id::BlockId;
 use super::value_id::ViewIn;
@@ -565,6 +566,42 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockCall<R, B, Param
     #[inline]
     pub(crate) fn into_parts(self) -> (BlockId<R, B>, IrResult<Box<[ValueSlot]>>) {
         (self.target.erase_params(), self.lowered)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> BasicBlock<'ctx, Dyn, Unterminated, B> {
+    /// A block in no function. Port of `BasicBlock::Create(LLVMContext
+    /// &Context, const Twine &Name)` with no parent and no block to insert
+    /// before (`IR/BasicBlock.h`): an empty, unterminated block named `name`
+    /// (an empty `name` leaves it unnamed), whose
+    /// [`parent_function`](Self::parent_function) is `None` — upstream's
+    /// `getParent()` is null — and which prints through the orphan-block
+    /// branch of its `Display`.
+    ///
+    /// Its return marker is [`Dyn`], since no function decides one. What it
+    /// is for today is naming the destinations of a call site created in no
+    /// block ([`InvokeInst::create_detached`](crate::InvokeInst::create_detached)),
+    /// as upstream's `InstructionsTest.AlterInvokeBundles` does; llvmkit does
+    /// not yet port `BasicBlock::insertInto`, so an orphan cannot later join a
+    /// function (`docs/future-work.md`).
+    pub fn create_orphan<Name>(module_token: &'ctx Module<B, Unverified>, name: Name) -> Self
+    where
+        Name: Into<String>,
+    {
+        let module = module_token.core_ref();
+        let label_ty = module
+            .label_type::<B>()
+            .as_type()
+            .slot_trusting_same_module();
+        let name = name.into();
+        let id = module.context().push_value(ValueData {
+            ty: label_ty,
+            name: RefCell::new((!name.is_empty()).then_some(name)),
+            debug_loc: None,
+            kind: ValueKindData::BasicBlock(BasicBlockData::new(None)),
+            use_list: RefCell::new(Vec::new()),
+        });
+        Self::from_parts(id, module, label_ty)
     }
 }
 
