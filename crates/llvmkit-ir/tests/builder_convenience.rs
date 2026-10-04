@@ -5,10 +5,10 @@
 use llvmkit_ir::{IntValue, IrBuilder, IrError, Linkage, PointerValue, module_new};
 
 /// Mirrors `unittests/Analysis/VectorUtilsTest.cpp::TEST_F(BasicTest, ...)`
-/// (line 92): `IRB.CreateVectorSplat(5, ScalarC)`. The upstream call splats
+/// — its `IRB.CreateVectorSplat(5, ScalarC)` use. The upstream call splats
 /// an `i8` constant across 5 lanes; we exercise the same shape through the
 /// typed `vector_splat_dyn` wrapper. The expected AsmWriter form mirrors
-/// `lib/IR/IRBuilder.cpp::IRBuilderBase::CreateVectorSplat` lines 1141-1158
+/// `lib/IR/IRBuilder.cpp::IRBuilderBase::CreateVectorSplat`
 /// (insertelement-into-poison + zero-mask shufflevector).
 #[test]
 fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrError> {
@@ -37,9 +37,9 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
     Ok(())
 }
 
-/// Mirrors `unittests/Analysis/MemorySSATest.cpp` line 1117-1118:
-/// `B.CreatePtrAdd(Foo, B.getInt64(1), "bar")`. The expected AsmWriter form
-/// is locked against `test/Assembler/opaque-ptr.ll` line 62
+/// Mirrors `unittests/Analysis/MemorySSATest.cpp`'s
+/// `B.CreatePtrAdd(Foo, B.getInt64(1), "bar")` use. The expected AsmWriter form
+/// is locked against `test/Assembler/opaque-ptr.ll`'s `@gep`
 /// (`%res = getelementptr i8, ptr %a, i32 2`) -- the canonical upstream
 /// `; CHECK:` directive for `getelementptr i8, ptr ..., <offset>`.
 #[test]
@@ -63,7 +63,7 @@ fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Assembler/flags.ll` line 322:
+/// Mirrors `test/Assembler/flags.ll`'s `@gep_inbounds_nusw`:
 /// `%gep = getelementptr inbounds i8, ptr %p, i64 %idx`. The upstream
 /// `; CHECK:` directive is the canonical print form for
 /// `IRBuilder::CreateInBoundsPtrAdd`.

@@ -8,7 +8,7 @@
 
 use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 
-/// Mirrors `test/Assembler/2007-12-11-AddressSpaces.ll` lines 20-26
+/// Mirrors `test/Assembler/2007-12-11-AddressSpaces.ll`'s `@bar`
 /// (`define ptr addrspace(11) @bar(ptr addrspace(33) %x)`): a GEP
 /// through a `ptr addrspace(33)` base must itself print as
 /// `ptr addrspace(33)` in the GEP operand position, and the result

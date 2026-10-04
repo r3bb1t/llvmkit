@@ -302,7 +302,7 @@ const BLOCK_LABELS_FIXTURE: &str =
 /// here comes from `Out.PadToColumn(50)` itself, which the CHECK lines cannot
 /// pin.
 ///
-/// CHECK lines 13-14 (`br label %"$N"` and `"$N":`) used to be skipped,
+/// Its `br label %"$N"` and `"$N":` CHECK lines used to be skipped,
 /// because llvmkit printed `$N` bare. That is closed, so nothing in `@test1`
 /// is left out.
 #[test]
@@ -352,7 +352,7 @@ fn non_entry_blocks_print_a_predecessors_comment() {
         );
     }
 
-    // CHECK lines 15-17: `; CHECK-NEXT:   %4 = add i32 1, 1` /
+    // The block's trailing CHECK-NEXTs: `; CHECK-NEXT:   %4 = add i32 1, 1` /
     // `; CHECK-NEXT:   ret i32 %4` / `; CHECK-NEXT: }`. These follow the `$N`
     // block, so they are not reached by the loop above. Asserted as one
     // contiguous run.
@@ -639,7 +639,7 @@ fn parses_ptrtoaddr_instruction_distinct_from_ptrtoint() {
 }
 
 /// Exact scalar addrspace(1) instruction excerpt from
-/// `llvm/test/Assembler/ptrtoaddr.ll` lines 17-21.
+/// `llvm/test/Assembler/ptrtoaddr.ll`'s `@test_as1`.
 #[test]
 fn parses_ptrtoaddr_as1_scalar_instruction() {
     let printed = parse_and_print(
@@ -653,7 +653,7 @@ fn parses_ptrtoaddr_as1_scalar_instruction() {
 }
 
 /// Exact vector addrspace(1) instruction excerpt from
-/// `llvm/test/Assembler/ptrtoaddr.ll` lines 23-27.
+/// `llvm/test/Assembler/ptrtoaddr.ll`'s `@test_vec_as1`.
 #[test]
 fn parses_ptrtoaddr_as1_vector_instruction() {
     let printed = parse_and_print(

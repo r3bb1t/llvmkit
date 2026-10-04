@@ -48,16 +48,18 @@ fn fneg_with_fmf_prints_canonical_form() -> Result<(), IrError> {
     let fast = b.fp_neg_fmf::<f32, _, _>(x, FastMathFlags::fast(), "fst")?;
     b.ret(n)?;
     let text = format!("{m}");
-    // Mirrors `; CHECK: %f.nnan = fneg nnan float %op1` (compatibility.ll line 1008).
+    // Mirrors `; CHECK: %f.nnan = fneg nnan float %op1` (compatibility.ll's
+    // `@fastmathflags_unop`).
     assert!(text.contains("%n = fneg nnan float %0\n"), "got:\n{text}");
-    // Mirrors `; CHECK: %f.fast = fneg fast float %op1` (compatibility.ll line 1022).
+    // Mirrors `; CHECK: %f.fast = fneg fast float %op1` (compatibility.ll's
+    // `@fastmathflags_unop`).
     assert!(text.contains("%fst = fneg fast float %0\n"), "got:\n{text}");
     let _ = fast;
     Ok(())
 }
 
 /// Ports `test/Bitcode/compatibility.ll::instructions.unops` — the
-/// no-FMF `fneg double %op1` fixture (line 1444). Locks the print form
+/// no-FMF `fneg double %op1` fixture. Locks the print form
 /// for an unnamed result (the void-returning function discards it).
 #[test]
 fn fneg_double_no_flags_unnamed_result() -> Result<(), IrError> {
@@ -72,7 +74,7 @@ fn fneg_double_no_flags_unnamed_result() -> Result<(), IrError> {
     let _ = b.fp_neg::<f64, _, _>(x, "")?;
     b.ret_void()?;
     let text = format!("{m}");
-    // Mirrors `; CHECK: fneg double %op1` (compatibility.ll line 1445).
+    // Mirrors `; CHECK: fneg double %op1` in that fixture.
     assert!(text.contains("fneg double %0\n"), "got:\n{text}");
     Ok(())
 }
@@ -125,7 +127,8 @@ fn freeze_i8_round_trip() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` lines 1732-1741: `freeze i32 %op1`,
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.other` (the
+/// `freeze` family): `freeze i32 %op1`,
 /// `freeze i32 10`, `freeze ptr %pop`. Verifies the canonical print form
 /// for integer and pointer operand types.
 #[test]
@@ -144,15 +147,15 @@ fn freeze_int_and_pointer_print_forms() -> Result<(), IrError> {
     let _ = b.freeze(pop, "")?;
     b.ret_void()?;
     let text = format!("{m}");
-    // Mirrors `; CHECK: freeze i32 %op1` (compatibility.ll line 1733).
+    // Mirrors `; CHECK: freeze i32 %op1` in that fixture.
     assert!(text.contains("freeze i32 %0\n"), "got:\n{text}");
-    // Mirrors `; CHECK: freeze ptr %pop` (compatibility.ll line 1741).
+    // Mirrors `; CHECK: freeze ptr %pop` in that fixture.
     assert!(text.contains("freeze ptr %1\n"), "got:\n{text}");
     Ok(())
 }
 
 /// Ports `unittests/IR/VerifierTest.cpp::TEST(VerifierTest, Freeze)` — the
-/// `// Valid type : freeze(int)` arm (lines 89-93). The verifier accepts a
+/// `// Valid type : freeze(int)` arm. The verifier accepts a
 /// freeze of an integer constant.
 #[test]
 fn verifier_accepts_freeze_int() -> Result<(), IrError> {
@@ -174,7 +177,7 @@ fn verifier_accepts_freeze_int() -> Result<(), IrError> {
 // va_arg
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/variableArgumentIntrinsic.3.2.ll` line 16:
+/// Ports `test/Bitcode/variableArgumentIntrinsic.3.2.ll`'s `@varArgIntrinsic`:
 /// `%tmp = va_arg ptr %ap, i32`. There is no dedicated upstream
 /// `unittests/IR/IRBuilderTest.cpp` arm for `va_arg`; this fixture is
 /// the closest canonical-form reference.
@@ -197,7 +200,7 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 1815:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.va_arg`:
 /// `va_arg ptr %ap, i32`. Locks the canonical print form for the
 /// pointer-source / integer-destination shape exercised in the
 /// upstream `instructions.misc.intrinsics` function.
@@ -222,7 +225,7 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
 }
 
 /// Ports `test/Verifier/tbaa-allowed.ll` — the `va_arg ptr %args, i8`
-/// call site (line 17). The verifier accepts a `va_arg` when the source
+/// call site. The verifier accepts a `va_arg` when the source
 /// operand is a pointer.
 #[test]
 fn verifier_accepts_va_arg_pointer_source() -> Result<(), IrError> {

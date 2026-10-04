@@ -15,7 +15,7 @@ use llvmkit_ir::{
 // --- Positioning ------------------------------------------------------
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, DebugLoc)`
-/// (lines 1155-1190). That test exercises `Builder.SetInsertPoint(Br)` and
+/// — that test exercises `Builder.SetInsertPoint(Br)` and
 /// `Builder.SetInsertPoint(Call1->getParent(), Call1->getIterator())` --
 /// the same upstream construct our `position_before` ports.
 #[test]
@@ -75,7 +75,7 @@ fn position_past_allocas_anchors_after_alloca_prefix() -> Result<(), IrError> {
 }
 
 /// Mirrors `unittests/Frontend/OpenMPIRBuilderTest.cpp` use of
-/// `Builder.saveIP()` / `Builder.restoreIP(...)` (lines 244 / 253) --
+/// `Builder.saveIP()` / `Builder.restoreIP(...)` --
 /// the canonical upstream usage of the IRBuilder save/restore API.
 #[test]
 fn save_and_restore_insert_point_before_terminator() -> Result<(), IrError> {
@@ -215,7 +215,7 @@ fn position_at_end_dyn_rejects_a_block_from_another_module() -> Result<(), IrErr
 
 /// Mirrors `IRBuilder.h::IRBuilder::CreateNeg(V, Name)` -> `sub 0, V`.
 /// AsmWriter print form locked against
-/// `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` line 128 (which has the
+/// `test/Assembler/auto_upgrade_nvvm_intrinsics.ll`'s `@abs` (which has the
 /// upstream `; CHECK-DAG: ... = sub i32 0, %a` directive).
 /// llvmkit-specific scaffold (no upstream `TEST_F` exists for `CreateNeg`).
 #[test]
@@ -280,7 +280,8 @@ fn build_int_not_emits_xor_minus_one() -> Result<(), IrError> {
 
 /// Mirrors `IRBuilder.h::IRBuilder::CreatePointerBitCastOrAddrSpaceCast`.
 /// Upstream call site:
-/// `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 6473 invokes
+/// `unittests/Frontend/OpenMPIRBuilderTest.cpp::TEST_F(OpenMPIRBuilderTest,
+/// TargetRegion)` invokes
 /// `Builder.CreatePointerBitCastOrAddrSpaceCast(Addr, Input->getType())`.
 /// llvmkit-specific scaffold (no dedicated `TEST_F` for the wrapper).
 #[test]
@@ -305,7 +306,8 @@ fn build_pointer_cast_same_addrspace_emits_bitcast() -> Result<(), IrError> {
 /// Mirrors `IRBuilder.h::IRBuilder::CreateIsNull(Arg)` ->
 /// `icmp eq <ptr>, null`. llvmkit-specific scaffold (no dedicated `TEST_F`).
 /// Sibling `CreateIsNotNull` is exercised at
-/// `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153.
+/// `unittests/Frontend/OpenMPIRBuilderTest.cpp::TEST_F(OpenMPIRBuilderTest,
+/// ParallelIfCond)`.
 #[test]
 fn build_is_null_emits_icmp_eq_null() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -326,8 +328,8 @@ fn build_is_null_emits_icmp_eq_null() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153:
-/// `Builder.CreateIsNotNull(F->arg_begin())` -- the canonical upstream
+/// Mirrors `unittests/Frontend/OpenMPIRBuilderTest.cpp::TEST_F(OpenMPIRBuilderTest,
+/// ParallelIfCond)`'s `Builder.CreateIsNotNull(F->arg_begin())` -- the canonical upstream
 /// use site for this wrapper.
 #[test]
 fn build_is_not_null_emits_icmp_ne_null() -> Result<(), IrError> {

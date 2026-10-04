@@ -80,7 +80,8 @@ fn optimization_level_parses_upstream_names() {
 }
 
 /// `llvmkit-specific`, anchored on `llvm/include/llvm/Passes/PassBuilder.h`
-/// lines 323-345: textual names validate at the erased parser boundary before
+/// `::PassBuilder::parsePassPipeline`'s documented textual grammar: textual
+/// names validate at the erased parser boundary before
 /// future pass resolution.
 #[test]
 fn pass_pipeline_text_name_rejects_invalid_text() -> IrResult<()> {
@@ -118,7 +119,8 @@ fn scoped_pass_name_rejects_invalid_text() -> IrResult<()> {
     Ok(())
 }
 
-/// Port of `llvm/include/llvm/Passes/PassBuilder.h` lines 323-345 and
+/// Port of `llvm/include/llvm/Passes/PassBuilder.h::PassBuilder::parsePassPipeline`
+/// (its documented textual grammar) and
 /// `llvm/lib/Passes/PassBuilder.cpp::parsePipelineText`: nested textual
 /// pipelines are syntax-only data at this milestone.
 #[test]
@@ -184,8 +186,9 @@ fn assert_default_recipe(
     assert_eq!(recipe.is_empty(), steps.is_empty());
 }
 
-/// `llvmkit-specific subset`, anchored on `ROADMAP.md` lines 348-356 and
-/// `llvm/lib/Passes/PassRegistry.def` lines 259-264: roadmap aliases are typed
+/// `llvmkit-specific subset`, anchored on `ROADMAP.md`'s `llvmkit-default<O0>` /
+/// `llvmkit-default<O1>` recipes and `llvm/lib/Passes/PassRegistry.def`'s
+/// `MODULE_PASS_WITH_PARAMS("default", ...)` entry: roadmap aliases are typed
 /// allocation-free data and do not instantiate optimization passes.
 #[test]
 fn roadmap_recipes_are_typed_data_only() {

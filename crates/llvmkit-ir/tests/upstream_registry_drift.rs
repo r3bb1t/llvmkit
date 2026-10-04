@@ -115,6 +115,116 @@ fn every_registry_row_names_a_test_its_cited_file_defines() {
     );
 }
 
+/// No comment in the workspace cites upstream by line number.
+///
+/// **No upstream counterpart** — the sibling of
+/// [`no_registry_row_cites_upstream_by_line_number`] for Rust sources.
+/// `CLAUDE.md` binds the same rule to "comments, rustdoc, tests", and nothing
+/// checked that half: 211 comment lines carried one, 82 of them pointing into
+/// `compatibility.ll` alone. The replacement is the construct at the line — the
+/// enclosing `@global` or `define` for a `.ll` fixture, the function or its
+/// named arm for a C++ one.
+///
+/// What counts as a citation here is narrow on purpose: a backticked **path or
+/// symbol** (one containing `/` or `::`, or ending in a source extension),
+/// then at most a few characters, then `line N` / `lines N-M`. Prose that
+/// discusses line numbering as its subject is not a citation and must keep its
+/// numbers — `parser_corpus.rs` explains a `split-file` off-by-one entirely in
+/// terms of which line a part's content lands on, and stripping those would
+/// destroy the explanation.
+#[test]
+fn no_source_comment_cites_upstream_by_line_number() {
+    fn is_locator(token: &str) -> bool {
+        token.contains('/')
+            || token.contains("::")
+            || [".cpp", ".h", ".ll", ".def", ".td", ".inc"]
+                .iter()
+                .any(|ext| token.ends_with(ext))
+    }
+
+    let root = repo_root();
+    let mut offenders = Vec::new();
+    for (path, source) in workspace_rust_sources(&root) {
+        for (at, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if !(trimmed.starts_with("///")
+                || trimmed.starts_with("//!")
+                || trimmed.starts_with("//"))
+            {
+                continue;
+            }
+            for (index, _) in line.match_indices("line") {
+                let after = &line[index..];
+                let rest = after
+                    .strip_prefix("lines")
+                    .or_else(|| after.strip_prefix("line"))
+                    .unwrap_or("");
+                if !rest.starts_with(' ')
+                    || !rest.trim_start().starts_with(|c: char| c.is_ascii_digit())
+                {
+                    continue;
+                }
+                // The backticked token immediately before it must be a locator,
+                // and must sit within a few characters.
+                let before = &line[..index];
+                let Some(close) = before.rfind('`') else {
+                    continue;
+                };
+                if before.len() - close > 4 {
+                    continue;
+                }
+                let Some(open) = before[..close].rfind('`') else {
+                    continue;
+                };
+                if is_locator(&before[open + 1..close]) {
+                    offenders.push(format!("  {path}:{}: {}", at + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "cite upstream by symbol, never line number (CLAUDE.md) — {} comment(s) \
+         point at a line instead of the thing at it. Replace each with the \
+         construct there: the `@global` / `define` for a `.ll` fixture, the \
+         function or its named arm for a C++ one:\n{}",
+        offenders.len(),
+        offenders.join("\n")
+    );
+}
+
+/// Every `.rs` file under `crates/`, as `(path relative to the repo root, source)`.
+fn workspace_rust_sources(root: &Path) -> Vec<(String, String)> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    walk(&root.join("crates"), &mut files);
+    walk(&root.join("llvmkit"), &mut files);
+    files.sort_unstable();
+
+    files
+        .into_iter()
+        .filter_map(|file| {
+            let source = std::fs::read_to_string(&file).ok()?;
+            let relative = file.strip_prefix(root).ok()?;
+            Some((relative.to_string_lossy().replace('\\', "/"), source))
+        })
+        .collect()
+}
+
 /// Every `#[test]` in the workspace, as `(path relative to the repo root, name)`.
 ///
 /// The scan is deliberately literal: a line that trims to exactly `#[test]`,

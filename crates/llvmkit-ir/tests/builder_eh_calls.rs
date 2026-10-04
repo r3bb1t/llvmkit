@@ -11,7 +11,8 @@ use llvmkit_ir::{
 // invoke
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1325:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.terminators`
+/// (`invoke fastcc`):
 /// `invoke fastcc void @f.fastcc() to label %defaultdest unwind label %exc`.
 /// Locks the fastcc call-site convention and the
 /// `\n          to label %... unwind label %...` suffix that
@@ -100,7 +101,7 @@ fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
 // --------------------------------------------------------------------------
 
 /// Ports `test/Assembler/callbr.ll` (the `; CHECK-NEXT: callbr void
-/// @llvm.amdgcn.kill(i1 [[C]])` fixture, lines 8-13). Locks the callee,
+/// @llvm.amdgcn.kill(i1 [[C]])` fixture, its `@test_kill`). Locks the callee,
 /// successor list, and block order from the upstream fixture.
 #[test]
 fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
@@ -142,7 +143,8 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Assembler/inline-asm-constraint-error.ll` line 65:
+/// Ports `test/Assembler/inline-asm-constraint-error.ll`'s `@foo`
+/// (`callbr void`):
 /// `callbr void asm sideeffect "", "~{flags},!i"()
 /// to label %1 [label %2]`. The callee is the same inline-asm value and
 /// the successor list matches the upstream label-constraint fixture.

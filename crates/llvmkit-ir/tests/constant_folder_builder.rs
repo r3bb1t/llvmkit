@@ -124,7 +124,7 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
 }
 
 /// Mirrors `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldExactBinOp`
-/// lines 56-67: non-desirable exact binops delegate to the plain
+/// — non-desirable exact binops delegate to the plain
 /// `ConstantFoldBinaryInstruction` path, so exact `udiv` does not poison an
 /// inexact all-constant quotient through `ConstantFolder`.
 #[test]
@@ -203,9 +203,9 @@ fn constant_folder_no_wrap_shl_delegates_to_binary_constant_fold() -> Result<(),
 
 /// llvmkit-specific direct Rust hook coverage for
 /// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldNoWrapBinOp`
-/// lines 69-85: the default folder does not prefilter opcodes before delegating
+/// — the default folder does not prefilter opcodes before delegating
 /// non-desirable all-constant binops to `ConstantFoldBinaryInstruction`
-/// (`llvm/lib/IR/ConstantFold.cpp` lines 598-955).
+/// (`llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction`).
 #[test]
 fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Result<(), IrError> {
     let m = module_new!("folder-nowrap-direct")?;
@@ -237,7 +237,7 @@ fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Res
 
 /// llvmkit-specific direct Rust hook coverage for
 /// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldBinaryIntrinsic`
-/// lines 184-188: default `ConstantFolder` declines intrinsic folding.
+/// — the default `ConstantFolder` declines intrinsic folding.
 #[test]
 fn constant_folder_binary_intrinsic_declines() -> Result<(), IrError> {
     let m = module_new!("folder-intrinsic")?;
@@ -292,7 +292,7 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFolder.h::FoldGEP` lines 107-118
+/// llvmkit-specific subset of `ConstantFolder.h::FoldGEP`
 /// and `Type.cpp::Type::isScalableTy`: scalable target extension source
 /// element types are unsupported for GEP constant expressions.
 #[test]
@@ -319,7 +319,7 @@ fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), 
 
 /// llvmkit-specific direct Rust hook coverage for
 /// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldShuffleVector`
-/// lines 165-172 and `Constants.cpp::ConstantExpr::getShuffleVector`: scalable
+/// and `Constants.cpp::ConstantExpr::getShuffleVector`: scalable
 /// zero-mask shuffles build a scalable mask constant for the fallback constexpr.
 ///
 /// **The operands used to be non-uniform** — `<i32 1, i32 2>` and
@@ -363,8 +363,8 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
 
 /// llvmkit-specific direct Rust hook coverage for
 /// `llvm/lib/IR/Constants.cpp::ConstantExpr::getPointerCast` and
-/// `getPointerBitCastOrAddrSpaceCast` lines 2277-2300 plus
-/// `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid` lines 3374-3395:
+/// `getPointerBitCastOrAddrSpaceCast` plus
+/// `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid`:
 /// same-address-space scalar pointer <-> fixed one-lane pointer-vector casts
 /// use `bitcast`, not an invalid-cast diagnostic.
 #[test]
@@ -419,7 +419,7 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
 }
 
 /// Mirrors `IRBuilder.h::CreateIsNull` -> `CreateICmpEQ` -> `Folder.FoldCmp`
-/// (`IRBuilder.h::CreateICmp` line 2442) +
+/// (`IRBuilder.h::CreateICmp`) +
 /// `ConstantFold.cpp::ConstantFoldCompareInstruction`: `icmp eq ptr null,
 /// null` folds to `i1 true` under the default folder and no instruction is
 /// inserted.
@@ -501,7 +501,7 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
 }
 
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, InsertExtractElement)`
-/// lines 1127-1138: a folded insertelement chain extracts the inserted
+/// — a folded insertelement chain extracts the inserted
 /// constants without materializing instructions.
 #[test]
 fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {

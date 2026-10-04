@@ -85,7 +85,7 @@ fn array_constant_initializer_round_trips() {
     );
 }
 
-/// Mirrors `LLParser.cpp::ValID::t_ConstantSplat` lines 6617-6625:
+/// Mirrors `LLParser.cpp::ValID::t_ConstantSplat`:
 /// scalable vector splats are valid constants and must parse after AsmWriter
 /// emits `splat (...)`.
 #[test]
@@ -131,7 +131,8 @@ fn constant_expr_casts_round_trip() {
 }
 
 /// Exact constant-expression folding excerpt from `test/Assembler/ConstantExprFold.ll`
-/// lines 9-50, including vector GEP and vector bitcast FileCheck assertions.
+/// — its `@A` through `@bitcast2`, including the vector GEP and vector
+/// bitcast FileCheck assertions.
 #[test]
 fn constant_expr_fold_full_vector_gep_and_bitcast_fixture() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -165,7 +166,7 @@ fn constant_expr_fold_full_vector_gep_and_bitcast_fixture() {
 }
 
 /// Exact constant-expression cast folding excerpt from
-/// `test/Assembler/ConstantExprFoldCast.ll` lines 11-29.
+/// `test/Assembler/ConstantExprFoldCast.ll`'s `@A` through `@K`.
 #[test]
 fn constant_expr_fold_cast_fixture_matches_upstream() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -452,7 +453,7 @@ fn ptrtoaddr_constant_expr_round_trips() {
 }
 
 /// Exact addrspace(1) `ptrtoaddr` constant expression from
-/// `llvm/test/Assembler/ptrtoaddr.ll` lines 7-9.
+/// `llvm/test/Assembler/ptrtoaddr.ll`'s `@i_as1` / `@global_cast_as1`.
 #[test]
 fn ptrtoaddr_as1_constant_expr_round_trips() {
     const FIXTURE: &[u8] = br#"target datalayout = "p1:64:64:64:32"

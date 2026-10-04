@@ -843,22 +843,22 @@ where
 /// Fold an integer or floating-point compare with caller-provided operands.
 ///
 /// Mirrors `llvm::ConstantFoldCompareInstOperands`
-/// (`llvm/lib/Analysis/ConstantFolding.cpp`, lines 1199-1311). Before
-/// falling back to the target-independent compare, try (in upstream's exact
-/// order, with upstream's exact "commit once the precondition holds, don't
-/// keep trying more folds" control flow):
+/// (`llvm/lib/Analysis/ConstantFolding.cpp`). Before falling back to the
+/// target-independent compare, try (in upstream's exact order, with upstream's
+/// exact "commit once the precondition holds, don't keep trying more folds"
+/// control flow):
 ///
-/// 1. `icmp pred (inttoptr x), null` -> `icmp pred x, 0` (lines 1213-1224),
-///    and its `icmp pred (ptrtoint x), 0` / `ptrtoaddr` sibling (lines
-///    1226-1236). The swapped `null`/`(inttoptr x)` forms are reached via
-///    the trailing operand swap (case 4 below).
+/// 1. `icmp pred (inttoptr x), null` -> `icmp pred x, 0`, and its
+///    `icmp pred (ptrtoint x), 0` / `ptrtoaddr` sibling. The swapped
+///    `null`/`(inttoptr x)` forms are reached via the trailing operand swap
+///    (case 4 below).
 /// 2. `icmp pred (inttoptr x), (inttoptr y)` -> `icmp pred x, y`, and the
-///    `ptrtoint`/`ptrtoaddr` sibling (lines 1239-1266).
+///    `ptrtoint`/`ptrtoaddr` sibling.
 /// 3. Base+offset stripping: `(base+off1) pred (base+off2)` ->
 ///    `off1 pred off2`, for two pointers that peel down to the same
-///    underlying base (lines 1268-1291).
+///    underlying base.
 /// 4. If only the right-hand operand is a constant expression, swap
-///    operands and predicate and retry (lines 1292-1297).
+///    operands and predicate and retry.
 ///
 /// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
 /// than `lhs`'s.
@@ -1926,47 +1926,46 @@ fn scaled_offset(index: &ApInt, scale: u64, index_bits: u32) -> ApInt {
     index.wrapping_mul(&ApInt::from_words(index_bits, &[scale]))
 }
 
-/// Mirrors `SymbolicallyEvaluateGEP` (`llvm/lib/Analysis/ConstantFolding.cpp`
-/// lines 881-991): canonicalise an all-constant-integer-index scalar
-/// `getelementptr` to a single `getelementptr i8, ptr <base>, i64 <total
-/// offset>`, merging through nested constant-GEP layers (both the general
-/// `ConstantExprOpcode::GetElementPtr` form and llvmkit's compact
-/// `ConstantData::GepOffset` form) and propagating no-wrap flags the same way
-/// upstream's merge loop does (lines 915-951, 982-984). Tried by both GEP
+/// Mirrors `SymbolicallyEvaluateGEP`
+/// (`llvm/lib/Analysis/ConstantFolding.cpp`): canonicalise an
+/// all-constant-integer-index scalar `getelementptr` to a single
+/// `getelementptr i8, ptr <base>, i64 <total offset>`, merging through nested
+/// constant-GEP layers (both the general `ConstantExprOpcode::GetElementPtr`
+/// form and llvmkit's compact `ConstantData::GepOffset` form) and propagating
+/// no-wrap flags the same way upstream's merge loop does. Tried by both GEP
 /// dispatch sites *before* falling back to the existing
 /// [`constant_fold_get_element_ptr_trusting_same_module`] empty/poison/undef/noop/in-range folds,
-/// matching upstream's `ConstantFoldInstOperandsImpl` dispatch order (lines
-/// 1031-1041: `SymbolicallyEvaluateGEP` first, `ConstantExpr::getGetElementPtr`
-/// — whose own constructor re-runs the target-independent fold — second).
+/// matching upstream's `ConstantFoldInstOperandsImpl` dispatch order
+/// (`SymbolicallyEvaluateGEP` first, `ConstantExpr::getGetElementPtr` — whose
+/// own constructor re-runs the target-independent fold — second).
 ///
 /// Narrower than upstream in four precise, safe-by-construction ways (each
 /// only forgoes a fold upstream would make; none mis-fold):
 ///
-///  - **No `CastGEPIndices`** (index-width normalisation for vector-shaped
-///    indices/pointers, lines 843-878, called at 890-892). This port only
-///    handles a scalar pointer base (`index_bits_for_pointer` returns `None`
-///    for a vector-of-pointers type, matching upstream's own
-///    `!Ptr->getType()->isPointerTy()` bail at lines 894-896) with scalar
-///    `ConstantInt` indices. Upstream itself never symbolically evaluates an
-///    offset for a genuinely vector-shaped index either — `isa<ConstantInt>`
-///    always fails for a vector constant (lines 900-902) — so the only thing
-///    skipped is upstream's index-width-only recursive re-fold for that
-///    shape, never an offset canonicalisation this port would otherwise
-///    produce.
+///  - **No `CastGEPIndices`** (the index-width normalisation for vector-shaped
+///    indices/pointers that `SymbolicallyEvaluateGEP` calls first). This port
+///    only handles a scalar pointer base (`index_bits_for_pointer` returns
+///    `None` for a vector-of-pointers type, matching upstream's own
+///    `!Ptr->getType()->isPointerTy()` bail) with scalar `ConstantInt`
+///    indices. Upstream itself never symbolically evaluates an offset for a
+///    genuinely vector-shaped index either — its `isa<ConstantInt>` operand
+///    loop always fails for a vector constant — so the only thing skipped is
+///    upstream's index-width-only recursive re-fold for that shape, never an
+///    offset canonicalisation this port would otherwise produce.
 ///  - **No `in_range` support**: llvmkit's [`ConstantExprInRange`] has no
-///    `sextOrTrunc`/`subtract`/`intersectWith` (needed at lines 911-913,
-///    934-938). Any GEP — outer or merged-through — carrying `in_range`
-///    stops the fold immediately rather than dropping or mis-adjusting the
-///    range.
-///  - **No null/`inttoptr`-base fold** (lines 953-971): llvmkit models
+///    `sextOrTrunc`/`subtract`/`intersectWith`, which upstream needs both when
+///    it first reads `GEP->getInRange()` and again inside the merge loop. Any
+///    GEP — outer or merged-through — carrying `in_range` stops the fold
+///    immediately rather than dropping or mis-adjusting the range.
+///  - **No null/`inttoptr`-base fold**: llvmkit models
 ///    neither `DataLayout::mustNotIntroduceIntToPtr` nor `APInt::insertBits`.
 ///    Rather than mis-canonicalising a from-null (or from-`inttoptr`-of-a-
 ///    nonzero-constant) GEP into a `getelementptr i8, ptr null, ...` form
 ///    upstream would instead fold to `inttoptr`, this bails to `None`
 ///    whenever the fully-merged base is null or `inttoptr` of a nonzero
 ///    `ConstantInt`.
-///  - **No "infer inbounds for GEPs of globals"** (lines 973-980,
-///    `Value::getPointerDereferenceableBytes`): llvmkit has no
+///  - **No "infer inbounds for GEPs of globals"**
+///    (`Value::getPointerDereferenceableBytes`): llvmkit has no
 ///    dereferenceable-bytes/pointer-capacity query. Simply omitted — the
 ///    produced no-wrap flags can be weaker (missing an inferable `inbounds`)
 ///    than upstream's, never wrong.
@@ -2016,9 +2015,9 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
     let mut ptr = pointer;
     while let Some(level_nw) = gep_level_no_wrap_flags(ptr) {
         // Upstream intersects a level's no-wrap flags unconditionally
-        // (`NW &= GEP->getNoWrapFlags();`, `ConstantFolding.cpp` line 919) —
+        // (`NW &= GEP->getNoWrapFlags();`, `ConstantFolding.cpp`) —
         // *before* it even checks whether that level's indices are all
-        // `ConstantInt` (lines 924-931). So this must run even when the
+        // `ConstantInt` (its `AllConstantInt` guard). So this must run even when the
         // peel below fails and the loop is about to stop.
         nw &= level_nw;
         let Some((base, level_offset)) = peel_one_gep_level(ptr, index_bits, dl) else {
@@ -2057,12 +2056,12 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
 /// [`ConstantExprOpcode::GetElementPtr`] constant expression (its stored
 /// flags) — or `None` if `ptr` is not a GEP at all (upstream's merge-loop
 /// condition, `while (auto *GEP = dyn_cast<GEPOperator>(Ptr))`,
-/// `ConstantFolding.cpp` line 918).
+/// `ConstantFolding.cpp`).
 ///
 /// Deliberately split out of [`peel_one_gep_level`]: upstream intersects a
 /// level's no-wrap flags into the running state *unconditionally* (`NW &=
-/// GEP->getNoWrapFlags();`, line 919) — before it even checks whether that
-/// level's indices are all `ConstantInt` (`AllConstantInt`, lines 924-931).
+/// GEP->getNoWrapFlags();`) — before it even checks whether that level's
+/// indices are all `ConstantInt` (its `AllConstantInt` guard).
 /// Callers must consult this function first and intersect its result before
 /// attempting [`peel_one_gep_level`], so the intersection still happens on
 /// the level where the peel is about to fail and the merge loop is about to
@@ -2094,8 +2093,8 @@ fn gep_level_no_wrap_flags<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// `None` stops the caller's merge loop exactly where upstream's does past
 /// the unconditional `NW &=` (which [`gep_level_no_wrap_flags`] now covers):
-/// a nested GEP with a non-`ConstantInt` index (`AllConstantInt`,
-/// `ConstantFolding.cpp` lines 924-931), or (this port's addition) a nested
+/// a nested GEP with a non-`ConstantInt` index (`AllConstantInt` in
+/// `ConstantFolding.cpp`), or (this port's addition) a nested
 /// GEP carrying `in_range` — see [`symbolically_evaluate_gep`]'s doc comment
 /// for why that last one isn't ported.
 fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
@@ -2160,12 +2159,14 @@ fn gep_offset_magnitude(off: i64, index_bits: u32) -> ApInt {
 }
 
 /// `Ptr->isNullValue()`, or `Ptr` is `inttoptr` of a literal nonzero
-/// `ConstantInt` — the precondition upstream uses (lines 963-964) to fold to
-/// `inttoptr` instead of a GEP. This port declines instead (see
+/// `ConstantInt` — the precondition upstream uses, its
+/// `(Ptr->isNullValue() || BaseIntVal != 0) && !DL.mustNotIntroduceIntToPtr(..)`
+/// guard, to fold to `inttoptr` instead of a GEP. This port declines (see
 /// [`symbolically_evaluate_gep`]'s doc comment); `inttoptr` of anything else
 /// (a non-`ConstantInt` operand) does *not* match, mirroring upstream's
 /// `BaseIntVal` staying zero — and thus this condition staying false — for
-/// that shape (lines 955-961).
+/// that shape, because its `BaseIntVal` is only written under
+/// `dyn_cast<ConstantInt>(CE->getOperand(0))`.
 fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx>(ptr: Constant<'ctx, B>) -> bool {
     if constant_is_null_value(ptr) {
         return true;
@@ -2190,7 +2191,9 @@ fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx>(ptr: Constant<'
 }
 
 /// Build `getelementptr i8, ptr <ptr>, i64 <offset>` with no-wrap flags `nw`,
-/// mirroring the tail of `SymbolicallyEvaluateGEP` (lines 986-990) plus the
+/// mirroring the tail of `SymbolicallyEvaluateGEP` — its "canonicalize this
+/// to a single ptradd" `ConstantExpr::getGetElementPtr(Type::getInt8Ty(..), ..)`
+/// — plus the
 /// `IsNoOp`/poison/undef auto-collapse every `ConstantExpr::getGetElementPtr`
 /// construction gets for free upstream (`ConstantFold.cpp`'s
 /// `ConstantFoldGetElementPtr`, reached here through

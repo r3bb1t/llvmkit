@@ -97,7 +97,8 @@ fn shufflevector_round_trips() {
 }
 
 /// `shufflevector` typed `zeroinitializer` mask operand from
-/// `test/Bitcode/compatibility.ll` line 1539.
+/// `test/Bitcode/compatibility.ll`'s `@instructions.vectorops`
+/// (`shufflevector`).
 #[test]
 fn shufflevector_zeroinitializer_mask_operand_round_trips() {
     let text = parse_fixture(
@@ -348,7 +349,8 @@ fn atomicrmw_round_trips() {
 }
 
 /// `atomicrmw fmaximum`/`fminimum` parse+print round trip from
-/// `test/Bitcode/compatibility.ll` (`@fp_atomics`, lines 935/938). These
+/// `test/Bitcode/compatibility.ll`'s `@fp_atomics` (`%atomicrmw.fmaximum` /
+/// `%atomicrmw.fminimum`). These
 /// are the LLVM 21 IEEE-754 `maximum`/`minimum`-semantics atomicrmw ops
 /// (`AtomicRMWInst::BinOp` in `Instructions.h`); this locks the
 /// `Keyword::Fmaximum`/`Keyword::Fminimum` parser arms end to end.
