@@ -141,7 +141,7 @@ fn bitcast_negative_zero_float_preserves_sign_bit() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::ConstantFoldCastInstruction` lines 153-183:
+/// Port of `ConstantFold.cpp::ConstantFoldCastInstruction`:
 /// fixed-vector casts with matching lane counts fold element-wise.
 #[test]
 fn vector_trunc_cast_folds_elementwise() -> Result<(), IrError> {
@@ -208,7 +208,7 @@ fn vector_integer_binary_folds_elementwise() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 927-947:
+/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction`:
 /// vector division/remainder by a zero RHS folds to vector poison.
 #[test]
 fn vector_div_by_zero_splat_folds_to_vector_poison() -> Result<(), IrError> {
@@ -230,7 +230,7 @@ fn vector_div_by_zero_splat_folds_to_vector_poison() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 620-621:
+/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction`:
 /// scalable vector undef operands follow the scalar undef fold rules before
 /// vector element extraction is considered.
 #[test]
@@ -249,7 +249,7 @@ fn scalable_vector_undef_binary_folds_before_bailout() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 620-621:
+/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction`:
 /// fixed-length vector undef operands fold per lane instead of taking the
 /// scalar/scalable undef shortcut.
 #[test]
@@ -275,7 +275,7 @@ fn fixed_vector_undef_binary_folds_per_lane() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::ConstantFoldCastInstruction` lines 153-170:
+/// Port of `ConstantFold.cpp::ConstantFoldCastInstruction`:
 /// scalable vector splat casts fold before the scalable-vector bailout.
 #[test]
 fn scalable_vector_trunc_splat_folds() -> Result<(), IrError> {
@@ -323,7 +323,7 @@ fn vector_bitcast_all_ones_to_float_splat_folds() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFold.cpp::FoldBitCast` lines 67-76:
+/// llvmkit-specific subset of `ConstantFold.cpp::FoldBitCast`:
 /// scalar all-ones bitcasts fold to all-ones destination constants before
 /// scalar-to-vector bitcasts are canonicalized as vector bitcasts.
 #[test]
@@ -344,7 +344,7 @@ fn scalar_all_ones_bitcast_to_vector_splat_folds() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFold.cpp::FoldBitCast` lines 67-76:
+/// llvmkit-specific subset of `ConstantFold.cpp::FoldBitCast`:
 /// scalar floating constants whose bit pattern is all ones bitcast to all-ones
 /// destination constants before scalar-to-vector bitcasts are canonicalized.
 #[test]
@@ -364,7 +364,7 @@ fn fp_all_ones_bitcast_to_vector_splat_folds() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFold.cpp::FoldBitCast` lines 70-76:
+/// llvmkit-specific subset of `ConstantFold.cpp::FoldBitCast`:
 /// non-all-ones scalar integer bitcasts to vector destinations canonicalize
 /// through a one-lane vector bitcast constant expression instead of declining.
 #[test]
@@ -389,7 +389,7 @@ fn scalar_int_bitcast_to_vector_canonicalizes_as_vector_bitcast() -> Result<(), 
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCastInstruction`
-/// lines 153-182: same-lane vector casts use `foldMaybeUndesirableCast`, so
+/// — same-lane vector casts use `foldMaybeUndesirableCast`, so
 /// desirable scalar casts materialize per-lane constant expressions.
 #[test]
 fn same_lane_vector_ptrtoint_cast_builds_lane_constant_exprs() -> Result<(), IrError> {
@@ -594,7 +594,7 @@ fn constant_int_refinement_rejects_unfolded_integer_constant_expr() -> Result<()
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldExtractElementInstruction`
-/// lines 374-381: extracting the same constant index from an unreduced
+/// — extracting the same constant index from an unreduced
 /// `insertelement` constant expression returns the inserted element.
 #[test]
 fn extractelement_from_insertelement_constant_expr_folds_inserted_lane() -> Result<(), IrError> {
@@ -628,7 +628,7 @@ fn extractelement_from_insertelement_constant_expr_folds_inserted_lane() -> Resu
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldExtractElementInstruction`
-/// lines 374-381: `ExtractElement(InsertElement)` compares index constants by
+/// — `ExtractElement(InsertElement)` compares index constants by
 /// numeric value, not by APInt bit width.
 #[test]
 fn extractelement_from_insertelement_matches_indices_across_widths() -> Result<(), IrError> {
@@ -660,7 +660,7 @@ fn extractelement_from_insertelement_matches_indices_across_widths() -> Result<(
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldExtractElementInstruction`
-/// lines 374-381: `APSInt::isSameValue` compares arbitrary-width index
+/// — `APSInt::isSameValue` compares arbitrary-width index
 /// constants without truncating through host integer widths.
 #[test]
 fn extractelement_from_insertelement_matches_wide_indices() -> Result<(), IrError> {
@@ -692,7 +692,9 @@ fn extractelement_from_insertelement_matches_wide_indices() -> Result<(), IrErro
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFold.cpp` lines 338-341 and 398-407:
+/// llvmkit-specific subset of `ConstantFold.cpp`'s
+/// `ConstantFoldExtractElementInstruction` poison/undef-index early returns and
+/// `ConstantFoldInsertElementInstruction`'s undef-index and all-zeros arms:
 /// poison indices are undef-like for extract/insert, and inserting null into an
 /// all-zero vector returns the original zero vector before range checks.
 #[test]
@@ -998,7 +1000,7 @@ fn insertelement_fixed_vector_replaces_lane() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldShuffleVectorInstruction`
-/// lines 448-479: a fixed-vector mask selects lanes from both operands,
+/// — a fixed-vector mask selects lanes from both operands,
 /// individual `-1` mask elements become undef, and an all-`-1` mask becomes
 /// a poison vector.
 #[test]
@@ -1037,7 +1039,7 @@ fn shufflevector_fixed_mask_selects_lanes() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldShuffleVectorInstruction`
-/// lines 448-469: all-poison masks fold before scalable-vector iteration is
+/// — all-poison masks fold before scalable-vector iteration is
 /// declined.
 #[test]
 fn shufflevector_scalable_all_poison_mask_folds() -> Result<(), IrError> {
@@ -1086,7 +1088,7 @@ fn insertvalue_array_replaces_element() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldExtractValueInstruction`
-/// lines 499-508: `getAggregateElement` on undef/poison aggregates yields a
+/// — `getAggregateElement` on undef/poison aggregates yields a
 /// typed undef/poison element rather than declining the fold.
 #[test]
 fn extractvalue_undef_and_poison_aggregates_fold_to_typed_elements() -> Result<(), IrError> {
@@ -1247,7 +1249,7 @@ fn frem_uses_modulo_not_ieee_remainder() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
-/// lines 907-918: associative constant expressions reassociate when the nested
+/// — associative constant expressions reassociate when the nested
 /// RHS and new RHS fold to a non-same-op constant.
 #[test]
 fn associative_constant_expr_binary_reassociates_folded_rhs() -> Result<(), IrError> {
@@ -1290,7 +1292,7 @@ fn associative_constant_expr_binary_reassociates_folded_rhs() -> Result<(), IrEr
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
-/// lines 783-789: a constant integer LHS and commutative desirable
+/// — a constant integer LHS and commutative desirable
 /// constant-expression RHS are swapped before building the folded expression.
 #[test]
 fn commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr() -> Result<(), IrError> {
@@ -1322,7 +1324,7 @@ fn commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr() -> Resu
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCastInstruction`
-/// lines 129-136: undef casts that introduce a bounded result fold to zero,
+/// — undef casts that introduce a bounded result fold to zero,
 /// while the remaining target-independent casts preserve undef in the
 /// destination type.
 #[test]
@@ -1359,7 +1361,7 @@ fn undef_cast_rules_fold_to_zero_or_undef() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
-/// lines 693-712: FP undef operands fold to undef for undef/undef and
+/// — FP undef operands fold to undef for undef/undef and
 /// negative-zero subtraction, otherwise to a quiet NaN because undef may be
 /// chosen as NaN.
 #[test]
@@ -1392,7 +1394,7 @@ fn fp_undef_binary_rules_fold_to_undef_or_nan() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
-/// lines 693-696 plus `PatternMatch.h::m_NegZeroFP`: scalable vector
+/// plus `PatternMatch.h::m_NegZeroFP`: scalable vector
 /// `-0.0 - undef` follows the scalar/scalable undef rule only when the
 /// left operand matches the negative-zero FP pattern; a poison-only vector
 /// does not match.
@@ -1435,7 +1437,7 @@ fn scalable_vector_fsub_negative_zero_pattern_controls_undef_fold() -> Result<()
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
-/// lines 1096-1131 and 1167-1199: scalar undef compares choose undef,
+/// — scalar undef compares choose undef,
 /// equality-at-the-non-undef value, or NaN for FP predicates; fixed vectors
 /// rebuild the per-lane compare result.
 #[test]
@@ -1488,7 +1490,7 @@ fn compare_undef_rules_fold_scalar_and_vector_results() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
-/// lines 1116-1131: the undef-with-undef "either value could make it pass or
+/// — the undef-with-undef "either value could make it pass or
 /// fail" shortcut is gated on `IcmpInst::isEquality`, which is integer-only --
 /// `ICMP_EQ`/`ICMP_NE` are distinct enumerators from `FCMP_OEQ`/`FCMP_ONE`/
 /// `FCMP_UEQ`/`FCMP_UNE` in the shared `CmpInst::Predicate` space, so it is
@@ -1530,7 +1532,7 @@ fn fcmp_equality_predicates_with_undef_fold_to_concrete_bool() -> Result<(), IrE
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
-/// lines 1169-1179: splatted vector compares fold before the scalable-vector
+/// — splatted vector compares fold before the scalable-vector
 /// bailout, while non-splat scalable vectors still decline.
 #[test]
 fn compare_scalable_vector_splats_fold_before_scalable_bailout() -> Result<(), IrError> {
@@ -1556,7 +1558,7 @@ fn compare_scalable_vector_splats_fold_before_scalable_bailout() -> Result<(), I
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
-/// lines 1134-1156 and 1202-1209: non-concrete constants still use the
+/// — non-concrete constants still use the
 /// unsigned-null shortcut, i1 EQ/NE xor rewrites, and identical-FP folds.
 #[test]
 fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
@@ -1653,7 +1655,7 @@ fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
-/// lines 1298-1305: a null LHS and non-null constant-expression RHS are
+/// — a null LHS and non-null constant-expression RHS are
 /// retried with a swapped predicate, enabling the RHS-null shortcuts.
 #[test]
 fn compare_null_lhs_constant_expr_rhs_commutes_to_rhs_null_shortcut() -> Result<(), IrError> {
@@ -1682,7 +1684,7 @@ fn compare_null_lhs_constant_expr_rhs_commutes_to_rhs_null_shortcut() -> Result<
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
-/// lines 1181-1199: fixed-vector compare folding extracts lanes with
+/// — fixed-vector compare folding extracts lanes with
 /// `ConstantExpr::getExtractElement`, so vector constant expressions fold too.
 #[test]
 fn compare_vector_constant_expr_operands_fold_by_extracting_lanes() -> Result<(), IrError> {
@@ -1845,8 +1847,8 @@ fn compare_global_pointer_vs_null_respects_address_space() -> Result<(), IrError
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::areGlobalsPotentiallyEqual` lines 957-979 and
-/// `evaluateICmpRelation` lines 1027-1044: ifuncs are `GlobalValue`s, so
+/// Port of `ConstantFold.cpp::areGlobalsPotentiallyEqual` and
+/// `evaluateICmpRelation`: ifuncs are `GlobalValue`s, so
 /// non-interposable ifuncs can compare not-equal while interposable/external
 /// weak ifuncs must not be folded.
 #[test]
@@ -1905,7 +1907,7 @@ fn compare_ifunc_linkage_relations_match_globalvalue_rules() -> Result<(), IrErr
     Ok(())
 }
 
-/// Port of `Type.cpp::Type::isEmptyTy` lines 180-194 as consumed by
+/// Port of `Type.cpp::Type::isEmptyTy` as consumed by
 /// `ConstantFold.cpp::areGlobalsPotentiallyEqual`: arrays with empty element
 /// types and structs whose fields are all empty remain empty for global
 /// equality folding.
@@ -1940,7 +1942,7 @@ fn compare_globals_with_recursive_empty_value_type_declines() -> Result<(), IrEr
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::areGlobalsPotentiallyEqual` lines 959-961:
+/// Port of `ConstantFold.cpp::areGlobalsPotentiallyEqual`:
 /// `hasGlobalUnnamedAddr` rejects only `unnamed_addr`, not
 /// `local_unnamed_addr`.
 #[test]
@@ -1988,7 +1990,7 @@ fn compare_local_unnamed_addr_globals_still_fold_not_equal() -> Result<(), IrErr
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldSelectInstruction`
-/// lines 256-331: undef and poison conditions fold before the scalar equal-arm
+/// — undef and poison conditions fold before the scalar equal-arm
 /// simplification, while equal non-poison arms fold to that shared arm.
 #[test]
 fn select_undef_poison_and_equal_arm_rules_fold() -> Result<(), IrError> {
@@ -2020,7 +2022,7 @@ fn select_undef_poison_and_equal_arm_rules_fold() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldSelectInstruction`
-/// lines 307-329: direct global variables are not-poison constants, so an
+/// — direct global variables are not-poison constants, so an
 /// undef arm can fold to the direct global arm.
 #[test]
 fn select_undef_arm_with_direct_global_arm_folds_to_global() -> Result<(), IrError> {
@@ -2045,7 +2047,7 @@ fn select_undef_arm_with_direct_global_arm_folds_to_global() -> Result<(), IrErr
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldSelectInstruction`
-/// lines 262-289: fixed-vector select folds each lane, including undef
+/// — fixed-vector select folds each lane, including undef
 /// condition lanes, poison condition lanes, and equal true/false arm lanes.
 #[test]
 fn select_vector_undef_poison_and_equal_lanes_rebuild_result() -> Result<(), IrError> {
@@ -2093,7 +2095,7 @@ fn select_vector_undef_poison_and_equal_lanes_rebuild_result() -> Result<(), IrE
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldSelectInstruction`
-/// lines 258-289: vector all-true/all-false conditions fold before scalable
+/// — vector all-true/all-false conditions fold before scalable
 /// iteration is declined, and fixed-vector arms are lane-extracted through
 /// `ConstantExpr::getExtractElement`.
 #[test]
@@ -2163,7 +2165,7 @@ fn select_vector_shortcuts_and_constant_expr_arms_fold() -> Result<(), IrError> 
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldSelectInstruction`
-/// line 281: a non-`ConstantInt` condition lane `break`s the per-element loop
+/// — a non-`ConstantInt` condition lane `break`s the per-element loop
 /// instead of aborting the whole fold. The partially-built (and therefore
 /// discarded, since its length no longer matches the lane count) vector
 /// result then falls through to the whole-value poison/undef checks below, so
@@ -2208,8 +2210,9 @@ fn select_vector_condition_with_unresolved_lane_falls_through_to_poison_rule() -
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFold.cpp` lines 398-438, 440-497, and
-/// 511-538: insertelement, shufflevector, and nested insertvalue rebuild
+/// llvmkit-specific subset of `ConstantFold.cpp`'s
+/// `ConstantFoldInsertElementInstruction`, `ConstantFoldShuffleVectorInstruction`
+/// and `ConstantFoldInsertValueInstruction`: they rebuild
 /// constants from their extracted elements rather than declining the fold.
 #[test]
 fn vector_and_aggregate_rebuilders_materialize_constants() -> Result<(), IrError> {
@@ -2283,7 +2286,9 @@ fn vector_and_aggregate_rebuilders_materialize_constants() -> Result<(), IrError
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFold.cpp` lines 423-437 and 481-492:
+/// llvmkit-specific subset of `ConstantFold.cpp`'s
+/// `ConstantFoldInsertElementInstruction` and
+/// `ConstantFoldShuffleVectorInstruction` lane-rebuild arms:
 /// fixed-vector insertelement and shufflevector rebuild non-aggregate vector
 /// constants through per-lane `extractelement` constant expressions.
 #[test]
@@ -2330,7 +2335,7 @@ fn vector_rebuilders_extract_lanes_from_non_aggregate_constants() -> Result<(), 
 }
 
 /// Port of `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, Integer_i1)`
-/// lines 62-132: i1 binary constant folding matches upstream's special cases.
+/// — i1 binary constant folding matches upstream's special cases.
 #[test]
 fn constants_test_integer_i1_binary_folds() -> Result<(), IrError> {
     let m = module_new!("fold-i1")?;
@@ -2395,7 +2400,7 @@ fn constants_test_integer_i1_binary_folds() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
-/// lines 926-947: i1 special cases apply to all i1 constants, including
+/// — i1 special cases apply to all i1 constants, including
 /// non-`ConstantInt` constant expressions.
 #[test]
 fn i1_constant_expr_binary_special_cases_fold() -> Result<(), IrError> {
@@ -2432,7 +2437,7 @@ fn i1_constant_expr_binary_special_cases_fold() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
-/// lines 871-883: vector splats use `ConstantExpr::get` for desirable scalar
+/// — vector splats use `ConstantExpr::get` for desirable scalar
 /// binops, so non-foldable scalar constant expressions still produce a splat.
 #[test]
 fn vector_splat_desirable_binop_builds_splat_constant_expr() -> Result<(), IrError> {
@@ -2469,7 +2474,7 @@ fn vector_splat_desirable_binop_builds_splat_constant_expr() -> Result<(), IrErr
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
-/// lines 620-716: scalable-vector undef operands use the scalar/scalable undef
+/// — scalable-vector undef operands use the scalar/scalable undef
 /// rules before fixed-vector element iteration is declined.
 #[test]
 fn scalable_vector_fp_undef_binary_folds_to_nan_splat() -> Result<(), IrError> {
@@ -2490,7 +2495,8 @@ fn scalable_vector_fp_undef_binary_folds_to_nan_splat() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `llvm/lib/IR/ConstantFold.cpp` lines 540-596:
+/// llvmkit-specific subset of
+/// `llvm/lib/IR/ConstantFold.cpp::ConstantFoldUnaryInstruction`:
 /// `fneg` preserves scalar/scalable undef and folds fixed vectors lane-wise,
 /// including splat vectors.
 #[test]
@@ -2547,7 +2553,8 @@ fn constant_fold_unary_fneg_undef_and_vector_elements() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `llvm/lib/IR/ConstantFold.cpp` lines 1310-1340:
+/// llvmkit-specific subset of
+/// `llvm/lib/IR/ConstantFold.cpp::ConstantFoldGetElementPtr`:
 /// poison/undef bases use the computed GEP result type, no-op scalar GEPs
 /// fold to the base, and scalar base plus vector zero index splats the base.
 #[test]
@@ -2616,7 +2623,9 @@ fn constant_fold_gep_poison_undef_and_noop_indices() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `llvm/lib/IR/ConstantFold.cpp` lines 1324-1334:
+/// llvmkit-specific subset of
+/// `llvm/lib/IR/ConstantFold.cpp::ConstantFoldGetElementPtr`'s `IsNoOp` lambda,
+/// which declines when `InRange` is set:
 /// all-zero GEPs with `inrange` are not folded because upstream avoids losing
 /// the `inrange` information.
 #[test]
@@ -2653,7 +2662,9 @@ fn constant_fold_gep_inrange_noop_does_not_fold() -> Result<(), IrError> {
 }
 
 /// Port of `unittests/IR/ConstantsTest.cpp` function-pointer alignment folding
-/// cases lines 497-550: `ptrtoint(function) & mask` folds to zero exactly when
+/// cases, `TEST(ConstantsTest, FoldFunctionPtrAlignUnknownAnd2)` through
+/// `DontFoldFunctionAlign4PtrAlignIndependent`: `ptrtoint(function) & mask`
+/// folds to zero exactly when
 /// upstream can prove the low bits are clear from pointer/function alignment.
 #[test]
 fn function_pointer_and_mask_folds_from_alignment() -> Result<(), IrError> {
@@ -2705,7 +2716,7 @@ fn function_pointer_and_mask_folds_from_alignment() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 740-779:
+/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction`:
 /// commutative integer ops commute constant masks before global pointer
 /// alignment folding.
 #[test]
@@ -2735,7 +2746,7 @@ fn commuted_global_pointer_mask_folds_to_null() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 724-742:
+/// Port of `ConstantFold.cpp::ConstantFoldBinaryInstruction`:
 /// `and` with a zero mask folds through the integer absorber before global
 /// pointer alignment is consulted.
 #[test]
@@ -2764,7 +2775,7 @@ fn global_pointer_zero_mask_folds_without_alignment() -> Result<(), IrError> {
 }
 
 /// Port of `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, FoldGlobalVariablePtr)`
-/// lines 559-579: aligned global-variable `ptrtoint` and `ptrtoaddr` low-bit
+/// — aligned global-variable `ptrtoint` and `ptrtoaddr` low-bit
 /// masks fold to integer zero.
 #[test]
 fn global_variable_ptrtoint_and_ptrtoaddr_and_mask_fold_to_null() -> Result<(), IrError> {
@@ -2792,7 +2803,7 @@ fn global_variable_ptrtoint_and_ptrtoaddr_and_mask_fold_to_null() -> Result<(), 
     Ok(())
 }
 
-/// Port of `Value.cpp::Value::getPointerAlignment` lines 974-988 as reached
+/// Port of `Value.cpp::Value::getPointerAlignment` as reached
 /// from `ConstantFold.cpp::ConstantFoldBinaryInstruction`: an unannotated
 /// defined global variable gets DataLayout-derived pointer alignment for low
 /// bit-mask folding.

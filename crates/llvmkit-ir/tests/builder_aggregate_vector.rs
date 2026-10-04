@@ -14,7 +14,8 @@ use llvmkit_ir::{
 // extractvalue
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1549:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops`
+/// (`extractvalue { i8, i32 }`):
 /// `extractvalue { i8, i32 } %up, 0`. Locks the print form and result
 /// type for an unpacked struct extract.
 #[test]
@@ -32,7 +33,7 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
     let _ = b.extract_value(up, [0u32], "")?;
     b.ret_void()?;
     let text = format!("{m}");
-    // Mirrors `; CHECK: extractvalue { i8, i32 } %up, 0` (line 1550).
+    // Mirrors its `; CHECK: extractvalue { i8, i32 } %up, 0`.
     assert!(
         text.contains("extractvalue { i8, i32 } %0, 0\n"),
         "got:\n{text}"
@@ -40,7 +41,8 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 1553:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops`
+/// (`extractvalue [3 x i8]`):
 /// `extractvalue [3 x i8] %arr, 2`.
 #[test]
 fn extract_value_array_index() -> Result<(), IrError> {
@@ -63,7 +65,8 @@ fn extract_value_array_index() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 1555:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops`
+/// (the nested `extractvalue { i8, { i32 } }`):
 /// `extractvalue { i8, { i32 } } %n, 1, 0`. Verifies the multi-index
 /// path walks struct → struct → leaf.
 #[test]
@@ -184,7 +187,8 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
 // insertvalue
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1558:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops`
+/// (`insertvalue { i8, i32 }`):
 /// `insertvalue { i8, i32 } %up, i8 1, 0`.
 #[test]
 fn insert_value_struct_field0() -> Result<(), IrError> {
@@ -209,7 +213,8 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 1562:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.aggregateops`
+/// (`insertvalue [3 x i8]`):
 /// `insertvalue [3 x i8] %arr, i8 0, 0`.
 #[test]
 fn insert_value_array_index_zero() -> Result<(), IrError> {
@@ -270,7 +275,8 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
 // extractelement
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1535:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.vectorops`
+/// (`extractelement`):
 /// `extractelement <4 x float> %vec, i8 0`. Locks the print form for
 /// vector + integer-indexed extract.
 #[test]
@@ -300,7 +306,8 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
 // insertelement
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1537:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.vectorops`
+/// (`insertelement`):
 /// `insertelement <4 x float> %vec, float 3.500000e+00, i8 0`.
 #[test]
 fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
@@ -330,7 +337,8 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
 // shufflevector
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1539:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.vectorops`
+/// (`shufflevector`):
 /// `shufflevector <4 x float> %vec, <4 x float> %vec2, <2 x i32> zeroinitializer`.
 /// Locks the all-zero mask print form (`zeroinitializer`).
 #[test]

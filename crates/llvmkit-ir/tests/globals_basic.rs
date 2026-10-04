@@ -22,7 +22,7 @@ fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
 // Simple globals
 // ---------------------------------------------------------------------------
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 88-89:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g1`:
 /// `@g1 = global i32 0` -- a default-linkage `global` with i32 zero
 /// initializer.
 #[test]
@@ -38,7 +38,7 @@ fn simple_global_i32_zero() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 90-91:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g2`:
 /// `@g2 = constant i32 0` -- a `constant` (immutable) global.
 #[test]
 fn simple_global_constant_i32_zero() {
@@ -53,7 +53,7 @@ fn simple_global_constant_i32_zero() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 114-115:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.external`:
 /// `@g.external = external global i32` -- a declaration-only global
 /// with explicit `external` keyword.
 #[test]
@@ -85,7 +85,7 @@ fn linkage_text(linkage: Linkage) -> String {
     module_text(&m)
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 94-95.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.private`.
 #[test]
 fn linkage_private() {
     assert!(
@@ -95,13 +95,13 @@ fn linkage_private() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 96-97.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.internal`.
 #[test]
 fn linkage_internal() {
     assert!(linkage_text(Linkage::Internal).contains("@g = internal global i32 0\n"));
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 98-99.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.available_externally`.
 #[test]
 fn linkage_available_externally() {
     assert!(
@@ -110,31 +110,31 @@ fn linkage_available_externally() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 100-101.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.linkonce`.
 #[test]
 fn linkage_linkonce() {
     assert!(linkage_text(Linkage::LinkOnceAny).contains("@g = linkonce global i32 0\n"));
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 110-111.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.linkonce_odr`.
 #[test]
 fn linkage_linkonce_odr() {
     assert!(linkage_text(Linkage::LinkOnceOdr).contains("@g = linkonce_odr global i32 0\n"));
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 102-103.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.weak`.
 #[test]
 fn linkage_weak() {
     assert!(linkage_text(Linkage::WeakAny).contains("@g = weak global i32 0\n"));
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 112-113.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.weak_odr`.
 #[test]
 fn linkage_weak_odr() {
     assert!(linkage_text(Linkage::WeakOdr).contains("@g = weak_odr global i32 0\n"));
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 108-109:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.extern_weak`:
 /// `@g.extern_weak = extern_weak global i32` -- declaration-only.
 #[test]
 fn linkage_extern_weak_declaration() {
@@ -151,7 +151,7 @@ fn linkage_extern_weak_declaration() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 104-105:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.common`:
 /// `@g.common = common global i32 0` -- common linkage requires a
 /// zero initializer.
 #[test]
@@ -179,7 +179,7 @@ fn visibility_text(vis: Visibility) -> String {
     module_text(&m)
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 120-121.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.hidden`.
 #[test]
 fn visibility_hidden() {
     assert!(
@@ -189,7 +189,7 @@ fn visibility_hidden() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 122-123.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.protected`.
 #[test]
 fn visibility_protected() {
     assert!(visibility_text(Visibility::Protected).contains("@g = protected global i32 0\n"));
@@ -199,7 +199,7 @@ fn visibility_protected() {
 // DLL storage class
 // ---------------------------------------------------------------------------
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 130-131.
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.dllexport`.
 #[test]
 fn dll_export() {
     let m = module_new!("m").expect("fresh module");
@@ -217,7 +217,7 @@ fn dll_export() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 128-129:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.dllimport`:
 /// `@g.dllimport = external dllimport global i32`.
 #[test]
 fn dll_import_declaration() {
@@ -250,14 +250,14 @@ fn tls_text(mode: ThreadLocalMode) -> String {
     module_text(&m)
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 136-137:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.generaldynamic`:
 /// `@g.generaldynamic = thread_local global i32 0`.
 #[test]
 fn tls_general_dynamic() {
     assert!(tls_text(ThreadLocalMode::GeneralDynamic).contains("@g = thread_local global i32 0\n"));
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 138-139:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.localdynamic`:
 /// `@g.localdynamic = thread_local(localdynamic) global i32 0`.
 #[test]
 fn tls_local_dynamic() {
@@ -267,7 +267,7 @@ fn tls_local_dynamic() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 140-141:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.initialexec`:
 /// `@g.initialexec = thread_local(initialexec) global i32 0`.
 #[test]
 fn tls_initial_exec() {
@@ -277,7 +277,7 @@ fn tls_initial_exec() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 142-143:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.localexec`:
 /// `@g.localexec = thread_local(localexec) global i32 0`.
 #[test]
 fn tls_local_exec() {
@@ -291,7 +291,7 @@ fn tls_local_exec() {
 // unnamed_addr
 // ---------------------------------------------------------------------------
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 146-147:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.unnamed_addr`:
 /// `@g.unnamed_addr = unnamed_addr global i32 0`.
 #[test]
 fn unnamed_addr_global() {
@@ -310,7 +310,7 @@ fn unnamed_addr_global() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 148-149:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.local_unnamed_addr`:
 /// `@g.local_unnamed_addr = local_unnamed_addr global i32 0`.
 #[test]
 fn unnamed_addr_local() {
@@ -333,7 +333,7 @@ fn unnamed_addr_local() {
 // Address space
 // ---------------------------------------------------------------------------
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 152-153:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.addrspace`:
 /// `@g.addrspace = addrspace(1) global i32 0`.
 #[test]
 fn address_space_one() {
@@ -356,7 +356,7 @@ fn address_space_one() {
 // externally_initialized
 // ---------------------------------------------------------------------------
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 156-157:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.externally_initialized`:
 /// `@g.externally_initialized = external externally_initialized global i32`.
 #[test]
 fn externally_initialized_declaration() {
@@ -378,7 +378,7 @@ fn externally_initialized_declaration() {
 // section + partition + align
 // ---------------------------------------------------------------------------
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 160-161:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.section`:
 /// `@g.section = global i32 0, section "_DATA"`.
 #[test]
 fn section_attribute() {
@@ -397,7 +397,7 @@ fn section_attribute() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 164-165:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.partition`:
 /// `@g.partition = global i32 0, partition "part"`.
 #[test]
 fn partition_attribute() {
@@ -416,7 +416,7 @@ fn partition_attribute() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 188-189:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.align`:
 /// `@g.align = global i32 0, align 4`.
 #[test]
 fn align_attribute() {
@@ -517,7 +517,7 @@ fn comdat_all_selection_kinds() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 168-169:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@comdat.any`:
 /// `@comdat.any = global i32 0, comdat` -- comdat name implicit
 /// (matches the global's name).
 #[test]
@@ -538,7 +538,7 @@ fn comdat_attached_implicit_name() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 182-185:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.comdat1`:
 /// `@g.comdat1 = global i32 0, section "SharedSection", comdat($comdat1)`
 /// -- comdat name explicit (differs from the global's name).
 #[test]
@@ -562,13 +562,13 @@ fn comdat_attached_explicit_name_with_section() {
 }
 
 // ---------------------------------------------------------------------------
-// Aggregate constants in initializers (mirrors compatibility.ll constants
-// section, lines 33-79)
+// Aggregate constants in initializers (mirrors compatibility.ll's `;; Constants`
+// section, `@const.true` through `@constant.vector.f64`)
 // ---------------------------------------------------------------------------
 
 /// Mirrors `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, AsInstructionsTest)`
 /// (struct-constant construction) and
-/// `test/Bitcode/compatibility.ll` line 47:
+/// `test/Bitcode/compatibility.ll`'s `@const.struct`:
 /// `@const.struct = constant %const.struct.type { i32 -1, i8 undef, i64 poison }`.
 #[test]
 fn const_struct_initializer() {
@@ -595,7 +595,8 @@ fn const_struct_initializer() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 53-58: `[3 x i16]` /
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@constant.array.i16` /
+/// `@constant.array.i32` / `@constant.array.i64`: `[3 x i16]` /
 /// `[3 x i32]` / `[3 x i64]` -- non-i8 array elements print element-wise.
 #[test]
 fn const_array_i32_initializer() {
@@ -615,7 +616,7 @@ fn const_array_i32_initializer() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 51:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@constant.array.i8`:
 /// `[3 x i8] c"\00\01\00"` -- i8 arrays print as c-strings via
 /// `ConstantDataArray::isString` in `lib/IR/AsmWriter.cpp`.
 #[test]
@@ -636,7 +637,7 @@ fn const_array_i8_prints_as_cstring() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 106-107:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@g.appending`:
 /// `@g.appending = appending global [4 x i8] c"test"` -- appending
 /// linkage with an i8-array initializer using the c-string form.
 #[test]
@@ -665,7 +666,7 @@ fn appending_global_cstring() {
     );
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 70-71: `<3 x i32>`
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@constant.vector.i32`: `<3 x i32>`
 /// vector constant prints with angle-bracket syntax.
 #[test]
 fn const_vector_initializer() {

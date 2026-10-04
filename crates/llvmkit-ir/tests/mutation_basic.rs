@@ -337,7 +337,8 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `llvm/test/Assembler/metadata-use-uselistorder.ll` lines 5-13:
+/// Mirrors `llvm/test/Assembler/metadata-use-uselistorder.ll`'s stated rule
+/// (uses inside metadata operands count toward use-list order):
 /// uses wrapped in metadata must still participate in value use tracking, but
 /// are distinct from ordinary instruction users.
 #[test]
@@ -392,7 +393,8 @@ fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `llvm/test/Assembler/metadata-use-uselistorder.ll` lines 10-13:
+/// Mirrors `llvm/test/Assembler/metadata-use-uselistorder.ll`'s debug-records
+/// note (a debug record still uses `ValueAsMetadata`, so its operand is a use):
 /// debug records live outside the instruction operand hierarchy, but value
 /// operands inside them still contribute structural uses and must be removed
 /// when the owning instruction is erased.
@@ -436,7 +438,8 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
     Ok(())
 }
 
-/// Mirrors `llvm/test/Assembler/metadata-use-uselistorder.ll` lines 10-13:
+/// Mirrors `llvm/test/Assembler/metadata-use-uselistorder.ll`'s debug-records
+/// note (a debug record still uses `ValueAsMetadata`, so its operand is a use):
 /// debug-record `ValueAsMetadata` edges are outside the instruction operand
 /// list, but `Value::replaceAllUsesWith` still rewrites them.
 #[test]

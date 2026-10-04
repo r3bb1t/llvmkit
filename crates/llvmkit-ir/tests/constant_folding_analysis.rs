@@ -888,11 +888,11 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
 
 // --------------------------------------------------------------------------
 // `ConstantFoldCompareInstOperands` pointer/integer rewrites
-// (`llvm/lib/Analysis/ConstantFolding.cpp` lines 1199-1311)
+// (`llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldCompareInstOperands`)
 // --------------------------------------------------------------------------
 
 /// fold #1: `icmp pred (inttoptr x), null` -> `icmp pred x, 0`
-/// (`ConstantFolding.cpp` lines 1213-1224).
+/// (`ConstantFolding.cpp::ConstantFoldCompareInstOperands`).
 #[test]
 fn inttoptr_vs_null_folds_via_integer_compare() -> Result<(), IrError> {
     let m = module_new!("analysis-inttoptr-vs-null")?;
@@ -924,7 +924,7 @@ fn inttoptr_vs_null_folds_via_integer_compare() -> Result<(), IrError> {
 }
 
 /// fold #2: `icmp pred (ptrtoint x), 0` -> `icmp pred x, null`
-/// (`ConstantFolding.cpp` lines 1226-1236). A non-weak, non-alias global's
+/// (`ConstantFolding.cpp::ConstantFoldCompareInstOperands`). A non-weak, non-alias global's
 /// address is provably non-null in address space 0, so the rewritten
 /// pointer compare folds all the way to a concrete bool through the
 /// target-independent `evaluateICmpRelation` port.
@@ -959,7 +959,7 @@ fn ptrtoint_eq_null_folds_to_false_for_nonweak_global() -> Result<(), IrError> {
 }
 
 /// fold #3 (`inttoptr` branch): `icmp pred (inttoptr x), (inttoptr y)` ->
-/// `icmp pred x, y` (`ConstantFolding.cpp` lines 1239-1252).
+/// `icmp pred x, y` (`ConstantFolding.cpp::ConstantFoldCompareInstOperands`).
 #[test]
 fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
     let m = module_new!("analysis-inttoptr-pair-ult")?;
@@ -999,7 +999,7 @@ fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
 }
 
 /// fold #3 (`ptrtoint` branch): `icmp pred (ptrtoint x), (ptrtoint y)` ->
-/// `icmp pred x, y` (`ConstantFolding.cpp` lines 1254-1264). Two distinct,
+/// `icmp pred x, y` (`ConstantFolding.cpp::ConstantFoldCompareInstOperands`). Two distinct,
 /// non-alias, non-interposable globals are never provably equal, so the
 /// rewritten pointer compare folds to `false` for `eq`.
 #[test]
@@ -1041,7 +1041,7 @@ fn ptrtoint_pair_eq_folds_via_pointer_operand_compare() -> Result<(), IrError> {
 }
 
 /// fold #4: base+offset stripping, `(base+off1) pred (base+off2)` ->
-/// `off1 pred off2` (`ConstantFolding.cpp` lines 1268-1291). Unsigned
+/// `off1 pred off2` (`ConstantFolding.cpp::ConstantFoldCompareInstOperands`). Unsigned
 /// ordering predicates require every stripped GEP to be `inbounds` (upstream
 /// passes `AllowNonInbounds = IsEqPred`, false here); both GEPs below are.
 #[test]
@@ -1304,7 +1304,7 @@ fn different_base_gep_offset_declines_to_fold() -> Result<(), IrError> {
 // ---------------------------------------------------------------------------
 
 /// Mirrors `llvm/lib/Analysis/ConstantFolding.cpp::SymbolicallyEvaluateGEP`
-/// (lines 881-991), the headline case: an all-constant-index GEP over a
+/// (`SymbolicallyEvaluateGEP`), the headline case: an all-constant-index GEP over a
 /// sized element type canonicalises to a single `i8`-element GEP carrying
 /// the total byte offset — `getelementptr i32, ptr @g, i64 4` folds to
 /// `getelementptr inbounds (i8, ptr @g, i64 16)`, exactly the compact
@@ -1343,7 +1343,7 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
 }
 
 /// Mirrors `SymbolicallyEvaluateGEP`'s "if this is a GEP of a GEP, fold it
-/// all into a single GEP" merge (`ConstantFolding.cpp` lines 915-946): two
+/// all into a single GEP" merge in `SymbolicallyEvaluateGEP`: two
 /// nested inbounds GEPs (`ptr @g, i64 1` twice, over `i32`) collapse to one
 /// canonical `i8` GEP carrying the combined offset (4 + 4 = 8).
 #[test]
@@ -1447,10 +1447,10 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
 // SymbolicallyEvaluateGEP merge-loop no-wrap-flag intersection (parity fix)
 // ---------------------------------------------------------------------------
 
-/// Mirrors `SymbolicallyEvaluateGEP`'s merge loop (`ConstantFolding.cpp`
-/// lines 915-946): `NW &= GEP->getNoWrapFlags();` (line 919) runs
+/// Mirrors `SymbolicallyEvaluateGEP`'s merge loop
+/// (`ConstantFolding.cpp`): `NW &= GEP->getNoWrapFlags();` runs
 /// *unconditionally* for every nested GEP the loop looks at, strictly
-/// before the `AllConstantInt` check (lines 924-931) that decides whether
+/// before the `AllConstantInt` check that decides whether
 /// the loop can actually accumulate that level's offset and keep going. So
 /// a nested GEP whose own index isn't a plain `ConstantInt` — which stops
 /// the offset merge — must still have contributed its own no-wrap flags to

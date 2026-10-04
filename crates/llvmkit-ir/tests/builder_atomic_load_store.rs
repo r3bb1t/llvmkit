@@ -11,9 +11,9 @@ use llvmkit_ir::{
     Linkage, SyncScope, VerifierRule, module_new,
 };
 
-// --- Atomic load shapes (compatibility.ll lines 902-906) ---------------
+// --- Atomic load shapes (compatibility.ll's `@atomics`, `%ld.1`-`%ld.3`) ---
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 902:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@atomics` (`%ld.1`):
 /// `%ld.1 = load atomic i32, ptr %word monotonic, align 4`.
 /// Constructed through the [`llvmkit_ir::LoadBuilder`] chain
 /// (`load_from(..).atomic(..)`), the single spelling for an atomic load.
@@ -42,7 +42,7 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 904:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@atomics` (`%ld.2`):
 /// `%ld.2 = load atomic volatile i32, ptr %word acquire, align 8`.
 /// Constructed through the [`llvmkit_ir::LoadBuilder`] chain
 /// (`load_from(..).volatile().atomic(..)`).
@@ -72,7 +72,7 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 906:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@atomics` (`%ld.3`):
 /// `%ld.3 = load atomic volatile i32, ptr %word syncscope("singlethread") seq_cst, align 16`.
 /// Constructed through the [`llvmkit_ir::LoadBuilder`] chain
 /// (`load_from(..).volatile().atomic(..).sync_scope(..)`).
@@ -104,9 +104,10 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
     Ok(())
 }
 
-// --- Atomic store shapes (compatibility.ll lines 909-913) --------------
+// --- Atomic store shapes (compatibility.ll's `@atomics` `store atomic`s) ---
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 909:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@atomics`
+/// (`store atomic i32`):
 /// `store atomic i32 23, ptr %word monotonic, align 4`.
 /// Constructed through the [`llvmkit_ir::StoreBuilder`] chain
 /// (`store_to(..).atomic(..)`), the single spelling for an atomic store.
@@ -135,7 +136,8 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 911:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@atomics`
+/// (`store atomic volatile i32`):
 /// `store atomic volatile i32 24, ptr %word monotonic, align 4`.
 /// Constructed through the [`llvmkit_ir::StoreBuilder`] chain
 /// (`store_to(..).volatile().atomic(..)`).
@@ -165,7 +167,8 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 913:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@atomics`
+/// (the syncscoped `store atomic volatile`):
 /// `store atomic volatile i32 25, ptr %word syncscope("singlethread") monotonic, align 4`.
 /// Constructed through the [`llvmkit_ir::StoreBuilder`] chain
 /// (`store_to(..).volatile().atomic(..).sync_scope(..)`).
@@ -291,7 +294,7 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Verifier/atomics.ll` (lines 1-15): an atomic load/store of a
+/// Mirrors `test/Verifier/atomics.ll` (`@foo` / `@bar`): an atomic load/store of a
 /// struct type must be rejected with "atomic load/store operand must have
 /// integer, pointer, floating point, or vector type!". Direct port of the
 /// upstream `; CHECK:` negative-test fixture. Constructed through the
@@ -327,7 +330,7 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
 // --- bitcast methods ---------------------------------------------------
 
 /// Adaptation of `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest,
-/// BitCast)` (line 638). Upstream exercises the `fp -> int` direction
+/// BitCast)`. Upstream exercises the `fp -> int` direction
 /// (`IRB.CreateBitCast(OneDouble, IRB.getInt64Ty())`); we exercise the
 /// inverse `int -> fp` direction here. llvmkit-specific scaffold for
 /// the `int -> fp` arm of `Instruction::BitCast` (`lib/IR/Instructions.cpp`).
@@ -374,8 +377,8 @@ fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
 }
 
 /// Mirrors `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)`
-/// (line 638). The `fp -> int` direction uses `IRB.CreateBitCast(OneDouble,
-/// IRB.getInt64Ty())` upstream (line 643).
+/// — its `fp -> int` direction, `IRB.CreateBitCast(OneDouble,
+/// IRB.getInt64Ty())`.
 #[test]
 fn bitcast_fp_to_int_emits_text() -> Result<(), IrError> {
     let m = module_new!("a")?;

@@ -148,7 +148,7 @@ fn typed_call_float_result_feeds_fadd_and_ret() -> Result<(), IrError> {
 // --------------------------------------------------------------------------
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest,
-/// InvokeInst)` (line 114): the upstream test builds an `InvokeInst`
+/// InvokeInst)`: the upstream test builds an `InvokeInst`
 /// against a 3-argument callee and asserts each `Invoke->getArgOperand(Idx)`
 /// matches the declared parameter type in order. This ports that
 /// operand-wiring check through `invoke`: three typed arguments
@@ -199,14 +199,14 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
 /// erased `...` tail, mirroring the classic C `int printf(const char*,
 /// ...)` idiom (here: `i32 @logf(i32, ...)`, since llvmkit's varargs
 /// facade fixes the prefix arity/type through `Params` like
-/// `call`). Anchors: `test/Feature/varargs.ll` line 14 (`define
+/// `call`). Anchors: `test/Feature/varargs.ll`'s `@test` (`define
 /// i32 @test(i32 %X, ...)` -- the local tree's exact fixed-i32-prefix +
-/// `...` declaration shape) and `test/Bitcode/compatibility.ll` lines
-/// 1900-1904 (`declare void @llvm.localescape(...)` /
+/// `...` declaration shape) and `test/Bitcode/compatibility.ll`'s
+/// `@intrinsics.localescape` (`declare void @llvm.localescape(...)` /
 /// `call void (...) @llvm.localescape(ptr %static.alloca)` -- the local
 /// tree's varargs *call-site* print form, `(...)` in the callee type
 /// followed by positional argument printing; a plain `call`, unlike the
-/// nearby `invoke`-with-operand-bundles fixture at lines 2079-2087,
+/// nearby `@invoke_with_operand_bundle_vaarg` fixture,
 /// which uses a different instruction and syntax). This test exercises
 /// the call form of that same shape through `varargs_call` rather
 /// than `invoke`, which the existing

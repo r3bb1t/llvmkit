@@ -3253,8 +3253,8 @@ where
     // ---- Per-predicate fcmp wrappers ----
     //
     // Each method mirrors the matching `IRBuilder::CreateFCmpO<Pred>` /
-    // `CreateFCmpU<Pred>` in `IRBuilder.h` (lines 2371-2475). All
-    // delegate to `fp_cmp` with the appropriate `FloatPredicate`.
+    // `CreateFCmpU<Pred>` in `IRBuilder.h`. All delegate to `fp_cmp` with the
+    // appropriate `FloatPredicate`.
 
     /// Mirrors `IRBuilder::CreateFCmpOEQ`.
     pub fn fcmp_oeq<K, Lhs, Rhs, Name>(
@@ -7213,7 +7213,7 @@ where
 
     /// Broadcast `scalar` across a fixed-width vector of `count` lanes.
     /// Mirrors `IRBuilderBase::CreateVectorSplat(unsigned NumElts, Value*,
-    /// const Twine&)` (`lib/IR/IRBuilder.cpp` line 1141), which expands to
+    /// const Twine&)` (`lib/IR/IRBuilder.cpp`), which expands to
     /// `insertelement <count x T> poison, <T> %v, i64 0` followed by
     /// `shufflevector ..., <count x T> poison, <count x i32> zeroinitializer`.
     /// The result is named `<name>.splat`; the intermediate insertelement
@@ -7272,8 +7272,8 @@ where
     // ---- ptr_add / inbounds_ptr_add ----
 
     /// `getelementptr i8, ptr <ptr>, <offset>` -- byte-offset pointer
-    /// arithmetic. Mirrors `IRBuilder::CreatePtrAdd` in `IRBuilder.h`
-    /// (line 2039), which expands to `CreateGEP(getInt8Ty(), Ptr, Offset, ...)`.
+    /// arithmetic. Mirrors `IRBuilder::CreatePtrAdd` in `IRBuilder.h`, which
+    /// expands to `CreateGEP(getInt8Ty(), Ptr, Offset, ...)`.
     pub fn ptr_add<P, O, W, Name>(
         &self,
         ptr: P,
@@ -7293,7 +7293,7 @@ where
     }
 
     /// `getelementptr inbounds i8, ptr <ptr>, <offset>`. Mirrors
-    /// `IRBuilder::CreateInBoundsPtrAdd` (`IRBuilder.h` line 2044), which
+    /// `IRBuilder::CreateInBoundsPtrAdd` (`IRBuilder.h`), which
     /// expands to `CreateGEP(getInt8Ty(), Ptr, Offset, Name, GEPNoWrapFlags::inBounds())`.
     pub fn inbounds_ptr_add<P, O, W, Name>(
         &self,

@@ -4,7 +4,7 @@
 //! Each `#[test]` cites its upstream source (Doctrine D11). The FMF
 //! tests port `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
 //! FastMathFlags)`. The fcmp predicate tests mirror the
-//! `test/Bitcode/compatibility.ll` fcmp fixture lines 1677-1706. The
+//! `test/Bitcode/compatibility.ll`'s `@instructions.other` fcmp block. The
 //! non-int phi tests adapt `unittests/IR/InstructionsTest.cpp` phi
 //! coverage to the typed-marker API.
 
@@ -16,7 +16,7 @@ use llvmkit_ir::{
 // --- Builder-context FMF -----------------------------------------------
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
-/// FastMathFlags)` (lines 596-620). Upstream sets every builder FMF bit,
+/// FastMathFlags)`, its all-flags-set block. Upstream sets every builder FMF bit,
 /// then checks the next `CreateFAdd` / `CreateFDiv` carry the same `fast`
 /// state. llvmkit observes the instruction FMF through exact AsmWriter
 /// spelling because FP binop handles currently return typed values.
@@ -49,7 +49,7 @@ fn fmf_propagates_from_builder_to_fadd() -> Result<(), IrError> {
 }
 
 /// Mirrors `IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
-/// (lines 622-628): after `Builder.clearFastMathFlags()`, the next
+/// — its `clearFastMathFlags` block: after `Builder.clearFastMathFlags()`, the next
 /// `CreateFDiv` carries no `AllowReciprocal` bit. The exact no-FMF print
 /// spelling is the observable llvmkit assertion.
 #[test]
@@ -73,7 +73,7 @@ fn clear_fast_math_flags_drops_flags_from_subsequent_ops() -> Result<(), IrError
 }
 
 /// Mirrors `IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
-/// (lines 630-640): after `FMF.setAllowReciprocal()` and
+/// — its individual-flag block: after `FMF.setAllowReciprocal()` and
 /// `Builder.setFastMathFlags(FMF)`, the next `CreateFDiv` carries the
 /// `AllowReciprocal` bit.
 #[test]
@@ -100,7 +100,7 @@ fn fmf_allow_reciprocal_propagates_to_fdiv() -> Result<(), IrError> {
 }
 
 /// Mirrors `IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
-/// (lines 642-658): `Builder.CreateFCmpOEQ(F, F)` first carries no
+/// — its `CreateFCmpOEQ` block: `Builder.CreateFCmpOEQ(F, F)` first carries no
 /// `AllowReciprocal` bit after clear, then carries it after
 /// `FMF.setAllowReciprocal(); Builder.setFastMathFlags(FMF);`.
 #[test]
@@ -134,7 +134,7 @@ fn fmf_propagates_to_fcmp_oeq() -> Result<(), IrError> {
 }
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, RAIIHelpersTest)`
-/// (lines 823-856), specifically the `FastMathFlagGuard` arm: snapshot FMF,
+/// — specifically its `FastMathFlagGuard` arm: snapshot FMF,
 /// scope changes to the builder's FMF, exit restores the original. Our
 /// consume-self builders provide the same observable round-trip via
 /// `fast_math_flags()` (snapshot) + `with_fast_math_flags(orig)` (restore).
@@ -169,7 +169,7 @@ fn fmf_save_and_restore_round_trip() -> Result<(), IrError> {
 }
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)`
-/// (line 535-555): `Builder.CreateUnOp(Instruction::FNeg, V)` followed by
+/// — `Builder.CreateUnOp(Instruction::FNeg, V)` followed by
 /// `Builder.CreateFNegFMF(V, I)` where `I` carries `nnan` + `nsz`. We mirror
 /// both shapes via `fp_neg` / `fp_neg_fmf` and
 /// assert the exposed `FnegInst` FMF bits directly.
@@ -211,7 +211,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
 }
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
-/// FastMathFlags)` (lines 662-697): the AllowContract / ApproxFunc /
+/// FastMathFlags)` — the AllowContract / ApproxFunc /
 /// AllowReassoc propagation arm. llvmkit observes the instruction bits
 /// through exact AsmWriter FMF order.
 #[test]
@@ -305,7 +305,7 @@ macro_rules! fcmp_predicate_emits {
 
 // --- Per-predicate fcmp -------------------------------------------------
 
-/// Mirrors `test/Bitcode/compatibility.ll` line 1677:
+/// Mirrors `test/Bitcode/compatibility.ll`'s `@instructions.other`:
 /// `fcmp oeq half %fop1, %fop2`. We use `f32` (`float`) here because the
 /// project ships f32/f64 as primary kinds; the predicate routing is
 /// agnostic to the float kind.
@@ -316,7 +316,7 @@ fn build_fcmp_oeq_emits_oeq() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `compatibility.ll` line 1679: `fcmp ogt half %fop1, %fop2`.
+/// Mirrors `compatibility.ll`'s `@instructions.other`: `fcmp ogt half %fop1, %fop2`.
 #[test]
 fn build_fcmp_ogt_emits_ogt() -> Result<(), IrError> {
     fcmp_predicate_emits!("ogt", |b, lhs, rhs| {
@@ -324,7 +324,7 @@ fn build_fcmp_ogt_emits_ogt() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `compatibility.ll` line 1681: `fcmp oge half %fop1, %fop2`.
+/// Mirrors `compatibility.ll`'s `@instructions.other`: `fcmp oge half %fop1, %fop2`.
 #[test]
 fn build_fcmp_oge_emits_oge() -> Result<(), IrError> {
     fcmp_predicate_emits!("oge", |b, lhs, rhs| {
@@ -332,7 +332,7 @@ fn build_fcmp_oge_emits_oge() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `compatibility.ll` line 1683: `fcmp olt half %fop1, %fop2`.
+/// Mirrors `compatibility.ll`'s `@instructions.other`: `fcmp olt half %fop1, %fop2`.
 #[test]
 fn build_fcmp_olt_emits_olt() -> Result<(), IrError> {
     fcmp_predicate_emits!("olt", |b, lhs, rhs| {
@@ -340,7 +340,7 @@ fn build_fcmp_olt_emits_olt() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `compatibility.ll` line 1685: `fcmp ole half %fop1, %fop2`.
+/// Mirrors `compatibility.ll`'s `@instructions.other`: `fcmp ole half %fop1, %fop2`.
 #[test]
 fn build_fcmp_ole_emits_ole() -> Result<(), IrError> {
     fcmp_predicate_emits!("ole", |b, lhs, rhs| {
@@ -348,7 +348,7 @@ fn build_fcmp_ole_emits_ole() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `compatibility.ll` line 1689: `fcmp ord half %fop1, %fop2`.
+/// Mirrors `compatibility.ll`'s `@instructions.other`: `fcmp ord half %fop1, %fop2`.
 #[test]
 fn build_fcmp_ord_emits_ord() -> Result<(), IrError> {
     fcmp_predicate_emits!("ord", |b, lhs, rhs| {
@@ -356,7 +356,7 @@ fn build_fcmp_ord_emits_ord() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `compatibility.ll` line 1703: `fcmp uno half %fop1, %fop2`.
+/// Mirrors `compatibility.ll`'s `@instructions.other`: `fcmp uno half %fop1, %fop2`.
 #[test]
 fn build_fcmp_uno_emits_uno() -> Result<(), IrError> {
     fcmp_predicate_emits!("uno", |b, lhs, rhs| {
@@ -364,7 +364,7 @@ fn build_fcmp_uno_emits_uno() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `compatibility.ll` line 1691: `fcmp ueq half %fop1, %fop2`.
+/// Mirrors `compatibility.ll`'s `@instructions.other`: `fcmp ueq half %fop1, %fop2`.
 #[test]
 fn build_fcmp_ueq_emits_ueq() -> Result<(), IrError> {
     fcmp_predicate_emits!("ueq", |b, lhs, rhs| {
@@ -375,7 +375,7 @@ fn build_fcmp_ueq_emits_ueq() -> Result<(), IrError> {
 // --- Non-int phi handles ----------------------------------------------
 
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest,
-/// FPMathOperator)` (line 539), which exercises
+/// FPMathOperator)`, which exercises
 /// `Builder.CreatePHI(Builder.getDoubleTy(), 0)` -- a `double`-typed phi
 /// that subsequently feeds an `FPMathOperator`. We mirror the same
 /// `phi double` shape through a `double` block parameter (the head-phi
@@ -406,7 +406,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Verifier/inalloca2.ll` line 35:
+/// Mirrors `test/Verifier/inalloca2.ll`'s `@c`:
 /// `%args = phi ptr [ %a, %if ], [ %b, %else ]` -- the canonical
 /// upstream IR fixture for a pointer phi. Adapted to a `ptr` block
 /// parameter (the head-phi created by `append_block_with_params`).

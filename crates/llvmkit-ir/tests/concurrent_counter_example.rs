@@ -5,10 +5,11 @@
 //!   decomposition documented in `llvm/docs/Atomics.html` (see the
 //!   "Monotonic" / "Acquire" / "Release" sections); the printed shape
 //!   is locked against the per-opcode fixtures in
-//!   `test/Bitcode/compatibility.ll` (line 848 for `atomicrmw add ... monotonic`,
-//!   lines 893-895 for `fence release` / `fence acquire`).
+//!   `test/Bitcode/compatibility.ll`'s `@atomics` (`%atomicrmw_no_align.add` for
+//!   `atomicrmw add ... monotonic`, its `fence` family for `fence release` /
+//!   `fence acquire`).
 //! - `dispatch`'s `switch` print form mirrors `test/Bitcode/compatibility.ll`
-//!   lines 1302-1310 (`switch <ty> %val, label %... [...]`).
+//!   `@instructions.terminators` (`switch <ty> %val, label %... [...]`).
 //!
 //! Doctrine D11: this is a `mirror` test --- it locks the AsmWriter
 //! parity of the example binary against the same upstream fixtures

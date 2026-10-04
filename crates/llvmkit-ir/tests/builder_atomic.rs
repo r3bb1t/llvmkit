@@ -11,7 +11,7 @@ use llvmkit_ir::{
 // fence
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` lines 893-898:
+/// Ports `test/Bitcode/compatibility.ll`'s `@atomics` (the `fence` family):
 /// `fence acquire`, `fence release`, `fence acq_rel`. Locks the
 /// canonical print form for the four valid system-scope orderings.
 #[test]
@@ -33,7 +33,7 @@ fn fence_system_scope_orderings() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 899:
+/// Ports `test/Bitcode/compatibility.ll`'s `@atomics` (the syncscoped `fence`):
 /// `fence syncscope("singlethread") seq_cst`. Locks the singlethread
 /// scope qualifier print form.
 #[test]
@@ -62,7 +62,7 @@ fn fence_singlethread_seq_cst() -> Result<(), IrError> {
 // cmpxchg
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 810:
+/// Ports `test/Bitcode/compatibility.ll`'s `@atomics` (`%cmpxchg_no_align.0`):
 /// `cmpxchg ptr %word, i32 0, i32 4 monotonic monotonic`.
 #[test]
 fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
@@ -97,7 +97,7 @@ fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 824:
+/// Ports `test/Bitcode/compatibility.ll`'s `@atomics` (`%cmpxchg_no_align.7`):
 /// `cmpxchg weak volatile ptr %word, i32 0, i32 11 syncscope("singlethread") seq_cst monotonic`.
 /// Locks the full flag + scope print form.
 #[test]
@@ -141,7 +141,8 @@ fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
 // atomicrmw
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 846:
+/// Ports `test/Bitcode/compatibility.ll`'s `@atomics`
+/// (`%atomicrmw_no_align.xchg`):
 /// `atomicrmw xchg ptr %word, i32 12 monotonic`.
 #[test]
 fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
@@ -171,7 +172,8 @@ fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 862:
+/// Ports `test/Bitcode/compatibility.ll`'s `@atomics`
+/// (`%atomicrmw_no_align.min`):
 /// `atomicrmw volatile min ptr %word, i32 20 monotonic`.
 #[test]
 fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
@@ -201,7 +203,8 @@ fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 864:
+/// Ports `test/Bitcode/compatibility.ll`'s `@atomics`
+/// (`%atomicrmw_no_align.umax`):
 /// `atomicrmw umax ptr %word, i32 21 syncscope("singlethread") monotonic`.
 #[test]
 fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
@@ -231,7 +234,8 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 935 (`@fp_atomics`):
+/// Ports `test/Bitcode/compatibility.ll`'s `@fp_atomics`
+/// (`%atomicrmw.fmaximum`):
 /// `atomicrmw fmaximum ptr %word, float 1.0 monotonic`. `FMaximum` is one
 /// of the LLVM 21 IEEE-754 `maximum`/`minimum`-semantics atomicrmw ops
 /// (`AtomicRMWInst::BinOp` in `Instructions.h`); this locks its print
@@ -266,7 +270,8 @@ fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 938 (`@fp_atomics`):
+/// Ports `test/Bitcode/compatibility.ll`'s `@fp_atomics`
+/// (`%atomicrmw.fminimum`):
 /// `atomicrmw fminimum ptr %word, float 1.0 monotonic`. `FMinimum` is
 /// `FMaximum`'s IEEE-754 `minimum` counterpart, added alongside it in
 /// LLVM 21's `AtomicRMWInst::BinOp`.

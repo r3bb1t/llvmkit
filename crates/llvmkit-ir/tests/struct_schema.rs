@@ -416,7 +416,8 @@ fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
 }
 
 /// Ports the aggregate indexing shape from `test/Bitcode/compatibility.ll`
-/// lines 1549 and 1558 (`extractvalue` / `insertvalue`), with a typed field
+/// — its `@instructions.aggregateops` (`extractvalue { i8, i32 }` /
+/// `insertvalue { i8, i32 }`) — with a typed field
 /// schema layered over the positional indices.
 #[test]
 fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
@@ -496,7 +497,8 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
 }
 
 /// Ports the nested aggregate indexing shape from `test/Bitcode/compatibility.ll`
-/// line 1555 (`extractvalue { i8, { i32 } } %n, 1, 0`) through nested named
+/// — its `@instructions.aggregateops` (`extractvalue { i8, { i32 } } %n, 1, 0`)
+/// — through nested named
 /// schemas so a `%Rect` field returns `PointValue`, not raw `StructValue`.
 #[test]
 fn nested_struct_schema_accessors_return_nested_wrapper() -> Result<(), IrError> {

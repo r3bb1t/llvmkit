@@ -8,7 +8,8 @@ use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, IsValue, Linkage, PointerVal
 // switch
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` lines 1302-1310:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.terminators`
+/// (`switch`):
 /// `switch i8 %val, label %defaultdest [ i8 0, label %defaultdest.0
 ///   i8 1, label %defaultdest.1
 ///   i8 2, label %defaultdest.2 ]`. Locks the multi-line print form.
@@ -42,7 +43,7 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
         .add_case(i8_ty.const_int(2_i8), case2_label)?
         .finish();
     let text = format!("{m}");
-    // Mirrors the upstream multi-line form (CHECK lines 1303-1310).
+    // Mirrors the upstream multi-line form of that `switch`'s CHECK block.
     assert!(
         text.contains("switch i8 %0, label %defaultdest ["),
         "got:\n{text}"
@@ -226,7 +227,8 @@ fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), I
 // indirectbr
 // --------------------------------------------------------------------------
 
-/// Ports `test/Bitcode/compatibility.ll` line 1320:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.terminators`
+/// (the single-destination `indirectbr`):
 /// `indirectbr ptr blockaddress(@instructions.terminators, %defaultdest.2),
 /// [label %defaultdest.2]`. Note: `blockaddress(...)` constants are not
 /// yet supported (Session 2 territory). We exercise the print form using
@@ -260,7 +262,8 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Ports `test/Bitcode/compatibility.ll` line 1322:
+/// Ports `test/Bitcode/compatibility.ll`'s `@instructions.terminators`
+/// (the repeated-destination `indirectbr`):
 /// `indirectbr ptr blockaddress(...), [label %defaultdest.2, label %defaultdest.2]`.
 /// Locks the comma-separated multi-destination print form. The duplicated
 /// destination is intentional in the upstream fixture (a valid IR form).
