@@ -280,4 +280,7 @@ fn typestate_compile_fail() {
     // impl is widened and its bodies are routed around the inherent methods.
     t.compile_fail("tests/compile_fail/verified_instruction_set_name_trait_is_read_only.rs");
     t.compile_fail("tests/compile_fail/verified_call_base_trait_is_read_only.rs");
+    // The same law for the value handles' `SetName` impls: one handle per
+    // impl, a macro's handle standing for every handle the macro declares.
+    t.compile_fail("tests/compile_fail/verified_value_set_name_trait_is_read_only.rs");
 }
