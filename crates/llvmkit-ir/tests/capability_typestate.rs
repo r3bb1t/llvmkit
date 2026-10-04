@@ -133,14 +133,16 @@ struct InstructionIds {
     pointer: ValueId<DynBrand>,
 }
 
-/// The capability every reader route into the block and instruction family
-/// hands back from `m`, named by route: `view` of each id, a value's
+/// The capability the reader routes named here hand back from `m`, keyed by
+/// route: `view` of each id in `ids`, a value's
 /// `users()`, `InstructionView::try_from` a value, the `kind()` and
 /// `terminator_kind()` payloads, and an operand. A viewed block id is a
-/// `BasicBlockLabel`, whose one onward route, `to_erased`, the branch route
-/// below takes. No public reader mints a `ReadOnly` `BasicBlock` yet: every
-/// public signature returning one leaves `C` at its `Mutable` default, a
-/// function's blocks included, until functions carry the capability.
+/// `BasicBlockLabel`; the branch route below goes on from it through
+/// `to_erased`. A `BasicBlock`'s own readers are not asserted here: `view` of
+/// a block id mints a `BasicBlockLabel`, and `FunctionValue::basic_blocks` /
+/// `entry_block` mint at the `Mutable` default until functions carry the
+/// capability, so neither route yields a `ReadOnly` `BasicBlock` to call
+/// them on.
 fn instruction_routes<S: ModuleState>(
     m: &Module<DynBrand, S>,
     ids: &InstructionIds,
@@ -219,14 +221,16 @@ fn block_view_routes<S: ModuleState>(m: &Module<DynBrand, S>) -> [(&'static str,
     ]
 }
 
-/// A verified module mints `ReadOnly` blocks and instructions on every reader
-/// route: `view` of each block and instruction id kind, a value's `users()`,
-/// `InstructionView::try_from`, the `kind()` / `terminator_kind()` payloads and
-/// an operand — and a pass context's `BasicBlockView` hands out `ReadOnly`
-/// instructions, placement witnesses and terminator. Positive control: the
-/// same routes through the unverified module are `Mutable`. A
-/// `BasicBlockView` is `ReadOnly` whatever its module's state, so it is
-/// asserted on both. llvmkit-specific (D1, D8).
+/// A verified module mints `ReadOnly` blocks and instructions on the reader
+/// routes this test names: `view` of a block id and of the call, typed-call,
+/// intrinsic, four phi, freeze, `va_arg`, `atomicrmw` and `cmpxchg` ids, a
+/// value's `users()`, `InstructionView::try_from`, the `kind()` /
+/// `terminator_kind()` payloads and an operand — and a pass context's
+/// `BasicBlockView` hands out `ReadOnly` instructions, placement witnesses and
+/// terminator. Positive control: the same routes through the unverified
+/// module, the `BasicBlockView` ones aside, are `Mutable`. A `BasicBlockView`
+/// is `ReadOnly` whatever its module's state, so it is asserted on both.
+/// llvmkit-specific (D1, D8).
 #[test]
 fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrError> {
     let m = Module::dynamic("m");
@@ -366,7 +370,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
     Ok(())
 }
 
-/// The read-only predicates take each operand at its own capability and
+/// These read-only predicates take each operand at its own capability and
 /// answer as they do on `Mutable` operands:
 /// `ShuffleVectorInst::is_valid_operands` and
 /// `is_valid_operands_with_constant_mask` with `Mutable` and `ReadOnly`

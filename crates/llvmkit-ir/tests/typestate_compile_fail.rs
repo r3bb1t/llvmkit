@@ -262,4 +262,8 @@ fn typestate_compile_fail() {
     // a verified call's callee, its entry block and an instruction there must
     // not come back `Mutable`.
     t.compile_fail("tests/compile_fail/verified_call_callee_is_not_a_mutable_route.rs");
+    // The instruction mutators whose bodies need no `Mutable` reference have
+    // only their `C: CanMutate` bound between a `ReadOnly` handle and the
+    // module; this fixture is what fails if one of those bounds goes.
+    t.compile_fail("tests/compile_fail/verified_instruction_mutators_are_read_only.rs");
 }

@@ -46,24 +46,49 @@ cut, entries accumulate under **Unreleased**.
   `set_name` / `clear_name`, `remove_incoming`, `set_fast_math_flags`,
   `set_value_operand`, `set_tail_call_kind`, `set_attributes`,
   `with_operand_bundles`, `splice_into`, `split_at` / `split_before` and the
-  blocks' `call` builders — now require `C: CanMutate`; locked by
-  `compile_fail/verified_instruction_metadata_is_read_only`,
-  `compile_fail/verified_phi_fast_math_flags_are_immutable` and, for the
-  routes that mint the handles, `capability_typestate`'s
-  `a_verified_modules_blocks_and_instructions_are_read_only`. Function
-  handles are not covered yet: `view` of a function id still mints a
+  blocks' `call` builders — now require `C: CanMutate`. What fails if one of
+  those bounds is dropped:
+  - a compile-fail fixture, for the mutators whose bodies need no `Mutable`
+    reference: `compile_fail/verified_instruction_metadata_is_read_only`
+    (`set_metadata`), `compile_fail/verified_phi_fast_math_flags_are_immutable`
+    (the float phi's `set_fast_math_flags`) and
+    `compile_fail/verified_instruction_mutators_are_read_only`
+    (`push_debug_record`, `set_tail_call_kind`, the call, invoke and `callbr`
+    `set_attributes`, `set_value_operand`, and the int and other phis'
+    `set_fast_math_flags`), each called on a verified module's `ReadOnly`
+    handle;
+  - the crate's own build, for the rest — `set_name` / `clear_name`,
+    `remove_incoming`, `with_operand_bundles`, `splice_into`, `split_at` /
+    `split_before` and the `call` builders — whose bodies call
+    `proven_mutable()` or another `CanMutate`-bounded routine. No fixture
+    calls them on a `ReadOnly` handle; for the `BasicBlock` ones a fixture
+    becomes writable at the integration step, when a function's blocks come
+    back `ReadOnly`.
+
+  `capability_typestate`'s
+  `a_verified_modules_blocks_and_instructions_are_read_only` locks the
+  routes that mint these handles `ReadOnly`, not the mutators. Function
+  handles are not covered yet: a function reached through `view` of its id,
+  or through an argument operand's `Argument::parent_function`, is still a
   `Mutable` `FunctionValue`, whose blocks and instructions are `Mutable`,
   until functions carry the capability.
 - **Breaking: `CallInst::classify_callee` and `BasicBlock::parent_function`
   exist only on a `Mutable` handle.** Both hand out a `FunctionValue`, which
   carries no capability yet, so on a `ReadOnly` call or block they would lead
   back to `Mutable` blocks and instructions; they become generic over the
-  capability once functions carry it. Locked by
-  `compile_fail/verified_call_callee_is_not_a_mutable_route`.
+  capability once functions carry it. `classify_callee`'s restriction is
+  locked by `compile_fail/verified_call_callee_is_not_a_mutable_route`.
+  `parent_function`'s has no fixture yet: one becomes writable at the
+  integration step, when a function's blocks, which it is called on, come
+  back `ReadOnly`.
 - **Breaking: a `BasicBlockView` hands out `ReadOnly` handles** —
   `instructions()`, `placed_instructions()` and its `IntoIterator` — so the
-  handles of a walk an `Inspect` pass receives reach no setter (viewing a
-  function id still yields a `Mutable` function, as above). Until the
+  instructions of a walk an `Inspect` pass receives, and what they narrow to,
+  are `ReadOnly`. One route from them to a setter stays open until the
+  integration step, when functions carry the capability: an operand that is
+  an argument hands out `Argument::parent_function` at `Mutable`, and that
+  function's `entry_block` leads to `Mutable` instructions and the tokenless
+  `set_fast_math_flags`. Until the
   value-tracking analyses accept either capability, that walk cannot feed
   them: they take `Mutable` values, so a caller holding the unverified module
   walks `module.view(function.id()).basic_blocks()` instead. A mutating context's
