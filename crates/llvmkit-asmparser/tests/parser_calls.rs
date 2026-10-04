@@ -744,7 +744,7 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
                 bundle.tag().clone(),
                 bundle
                     .inputs()
-                    .map(|input: Value<'_, _>| input.to_string())
+                    .map(|input: Value<'_, _, llvmkit_ir::ReadOnly>| input.to_string())
                     .collect(),
             )
         })
@@ -774,8 +774,8 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
 
 /// Every bundle of a call site, as `(tag, input texts)`, read through the
 /// `OperandBundleUse` view: shared by the invoke and callbr read-back tests.
-fn bundle_texts<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
-    bundles: impl Iterator<Item = llvmkit_ir::OperandBundleUse<'ctx, B>>,
+fn bundle_texts<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx, C: llvmkit_ir::Capability>(
+    bundles: impl Iterator<Item = llvmkit_ir::OperandBundleUse<'ctx, B, C>>,
 ) -> Vec<(llvmkit_ir::OperandBundleTag, Vec<String>)> {
     bundles
         .map(|bundle| {
@@ -3269,10 +3269,16 @@ attributes #0 = { speculatable }
         .parse_module()
         .expect("parser succeeds");
     let view = module.as_view();
+    // The module's own blocks: the speculation queries take `Mutable` views,
+    // and a `ModuleView` walk hands out `ReadOnly` ones.
     let call = |name: &str| {
-        view.functions()
+        let function = view
+            .functions()
             .find(|function| function.name().as_deref() == Some("f"))
             .expect("the source defines @f")
+            .id();
+        module
+            .view(function)
             .basic_blocks()
             .flat_map(|block| block.instructions())
             .find(|instruction| instruction.name().as_deref() == Some(name))

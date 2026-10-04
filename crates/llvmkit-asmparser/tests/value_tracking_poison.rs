@@ -21,7 +21,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
     module
         .as_view()
         .functions()
-        .flat_map(|f| f.basic_blocks())
+        .flat_map(|f| module.view(f.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))

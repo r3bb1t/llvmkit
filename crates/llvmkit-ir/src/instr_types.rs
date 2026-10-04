@@ -2428,8 +2428,8 @@ impl CallAttributeData {
 /// CallBase::isNoBuiltin() to check for Attribute::NoBuiltin"); this routine
 /// is `hasFnAttrImpl`, which has no such guard, and answers for `NoBuiltin`
 /// the way `isNoBuiltin`'s first half asks it.
-pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
-    module: ModuleRef<'ctx, B>,
+pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     callee: ValueSlot,
     attrs: &CallAttributeData,
     kind: AttrKind,
@@ -2444,7 +2444,12 @@ pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx>(
     //  return false;`
     match &module.value_data(callee).kind {
         ValueKindData::Function(_) => {
-            FunctionValue::<Dyn, B>::from_parts_unchecked(callee, module).has_fn_attribute(kind)
+            // capability (proof): laundered until Task 4 — `FunctionValue`
+            // carries no capability yet; the function is read for one
+            // attribute and never leaves this routine.
+            let function_module = module.mutable_at_marked_boundary();
+            FunctionValue::<Dyn, B>::from_parts_unchecked(callee, function_module)
+                .has_fn_attribute(kind)
         }
         _ => false,
     }

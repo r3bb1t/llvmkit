@@ -25,7 +25,9 @@ use std::collections::HashMap;
 use super::atomic_ordering::AtomicOrdering;
 use super::attributes::{AttrKind, AttributeStorage, AttributeStored};
 use super::basic_block::BasicBlock;
+use super::block_params::BlockParamsDyn;
 use super::block_state::{BlockTerminationState, Terminated};
+use super::capability::Capability;
 use super::comdat::ComdatRef;
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
@@ -188,7 +190,7 @@ pub(super) fn block_slot_label<B: ModuleBrand>(module: ModuleRef<'_, B>, id: Val
 
 /// `true` if `inst` produces a result that gets a textual name (or
 /// slot). Terminators and stores don't.
-fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
+fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand, impl Capability>) -> bool {
     match inst_kind_data(inst) {
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
@@ -246,8 +248,8 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
     }
 }
 
-fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx>(
-    inst: &InstructionView<'ctx, B>,
+fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    inst: &InstructionView<'ctx, B, C>,
 ) -> &'ctx InstructionKindData {
     match &inst.as_erased().data().kind {
         ValueKindData::Instruction(i) => &i.kind,
@@ -261,9 +263,9 @@ fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Print a value as an operand: `<type> <ref>`, where `<ref>` is
 /// `%name`, `@name`, `%slot`, or a constant literal.
-pub(super) fn fmt_operand<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    v: Value<'ctx, B>,
+    v: Value<'ctx, B, C>,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     write!(f, "{} ", v.ty())?;
@@ -272,9 +274,9 @@ pub(super) fn fmt_operand<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Print just the SSA reference part: `%name` / `@name` / `%slot` /
 /// constant body.
-pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    v: Value<'ctx, B>,
+    v: Value<'ctx, B, C>,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     let data = v.data();
@@ -760,9 +762,9 @@ fn fmt_inline_asm(f: &mut fmt::Formatter<'_>, d: &InlineAsmData) -> fmt::Result 
 // Constant printing
 // --------------------------------------------------------------------------
 
-pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'ctx, B>,
+    host: Value<'ctx, B, C>,
     c: &ConstantData,
 ) -> fmt::Result {
     match c {
@@ -939,9 +941,9 @@ fn fmt_apint_signed(f: &mut fmt::Formatter<'_>, words: &[u64], bit_width: u32) -
     write!(f, "{}", ApInt::from_words(bit_width, words))
 }
 
-fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx>(
+fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'ctx, B>,
+    host: Value<'ctx, B, C>,
     expr: &ConstantExprData,
 ) -> fmt::Result {
     let module = host.module();
@@ -1110,9 +1112,9 @@ fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>)
     }
 }
 
-fn fmt_int_constant<B: ModuleBrand>(
+fn fmt_int_constant<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    ty: Type<'_, B>,
+    ty: Type<'_, B, C>,
     words: &[u64],
 ) -> fmt::Result {
     let bits = match ty.data() {
@@ -1250,9 +1252,9 @@ fn write_hex_prefixed_upper(f: &mut fmt::Formatter<'_>, value: u64) -> fmt::Resu
     write!(f, "0x{value:0digits$X}")
 }
 
-fn fmt_float_constant<B: ModuleBrand>(
+fn fmt_float_constant<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    ty: Type<'_, B>,
+    ty: Type<'_, B, C>,
     bits: u128,
 ) -> fmt::Result {
     match ty.data() {
@@ -1349,9 +1351,9 @@ fn fmt_llvm_name_without_prefix<W: fmt::Write>(f: &mut W, name: &str) -> fmt::Re
     f.write_str("\"")
 }
 
-fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
+fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    v: Value<'ctx, B>,
+    v: Value<'ctx, B, C>,
 ) -> fmt::Result {
     match v.name() {
         Some(name) => fmt_llvm_name(f, "@", &name),
@@ -1405,9 +1407,9 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
 /// `ConstantInt`, return the underlying byte sequence; else `None`.
 /// Mirrors `ConstantDataArray::isString` (in C++ this is a runtime
 /// downcast plus a per-element check).
-fn collect_byte_string<B: ModuleBrand>(
+fn collect_byte_string<B: ModuleBrand, C: Capability>(
     module: &ModuleCore,
-    ty: Type<'_, B>,
+    ty: Type<'_, B, C>,
     elem_ids: &[ValueSlot],
 ) -> Option<Vec<u8>> {
     match ty.data() {
@@ -1480,7 +1482,11 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
 /// know the difference. `VectorType::const_vector` requires a scalable
 /// constant's lanes to agree, so every scalable aggregate that reaches here
 /// takes this arm and the element-list fallback below is fixed-width only.
-fn prints_as_splat<B: ModuleBrand>(module: &ModuleCore, ty: Type<'_, B>, splat: ValueSlot) -> bool {
+fn prints_as_splat<B: ModuleBrand, C: Capability>(
+    module: &ModuleCore,
+    ty: Type<'_, B, C>,
+    splat: ValueSlot,
+) -> bool {
     match ty.data() {
         TypeData::FixedVector { .. } => is_int_or_fp_splat_value(module, splat),
         TypeData::ScalableVector { .. } => true,
@@ -1488,9 +1494,9 @@ fn prints_as_splat<B: ModuleBrand>(module: &ModuleCore, ty: Type<'_, B>, splat: 
     }
 }
 
-fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
+fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'ctx, B>,
+    host: Value<'ctx, B, C>,
     elem_ids: &[ValueSlot],
 ) -> fmt::Result {
     let module = host.module();
@@ -1556,7 +1562,7 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
 
 pub(super) fn fmt_instruction(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     slots: &SlotTracker,
 ) -> fmt::Result {
     f.write_str("  ")?;
@@ -1651,7 +1657,7 @@ pub(super) fn fmt_instruction(
 fn fmt_binop(
     f: &mut fmt::Formatter<'_>,
     opcode: &str,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     b: &BinaryOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1687,7 +1693,7 @@ fn fmt_binop(
 
 fn fmt_cast(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     c: &CastOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1722,7 +1728,7 @@ fn fmt_cast(
 
 fn fmt_fneg(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     u: &FnegInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1742,7 +1748,7 @@ fn fmt_fneg(
 
 fn fmt_freeze(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     u: &FreezeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1757,7 +1763,7 @@ fn fmt_freeze(
 
 fn fmt_va_arg(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     u: &VaArgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1773,7 +1779,7 @@ fn fmt_va_arg(
 
 fn fmt_extract_value(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &ExtractValueInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1795,7 +1801,7 @@ fn fmt_extract_value(
 
 fn fmt_insert_value(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &InsertValueInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1821,7 +1827,7 @@ fn fmt_insert_value(
 
 fn fmt_extract_element(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &ExtractElementInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1845,7 +1851,7 @@ fn fmt_extract_element(
 
 fn fmt_insert_element(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &InsertElementInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1873,7 +1879,7 @@ fn fmt_insert_element(
 
 fn fmt_shuffle_vector(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &ShuffleVectorInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1896,9 +1902,9 @@ fn fmt_shuffle_vector(
     print_shuffle_mask(f, inst.ty(), &d.mask)
 }
 
-fn print_shuffle_mask<B: ModuleBrand>(
+fn print_shuffle_mask<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    result_ty: Type<'_, B>,
+    result_ty: Type<'_, B, C>,
     mask: &[ShuffleMaskElem],
 ) -> fmt::Result {
     // Mirrors `printShuffleMask` in `lib/IR/AsmWriter.cpp`.
@@ -1958,7 +1964,7 @@ fn fmt_fence(f: &mut fmt::Formatter<'_>, d: &FenceInstData) -> fmt::Result {
 
 fn fmt_cmpxchg(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &AtomicCmpXchgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2001,7 +2007,7 @@ fn fmt_cmpxchg(
 
 fn fmt_atomicrmw(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &AtomicRmwInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2033,7 +2039,7 @@ fn fmt_atomicrmw(
 
 fn fmt_ret(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     r: &ReturnOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2051,7 +2057,7 @@ fn fmt_ret(
 
 fn fmt_icmp(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     c: &CmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2071,7 +2077,7 @@ fn fmt_icmp(
 }
 fn fmt_fcmp(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     c: &FcmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2093,7 +2099,7 @@ fn fmt_fcmp(
 }
 fn fmt_alloca(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     a: &AllocaInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2135,7 +2141,7 @@ fn fmt_alloca(
 
 fn fmt_load(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     l: &LoadInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2165,7 +2171,7 @@ fn fmt_load(
 
 fn fmt_store(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     s: &StoreInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2199,7 +2205,7 @@ fn fmt_store(
 
 fn fmt_gep(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     g: &GepInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2228,7 +2234,7 @@ fn fmt_gep(
 
 fn fmt_call(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     c: &CallInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2522,7 +2528,7 @@ fn fmt_operand_bundles(
 
 fn fmt_landingpad(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &LandingPadInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2561,7 +2567,7 @@ fn fmt_landingpad(
 
 fn fmt_resume(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &ResumeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2577,7 +2583,7 @@ fn fmt_resume(
 
 fn fmt_funclet_pad(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     keyword: &str,
     parent_pad: &core::cell::Cell<Option<ValueSlot>>,
     args: &[core::cell::Cell<ValueSlot>],
@@ -2613,7 +2619,7 @@ fn fmt_funclet_pad(
 
 fn fmt_catchret(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &CatchReturnInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2633,7 +2639,7 @@ fn fmt_catchret(
 
 fn fmt_cleanupret(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &CleanupReturnInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2658,7 +2664,7 @@ fn fmt_cleanupret(
 
 fn fmt_catchswitch(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &CatchSwitchInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2700,7 +2706,7 @@ fn fmt_catchswitch(
 
 fn fmt_invoke(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &InvokeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2779,7 +2785,7 @@ fn fmt_invoke(
 
 fn fmt_callbr(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &CallBrInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2863,7 +2869,7 @@ fn fmt_callbr(
 
 fn fmt_phi(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     p: &PhiData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2895,7 +2901,7 @@ fn fmt_phi(
 
 fn fmt_switch(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &SwitchInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2934,7 +2940,7 @@ fn fmt_switch(
 
 fn fmt_indirectbr(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &IndirectBrInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2962,7 +2968,7 @@ fn fmt_indirectbr(
 
 fn fmt_br(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     b: &BranchInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -3243,7 +3249,7 @@ fn pad_to_column(f: &mut fmt::Formatter<'_>, new_column: usize, column: usize) -
 /// where an entry block inside a function does not.
 pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     f: &mut fmt::Formatter<'_>,
-    bb: BasicBlock<'_, Dyn, S, impl ModuleBrand>,
+    bb: BasicBlock<'_, Dyn, S, impl ModuleBrand, BlockParamsDyn, impl Capability>,
     slots: &SlotTracker,
     is_entry_block: bool,
 ) -> fmt::Result {
@@ -4444,7 +4450,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
 
 fn fmt_select(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     s: &SelectInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {

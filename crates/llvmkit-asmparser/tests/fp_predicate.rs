@@ -43,7 +43,7 @@ fn compare_operands<'m>(
     let compare = module
         .as_view()
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|candidate| candidate.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"));
@@ -272,7 +272,7 @@ define float @test(float %x) {
     let absolute = module
         .as_view()
         .functions()
-        .flat_map(|f| f.basic_blocks())
+        .flat_map(|f| module.view(f.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|candidate| candidate.name().as_deref() == Some("A"))
         .expect("fixture defines %A")

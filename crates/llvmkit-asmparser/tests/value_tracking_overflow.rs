@@ -25,12 +25,16 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
     parser::parse_dynamic(source).expect("fixture parses")
 }
 
-/// The instruction named `%name` in the module's single function.
+/// The instruction named `%name` in the module's single function, `@test`.
+///
+/// Walked through the unverified module itself rather than `as_view()`: a
+/// view's blocks hand out `ReadOnly` instructions, and the analyses under test
+/// take the module's own `Mutable` values.
 fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+    let function = module.function_dyn("test").expect("fixture defines @test");
     module
-        .as_view()
-        .functions()
-        .flat_map(|f| f.basic_blocks())
+        .view(function)
+        .basic_blocks()
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))

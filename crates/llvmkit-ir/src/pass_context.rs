@@ -64,8 +64,9 @@ use super::analysis::{
     ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
 use super::basic_block::IntoBasicBlockLabel;
+use super::block_params::BlockParamsDyn;
 use super::block_state::Terminated;
-use super::capability::Mutable;
+use super::capability::{Capability, Mutable, ReadOnly};
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
@@ -94,27 +95,36 @@ use super::worklist::Worklist;
 /// Stores the raw parts of the viewed block rather than a [`BasicBlock`]
 /// (which is a deliberately non-`Copy` linear handle), so the read-only view
 /// is `Copy` like its sibling [`FunctionView`].
+///
+/// Read-only by type (D8): the block and instruction handles it hands out are
+/// [`ReadOnly`], so a walk reached through a pass context — an `Inspect` pass
+/// included — has no setter on them. A mutating rung edits through its
+/// context's own entries, which take ids and witnesses of any capability.
 #[derive(Branded)]
 pub struct BasicBlockView<'ctx, B: ModuleBrand> {
     id: ValueSlot,
-    module: ModuleRef<'ctx, B>,
+    module: ModuleRef<'ctx, B, ReadOnly>,
     ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
-    pub(super) fn new(block: BasicBlock<'ctx, Dyn, Terminated, B>) -> Self {
+    pub(super) fn new<C: Capability>(
+        block: BasicBlock<'ctx, Dyn, Terminated, B, BlockParamsDyn, C>,
+    ) -> Self {
         // Internal: the view keeps the block's own parts, with its own module.
         Self {
             id: block.slot_trusting_same_module(),
-            module: block.module,
+            module: block.module.read_only(),
             ty: block.to_erased().ty().slot_trusting_same_module(),
         }
     }
 
-    /// Underlying basic-block handle.
+    /// Underlying basic-block handle, at [`ReadOnly`].
     #[inline]
-    pub(super) fn as_basic_block(&self) -> BasicBlock<'ctx, Dyn, Terminated, B> {
+    pub(super) fn as_basic_block(
+        &self,
+    ) -> BasicBlock<'ctx, Dyn, Terminated, B, BlockParamsDyn, ReadOnly> {
         BasicBlock::from_parts(self.id, self.module, self.ty)
     }
 
@@ -138,9 +148,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub fn parent_function(&self) -> Option<FunctionView<'ctx, B>> {
         let id = self.as_basic_block().parent_id()?;
+        // capability (proof): laundered until Task 4 — `FunctionView` wraps a
+        // `FunctionValue`, which carries no capability yet; the view exposes
+        // no mutator of it.
+        let module = self.module.mutable_at_marked_boundary();
         Some(FunctionView::new(FunctionValue::from_parts_unchecked(
-            id,
-            self.module,
+            id, module,
         )))
     }
 
@@ -162,7 +175,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub fn instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B, ReadOnly>>
     + DoubleEndedIterator
     + FusedIterator
     + use<'ctx, B> {
@@ -188,7 +201,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub fn placed_instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = PlacedInstruction<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = PlacedInstruction<'ctx, B, ReadOnly>>
     + DoubleEndedIterator
     + FusedIterator
     + use<'ctx, B> {
@@ -211,11 +224,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 #[branded(Debug)]
 pub struct BlockInstructionViews<'ctx, B: ModuleBrand> {
     ids: std::vec::IntoIter<ValueSlot>,
-    module: ModuleRef<'ctx, B>,
+    module: ModuleRef<'ctx, B, ReadOnly>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Iterator for BlockInstructionViews<'ctx, B> {
-    type Item = InstructionView<'ctx, B>;
+    type Item = InstructionView<'ctx, B, ReadOnly>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -251,7 +264,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FusedIterator for BlockInstructionViews<'ctx, 
 /// `for f in module { for bb in f { for inst in bb } }`. Sugar beside the
 /// named [`BasicBlockView::instructions`], not a replacement.
 impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for BasicBlockView<'ctx, B> {
-    type Item = InstructionView<'ctx, B>;
+    type Item = InstructionView<'ctx, B, ReadOnly>;
     type IntoIter = BlockInstructionViews<'ctx, B>;
 
     #[inline]
@@ -932,8 +945,12 @@ where
     /// would break the "CFG preserved" floor this rung rests on) is a compile
     /// error, not a runtime rejection. Infallible: erasing a non-terminator
     /// cannot fail.
+    ///
+    /// `target` may be of any capability — one a [`BasicBlockView`] walk hands
+    /// out is [`ReadOnly`]: naming the instruction is not mutating it, and this
+    /// context carries the authority to erase.
     #[inline]
-    pub fn erase(&self, target: &NonTerminator<'m, B>) {
+    pub fn erase<C2: Capability>(&self, target: &NonTerminator<'m, B, C2>) {
         // `target` may belong to another module; this infallible entry cannot
         // refuse it.
         // boundary (F1): refused by Task 26
@@ -987,10 +1004,17 @@ where
     ///
     /// Errors with [`IrError::ForeignValueId`] if `view` or `replacement`
     /// belongs to another module.
+    ///
+    /// `view` may be of any capability, as on [`Self::erase`].
     #[inline]
-    pub fn replace_all_uses<V>(&self, view: &InstructionView<'m, B>, replacement: V) -> IrResult<()>
+    pub fn replace_all_uses<V, C2>(
+        &self,
+        view: &InstructionView<'m, B, C2>,
+        replacement: V,
+    ) -> IrResult<()>
     where
         V: IntoErasedValue<'m, B>,
+        C2: Capability,
     {
         // Boundary: the caller's instruction view, admitted before anything
         // reads it.
@@ -1292,7 +1316,7 @@ where
     /// Erase a non-terminator instruction. Delegated from the inner [`FnPatch`];
     /// an in-block erase preserves the CFG, so it records no [`CfgUpdate`].
     #[inline]
-    pub fn erase(&self, target: &NonTerminator<'m, B>) {
+    pub fn erase<C2: Capability>(&self, target: &NonTerminator<'m, B, C2>) {
         self.patch.erase(target);
     }
 
@@ -1300,9 +1324,14 @@ where
     /// the inner [`FnPatch`]; preserves the CFG. Takes a handle or a storable
     /// id, exactly as [`FnPatch::replace_all_uses`] does.
     #[inline]
-    pub fn replace_all_uses<V>(&self, view: &InstructionView<'m, B>, replacement: V) -> IrResult<()>
+    pub fn replace_all_uses<V, C2>(
+        &self,
+        view: &InstructionView<'m, B, C2>,
+        replacement: V,
+    ) -> IrResult<()>
     where
         V: IntoErasedValue<'m, B>,
+        C2: Capability,
     {
         self.patch.replace_all_uses(view, replacement)
     }
@@ -1359,12 +1388,19 @@ where
             .expect("pushed value is A::Result")
     }
 
-    /// Resolve a caller-supplied [`BlockId`] into the ephemeral read-only view
-    /// the mutator's internals work through. The single choke point for the
-    /// reshape surface's block arguments: a foreign id is rejected here, before
-    /// any successor scan, phi read, or arena write.
+    /// Resolve a caller-supplied [`BlockId`] into the block the mutator's
+    /// internals work through. The single choke point for the reshape
+    /// surface's block arguments: a foreign id is rejected here, before any
+    /// successor scan, phi read, or arena write.
+    ///
+    /// The block is minted at this context's own reference — the unverified
+    /// module the edit runs under — so it is [`Mutable`]; a
+    /// [`BasicBlockView`] built from it hands out [`ReadOnly`] handles.
     #[inline]
-    fn resolve_block(&self, block: BlockId<Dyn, B>) -> IrResult<BasicBlockView<'m, B>> {
+    fn resolve_basic_block(
+        &self,
+        block: BlockId<Dyn, B>,
+    ) -> IrResult<BasicBlock<'m, Dyn, Terminated, B>> {
         let module_ref = self.patch.module_mut().module_ref();
         // Internal: admitted by `into_basic_block_label` on this line.
         let slot = block
@@ -1375,9 +1411,7 @@ where
             .label_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        Ok(BasicBlockView::new(BasicBlock::from_parts(
-            slot, module_ref, label_ty,
-        )))
+        Ok(BasicBlock::from_parts(slot, module_ref, label_ty))
     }
 
     /// Split `block` in two at `before` and return the new block's id. The
@@ -1394,23 +1428,27 @@ where
     /// terminator, so the new block owes nothing that a linear handle would
     /// have to carry.
     ///
+    /// `before` may be a view of any capability — one a [`BasicBlockView`]
+    /// walk hands out is [`ReadOnly`].
+    ///
     /// Errors: [`IrError::ForeignValueId`] if `block` is not from this module;
     /// otherwise the errors of [`BasicBlock::split_at`].
     #[inline]
-    pub fn split_block<Name>(
+    pub fn split_block<Name, C2>(
         &self,
         block: BlockId<Dyn, B>,
-        before: &InstructionView<'m, B>,
+        before: &InstructionView<'m, B, C2>,
         name: Name,
     ) -> IrResult<BlockId<Dyn, B>>
     where
         Name: Into<String>,
+        C2: Capability,
     {
         // Capture the successors of `block`'s terminator *before* the split
         // moves that terminator into the new block. The split's effect on the
         // CFG is exactly: each edge `block → s` becomes `new_block → s`, and
         // the branch the split inserts adds `block → new_block`.
-        let source = self.resolve_block(block)?.as_basic_block();
+        let source = self.resolve_basic_block(block)?;
         // Internal: `source` was resolved against this module, and the split
         // mints `new_block` there; the successors are `source`'s own.
         let source_id = source.id().as_dyn();
@@ -1551,7 +1589,9 @@ where
         term_id: ValueSlot,
         slot: EditSlot,
     ) -> IrResult<()> {
-        let from_block = from.as_basic_block();
+        // The edit mutates `from`'s terminator, so the block is re-resolved at
+        // this context's own `Mutable` reference; the view is `ReadOnly`.
+        let from_block = self.resolve_basic_block(from.id())?;
         // Internal: the pass's own block, read in its own module.
         let from_id = from_block.slot_trusting_same_module();
         let ctx = self.patch.module_mut().core_ref().context();
@@ -1692,7 +1732,9 @@ where
         new_to: BlockId<Dyn, B>,
         phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
-        let from_block = from.as_basic_block();
+        // The edit mutates `from`'s terminator, so the block is re-resolved at
+        // this context's own `Mutable` reference; the view is `ReadOnly`.
+        let from_block = self.resolve_basic_block(from.id())?;
         // Internal: the pass's own block, read in its own module.
         let from_id = from_block.slot_trusting_same_module();
         // Resolve the target id against this function's module *first*: a
@@ -1978,8 +2020,8 @@ where
         &'e self,
         from: BlockId<Dyn, B>,
     ) -> IrResult<TermEdit<'e, 'm, 'r, 'ctx, B, R>> {
-        let from_view = self.resolve_block(from)?;
-        let from_block = from_view.as_basic_block();
+        let from_block = self.resolve_basic_block(from)?;
+        let from_view = BasicBlockView::new(from_block.copy_handle());
         let term = from_block.terminator().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from` has no terminator",
         })?;
@@ -2248,7 +2290,7 @@ where
     /// type-level nudge rather than a runtime surprise.
     ///
     /// `ty` may be a type of any capability — one read through
-    /// [`Self::module`] is [`ReadOnly`](crate::ReadOnly). Naming a type is not
+    /// [`Self::module`] is [`ReadOnly`]. Naming a type is not
     /// mutating it; the type is admitted against this module.
     ///
     /// Errors: [`IrError::ForeignType`] if `ty` belongs to another module;
@@ -2301,8 +2343,8 @@ where
         // Boundary: the caller's phi type (from `insert_phi_dyn`), admitted
         // before any coherence, dominance or arena work reads it.
         let ty_id = ty.as_type().slot_in(self.patch.module_mut().id())?;
-        let target_block = self.resolve_block(block)?.as_basic_block();
-        // Internal: resolved against this module by `resolve_block`. The
+        let target_block = self.resolve_basic_block(block)?;
+        // Internal: resolved against this module by `resolve_basic_block`. The
         // incoming values below were resolved from tagged ids by both callers.
         let target_id = target_block.slot_trusting_same_module();
         // Resolve every predecessor id against this function's module up front:
@@ -2646,7 +2688,7 @@ where
         phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         let old_id = old_to
-            .into_basic_block_label(self.from.as_basic_block().module_ref())?
+            .into_basic_block_label(self.reshape.patch.module_mut().module_ref())?
             // Internal: admitted by `into_basic_block_label` just above.
             .slot_trusting_same_module();
         // `old_to` is target-based, so witness it names a live case before
@@ -2707,7 +2749,7 @@ where
     #[inline]
     pub fn remove_successor(&self, old_to: BlockId<Dyn, B>) -> IrResult<()> {
         let old_id = old_to
-            .into_basic_block_label(self.from.as_basic_block().module_ref())?
+            .into_basic_block_label(self.reshape.patch.module_mut().module_ref())?
             // Internal: admitted by `into_basic_block_label` just above.
             .slot_trusting_same_module();
         if self.reshape.switch_default_dest(self.term_id) == old_id {

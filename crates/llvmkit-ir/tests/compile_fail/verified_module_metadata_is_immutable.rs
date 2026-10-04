@@ -19,6 +19,15 @@
 //! attachments while the driver derives `Module<B, Verified>` and reports
 //! everything preserved.
 //!
+//! Since blocks and instructions carry their capability (D8), the call is
+//! refused twice, and both errors are the law this fixture holds: the
+//! instruction view a `ModuleView` walk hands out is `ReadOnly`, so
+//! `set_metadata`'s `C: CanMutate` bound refuses it (E0277), and the
+//! `Verified` module still cannot stand in for the `Unverified` token (E0308).
+//! `verified_instruction_metadata_is_read_only.rs` isolates the first: there a
+//! second, unverified module's token type-checks and only the capability
+//! refuses.
+//!
 //! Upstream has no analogue: `Instruction::setMetadata` is a plain non-const
 //! method, `verifyModule` is a free function returning a bool a caller may
 //! ignore, and nothing connects the two.

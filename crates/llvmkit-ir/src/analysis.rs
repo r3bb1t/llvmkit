@@ -1879,7 +1879,9 @@ mod tests {
         // Edit the CFG: split the entry at its terminator. The `br next` (and
         // the edge into `next`) moves into `entry.split`, and `entry` gains a
         // branch to it, so `entry.split` now dominates `next`.
-        let entry_bb = function.entry_block().expect("definition").as_basic_block();
+        // The block to split comes from the unverified module itself: a
+        // `FunctionView`'s blocks are `ReadOnly` and have no `split_at`.
+        let entry_bb = m.view(f).entry_block().expect("definition");
         let terminator = entry_bb.terminator().expect("terminated");
         let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
         let new_label = new_bb.id();

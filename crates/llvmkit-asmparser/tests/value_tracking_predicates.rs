@@ -35,7 +35,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
     let view = module.as_view();
     let instruction = view
         .functions()
-        .flat_map(|f| f.basic_blocks())
+        .flat_map(|f| module.view(f.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .map(|instruction| instruction.to_erased())
         .find(|value| value.name().as_deref() == Some(name));

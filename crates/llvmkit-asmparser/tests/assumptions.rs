@@ -46,7 +46,7 @@ fn instruction<'m>(
     module
         .as_view()
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|candidate| candidate.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -60,7 +60,7 @@ fn assume<'m>(
     module
         .as_view()
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .filter(|candidate| format!("{candidate}").contains("@llvm.assume"))
         .nth(index)
@@ -523,7 +523,8 @@ else:
     let function = defined_function(&module);
     let dominator_tree = dominator_tree(&module);
     let mut conditions = DomConditionCache::new();
-    let branch = function
+    let branch = module
+        .view(function.id())
         .basic_blocks()
         .next()
         .and_then(|block| block.instructions().last())

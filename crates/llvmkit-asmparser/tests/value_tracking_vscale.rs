@@ -133,7 +133,8 @@ fn known_bits_of_a_vscale_call_read_the_range() {
         .functions()
         .find(|f| f.name().as_deref() == Some("bounded"))
         .expect("fixture defines @bounded");
-    let call = f
+    let call = module
+        .view(f.id())
         .basic_blocks()
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some("v"))
@@ -159,7 +160,8 @@ fn a_vscale_call_is_a_power_of_two_exactly_when_the_attribute_is_present() {
             .functions()
             .find(|f| f.name().as_deref() == Some(name))
             .unwrap_or_else(|| panic!("fixture defines @{name}"));
-        let call = f
+        let call = module
+            .view(f.id())
             .basic_blocks()
             .flat_map(|block| block.instructions())
             .find(|instruction| instruction.name().as_deref() == Some("v"))

@@ -250,4 +250,12 @@ fn typestate_compile_fail() {
     // only guard: without it a verified module's use-list order could be
     // rewritten after `verify()`.
     t.compile_fail("tests/compile_fail/verified_value_use_list_is_immutable.rs");
+    // Blocks and instructions carry the capability too: an instruction view a
+    // verified module mints is `ReadOnly`, so `set_metadata` is refused by the
+    // view's own capability, not by which module's token is offered.
+    t.compile_fail("tests/compile_fail/verified_instruction_metadata_is_read_only.rs");
+    // `set_fast_math_flags` on a phi takes no token at all, so the capability
+    // bound is its only guard: without it a verified module's phi flags could
+    // be rewritten after `verify()`.
+    t.compile_fail("tests/compile_fail/verified_phi_fast_math_flags_are_immutable.rs");
 }

@@ -797,7 +797,7 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _is_safe_to_speculatively_execute_with_variable_replaced =
         is_safe_to_speculatively_execute_with_variable_replaced::<DynBrand>;
     let _is_guaranteed_to_transfer_execution_to_successor =
-        is_guaranteed_to_transfer_execution_to_successor::<DynBrand>;
+        is_guaranteed_to_transfer_execution_to_successor::<DynBrand, llvmkit_ir::ReadOnly>;
     let _block_transfers_execution_to_successor =
         block_transfers_execution_to_successor::<DynBrand>;
     let _instructions_transfer_execution_to_successor =
@@ -867,8 +867,8 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         llvmkit_ir::compute_known_fp_sign_bit::<DynBrand>,
     );
     let _sign_bit_indifference = (
-        llvmkit_ir::can_ignore_sign_bit_of_zero::<DynBrand>,
-        llvmkit_ir::can_ignore_sign_bit_of_nan::<DynBrand>,
+        llvmkit_ir::can_ignore_sign_bit_of_zero::<DynBrand, llvmkit_ir::ReadOnly>,
+        llvmkit_ir::can_ignore_sign_bit_of_nan::<DynBrand, llvmkit_ir::ReadOnly>,
     );
     let _adjust_known_fp_class_for_select_arm =
         llvmkit_ir::adjust_known_fp_class_for_select_arm::<DynBrand>;

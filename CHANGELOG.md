@@ -19,6 +19,65 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed — blocks and instructions carry their capability *(breaking)*
+
+- **Block and instruction handles take a trailing `C: Capability = Mutable`**
+  (D1, D8) — `BasicBlock` (after `Params`), `BasicBlockLabel`,
+  `InstructionView`, `PlacedInstruction`, `NonTerminator`, the per-opcode
+  views (`AddInst` … `CatchSwitchInst`, `BinaryOp`, `Cmp`, `CallInst`,
+  `TypedCallInst`, `PhiInst`, `FpPhiInst`, `PointerPhiInst`, `OtherPhiInst`;
+  `SwitchInst` takes it after `W`), `IntrinsicInst`, `MemIntrinsic`,
+  `LifetimeIntrinsic`, and the `Callee`, `CastKind`, `PhiKind`,
+  `InstructionKind`, `TerminatorKind` and `Classified` enums. A block or
+  instruction reached from an unverified module is `Mutable`; one reached from
+  a `Module<B, Verified>` — `view` of a block or instruction id, `users()` of
+  one of its values, `InstructionView::try_from` one of its values — or from a
+  pass context's `BasicBlockView` is `ReadOnly`, and what it hands on
+  (`kind()`, operands, incomings, the terminator, a block's instructions)
+  keeps that capability. Spellings that omit `C` keep meaning `Mutable`. The linear
+  `Instruction` lifecycle handle is unchanged and stays `Mutable`.
+- **Fixed: a verified module's instructions could be changed.**
+  `Module<B, Verified>::view` of a block or instruction id, and `users()` of a
+  verified module's value, handed out `Mutable` handles. With a second
+  unverified module of the same brand, `set_metadata` attached that module's
+  node to the verified module's instruction (the token type-checked), and
+  `set_fast_math_flags`, which takes no token, rewrote a verified phi's flags.
+  The setters on these handles — `set_metadata`, `push_debug_record`,
+  `set_name` / `clear_name`, `remove_incoming`, `set_fast_math_flags`,
+  `set_value_operand`, `set_tail_call_kind`, `set_attributes`,
+  `with_operand_bundles` and `splice_into` — now require `C: CanMutate`, and
+  `split_at` / `split_before` exist only on a `Mutable` block; locked by
+  `compile_fail/verified_instruction_metadata_is_read_only` and
+  `compile_fail/verified_phi_fast_math_flags_are_immutable`.
+- **Breaking: a `BasicBlockView` hands out `ReadOnly` handles** —
+  `instructions()`, `placed_instructions()` and its `IntoIterator` — so a walk
+  an `Inspect` pass receives reaches no setter. A mutating context's `erase`,
+  `replace_all_uses` and `split_block`, `IrBuilder::position_before`, the
+  `Instruction` insert and move entries, and `BasicBlock::split_at` /
+  `split_before` take handles and witnesses of either capability; the entry
+  carries the authority, and naming an instruction is not mutating it.
+- **Breaking: `User::operand` and `User::operand_use` return at the user's
+  capability** (`User` gains a `CapabilityOf` supertrait), and the call views'
+  `operand_bundles` / `operand_bundle` return `OperandBundleUse` at the call's.
+- **Breaking: `CallBase` is implemented only for call sites that
+  `CanMutate`** — both of its operations mutate.
+- **Breaking: `TypedCallInst::result` exists only on a `Mutable` call.**
+  `FunctionReturn::CallResult` names no capability (for a struct return it is
+  the `IrStruct` derive's own value type); a `ReadOnly` call reads its result
+  through `as_call_inst().return_value()`.
+- **Breaking: `BasicBlockLabel::call` / `BasicBlock::call`,
+  `BlockCursor::at_start` and `IrBuilder::position_at_end` take a `Mutable`
+  block**, and the open-terminator surfaces (`add_case`, `add_destination`,
+  `add_catch_clause`, `add_handler`) stay on the `Mutable` handles the builder
+  mints.
+- **Read-only queries accept either capability**: `IntoBasicBlockLabel`
+  re-mints a block or label of either capability at the receiving module; the
+  dominator tree's block, instruction and use queries,
+  `can_ignore_sign_bit_of_zero` / `_nan`,
+  `is_guaranteed_to_transfer_execution_to_successor` and
+  `descriptor_for_callee` are generic over it; and a `Value`, block or
+  instruction of either capability prints.
+
 ### Changed — global values rename through the module's symbol table *(breaking)*
 
 - **Fixed: renaming a function, global variable, alias or ifunc did

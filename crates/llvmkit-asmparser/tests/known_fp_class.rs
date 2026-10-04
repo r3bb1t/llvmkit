@@ -30,7 +30,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
     module
         .as_view()
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|candidate| candidate.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -45,7 +45,7 @@ fn instruction<'m>(
     module
         .as_view()
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|candidate| candidate.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -457,7 +457,8 @@ if.else:
     let function = defined_function(&module);
     let dominator_tree = DominatorTree::new(module.view(function.id()));
     let mut conditions = DomConditionCache::new();
-    let branch = function
+    let branch = module
+        .view(function.id())
         .basic_blocks()
         .next()
         .and_then(|block| block.instructions().last())
@@ -521,7 +522,8 @@ if.end:
     let function = defined_function(&module);
     let dominator_tree = DominatorTree::new(module.view(function.id()));
     let mut conditions = DomConditionCache::new();
-    let branch = function
+    let branch = module
+        .view(function.id())
         .basic_blocks()
         .next()
         .and_then(|block| block.instructions().last())
@@ -762,7 +764,7 @@ define float @ret_plain(float %x) {
             .flat_map(|block| block.instructions())
             .next_back()
             .expect("the function has a terminator");
-        <InstructionView<'_, DynBrand> as llvmkit_ir::User<'_, DynBrand>>::operand_use(
+        <InstructionView<'_, DynBrand, llvmkit_ir::ReadOnly> as llvmkit_ir::User<'_, DynBrand>>::operand_use(
             terminator, 0,
         )
         .expect("`ret` has one operand")

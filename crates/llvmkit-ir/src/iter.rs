@@ -19,7 +19,9 @@
 //! (iteration safety is structural).
 
 use super::basic_block::BasicBlock;
+use super::block_params::BlockParamsDyn;
 use super::block_state::{BlockTerminationState, Unterminated};
+use super::capability::Mutable;
 use super::instruction::{Instruction, state};
 use super::marker::ReturnMarker;
 use super::module::ModuleBrand;
@@ -62,7 +64,12 @@ where
     /// Create a lifecycle-producing cursor at the start of an unterminated block.
     /// Mirrors `BB->begin()` in C++ while keeping terminated/read-only block
     /// rediscovery from minting mutation capabilities.
-    pub fn at_start(block: BasicBlock<'ctx, R, Unterminated, B>) -> Self {
+    ///
+    /// Only a [`Mutable`] block is accepted: each step mints the linear
+    /// [`Instruction`] lifecycle handle, which is `Mutable` by construction
+    /// (D8), so a [`ReadOnly`](crate::ReadOnly) block — one a verified module
+    /// or a read-only pass context hands out — cannot start a cursor.
+    pub fn at_start(block: BasicBlock<'ctx, R, Unterminated, B, BlockParamsDyn, Mutable>) -> Self {
         let snapshot = block.instruction_ids();
         Self {
             block,
