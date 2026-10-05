@@ -532,7 +532,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         self.update_after_name_change();
     }
 
-    /// `Value::setName`: [`Self::set_name_impl`], then
+    /// `Value::setName`: [`Self::admit_rename`] runs `setNameImpl`'s guards,
+    /// and [`AdmittedRename::apply`] its update, then
     /// `Function::updateAfterNameChange` on a function — which upstream runs
     /// however `setNameImpl` returned. A refusal changes nothing, so it skips
     /// the tail.

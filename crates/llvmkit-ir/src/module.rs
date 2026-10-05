@@ -4709,11 +4709,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     ///
     /// # Errors
     ///
+    /// Each before anything is declared or renamed:
+    /// [`IrError::ForeignType`] if an overload type of `descriptor` belongs to
+    /// another module; [`IrError::InvalidOperation`] if an overload type is an
+    /// unnamed struct without a body, which has no mangled spelling;
     /// [`IrError::DuplicateFunctionName`] if a global variable, alias or ifunc
     /// holds the name, where upstream's `cast<Function>` asserts;
-    /// [`IrError::IntrinsicSignatureMismatch`] if a function of the right type
-    /// holds it without this intrinsic's identity, which upstream has no
-    /// counterpart for (`docs/divergences.md`, the
+    /// [`IrError::IntrinsicSignatureMismatch`] if the generated signature or
+    /// declaration attributes cannot be built, or if a function of the right
+    /// type holds the name without this intrinsic's identity, which upstream
+    /// has no counterpart for (`docs/divergences.md`, the
     /// `getOrInsertIntrinsicDeclarationImpl` entry).
     pub fn get_or_insert_intrinsic_declaration(
         &'ctx self,
@@ -4724,6 +4729,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .map(|function| function.id())
     }
 
+    /// [`Self::get_or_insert_intrinsic_declaration`] for the descriptor
+    /// [`IntrinsicDescriptor::new`] builds from `id` and `overloads`.
+    ///
+    /// # Errors
+    ///
+    /// [`IntrinsicDescriptor::new`]'s — [`IrError::ForeignType`] if the
+    /// overloads belong to more than one module,
+    /// [`IrError::IntrinsicSignatureMismatch`] if they do not fit the
+    /// intrinsic — then [`Self::get_or_insert_intrinsic_declaration`]'s,
+    /// [`IrError::ForeignType`] included when the overloads belong to another
+    /// module than this one.
     pub fn get_or_insert_intrinsic_declaration_by_id<Overloads>(
         &'ctx self,
         id: IntrinsicId,
@@ -4736,6 +4752,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
+    /// [`Self::get_or_insert_intrinsic_declaration`] for the intrinsic `name`
+    /// spells, overload suffix included (`llvm.abs.i32`).
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::UnknownIntrinsic`] if no intrinsic has the name;
+    /// [`IrError::IntrinsicSignatureMismatch`] if its overload suffix does not
+    /// demangle to a signature of that intrinsic; then
+    /// [`Self::get_or_insert_intrinsic_declaration`]'s.
     pub fn get_or_insert_intrinsic_declaration_by_name<Name>(
         &'ctx self,
         name: Name,

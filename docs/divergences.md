@@ -926,7 +926,13 @@ whole. What is left is below.
   returns nothing.
 - **Every `switch (ID)` arm except `Intrinsic::callbr_landingpad`** — `llvm.assume`'s
   operand bundles, the `experimental.gc.*` family, the constrained-FP family,
-  and the rest. Each needs the `test/Verifier` fixture that pins it.
+  `Intrinsic::ucmp` / `Intrinsic::scmp`, and the rest. Each needs the
+  `test/Verifier` fixture that pins it. For `scmp` / `ucmp` that is
+  `test/Verifier/intrinsic-cmp.ll`, none of whose four `CHECK` messages
+  llvmkit raises (`rg -n -i "scmp|ucmp" crates/llvmkit-ir/src/verifier.rs` is
+  empty at `3baa7ed`): each of its four calls, parsed in a module of its own
+  function and checked with `Module::verify_borrowed`, verifies (a probe run
+  2026-10-05 on `3baa7ed`).
 - **`define`-ing an intrinsic is a *parse* error here.** Upstream's `LLParser`
   accepts `define void @llvm.donothing() { ret void }` and leaves the verdict to
   `visitIntrinsicCall`'s `Intrinsic functions should never be defined!`, raised

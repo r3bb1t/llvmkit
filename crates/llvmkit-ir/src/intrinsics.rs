@@ -2714,8 +2714,10 @@ mod tests {
         Ok(())
     }
 
-    /// Every generated sample overload declares again with each sample whose
-    /// slot admits a vector widened to `<4 x T>` (`widened_sample_type`).
+    /// Every generated sample overload that has a scalar integer or
+    /// floating-point sample declares again with each such sample widened to
+    /// `<4 x T>` (`widened_sample_type`); the others, whose widened form is
+    /// their scalar form, are passed over.
     /// `generated_all_intrinsic_names_lookup_and_decode` declares the scalar
     /// samples only, which is how a vector `llvm.scmp` went undeclarable
     /// unnoticed: `getIntrinsicArgAttributeSet` (emitted by

@@ -86,7 +86,8 @@ cut, entries accumulate under **Unreleased**.
   element type (`range(i8 -1, 2)`), as `getIntrinsicArgAttributeSet`'s
   `ArgType->getScalarSizeInBits()` sizes it. The sample-overload sweep, which
   declared scalar samples only and so never met a vector `scmp`, now also
-  declares every sample with its vector-admitting overloads widened.
+  declares again every sample that has a scalar integer or floating-point
+  overload, with those overloads widened to vectors.
 - **Breaking: `FunctionValue::is_intrinsic` mirrors `Function::isIntrinsic`**
   — whether the name starts with `llvm.` — where it used to answer whether
   `intrinsic_id()` does. A function named `llvm.` plus a name no intrinsic has
