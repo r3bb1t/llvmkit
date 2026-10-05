@@ -61,8 +61,9 @@ cut, entries accumulate under **Unreleased**.
     `remove_incoming`, `with_operand_bundles`, `splice_into`, `split_at` /
     `split_before`, the `call` builders, and the `SetName` and `CallBase`
     impls on these handles (each bounded `C: CanMutate`) — whose bodies call
-    `proven_mutable()` or another `CanMutate`-bounded routine. Where the receiver can be `ReadOnly` today, a compile-fail
-    fixture also fails if a bound is dropped and its body routed around it:
+    `proven_mutable()` or another `CanMutate`-bounded routine. Where the
+    receiver can be `ReadOnly` today, a compile-fail fixture also fails if a
+    bound is dropped and its body routed around it:
     `compile_fail/verified_block_label_call_is_read_only`
     (`BasicBlockLabel::call`),
     `compile_fail/verified_instruction_name_is_read_only`

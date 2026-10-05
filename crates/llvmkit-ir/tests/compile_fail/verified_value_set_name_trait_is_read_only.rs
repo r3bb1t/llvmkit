@@ -5,7 +5,7 @@
 //! blocks, over a `Module<B, Verified>`, so every instruction it reaches is
 //! `ReadOnly`, and so is the value each one erases to and every handle that
 //! value narrows to through the handle's own `TryFrom`. `SetName` is
-//! implemented for these value handles only where the capability
+//! implemented for these value handles only where the capability is
 //! `CanMutate`, so each trait-qualified call is refused by `CanMutate`'s own
 //! message. The token is a second unverified module of the same brand, which
 //! type-checks, so nothing but the handle's capability refuses the calls.
