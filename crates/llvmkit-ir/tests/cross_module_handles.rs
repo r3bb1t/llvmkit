@@ -583,8 +583,9 @@ fn a_global_builder_rejects_a_value_type_from_another_module() {
 /// the same name — which exists here before the refusals, with a different
 /// selection kind, so a name stored before a refusal would read back through
 /// `comdat()` and print. Positive control: this module's own comdat is
-/// attached by each of the four entries, read back from each — with its own
-/// selection kind — and printed.
+/// attached by each of the four entries and read back from each with its own
+/// selection kind; the printed module carries `$c = comdat any`, and the two
+/// globals' lines (`@g`, `@built`) carry `comdat($c)`.
 ///
 /// No upstream counterpart: `GlobalObject::setComdat` (`lib/IR/Globals.cpp`)
 /// takes a `Comdat *`, whose identity is its address.

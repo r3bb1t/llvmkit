@@ -11,7 +11,9 @@
 use llvmkit_ir::comdat::SelectionKind;
 use llvmkit_ir::global_value::{DllStorageClass, ThreadLocalMode, Visibility};
 use llvmkit_ir::{
-    Align, IrError, Linkage, MaybeAlign, Module, ModuleBrand, UnnamedAddr, VerifierRule, module_new,
+    Align, ConstantExprFlags, ConstantExprOpcode, ConstantExprOptions, DataLayout, GepNoWrapFlags,
+    IrBuilder, IrError, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, UnnamedAddr,
+    VerifierRule, VerifierSubject, constant_fold_constant, module_new,
 };
 
 fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
@@ -1037,6 +1039,145 @@ fn alias_ifunc_partition_clear_apis() {
     assert_eq!(m.view(ifunc).partition().as_deref(), Some("part"));
     m.view(ifunc).clear_partition(&m);
     assert!(m.view(ifunc).partition().is_none());
+}
+
+/// `alias_builder(..).build()` refuses `extern_weak` and installs nothing. The
+/// builder checks `GlobalAlias::isValidLinkage` (`IR/GlobalAlias.h`), whose
+/// `isWeakLinkage` is `weak` / `weak_odr` only; llvmkit's
+/// `global_alias::is_valid_alias_linkage` used to list `extern_weak`. Positive
+/// controls: `weak_odr`, which `isWeakLinkage` takes, and
+/// `available_externally`, the clause the alias predicate has over the ifunc
+/// one, both build.
+///
+/// llvmkit-specific: upstream's `GlobalAlias::create` (`lib/IR/Globals.cpp`)
+/// takes any linkage and leaves the check to `Verifier::visitGlobalAlias`,
+/// which llvmkit does not port (`docs/divergences.md`, entry 138); the
+/// builder's refusal is that check moved to construction.
+#[test]
+fn alias_builder_refuses_an_extern_weak_linkage() {
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let target = m
+        .add_global("target", i32_ty.const_int(0i32))
+        .expect("target");
+    let error = m
+        .alias_builder("alias", i32_ty.as_type(), m.view(target))
+        .linkage(Linkage::ExternalWeak)
+        .build()
+        .expect_err("extern_weak is no valid alias linkage");
+    assert!(
+        matches!(
+            error,
+            IrError::InvalidOperation {
+                message: "invalid linkage type for alias"
+            }
+        ),
+        "got {error:?}"
+    );
+    assert!(
+        m.alias("alias").is_none(),
+        "a refused build must not install"
+    );
+
+    for (name, linkage) in [
+        ("weak_odr_alias", Linkage::WeakOdr),
+        ("available_externally_alias", Linkage::AvailableExternally),
+    ] {
+        let alias = m
+            .alias_builder(name, i32_ty.as_type(), m.view(target))
+            .linkage(linkage)
+            .build()
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        assert_eq!(m.view(alias).linkage(), linkage, "{name}");
+    }
+}
+
+/// `Value::stripPointerCastsAndAliases`'s `getelementptr` arm on llvmkit's
+/// compact `getelementptr inbounds (i8, ptr @f, i64 N)` constant, both exits,
+/// reached from `Verifier::visitGlobalIFunc`'s `GI.getResolverFunction()`. A
+/// zero offset — `FunctionValue::as_aggregate_ptr`, which interns the compact
+/// form without folding it — is stepped through to the resolver function, so
+/// the ifunc verifies; a non-zero offset — `constant_fold_constant`
+/// canonicalising `getelementptr inbounds (i8, ptr @resolver, i64 4)` to the
+/// compact form, a node other than the constant expression it folded — stops
+/// the walk at the GEP, which is no `Function` ("IFunc must have a Function
+/// resolver").
+///
+/// llvmkit-specific: upstream has no compact GEP constant, and a zero-index
+/// GEP that is not `inrange` never reaches this walk there —
+/// `ConstantFoldGetElementPtr`'s `IsNoOp` folds it to its base. The walk used
+/// to stop at the compact form whatever its offset, because the port of
+/// `Operator::getOpcode` answered no opcode for it. The `inrange`
+/// constant-expression form is locked by
+/// `parser_module_level.rs::an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr`.
+#[test]
+fn an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr() -> Result<(), IrError>
+{
+    let m = module_new!("m")?;
+    let ptr_ty = m.ptr_type(0);
+    let resolver = m.add_function_dyn(
+        "resolver",
+        m.function_type_no_parameters(ptr_ty),
+        Linkage::Internal,
+    )?;
+    let entry = m.view(resolver).append_basic_block(&m, "entry");
+    IrBuilder::with_folder(&m, NoFolder)
+        .position_at_end(entry)
+        .ret(ptr_ty.const_null())?;
+    let ifunc_ty = m.function_type_no_parameters(m.void_type());
+
+    m.ifunc_builder("zero", ifunc_ty, m.view(resolver).as_aggregate_ptr(0))
+        .build()?;
+    // `AssemblyWriter::printIFunc` writes a `ConstantExpr` resolver without
+    // its type: `writeOperand(Resolver, !isa<ConstantExpr>(Resolver))`.
+    let text = module_text(&m);
+    assert!(
+        text.contains("@zero = ifunc void (), getelementptr inbounds (i8, ptr @resolver, i64 0)"),
+        "the zero-offset GEP must survive to the verifier, got:\n{text}"
+    );
+    m.verify_borrowed()?;
+
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let gep = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [
+            m.view(resolver).as_global_constant_ptr().as_erased(),
+            m.i64_type().const_int(4_i64).as_constant().as_erased(),
+        ],
+        [],
+        [],
+        ConstantExprOptions::new()
+            .source_ty(m.i8_type().as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+    )?;
+    let compact = constant_fold_constant(gep, &dl, None)?;
+    assert_ne!(compact, gep, "the fold must hand back the compact node");
+    m.ifunc_builder("non_zero", ifunc_ty, compact).build()?;
+    let text = module_text(&m);
+    assert!(
+        text.contains(
+            "@non_zero = ifunc void (), getelementptr inbounds (i8, ptr @resolver, i64 4)"
+        ),
+        "got:\n{text}"
+    );
+    let error = m
+        .verify_borrowed()
+        .expect_err("a non-zero offset stops the walk at the GEP");
+    let IrError::VerifierFailure {
+        message, subject, ..
+    } = error
+    else {
+        panic!("expected a verifier failure, got {error:?}");
+    };
+    assert_eq!(message, "IFunc must have a Function resolver");
+    assert_eq!(
+        subject,
+        VerifierSubject::GlobalIfunc {
+            name: "non_zero".to_owned()
+        }
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

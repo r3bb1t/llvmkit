@@ -225,10 +225,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         }
     }
 
-    /// Verify every function in the module. Returns the first
-    /// invariant violation encountered. Stops on first error to keep
-    /// `IrError` single-shot; a later revision can add a multi-error
-    /// collecting variant if pass infrastructure needs it.
+    /// Verify the module: its global variables, its ifuncs, its module flags,
+    /// then every function. Returns the first invariant violation
+    /// encountered. Stops on first error to keep `IrError` single-shot; a
+    /// later revision can add a multi-error collecting variant if pass
+    /// infrastructure needs it. Upstream's `llvm::verifyModule` reports every
+    /// failure, and verifies the functions first — `docs/divergences.md`,
+    /// entry 139.
     pub(crate) fn run(&self) -> IrResult<()> {
         for g in self.module.iter_globals() {
             self.visit_global_variable(g)?;
@@ -236,8 +239,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         for i in self.module.iter_ifuncs::<B>() {
             self.visit_global_ifunc(i)?;
         }
-        // Mirrors `Verifier::verify`'s module-level `visitModuleFlags()`
-        // step between the global-value walk and the function walk.
+        // Mirrors `Verifier::verify`'s `visitModuleFlags()`, which follows its
+        // global-value walk. Upstream's function walk is not after it but
+        // before the whole of `Verifier::verify` (`llvm::verifyModule`).
         self.visit_module_flags()?;
         for f in self.module.iter_functions() {
             self.visit_function(f)?;
@@ -245,16 +249,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    /// Mirrors `Verifier::visitGlobalVariable` for the constructive
-    /// subset shipped today (initializer type/sized, common-linkage
-    /// invariants, scalable-type rejection). The intrinsic-globals
-    /// (`llvm.global_ctors` / `llvm.used` / etc.) and metadata
-    /// attachment rules are deferred -- they need the metadata layer.
     /// Mirrors `Verifier::visitGlobalIFunc`, in its order: the attachment
     /// loop, the linkage, then the resolver — a `Function`, a definition,
     /// returning a pointer, held through a pointer of the ifunc's address
     /// space. Single-shot like the rest of this verifier: the first failing
-    /// `Check` returns where upstream's `CheckFailed` accumulates.
+    /// `Check` returns where upstream's `CheckFailed` records the failure and
+    /// `Verifier::verify` goes on to the next ifunc (`docs/divergences.md`,
+    /// entry 139).
     ///
     /// Two of upstream's statements are unported, recorded as
     /// `docs/divergences.md` entry 138: the leading `visitGlobalValue(GI)` —
@@ -365,10 +366,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         }
 
         // `Check(ResolverTy == PointerType::get(Context, GI.getAddressSpace()), …)`.
-        // No llvmkit construction path reaches it today (derived by reading):
-        // `GlobalIfuncBuilder` takes the ifunc's address space from its
-        // resolver and refuses a resolver that is not an opaque `ptr`, and
-        // `GlobalIfunc::set_resolver` refuses one of another address space.
+        // No llvmkit construction path reaches it today, derived by reading
+        // every writer of the resolver cell and of the address space, found by
+        // `rg -n "resolver\.set\(|GlobalFieldKind::IfuncResolver|install_global_ifunc"`.
+        // `ModuleCore::install_global_ifunc` fixes the address space once, as
+        // the ifunc's own `ptr addrspace(N)` type, and the resolver writers are:
+        // - `GlobalIfuncBuilder::new` takes `N` from the resolver's type, and
+        //   `GlobalIfuncBuilder::build` refuses a resolver whose arena type
+        //   moved since (`IfuncResolverTypeChangedBeforeBuild`) or is not an
+        //   opaque `ptr`;
+        // - `GlobalIfunc::set_resolver` refuses a resolver that is not a `ptr`
+        //   of the ifunc's address space;
+        // - the placeholder replace-all-uses path,
+        //   `constants::replace_placeholder_uses_with` →
+        //   `replace_value_uses_with` → `LlvmContext::rewrite_global_field_cell`,
+        //   refuses a replacement of another type than the placeholder's
+        //   (`TypeIdentityMismatch`), re-interns a constant user at its own
+        //   type, and re-wraps a global-object replacement at the type of the
+        //   wrapper the cell held.
         // Ported anyway, so a path that stops agreeing is caught here.
         if !matches!(
             resolver_ty,
@@ -382,6 +397,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
+    /// Mirrors `Verifier::visitGlobalVariable` for the constructive
+    /// subset shipped today (initializer type/sized, common-linkage
+    /// invariants, scalable-type rejection). The intrinsic-globals
+    /// (`llvm.global_ctors` / `llvm.used` / etc.) and metadata
+    /// attachment rules are deferred -- they need the metadata layer.
     fn visit_global_variable(&self, g: GlobalVariable<'ctx, B>) -> IrResult<()> {
         let value_ty = g.value_type();
         // `GlobalValue::getName`, the empty string for an unnamed global.

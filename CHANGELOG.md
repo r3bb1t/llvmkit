@@ -25,15 +25,34 @@ cut, entries accumulate under **Unreleased**.
   whose resolver, once pointer casts and aliases are stripped
   (`Value::stripPointerCastsAndAliases`), is no `Function` ("IFunc must have a
   Function resolver"), is a declaration or `available_externally` ("IFunc
-  resolver must be a definition"), does not return a pointer ("IFunc resolver
-  must return a pointer"), or is not a `ptr` of the ifunc's address space
-  ("IFunc resolver has incorrect type") used to verify; so did an ifunc
-  carrying `!dbg` or `!prof` ("an ifunc may not have a !dbg attachment" / "…
-  !prof attachment"). Each is a verifier failure now, in upstream's order,
-  locked by `test/Verifier/ifunc.ll` and `ifunc-opaque.ll`, ported whole.
-  *Breaking:* two new `VerifierRule` variants, `IfuncMetadataAttachment` and
-  `IfuncInvalidResolver`. Not ported: the `visitGlobalValue` call and the
-  attachment loop's `visitMDNode` (`docs/divergences.md`, entry 138).
+  resolver must be a definition"), or does not return a pointer ("IFunc
+  resolver must return a pointer") used to verify; so did an ifunc carrying
+  `!dbg` or `!prof` ("an ifunc may not have a !dbg attachment" / "… !prof
+  attachment"). Each is a verifier failure now, in upstream's order. What
+  locks each: the linkage and the three resolver checks, `test/Verifier/ifunc.ll`
+  and `ifunc-opaque.ll`, vendored whole and verified one ifunc per module,
+  plus the unreduced fixture on its first `CHECK` — llvmkit's verifier stops
+  at its first failure where `llvm::verifyModule` reports every one
+  (`docs/divergences.md`, entry 139); the two attachment checks and their
+  kind-id order, the llvmkit-specific
+  `an_ifunc_may_carry_neither_a_dbg_nor_a_prof_attachment`, since no upstream
+  fixture writes either; the strip's `addrspacecast` and alias steps, the
+  corpus fixture `test/Assembler/ifunc-stripPointerCastsAndAliases.ll`, which
+  must verify; its `getelementptr` step, both exits, on an `inrange` constant
+  expression (`an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr`)
+  and on llvmkit's compact `getelementptr inbounds (i8, ptr @f, i64 N)`
+  (`an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr`);
+  its `bitcast` step's answer on the one constant bitcast that can be a
+  resolver, `bitcast (<1 x ptr> … to ptr)`
+  (`an_ifunc_resolver_behind_a_vector_bitcast_is_no_function`). The last
+  check, "IFunc resolver has incorrect type" (the resolver operand not a `ptr`
+  of the ifunc's address space), is ported but unreachable from what llvmkit
+  builds — the ifunc builder, `GlobalIfunc::set_resolver` and the placeholder
+  replace-all-uses path each keep the two in agreement — so no module of
+  llvmkit's can fail it and no test does. *Breaking:* two new `VerifierRule`
+  variants, `IfuncMetadataAttachment` and `IfuncInvalidResolver`. Not ported:
+  the `visitGlobalValue` call and the attachment loop's `visitMDNode`
+  (`docs/divergences.md`, entry 138).
 - **Fixed: `extern_weak` was accepted as an ifunc and an alias linkage.**
   `global_ifunc::is_valid_ifunc_linkage` and
   `global_alias::is_valid_alias_linkage` listed it, where
@@ -41,8 +60,10 @@ cut, entries accumulate under **Unreleased**.
   their `isWeakLinkage` is `weak` / `weak_odr` only. Both are ported clause by
   clause now: an `extern_weak` ifunc fails verification ("IFunc should have
   … linkage!", `test/Verifier/ifunc.ll`'s `@inval_linkage`), and an
-  `extern_weak` alias is the parse error "invalid linkage type for alias" (and
-  refused by `GlobalAliasBuilder::build`).
+  `extern_weak` alias is the parse error "invalid linkage type for alias" and
+  is refused by `GlobalAliasBuilder::build` (locked by
+  `extern_weak_is_no_valid_alias_linkage` and
+  `alias_builder_refuses_an_extern_weak_linkage`).
 
 ### Changed — a verified module's globals and functions are read-only by type *(breaking)*
 
@@ -95,30 +116,41 @@ cut, entries accumulate under **Unreleased**.
     `IrStruct` derive emits for them) carry no capability, so its values are
     `Mutable` handles a `ReadOnly` function cannot mint. The erased
     `FunctionValue::param` / `params` answer at either capability.
-  - every public entry that takes a `Mutable` global or function handle as
-    an operand refuses a `ReadOnly` one at compile time — a verified module's
-    `view(f)` / `view(g)`, `FunctionBody::as_function()` — where it compiled
-    while `view` handed out `Mutable` handles. Read and analysis entries:
-    `DominatorTree::new` / `recalculate`, `FunctionCfg::new`,
-    `color_eh_funclets`, `check_function_phi_coherence`, `get_vscale_range`,
-    `fcmp_implies_class`, `fcmp_implies_class_of_constant`,
-    `fcmp_implies_class_of_class`, `fcmp_to_class_test`,
-    `fcmp_to_class_test_of_constant`, and in `llvmkit-asmparser`
-    `AsmParserContext::function_location` / `add_function_location` and
-    `GlobalRef`'s `From` for a function, global variable, alias and ifunc.
-    Authoring entries, which a `ReadOnly` function of an unverified module
-    such as `FunctionBody::as_function()` no longer reaches: `Module::block_address`,
-    `dso_local_equivalent`, `no_cfi`; `SsaState::for_function`,
-    `SsaBuilder::for_function`, `with_folder_for_function`; and
-    `IrBuilder::position_past_allocas`, `append_block_with_params`,
-    `append_block_with_named_params`, `append_block_typed`, `call_builder`,
-    `invoke_dyn`, `invoke_dyn_with_config`, `invoke_dyn_with_args`,
-    `callbr_with_config`. Analyses the pass manager runs are unaffected; a
-    pass that calls one of these on `as_function()` is not. Derivation:
-    rust-analyzer `findReferences` on `FunctionValue`, `GlobalVariable`,
-    `GlobalAlias`, `GlobalIfunc` and `ComdatRef` at `bac8293`, filtered to
-    parameter positions of public functions and trait impls, then checked
-    against this commit.
+  - every public entry that takes, as an operand, a `Mutable` handle of one
+    of the nine types above refuses a `ReadOnly` one at compile time — a
+    verified module's `view(f)` / `view(g)`, a `ModuleView`'s `view`,
+    `FunctionBody::as_function()`, a `ReadOnly` function's
+    `intrinsic_descriptor()` — where it compiled while `view` handed out
+    `Mutable` handles. Read and analysis entries: `DominatorTree::new` /
+    `recalculate`, `FunctionCfg::new`, `color_eh_funclets`,
+    `check_function_phi_coherence`, `get_vscale_range`, `fcmp_implies_class`,
+    `fcmp_implies_class_of_constant`, `fcmp_implies_class_of_class`,
+    `fcmp_to_class_test`, `fcmp_to_class_test_of_constant`, and in
+    `llvmkit-asmparser` `AsmParserContext::function_location` /
+    `add_function_location` and `GlobalRef` — its `Function`, `Variable`,
+    `Alias` and `Ifunc` variants and its `From` for each. Authoring entries,
+    which a `ReadOnly` function of an unverified module such as
+    `FunctionBody::as_function()` no longer reaches: `Module::block_address`,
+    `dso_local_equivalent`, `no_cfi`, `get_or_insert_intrinsic_declaration`;
+    `SsaState::for_function`, `SsaBuilder::for_function`,
+    `with_folder_for_function`; and `IrBuilder::position_past_allocas`,
+    `append_block_with_params`, `append_block_with_named_params`,
+    `append_block_typed`, `call_builder`, `intrinsic_call`,
+    `intrinsic_call_builder`, `invoke`, `invoke_with_config`,
+    `invoke_with_args`, `invoke_dyn`, `invoke_dyn_with_config`,
+    `invoke_dyn_with_args`, `callbr_with_config`. Analyses the pass manager
+    runs are unaffected; a pass that calls one of these on `as_function()` is
+    not. Derivation: rust-analyzer `findReferences` at `bac8293` on all nine
+    types that gained `C` — `FunctionValue`, `GlobalVariable`,
+    `GlobalAlias`, `GlobalIfunc`, `ComdatRef`, `TypedFunctionValue`,
+    `TypedVarArgsFunctionValue`, `FunctionBasicBlocks` and
+    `IntrinsicDescriptor` — each reference read in its file and kept
+    when it sits in a public function's signature or a trait impl's trait
+    arguments, then each kept entry's signature read at this commit. The
+    entries this change made generic (`IntoCallee`, `IntoTypedCallee`,
+    `IntoVarArgsCallee`, the `comdat` setters, `try_delta_from(_plus)`,
+    `try_from_function`, `From` for `Value` / `Constant` / `FunctionView`)
+    accept either capability and are not listed.
 - **Operands of any capability are admitted.** `IntoCallee`,
   `IntoTypedCallee` and `IntoVarArgsCallee` accept a function or facade of
   either capability, check it belongs to the builder's module

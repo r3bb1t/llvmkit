@@ -760,7 +760,7 @@ Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
 
-### 138. `Verifier::visitGlobalValue` and `visitGlobalAlias` are unported, and so is `visitGlobalIFunc`'s attachment walk
+### 138. `Verifier::visitGlobalValue` and `visitGlobalAlias` are unported, and so is the `visitMDNode` call in `visitGlobalIFunc`'s attachment loop
 
 **Severity:** accepts-invalid (derived by reading; no fixture exhibits it — a
 hypothesis until one does)
@@ -1178,6 +1178,72 @@ fixtures — `test/Assembler/implicit-intrinsic-declaration-invalid.ll` and
   reshape `AutoUpgrade`'s unported call sites want (`docs/future-work.md`).
   Doing half of it would put the declaration in one place and the upgrade in
   another.
+
+### 139. The verifier stops at its first failure, where `llvm::verifyModule` reports every one
+
+**Severity:** wrong-message (the verdict — broken or not — is the same; the
+diagnostics are not: upstream prints one per failed `Check`, llvmkit returns
+the first)
+**Where:** `crates/llvmkit-ir/src/verifier.rs` — `Verifier::run`, which
+propagates the first `Err` of every `visit_*` it calls with `?`, surfaced by
+`Module::verify` / `Module::verify_borrowed` as one
+`IrError::VerifierFailure`.
+
+- **LLVM:** `llvm::verifyModule` (`lib/IR/Verifier.cpp`) runs
+  `Verifier::verify(const Function &)` on every function and then
+  `Verifier::verify()` on the module, OR-ing the results. A failed `Check` /
+  `CheckDI` calls `Verifier::CheckFailed`, which writes the message to the
+  stream and sets `Broken`; the macro then `return`s from that one visitor, and
+  the walk goes on. So `llvm-as` prints a diagnostic for every failing entity,
+  in the walk's order, and a `test/Verifier` fixture's `CHECK` lines pin all of
+  them against one verification of the unmodified module.
+- **llvmkit:** `Verifier::run` returns at the first failure, by design ("Stops
+  on first error to keep `IrError` single-shot", its doc), so a module with
+  several failures reports one.
+- **Which one — the walk order differs too:** `llvm::verifyModule` verifies
+  every function before `Verifier::verify()` walks the global variables,
+  aliases, ifuncs, named metadata, comdats and module flags, in that order.
+  `Verifier::run` walks the global variables, the ifuncs and the module flags
+  first and the functions last. So a module with a failing function and a
+  failing global variable or ifunc reports the global's failure, where
+  `llvm-as`'s first diagnostic is the function's. Entry 138 lists what the walk
+  visits, not its order. Neither ifunc port below meets this: every function
+  in both fixtures is valid.
+- **What it forces:** a port of a fixture with several failing entities cannot
+  compare upstream's output in one verification. The ifunc ports verify one
+  ifunc per module — the fixture with every other ifunc line removed — and
+  compare only the first `CHECK` against the fixture as written:
+  `crates/llvmkit-asmparser/tests/parser_module_level.rs::upstream_ifunc_verifier_fixture_messages_match`
+  (`test/Verifier/ifunc.ll`) and `::upstream_ifunc_opaque_verifier_fixture_messages_match`
+  (`test/Verifier/ifunc-opaque.ll`). Earlier ports split their fixtures for
+  the same reason and say so in their docs —
+  `parser_calls.rs::upstream_callbr_label_constraint_fixture_messages_match`,
+  `run_operand_bundle_fixture` (the kcfi and ptrauth operand-bundle ports),
+  `upstream_musttail_invalid_fixture_messages_match`,
+  `upstream_tailcc_musttail_fixture_messages_match`,
+  `upstream_verifier_operand_bundles_fixture_messages_match` and
+  `parser_eh_funclet.rs::upstream_invalid_eh_fixture_messages_match`
+  (`git grep -n -i -E "accumulat|first failure" acf4502 -- crates/llvmkit-asmparser/tests`,
+  read hit by hit) — and
+  `parser_metadata.rs::upstream_invalid_range_metadata_fixture_messages_match`
+  splits `test/Verifier/range-1.ll` per function without saying why.
+- **Found:** 2026-10-04, by the second re-review of capability-typestate Task
+  4, on the ifunc ports. Unrecorded before this entry, at `acf4502`:
+  `rg -n -i "single-shot|first failure|first error|accumulat|stops at the first|CheckFailed|first finding|one finding|multi-error|every failure" docs/divergences.md`
+  hits entries D15 (the parser), 101 (the lexer), 32 (the parser's own
+  fail-fast choice) and 130, which cites `Verifier::CheckFailed` for how a
+  value is rendered, not for whether the walk stops; `rg -n -i "verif.{0,80}(first|single|one at a time|stops)|(first|single|stops).{0,80}verif" docs/divergences.md docs/future-work.md docs/fixture-coverage.md`
+  and `rg -n -i "verifyModule|verify_borrowed|Verifier::run" docs/divergences.md docs/future-work.md docs/fixture-coverage.md`
+  find nothing about the verifier's stopping rule (the second search's
+  `future-work.md` hit is the missing `test/Verifier` manifest; the third's are
+  entry 138 and `BrokenDebugInfo`). The walk order was found by the same
+  review; `git grep -n -i -E "verifyModule|function walk|global-value walk|walk order|functions last|functions first" acf4502 -- docs/divergences.md docs/future-work.md docs/fixture-coverage.md`
+  hits only the `BrokenDebugInfo` line.
+- **Fix:** a collecting verifier — `Module::verify` answering every failure,
+  in upstream's walk order, functions first — after which the per-ifunc and per-case ports
+  become single comparisons of the unmodified fixture. That is a change to the
+  verifier's result type and to every caller of it, so it is its own design
+  step, not part of the ifunc port.
 
 ## Different printed bytes
 

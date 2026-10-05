@@ -459,20 +459,34 @@ fn file_check_matches(pattern: &str, line: &str) -> bool {
 
 /// Each ifunc of a `Verifier::visitGlobalIFunc` fixture, verified alone, must
 /// fail with that ifunc's `CHECK` message, naming the ifunc its `CHECK-NEXT`
-/// names.
+/// names; and the fixture as written must fail with its first `CHECK`.
 ///
 /// The fixture is per-ifunc here for the reason
 /// `parser_calls.rs::upstream_musttail_invalid_fixture_messages_match` is
 /// per-function: `Module::verify_borrowed` reports the *first* failure, where
-/// upstream's `Verifier` accumulates. Each case is the whole fixture with every
-/// other ifunc line removed, so every resolver, global and function the
-/// fixture defines is still there. Upstream's `CHECK-NEXT` line is
-/// `Verifier::Write(&GI)`'s operand print of the ifunc (`@name`, or
-/// `ptr @name`); llvmkit carries that as the failure's subject, so the line's
-/// `@name` is compared with the subject's name.
+/// `llvm::verifyModule` reports every one (`docs/divergences.md`, entry 139).
+/// Each case is the whole fixture with every other ifunc line removed, so
+/// every resolver, global and function the fixture defines is still there.
+/// Upstream's `CHECK-NEXT` line is `Verifier::Write(&GI)`'s operand print of
+/// the ifunc (`@name`, or `ptr @name`); llvmkit carries that as the failure's
+/// subject, so the line's `@name` is compared with the subject's name.
+///
+/// The unreduced fixture is compared on its first diagnostic only, the one a
+/// first-failure verifier can give: `llvm::verifyModule` verifies every
+/// function — each is valid in these fixtures — before `Verifier::verify`
+/// walks the ifuncs in module order, and every ifunc here fails, so upstream's
+/// first line is the first ifunc's `CHECK`.
 fn assert_ifunc_verifier_fixture(fixture: &str) {
     let lines: Vec<&str> = fixture.lines().collect();
     let is_ifunc = |line: &&str| line.starts_with('@') && line.contains(" ifunc ");
+    let ifunc_name = |ifunc: &str| -> String {
+        ifunc
+            .split(" = ")
+            .next()
+            .and_then(|name| name.strip_prefix('@'))
+            .expect("an ifunc line opens on its name")
+            .to_owned()
+    };
     let ifuncs: Vec<&str> = lines.iter().copied().filter(is_ifunc).collect();
     let checks = verifier_checks(fixture);
     assert_eq!(
@@ -480,6 +494,28 @@ fn assert_ifunc_verifier_fixture(fixture: &str) {
         checks.len(),
         "one CHECK per ifunc in the fixture"
     );
+
+    let whole = llvmkit_ir::Module::dynamic("ifunc_verifier_fixture_as_written");
+    parse_into(fixture, &whole);
+    let Err(llvmkit_ir::IrError::VerifierFailure {
+        message, subject, ..
+    }) = whole.verify_borrowed()
+    else {
+        panic!("`llvm-as` rejects this fixture with a verifier failure");
+    };
+    assert!(
+        file_check_matches(&checks[0].message, &message),
+        "the fixture as written: {message:?} does not match its first CHECK {:?}",
+        checks[0].message
+    );
+    assert_eq!(
+        subject,
+        llvmkit_ir::VerifierSubject::GlobalIfunc {
+            name: ifunc_name(ifuncs[0])
+        },
+        "the fixture as written"
+    );
+
     for (&ifunc, check) in ifuncs.iter().zip(&checks) {
         let source: String = lines
             .iter()
@@ -503,25 +539,15 @@ fn assert_ifunc_verifier_fixture(fixture: &str) {
             "{ifunc}: {message:?} does not match CHECK {:?}",
             check.message
         );
-        let ifunc_name = ifunc
-            .split(" = ")
-            .next()
-            .and_then(|name| name.strip_prefix('@'))
-            .expect("an ifunc line opens on its name");
+        let name = ifunc_name(ifunc);
         assert_eq!(
             subject,
-            llvmkit_ir::VerifierSubject::GlobalIfunc {
-                name: ifunc_name.to_owned()
-            },
+            llvmkit_ir::VerifierSubject::GlobalIfunc { name: name.clone() },
             "{ifunc}"
         );
         if let Some(next) = &check.next {
             let named = next.rsplit(' ').next().unwrap_or(next);
-            assert_eq!(
-                named,
-                format!("@{ifunc_name}"),
-                "{ifunc}: CHECK-NEXT {next:?}"
-            );
+            assert_eq!(named, format!("@{name}"), "{ifunc}: CHECK-NEXT {next:?}");
         }
     }
 }
@@ -530,7 +556,8 @@ fn assert_ifunc_verifier_fixture(fixture: &str) {
 /// `Verifier::visitGlobalIFunc` the fixture reaches — the linkage, a resolver
 /// that is no `Function`, a declaration, an `available_externally`
 /// definition, and a resolver returning `i32` — with its message and the ifunc
-/// it names.
+/// it names, one ifunc per module (`docs/divergences.md`, entry 139); and the
+/// fixture as written, on its first `CHECK`.
 #[test]
 fn upstream_ifunc_verifier_fixture_messages_match() {
     assert_ifunc_verifier_fixture(include_str!("fixtures/upstream/Verifier/ifunc.ll"));
@@ -538,10 +565,103 @@ fn upstream_ifunc_verifier_fixture_messages_match() {
 
 /// Ports `test/Verifier/ifunc-opaque.ll` whole: a resolver behind a
 /// non-zero-index `getelementptr`, and one behind `inttoptr (add (ptrtoint …))`,
-/// are no `Function` once `Value::stripPointerCastsAndAliases` stops at them.
+/// are no `Function` once `Value::stripPointerCastsAndAliases` stops at them —
+/// one ifunc per module (`docs/divergences.md`, entry 139), and the fixture as
+/// written on its first `CHECK`.
 #[test]
 fn upstream_ifunc_opaque_verifier_fixture_messages_match() {
     assert_ifunc_verifier_fixture(include_str!("fixtures/upstream/Verifier/ifunc-opaque.ll"));
+}
+
+/// `Value::stripPointerCastsAndAliases`'s `getelementptr` arm, both exits,
+/// reached from `Verifier::visitGlobalIFunc`'s `GI.getResolverFunction()`: a
+/// zero-index GEP is stepped through to the resolver function, so the ifunc
+/// verifies; a non-zero index stops the walk at the GEP, which is no
+/// `Function` ("IFunc must have a Function resolver"). Both GEPs carry
+/// `inrange`, which keeps the zero-index one from folding to its base —
+/// `ConstantFoldGetElementPtr`'s `IsNoOp` spares an `inrange` GEP, and
+/// llvmkit's `constant_fold_get_element_ptr_trusting_same_module` ports that —
+/// so the printed module is checked to still hold it, and the walk, not the
+/// folder, is what answers.
+///
+/// No upstream fixture: `rg -n " ifunc .*(getelementptr|bitcast)" llvm/test
+/// llvm/unittests` in the vendored tree finds only
+/// `test/Verifier/ifunc-opaque.ll`'s non-zero GEP, ported above.
+/// llvmkit-specific lock on the ported arm.
+#[test]
+fn an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr() {
+    let source = |index: u32| {
+        format!(
+            "define ptr @resolver() {{\n  ret ptr null\n}}\n\
+             @i = ifunc void (), ptr getelementptr inrange(0, 1) (i8, ptr @resolver, i64 {index})\n"
+        )
+    };
+    let m = llvmkit_ir::Module::dynamic("ifunc_zero_index_gep");
+    parse_into(&source(0), &m);
+    let text = format!("{m}");
+    assert!(
+        text.contains("getelementptr inrange(0, 1) (i8, ptr @resolver, i64 0)"),
+        "the zero-index GEP must survive to the verifier, got:\n{text}"
+    );
+    m.verify_borrowed()
+        .expect("a zero-index GEP is stripped to the resolver function");
+
+    let m = llvmkit_ir::Module::dynamic("ifunc_non_zero_index_gep");
+    parse_into(&source(1), &m);
+    let err = m
+        .verify_borrowed()
+        .expect_err("a non-zero index stops the walk at the GEP");
+    let llvmkit_ir::IrError::VerifierFailure { message, .. } = err else {
+        panic!("expected a verifier failure, got {err:?}");
+    };
+    assert_eq!(message, "IFunc must have a Function resolver");
+}
+
+/// `Value::stripPointerCastsAndAliases`'s `bitcast` arm, reached from
+/// `Verifier::visitGlobalIFunc` through the one shape of constant bitcast that
+/// can be an ifunc resolver: `bitcast (<1 x ptr> <ptr @resolver> to ptr)`.
+/// `CastInst::castIsValid` admits a one-lane pointer vector, and `FoldBitCast`
+/// leaves it unfolded; its operand is no pointer, so the arm returns the
+/// bitcast, which is no `Function` ("IFunc must have a Function resolver").
+/// Positive control: `bitcast (ptr @resolver to ptr)` is folded to
+/// `ptr @resolver` (`FoldBitCast`'s `SrcTy == DestTy`) and verifies — which
+/// is also why the arm's continue exit cannot be reached from this caller.
+///
+/// This pins the answer, not the arm: from this caller, continuing to the
+/// vector lands on no `Function` either. No upstream fixture (the search in
+/// `an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr`'s doc).
+/// llvmkit-specific.
+#[test]
+fn an_ifunc_resolver_behind_a_vector_bitcast_is_no_function() {
+    let source = |resolver: &str| {
+        format!(
+            "define ptr @resolver() {{\n  ret ptr null\n}}\n@i = ifunc void (), ptr {resolver}\n"
+        )
+    };
+    let m = llvmkit_ir::Module::dynamic("ifunc_vector_bitcast");
+    parse_into(&source("bitcast (<1 x ptr> <ptr @resolver> to ptr)"), &m);
+    let text = format!("{m}");
+    assert!(
+        text.contains("bitcast (<1 x ptr> <ptr @resolver> to ptr)"),
+        "the vector bitcast must survive to the verifier, got:\n{text}"
+    );
+    let err = m
+        .verify_borrowed()
+        .expect_err("the bitcast of a vector is no Function");
+    let llvmkit_ir::IrError::VerifierFailure { message, .. } = err else {
+        panic!("expected a verifier failure, got {err:?}");
+    };
+    assert_eq!(message, "IFunc must have a Function resolver");
+
+    let m = llvmkit_ir::Module::dynamic("ifunc_pointer_bitcast");
+    parse_into(&source("bitcast (ptr @resolver to ptr)"), &m);
+    let text = format!("{m}");
+    assert!(
+        text.contains("@i = ifunc void (), ptr @resolver"),
+        "a ptr-to-ptr bitcast folds to its operand, got:\n{text}"
+    );
+    m.verify_borrowed()
+        .expect("the folded resolver is the function itself");
 }
 
 /// `Verifier::visitGlobalIFunc`'s attachment loop refuses `!dbg` and `!prof`

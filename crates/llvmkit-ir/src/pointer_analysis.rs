@@ -1208,6 +1208,35 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
 /// `GlobalIFunc::getResolverFunction` is its one caller upstream that llvmkit
 /// ports (`Verifier::visitGlobalIFunc`).
 ///
+/// What that caller reaches, since it hands in an ifunc's resolver — a
+/// constant (`GlobalIfunc::set_resolver` and `GlobalIfuncBuilder` take an
+/// `IsConstant`) — and every step goes to a constant's operand or an alias's
+/// aliasee, itself a constant:
+/// - both `getelementptr` exits, on both forms of constant GEP. A zero-index
+///   constant expression survives folding when it carries `inrange`, as
+///   `ConstantFoldGetElementPtr`'s `IsNoOp` spares it upstream — locked, zero
+///   and non-zero, by
+///   `parser_module_level.rs::an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr`.
+///   llvmkit's compact `GepOffset` form survives at offset 0 when
+///   `FunctionValue::as_aggregate_ptr`, or `GlobalVariable::as_global_constant_ptr_offset`
+///   / `ptr_offset` given 0, interns it without folding — the fourth
+///   `intern_constant_gep_offset` caller, `constant_folding::build_canonical_i8_gep`,
+///   returns the base for a zero offset (`rg -n "intern_constant_gep_offset\("
+///   crates/llvmkit-ir/src`) — locked, zero and non-zero, by
+///   `globals_basic.rs::an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr`;
+/// - the `bitcast` arm only through a non-pointer operand (`bitcast (<1 x ptr>
+///   … to ptr)`, pinned by
+///   `parser_module_level.rs::an_ifunc_resolver_behind_a_vector_bitcast_is_no_function`),
+///   whose exit and a continue land equally on no `Function`, so no test
+///   through this caller can tell them apart. A `ptr`-to-`ptr` constant
+///   bitcast — the continue exit — is folded to its operand before it can be
+///   a resolver (`FoldBitCast`'s `SrcTy == DestTy`, llvmkit's
+///   `constant_fold::fold_bitcast`);
+/// - never an instruction, so neither the `CallBase` returned-argument arm nor
+///   an instruction GEP: [`returned_arg_operand`] answers only for a `call`,
+///   `invoke` or `callbr` instruction. Both are ported for a caller that hands
+///   in an instruction.
+///
 /// One spelling difference, house doctrine rather than a divergence: llvmkit's
 /// interned `ptr @g` constant (`ConstantData::GlobalValueRef`) *is* upstream's
 /// `GlobalValue` (`docs/divergences.md` D3), so every value this walk reaches
@@ -1485,28 +1514,33 @@ fn gep_pointer_operand<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports `Operator::getOpcode`: the opcode of an instruction *or* of a constant
 /// expression, which upstream reaches through the same `Operator` base.
+///
+/// llvmkit's compact `getelementptr inbounds (i8, ptr @g, i64 off)`
+/// (`ConstantData::GepOffset`) is a `GEPOperator` upstream, so it answers
+/// `GetElementPtr`. [`operator_operand`] cannot hand out its offset, which is
+/// no arena value, so a caller's `GetElementPtr` arm reads the form itself —
+/// [`gep_operator_zero_index_base`], [`strip_in_bounds_offsets`].
 fn operator_opcode<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Opcode> {
-    if let ValueKindData::Instruction(instruction) = &value.data().kind {
-        return Some(instruction.kind.opcode());
+    match &value.data().kind {
+        ValueKindData::Instruction(instruction) => Some(instruction.kind.opcode()),
+        ValueKindData::Constant(ConstantData::GepOffset { .. }) => Some(Opcode::GetElementPtr),
+        ValueKindData::Constant(ConstantData::Expr(expr)) => Some(match expr.opcode {
+            ConstantExprOpcode::Add => Opcode::Add,
+            ConstantExprOpcode::Sub => Opcode::Sub,
+            ConstantExprOpcode::Xor => Opcode::Xor,
+            ConstantExprOpcode::GetElementPtr => Opcode::GetElementPtr,
+            ConstantExprOpcode::ShuffleVector => Opcode::ShuffleVector,
+            ConstantExprOpcode::InsertElement => Opcode::InsertElement,
+            ConstantExprOpcode::ExtractElement => Opcode::ExtractElement,
+            ConstantExprOpcode::Trunc => Opcode::Trunc,
+            ConstantExprOpcode::PtrToAddr => Opcode::PtrToAddr,
+            ConstantExprOpcode::PtrToInt => Opcode::PtrToInt,
+            ConstantExprOpcode::IntToPtr => Opcode::IntToPtr,
+            ConstantExprOpcode::BitCast => Opcode::BitCast,
+            ConstantExprOpcode::AddrSpaceCast => Opcode::AddrSpaceCast,
+        }),
+        _ => None,
     }
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &value.data().kind else {
-        return None;
-    };
-    Some(match expr.opcode {
-        ConstantExprOpcode::Add => Opcode::Add,
-        ConstantExprOpcode::Sub => Opcode::Sub,
-        ConstantExprOpcode::Xor => Opcode::Xor,
-        ConstantExprOpcode::GetElementPtr => Opcode::GetElementPtr,
-        ConstantExprOpcode::ShuffleVector => Opcode::ShuffleVector,
-        ConstantExprOpcode::InsertElement => Opcode::InsertElement,
-        ConstantExprOpcode::ExtractElement => Opcode::ExtractElement,
-        ConstantExprOpcode::Trunc => Opcode::Trunc,
-        ConstantExprOpcode::PtrToAddr => Opcode::PtrToAddr,
-        ConstantExprOpcode::PtrToInt => Opcode::PtrToInt,
-        ConstantExprOpcode::IntToPtr => Opcode::IntToPtr,
-        ConstantExprOpcode::BitCast => Opcode::BitCast,
-        ConstantExprOpcode::AddrSpaceCast => Opcode::AddrSpaceCast,
-    })
 }
 
 /// Operand `index` of an instruction or constant expression, in the order
