@@ -929,10 +929,9 @@ whole. What is left is below.
   `Intrinsic::ucmp` / `Intrinsic::scmp`, and the rest. Each needs the
   `test/Verifier` fixture that pins it. For `scmp` / `ucmp` that is
   `test/Verifier/intrinsic-cmp.ll`, none of whose four `CHECK` messages
-  llvmkit raises (`rg -n -i "scmp|ucmp" crates/llvmkit-ir/src/verifier.rs` is
-  empty at `3baa7ed`): each of its four calls, parsed in a module of its own
-  function and checked with `Module::verify_borrowed`, verifies (a probe run
-  2026-10-05 on `3baa7ed`).
+  llvmkit has: at `c541e21`,
+  `rg -n "same number of elements|at least 2 bits wide|ucmp/scmp" crates/llvmkit-ir/src crates/llvmkit-asmparser/src`
+  finds nothing.
 - **`define`-ing an intrinsic is a *parse* error here.** Upstream's `LLParser`
   accepts `define void @llvm.donothing() { ret void }` and leaves the verdict to
   `visitIntrinsicCall`'s `Intrinsic functions should never be defined!`, raised
