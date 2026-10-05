@@ -464,7 +464,8 @@ fn file_check_matches(pattern: &str, line: &str) -> bool {
 /// The fixture is per-ifunc here for the reason
 /// `parser_calls.rs::upstream_musttail_invalid_fixture_messages_match` is
 /// per-function: `Module::verify_borrowed` reports the *first* failure, where
-/// `llvm::verifyModule` reports every one (`docs/divergences.md`, entry 139).
+/// `llvm::verifyModule` reports each failing entity (`docs/divergences.md`,
+/// entry 139).
 /// Each case is the whole fixture with every other ifunc line removed, so
 /// every resolver, global and function the fixture defines is still there.
 /// Upstream's `CHECK-NEXT` line is `Verifier::Write(&GI)`'s operand print of

@@ -229,9 +229,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// then every function. Returns the first invariant violation
     /// encountered. Stops on first error to keep `IrError` single-shot; a
     /// later revision can add a multi-error collecting variant if pass
-    /// infrastructure needs it. Upstream's `llvm::verifyModule` reports every
-    /// failure, and verifies the functions first — `docs/divergences.md`,
-    /// entry 139.
+    /// infrastructure needs it. Upstream's `llvm::verifyModule` goes on after
+    /// a failure — each failed `Check` returns from its own visitor only, so it
+    /// reports one failure per failing visitor — and verifies the functions
+    /// first: `docs/divergences.md`, entry 139.
     pub(crate) fn run(&self) -> IrResult<()> {
         for g in self.module.iter_globals() {
             self.visit_global_variable(g)?;

@@ -1179,7 +1179,7 @@ fixtures — `test/Assembler/implicit-intrinsic-declaration-invalid.ll` and
   Doing half of it would put the declaration in one place and the upgrade in
   another.
 
-### 139. The verifier stops at its first failure, where `llvm::verifyModule` reports every one
+### 139. The verifier stops at its first failure, where `llvm::verifyModule` reports each failing entity
 
 **Severity:** wrong-message (the verdict — broken or not — is the same; the
 diagnostics are not: upstream prints one per failed `Check`, llvmkit returns
@@ -1201,10 +1201,13 @@ propagates the first `Err` of every `visit_*` it calls with `?`, surfaced by
   on first error to keep `IrError` single-shot", its doc), so a module with
   several failures reports one.
 - **Which one — the walk order differs too:** `llvm::verifyModule` verifies
-  every function before `Verifier::verify()` walks the global variables,
-  aliases, ifuncs, named metadata, comdats and module flags, in that order.
-  `Verifier::run` walks the global variables, the ifuncs and the module flags
-  first and the functions last. So a module with a failing function and a
+  every function before it calls `Verifier::verify()`. That routine, in
+  order, collects the `experimental.deoptimize` declarations, runs
+  `verifyFrameRecoverIndices`, walks the global variables, aliases, ifuncs,
+  named metadata and comdats, then checks the module flags, idents, command
+  lines and errno-TBAA metadata, the compile units, and the deoptimize
+  calling conventions. `Verifier::run` walks the global variables, the
+  ifuncs and the module flags first and the functions last. So a module with a failing function and a
   failing global variable or ifunc reports the global's failure, where
   `llvm-as`'s first diagnostic is the function's. Entry 138 lists what the walk
   visits, not its order. Neither ifunc port below meets this: every function

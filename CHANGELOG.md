@@ -19,6 +19,27 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — the pointer-strip walks are one port of `stripPointerCastsAndOffsets`
+
+- **`Value::stripPointerCasts` and `stripPointerCastsSameRepresentation`
+  stepped through less than upstream.** llvmkit had four hand-written strip
+  walks; two of them peeled only a `getelementptr` *instruction* with zero
+  indices, never a zero-index constant GEP (an `inrange` constant expression,
+  or llvmkit's compact `getelementptr inbounds (i8, ptr @g, i64 0)`), and
+  neither stepped to a call's `returned` argument. All four are now
+  instantiations of one port of `stripPointerCastsAndOffsets`
+  (`llvm/lib/IR/Value.cpp`), with its arm order, its `Visited` cycle guard and
+  its `PointerStripKind` switch. What answers differently, each as upstream:
+  `eh_personalities::classify_eh_personality` recognises a personality behind
+  a zero-index constant GEP (it answered `Unknown`); `string_length` reads
+  through a `returned` argument to a `select` or `phi` of strings (it answered
+  `None`); `is_known_not_poison`, `is_known_not_undef` and
+  `is_known_not_undef_or_poison` prove a call whose `returned` argument is an
+  alloca, a global or null (they answered `false`). Locked by
+  `pointer_analysis.rs::eh_personality_is_read_through_a_zero_index_constant_getelementptr`,
+  `::string_length_reads_through_a_returned_argument` and
+  `::poison_query_strips_through_a_returned_argument`.
+
 ### Fixed — the verifier checks an ifunc's resolver and attachments
 
 - **`Verifier::visitGlobalIFunc` is ported past its linkage check.** An ifunc
@@ -32,7 +53,7 @@ cut, entries accumulate under **Unreleased**.
   locks each: the linkage and the three resolver checks, `test/Verifier/ifunc.ll`
   and `ifunc-opaque.ll`, vendored whole and verified one ifunc per module,
   plus the unreduced fixture on its first `CHECK` — llvmkit's verifier stops
-  at its first failure where `llvm::verifyModule` reports every one
+  at its first failure where `llvm::verifyModule` reports each failing entity
   (`docs/divergences.md`, entry 139); the two attachment checks and their
   kind-id order, the llvmkit-specific
   `an_ifunc_may_carry_neither_a_dbg_nor_a_prof_attachment`, since no upstream
@@ -42,8 +63,8 @@ cut, entries accumulate under **Unreleased**.
   expression (`an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr`)
   and on llvmkit's compact `getelementptr inbounds (i8, ptr @f, i64 N)`
   (`an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr`);
-  its `bitcast` step's answer on the one constant bitcast that can be a
-  resolver, `bitcast (<1 x ptr> … to ptr)`
+  its `bitcast` step's answer on the one shape of constant bitcast that can be
+  a resolver, `bitcast (<1 x ptr> … to ptr)`
   (`an_ifunc_resolver_behind_a_vector_bitcast_is_no_function`). The last
   check, "IFunc resolver has incorrect type" (the resolver operand not a `ptr`
   of the ifunc's address space), is ported but unreachable from what llvmkit
@@ -140,13 +161,17 @@ cut, entries accumulate under **Unreleased**.
     `invoke_with_args`, `invoke_dyn`, `invoke_dyn_with_config`,
     `invoke_dyn_with_args`, `callbr_with_config`. Analyses the pass manager
     runs are unaffected; a pass that calls one of these on `as_function()` is
-    not. Derivation: rust-analyzer `findReferences` at `bac8293` on all nine
-    types that gained `C` — `FunctionValue`, `GlobalVariable`,
-    `GlobalAlias`, `GlobalIfunc`, `ComdatRef`, `TypedFunctionValue`,
-    `TypedVarArgsFunctionValue`, `FunctionBasicBlocks` and
-    `IntrinsicDescriptor` — each reference read in its file and kept
-    when it sits in a public function's signature or a trait impl's trait
-    arguments, then each kept entry's signature read at this commit. The
+    not. Derivation, run on this branch at `92b3e4a`: rust-analyzer
+    `findReferences` on each of the nine types that gained `C` —
+    `FunctionValue`, `GlobalVariable`, `GlobalAlias`, `GlobalIfunc`,
+    `ComdatRef`, `TypedFunctionValue`, `TypedVarArgsFunctionValue`,
+    `FunctionBasicBlocks` and `IntrinsicDescriptor`; for each reference in a
+    crate's `src`, the enclosing item printed by a scratch script and kept
+    when the type sits, without a capability parameter, in a public
+    function's parameter list or a trait impl's trait arguments; the
+    `verifier.rs` references were set aside because `Verifier` has no
+    function more visible than `pub(crate)`; `GlobalRef`'s variants come
+    from reading its `pub enum`. That reproduced the list above exactly. The
     entries this change made generic (`IntoCallee`, `IntoTypedCallee`,
     `IntoVarArgsCallee`, the `comdat` setters, `try_delta_from(_plus)`,
     `try_from_function`, `From` for `Value` / `Constant` / `FunctionView`)

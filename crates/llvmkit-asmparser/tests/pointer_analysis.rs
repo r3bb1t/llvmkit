@@ -14,10 +14,12 @@
 //!   so the `CHECK` line is the oracle.
 
 use llvmkit_asmparser::parser;
+use llvmkit_ir::eh_personalities::{EhPersonality, classify_eh_personality};
 use llvmkit_ir::{
-    BytewiseValue, DynBrand, Module, Unverified, Value, argument_aliasing_to_returned_pointer,
-    constant_string_info, find_alloca_for_value, find_inserted_value, is_bytewise_value,
-    is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
+    BytewiseValue, DynBrand, Module, Unverified, Value, ValueTrackingQuery,
+    argument_aliasing_to_returned_pointer, constant_string_info, find_alloca_for_value,
+    find_inserted_value, is_bytewise_value,
+    is_intrinsic_returning_pointer_aliasing_argument_without_capturing, is_known_not_poison,
     only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
     pointer_base_with_constant_offset, string_length, underlying_object,
     underlying_object_aggressive, underlying_objects, underlying_objects_for_code_gen,
@@ -663,5 +665,161 @@ define void @test(ptr %p) {
             &call("laundered"),
             true
         )
+    );
+}
+
+/// `classifyEHPersonality` (`llvm/lib/IR/EHPersonalities.cpp`) reads its
+/// personality through `Value::stripPointerCasts`, whose `PSK_ZeroIndices`
+/// arm in `stripPointerCastsAndOffsets` (`llvm/lib/IR/Value.cpp`) steps
+/// through any `GEPOperator` with all-zero indices — a constant expression
+/// included. An `inrange` zero-index GEP survives folding
+/// (`ConstantFoldGetElementPtr`'s `IsNoOp`), and llvmkit's compact
+/// `getelementptr inbounds (i8, ptr @f, i64 0)` (`FunctionValue::as_aggregate_ptr`)
+/// is never folded, so `@__gxx_personality_v0` behind either is still the
+/// GNU C++ personality; a non-zero index stops the strip at the GEP, which is
+/// no `GlobalValue` (`Unknown`). Positive control: the plain
+/// `ptr @__gxx_personality_v0`.
+///
+/// No upstream fixture or unit test reaches these arms through this caller;
+/// llvmkit-specific rule anchor.
+#[test]
+fn eh_personality_is_read_through_a_zero_index_constant_getelementptr() {
+    let module = parse(
+        r#"
+declare i32 @__gxx_personality_v0(...)
+
+define void @plain() personality ptr @__gxx_personality_v0 {
+  ret void
+}
+
+define void @zero() personality ptr getelementptr inrange(0, 1) (i8, ptr @__gxx_personality_v0, i64 0) {
+  ret void
+}
+
+define void @non_zero() personality ptr getelementptr inrange(0, 1) (i8, ptr @__gxx_personality_v0, i64 1) {
+  ret void
+}
+
+define void @compact() {
+  ret void
+}
+"#,
+    );
+    let function = |name: &str| {
+        module.view(
+            module
+                .function_dyn(name)
+                .unwrap_or_else(|| panic!("fixture defines @{name}")),
+        )
+    };
+    let text = format!("{module}");
+    assert!(
+        text.contains("getelementptr inrange(0, 1) (i8, ptr @__gxx_personality_v0, i64 0)"),
+        "the zero-index GEP must survive to the classifier, got:\n{text}"
+    );
+    function("compact")
+        .set_personality_fn(
+            &module,
+            function("__gxx_personality_v0").as_aggregate_ptr(0),
+        )
+        .expect("a constant personality");
+
+    for (name, expected) in [
+        ("plain", EhPersonality::GnuCxx),
+        ("zero", EhPersonality::GnuCxx),
+        ("compact", EhPersonality::GnuCxx),
+        ("non_zero", EhPersonality::Unknown),
+    ] {
+        let personality = function(name)
+            .personality_fn()
+            .unwrap_or_else(|| panic!("@{name} has a personality"));
+        assert_eq!(
+            classify_eh_personality(personality.as_erased()),
+            expected,
+            "@{name}"
+        );
+    }
+}
+
+/// `GetStringLengthH` (`llvm/lib/Analysis/ValueTracking.cpp`) begins with
+/// `V = V->stripPointerCasts()`, whose last arm in `stripPointerCastsAndOffsets`
+/// (`llvm/lib/IR/Value.cpp`) steps to a call's `returned` argument
+/// (`CallBase::getReturnedArgOperand`). Behind `call ptr @id(ptr returned
+/// %either)` it therefore meets the `select` of two six-byte strings and
+/// answers 6. Without the attribute the strip stops at the call, and
+/// `getConstantDataArrayInfo`'s `getUnderlyingObject` finds no global
+/// (`None`).
+///
+/// No upstream fixture or unit test reaches this arm through this caller
+/// (`strlen-1.ll` has no such call); llvmkit-specific rule anchor.
+#[test]
+fn string_length_reads_through_a_returned_argument() {
+    let module = parse(
+        r#"
+@hello = constant [6 x i8] c"hello\00"
+@world = constant [6 x i8] c"world\00"
+
+declare ptr @id(ptr returned)
+declare ptr @opaque(ptr)
+
+define void @test(i1 %c) {
+  %either = select i1 %c, ptr @hello, ptr @world
+  %through = call ptr @id(ptr %either)
+  %opaque = call ptr @opaque(ptr %either)
+  ret void
+}
+"#,
+    );
+    let data_layout = module.data_layout();
+    assert_eq!(
+        string_length(named(&module, "either"), 8, &data_layout),
+        Some(6),
+        "positive control: the select itself"
+    );
+    assert_eq!(
+        string_length(named(&module, "through"), 8, &data_layout),
+        Some(6)
+    );
+    assert_eq!(
+        string_length(named(&module, "opaque"), 8, &data_layout),
+        None
+    );
+}
+
+/// `isGuaranteedNotToBeUndefOrPoison` (`llvm/lib/Analysis/ValueTracking.cpp`)
+/// strips with `Value::stripPointerCastsSameRepresentation` before its
+/// allocated-object test, and that strip's last arm in
+/// `stripPointerCastsAndOffsets` (`llvm/lib/IR/Value.cpp`) steps to a call's
+/// `returned` argument. So `call ptr @retptr(ptr returned %a)` over an alloca
+/// is not poison; the same call without the attribute is not proven.
+/// The declarations are `FindAllocaForValueTests`'s two call rows
+/// (`llvm/unittests/Analysis/ValueTrackingTest.cpp`).
+///
+/// No upstream test asks `isGuaranteedNotToBePoison` of such a call;
+/// llvmkit-specific rule anchor.
+#[test]
+fn poison_query_strips_through_a_returned_argument() {
+    let module = parse(
+        r#"
+declare ptr @retptr(ptr returned)
+declare ptr @fun(ptr)
+
+define void @test() {
+  %a = alloca i32
+  %through = call ptr @retptr(ptr %a)
+  %opaque = call ptr @fun(ptr %a)
+  ret void
+}
+"#,
+    );
+    let data_layout = module.data_layout();
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+    assert!(
+        is_known_not_poison(named(&module, "through"), &query).expect("query succeeds"),
+        "a returned argument that is an alloca"
+    );
+    assert!(
+        !is_known_not_poison(named(&module, "opaque"), &query).expect("query succeeds"),
+        "a call without `returned` is not proven"
     );
 }

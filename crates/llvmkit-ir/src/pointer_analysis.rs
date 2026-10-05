@@ -33,7 +33,9 @@
 
 use crate::ApInt;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
-use crate::constant::{Constant, ConstantData, ConstantExprFlags, ConstantExprOpcode};
+use crate::constant::{
+    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
+};
 use crate::data_layout::DataLayout;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::global_value::Linkage;
@@ -91,8 +93,8 @@ fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<
     // `dyn_cast<GEPOperator>`: a `getelementptr` instruction or the constant
     // expression of the same name. Only a scalar pointer base peels — a vector
     // of pointers is where the walk stops.
-    if let Some(pointer) = gep_pointer_operand(value) {
-        return is_pointer(pointer.ty()).then_some(pointer);
+    if let Some(gep) = GepOperator::of(value) {
+        return is_pointer(gep.pointer_operand.ty()).then_some(gep.pointer_operand);
     }
 
     // `Operator::getOpcode(V) == BitCast || AddrSpaceCast`.
@@ -1095,105 +1097,108 @@ fn underlying_object_from_int<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-/// Ports `Value::stripPointerCasts` for the cases the string walk meets:
-/// `bitcast` and `addrspacecast` of a pointer, plus zero-offset GEPs.
-pub(crate) fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Value<'ctx, B> {
-    let mut current = value;
-    for _ in 0..MAX_LOOKUP_SEARCH_DEPTH {
-        let next = match operator_opcode(current) {
-            Some(Opcode::BitCast | Opcode::AddrSpaceCast) => operator_operand(current, 0),
-            Some(Opcode::GetElementPtr) => match instruction_kind(current) {
-                Some(InstructionKindData::Gep(data)) if gep_has_all_zero_indices(current, data) => {
-                    Some(value_from_slot(current, data.ptr.get()))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        match next.filter(|next| is_pointer(next.ty())) {
-            Some(next) => current = next,
-            None => return current,
-        }
-    }
-    current
+/// Which instantiation of `stripPointerCastsAndOffsets` a walk is: upstream's
+/// `PointerStripKind` (`llvm/lib/IR/Value.cpp`), for the four instantiations
+/// llvmkit calls. `PSK_ForAliasAnalysis` and `PSK_InBoundsConstantIndices`
+/// are absent because nothing here ports `stripPointerCastsForAliasAnalysis`
+/// or `stripInBoundsConstantOffsets`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PointerStripKind {
+    /// `PSK_ZeroIndices` — [`strip_pointer_casts`].
+    ZeroIndices,
+    /// `PSK_ZeroIndicesAndAliases` — [`strip_pointer_casts_and_aliases`].
+    ZeroIndicesAndAliases,
+    /// `PSK_ZeroIndicesSameRepresentation` —
+    /// [`strip_pointer_casts_same_representation`].
+    ZeroIndicesSameRepresentation,
+    /// `PSK_InBounds` — [`strip_in_bounds_offsets`].
+    InBounds,
 }
 
-/// Ports `Value::stripInBoundsOffsets` (`llvm/lib/IR/Value.cpp`) — the
-/// `PSK_InBounds` instantiation of `stripPointerCastsAndOffsets`, in that
-/// template's own arm order.
+/// Ports the static `stripPointerCastsAndOffsets` (`llvm/lib/IR/Value.cpp`),
+/// the one walk behind [`strip_pointer_casts`],
+/// [`strip_pointer_casts_and_aliases`],
+/// [`strip_pointer_casts_same_representation`] and
+/// [`strip_in_bounds_offsets`], in that template's arm order: a
+/// `GEPOperator` ([`GepOperator`]), `bitcast` of a pointer, `addrspacecast`
+/// (not for `ZeroIndicesSameRepresentation`), a `GlobalAlias`'s aliasee (for
+/// `ZeroIndicesAndAliases` only), and a call's `returned` argument. Upstream's
+/// `PHINode` and `launder` / `strip.invariant.group` arms are
+/// `PSK_ForAliasAnalysis` only, and its `Func` callback has no caller here.
 ///
-/// `Verifier::visitCallBase`'s `swifterror` loop is its one caller here:
-/// `dyn_cast<AllocaInst>(SwiftErrorArg->stripInBoundsOffsets())`.
-///
-/// Two differences from its siblings above, both upstream's: the GEP arm peels
-/// an `inbounds` GEP whatever its indices are (not only an all-zero one), and
-/// the loop terminates on a `Visited` set rather than a depth cap — upstream's
-/// `do { … } while (Visited.insert(V).second)`, whose comment says the cycle
-/// guard exists because the value may sit in an unreachable block.
-pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
+/// One spelling difference, house doctrine rather than a divergence: llvmkit's
+/// interned `ptr @g` constant (`ConstantData::GlobalValueRef`) *is* upstream's
+/// `GlobalValue` (`docs/divergences.md` D3), so every value the walk reaches —
+/// the input, each step, and so the answer — is read as the global it names.
+fn strip_pointer_casts_and_offsets<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
+    kind: PointerStripKind,
 ) -> Value<'ctx, B> {
-    // `if (!V->getType()->isPointerTy()) return V;`
-    if !is_pointer(value.ty()) {
+    // `if (!V->getType()->isPointerTy()) return V;` — `isPointerTy` is the
+    // opaque `PointerTyID` only; a `TypedPointerType` is not one.
+    if !is_opaque_pointer(value.ty()) {
         return value;
     }
-    let mut current = value;
+    let mut current = global_value_or_self(value);
+    // `SmallPtrSet<const Value *, 4> Visited; Visited.insert(V);` — the
+    // value may sit on a cycle in an unreachable block.
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     visited.insert(current.slot_trusting_same_module());
     loop {
-        let next = match operator_opcode(current) {
-            // `if (auto *GEP = dyn_cast<GEPOperator>(V)) { case PSK_InBounds:
-            //    if (!GEP->isInBounds()) return V; … V = GEP->getPointerOperand(); }`
-            Some(Opcode::GetElementPtr) => match instruction_kind(current) {
-                Some(InstructionKindData::Gep(data))
-                    if data.flags.contains(GepNoWrapFlags::IN_BOUNDS) =>
-                {
-                    Some(value_from_slot(current, data.ptr.get()))
-                }
-                // A constant-expression GEP: llvmkit's `GepOffset` form is
-                // always `inbounds` (see `gep_operator_pointer_operand`), and
-                // an `Expr` GEP carries its flags with it.
-                _ => match &current.data().kind {
-                    ValueKindData::Constant(ConstantData::GepOffset { base_id, .. }) => {
-                        Some(value_from_slot(current, *base_id))
-                    }
-                    ValueKindData::Constant(ConstantData::Expr(expr))
-                        if matches!(
-                            &expr.flags,
-                            ConstantExprFlags::Gep(gep)
-                                if gep.no_wrap().contains(GepNoWrapFlags::IN_BOUNDS)
-                        ) =>
-                    {
-                        expr.operands
-                            .first()
-                            .map(|slot| value_from_slot(current, *slot))
-                    }
+        let next = if let Some(gep) = GepOperator::of(current) {
+            // `if (auto *GEP = dyn_cast<GEPOperator>(V)) { switch (StripKind) {
+            //    case PSK_ZeroIndices: … if (!GEP->hasAllZeroIndices()) return V;
+            //    break; … case PSK_InBounds: if (!GEP->isInBounds()) return V;
+            //    break; } V = GEP->getPointerOperand(); }`
+            let strips = match kind {
+                PointerStripKind::ZeroIndices
+                | PointerStripKind::ZeroIndicesAndAliases
+                | PointerStripKind::ZeroIndicesSameRepresentation => gep.has_all_zero_indices(),
+                PointerStripKind::InBounds => gep.is_in_bounds(),
+            };
+            if !strips {
+                return current;
+            }
+            gep.pointer_operand
+        } else {
+            match operator_opcode(current) {
+                // `else if (Operator::getOpcode(V) == Instruction::BitCast) {
+                //    Value *NewV = cast<Operator>(V)->getOperand(0);
+                //    if (!NewV->getType()->isPointerTy()) return V; V = NewV; }`
+                Some(Opcode::BitCast) => match operator_operand(current, 0) {
+                    Some(next) if is_opaque_pointer(next.ty()) => next,
                     _ => return current,
                 },
-            },
-            // `else if (Operator::getOpcode(V) == Instruction::BitCast) {
-            //    Value *NewV = cast<Operator>(V)->getOperand(0);
-            //    if (!NewV->getType()->isPointerTy()) return V; V = NewV; }`
-            Some(Opcode::BitCast) => match operator_operand(current, 0) {
-                Some(next) if is_pointer(next.ty()) => Some(next),
-                _ => return current,
-            },
-            // `else if (StripKind != PSK_ZeroIndicesSameRepresentation &&
-            //    Operator::getOpcode(V) == Instruction::AddrSpaceCast)`
-            Some(Opcode::AddrSpaceCast) => operator_operand(current, 0),
-            // `else { if (const auto *Call = dyn_cast<CallBase>(V)) { if (const
-            //    Value *RV = Call->getReturnedArgOperand()) { V = RV;
-            //    continue; } … } return V; }` — the
-            //    `launder`/`strip.invariant.group` arm below it is
-            //    `PSK_ForAliasAnalysis` only.
-            _ => returned_arg_operand(current),
+                // `else if (StripKind != PSK_ZeroIndicesSameRepresentation &&
+                //    Operator::getOpcode(V) == Instruction::AddrSpaceCast)
+                //    V = cast<Operator>(V)->getOperand(0);`
+                Some(Opcode::AddrSpaceCast)
+                    if kind != PointerStripKind::ZeroIndicesSameRepresentation =>
+                {
+                    match operator_operand(current, 0) {
+                        Some(next) => next,
+                        None => return current,
+                    }
+                }
+                _ => match &current.data().kind {
+                    // `else if (StripKind == PSK_ZeroIndicesAndAliases &&
+                    //    isa<GlobalAlias>(V)) V = cast<GlobalAlias>(V)->getAliasee();`
+                    ValueKindData::GlobalAlias(alias)
+                        if kind == PointerStripKind::ZeroIndicesAndAliases =>
+                    {
+                        value_from_slot(current, alias.aliasee.get())
+                    }
+                    // `else { if (const auto *Call = dyn_cast<CallBase>(V)) { if
+                    //    (const Value *RV = Call->getReturnedArgOperand()) { V =
+                    //    RV; continue; } … } return V; }`
+                    _ => match returned_arg_operand(current) {
+                        Some(returned) => returned,
+                        None => return current,
+                    },
+                },
+            }
         };
-        let Some(next) = next else {
-            return current;
-        };
-        current = next;
+        current = global_value_or_self(next);
         // `while (Visited.insert(V).second);`
         if !visited.insert(current.slot_trusting_same_module()) {
             return current;
@@ -1201,9 +1206,34 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
+/// Ports `Value::stripPointerCasts` (`llvm/lib/IR/Value.cpp`) — the
+/// `PSK_ZeroIndices` instantiation of [`strip_pointer_casts_and_offsets`].
+///
+/// Its callers here: `GetStringLengthH`'s strip
+/// ([`string_length`]), `classifyEHPersonality`
+/// ([`crate::eh_personalities::classify_eh_personality`]) and
+/// `Verifier::visitEHPadPredecessors`'s invoke-callee test.
+pub(crate) fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Value<'ctx, B> {
+    strip_pointer_casts_and_offsets(value, PointerStripKind::ZeroIndices)
+}
+
+/// Ports `Value::stripInBoundsOffsets` (`llvm/lib/IR/Value.cpp`) — the
+/// `PSK_InBounds` instantiation of [`strip_pointer_casts_and_offsets`], whose
+/// GEP arm peels an `inbounds` GEP whatever its indices are.
+///
+/// `Verifier::visitCallBase`'s `swifterror` loop is its one caller here:
+/// `dyn_cast<AllocaInst>(SwiftErrorArg->stripInBoundsOffsets())`.
+pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Value<'ctx, B> {
+    strip_pointer_casts_and_offsets(value, PointerStripKind::InBounds)
+}
+
 /// Ports `Value::stripPointerCastsAndAliases` (`llvm/lib/IR/Value.cpp`) — the
-/// `PSK_ZeroIndicesAndAliases` instantiation of `stripPointerCastsAndOffsets`,
-/// in that template's own arm order.
+/// `PSK_ZeroIndicesAndAliases` instantiation of
+/// [`strip_pointer_casts_and_offsets`].
 ///
 /// `GlobalIFunc::getResolverFunction` is its one caller upstream that llvmkit
 /// ports (`Verifier::visitGlobalIFunc`).
@@ -1222,7 +1252,8 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
 ///   / `ptr_offset` given 0, interns it without folding — the fourth
 ///   `intern_constant_gep_offset` caller, `constant_folding::build_canonical_i8_gep`,
 ///   returns the base for a zero offset (`rg -n "intern_constant_gep_offset\("
-///   crates/llvmkit-ir/src`) — locked, zero and non-zero, by
+///   crates/llvmkit-ir/src` lists those four calls and the definition) —
+///   locked, zero and non-zero, by
 ///   `globals_basic.rs::an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr`;
 /// - the `bitcast` arm only through a non-pointer operand (`bitcast (<1 x ptr>
 ///   … to ptr)`, pinned by
@@ -1236,70 +1267,14 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
 ///   an instruction GEP: [`returned_arg_operand`] answers only for a `call`,
 ///   `invoke` or `callbr` instruction. Both are ported for a caller that hands
 ///   in an instruction.
-///
-/// One spelling difference, house doctrine rather than a divergence: llvmkit's
-/// interned `ptr @g` constant (`ConstantData::GlobalValueRef`) *is* upstream's
-/// `GlobalValue` (`docs/divergences.md` D3), so every value this walk reaches
-/// is read as the global it names before an arm looks at it.
 pub(crate) fn strip_pointer_casts_and_aliases<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Value<'ctx, B> {
-    // `if (!V->getType()->isPointerTy()) return V;` — `isPointerTy` is the
-    // opaque `PointerTyID` only; a `TypedPointerType` is not one.
-    if !matches!(value.ty().kind(), TypeKind::Pointer { .. }) {
-        return value;
-    }
-    let mut current = global_value_or_self(value);
-    let mut visited: HashSet<ValueSlot> = HashSet::new();
-    visited.insert(current.slot_trusting_same_module());
-    loop {
-        let next = match operator_opcode(current) {
-            // `if (auto *GEP = dyn_cast<GEPOperator>(V)) { case
-            //    PSK_ZeroIndicesAndAliases: if (!GEP->hasAllZeroIndices())
-            //    return V; … V = GEP->getPointerOperand(); }`
-            Some(Opcode::GetElementPtr) => match gep_operator_zero_index_base(current) {
-                Some(base) => base,
-                None => return current,
-            },
-            // `else if (Operator::getOpcode(V) == Instruction::BitCast) {
-            //    Value *NewV = cast<Operator>(V)->getOperand(0);
-            //    if (!NewV->getType()->isPointerTy()) return V; V = NewV; }`
-            Some(Opcode::BitCast) => match operator_operand(current, 0) {
-                Some(next) if matches!(next.ty().kind(), TypeKind::Pointer { .. }) => next,
-                _ => return current,
-            },
-            // `else if (StripKind != PSK_ZeroIndicesSameRepresentation &&
-            //    Operator::getOpcode(V) == Instruction::AddrSpaceCast)
-            //    V = cast<Operator>(V)->getOperand(0);`
-            Some(Opcode::AddrSpaceCast) => match operator_operand(current, 0) {
-                Some(next) => next,
-                None => return current,
-            },
-            _ => match &current.data().kind {
-                // `else if (StripKind == PSK_ZeroIndicesAndAliases &&
-                //    isa<GlobalAlias>(V)) V = cast<GlobalAlias>(V)->getAliasee();`
-                ValueKindData::GlobalAlias(alias) => value_from_slot(current, alias.aliasee.get()),
-                // `else { if (const auto *Call = dyn_cast<CallBase>(V)) { if
-                //    (const Value *RV = Call->getReturnedArgOperand()) { V =
-                //    RV; continue; } … } return V; }` — the `PHINode` and
-                //    `launder`/`strip.invariant.group` arms are
-                //    `PSK_ForAliasAnalysis` only.
-                _ => match returned_arg_operand(current) {
-                    Some(returned) => returned,
-                    None => return current,
-                },
-            },
-        };
-        current = global_value_or_self(next);
-        // `while (Visited.insert(V).second);`
-        if !visited.insert(current.slot_trusting_same_module()) {
-            return current;
-        }
-    }
+    strip_pointer_casts_and_offsets(value, PointerStripKind::ZeroIndicesAndAliases)
 }
 
 /// The global an interned `ptr @g` constant names, or `value` itself — the
-/// D3 reading [`strip_pointer_casts_and_aliases`] applies at every step.
+/// D3 reading [`strip_pointer_casts_and_offsets`] applies at every step.
 fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, B> {
     match &value.data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value: global }) => {
@@ -1309,72 +1284,112 @@ fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> V
     }
 }
 
-/// `GEPOperator::hasAllZeroIndices` and `getPointerOperand` for an instruction
-/// or a constant-expression GEP: the pointer operand when every index is a
-/// zero `ConstantInt`, `None` otherwise.
-fn gep_operator_zero_index_base<'ctx, B: ModuleBrand + 'ctx>(
-    gep: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
-    if let Some(InstructionKindData::Gep(data)) = instruction_kind(gep) {
-        return gep_has_all_zero_indices(gep, data).then(|| value_from_slot(gep, data.ptr.get()));
-    }
-    match &gep.data().kind {
-        // llvmkit's compact `getelementptr inbounds (i8, ptr @g, i64 off)`:
-        // its one index is `off`.
-        ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
-            (*off == 0).then(|| value_from_slot(gep, *base_id))
+/// `isPointerTy`: the opaque `PointerTyID` only, not a `TypedPointerType`
+/// (which [`is_pointer`] also admits).
+fn is_opaque_pointer<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
+    matches!(ty.kind(), TypeKind::Pointer { .. })
+}
+
+/// A `GEPOperator` (`llvm/include/llvm/IR/Operator.h`): a `getelementptr`
+/// instruction, a `getelementptr` constant expression, or llvmkit's compact
+/// `getelementptr inbounds (i8, ptr @g, i64 off)` (`ConstantData::GepOffset`),
+/// which stands for the constant expression of that spelling.
+struct GepOperator<'ctx, B: ModuleBrand> {
+    /// `GEPOperator::getPointerOperand`.
+    pointer_operand: Value<'ctx, B>,
+    form: GepForm<'ctx>,
+}
+
+/// Where a [`GepOperator`]'s indices and flags live.
+enum GepForm<'ctx> {
+    Instruction(&'ctx GepInstData),
+    Expr(&'ctx ConstantExprData),
+    /// The compact form: its one index is `offset`, and it is always
+    /// `inbounds`.
+    Compact {
+        offset: i64,
+    },
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> GepOperator<'ctx, B> {
+    /// `dyn_cast<GEPOperator>(V)`.
+    fn of(value: Value<'ctx, B>) -> Option<Self> {
+        if let Some(InstructionKindData::Gep(data)) = instruction_kind(value) {
+            return Some(Self {
+                pointer_operand: value_from_slot(value, data.ptr.get()),
+                form: GepForm::Instruction(data),
+            });
         }
-        ValueKindData::Constant(ConstantData::Expr(expr)) => {
-            let (pointer, indices) = expr.operands.split_first()?;
-            indices
-                .iter()
-                .all(|index| {
-                    matches!(
-                        &value_from_slot(gep, *index).data().kind,
-                        ValueKindData::Constant(ConstantData::Int(words))
-                            if words.iter().all(|word| *word == 0)
-                    )
+        match &value.data().kind {
+            ValueKindData::Constant(ConstantData::Expr(expr))
+                if expr.opcode == ConstantExprOpcode::GetElementPtr =>
+            {
+                Some(Self {
+                    pointer_operand: value_from_slot(value, *expr.operands.first()?),
+                    form: GepForm::Expr(expr),
                 })
-                .then(|| value_from_slot(gep, *pointer))
+            }
+            ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => Some(Self {
+                pointer_operand: value_from_slot(value, *base_id),
+                form: GepForm::Compact { offset: *off },
+            }),
+            _ => None,
         }
-        _ => None,
+    }
+
+    /// `GEPOperator::hasAllZeroIndices`: every index a zero `ConstantInt`.
+    fn has_all_zero_indices(&self) -> bool {
+        match &self.form {
+            GepForm::Instruction(data) => gep_has_all_zero_indices(self.pointer_operand, data),
+            GepForm::Expr(expr) => {
+                expr.operands.iter().skip(1).all(|index| {
+                    is_zero_constant_int(value_from_slot(self.pointer_operand, *index))
+                })
+            }
+            GepForm::Compact { offset } => *offset == 0,
+        }
+    }
+
+    /// `GEPOperator::isInBounds`.
+    fn is_in_bounds(&self) -> bool {
+        match &self.form {
+            GepForm::Instruction(data) => data.flags.contains(GepNoWrapFlags::IN_BOUNDS),
+            GepForm::Expr(expr) => matches!(
+                &expr.flags,
+                ConstantExprFlags::Gep(gep) if gep.no_wrap().contains(GepNoWrapFlags::IN_BOUNDS)
+            ),
+            GepForm::Compact { .. } => true,
+        }
     }
 }
 
-/// Ports `Value::stripPointerCastsSameRepresentation` (`llvm/lib/IR/Value.cpp`),
-/// the narrower sibling of [`strip_pointer_casts`] used by
+/// `isa<ConstantInt>(V) && cast<ConstantInt>(V)->isZero()`.
+fn is_zero_constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    matches!(
+        &value.data().kind,
+        ValueKindData::Constant(ConstantData::Int(words)) if words.iter().all(|word| *word == 0)
+    )
+}
+
+/// Ports `Value::stripPointerCastsSameRepresentation` (`llvm/lib/IR/Value.cpp`)
+/// — the `PSK_ZeroIndicesSameRepresentation` instantiation of
+/// [`strip_pointer_casts_and_offsets`], used by
 /// `isGuaranteedNotToBeUndefOrPoison` before its allocated-object test.
 ///
-/// The difference from [`strip_pointer_casts`] is `addrspacecast`, which this
-/// does **not** peel. Upstream peels it only when the two address spaces have
-/// the same representation — a `DataLayout::isNonIntegralAddressSpace` question
-/// llvmkit does not model — so declining is the conservative reading. Not
-/// peeling only forgoes an answer; peeling wrongly would claim a pointer is an
-/// allocated object when the cast changed what it means.
+/// Its one difference from [`strip_pointer_casts`] is `addrspacecast`, which
+/// this never peels: the template's arm is guarded by `StripKind !=
+/// PSK_ZeroIndicesSameRepresentation`, with a `TODO` to look through a cast
+/// known not to change the representation. (The comment above the call in
+/// `isGuaranteedNotToBeUndefOrPoison` says the strip "can strip off
+/// addrspacecast that do not change bit representation"; the routine it calls
+/// does not, and the routine is what is ported.)
 ///
 /// Crate-visible rather than public: `Value.h` is not a surface the
 /// ValueTracking parity ledger tracks.
 pub(crate) fn strip_pointer_casts_same_representation<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Value<'ctx, B> {
-    let mut current = value;
-    for _ in 0..MAX_LOOKUP_SEARCH_DEPTH {
-        let next = match operator_opcode(current) {
-            Some(Opcode::BitCast) => operator_operand(current, 0),
-            Some(Opcode::GetElementPtr) => match instruction_kind(current) {
-                Some(InstructionKindData::Gep(data)) if gep_has_all_zero_indices(current, data) => {
-                    Some(value_from_slot(current, data.ptr.get()))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        match next.filter(|next| is_pointer(next.ty())) {
-            Some(next) => current = next,
-            None => return current,
-        }
-    }
-    current
+    strip_pointer_casts_and_offsets(value, PointerStripKind::ZeroIndicesSameRepresentation)
 }
 
 /// Ports `llvm::isIdentifiedObject` (`llvm/lib/Analysis/AliasAnalysis.cpp`).
@@ -1489,37 +1504,14 @@ fn to_words(bits: u128) -> [u64; 2] {
     ]
 }
 
-/// The pointer operand of a `getelementptr`, whether an instruction or a
-/// constant expression. Ports `dyn_cast<GEPOperator>` plus `getPointerOperand`.
-fn gep_pointer_operand<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
-    if let Some(InstructionKindData::Gep(data)) = instruction_kind(value) {
-        return Some(value_from_slot(value, data.ptr.get()));
-    }
-    match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Expr(expr))
-            if expr.opcode == ConstantExprOpcode::GetElementPtr =>
-        {
-            Some(value_from_slot(value, *expr.operands.first()?))
-        }
-        // llvmkit's compact byte-offset-into-a-global form, which is always an
-        // `inbounds getelementptr` of `base_id`.
-        ValueKindData::Constant(ConstantData::GepOffset { base_id, .. }) => {
-            Some(value_from_slot(value, *base_id))
-        }
-        _ => None,
-    }
-}
-
 /// Ports `Operator::getOpcode`: the opcode of an instruction *or* of a constant
 /// expression, which upstream reaches through the same `Operator` base.
 ///
 /// llvmkit's compact `getelementptr inbounds (i8, ptr @g, i64 off)`
 /// (`ConstantData::GepOffset`) is a `GEPOperator` upstream, so it answers
 /// `GetElementPtr`. [`operator_operand`] cannot hand out its offset, which is
-/// no arena value, so a caller's `GetElementPtr` arm reads the form itself —
-/// [`gep_operator_zero_index_base`], [`strip_in_bounds_offsets`].
+/// no arena value; [`GepOperator`] reads the pointer operand, indices and
+/// flags of all three forms.
 fn operator_opcode<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Opcode> {
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => Some(instruction.kind.opcode()),
@@ -1610,13 +1602,9 @@ fn gep_has_all_zero_indices<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     data: &GepInstData,
 ) -> bool {
-    data.indices.iter().all(|index| {
-        let index = value_from_slot(anchor, index.get());
-        matches!(
-            &index.data().kind,
-            ValueKindData::Constant(ConstantData::Int(words)) if words.iter().all(|word| *word == 0)
-        )
-    })
+    data.indices
+        .iter()
+        .all(|index| is_zero_constant_int(value_from_slot(anchor, index.get())))
 }
 
 /// One step of [`strip_and_accumulate_offset`]: the peeled base and the byte
