@@ -207,6 +207,126 @@ cut, entries accumulate under **Unreleased**.
   comparing a function reached through a read-only route with one reached
   from the module.
 
+### Changed — blocks and instructions carry their capability *(breaking)*
+
+- **Block and instruction handles take a trailing `C: Capability = Mutable`**
+  (D1, D8) — `BasicBlock` (after `Params`), `BasicBlockLabel`,
+  `InstructionView`, `PlacedInstruction`, `NonTerminator`, the per-opcode
+  views (`AddInst` … `CatchSwitchInst`, `BinaryOp`, `Cmp`, `CallInst`,
+  `TypedCallInst`, `PhiInst`, `FpPhiInst`, `PointerPhiInst`, `OtherPhiInst`;
+  `SwitchInst` takes it after `W`), `IntrinsicInst`, `MemIntrinsic`,
+  `LifetimeIntrinsic`, and the `Callee`, `CastKind`, `PhiKind`,
+  `InstructionKind`, `TerminatorKind` and `Classified` enums. A block or
+  instruction reached from an unverified module is `Mutable`; one reached from
+  a `Module<B, Verified>` — `view` of a block or instruction id, `users()` of
+  one of its values, `InstructionView::try_from` one of its values — or from a
+  pass context's `BasicBlockView` is `ReadOnly`, and what it hands on
+  (`kind()`, operands, incomings, the terminator, a block's instructions)
+  keeps that capability. Spellings that omit `C` keep meaning `Mutable`. The linear
+  `Instruction` lifecycle handle is unchanged and stays `Mutable`.
+- **Fixed: a verified module's instructions could be changed.**
+  `Module<B, Verified>::view` of a block or instruction id, and `users()` of a
+  verified module's value, handed out `Mutable` handles. With a second
+  unverified module of the same brand, `set_metadata` attached that module's
+  node to the verified module's instruction (the token type-checked), and
+  `set_fast_math_flags`, which takes no token, rewrote a verified phi's flags.
+  The mutators on these handles — `set_metadata`, `push_debug_record`,
+  `set_name` / `clear_name`, `remove_incoming`, `set_fast_math_flags`,
+  `set_value_operand`, `set_tail_call_kind`, `set_attributes`,
+  `with_operand_bundles`, `splice_into`, `split_at` / `split_before` and the
+  blocks' `call` builders — now require `C: CanMutate`. What fails if one of
+  those bounds is dropped:
+  - a compile-fail fixture, for the mutators whose bodies need no `Mutable`
+    reference: `compile_fail/verified_instruction_metadata_is_read_only`
+    (`set_metadata`), `compile_fail/verified_phi_fast_math_flags_are_immutable`
+    (the float phi's `set_fast_math_flags`) and
+    `compile_fail/verified_instruction_mutators_are_read_only`
+    (`push_debug_record`, `set_tail_call_kind`, the call, invoke and `callbr`
+    `set_attributes`, `set_value_operand`, and the int and other phis'
+    `set_fast_math_flags`), each called on a verified module's `ReadOnly`
+    handle;
+  - the crate's own build, for the rest — `set_name` / `clear_name`,
+    `remove_incoming`, `with_operand_bundles`, `splice_into`, `split_at` /
+    `split_before`, the `call` builders, and the `SetName` and `CallBase`
+    impls on these handles (each bounded `C: CanMutate`) — whose bodies call
+    `proven_mutable()` or another `CanMutate`-bounded routine. Where the
+    receiver can be `ReadOnly` today, a compile-fail fixture also fails if a
+    bound is dropped and its body routed around it:
+    `compile_fail/verified_block_label_call_is_read_only`
+    (`BasicBlockLabel::call`),
+    `compile_fail/verified_instruction_name_is_read_only`
+    (`InstructionView::set_name` / `clear_name`),
+    `compile_fail/verified_phi_incoming_removal_is_read_only`
+    (`remove_incoming` on `PhiKind` and the four phi handles),
+    `compile_fail/verified_call_operand_bundles_are_read_only`
+    (`with_operand_bundles` on the call, invoke and `callbr` handles),
+    `compile_fail/verified_instruction_set_name_trait_is_read_only`
+    (`SetName::set_name` / `clear_name` on an instruction) and
+    `compile_fail/verified_call_base_trait_is_read_only`
+    (`CallBase::with_operand_bundles` / `set_attributes` on the call, invoke
+    and `callbr` handles). Only the `BasicBlock` receivers — a block's
+    `set_name` / `clear_name`, inherent or through `SetName`, `splice_into`,
+    `split_at` / `split_before` and `call` — wait for the integration step for
+    theirs, when a function's blocks come back `ReadOnly`.
+
+  `capability_typestate`'s
+  `a_verified_modules_blocks_and_instructions_are_read_only` locks the
+  routes that mint these handles `ReadOnly`, not the mutators. Function
+  handles are not covered yet: a function reached through `view` of its id,
+  or through an argument operand's `Argument::parent_function`, is still a
+  `Mutable` `FunctionValue`, whose blocks and instructions are `Mutable`,
+  until functions carry the capability.
+- **Breaking: `CallInst::classify_callee` and `BasicBlock::parent_function`
+  exist only on a `Mutable` handle.** Both hand out a `FunctionValue`, which
+  carries no capability yet, so on a `ReadOnly` call or block they would lead
+  back to `Mutable` blocks and instructions; they become generic over the
+  capability once functions carry it. `classify_callee`'s restriction is
+  locked by `compile_fail/verified_call_callee_is_not_a_mutable_route`.
+  `parent_function`'s has no fixture yet: one becomes writable at the
+  integration step, when a function's blocks, which it is called on, come
+  back `ReadOnly`.
+- **Breaking: a `BasicBlockView` hands out `ReadOnly` handles** —
+  `instructions()`, `placed_instructions()` and its `IntoIterator` — so the
+  instructions of a walk an `Inspect` pass receives, and what they narrow to,
+  are `ReadOnly`. A route from them to a setter stays open until the
+  integration step, when functions carry the capability: an operand that is
+  an argument hands out `Argument::parent_function` at `Mutable`, and that
+  function's `entry_block` leads to `Mutable` instructions and the tokenless
+  `set_fast_math_flags`. Until the
+  value-tracking analyses accept either capability, that walk cannot feed
+  them: they take `Mutable` values, so a caller holding the unverified module
+  walks `module.view(function.id()).basic_blocks()` instead. A mutating context's
+  `erase`, `replace_all_uses` and `split_block`, `IrBuilder::position_before`, the
+  `Instruction` insert and move entries, and `BasicBlock::split_at` /
+  `split_before` take handles and witnesses of either capability; the entry
+  carries the authority, and naming an instruction is not mutating it.
+- **Breaking: `User::operand` and `User::operand_use` return at the user's
+  capability** (`User` gains a `CapabilityOf` supertrait), and the call views'
+  `operand_bundles` / `operand_bundle` return `OperandBundleUse` at the call's.
+- **Breaking: `CallBase` is implemented only for call sites that
+  `CanMutate`** — both of its operations mutate.
+  `compile_fail/verified_call_base_trait_is_read_only` calls both through
+  the trait on a verified module's `ReadOnly` call sites.
+- **Breaking: `TypedCallInst::result` exists only on a `Mutable` call.**
+  `FunctionReturn::CallResult` names no capability (for a struct return it is
+  the `IrStruct` derive's own value type); a `ReadOnly` call reads its result
+  through `as_call_inst().return_value()`.
+- **Breaking: `BlockCursor::at_start` and `IrBuilder::position_at_end` take a
+  `Mutable` block**, and the open-terminator surfaces (`add_case`, `add_destination`,
+  `add_catch_clause`, `add_handler`) stay on the `Mutable` handles the builder
+  mints.
+- **Read-only queries accept either capability**: `IntoBasicBlockLabel`
+  re-mints a block or label of either capability at the receiving module; the
+  dominator tree's block, instruction and use queries,
+  `can_ignore_sign_bit_of_zero` / `_nan`,
+  `is_guaranteed_to_transfer_execution_to_successor`, the
+  `OverflowingBinaryOperator` / `PossiblyExactOperator` impls on the
+  per-opcode views, `is_supported_floating_point_type`, and
+  `ShuffleVectorInst::is_valid_operands` /
+  `is_valid_operands_with_constant_mask` (each operand at its own) are
+  generic over it; and a `Value`, block or instruction of either capability
+  prints.
+
 ### Changed — global values rename through the module's symbol table *(breaking)*
 
 - **Fixed: renaming a function, global variable, alias or ifunc did

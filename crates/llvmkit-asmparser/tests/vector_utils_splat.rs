@@ -30,11 +30,14 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 
 /// Upstream's harness: find the instruction named `%A` in `@test`.
 fn instruction_a<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynBrand> {
-    module
+    let function = module
         .as_view()
         .functions()
         .find(|function| function.name().as_deref() == Some("test"))
         .expect("@test must have a function named @test")
+        .id();
+    module
+        .view(function)
         .basic_blocks()
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some("A"))

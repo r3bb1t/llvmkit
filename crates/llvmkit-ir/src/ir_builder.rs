@@ -50,7 +50,7 @@ use super::basic_block::{
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
-use super::capability::Mutable;
+use super::capability::{Capability, Mutable};
 use super::cmp_predicate::CmpPredicate;
 use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
@@ -928,9 +928,12 @@ where
     /// module, and with [`IrError::InstructionHasNoParent`] if the anchor was
     /// detached after the witness was made — the one case the witness cannot
     /// rule out.
-    pub fn position_before(
+    ///
+    /// The witness may be of any capability — naming an anchor is not
+    /// mutating it; the builder's own module carries the authority.
+    pub fn position_before<C2: Capability>(
         self,
-        anchor: PlacedInstruction<'ctx, B>,
+        anchor: PlacedInstruction<'ctx, B, C2>,
     ) -> IrResult<IrBuilder<'m, 'ctx, B, F, Positioned, R>> {
         let anchor = anchor.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.

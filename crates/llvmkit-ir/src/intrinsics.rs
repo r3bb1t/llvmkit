@@ -252,11 +252,12 @@ pub fn resolve_intrinsic_name(name: &str) -> IntrinsicNameResolution {
     IntrinsicId::resolve_name(name)
 }
 
-pub fn descriptor_for_callee<'ctx, B>(
-    callee: Value<'ctx, B>,
+pub fn descriptor_for_callee<'ctx, B, C>(
+    callee: Value<'ctx, B, C>,
 ) -> Option<IntrinsicDescriptor<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
+    C: crate::capability::Capability,
 {
     let ValueKindData::Function(function) = &callee.data().kind else {
         return None;

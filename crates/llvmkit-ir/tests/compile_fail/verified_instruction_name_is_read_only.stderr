@@ -1,0 +1,43 @@
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_instruction_name_is_read_only.rs:29:29
+   |
+29 |                 instruction.set_name(&other, "renamed");
+   |                             ^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `InstructionView::<'ctx, B, C>::set_name`
+  --> src/instruction.rs
+   |
+   |     pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
+   |            -------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `InstructionView::<'ctx, B, C>::set_name`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_instruction_name_is_read_only.rs:30:29
+   |
+30 |                 instruction.clear_name(&other);
+   |                             ^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `InstructionView::<'ctx, B, C>::clear_name`
+  --> src/instruction.rs
+   |
+   |     pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>)
+   |            ---------- required by a bound in this associated function
+   |     where
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `InstructionView::<'ctx, B, C>::clear_name`

@@ -37,7 +37,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
     module
         .as_view()
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -622,7 +622,7 @@ define void @test(ptr %p) {
     let view = module.as_view();
     let call = |name: &str| {
         view.functions()
-            .flat_map(|function| function.basic_blocks())
+            .flat_map(|function| module.view(function.id()).basic_blocks())
             .flat_map(|block| block.instructions())
             .find(|instruction| instruction.name().as_deref() == Some(name))
             .unwrap_or_else(|| panic!("fixture defines %{name}"))

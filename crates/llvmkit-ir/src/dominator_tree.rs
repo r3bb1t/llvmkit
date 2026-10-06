@@ -9,7 +9,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::basic_block::{BasicBlock, BasicBlockLabel};
+use super::block_params::BlockParamsDyn;
 use super::block_state::BlockTerminationState;
+use super::capability::Capability;
 use super::cfg::{BasicBlockEdge, FunctionCfg};
 use super::function::FunctionValue;
 use super::instruction::{InstructionKindData, InstructionView};
@@ -63,11 +65,13 @@ use crate::CrateOnly;
 /// Basic-block identity accepted by dominator-tree block queries.
 pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {}
 
-impl<'ctx, R, S, B> dominator_block_sealed::Sealed for BasicBlock<'ctx, R, S, B>
+impl<'ctx, R, S, B, C> dominator_block_sealed::Sealed
+    for BasicBlock<'ctx, R, S, B, BlockParamsDyn, C>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     #[inline]
     fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
@@ -78,19 +82,22 @@ where
     }
 }
 
-impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S, B>
+impl<'ctx, R, S, B, C> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S, B, BlockParamsDyn, C>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
 }
 
-impl<'ctx, R, S, B> dominator_block_sealed::Sealed for &BasicBlock<'ctx, R, S, B>
+impl<'ctx, R, S, B, C> dominator_block_sealed::Sealed
+    for &BasicBlock<'ctx, R, S, B, BlockParamsDyn, C>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     #[inline]
     fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
@@ -99,11 +106,12 @@ where
     }
 }
 
-impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for &BasicBlock<'ctx, R, S, B>
+impl<'ctx, R, S, B, C> DominatorTreeBlock<'ctx> for &BasicBlock<'ctx, R, S, B, BlockParamsDyn, C>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
 }
 
@@ -148,10 +156,12 @@ where
 {
 }
 
-impl<'ctx, R, B> dominator_block_sealed::Sealed for BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R, B, C> dominator_block_sealed::Sealed
+    for BasicBlockLabel<'ctx, R, B, BlockParamsDyn, C>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     #[inline]
     fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
@@ -160,17 +170,20 @@ where
     }
 }
 
-impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R, B, C> DominatorTreeBlock<'ctx> for BasicBlockLabel<'ctx, R, B, BlockParamsDyn, C>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
 }
 
-impl<'ctx, R, B> dominator_block_sealed::Sealed for &BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R, B, C> dominator_block_sealed::Sealed
+    for &BasicBlockLabel<'ctx, R, B, BlockParamsDyn, C>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     #[inline]
     fn dominator_block_id(self, _: CrateOnly) -> SealedValueSlot {
@@ -179,10 +192,11 @@ where
     }
 }
 
-impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R, B, C> DominatorTreeBlock<'ctx> for &BasicBlockLabel<'ctx, R, B, BlockParamsDyn, C>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
 }
 
@@ -257,10 +271,10 @@ impl DominatorTree {
     }
 
     /// Whether instruction `def` dominates all ordinary uses in `user`.
-    pub fn dominates_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn dominates_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability, C2: Capability>(
         &self,
-        def: &InstructionView<'ctx, B>,
-        user: &InstructionView<'ctx, B>,
+        def: &InstructionView<'ctx, B, C>,
+        user: &InstructionView<'ctx, B, C2>,
     ) -> bool {
         let use_bb = user.parent();
         let def_bb = def.parent();
@@ -304,13 +318,14 @@ impl DominatorTree {
     }
 
     /// Whether instruction `def` dominates every possible use in `block`.
-    pub fn dominates_instruction_block<'ctx, B, Block>(
+    pub fn dominates_instruction_block<'ctx, B, C, Block>(
         &self,
-        def: &InstructionView<'ctx, B>,
+        def: &InstructionView<'ctx, B, C>,
         block: Block,
     ) -> bool
     where
         B: ModuleBrand + 'ctx,
+        C: Capability,
         Block: DominatorTreeBlock<'ctx>,
     {
         let use_bb_id = block.dominator_block_id(CrateOnly(())).0;
@@ -341,10 +356,10 @@ impl DominatorTree {
 
     /// Whether `def` dominates this specific operand use. Non-instruction
     /// values (arguments, constants, globals, functions) dominate all uses.
-    pub fn dominates_use<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn dominates_use<'ctx, B: ModuleBrand + 'ctx, C: Capability, C2: Capability>(
         &self,
-        def: Value<'ctx, B>,
-        use_edge: Use<'ctx, B>,
+        def: Value<'ctx, B, C>,
+        use_edge: Use<'ctx, B, C2>,
     ) -> bool {
         let Ok(def_inst) = InstructionView::try_from(def) else {
             return true;
@@ -397,10 +412,15 @@ impl DominatorTree {
     }
 
     /// Whether edge `edge` dominates this specific use.
-    pub fn dominates_edge_use<'ctx, EB: ModuleBrand + 'ctx, B: ModuleBrand + 'ctx>(
+    pub fn dominates_edge_use<
+        'ctx,
+        EB: ModuleBrand + 'ctx,
+        B: ModuleBrand + 'ctx,
+        C: Capability,
+    >(
         &self,
         edge: BasicBlockEdge<EB>,
-        use_edge: Use<'ctx, B>,
+        use_edge: Use<'ctx, B, C>,
     ) -> bool {
         let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
             return true;
@@ -691,21 +711,21 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
     (parent, order, normal_dest, phi_incoming_blocks)
 }
 
-fn is_phi<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
+fn is_phi<B: ModuleBrand, C: Capability>(inst: &InstructionView<'_, B, C>) -> bool {
     matches!(
         &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Phi(_))
     )
 }
 
-fn is_invoke<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
+fn is_invoke<B: ModuleBrand, C: Capability>(inst: &InstructionView<'_, B, C>) -> bool {
     matches!(
         &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Invoke(_))
     )
 }
 
-fn is_callbr<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
+fn is_callbr<B: ModuleBrand, C: Capability>(inst: &InstructionView<'_, B, C>) -> bool {
     matches!(
         &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::CallBr(_))

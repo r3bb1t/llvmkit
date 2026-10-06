@@ -626,10 +626,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         }
     }
 
-    /// Snapshot the read-only instruction views that use this value. Metadata
-    /// and debug-record uses are tracked structurally and counted by
-    /// [`Self::num_uses`], but are intentionally omitted here because callers of
-    /// `users()` expect concrete instruction views.
+    /// Snapshot the instruction views that use this value, at this value's
+    /// capability. Metadata and debug-record uses are tracked structurally and
+    /// counted by [`Self::num_uses`], but are intentionally omitted here
+    /// because callers of `users()` expect concrete instruction views.
     ///
     /// The list is a snapshot, not a live view: callers may mutate the IR
     /// (erase, RAUW) without invalidating the iterator. Order is the use-list
@@ -638,13 +638,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
     /// value in multiple slots.
     pub fn users(
         self,
-    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B, C>>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        // capability (proof): laundered until Task 5 — an instruction view's
-        // mutators still demand a `&Module<B, Unverified>` token.
-        let module = self.module.mutable_at_marked_boundary();
+        let module = self.module;
         let snapshot: Vec<ValueSlot> = self
             .data()
             .use_list
@@ -660,7 +658,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             .collect();
         snapshot
             .into_iter()
-            .map(move |id| InstructionView::from_parts(id, module))
+            .map(move |id| InstructionView::<'ctx, B, C>::from_parts(id, module))
     }
 
     /// `true` when at least one structural user references this value.
@@ -1073,9 +1071,9 @@ pub(crate) mod into_erased_value_sealed {
 /// This exists because [`IntoErasedValue`] cannot be blanket-implemented over
 /// [`IsValue`] without colliding with the id-family impls; see the trait docs.
 macro_rules! impl_into_erased_value_for_handle {
-    // A handle that does not carry a capability yet: functions, globals and
-    // instruction views until Tasks 4 and 5 of the capability plan, which
-    // move each to the arm below and then delete this one.
+    // A handle that does not carry a capability yet: functions and globals
+    // until Task 4 of the capability plan, which moves each to the arm below;
+    // this arm is deleted once nothing uses it.
     (capability_free: $( $name:ident $([$($mk:ident : $mkb:path),+ $(,)?])? ),+ $(,)?) => { $(
         impl<'ctx, $($($mk: $mkb,)+)? B: $crate::module::ModuleBrand + 'ctx>
             $crate::value::into_erased_value_sealed::Sealed
@@ -3018,15 +3016,7 @@ impl_float_value_static_try_from!(PpcFp128, PpcFp128, PpcFp128);
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for Value<'ctx, B, C> {
     /// Print as `<type> <ref>`. Mirrors LLVM's `Value::print`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = Value {
-            id: self.id,
-            // capability (proof): laundered until Task 5 — the AsmWriter reads
-            // through function and instruction handles that carry no
-            // capability yet; the value never leaves this formatter.
-            module: self.module.mutable_at_marked_boundary(),
-            ty: self.ty,
-        };
-        crate::asm_writer::fmt_operand(f, value, None)
+        crate::asm_writer::fmt_operand(f, *self, None)
     }
 }
 

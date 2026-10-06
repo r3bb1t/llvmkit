@@ -35,7 +35,7 @@ fn named_instruction<'m>(
     module
         .as_view()
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -238,10 +238,14 @@ BB2:
     let view = module.as_view();
     let blocks: Vec<_> = view
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .collect();
     let (entry, rest) = blocks.split_first().expect("fixture has blocks");
-    assert_eq!(entry.instruction_count(), 3, "entry is the branching block");
+    assert_eq!(
+        entry.instructions().len(),
+        3,
+        "entry is the branching block"
+    );
 
     for block in rest {
         let terminator = block
@@ -345,7 +349,7 @@ exit:
     let view = module.as_view();
     let context = view
         .functions()
-        .flat_map(|function| function.basic_blocks())
+        .flat_map(|function| module.view(function.id()).basic_blocks())
         .find(|block| block.name().as_deref() == Some("then"))
         .expect("fixture defines %then")
         .instructions()

@@ -8,7 +8,9 @@ use core::iter::FusedIterator;
 use std::collections::HashMap;
 
 use super::basic_block::{BasicBlock, IntoBasicBlockLabel};
+use super::block_params::BlockParams;
 use super::block_state::{BlockTerminationState, Unterminated};
+use super::capability::Capability;
 use super::function::FunctionValue;
 use super::instr_types::{BranchInstData, BranchKind};
 use super::instruction::{InstructionKindData, InstructionView};
@@ -220,8 +222,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
 /// every upstream consumer of `predecessors(BB)` sees, `AsmWriter`'s
 /// `; preds = …` comment and the dominator-tree builder alike. It lives here
 /// rather than in `asm_writer.rs` because [`FunctionCfg`] answers from it too.
-pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(
-    block: Value<'ctx, B>,
+pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    block: Value<'ctx, B, C>,
 ) -> Vec<ValueSlot> {
     let context = block.module().context();
     block
@@ -252,8 +254,8 @@ pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(
 /// from one predecessor — a `switch` with two cases into it, or
 /// `br i1 %c, label %b, label %b` — has no single predecessor. Counting
 /// distinct predecessor blocks instead is `BasicBlock::getUniquePredecessor`.
-pub(super) fn single_predecessor<'ctx, B: ModuleBrand + 'ctx>(
-    block: Value<'ctx, B>,
+pub(super) fn single_predecessor<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    block: Value<'ctx, B, C>,
 ) -> Option<ValueSlot> {
     match block_predecessors(block).as_slice() {
         [only] => Some(*only),
@@ -261,13 +263,15 @@ pub(super) fn single_predecessor<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-pub(super) fn block_successors<'ctx, R, S, B>(
-    block: &BasicBlock<'ctx, R, S, B>,
+pub(super) fn block_successors<'ctx, R, S, B, Params, C>(
+    block: &BasicBlock<'ctx, R, S, B, Params, C>,
 ) -> Vec<BlockId<Dyn, B>>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
 {
     let tag = block.module_ref().id();
     successor_ids(&block.as_dyn())
@@ -276,11 +280,15 @@ where
         .collect()
 }
 
-pub(super) fn successor_ids<'ctx, R, S, B>(block: &BasicBlock<'ctx, R, S, B>) -> Vec<ValueSlot>
+pub(super) fn successor_ids<'ctx, R, S, B, Params, C>(
+    block: &BasicBlock<'ctx, R, S, B, Params, C>,
+) -> Vec<ValueSlot>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
 {
     let Some(term) = block.terminator() else {
         return Vec::new();
@@ -288,8 +296,8 @@ where
     instruction_successor_ids(&term)
 }
 
-pub(super) fn instruction_successor_ids<'ctx, B: ModuleBrand + 'ctx>(
-    inst: &InstructionView<'ctx, B>,
+pub(super) fn instruction_successor_ids<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    inst: &InstructionView<'ctx, B, C>,
 ) -> Vec<ValueSlot> {
     match &inst.to_erased().data().kind {
         ValueKindData::Instruction(data) => kind_successor_ids(&data.kind),

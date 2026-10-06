@@ -42,6 +42,7 @@
 use crate::ap_float::{ApFloatSemantics, ApFloatSign, BinaryExponent};
 use crate::assumptions::{AssumptionSource, is_valid_assume_for_context};
 use crate::attributes::AttrIndex;
+use crate::capability::Capability;
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::constant::ConstantData;
 use crate::denormal_mode::{DenormalMode, DenormalModeKind};
@@ -665,8 +666,8 @@ fn no_fp_class_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> FpClass
 
 /// The `nofpclass` mask at `index` on the function in `function_slot`, if that
 /// slot really holds a function and the attribute is present.
-fn function_no_fp_class<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn function_no_fp_class<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     function_slot: ValueSlot,
     index: AttrIndex,
 ) -> Option<FpClassTest> {
@@ -1571,7 +1572,9 @@ pub fn compute_known_fp_sign_bit<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// shape and not a gap. (This comment used to justify the absence with
 /// "`nofpclass` … llvmkit does not model", which was false and was masking the
 /// sibling's arm being genuinely unported — see [`can_ignore_sign_bit_of_nan`].)
-pub fn can_ignore_sign_bit_of_zero<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ctx, B>) -> bool {
+pub fn can_ignore_sign_bit_of_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    use_edge: Use<'ctx, B, C>,
+) -> bool {
     let user = use_edge.user();
     let Some(kind) = instruction_kind(user) else {
         return false;
@@ -1603,7 +1606,9 @@ pub fn can_ignore_sign_bit_of_zero<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'c
 /// attribute; llvmkit models no `nofpclass` payload, so that arm answers
 /// `false` — the conservative direction, since the predicate licenses dropping
 /// a sign.
-pub fn can_ignore_sign_bit_of_nan<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ctx, B>) -> bool {
+pub fn can_ignore_sign_bit_of_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    use_edge: Use<'ctx, B, C>,
+) -> bool {
     let user = use_edge.user();
     let Some(kind) = instruction_kind(user) else {
         return false;
@@ -1649,8 +1654,8 @@ pub fn can_ignore_sign_bit_of_nan<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ct
 /// The function an instruction belongs to. Ports `Instruction::getFunction`,
 /// which upstream reaches through `User->getFunction()`,
 /// `II->getFunction()` and `Q.CxtI->getFunction()`.
-pub(crate) fn enclosing_function_slot<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: Value<'ctx, B>,
+pub(crate) fn enclosing_function_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: Value<'ctx, B, C>,
 ) -> Option<ValueSlot> {
     let ValueKindData::Instruction(data) = &instruction.data().kind else {
         return None;
@@ -1673,8 +1678,8 @@ enum SignOf {
 
 /// The `call` arm shared by [`can_ignore_sign_bit_of_zero`] and
 /// [`can_ignore_sign_bit_of_nan`].
-fn sign_indifferent_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
-    user: Value<'ctx, B>,
+fn sign_indifferent_intrinsic<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    user: Value<'ctx, B, C>,
     kind: &'ctx InstructionKindData,
     operand_index: u32,
     sign_of: SignOf,
@@ -1715,7 +1720,9 @@ fn sign_indifferent_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports the `Test == fcZero || Test == fcNone` check in
 /// `canIgnoreSignBitOfZero`.
-fn is_fpclass_mask_zero_agnostic<'ctx, B: ModuleBrand + 'ctx>(user: Value<'ctx, B>) -> bool {
+fn is_fpclass_mask_zero_agnostic<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    user: Value<'ctx, B, C>,
+) -> bool {
     let Some((_, mask)) = is_fpclass_call_parts(user) else {
         return false;
     };
@@ -1755,9 +1762,9 @@ fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The tested value and mask of an `@llvm.is.fpclass` call. Ports
 /// `m_Intrinsic<Intrinsic::is_fpclass>(m_Value(), m_ConstantInt(ClassVal))`.
-fn is_fpclass_call_parts<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, FpClassTest)> {
+fn is_fpclass_call_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, FpClassTest)> {
     let InstructionKindData::Call(data) = instruction_kind(value)? else {
         return None;
     };
@@ -1796,7 +1803,9 @@ fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The integer constant `value` is, if it is one.
-fn constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApInt> {
+fn constant_int<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApInt> {
     let TypeKind::Integer { bits } = value.ty().kind() else {
         return None;
     };
@@ -1912,8 +1921,8 @@ fn scalar_kind<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> TypeKind {
 }
 
 /// The instruction payload behind `value`, or `None` when it is not one.
-fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<&'ctx InstructionKindData> {
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => Some(&instruction.kind),
@@ -1921,12 +1930,13 @@ fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-/// Re-anchor a slot as a value in the same module.
-fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+/// Re-anchor a slot as a value in the same module, at the anchor's
+/// capability.
+fn value_from_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     slot: ValueSlot,
-) -> Value<'ctx, B> {
-    let module = module_ref(anchor);
+) -> Value<'ctx, B, C> {
+    let module = anchor.module;
     let data = module.value_data(slot);
     Value::from_parts(slot, module, data.ty)
 }

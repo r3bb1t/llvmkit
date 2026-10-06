@@ -862,7 +862,7 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> sealed::Sealed
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'ctx, B>
     for BlockId<R, B, Params>
 {
-    type View<C: Capability> = BasicBlockLabel<'ctx, R, B, Params>;
+    type View<C: Capability> = BasicBlockLabel<'ctx, R, B, Params, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -871,9 +871,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 5 — a block label's
-        // mutators still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
         let data = module.value_data(slot);
         if !matches!(data.kind, ValueKindData::BasicBlock(_)) {
@@ -891,10 +888,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
 /// `call` instruction, and yield the call's result type from the arena.
 /// Shared by the three call-shaped instruction ids, which differ only in the
 /// handle they wrap around the same `(slot, module, result-type)` triple.
-fn call_result_type_in<B: ModuleBrand>(
+fn call_result_type_in<B: ModuleBrand, C: Capability>(
     tag: ModuleId,
     slot: ValueSlot,
-    module: ModuleRef<'_, B>,
+    module: ModuleRef<'_, B, C>,
 ) -> Option<TypeSlot> {
     let slot = slot_admitted_by(tag, slot, module.id())?;
     let data = module.value_data(slot);
@@ -909,7 +906,7 @@ fn call_result_type_in<B: ModuleBrand>(
 
 impl<R: ReturnMarker, B: ModuleBrand> sealed::Sealed for CallInstId<R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for CallInstId<R, B> {
-    type View<C: Capability> = CallInst<'ctx, R, B>;
+    type View<C: Capability> = CallInst<'ctx, R, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -918,9 +915,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for CallInstI
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 5 — `CallInst`'s mutators
-        // still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let ty = call_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
             signature_matches_marker::<R>(module.type_data(ty)),
@@ -932,7 +926,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for CallInstI
 
 impl<Ret: FunctionReturn, B: ModuleBrand> sealed::Sealed for TypedCallInstId<Ret, B> {}
 impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for TypedCallInstId<Ret, B> {
-    type View<C: Capability> = TypedCallInst<'ctx, Ret, B>;
+    type View<C: Capability> = TypedCallInst<'ctx, Ret, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -941,9 +935,6 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for Typed
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 5 — `TypedCallInst`'s
-        // mutators still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let ty = call_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
             Ret::matches_ir_type(Type::new(ty, module)),
@@ -957,7 +948,7 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for Typed
 
 impl<R: ReturnMarker, B: ModuleBrand> sealed::Sealed for IntrinsicInstId<R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntrinsicInstId<R, B> {
-    type View<C: Capability> = IntrinsicInst<'ctx, R, B>;
+    type View<C: Capability> = IntrinsicInst<'ctx, R, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -966,9 +957,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for Intrinsic
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 5 — `IntrinsicInst`'s
-        // mutators still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let ty = call_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
             signature_matches_marker::<R>(module.type_data(ty)),
@@ -988,7 +976,7 @@ macro_rules! impl_view_in_for_instruction_id {
     ($( $name:ident => $handle:ident [$kind:ident] ),+ $(,)?) => { $(
         impl<B: ModuleBrand> sealed::Sealed for $name<B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for $name<B> {
-            type View<C: Capability> = $handle<'ctx, B>;
+            type View<C: Capability> = $handle<'ctx, B, C>;
 
             #[inline]
             fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -1000,9 +988,6 @@ macro_rules! impl_view_in_for_instruction_id {
                 self,
                 module: ModuleRef<'ctx, B, C>,
             ) -> Option<Self::View<C>> {
-                // capability (proof): laundered until Task 5 — the opcode
-                // handles' mutators still demand a `&Module<B, Unverified>` token.
-                let module = module.mutable_at_marked_boundary();
                 let slot = slot_admitted_by(self.tag, self.slot, module.id())?;
                 let data = module.value_data(slot);
                 let ValueKindData::Instruction(inst) = &data.kind else {
@@ -1030,10 +1015,10 @@ impl_view_in_for_instruction_id!(
 /// [`call_result_type_in`], shared by the three *typed* phi ids (the erased
 /// [`OtherPhiInstId`] goes through [`impl_view_in_for_instruction_id`], which
 /// performs the same two checks).
-fn phi_result_type_in<B: ModuleBrand>(
+fn phi_result_type_in<B: ModuleBrand, C: Capability>(
     tag: ModuleId,
     slot: ValueSlot,
-    module: ModuleRef<'_, B>,
+    module: ModuleRef<'_, B, C>,
 ) -> Option<TypeSlot> {
     let slot = slot_admitted_by(tag, slot, module.id())?;
     let data = module.value_data(slot);
@@ -1048,7 +1033,7 @@ fn phi_result_type_in<B: ModuleBrand>(
 
 impl<W: IntWidth, B: ModuleBrand> sealed::Sealed for PhiInstId<W, B> {}
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PhiInstId<W, B> {
-    type View<C: Capability> = PhiInst<'ctx, W, B>;
+    type View<C: Capability> = PhiInst<'ctx, W, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -1057,9 +1042,6 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PhiInstId<W, 
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 5 — `PhiInst`'s mutators
-        // still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let ty = phi_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
             matches!(
@@ -1074,7 +1056,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PhiInstId<W, 
 
 impl<K: FloatKind, B: ModuleBrand> sealed::Sealed for FpPhiInstId<K, B> {}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<K, B> {
-    type View<C: Capability> = FpPhiInst<'ctx, K, B>;
+    type View<C: Capability> = FpPhiInst<'ctx, K, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -1083,9 +1065,6 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 5 — `FpPhiInst`'s mutators
-        // still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let ty = phi_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
             matches!(
@@ -1106,7 +1085,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<
 
 impl<B: ModuleBrand> sealed::Sealed for PointerPhiInstId<B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
-    type View<C: Capability> = PointerPhiInst<'ctx, B>;
+    type View<C: Capability> = PointerPhiInst<'ctx, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -1115,9 +1094,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
 
     #[inline]
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
-        // capability (proof): laundered until Task 5 — `PointerPhiInst`'s
-        // mutators still demand a `&Module<B, Unverified>` token.
-        let module = module.mutable_at_marked_boundary();
         let ty = phi_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
             matches!(module.type_data(ty), TypeData::Pointer { .. }),

@@ -21,7 +21,7 @@
 use super::asm_writer::SlotTracker;
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{BlockTerminationState, Terminated, Unterminated};
-use super::capability::{CapabilityOf, Mutable};
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable};
 use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
@@ -116,35 +116,61 @@ impl BasicBlockData {
 /// reopen a terminated construction path. Use [`id`](Self::id) to mint the
 /// copyable [`BlockId`] that names this block at branch-target and
 /// PHI-predecessor positions.
+///
+/// `C` is the [`Capability`] (D8): a block reached from an unverified module
+/// is [`Mutable`]; one reached from a verified module or a read-only pass
+/// context is [`ReadOnly`](crate::ReadOnly), and has no mutators — and no
+/// builder, since [`IrBuilder::position_at_end`](crate::IrBuilder::position_at_end)
+/// and [`BlockCursor::at_start`](crate::iter::BlockCursor::at_start) accept
+/// only a `Mutable` block.
 pub struct BasicBlock<
     'ctx,
     R: ReturnMarker,
     Term: BlockTerminationState,
     B: ModuleBrand,
     Params: BlockParams = BlockParamsDyn,
+    C: Capability = Mutable,
 > {
     id: ValueSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     ty: TypeSlot,
     pub(super) _r: PhantomData<R>,
     pub(super) _term: PhantomData<Term>,
     pub(super) _params: PhantomData<Params>,
 }
 
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params: BlockParams>
-    PartialEq for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand,
+    Params: BlockParams,
+    C: Capability,
+> PartialEq for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params: BlockParams> Eq
-    for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand,
+    Params: BlockParams,
+    C: Capability,
+> Eq for BasicBlock<'ctx, R, Term, B, Params, C>
 {
 }
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params: BlockParams>
-    core::hash::Hash for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand,
+    Params: BlockParams,
+    C: Capability,
+> core::hash::Hash for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
@@ -152,8 +178,14 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params:
         self.ty.hash(h);
     }
 }
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params: BlockParams>
-    core::fmt::Debug for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand,
+    Params: BlockParams,
+    C: Capability,
+> core::fmt::Debug for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BasicBlock")
@@ -176,45 +208,49 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params:
 /// Since 0.0.4 this is the ephemeral read view, not the stored currency:
 /// producers hand back [`BlockId`] and consumers accept it, so a label is
 /// something you *take* to read a block, not something you keep.
+///
+/// `C` is the [`Capability`], as on [`BasicBlock`]: a label viewed through a
+/// verified module is [`ReadOnly`](crate::ReadOnly).
 pub struct BasicBlockLabel<
     'ctx,
     R: ReturnMarker,
     B: ModuleBrand,
     Params: BlockParams = BlockParamsDyn,
+    C: Capability = Mutable,
 > {
     id: ValueSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     ty: TypeSlot,
     pub(super) _r: PhantomData<R>,
     pub(super) _params: PhantomData<Params>,
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Clone
-    for BasicBlockLabel<'ctx, R, B, Params>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams, C: Capability> Clone
+    for BasicBlockLabel<'ctx, R, B, Params, C>
 {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Copy
-    for BasicBlockLabel<'ctx, R, B, Params>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams, C: Capability> Copy
+    for BasicBlockLabel<'ctx, R, B, Params, C>
 {
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams> PartialEq
-    for BasicBlockLabel<'ctx, R, B, Params>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams, C: Capability> PartialEq
+    for BasicBlockLabel<'ctx, R, B, Params, C>
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Eq
-    for BasicBlockLabel<'ctx, R, B, Params>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams, C: Capability> Eq
+    for BasicBlockLabel<'ctx, R, B, Params, C>
 {
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::hash::Hash
-    for BasicBlockLabel<'ctx, R, B, Params>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams, C: Capability> core::hash::Hash
+    for BasicBlockLabel<'ctx, R, B, Params, C>
 {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
@@ -222,8 +258,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::hash::Has
         self.ty.hash(h);
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::fmt::Debug
-    for BasicBlockLabel<'ctx, R, B, Params>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams, C: Capability> core::fmt::Debug
+    for BasicBlockLabel<'ctx, R, B, Params, C>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BasicBlockLabel")
@@ -233,14 +269,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::fmt::Debu
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
-    BasicBlockLabel<'ctx, R, B, Params>
+impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams, C: Capability> CapabilityOf
+    for BasicBlockLabel<'_, R, B, Params, C>
 {
-    /// Widen this copyable label reference to the erased [`Value`] handle.
+    type Capability = C;
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capability>
+    BasicBlockLabel<'ctx, R, B, Params, C>
+{
+    /// Widen this copyable label reference to the erased [`Value`] handle,
+    /// at the label's capability.
     ///
     /// Borrows rather than consumes, so the label stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -268,7 +311,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// erased phi-seeding path, which is written against the `BlockParamsDyn`
     /// label.
     #[inline]
-    pub(crate) fn erase_params(self) -> BasicBlockLabel<'ctx, R, B> {
+    pub(crate) fn erase_params(self) -> BasicBlockLabel<'ctx, R, B, BlockParamsDyn, C> {
         BasicBlockLabel {
             id: self.id,
             module: self.module,
@@ -282,7 +325,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// `ty`. Built by [`BlockId`]'s `resolve_in` after it compares the id's
     /// module tag, and by nothing that skips that comparison.
     #[inline]
-    pub(crate) fn from_parts(id: ValueSlot, module: ModuleRef<'ctx, B>, ty: TypeSlot) -> Self {
+    pub(crate) fn from_parts(id: ValueSlot, module: ModuleRef<'ctx, B, C>, ty: TypeSlot) -> Self {
         Self {
             id,
             module,
@@ -293,11 +336,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     }
 
     /// The linear block handle for this label's block, in the label's own
-    /// module. Crate-internal: the builder reopens a block it has already
-    /// admitted — through [`ViewIn::resolve_in`] or
+    /// module and at its capability. Crate-internal: the builder reopens a
+    /// block it has already admitted — through [`ViewIn::resolve_in`] or
     /// [`IntoBasicBlockLabel`] — as its insertion point.
     #[inline]
-    pub(crate) fn to_block<Term: BlockTerminationState>(self) -> BasicBlock<'ctx, R, Term, B> {
+    pub(crate) fn to_block<Term: BlockTerminationState>(
+        self,
+    ) -> BasicBlock<'ctx, R, Term, B, BlockParamsDyn, C> {
         BasicBlock::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -322,6 +367,11 @@ mod block_label_sealed {
 /// the typed parameter schema is honoured by the [`BlockCall`] edge
 /// ([`BasicBlockLabel::call`] / [`BasicBlock::call`]), not by the plain label
 /// positions.
+///
+/// A block handle of any [`Capability`] is accepted: naming a block as a
+/// target is not mutating it. The handle is admitted against `module` and the
+/// label is re-minted at `module`'s capability — the capability comes from
+/// the receiving authority, never from the operand.
 pub trait IntoBasicBlockLabel<'ctx, R: ReturnMarker, B: ModuleBrand>:
     block_label_sealed::Sealed
 {
@@ -350,93 +400,90 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> block_label_sealed::Sealed
-    for BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> block_label_sealed::Sealed
+    for BasicBlockLabel<'ctx, R, B, BlockParamsDyn, C>
 {
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, B>
-    for BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoBasicBlockLabel<'ctx, R, B>
+    for BasicBlockLabel<'ctx, R, B, BlockParamsDyn, C>
 {
     #[inline]
     fn into_basic_block_label(
         self,
         module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
-        // Boundary: refuse a block another module minted.
-        self.to_erased().slot_in(module.id())?;
-        Ok(self)
+        // Boundary: refuse a block another module minted, then re-mint the
+        // label at `module`'s capability.
+        let id = self.to_erased().slot_in(module.id())?;
+        Ok(BasicBlockLabel::from_parts(id, module, self.ty))
     }
 }
 
-impl<'ctx, R, Term, B, Params> block_label_sealed::Sealed for BasicBlock<'ctx, R, Term, B, Params>
+impl<'ctx, R, Term, B, Params, C> block_label_sealed::Sealed
+    for BasicBlock<'ctx, R, Term, B, Params, C>
 where
     R: ReturnMarker,
     Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
     Params: BlockParams,
+    C: Capability,
 {
 }
 
-impl<'ctx, R, Term, B, Params> IntoBasicBlockLabel<'ctx, R, B>
-    for BasicBlock<'ctx, R, Term, B, Params>
+impl<'ctx, R, Term, B, Params, C> IntoBasicBlockLabel<'ctx, R, B>
+    for BasicBlock<'ctx, R, Term, B, Params, C>
 where
     R: ReturnMarker,
     Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
     Params: BlockParams,
+    C: Capability,
 {
     #[inline]
     fn into_basic_block_label(
         self,
         module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
-        // Boundary: refuse a block another module minted.
-        self.to_erased().slot_in(module.id())?;
-        Ok(BasicBlockLabel {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-            _r: PhantomData,
-            _params: PhantomData,
-        })
+        // Boundary: refuse a block another module minted, then re-mint the
+        // label at `module`'s capability.
+        let id = self.to_erased().slot_in(module.id())?;
+        Ok(BasicBlockLabel::from_parts(id, module, self.ty))
     }
 }
 
-impl<'ctx, R, Term, B, Params> block_label_sealed::Sealed for &BasicBlock<'ctx, R, Term, B, Params>
+impl<'ctx, R, Term, B, Params, C> block_label_sealed::Sealed
+    for &BasicBlock<'ctx, R, Term, B, Params, C>
 where
     R: ReturnMarker,
     Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
     Params: BlockParams,
+    C: Capability,
 {
 }
 
-impl<'ctx, R, Term, B, Params> IntoBasicBlockLabel<'ctx, R, B>
-    for &BasicBlock<'ctx, R, Term, B, Params>
+impl<'ctx, R, Term, B, Params, C> IntoBasicBlockLabel<'ctx, R, B>
+    for &BasicBlock<'ctx, R, Term, B, Params, C>
 where
     R: ReturnMarker,
     Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
     Params: BlockParams,
+    C: Capability,
 {
     #[inline]
     fn into_basic_block_label(
         self,
         module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
-        // Boundary: refuse a block another module minted.
-        self.to_erased().slot_in(module.id())?;
-        // `IntoBasicBlockLabel` yields the parameter-erased label (its return
-        // type pins `BlockParamsDyn`), so construct it directly rather than
-        // through `label()`, which threads this block's `Params`.
-        Ok(BasicBlockLabel {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-            _r: PhantomData,
-            _params: PhantomData,
-        })
+        // Boundary: refuse a block another module minted, then re-mint the
+        // label at `module`'s capability. `IntoBasicBlockLabel` yields the
+        // parameter-erased label (its return type pins `BlockParamsDyn`), so
+        // construct it directly rather than through `label()`, which threads
+        // this block's `Params`.
+        let id = self.to_erased().slot_in(module.id())?;
+        Ok(BasicBlockLabel::from_parts(id, module, self.ty))
     }
 }
 
@@ -494,11 +541,12 @@ pub struct BlockCall<R: ReturnMarker, B: ModuleBrand, Params: BlockParams = Bloc
     lowered: IrResult<Box<[ValueSlot]>>,
 }
 
-impl<'ctx, R, B, Params> BasicBlockLabel<'ctx, R, B, Params>
+impl<'ctx, R, B, Params, C> BasicBlockLabel<'ctx, R, B, Params, C>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
     Params: BlockParams + FunctionParamList,
+    C: Capability,
 {
     /// Bundle this typed branch target with the block-arguments that seed its
     /// leading head-phis, forming a [`BlockCall`] edge for
@@ -512,13 +560,17 @@ where
     /// label carries its module), so `.call()` is infallible; a value-level
     /// lowering failure is deferred into the returned [`BlockCall`] and surfaces
     /// when the branch builder consumes it.
+    ///
+    /// The label must [`CanMutate`]: lowering admits the arguments into the
+    /// label's module, which is authoring an edge, not reading one.
     #[inline]
     pub fn call<A>(self, args: A) -> BlockCall<R, B, Params>
     where
         A: CallArgs<'ctx, Params, B>,
+        C: CanMutate,
     {
         let lowered = args
-            .lower(self.module, crate::CrateOnly(()))
+            .lower(self.module.proven_mutable(), crate::CrateOnly(()))
             .map(|lowered| lowered.0);
         BlockCall {
             target: self.id(),
@@ -527,21 +579,24 @@ where
     }
 }
 
-impl<'ctx, R, Term, B, Params> BasicBlock<'ctx, R, Term, B, Params>
+impl<'ctx, R, Term, B, Params, C> BasicBlock<'ctx, R, Term, B, Params, C>
 where
     R: ReturnMarker,
     Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
     Params: BlockParams + FunctionParamList,
+    C: Capability,
 {
     /// Convenience wrapper for `self.label().call(args)`: bundle this typed
     /// block as a branch target with the block-arguments that seed its head-phis.
     /// Borrows the block, so the handle stays usable (e.g. to reposition the
-    /// builder into it afterwards). See [`BasicBlockLabel::call`].
+    /// builder into it afterwards). See [`BasicBlockLabel::call`]; like it, the
+    /// block must [`CanMutate`].
     #[inline]
     pub fn call<A>(&self, args: A) -> BlockCall<R, B, Params>
     where
         A: CallArgs<'ctx, Params, B>,
+        C: CanMutate,
     {
         self.label().call(args)
     }
@@ -606,13 +661,42 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlock<'ctx, Dyn, Unterminated, B> {
     }
 }
 
+// Only on a `Mutable` block (the `C` default): `FunctionValue` carries no
+// capability yet, so the parent could only be handed out at `Mutable`, and
+// from a `ReadOnly` block that would launder its way back to `Mutable` blocks
+// and their setters. This becomes generic over `C` at the integration step,
+// once `FunctionValue` carries `C` and the parent keeps the block's.
 impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
     BasicBlock<'ctx, R, Term, B, Params>
+{
+    /// Parent function as a runtime-checked [`FunctionValue<Dyn>`](FunctionValue).
+    /// `None` if the block is an orphan (no parent attached). The
+    /// caller can narrow back to its static `R` via
+    /// [`crate::FunctionValue::as_dyn`] / `try_into` if needed.
+    ///
+    /// Only on a [`Mutable`] block for now; see the comment on this impl.
+    pub fn parent_function(&self) -> Option<FunctionValue<'ctx, Dyn, B>> {
+        let id = self.parent_id()?;
+        Some(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
+            id,
+            self.module,
+        ))
+    }
+}
+
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> BasicBlock<'ctx, R, Term, B, Params, C>
 {
     #[inline]
     pub(super) fn from_parts<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -652,7 +736,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// parameter-erased block (the [`BlockParamsDyn`] default) yields the
     /// erased label form, unchanged.
     #[inline]
-    pub(crate) fn label(&self) -> BasicBlockLabel<'ctx, R, B, Params> {
+    pub(crate) fn label(&self) -> BasicBlockLabel<'ctx, R, B, Params, C> {
         BasicBlockLabel {
             id: self.id,
             module: self.module,
@@ -662,11 +746,11 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         }
     }
 
-    /// Widen to the erased [`Value`] handle.
+    /// Widen to the erased [`Value`] handle, at the block's capability.
     ///
     /// Borrows rather than consumes, so the block stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -696,7 +780,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// public code should use [`label`](Self::label) when it needs a copyable
     /// non-insertion reference.
     #[inline]
-    pub(crate) fn as_dyn(&self) -> BasicBlock<'ctx, Dyn, Term, B> {
+    pub(crate) fn as_dyn(&self) -> BasicBlock<'ctx, Dyn, Term, B, BlockParamsDyn, C> {
         BasicBlock {
             id: self.id,
             module: self.module,
@@ -711,7 +795,9 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// terminator-emitting build path produces a terminated view from
     /// an unterminated builder block.
     #[inline]
-    pub(super) fn retag_termination<S2: BlockTerminationState>(self) -> BasicBlock<'ctx, R, S2, B> {
+    pub(super) fn retag_termination<S2: BlockTerminationState>(
+        self,
+    ) -> BasicBlock<'ctx, R, S2, B, BlockParamsDyn, C> {
         BasicBlock {
             id: self.id,
             module: self.module,
@@ -727,7 +813,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// [`crate::IrBuilder::append_block_typed`] stamps a freshly appended
     /// block with the `Params` schema whose head-phis it just built.
     #[inline]
-    pub(crate) fn retag_params<P2: BlockParams>(self) -> BasicBlock<'ctx, R, Term, B, P2> {
+    pub(crate) fn retag_params<P2: BlockParams>(self) -> BasicBlock<'ctx, R, Term, B, P2, C> {
         BasicBlock {
             id: self.id,
             module: self.module,
@@ -760,13 +846,17 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
+        C: CanMutate,
     {
         self.to_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.to_erased().clear_name(module_token);
     }
 
@@ -776,27 +866,16 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         ModuleView::new(self.module.module())
     }
 
-    /// Owning module reference with the compile-time brand.
+    /// Owning module reference with the compile-time brand, at the block's
+    /// capability.
     #[inline]
-    pub(super) fn module_ref(&self) -> ModuleRef<'ctx, B> {
+    pub(super) fn module_ref(&self) -> ModuleRef<'ctx, B, C> {
         self.module
     }
 
     /// Owning function value-id, or `None` if the block is an orphan.
     pub(super) fn parent_id(&self) -> Option<ValueSlot> {
         *self.data().parent.borrow()
-    }
-
-    /// Parent function as a runtime-checked [`FunctionValue<Dyn>`](FunctionValue).
-    /// `None` if the block is an orphan (no parent attached). The
-    /// caller can narrow back to its static `R` via
-    /// [`crate::FunctionValue::as_dyn`] / `try_into` if needed.
-    pub fn parent_function(&self) -> Option<FunctionValue<'ctx, Dyn, B>> {
-        let id = self.parent_id()?;
-        Some(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
-            id,
-            self.module,
-        ))
     }
 
     /// Iterate the instruction value-ids in program order. Returns
@@ -816,10 +895,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// `blocks.flat_map(|block| block.instructions())`.
     pub fn instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B, C>>
     + DoubleEndedIterator
     + FusedIterator
-    + use<'ctx, R, Term, B, Params> {
+    + use<'ctx, R, Term, B, Params, C> {
         let module = self.module;
         let ids = self.instruction_ids();
         ids.into_iter()
@@ -855,10 +934,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// whether it is null.
     pub fn placed_instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = PlacedInstruction<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = PlacedInstruction<'ctx, B, C>>
     + DoubleEndedIterator
     + FusedIterator
-    + use<'ctx, R, Term, B, Params> {
+    + use<'ctx, R, Term, B, Params, C> {
         let module = self.module;
         let block = BlockId::<Dyn, B>::from_raw(module.id(), self.id);
         let ids = self.instruction_ids();
@@ -874,7 +953,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Last instruction view (the terminator if the block is well-formed),
     /// or `None` for an empty block.
-    pub fn terminator(&self) -> Option<InstructionView<'ctx, B>> {
+    pub fn terminator(&self) -> Option<InstructionView<'ctx, B, C>> {
         let last = *self.data().instructions.borrow().last()?;
         Some(InstructionView::from_parts(last, self.module))
     }
@@ -892,7 +971,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>>
     + DoubleEndedIterator
     + FusedIterator
-    + use<'ctx, R, Term, B, Params> {
+    + use<'ctx, R, Term, B, Params, C> {
         let tag = self.module.id();
         crate::cfg::successor_ids(&self.as_dyn())
             .into_iter()
@@ -901,7 +980,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Append an instruction value-id to the block. Crate-internal:
     /// only the IR builder calls this.
-    pub(super) fn append_instruction(&self, instr: ValueSlot) {
+    pub(super) fn append_instruction(&self, instr: ValueSlot)
+    where
+        C: CanMutate,
+    {
         self.data().instructions.borrow_mut().push(instr);
     }
 
@@ -913,7 +995,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     ///
     /// Mirrors LLVM's `BasicBlock::getInstList().remove(I)`
     /// (`lib/IR/BasicBlock.cpp`).
-    pub(super) fn remove_instruction(&self, instr: ValueSlot) -> bool {
+    pub(super) fn remove_instruction(&self, instr: ValueSlot) -> bool
+    where
+        C: CanMutate,
+    {
         let mut list = self.data().instructions.borrow_mut();
         if let Some(pos) = list.iter().position(|id| *id == instr) {
             list.remove(pos);
@@ -934,7 +1019,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         &self,
         instr: ValueSlot,
         before: ValueSlot,
-    ) -> IrResult<()> {
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
         let mut list = self.data().instructions.borrow_mut();
         match list.iter().position(|id| *id == before) {
             Some(pos) => {
@@ -954,7 +1042,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         &self,
         instr: ValueSlot,
         after: ValueSlot,
-    ) -> IrResult<()> {
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
         let mut list = self.data().instructions.borrow_mut();
         match list.iter().position(|id| *id == after) {
             Some(pos) => {
@@ -974,7 +1065,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// the cursor sits past a non-phi still lands at the phi head. Mirrors
     /// the placement `IRBuilder::SetInsertPoint(&BB.getFirstNonPHI())`
     /// gives phis in `llvm/lib/IR/IRBuilder.cpp`.
-    pub(crate) fn insert_instruction_at_phi_head(&self, id: ValueSlot) {
+    pub(crate) fn insert_instruction_at_phi_head(&self, id: ValueSlot)
+    where
+        C: CanMutate,
+    {
         let mut list = self.data().instructions.borrow_mut();
         let at = list
             .iter()
@@ -1001,7 +1095,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// [`Cell`] read for [`require_no_block_parameters`], so an argument-less
     /// branch to an ordinary block never walks an instruction list.
     #[inline]
-    pub(crate) fn set_parameter_count(&self, count: usize) {
+    pub(crate) fn set_parameter_count(&self, count: usize)
+    where
+        C: CanMutate,
+    {
         self.data().parameter_count.set(count);
     }
 }
@@ -1105,8 +1202,14 @@ pub(crate) fn require_no_block_parameters<'ctx, B: ModuleBrand>(
 // Splice helpers (T1)
 // --------------------------------------------------------------------------
 
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> BasicBlock<'ctx, R, Term, B, Params, C>
 {
     /// Move every instruction from `self` into `dest`, appending at the
     /// end. After the call, `self` is empty and every moved instruction's
@@ -1116,8 +1219,12 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         self,
         module_token: &'ctx Module<B, Unverified>,
         dest: BasicBlock<'ctx, R2, S2, B>,
-    ) -> IrResult<()> {
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
         let _ = module_token;
+        let own = self.module.proven_mutable();
         // Boundary: the caller's destination block, admitted against this
         // block's module before either block is read or drained.
         let dest_id = dest.to_erased().slot_in(self.module.id())?;
@@ -1130,8 +1237,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
             core::mem::take(&mut *src)
         };
         if rehome_names && let Some(source_fn_id) = source_fn_id {
-            let source_fn =
-                FunctionValue::<Dyn, B>::from_parts_unchecked(source_fn_id, self.module);
+            let source_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(source_fn_id, own);
             for id in &drained {
                 source_fn.remove_local_value_name(*id);
             }
@@ -1144,10 +1250,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
             module.context().set_instruction_parent(*id, dest_id);
         }
         if rehome_names && let Some(dest_fn_id) = dest_fn_id {
-            let dest_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(dest_fn_id, self.module);
+            let dest_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(dest_fn_id, own);
             for id in &drained {
                 let ty = module.context().value_data(*id).ty;
-                let value = Value::from_parts(*id, self.module, ty);
+                let value = Value::from_parts(*id, own, ty);
                 let current_name = value.name();
                 if let Some(name) = current_name.as_deref() {
                     value.set_name_internal(None);
@@ -1186,12 +1292,17 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// The parent function, and this block's position in its block list.
     /// Upstream's `BasicBlock::Create` accepts a null parent and makes a
     /// parentless block; llvmkit refuses to split an orphan instead.
-    fn parent_and_position(&self) -> IrResult<(FunctionValue<'ctx, R, B>, usize)> {
+    fn parent_and_position(&self) -> IrResult<(FunctionValue<'ctx, R, B>, usize)>
+    where
+        C: CanMutate,
+    {
         let parent_fn_id = self.parent_id().ok_or(IrError::InvalidOperation {
             message: "cannot split an orphan basic block",
         })?;
-        let parent_fn =
-            FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
+        let parent_fn = FunctionValue::<'ctx, R, B>::from_parts_unchecked(
+            parent_fn_id,
+            self.module.proven_mutable(),
+        );
         let position = parent_fn
             .data()
             .basic_blocks
@@ -1208,7 +1319,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// block's leading phis that names `old` names `new` instead
     /// (`PHINode::replaceIncomingBlockWith`). A phi's incoming blocks are not
     /// `Use`s upstream or here, so no use list changes.
-    pub(crate) fn replace_phi_uses_with(&self, old: ValueSlot, new: ValueSlot) {
+    pub(crate) fn replace_phi_uses_with(&self, old: ValueSlot, new: ValueSlot)
+    where
+        C: CanMutate,
+    {
         // N.B. This might not be a complete BasicBlock, so don't assume
         // that it ends with a non-phi instruction.
         for instruction in self.instruction_ids() {
@@ -1229,7 +1343,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Ports `BasicBlock::replaceSuccessorsPhiUsesWith(Old, New)`: the phi
     /// rewrite, applied to each successor of this block's terminator,
     /// duplicate edges included.
-    pub(crate) fn replace_successors_phi_uses_with(&self, old: ValueSlot, new: ValueSlot) {
+    pub(crate) fn replace_successors_phi_uses_with(&self, old: ValueSlot, new: ValueSlot)
+    where
+        C: CanMutate,
+    {
         let Some(terminator) = self.terminator_slot() else {
             // Cope with being called on a BasicBlock that doesn't have a
             // terminator yet.
@@ -1239,14 +1356,18 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
             return;
         };
         for successor in crate::cfg::kind_successor_ids(&data.kind) {
-            BasicBlock::<'ctx, Dyn, Terminated, B>::from_parts(successor, self.module, self.ty)
-                .replace_phi_uses_with(old, new);
+            BasicBlock::<'ctx, Dyn, Terminated, B, BlockParamsDyn, C>::from_parts(
+                successor,
+                self.module,
+                self.ty,
+            )
+            .replace_phi_uses_with(old, new);
         }
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
-    BasicBlock<'ctx, R, Terminated, B, Params>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capability>
+    BasicBlock<'ctx, R, Terminated, B, Params, C>
 {
     /// Split this block in two at `before` and return the new block.
     ///
@@ -1262,6 +1383,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// of the new branch. `splitBasicBlock` splices from an iterator whose head
     /// bit is clear, which leaves them behind for the branch to adopt.
     ///
+    /// `before` may be a view of any capability: naming the split point is not
+    /// mutating it, and it is admitted against this block's module. The block
+    /// split is the mutation, so it must [`CanMutate`].
+    ///
     /// # Errors
     ///
     /// Every refusal happens before anything is created, moved or rewritten:
@@ -1273,15 +1398,18 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     ///   out for every block), if `before` is not one of its instructions, or
     ///   if this block has no parent function or is missing from its block
     ///   list.
-    pub fn split_at<Name>(
+    pub fn split_at<Name, C2>(
         self,
         module_token: &'ctx Module<B, Unverified>,
-        before: &InstructionView<'ctx, B>,
+        before: &InstructionView<'ctx, B, C2>,
         name: Name,
     ) -> IrResult<BasicBlock<'ctx, R, Terminated, B>>
     where
         Name: Into<String>,
+        C: CanMutate,
+        C2: Capability,
     {
+        let own = self.module.proven_mutable();
         // Boundary: the caller's split point, admitted before the block is
         // read or a new block created.
         let split_id = before.slot_in(self.module.id())?;
@@ -1325,14 +1453,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
 
         // BranchInst *BI = BranchInst::Create(New, this);
         let (_, branch) = IrBuilder::new_for::<R>(module_token)
-            .position_at_end(self.copy_handle().retag_termination::<Unterminated>())
+            .position_at_end(BasicBlock::<'ctx, R, Unterminated, B>::from_parts(
+                self.id, own, self.ty,
+            ))
             .br_to_slot_unchecked(new_id);
         // The splice left `I`'s records at this block's end, and inserting the
         // branch there adopts them (`Instruction::insertBefore`).
         // Internal: the branch was minted in this module just above.
         absorb_debug_records(module, split_id, branch.slot_trusting_same_module());
         // BI->setDebugLoc(Loc);
-        set_debug_location(self.module, branch.slot_trusting_same_module(), location);
+        set_debug_location(own, branch.slot_trusting_same_module(), location);
 
         // New->replaceSuccessorsPhiUsesWith(this, New);
         new_block.replace_successors_phi_uses_with(self.id, new_id);
@@ -1366,15 +1496,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     ///   edge (upstream's `assert(!isa<PHINode>(*I) || getSinglePredecessor())`),
     ///   or if this block has no parent function or is missing from its block
     ///   list.
-    pub fn split_before<Name>(
+    ///
+    /// `before` may be a view of any capability, and the block must
+    /// [`CanMutate`], as on [`split_at`](Self::split_at).
+    pub fn split_before<Name, C2>(
         self,
         module_token: &'ctx Module<B, Unverified>,
-        before: &InstructionView<'ctx, B>,
+        before: &InstructionView<'ctx, B, C2>,
         name: Name,
     ) -> IrResult<BasicBlock<'ctx, R, Terminated, B>>
     where
         Name: Into<String>,
+        C: CanMutate,
+        C2: Capability,
     {
+        let own = self.module.proven_mutable();
         // Boundary: the caller's split point, admitted before the block is
         // read or a new block created.
         let split_id = before.slot_in(self.module.id())?;
@@ -1429,11 +1565,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
         let predecessors = crate::cfg::block_predecessors(self.to_erased());
         for predecessor in predecessors {
             // Instruction *TI = Pred->getTerminator();
-            let predecessor_block = BasicBlock::<'ctx, Dyn, Terminated, B>::from_parts(
-                predecessor,
-                self.module,
-                self.ty,
-            );
+            let predecessor_block =
+                BasicBlock::<'ctx, Dyn, Terminated, B>::from_parts(predecessor, own, self.ty);
             // A predecessor is found through a terminator that uses this block,
             // so it has one unless instructions follow that terminator. Upstream
             // would dereference a null `TI` there; llvmkit leaves such a
@@ -1445,8 +1578,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
             if let ValueKindData::Instruction(data) = &self.module.value_data(terminator).kind {
                 crate::cfg::replace_successor_with(&data.kind, self.id, new_id);
             }
-            crate::cfg::sync_block_uses(self.module, terminator, self.id);
-            crate::cfg::sync_block_uses(self.module, terminator, new_id);
+            crate::cfg::sync_block_uses(own, terminator, self.id);
+            crate::cfg::sync_block_uses(own, terminator, new_id);
             // this->replacePhiUsesWith(Pred, New);
             self.replace_phi_uses_with(predecessor, new_id);
         }
@@ -1460,8 +1593,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
         // Internal: the branch was minted in this module just above.
         absorb_debug_records(module, split_id, branch.slot_trusting_same_module());
         // BI->setDebugLoc(Loc);
-        set_debug_location(self.module, branch.slot_trusting_same_module(), location);
-        Ok(BasicBlock::from_parts(new_id, self.module, self.ty))
+        set_debug_location(own, branch.slot_trusting_same_module(), location);
+        Ok(BasicBlock::from_parts(new_id, own, self.ty))
     }
 }
 
@@ -1474,9 +1607,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
 /// with the same `line`, `column`, `scope`, `inlinedAt` and `isImplicitCode`
 /// and no atom. A `!dbg` attachment that is not a `DILocation` node has no atom
 /// to drop and is kept as it is.
-fn split_point_location<'ctx, B: ModuleBrand + 'ctx>(
+fn split_point_location<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module_token: &'ctx Module<B, Unverified>,
-    split_point: &InstructionView<'ctx, B>,
+    split_point: &InstructionView<'ctx, B, C>,
 ) -> IrResult<Option<MetadataId<StoredBrand>>> {
     let Some(location) = split_point.metadata().get(&MetadataAttachmentKind::Dbg) else {
         return Ok(None);
@@ -1529,35 +1662,62 @@ fn set_debug_location<B: ModuleBrand>(
     }
 }
 
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    sealed::Sealed for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> sealed::Sealed for BasicBlock<'ctx, R, Term, B, Params, C>
 {
 }
-// A block carries no capability until Task 5 of the capability plan; it is
-// always reached from an unverified module today.
-impl<R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params: BlockParams> CapabilityOf
-    for BasicBlock<'_, R, Term, B, Params>
+impl<
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand,
+    Params: BlockParams,
+    C: Capability,
+> CapabilityOf for BasicBlock<'_, R, Term, B, Params, C>
 {
-    type Capability = Mutable;
+    type Capability = C;
 }
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    Typed<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> Typed<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     #[inline]
-    fn ty(self) -> Type<'ctx, B> {
+    fn ty(self) -> Type<'ctx, B, C> {
         self.to_erased().ty()
     }
 }
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    HasName<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> HasName<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     #[inline]
     fn name(self) -> Option<String> {
         BasicBlock::name(&self)
     }
 }
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    SetName<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: CanMutate,
+> SetName<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     #[inline]
     fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
@@ -1571,8 +1731,14 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         BasicBlock::clear_name(&self, module_token);
     }
 }
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    HasDebugLoc for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> HasDebugLoc for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
@@ -1580,11 +1746,17 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 }
 
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    From<BasicBlock<'ctx, R, Term, B, Params>> for Value<'ctx, B>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> From<BasicBlock<'ctx, R, Term, B, Params, C>> for Value<'ctx, B, C>
 {
     #[inline]
-    fn from(b: BasicBlock<'ctx, R, Term, B, Params>) -> Self {
+    fn from(b: BasicBlock<'ctx, R, Term, B, Params, C>) -> Self {
         b.to_erased()
     }
 }
@@ -1592,13 +1764,14 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 // Erased narrowing: a `Value` that is a basic block lands in the
 // parameter-erased [`BlockParamsDyn`] label. This is the non-leak point —
 // a label recovered from an untyped `Value` legitimately carries no static
-// parameter promise, so `BlockParamsDyn` is the correct marker.
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>>
-    for BasicBlockLabel<'ctx, Dyn, B, BlockParamsDyn>
+// parameter promise, so `BlockParamsDyn` is the correct marker. The label
+// keeps the value's capability.
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Value<'ctx, B, C>>
+    for BasicBlockLabel<'ctx, Dyn, B, BlockParamsDyn, C>
 {
     type Error = IrError;
 
-    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B, C>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::BasicBlock(_) => Ok(Self {
                 // Internal: a re-wrap that keeps `v`'s own module.
@@ -1616,8 +1789,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>>
     }
 }
 
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    core::fmt::Display for BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> core::fmt::Display for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     /// Print the basic block including its label and instructions.
     /// Mirrors LLVM's `BasicBlock::print`.
@@ -1625,7 +1804,11 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         // Without an enclosing function, build a one-block slot tracker
         // ad hoc.
         if let Some(parent_id) = self.parent_id() {
-            let parent = FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, self.module);
+            // capability (proof): laundered until Task 4 — the slot tracker
+            // numbers through a `FunctionValue`, which carries no capability
+            // yet; the function never leaves this formatter.
+            let module = self.module.mutable_at_marked_boundary();
+            let parent = FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, module);
             let slots = SlotTracker::for_function(parent);
             // `bool IsEntryBlock = BB->getParent() && BB->isEntryBlock();`
             let is_entry_block = parent

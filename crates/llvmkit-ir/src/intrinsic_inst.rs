@@ -1,6 +1,7 @@
 //! Intrinsic call views. Mirrors `llvm/lib/IR/IntrinsicInst.cpp` wrappers.
 
 use super::attributes::MemoryEffects;
+use super::capability::{Capability, CapabilityOf, Mutable};
 use super::error::{IrError, IrResult};
 use super::instructions::CallInst;
 use super::intrinsics::{IntrinsicDescriptor, IntrinsicId, descriptor_for_callee};
@@ -11,35 +12,49 @@ use super::value_id::IntrinsicInstId;
 use crate::Branded;
 
 /// A call whose callee is a generated LLVM intrinsic declaration.
+///
+/// `C` is the [`Capability`] of the wrapped call (D8).
 #[derive(Branded)]
-pub struct IntrinsicInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
-    call: CallInst<'ctx, R, B>,
+pub struct IntrinsicInst<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability = Mutable> {
+    call: CallInst<'ctx, R, B, C>,
     id: IntrinsicId,
 }
 
 /// Memory intrinsic call wrapper for `llvm.memcpy`, `llvm.memmove`, and `llvm.memset`.
 #[derive(Branded)]
-pub struct MemIntrinsic<'ctx, B: ModuleBrand, R: ReturnMarker = Dyn> {
-    inner: IntrinsicInst<'ctx, R, B>,
+pub struct MemIntrinsic<'ctx, B: ModuleBrand, R: ReturnMarker = Dyn, C: Capability = Mutable> {
+    inner: IntrinsicInst<'ctx, R, B, C>,
 }
 
 /// Lifetime intrinsic call wrapper for `llvm.lifetime.start/end`.
 #[derive(Branded)]
-pub struct LifetimeIntrinsic<'ctx, B: ModuleBrand, R: ReturnMarker = Dyn> {
-    inner: IntrinsicInst<'ctx, R, B>,
+pub struct LifetimeIntrinsic<'ctx, B: ModuleBrand, R: ReturnMarker = Dyn, C: Capability = Mutable> {
+    inner: IntrinsicInst<'ctx, R, B, C>,
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntrinsicInst<'ctx, R, B> {
+impl<R: ReturnMarker, B: ModuleBrand, C: Capability> CapabilityOf for IntrinsicInst<'_, R, B, C> {
+    type Capability = C;
+}
+impl<B: ModuleBrand, R: ReturnMarker, C: Capability> CapabilityOf for MemIntrinsic<'_, B, R, C> {
+    type Capability = C;
+}
+impl<B: ModuleBrand, R: ReturnMarker, C: Capability> CapabilityOf
+    for LifetimeIntrinsic<'_, B, R, C>
+{
+    type Capability = C;
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntrinsicInst<'ctx, R, B, C> {
     /// Return `Some` when `call` targets a generated intrinsic declaration.
     #[inline]
-    pub fn from_call(call: CallInst<'ctx, R, B>) -> Option<Self> {
+    pub fn from_call(call: CallInst<'ctx, R, B, C>) -> Option<Self> {
         let id = descriptor_for_callee(call.callee())?.id();
         Some(Self { call, id })
     }
 
     /// Convert a call to an intrinsic view, rejecting ordinary calls.
     #[inline]
-    pub fn try_from_call(call: CallInst<'ctx, R, B>) -> IrResult<Self> {
+    pub fn try_from_call(call: CallInst<'ctx, R, B, C>) -> IrResult<Self> {
         Self::from_call(call).ok_or(IrError::InvalidOperation {
             message: "call is not an intrinsic",
         })
@@ -47,7 +62,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntrinsicInst<'ctx, R, B> {
 
     /// Return the underlying call instruction.
     #[inline]
-    pub fn call(self) -> CallInst<'ctx, R, B> {
+    pub fn call(self) -> CallInst<'ctx, R, B, C> {
         self.call
     }
 
@@ -110,19 +125,20 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntrinsicInst<'ctx, R, B> {
 
     /// Return value, or `None` for void-returning intrinsic calls.
     #[inline]
-    pub fn return_value(self) -> Option<Value<'ctx, B>> {
+    pub fn return_value(self) -> Option<Value<'ctx, B, C>> {
         self.call.return_value()
     }
 }
 
-impl<'ctx, B, R> MemIntrinsic<'ctx, B, R>
+impl<'ctx, B, R, C> MemIntrinsic<'ctx, B, R, C>
 where
     B: ModuleBrand + 'ctx,
     R: ReturnMarker,
+    C: Capability,
 {
     /// Narrow an intrinsic view to a memory intrinsic wrapper.
     #[inline]
-    pub fn try_from_intrinsic(inner: IntrinsicInst<'ctx, R, B>) -> IrResult<Self> {
+    pub fn try_from_intrinsic(inner: IntrinsicInst<'ctx, R, B, C>) -> IrResult<Self> {
         match inner.intrinsic_id() {
             id if id == IntrinsicId::MEMCPY
                 || id == IntrinsicId::MEMMOVE
@@ -140,25 +156,26 @@ where
 
     /// Return the underlying intrinsic view.
     #[inline]
-    pub fn inner(&self) -> &IntrinsicInst<'ctx, R, B> {
+    pub fn inner(&self) -> &IntrinsicInst<'ctx, R, B, C> {
         &self.inner
     }
 
     /// Return the underlying call instruction.
     #[inline]
-    pub fn call(&self) -> CallInst<'ctx, R, B> {
+    pub fn call(&self) -> CallInst<'ctx, R, B, C> {
         self.inner.call()
     }
 }
 
-impl<'ctx, B, R> LifetimeIntrinsic<'ctx, B, R>
+impl<'ctx, B, R, C> LifetimeIntrinsic<'ctx, B, R, C>
 where
     B: ModuleBrand + 'ctx,
     R: ReturnMarker,
+    C: Capability,
 {
     /// Narrow an intrinsic view to a lifetime intrinsic wrapper.
     #[inline]
-    pub fn try_from_intrinsic(inner: IntrinsicInst<'ctx, R, B>) -> IrResult<Self> {
+    pub fn try_from_intrinsic(inner: IntrinsicInst<'ctx, R, B, C>) -> IrResult<Self> {
         match inner.intrinsic_id() {
             id if id == IntrinsicId::LIFETIME_START || id == IntrinsicId::LIFETIME_END => {
                 Ok(Self { inner })
@@ -171,13 +188,13 @@ where
 
     /// Return the underlying intrinsic view.
     #[inline]
-    pub fn inner(&self) -> &IntrinsicInst<'ctx, R, B> {
+    pub fn inner(&self) -> &IntrinsicInst<'ctx, R, B, C> {
         &self.inner
     }
 
     /// Return the underlying call instruction.
     #[inline]
-    pub fn call(&self) -> CallInst<'ctx, R, B> {
+    pub fn call(&self) -> CallInst<'ctx, R, B, C> {
         self.inner.call()
     }
 }

@@ -33,6 +33,7 @@
 use crate::ApInt;
 use crate::atomic_ordering::AtomicOrdering;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored, MemoryEffects};
+use crate::capability::Capability;
 use crate::cfg::kind_successor_ids;
 use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
@@ -328,9 +329,19 @@ pub fn may_have_non_def_use_dependency<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// An atomic operation qualifies: another thread can interfere with it for an
 /// arbitrary length of time, but programs are not allowed to rely on that.
-pub fn is_guaranteed_to_transfer_execution_to_successor<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn is_guaranteed_to_transfer_execution_to_successor<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    instruction: &InstructionView<'ctx, B, C>,
 ) -> bool {
+    // capability (proof): laundered until Task 6 — the helpers below take
+    // `Mutable` handles until the analyses go capability-generic; this
+    // routine only reads, and the view never leaves it.
+    let module = instruction.module.mutable_at_marked_boundary();
+    let instruction =
+        &InstructionView::<'ctx, B>::from_parts(instruction.slot_trusting_same_module(), module);
     let anchor = instruction.to_erased();
     let kind = view_kind(instruction);
 

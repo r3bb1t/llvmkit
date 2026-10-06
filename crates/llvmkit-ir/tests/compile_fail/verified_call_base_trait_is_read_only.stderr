@@ -1,0 +1,101 @@
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_call_base_trait_is_read_only.rs:40:25
+   |
+39 |                     let _ = CallBase::with_operand_bundles(
+   |                             ------------------------------ required by a bound introduced by this call
+40 |                         call,
+   |                         ^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `CallInst<'_, Dyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `CallBase<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_call_base_trait_is_read_only.rs:44:46
+   |
+44 |                     CallBase::set_attributes(call, &other, CallAttributeData::default());
+   |                     ------------------------ ^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `CallInst<'_, Dyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `CallBase<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_call_base_trait_is_read_only.rs:49:29
+   |
+48 |                         let _ = CallBase::with_operand_bundles(
+   |                                 ------------------------------ required by a bound introduced by this call
+49 |                             invoke,
+   |                             ^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `InvokeInst<'_, Dyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `CallBase<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_call_base_trait_is_read_only.rs:53:50
+   |
+53 |                         CallBase::set_attributes(invoke, &other, CallAttributeData::default());
+   |                         ------------------------ ^^^^^^ this handle was minted read-only
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `InvokeInst<'_, Dyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `CallBase<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_call_base_trait_is_read_only.rs:57:29
+   |
+56 |                         let _ = CallBase::with_operand_bundles(
+   |                                 ------------------------------ required by a bound introduced by this call
+57 |                             callbr,
+   |                             ^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `CallBrInst<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `CallBase<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_call_base_trait_is_read_only.rs:61:50
+   |
+61 |                         CallBase::set_attributes(callbr, &other, CallAttributeData::default());
+   |                         ------------------------ ^^^^^^ this handle was minted read-only
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `CallBrInst<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `CallBase<'_, DynBrand>`

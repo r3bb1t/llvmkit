@@ -7,6 +7,7 @@
 //!
 //! [`Instruction`]: crate::instruction::Instruction
 
+use super::capability::CapabilityOf;
 use super::module::ModuleBrand;
 use super::r#use::Use;
 use super::value::{Value, sealed};
@@ -14,17 +15,20 @@ use super::value::{Value, sealed};
 /// Trait implemented by values that have operand edges. Inherits
 /// the same `Sealed` bound used by every value-side trait so external
 /// crates cannot widen the closed user set.
-pub trait User<'ctx, B: ModuleBrand>: sealed::Sealed {
+///
+/// Operands and uses come back at the user's own capability (D8): a
+/// read-only user hands out read-only operands.
+pub trait User<'ctx, B: ModuleBrand>: sealed::Sealed + CapabilityOf {
     /// Number of operand edges. Mirrors `User::getNumOperands`.
     fn operand_count(self) -> u32;
 
     /// Operand at `index`, or `None` if `index >= operand_count()`.
     /// Mirrors `User::getOperand`.
-    fn operand(self, index: u32) -> Option<Value<'ctx, B>>;
+    fn operand(self, index: u32) -> Option<Value<'ctx, B, Self::Capability>>;
 
     /// Materialize a transient [`Use`] view for the operand at
     /// `index`, or `None` if out of range. Mirrors the role of
     /// `User::getOperandUse` but builds the view on demand instead of
     /// linking into an intrusive list (see the [`Use`] type).
-    fn operand_use(self, index: u32) -> Option<Use<'ctx, B>>;
+    fn operand_use(self, index: u32) -> Option<Use<'ctx, B, Self::Capability>>;
 }

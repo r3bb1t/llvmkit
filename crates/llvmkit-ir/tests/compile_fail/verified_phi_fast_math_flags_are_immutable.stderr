@@ -1,0 +1,21 @@
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_phi_fast_math_flags_are_immutable.rs:45:10
+   |
+45 |         .set_fast_math_flags(FastMathFlags::fast())
+   |          ^^^^^^^^^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `FpPhiInst::<'ctx, K, B, C>::set_fast_math_flags`
+  --> src/instructions.rs
+   |
+   |     pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()>
+   |            ------------------- required by a bound in this associated function
+   |     where
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `FpPhiInst::<'ctx, K, B, C>::set_fast_math_flags`

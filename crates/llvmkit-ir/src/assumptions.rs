@@ -590,7 +590,16 @@ impl AssumptionCache {
         let mut cache = Self::default();
         for block in function.basic_blocks() {
             for instruction in block.instructions() {
-                let value = instruction.to_erased();
+                // capability (proof): laundered until Task 6 — a block view
+                // hands out `ReadOnly` instructions, and the scan's helpers
+                // take `Mutable` values until the analyses go
+                // capability-generic; the scan only reads.
+                let module = instruction.module.mutable_at_marked_boundary();
+                let value = Value::from_parts(
+                    instruction.slot_trusting_same_module(),
+                    module,
+                    instruction.ty().slot_trusting_same_module(),
+                );
                 if !is_assume_call(value) {
                     continue;
                 }

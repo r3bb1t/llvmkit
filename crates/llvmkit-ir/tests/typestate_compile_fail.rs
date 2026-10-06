@@ -254,4 +254,37 @@ fn typestate_compile_fail() {
     // unverified module's token of the shared `DynBrand` used to unlock a
     // verified module's global; a verified module's global is `ReadOnly`.
     t.compile_fail("tests/compile_fail/verified_global_cannot_be_mutated.rs");
+    // Blocks and instructions carry the capability too: an instruction view a
+    // verified module mints is `ReadOnly`, so `set_metadata` is refused by the
+    // view's own capability, not by which module's token is offered.
+    t.compile_fail("tests/compile_fail/verified_instruction_metadata_is_read_only.rs");
+    // `set_fast_math_flags` on a phi takes no token at all, so the capability
+    // bound is its only guard: without it a verified module's phi flags could
+    // be rewritten after `verify()`.
+    t.compile_fail("tests/compile_fail/verified_phi_fast_math_flags_are_immutable.rs");
+    // A `ReadOnly` route never reaches a mutator, not even through a function:
+    // a verified call's callee, its entry block and an instruction there must
+    // not come back `Mutable`.
+    t.compile_fail("tests/compile_fail/verified_call_callee_is_not_a_mutable_route.rs");
+    // The instruction mutators whose bodies need no `Mutable` reference have
+    // only their `C: CanMutate` bound between a `ReadOnly` handle and the
+    // module; this fixture is what fails if one of those bounds goes.
+    t.compile_fail("tests/compile_fail/verified_instruction_mutators_are_read_only.rs");
+    // The mutators whose bodies do need the `Mutable` reference their bound
+    // licenses: dropping such a bound alone breaks the build, so each of these
+    // fixtures is what fails if the bound goes and the body is routed around it.
+    t.compile_fail("tests/compile_fail/verified_block_label_call_is_read_only.rs");
+    t.compile_fail("tests/compile_fail/verified_instruction_name_is_read_only.rs");
+    t.compile_fail("tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs");
+    t.compile_fail("tests/compile_fail/verified_call_operand_bundles_are_read_only.rs");
+    // The trait forms of those mutators, `SetName` and `CallBase`, are
+    // implemented only where `C: CanMutate`. Their bodies call the bounded
+    // inherent methods, so widening an impl alone breaks the build; these
+    // fixtures call the trait methods themselves, so each is what fails if an
+    // impl is widened and its bodies are routed around the inherent methods.
+    t.compile_fail("tests/compile_fail/verified_instruction_set_name_trait_is_read_only.rs");
+    t.compile_fail("tests/compile_fail/verified_call_base_trait_is_read_only.rs");
+    // The same law for the value handles' `SetName` impls: one handle per
+    // impl, a macro's handle standing for every handle the macro declares.
+    t.compile_fail("tests/compile_fail/verified_value_set_name_trait_is_read_only.rs");
 }
