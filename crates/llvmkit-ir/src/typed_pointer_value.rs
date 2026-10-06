@@ -107,7 +107,10 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'c
     for TypedPointerValue<'ctx, T, B, C>
 {
     #[inline]
-    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+    fn into_pointer_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>> {
         self.ptr.into_pointer_value(module)
     }
 }

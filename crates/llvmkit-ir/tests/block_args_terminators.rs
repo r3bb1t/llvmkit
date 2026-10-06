@@ -182,7 +182,7 @@ fn plain_invoke_into_param_block_errors_on_either_edge() -> Result<(), IrError> 
 
     // Parameterised normal destination.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(normal_entry);
-    let res = b.invoke_dyn::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
+    let res = b.invoke_dyn::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _, _>(
         m.view(callee),
         Vec::new(),
         param_label,
@@ -202,7 +202,7 @@ fn plain_invoke_into_param_block_errors_on_either_edge() -> Result<(), IrError> 
 
     // Parameterised unwind destination.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind_entry);
-    let res = b.invoke_dyn::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
+    let res = b.invoke_dyn::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _, _>(
         m.view(callee),
         Vec::new(),
         plain_label,
@@ -682,7 +682,7 @@ fn invoke_dyn_with_args_seeds_edges_and_checks_arity() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let carried = [a.as_erased()];
-    b.invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
+    b.invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _, _>(
         m.view(callee),
         Vec::new(),
         (normal_label, &carried),
@@ -692,7 +692,7 @@ fn invoke_dyn_with_args_seeds_edges_and_checks_arity() -> Result<(), IrError> {
 
     // Wrong arity on the normal edge.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bad_entry);
-    let res = b.invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
+    let res = b.invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _, _>(
         m.view(callee),
         Vec::new(),
         (normal_label, &[]),

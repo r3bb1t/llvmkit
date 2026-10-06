@@ -27,7 +27,7 @@ use super::attributes::{AttrKind, AttributeStorage, AttributeStored};
 use super::basic_block::BasicBlock;
 use super::block_params::BlockParamsDyn;
 use super::block_state::{BlockTerminationState, Terminated};
-use super::capability::Capability;
+use super::capability::{Capability, ReadOnly};
 use super::comdat::ComdatRef;
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
@@ -154,7 +154,10 @@ impl SlotTracker {
 /// Mirrors how `Verifier::CheckFailed` renders a `Value` — through
 /// `WriteAsOperand`, which asks the module's `SlotTracker` for the number and
 /// so always names something the reader can find in the printed IR.
-pub(super) fn slot_label<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>, id: ValueSlot) -> String {
+pub(super) fn slot_label<B: ModuleBrand, C: Capability>(
+    f: FunctionValue<'_, Dyn, B, C>,
+    id: ValueSlot,
+) -> String {
     let module = f.module();
     if let Some(name) = module.context().value_data(id).name.borrow().as_ref() {
         return name.clone();
@@ -174,7 +177,10 @@ pub(super) fn slot_label<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>, id: Value
 /// slot, so the owning function is recovered from the block itself. A block
 /// with no parent has no `SlotTracker` to ask and gets upstream's `<badref>`,
 /// the same answer `slot_label` gives a value its function cannot number.
-pub(super) fn block_slot_label<B: ModuleBrand>(module: ModuleRef<'_, B>, id: ValueSlot) -> String {
+pub(super) fn block_slot_label<B: ModuleBrand, C: Capability>(
+    module: ModuleRef<'_, B, C>,
+    id: ValueSlot,
+) -> String {
     if let Some(name) = module.value_data(id).name.borrow().as_ref() {
         return name.clone();
     }
@@ -185,7 +191,7 @@ pub(super) fn block_slot_label<B: ModuleBrand>(module: ModuleRef<'_, B>, id: Val
         return BAD_REF.to_owned();
     };
     slot_label(
-        FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, module),
+        FunctionValue::<'_, Dyn, B, C>::from_parts_unchecked(parent_id, module),
         id,
     )
 }
@@ -393,7 +399,7 @@ fn is_global_value(kind: &ValueKindData) -> bool {
 /// `isa<ConstantData>` — asked of a slot rather than of a handle.
 fn slot_is_constant_data(m: &ModuleCore, value: ValueSlot) -> bool {
     let ty = m.context().value_data(value).ty;
-    Constant::try_from(Value::<DynBrand>::from_parts(value, m, ty))
+    Constant::try_from(Value::<DynBrand, ReadOnly>::from_parts(value, m, ty))
         .is_ok_and(Constant::is_constant_data)
 }
 
@@ -686,7 +692,7 @@ fn fmt_use_list_order(
         // too. It is kept because the shape is upstream's and because the
         // *parser* half (`parseUseListOrderBB`) is reachable from
         // hand-written `.ll`.
-        let block = BasicBlock::<Dyn, Terminated, DynBrand>::from_parts(
+        let block = BasicBlock::<Dyn, Terminated, DynBrand, BlockParamsDyn, ReadOnly>::from_parts(
             directive.value,
             ModuleView::new(m),
             data.ty,
@@ -694,7 +700,7 @@ fn fmt_use_list_order(
         let Some(parent_slot) = block_parent_function(m, directive.value) else {
             unreachable!("a block reached through orderModule always has a parent function")
         };
-        let parent = FunctionValue::<Dyn, DynBrand>::from_parts_unchecked(parent_slot, m);
+        let parent = FunctionValue::<Dyn, DynBrand, ReadOnly>::from_parts_unchecked(parent_slot, m);
         f.write_str("_bb ")?;
         fmt_operand_ref(f, parent.as_erased(), None)?;
         f.write_str(", ")?;
@@ -704,7 +710,7 @@ fn fmt_use_list_order(
         f.write_str(" ")?;
         fmt_operand(
             f,
-            Value::<DynBrand>::from_parts(directive.value, m, data.ty),
+            Value::<DynBrand, ReadOnly>::from_parts(directive.value, m, data.ty),
             slots,
         )?;
     }
@@ -785,13 +791,16 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
         ConstantData::BlockAddress { function, block } => {
             let module = host.module.module();
-            let fval = Value::<B>::from_parts(
+            let fval = Value::<B, ReadOnly>::from_parts(
                 *function,
                 module,
                 module.context().value_data(*function).ty,
             );
-            let bval =
-                Value::<B>::from_parts(*block, module, module.context().value_data(*block).ty);
+            let bval = Value::<B, ReadOnly>::from_parts(
+                *block,
+                module,
+                module.context().value_data(*block).ty,
+            );
             f.write_str("blockaddress(")?;
             fmt_operand_ref(f, fval, None)?;
             f.write_str(", ")?;
@@ -801,7 +810,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             // no function tracker at all. Upstream reaches the same numbering
             // through `SlotTracker::incorporateFunction`.
             let block_slots = bval.name().is_none().then(|| {
-                FunctionValue::<Dyn, B>::try_from(fval)
+                FunctionValue::<Dyn, B, ReadOnly>::try_from(fval)
                     .ok()
                     .map(SlotTracker::for_function)
             });
@@ -810,7 +819,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         ConstantData::DsoLocalEquivalent { function } => {
             let module = host.module.module();
-            let fval = Value::<B>::from_parts(
+            let fval = Value::<B, ReadOnly>::from_parts(
                 *function,
                 module,
                 module.context().value_data(*function).ty,
@@ -820,7 +829,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         ConstantData::NoCfi { function } => {
             let module = host.module.module();
-            let fval = Value::<B>::from_parts(
+            let fval = Value::<B, ReadOnly>::from_parts(
                 *function,
                 module,
                 module.context().value_data(*function).ty,
@@ -863,7 +872,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                     f.write_str(", ")?;
                 }
                 let data = module.context().value_data(*id);
-                let value = Value::<B>::from_parts(*id, module, data.ty);
+                let value = Value::<B, ReadOnly>::from_parts(*id, module, data.ty);
                 fmt_operand(f, value, None)?;
             }
             f.write_str(")")
@@ -873,8 +882,11 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             // Mirrors `writeConstantInternal` printing each ConstantExpr
             // operand with its true type.
             let module = host.module.module();
-            let base =
-                Value::<B>::from_parts(*base_id, module, module.context().value_data(*base_id).ty);
+            let base = Value::<B, ReadOnly>::from_parts(
+                *base_id,
+                module,
+                module.context().value_data(*base_id).ty,
+            );
             write!(
                 f,
                 "getelementptr inbounds (i8, {} ",
@@ -885,8 +897,16 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         ConstantData::SymbolDelta { hi_id, lo_id } => {
             let module = host.module.module();
-            let hi = Value::<B>::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
-            let lo = Value::<B>::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
+            let hi = Value::<B, ReadOnly>::from_parts(
+                *hi_id,
+                module,
+                module.context().value_data(*hi_id).ty,
+            );
+            let lo = Value::<B, ReadOnly>::from_parts(
+                *lo_id,
+                module,
+                module.context().value_data(*lo_id).ty,
+            );
             write!(f, "sub (i64 ptrtoint ({} ", constant_ptr_operand_type(hi))?;
             fmt_operand_ref(f, hi, None)?;
             write!(
@@ -903,8 +923,16 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             addend,
         } => {
             let module = host.module.module();
-            let hi = Value::<B>::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
-            let lo = Value::<B>::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
+            let hi = Value::<B, ReadOnly>::from_parts(
+                *hi_id,
+                module,
+                module.context().value_data(*hi_id).ty,
+            );
+            let lo = Value::<B, ReadOnly>::from_parts(
+                *lo_id,
+                module,
+                module.context().value_data(*lo_id).ty,
+            );
             write!(
                 f,
                 "add (i64 sub (i64 ptrtoint ({} ",
@@ -1106,7 +1134,9 @@ fn maybe_print_call_addr_space<B: ModuleBrand>(
     print_address_space(f, call_addr_space, " ", "", force_print_addr_space)
 }
 
-fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Type<'ctx, B> {
+fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Type<'ctx, B, C> {
     match &value.data().kind {
         ValueKindData::Function(_) => value.module.ptr_type(0).as_type(),
         ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
@@ -2324,7 +2354,7 @@ fn fmt_call(
             .as_erased()
             .local_parent_function_id()
             .is_some_and(|fn_id| {
-                FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
+                FunctionValue::<Dyn, _, ReadOnly>::from_parts_unchecked(fn_id, module)
                     .signature()
                     .is_var_arg()
             });
@@ -2343,10 +2373,10 @@ fn fmt_call(
     fmt_operand_bundles(f, &c.operand_bundles, module.core_ref(), slots)
 }
 
-fn fmt_intrinsic_pretty_arg_comment<B: ModuleBrand>(
+fn fmt_intrinsic_pretty_arg_comment<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
     pretty: Option<PrettyPrintArg>,
-    value: Value<'_, B>,
+    value: Value<'_, B, C>,
 ) -> fmt::Result {
     let Some(pretty) = pretty else {
         return Ok(());
@@ -2357,9 +2387,9 @@ fn fmt_intrinsic_pretty_arg_comment<B: ModuleBrand>(
     write!(f, "/* {comment} */ ")
 }
 
-fn intrinsic_pretty_arg_comment<B: ModuleBrand>(
+fn intrinsic_pretty_arg_comment<B: ModuleBrand, C: Capability>(
     pretty: PrettyPrintArg,
-    value: Value<'_, B>,
+    value: Value<'_, B, C>,
 ) -> Option<String> {
     let rendered_value = intrinsic_pretty_arg_value(pretty.printer, value)?;
     if pretty.name.is_empty() {
@@ -2368,9 +2398,9 @@ fn intrinsic_pretty_arg_comment<B: ModuleBrand>(
     Some(format!("{}={rendered_value}", pretty.name))
 }
 
-fn intrinsic_pretty_arg_value<B: ModuleBrand>(
+fn intrinsic_pretty_arg_value<B: ModuleBrand, C: Capability>(
     printer: &str,
-    value: Value<'_, B>,
+    value: Value<'_, B, C>,
 ) -> Option<String> {
     let zext = constant_int_zext_u128(value)?;
     let text = match printer {
@@ -2445,7 +2475,7 @@ fn lookup_pretty_arg_name(value: u128, names: &[&str]) -> Option<String> {
     names.get(index).map(|name| (*name).to_owned())
 }
 
-fn constant_int_zext_u128<B: ModuleBrand>(value: Value<'_, B>) -> Option<u128> {
+fn constant_int_zext_u128<B: ModuleBrand, C: Capability>(value: Value<'_, B, C>) -> Option<u128> {
     let TypeData::Integer { bits } = value.ty().data() else {
         return None;
     };
@@ -2518,7 +2548,7 @@ fn fmt_operand_bundles(
             }
             // `writeAsOperandInternal(Out, Input, WriterCtx, /*PrintType=*/true)`
             let data = module.context().value_data(id);
-            let value = Value::<DynBrand>::from_parts(id, module, data.ty);
+            let value = Value::<DynBrand, ReadOnly>::from_parts(id, module, data.ty);
             fmt_operand(f, value, Some(slots))?;
         }
         // `Out << ')'`
@@ -3121,7 +3151,7 @@ fn fmt_debug_metadata_operand(
             let data = module.context().value_data(slot);
             fmt_operand(
                 f,
-                Value::<DynBrand>::from_parts(slot, module, data.ty),
+                Value::<DynBrand, ReadOnly>::from_parts(slot, module, data.ty),
                 Some(slots),
             )
         }
@@ -3547,7 +3577,7 @@ fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &ModuleCore
             f.write_str(", ")?;
         }
         first = false;
-        write!(f, "{}", Type::<DynBrand>::new(*e, m))?;
+        write!(f, "{}", Type::<DynBrand, ReadOnly>::new(*e, m))?;
     }
     if body.packed {
         f.write_str(" }>")
@@ -3651,7 +3681,7 @@ pub(super) fn fmt_module_with_options(
     // comdat no global object references is never printed at all, which is
     // why an `llvm-as | llvm-dis` round trip loses one. An alias and an ifunc
     // are `GlobalValue`s but not `GlobalObject`s, so neither is walked.
-    let mut comdats: Vec<ComdatRef<'_, DynBrand>> = Vec::new();
+    let mut comdats: Vec<ComdatRef<'_, DynBrand, ReadOnly>> = Vec::new();
     for c in m
         .iter_functions::<DynBrand>()
         .filter_map(FunctionValue::comdat)
@@ -3909,7 +3939,7 @@ fn fmt_metadata_node(
                 if position != 0 {
                     f.write_str(", ")?;
                 }
-                let value = Value::<DynBrand>::from_parts(
+                let value = Value::<DynBrand, ReadOnly>::from_parts(
                     argument.slot_trusting_same_module(),
                     module,
                     module
@@ -3925,7 +3955,7 @@ fn fmt_metadata_node(
         MetadataKind::Constant(id) => {
             let slot = id.slot_trusting_same_module();
             let data = module.context().value_data(slot);
-            let value = Value::<DynBrand>::from_parts(slot, module, data.ty);
+            let value = Value::<DynBrand, ReadOnly>::from_parts(slot, module, data.ty);
             fmt_operand(f, value, value_slots)
         }
     }
@@ -4178,7 +4208,7 @@ fn metadata_slot_map(nodes: &[MetadataKind<StoredBrand>]) -> Vec<Option<usize>> 
     slots
 }
 
-fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: ComdatRef<'_, DynBrand>) -> fmt::Result {
+fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: ComdatRef<'_, DynBrand, ReadOnly>) -> fmt::Result {
     // `$<name> = comdat <kind>\n`. Mirrors
     // `Comdat::print` in `lib/IR/AsmWriter.cpp`.
     fmt_llvm_name(f, "$", c.name())?;

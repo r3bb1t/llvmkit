@@ -16,11 +16,11 @@ use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, Inv
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
 use super::intrinsics::{IntrinsicSemantic, semantic_for_callee};
-use super::module::{DynBrand, ModuleBrand, ModuleRef};
+use super::module::{ModuleBrand, ModuleRef};
 use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
-use super::r#type::{Type, TypeKind, TypeSlotAccess};
+use super::r#type::{Type, TypeKind, TypeSlotAccess, erase_type};
 use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse};
 use super::value_id::IntValueId;
 use super::value_tracking::{ValueTrackingQuery, compute_known_bits, value_from_slot};
@@ -1023,7 +1023,8 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
     for block in patch.function_mut().basic_blocks() {
         let instruction_ids = block.instruction_ids();
         for id in instruction_ids {
-            let inst = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
+            let inst =
+                Instruction::<state::Attached, B>::from_parts(id, module_token.capability_ref());
             let value = inst.to_erased();
             if !is_simplify_candidate(value) {
                 continue;
@@ -1039,8 +1040,10 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
                 // The result carries a storable id; view it for the RAUW, which
                 // takes an ephemeral handle.
                 inst.replace_all_uses_with(module_token, module_token.view(replacement))?;
-                let erased =
-                    Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
+                let erased = Instruction::<state::Attached, B>::from_parts(
+                    id,
+                    module_token.capability_ref(),
+                );
                 erased.erase_from_parent(module_token);
                 return Ok(true);
             }
@@ -1048,8 +1051,10 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
                 let id = value.slot_trusting_same_module();
                 drop_zext_nneg_for_replaced_uses(value);
                 inst.replace_all_uses_with(module_token, replacement)?;
-                let erased =
-                    Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
+                let erased = Instruction::<state::Attached, B>::from_parts(
+                    id,
+                    module_token.capability_ref(),
+                );
                 erased.erase_from_parent(module_token);
                 return Ok(true);
             }
@@ -1063,7 +1068,8 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     for id in dead_to_erase.into_iter().rev() {
-        let erased = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
+        let erased =
+            Instruction::<state::Attached, B>::from_parts(id, module_token.capability_ref());
         if erased.to_erased().has_uses() {
             continue;
         }
@@ -1459,13 +1465,4 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return width;
     }
     u32::try_from(dl.type_size_in_bits(erase_type(value.ty()))).unwrap_or(0)
-}
-
-fn erase_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-) -> Type<'ctx, DynBrand> {
-    Type::new(
-        ty.slot_trusting_same_module(),
-        ModuleRef::new(ty.module().core_ref()),
-    )
 }

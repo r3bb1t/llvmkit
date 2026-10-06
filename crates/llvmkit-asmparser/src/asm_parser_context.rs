@@ -38,8 +38,8 @@ use std::collections::HashMap;
 use llvmkit_macros::Branded;
 
 use llvmkit_ir::{
-    BasicBlock, BasicBlockLabel, BlockId, BlockTerminationState, Dyn, FunctionValue,
-    InstructionView, ModuleBrand, ReturnMarker, Value,
+    BasicBlock, BasicBlockLabel, BlockId, BlockParamsDyn, BlockTerminationState, Capability, Dyn,
+    FunctionValue, InstructionView, ModuleBrand, ReadOnly, ReturnMarker, Value,
 };
 
 use super::file_loc::{FileLoc, FileLocRange};
@@ -61,7 +61,9 @@ pub enum LocationError {
 #[derive(Branded)]
 #[branded(Debug)]
 struct LocMap<'ctx, B: ModuleBrand> {
-    forward: HashMap<Value<'ctx, B>, FileLocRange>,
+    /// Keyed at [`ReadOnly`]: a lookup only reads its key, so a handle of
+    /// either capability finds its entry.
+    forward: HashMap<Value<'ctx, B, ReadOnly>, FileLocRange>,
     /// Reverse map kept sorted by `range.start` for binary-search queries.
     reverse: Vec<(FileLocRange, Value<'ctx, B>)>,
 }
@@ -77,10 +79,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for LocMap<'ctx, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> LocMap<'ctx, B> {
     fn add(&mut self, value: Value<'ctx, B>, loc: FileLocRange) -> Result<(), LocationError> {
-        if self.forward.contains_key(&value) {
+        if self.forward.contains_key(&value.read_only()) {
             return Err(LocationError::DuplicateHandle);
         }
-        self.forward.insert(value, loc);
+        self.forward.insert(value.read_only(), loc);
         let pos = self
             .reverse
             .binary_search_by(|(existing, _)| existing.start.cmp(&loc.start))
@@ -89,8 +91,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> LocMap<'ctx, B> {
         Ok(())
     }
 
-    fn location_of(&self, value: Value<'ctx, B>) -> Option<FileLocRange> {
-        self.forward.get(&value).copied()
+    fn location_of<C: Capability>(&self, value: Value<'ctx, B, C>) -> Option<FileLocRange> {
+        self.forward.get(&value.read_only()).copied()
     }
 
     fn handle_at(&self, loc: FileLoc) -> Option<Value<'ctx, B>> {
@@ -157,29 +159,35 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
     // ── Forward queries ────────────────────────────────────────────────
 
     /// Source range of a recorded function. Mirrors upstream
-    /// `getFunctionLocation(const Function *)`.
+    /// `getFunctionLocation(const Function *)`. A function of either
+    /// capability finds its entry: the lookup only reads it.
     #[inline]
-    pub fn function_location<R: ReturnMarker>(
+    pub fn function_location<R: ReturnMarker, C: Capability>(
         &self,
-        f: FunctionValue<'ctx, R, B>,
+        f: FunctionValue<'ctx, R, B, C>,
     ) -> Option<FileLocRange> {
         self.functions.location_of(f.as_erased())
     }
 
     /// Source range of a recorded basic block. Mirrors
-    /// `getBlockLocation(const BasicBlock *)`.
+    /// `getBlockLocation(const BasicBlock *)`. A block of either capability
+    /// finds its entry.
     #[inline]
-    pub fn block_location<R: ReturnMarker, S: BlockTerminationState>(
+    pub fn block_location<R: ReturnMarker, S: BlockTerminationState, C: Capability>(
         &self,
-        b: &BasicBlock<'ctx, R, S, B>,
+        b: &BasicBlock<'ctx, R, S, B, BlockParamsDyn, C>,
     ) -> Option<FileLocRange> {
         self.blocks.location_of(b.to_erased())
     }
 
     /// Source range of a recorded instruction. Mirrors
-    /// `getInstructionLocation(const Instruction *)`.
+    /// `getInstructionLocation(const Instruction *)`. An instruction of either
+    /// capability finds its entry.
     #[inline]
-    pub fn instruction_location(&self, i: &InstructionView<'ctx, B>) -> Option<FileLocRange> {
+    pub fn instruction_location<C: Capability>(
+        &self,
+        i: &InstructionView<'ctx, B, C>,
+    ) -> Option<FileLocRange> {
         self.instructions.location_of(i.to_erased())
     }
 
@@ -241,6 +249,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
     }
 
     // ── Insertion ──────────────────────────────────────────────────────
+    //
+    // The insertion entries take `Mutable` handles, unlike the queries: the
+    // reverse queries hand a recorded handle back out at `Mutable`
+    // (`instruction_at`, `function_at`), so the context records only what it
+    // can hand back without minting `Mutable` from a `ReadOnly` handle (R9).
+    // Its one writer is the parser, which holds the module it builds.
 
     /// Record `f`'s location. Mirrors `addFunctionLocation`.
     #[inline]

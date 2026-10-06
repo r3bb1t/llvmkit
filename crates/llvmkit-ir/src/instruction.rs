@@ -1383,7 +1383,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let parent_block_id = self.parent_slot();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
-            module,
+            module_token.capability_ref(),
             module
                 .label_type::<B>()
                 .as_type()
@@ -1409,7 +1409,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let parent_block_id = self.parent_slot();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
-            module,
+            module_token.capability_ref(),
             module
                 .label_type::<B>()
                 .as_type()
@@ -1463,7 +1463,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let cur_parent = self.parent_slot();
         let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             cur_parent,
-            module,
+            module_token.capability_ref(),
             module
                 .label_type::<B>()
                 .as_type()
@@ -1473,7 +1473,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         // Insert before other in other's parent.
         let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             new_parent,
-            module,
+            module_token.capability_ref(),
             module
                 .label_type::<B>()
                 .as_type()
@@ -1521,7 +1521,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let cur_parent = self.parent_slot();
         let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             cur_parent,
-            module,
+            module_token.capability_ref(),
             module
                 .label_type::<B>()
                 .as_type()
@@ -1530,7 +1530,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         cur_bb.remove_instruction(self_id);
         let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             new_parent,
-            module,
+            module_token.capability_ref(),
             module
                 .label_type::<B>()
                 .as_type()
@@ -1571,7 +1571,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         let parent_fn_id = other.to_erased().local_parent_function_id();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_id,
-            module,
+            module_token.capability_ref(),
             module
                 .label_type::<B>()
                 .as_type()
@@ -1607,7 +1607,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         let parent_fn_id = other.to_erased().local_parent_function_id();
         let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_id,
-            module,
+            module_token.capability_ref(),
             module
                 .label_type::<B>()
                 .as_type()

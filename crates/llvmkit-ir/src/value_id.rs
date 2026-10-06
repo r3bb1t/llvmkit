@@ -1127,7 +1127,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
 impl<W: IntWidth, B: ModuleBrand> into_int_value_sealed::Sealed for IntValueId<W, B> {}
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValueId<W, B> {
     #[inline]
-    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+    fn into_int_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<IntValue<'ctx, W, B, ModuleCapability>> {
         self.resolve_in(module).ok_or(IrError::ForeignValueId)
     }
 }
@@ -1135,7 +1138,10 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntV
 impl<K: FloatKind, B: ModuleBrand> into_float_value_sealed::Sealed for FloatValueId<K, B> {}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B> for FloatValueId<K, B> {
     #[inline]
-    fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+    fn into_float_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<FloatValue<'ctx, K, B, ModuleCapability>> {
         self.resolve_in(module).ok_or(IrError::ForeignValueId)
     }
 }
@@ -1143,7 +1149,10 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B> for F
 impl<B: ModuleBrand> into_pointer_value_sealed::Sealed for PointerValueId<B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<B> {
     #[inline]
-    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+    fn into_pointer_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>> {
         self.resolve_in(module).ok_or(IrError::ForeignValueId)
     }
 }
@@ -1189,10 +1198,10 @@ macro_rules! impl_into_erased_value_for_id {
             for $name<$($($mk,)+)? B>
         {
             #[inline]
-            fn into_erased_value(
+            fn into_erased_value<ModuleCapability: Capability>(
                 self,
-                module: ModuleRef<'ctx, B>,
-            ) -> IrResult<Value<'ctx, B>> {
+                module: ModuleRef<'ctx, B, ModuleCapability>,
+            ) -> IrResult<Value<'ctx, B, ModuleCapability>> {
                 self.resolve_in(module)
                     .map(IsValue::as_erased)
                     .ok_or(IrError::ForeignValueId)
@@ -1231,10 +1240,10 @@ macro_rules! impl_into_erased_value_for_instruction_id {
             for $name<$($($mk,)+)? B>
         {
             #[inline]
-            fn into_erased_value(
+            fn into_erased_value<ModuleCapability: Capability>(
                 self,
-                module: ModuleRef<'ctx, B>,
-            ) -> IrResult<Value<'ctx, B>> {
+                module: ModuleRef<'ctx, B, ModuleCapability>,
+            ) -> IrResult<Value<'ctx, B, ModuleCapability>> {
                 self.resolve_in(module)
                     .map(|inst| inst.to_erased())
                     .ok_or(IrError::ForeignValueId)

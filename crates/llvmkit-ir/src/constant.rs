@@ -236,7 +236,9 @@ impl ConstantGepFlags {
 /// `isa<UndefValue>` there answers `true` for both. llvmkit splits the two so a
 /// port can say which it means; a caller mirroring upstream's `isa<UndefValue>`
 /// wants [`is_undef_or_poison`].
-pub(crate) fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+pub(crate) fn is_undef<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
     matches!(
         &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::Undef)
@@ -244,7 +246,9 @@ pub(crate) fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>)
 }
 
 /// `isa<PoisonValue>(C)`.
-pub(crate) fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+pub(crate) fn is_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
     matches!(
         &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::Poison)
@@ -252,7 +256,9 @@ pub(crate) fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>
 }
 
 /// Upstream's plain `isa<UndefValue>(C)`, which catches `poison` too.
-pub(crate) fn is_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+pub(crate) fn is_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
     is_undef(constant) || is_poison(constant)
 }
 

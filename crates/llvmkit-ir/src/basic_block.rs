@@ -375,10 +375,10 @@ mod block_label_sealed {
 pub trait IntoBasicBlockLabel<'ctx, R: ReturnMarker, B: ModuleBrand>:
     block_label_sealed::Sealed
 {
-    fn into_basic_block_label(
+    fn into_basic_block_label<ModuleCapability: Capability>(
         self,
-        module: ModuleRef<'ctx, B>,
-    ) -> IrResult<BasicBlockLabel<'ctx, R, B>>;
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B, BlockParamsDyn, ModuleCapability>>;
 }
 
 impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> block_label_sealed::Sealed
@@ -390,10 +390,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     IntoBasicBlockLabel<'ctx, R, B> for BlockId<R, B, Params>
 {
     #[inline]
-    fn into_basic_block_label(
+    fn into_basic_block_label<ModuleCapability: Capability>(
         self,
-        module: ModuleRef<'ctx, B>,
-    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B, BlockParamsDyn, ModuleCapability>> {
         ViewIn::resolve_in(self, module)
             .map(BasicBlockLabel::erase_params)
             .ok_or(IrError::ForeignValueId)
@@ -409,10 +409,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoBasicBlock
     for BasicBlockLabel<'ctx, R, B, BlockParamsDyn, C>
 {
     #[inline]
-    fn into_basic_block_label(
+    fn into_basic_block_label<ModuleCapability: Capability>(
         self,
-        module: ModuleRef<'ctx, B>,
-    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B, BlockParamsDyn, ModuleCapability>> {
         // Boundary: refuse a block another module minted, then re-mint the
         // label at `module`'s capability.
         let id = self.to_erased().slot_in(module.id())?;
@@ -441,10 +441,10 @@ where
     C: Capability,
 {
     #[inline]
-    fn into_basic_block_label(
+    fn into_basic_block_label<ModuleCapability: Capability>(
         self,
-        module: ModuleRef<'ctx, B>,
-    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B, BlockParamsDyn, ModuleCapability>> {
         // Boundary: refuse a block another module minted, then re-mint the
         // label at `module`'s capability.
         let id = self.to_erased().slot_in(module.id())?;
@@ -473,10 +473,10 @@ where
     C: Capability,
 {
     #[inline]
-    fn into_basic_block_label(
+    fn into_basic_block_label<ModuleCapability: Capability>(
         self,
-        module: ModuleRef<'ctx, B>,
-    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B, BlockParamsDyn, ModuleCapability>> {
         // Boundary: refuse a block another module minted, then re-mint the
         // label at `module`'s capability. `IntoBasicBlockLabel` yields the
         // parameter-erased label (its return type pins `BlockParamsDyn`), so
@@ -496,10 +496,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
     for super::ssa_builder::SsaBlock<R, B>
 {
     #[inline]
-    fn into_basic_block_label(
+    fn into_basic_block_label<ModuleCapability: Capability>(
         self,
-        module: ModuleRef<'ctx, B>,
-    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B, BlockParamsDyn, ModuleCapability>> {
         self.id().into_basic_block_label(module)
     }
 }
@@ -657,7 +657,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlock<'ctx, Dyn, Unterminated, B> {
             kind: ValueKindData::BasicBlock(BasicBlockData::new(None)),
             use_list: RefCell::new(Vec::new()),
         });
-        Self::from_parts(id, module, label_ty)
+        Self::from_parts(id, module_token.capability_ref(), label_ty)
     }
 }
 

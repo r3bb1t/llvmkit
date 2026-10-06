@@ -12,9 +12,14 @@
 //! pinned here.
 
 use llvmkit_asmparser::parser;
-use llvmkit_ir::{Constant, DynBrand, Module, Unverified};
+use llvmkit_ir::{Constant, DynBrand, Module, ReadOnly, Unverified};
 
-fn initializer<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Constant<'m, DynBrand> {
+/// The initializer is reached through the module's read view, so it is
+/// `ReadOnly`; the splat query only reads it.
+fn initializer<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Constant<'m, DynBrand, ReadOnly> {
     module
         .as_view()
         .globals()

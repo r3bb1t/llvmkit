@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use crate::capability::Capability;
 use crate::constant::ConstantData;
 use crate::function::FunctionValue;
 use crate::instruction::InstructionKindData;
@@ -65,13 +66,15 @@ pub fn is_scoped_eh_personality(personality: EhPersonality) -> bool {
 /// is direct. llvmkit interposes a [`ConstantData::GlobalValueRef`] standing
 /// for `@name`, so the cast has to step through it first — a representation
 /// difference, not a rule.
-fn global_value_name_and_type<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn global_value_name_and_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<(String, TypeSlot)> {
     let value = match &value.data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value: referent }) => {
-            let module = value.module().core_ref();
-            Value::from_parts(*referent, module, module.context().value_data(*referent).ty)
+            // The referent, through the value's own reference: navigation, so
+            // it keeps the capability the caller held.
+            let module = value.module;
+            Value::from_parts(*referent, module, module.value_data(*referent).ty)
         }
         _ => value,
     };
@@ -91,8 +94,8 @@ fn global_value_name_and_type<'ctx, B: ModuleBrand + 'ctx>(
 /// Upstream's `Pers ? … : nullptr` guard is spelled by the caller here:
 /// llvmkit's `FunctionValue::personality_fn` already answers `Option`, so a
 /// function without a personality never reaches this routine.
-pub fn classify_eh_personality<'ctx, B: ModuleBrand + 'ctx>(
-    personality: Value<'ctx, B>,
+pub fn classify_eh_personality<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    personality: Value<'ctx, B, C>,
 ) -> EhPersonality {
     // `const GlobalValue *F = dyn_cast<GlobalValue>(Pers->stripPointerCasts());
     //  if (!F || !F->getValueType() || !F->getValueType()->isFunctionTy())
@@ -165,8 +168,8 @@ fn is_eh_pad(kind: &InstructionKindData) -> bool {
 }
 
 /// The instruction payload behind `slot`, or `None` when it is not one.
-fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     slot: ValueSlot,
 ) -> Option<&'ctx InstructionKindData> {
     match &anchor.module().core_ref().context().value_data(slot).kind {
@@ -186,8 +189,8 @@ pub(crate) fn is_funclet_pad_kind(kind: &InstructionKindData) -> bool {
 
 /// `BasicBlock::getFirstNonPHIIt()`, projected to the instruction's value id —
 /// `None` where upstream's iterator would be `end()`.
-pub(crate) fn first_non_phi_slot<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+pub(crate) fn first_non_phi_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
 ) -> Option<ValueSlot> {
     let ValueKindData::BasicBlock(data) =
@@ -205,16 +208,16 @@ pub(crate) fn first_non_phi_slot<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// [`first_non_phi_slot`], projected to the instruction's payload.
-pub(crate) fn first_non_phi_kind<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+pub(crate) fn first_non_phi_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
 ) -> Option<&'ctx InstructionKindData> {
     instruction_kind(anchor, first_non_phi_slot(anchor, block)?)
 }
 
 /// `Visiting->getTerminator()`, projected to its payload.
-fn terminator_kind<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn terminator_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
 ) -> Option<&'ctx InstructionKindData> {
     let ValueKindData::BasicBlock(data) =
@@ -234,8 +237,8 @@ fn terminator_kind<'ctx, B: ModuleBrand + 'ctx>(
 /// the pad is malformed. llvmkit answers `None` there instead, which routes the
 /// caller to the entry block rather than crashing on IR the verifier is in the
 /// middle of rejecting.
-fn catch_switch_parent_pad<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn catch_switch_parent_pad<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     catch_pad: ValueSlot,
 ) -> Option<ValueSlot> {
     let Some(InstructionKindData::CatchPad(pad)) = instruction_kind(anchor, catch_pad) else {
@@ -250,8 +253,8 @@ fn catch_switch_parent_pad<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The block an instruction belongs to — `cast<Instruction>(Pad)->getParent()`.
-fn parent_block<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn parent_block<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     slot: ValueSlot,
 ) -> Option<ValueSlot> {
     match &anchor.module().core_ref().context().value_data(slot).kind {
@@ -275,8 +278,8 @@ fn parent_block<'ctx, B: ModuleBrand + 'ctx>(
 /// Keyed and valued by [`BlockId`], as upstream's
 /// `DenseMap<BasicBlock *, ColorVector>` is by the block: a caller looks a
 /// block up by the id it holds, and each colour is a block it can view.
-pub fn color_eh_funclets<'ctx, B: ModuleBrand + 'ctx>(
-    function: FunctionValue<'ctx, Dyn, B>,
+pub fn color_eh_funclets<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    function: FunctionValue<'ctx, Dyn, B, C>,
 ) -> HashMap<BlockId<Dyn, B>, Vec<BlockId<Dyn, B>>> {
     // Internal: every slot the walk visits is a block of `function`, read
     // through `function`'s own module, so each is minted under its tag.
@@ -292,8 +295,8 @@ pub fn color_eh_funclets<'ctx, B: ModuleBrand + 'ctx>(
 /// itself, kept on slots because every helper it calls reads blocks by slot
 /// through `function`'s module. Its one caller is [`color_eh_funclets`], which
 /// the verifier calls too, so the colouring has one path (D5).
-fn color_eh_funclet_slots<'ctx, B: ModuleBrand + 'ctx>(
-    function: FunctionValue<'ctx, Dyn, B>,
+fn color_eh_funclet_slots<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    function: FunctionValue<'ctx, Dyn, B, C>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
     let anchor = function.as_erased();
     let mut block_colors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();

@@ -297,11 +297,15 @@ use super::value::{FloatValue, Value};
 /// The trait is **sealed**. An erased [`Value`] / `Argument` /
 /// `Instruction` no longer lifts silently: narrow it explicitly with
 /// [`FloatValue::try_from`] (or [`IsValue`](crate::IsValue)-erased `_dyn`
-/// builders).
+/// builders). The value comes back at `module`'s capability, as for
+/// [`IntoIntValue`](crate::IntoIntValue).
 pub trait IntoFloatValue<'ctx, K: FloatKind, B: ModuleBrand>:
     Sized + into_float_value_sealed::Sealed
 {
-    fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>>;
+    fn into_float_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<FloatValue<'ctx, K, B, ModuleCapability>>;
 }
 
 /// Seals [`IntoFloatValue`] to the identity/lift handles plus the exact
@@ -334,9 +338,12 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> IntoFloatValue<'c
     for FloatValue<'ctx, K, B, C>
 {
     #[inline]
-    fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+    fn into_float_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<FloatValue<'ctx, K, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module.
-        Ok(FloatValue::<K, B>::from_value_unchecked(
+        Ok(FloatValue::from_value_unchecked(
             self.as_erased().admitted_at(module)?,
         ))
     }
@@ -347,9 +354,12 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> IntoFloatValue<'c
     for ConstantFloatValue<'ctx, K, B, C>
 {
     #[inline]
-    fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+    fn into_float_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<FloatValue<'ctx, K, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module.
-        Ok(FloatValue::<K, B>::from_value_unchecked(
+        Ok(FloatValue::from_value_unchecked(
             crate::value::IsValue::as_erased(self).admitted_at(module)?,
         ))
     }
@@ -359,13 +369,13 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> IntoFloatValue<'c
 macro_rules! impl_into_float_value_static {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, $marker, B> for $rust_ty {
-            fn into_float_value(
+            fn into_float_value<ModuleCapability: Capability>(
                 self,
-                module: ModuleRef<'ctx, B>,
-            ) -> IrResult<FloatValue<'ctx, $marker, B>> {
-                let ty: FloatType<'ctx, $marker, B> = module.$ty_method();
+                module: ModuleRef<'ctx, B, ModuleCapability>,
+            ) -> IrResult<FloatValue<'ctx, $marker, B, ModuleCapability>> {
+                let ty: FloatType<'ctx, $marker, B, ModuleCapability> = module.$ty_method();
                 match self.into_constant_float(ty) {
-                    Ok(c) => Ok(FloatValue::<$marker, B>::from_value_unchecked(
+                    Ok(c) => Ok(FloatValue::from_value_unchecked(
                         crate::value::IsValue::as_erased(c),
                     )),
                     Err(_) => unreachable!(

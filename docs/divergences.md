@@ -1615,6 +1615,15 @@ pins the string. What survives is the metadata half and a model gap.
   `NumberedTypes` **index** and so cannot fail; and the same struct case in
   `type.rs`'s `Display`.
 
+### 143. Every named struct in the type arena prints, not only the ones the module reaches
+
+*printer* — crates/llvmkit-ir/src/asm_writer.rs (the named-struct type-identity block over `Module::iter_named_struct_ids`)
+
+- **LLVM:** `AssemblyWriter::printTypeIdentities` prints the identified structs `TypePrinting::incorporateTypes` collected, and that runs `TypeFinder::run(M, false)`: a walk over global value types and initializers, aliases and aliasees, ifunc value types, and each function's type, attributes, arguments, instruction types, non-instruction operands and attached metadata, then named metadata. An identified struct the walk never reaches is never printed; the ones it reaches print in discovery order, and an unnamed one is numbered by that same order (`Type2Number`).
+- **llvmkit:** the printer writes one line per named struct in the module's type arena, in creation order. A type that was interned and never used still prints. Observed 2026-10-06 on the working tree over `6c1efac`: `NestValue::build` — the `IrStruct` derive's builder — interns `%Nest` before it lifts its field operand, so when the lift refuses a value from another module nothing uses `%Nest`, yet the home module's printed text gains `%Nest = type { %Pair }`. `crates/llvmkit-ir/tests/cross_module_handles.rs::a_struct_schema_operand_rejects_a_value_from_another_module` interns `%Nest` before its no-mutation snapshot for that reason and says so. The output still re-parses (an unused type definition is legal), so only the byte-for-byte half of the contract is broken. Whether creation order and discovery order differ for any parsed fixture was not measured.
+- **Why:** found while writing a regression test for an unrelated fix; a `TypeFinder` port is a change of its own and may re-pin expected printer output.
+- **Fix:** port `TypeFinder::run` and drive the identity block — and the unnamed-struct numbering behind `anonymous_identified_struct_number` — from its result, re-blessing any expected output it moves in the same commit.
+
 ## Model gaps
 
 A public query answers differently from its LLVM counterpart, or a structure LLVM has is missing.

@@ -8,7 +8,7 @@ use llvmkit_ir::{Argument, Capability, FunctionParam, IrResult, ModuleBrand, Mod
 struct Leaker;
 
 impl FunctionParam for Leaker {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = ();
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = ();
 
     fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
@@ -31,20 +31,20 @@ impl FunctionParam for Leaker {
         Ok(())
     }
 
-    fn value_from_argument<'ctx, B>(
-        _arg: Argument<'ctx, B>,
+    fn value_from_argument<'ctx, B, C: Capability>(
+        _arg: Argument<'ctx, B, C>,
         validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
         let _leaked: &'static ValidatedFunctionParams<'static> = validated;
     }
 
-    fn value_from_value<'ctx, B>(
-        _value: Value<'ctx, B>,
+    fn value_from_value<'ctx, B, C: Capability>(
+        _value: Value<'ctx, B, C>,
         validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {

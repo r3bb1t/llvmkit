@@ -1047,7 +1047,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     /// [`IrError::ReturnTypeMismatch`]. A refusal creates nothing.
     pub fn create_detached<I, V>(
         module_token: &'ctx Module<B, Unverified>,
-        fn_ty: FunctionType<'ctx, B>,
+        fn_ty: FunctionType<'ctx, B, impl Capability>,
         callee: Value<'ctx, B>,
         args: I,
         config: CallSiteConfig<'ctx, B>,
@@ -1057,12 +1057,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         V: IntoErasedValue<'ctx, B>,
     {
         let module = module_token.core_ref();
+        let module_ref = module_token.capability_ref();
         let ErasedCallOperands {
             fn_ty,
             return_ty,
             callee,
             args,
-        } = admit_erased_call_operands::<R, B, I, V>(module, fn_ty, callee, args, &config)?;
+        } = admit_erased_call_operands::<R, B, I, V>(module_ref, fn_ty, callee, args, &config)?;
         let (name, parts) = config.into_parts(module)?;
         let payload = CallInstData::new(
             callee,
@@ -1073,12 +1074,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
             parts,
         );
         let instruction = create_detached_instruction(
-            ModuleRef::new(module),
+            module_ref,
             return_ty,
             InstructionKindData::Call(payload),
             &name,
         );
-        let call = Self::from_raw(instruction.slot_trusting_same_module(), module, return_ty);
+        let call = Self::from_raw(
+            instruction.slot_trusting_same_module(),
+            module_ref,
+            return_ty,
+        );
         Ok((instruction, call))
     }
 }
@@ -1283,15 +1288,14 @@ impl<Ret: FunctionReturn, B: ModuleBrand, C: Capability> CapabilityOf
     type Capability = C;
 }
 
-// `FunctionReturn::CallResult` names no capability — for a struct return it is
-// the `IrStruct` derive's own value type — so the typed result exists only on
-// a `Mutable` call (the `C` default). A read-only call reads its result through
-// `as_call_inst().return_value()` or `as_erased()`.
-impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, B> {
-    /// Typed result. Infallible: the schema was validated when the
-    /// typed callee facade was constructed. `()` for a void callee.
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx, C: Capability>
+    TypedCallInst<'ctx, Ret, B, C>
+{
+    /// Typed result, at the call's capability. Infallible: the schema was
+    /// validated when the typed callee facade was constructed. `()` for a
+    /// void callee.
     #[inline]
-    pub fn result(self) -> Ret::CallResult<'ctx, B> {
+    pub fn result(self) -> Ret::CallResult<'ctx, B, C> {
         let validated = ValidatedCallResult::new();
         let value = Value::from_parts(self.inner.id, self.inner.module, self.inner.ty);
         Ret::call_result_from_value(value, &validated)
@@ -2028,7 +2032,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::<B>::new(self.ty, module).kind_label(),
+                expected: Type::new(self.ty, self.module).kind_label(),
                 got: value.as_erased().ty().kind_label(),
             })
         }
@@ -2279,7 +2283,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::<B>::new(self.ty, module).kind_label(),
+                expected: Type::new(self.ty, self.module).kind_label(),
                 got: value.as_erased().ty().kind_label(),
             })
         }
@@ -2494,7 +2498,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::<B>::new(self.ty, module).kind_label(),
+                expected: Type::new(self.ty, self.module).kind_label(),
                 got: IsValue::as_erased(value).ty().kind_label(),
             })
         }
@@ -3546,7 +3550,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         // and erased `add_case`, and the builder's lowered seeded cases.
         if v.ty().slot_trusting_same_module() != cond_ty {
             return Err(crate::IrError::TypeMismatch {
-                expected: Type::<B>::new(cond_ty, module).kind_label(),
+                expected: Type::new(cond_ty, self.module).kind_label(),
                 got: v.ty().kind_label(),
             });
         }
@@ -3944,7 +3948,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     /// applies.
     pub fn create_detached<I, V, Normal, Unwind, RN, RU>(
         module_token: &'ctx Module<B, Unverified>,
-        fn_ty: FunctionType<'ctx, B>,
+        fn_ty: FunctionType<'ctx, B, impl Capability>,
         callee: Value<'ctx, B>,
         normal_dest: Normal,
         unwind_dest: Unwind,
@@ -3960,13 +3964,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         Unwind: IntoBasicBlockLabel<'ctx, RU, B>,
     {
         let module = module_token.core_ref();
-        let module_ref = ModuleRef::<B>::new(module);
+        let module_ref = module_token.capability_ref();
         let ErasedCallOperands {
             fn_ty,
             return_ty,
             callee,
             args,
-        } = admit_erased_call_operands::<R, B, I, V>(module, fn_ty, callee, args, &config)?;
+        } = admit_erased_call_operands::<R, B, I, V>(module_ref, fn_ty, callee, args, &config)?;
         let normal_dest = normal_dest
             .into_basic_block_label(module_ref)?
             .slot_trusting_same_module();
@@ -3990,7 +3994,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
             InstructionKindData::Invoke(payload),
             &name,
         );
-        let invoke = Self::from_raw(instruction.slot_trusting_same_module(), module, return_ty);
+        let invoke = Self::from_raw(
+            instruction.slot_trusting_same_module(),
+            module_ref,
+            return_ty,
+        );
         Ok((instruction, invoke))
     }
 }
@@ -4853,8 +4861,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
 /// vector-to-scalar without a separate arm — upstream's own trick.
 pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
     op: CastOpcode,
-    src: Type<'ctx, B>,
-    dst: Type<'ctx, B>,
+    src: Type<'ctx, B, impl Capability>,
+    dst: Type<'ctx, B, impl Capability>,
 ) -> bool {
     if !src.is_first_class() || !dst.is_first_class() || src.is_aggregate() || dst.is_aggregate() {
         return false;
@@ -4958,10 +4966,10 @@ pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
 /// passes it. The first index steps the pointer and is never applied to
 /// `source_ty`, so an empty list arrives at `source_ty` itself — which is why
 /// upstream's null check doubles as "these indices are valid".
-pub fn indexed_gep_type<'ctx, B: ModuleBrand + 'ctx>(
-    source_ty: Type<'ctx, B>,
-    indices: &[Value<'ctx, B>],
-) -> Option<Type<'ctx, B>> {
+pub fn indexed_gep_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    source_ty: Type<'ctx, B, C>,
+    indices: &[Value<'ctx, B, impl Capability>],
+) -> Option<Type<'ctx, B, C>> {
     let module = source_ty.module;
     // boundary (F2): Task 27
     // Each index's slot is read against `source_ty`'s arena; nothing proves
@@ -4989,10 +4997,10 @@ pub fn indexed_gep_type<'ctx, B: ModuleBrand + 'ctx>(
 /// Two private near-copies of this walk exist, in `ir_builder.rs` and
 /// `verifier.rs`; consolidating them onto this one is recorded in
 /// `docs/future-work.md`.
-pub fn indexed_aggregate_type<'ctx, B: ModuleBrand + 'ctx>(
-    agg_ty: Type<'ctx, B>,
+pub fn indexed_aggregate_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    agg_ty: Type<'ctx, B, C>,
     indices: &[u32],
-) -> Option<Type<'ctx, B>> {
+) -> Option<Type<'ctx, B, C>> {
     use crate::AnyTypeEnum;
     let mut current = agg_ty;
     for &index in indices {

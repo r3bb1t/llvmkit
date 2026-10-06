@@ -503,6 +503,12 @@ pub fn parse_type_at_beginning_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<
 }
 
 /// Parse one constant value of the supplied LLVM type and require EOF.
+///
+/// `ty` is a `Mutable` type: [`ParseError`](crate::parse_error::ParseError)
+/// has no variant for a type of
+/// another module, so a `ReadOnly` one is re-minted first with
+/// [`Module::admit_type`] on the `module` passed here, which refuses another
+/// module's.
 pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     src: S,
     module: &'ctx Module<B, Unverified>,
@@ -511,7 +517,8 @@ pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     Parser::new(src.as_ref(), module)?.parse_standalone_constant_value(ty)
 }
 
-/// [`parse_constant_value`] with a caller-supplied slot mapping.
+/// [`parse_constant_value`] with a caller-supplied slot mapping; `ty` is
+/// re-minted the same way.
 pub fn parse_constant_value_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     src: S,
     module: &'ctx Module<B, Unverified>,

@@ -9,7 +9,7 @@ error[E0308]: mismatched types
 note: function defined here
   --> src/constant_folding.rs
    |
-   | pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
+   | pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0308]: mismatched types

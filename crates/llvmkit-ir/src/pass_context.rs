@@ -475,37 +475,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
         self.function.name()
     }
 
-    /// Entry block if the function is a definition, at [`Mutable`]: the
-    /// body's blocks are what its rung mutates.
+    /// Entry block if the function is a definition, at [`ReadOnly`] like
+    /// every handle a pass context hands out: the rung mutates the body
+    /// through its own mutator — `erase`, `replace_all_uses`, `builder_at` —
+    /// which takes a block's instructions of either capability (D8).
     #[inline]
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn, Terminated, B>> {
-        self.function_of_blocks().entry_block()
+    pub fn entry_block(
+        self,
+    ) -> Option<BasicBlock<'ctx, Dyn, Terminated, B, BlockParamsDyn, ReadOnly>> {
+        self.function.entry_block()
     }
 
-    /// Basic blocks in insertion order, at [`Mutable`] (see
+    /// Basic blocks in insertion order, at [`ReadOnly`] (see
     /// [`Self::entry_block`]).
     #[inline]
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Terminated, B>>
-    + DoubleEndedIterator
+    ) -> impl ExactSizeIterator<
+        Item = BasicBlock<'ctx, Dyn, Terminated, B, BlockParamsDyn, ReadOnly>,
+    > + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        self.function_of_blocks().basic_blocks()
-    }
-
-    /// The function at [`Mutable`], to mint its blocks at `Mutable`; never
-    /// handed out, so the function's own setters stay unreachable.
-    #[inline]
-    fn function_of_blocks(self) -> FunctionValue<'ctx, Dyn, B> {
-        FunctionValue::from_parts_unchecked(
-            self.function.slot_trusting_same_module(),
-            // capability (proof): FnPatch holds the module's Unverified token
-            // — a `FunctionBody` is minted only by `FnPatch::function_mut`
-            // (`FnReshape` delegates to it), and its blocks are what that
-            // rung mutates.
-            self.function.module.mutable_at_marked_boundary(),
-        )
+        self.function.basic_blocks()
     }
 }
 
@@ -977,7 +968,7 @@ where
         // refuse it.
         // boundary (F1): refused by Task 26
         let id = target.to_erased().slot_trusting_same_module();
-        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.capability_ref());
         // Capture operand ids before erasing (erase drops their uses). Push them
         // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
         // is not an instruction (constant/param operands), so no filter is needed
@@ -1007,7 +998,7 @@ where
     #[inline]
     pub fn body_instructions(
         &self,
-    ) -> impl Iterator<Item = NonTerminator<'m, B>> + use<'m, 'r, 'ctx, B, R> {
+    ) -> impl Iterator<Item = NonTerminator<'m, B, ReadOnly>> + use<'m, 'r, 'ctx, B, R> {
         let module = self.module.module_ref();
         self.function
             .as_function()
@@ -1041,7 +1032,7 @@ where
         // Boundary: the caller's instruction view, admitted before anything
         // reads it.
         let id = view.slot_in(self.module.id())?;
-        let replacement = replacement.into_erased_value(self.module.module_ref())?;
+        let replacement = replacement.into_erased_value(self.module.capability_ref())?;
         // Capture the former users only when a worklist is active — the
         // inactive path must stay allocation-free (the field's zero-overhead
         // promise). The `borrow()` is a let-RHS temporary, released before the
@@ -1055,7 +1046,7 @@ where
         } else {
             Vec::new()
         };
-        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.capability_ref());
         inst.replace_all_uses_with(self.module, replacement)?;
         if let Some(wl) = self.worklist.borrow_mut().as_mut() {
             for user_id in users {
@@ -1136,7 +1127,7 @@ where
     /// reached. Skips terminators and erased ids (the latter never surface —
     /// `erase` removes them).
     #[inline]
-    pub fn step(&self) -> Option<NonTerminator<'m, B>> {
+    pub fn step(&self) -> Option<NonTerminator<'m, B, ReadOnly>> {
         let module = self.patch.module.module_ref();
         self.patch.worklist.borrow_mut().as_mut()?.pop(module)
     }
@@ -1423,7 +1414,7 @@ where
         &self,
         block: BlockId<Dyn, B>,
     ) -> IrResult<BasicBlock<'m, Dyn, Terminated, B>> {
-        let module_ref = self.patch.module_mut().module_ref();
+        let module_ref = self.patch.module_mut().capability_ref();
         // Internal: admitted by `into_basic_block_label` on this line.
         let slot = block
             .into_basic_block_label(module_ref)?
@@ -2238,7 +2229,7 @@ where
             + TryFrom<Value<'m, B>, Error = IrError>,
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
-        let module_ref = self.patch.module_mut().module_ref();
+        let module_ref = self.patch.module_mut().capability_ref();
         let (first, _) = *incomings.first().ok_or(IrError::InvalidOperation {
             message: "insert_phi: needs at least one typed incoming to derive the \
                       result type; use insert_phi_dyn for the zero-incoming case",
@@ -2331,7 +2322,7 @@ where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
         T: IrType<'m, B>,
     {
-        let module_ref = self.patch.module_mut().module_ref();
+        let module_ref = self.patch.module_mut().capability_ref();
         // Resolve the caller's value ids to ephemeral handles (tag-checked)
         // before anything else; a foreign id is rejected with
         // `IrError::ForeignValueId` while nothing has been touched.

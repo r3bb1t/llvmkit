@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn static_vec_elem_projects_scalar_element_types() {
         let m = crate::module_new!("element-marker").expect("fresh module");
-        let module = m.module_ref();
+        let module = m.capability_ref();
         assert_eq!(
             <i32 as StaticVecElem<'_, _>>::element_ir_type(module),
             m.i32_type().as_type(),

@@ -65,7 +65,9 @@ use super::module::ModuleRef;
 use super::value::{Value, ValueSlotAccess, ValueUse};
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlock;
+use crate::block_params::BlockParamsDyn;
 use crate::block_state::Unterminated;
+use crate::capability::ReadOnly;
 use crate::constant_range::{ConstantRange, metadata_constant_int};
 use crate::derived_types::SizedType;
 use crate::dominator_tree::DominatorTree;
@@ -194,7 +196,7 @@ impl<'a> CallBaseParts<'a> {
 #[derive(Clone, Copy)]
 struct BlockPosition<'a, 'ctx, B: ModuleBrand> {
     index: usize,
-    instructions: &'a [InstructionView<'ctx, B>],
+    instructions: &'a [InstructionView<'ctx, B, ReadOnly>],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,7 +271,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// is caught at verify time. llvmkit used to reject it at parse time and
     /// again in `GlobalIfuncBuilder::build`, which made the upstream
     /// diagnostic unreachable.
-    fn visit_global_ifunc(&self, i: crate::GlobalIfunc<'ctx, B>) -> IrResult<()> {
+    fn visit_global_ifunc(&self, i: crate::GlobalIfunc<'ctx, B, ReadOnly>) -> IrResult<()> {
         let fail = |rule: VerifierRule, message: &str| IrError::VerifierFailure {
             rule,
             subject: VerifierSubject::GlobalIfunc {
@@ -403,7 +405,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// invariants, scalable-type rejection). The intrinsic-globals
     /// (`llvm.global_ctors` / `llvm.used` / etc.) and metadata
     /// attachment rules are deferred -- they need the metadata layer.
-    fn visit_global_variable(&self, g: GlobalVariable<'ctx, B>) -> IrResult<()> {
+    fn visit_global_variable(&self, g: GlobalVariable<'ctx, B, ReadOnly>) -> IrResult<()> {
         let value_ty = g.value_type();
         // `GlobalValue::getName`, the empty string for an unnamed global.
         let name = g.name().unwrap_or_default();
@@ -492,7 +494,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    fn verify_constant_tree(&self, constant: Constant<'ctx, B>) -> IrResult<()> {
+    fn verify_constant_tree(&self, constant: Constant<'ctx, B, ReadOnly>) -> IrResult<()> {
         let value_data = self
             .module
             .context()
@@ -515,14 +517,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             ConstantData::BlockAddress { function, block } => {
-                let block = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
-                    *block,
-                    self.module,
-                    self.module
-                        .label_type::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                );
+                let block =
+                    BasicBlock::<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>::from_parts(
+                        *block,
+                        self.module,
+                        self.module
+                            .label_type::<B>()
+                            .as_type()
+                            .slot_trusting_same_module(),
+                    );
                 if block
                     .parent_function()
                     .map(|f| f.slot_trusting_same_module())
@@ -534,8 +537,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             ConstantData::DsoLocalEquivalent { function } => {
-                let value =
-                    Value::<B>::from_parts(*function, self.module, self.value_type(*function));
+                let value = Value::<B, ReadOnly>::from_parts(
+                    *function,
+                    self.module,
+                    self.value_type(*function),
+                );
                 match &value.data().kind {
                     ValueKindData::Function(_) => {}
                     ValueKindData::GlobalAlias(_) => {
@@ -566,8 +572,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             ConstantData::NoCfi { function } => {
-                let value =
-                    Value::<B>::from_parts(*function, self.module, self.value_type(*function));
+                let value = Value::<B, ReadOnly>::from_parts(
+                    *function,
+                    self.module,
+                    self.value_type(*function),
+                );
                 match &value.data().kind {
                     ValueKindData::Function(_)
                     | ValueKindData::GlobalVariable(_)
@@ -602,18 +611,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 deactivation_symbol,
             } => {
                 let pointer = Value::from_parts(*pointer, self.module, self.value_type(*pointer));
-                let key = Value::<B>::from_parts(*key, self.module, self.value_type(*key));
-                let discriminator = Value::<B>::from_parts(
+                let key =
+                    Value::<B, ReadOnly>::from_parts(*key, self.module, self.value_type(*key));
+                let discriminator = Value::<B, ReadOnly>::from_parts(
                     *discriminator,
                     self.module,
                     self.value_type(*discriminator),
                 );
-                let addr_discriminator = Value::<B>::from_parts(
+                let addr_discriminator = Value::<B, ReadOnly>::from_parts(
                     *addr_discriminator,
                     self.module,
                     self.value_type(*addr_discriminator),
                 );
-                let deactivation_symbol = Value::<B>::from_parts(
+                let deactivation_symbol = Value::<B, ReadOnly>::from_parts(
                     *deactivation_symbol,
                     self.module,
                     self.value_type(*deactivation_symbol),
@@ -672,7 +682,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn fail_global(
         &self,
-        g: GlobalVariable<'ctx, B>,
+        g: GlobalVariable<'ctx, B, ReadOnly>,
         rule: VerifierRule,
         message: String,
     ) -> IrError {
@@ -1163,7 +1173,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     // Per-function walk
     // ------------------------------------------------------------------
 
-    fn visit_function(&self, f: FunctionValue<'ctx, Dyn, B>) -> IrResult<()> {
+    fn visit_function(&self, f: FunctionValue<'ctx, Dyn, B, ReadOnly>) -> IrResult<()> {
         self.verify_intrinsic_address_not_taken(f)?;
         self.verify_intrinsic_function(f)?;
         // Build a CFG predecessor map for this function so phi-validation
@@ -1235,7 +1245,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    fn verify_intrinsic_function(&self, f: FunctionValue<'ctx, Dyn, B>) -> IrResult<()> {
+    fn verify_intrinsic_function(&self, f: FunctionValue<'ctx, Dyn, B, ReadOnly>) -> IrResult<()> {
         let name_buffer = f.name().unwrap_or_default();
         let name = name_buffer.as_str();
         match crate::intrinsics::resolve_intrinsic_name(name) {
@@ -1255,9 +1265,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `descriptor_for_name`/`function_type_ref` is normalised to
         // `IntrinsicSignatureMismatch` at its own id-bearing boundary now, so
         // there is no other variant left to renormalise here.
-        let descriptor = self
-            .module
-            .intrinsic_descriptor_from_signature::<B>(name, f.signature())?;
+        // The verifier only reads, so the descriptor is minted `ReadOnly` —
+        // the grade `f` and its own descriptor already have.
+        let descriptor = ModuleRef::<B, ReadOnly>::new(self.module)
+            .intrinsic_descriptor_from_signature(name, f.signature())?;
         if f.intrinsic_id().is_some() && f.intrinsic_descriptor().as_ref() != Some(&descriptor) {
             return Err(IrError::IntrinsicSignatureMismatch {
                 name: name.to_owned(),
@@ -1311,7 +1322,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// [`Self::verify_intrinsic_function`]'s signature work.
     /// `Module::isMaterialized()` is always true here: llvmkit has no lazy
     /// bitcode loader, so a module's use lists are always complete.
-    fn verify_intrinsic_address_not_taken(&self, f: FunctionValue<'ctx, Dyn, B>) -> IrResult<()> {
+    fn verify_intrinsic_address_not_taken(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+    ) -> IrResult<()> {
         let name = f.name().unwrap_or_default();
         if matches!(
             crate::intrinsics::resolve_intrinsic_name(&name),
@@ -1355,7 +1369,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ///   `Use` at all, while llvmkit records an edge for each
     ///   (`docs/divergences.md` D5); those edges are skipped so the two sets
     ///   agree.
-    fn function_address_is_taken(&self, f: FunctionValue<'ctx, Dyn, B>) -> bool {
+    fn function_address_is_taken(&self, f: FunctionValue<'ctx, Dyn, B, ReadOnly>) -> bool {
         let value = f.as_erased();
         let signature = f.signature();
         let edges: Vec<ValueUse> = value.data().use_list.borrow().iter().copied().collect();
@@ -1383,10 +1397,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             // `if (IgnoreAssumeLikeCalls) { if (const auto *I =
             //    dyn_cast<IntrinsicInst>(Call)) if (I->isAssumeLikeIntrinsic())
             //    continue; }`
-            if crate::speculation::is_assume_like_intrinsic(&InstructionView::<B>::from_parts(
-                user,
-                self.module,
-            )) {
+            if crate::speculation::is_assume_like_intrinsic(
+                &InstructionView::<B, ReadOnly>::from_parts(user, self.module),
+            ) {
                 continue;
             }
             // `if (!Call->isCallee(&U) || (!IgnoreCastedDirectCall &&
@@ -1456,16 +1469,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `all_of` over an empty range is true, so a cast operator with no
         // users of its own is exempt upstream too.
         users.iter().all(|user| {
-            crate::speculation::is_assume_like_intrinsic(&InstructionView::<B>::from_parts(
-                *user,
-                self.module,
-            ))
+            crate::speculation::is_assume_like_intrinsic(
+                &InstructionView::<B, ReadOnly>::from_parts(*user, self.module),
+            )
         })
     }
 
     fn function_attrs_with_groups(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
     ) -> Option<AttributeStorage> {
         let mut attrs = f.data().attributes.borrow().clone();
         for group in f.function_attr_groups() {
@@ -1477,11 +1489,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn visit_block(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
-        let instructions: Vec<InstructionView<'ctx, B>> = bb.instructions().collect();
+        let instructions: Vec<InstructionView<'ctx, B, ReadOnly>> = bb.instructions().collect();
 
         // Empty block is malformed (LLVM accepts `unreachable` as the
         // sole instruction; an empty list has no terminator at all).
@@ -1557,11 +1569,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn visit_instruction(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         index_in_block: usize,
-        block_instructions: &[InstructionView<'ctx, B>],
+        block_instructions: &[InstructionView<'ctx, B, ReadOnly>],
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // Per-opcode dispatch. Reaches into the storage payload
@@ -1697,9 +1709,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn check_instruction_metadata(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         kind: &InstructionKindData,
     ) -> IrResult<()> {
         let Some(range_id) = inst.metadata_stored().get(&MetadataAttachmentKind::Range) else {
@@ -1730,9 +1742,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn verify_range_like_metadata_inst(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         id: MetadataSlot,
         expected_scalar_ty: TypeSlot,
         kind: RangeLikeMetadataKind,
@@ -1744,7 +1756,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn verify_range_like_metadata_global(
         &self,
-        g: GlobalVariable<'ctx, B>,
+        g: GlobalVariable<'ctx, B, ReadOnly>,
         id: MetadataSlot,
         expected_scalar_ty: TypeSlot,
         kind: RangeLikeMetadataKind,
@@ -1896,9 +1908,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// see [`Self::visit_instruction`]'s dispatch.
     fn check_int_binary(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         b: &BinaryOpData,
         operand_kind_message: &str,
         same_type_message: &str,
@@ -1947,9 +1959,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `fadd`/`fsub`/`fmul`/`fdiv`/`frem`.
     fn check_float_binary(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         b: &BinaryOpData,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(b.lhs.get());
@@ -2000,9 +2012,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// literals it concatenates have no separator.
     fn check_fneg(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         u: &FnegInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
@@ -2041,9 +2053,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `grep -c 'Freeze' llvm/lib/IR/Verifier.cpp` is 0 at `llvmorg-22.1.4`.
     fn check_freeze(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         u: &FreezeInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
@@ -2070,9 +2082,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// rule has no literal to reproduce and keeps llvmkit's own wording.
     fn check_va_arg(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         u: &VaArgInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
@@ -2091,9 +2103,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// the index list and checks the leaf matches the result.
     fn check_extract_value(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &ExtractValueInstData,
     ) -> IrResult<()> {
         let agg_ty = self.value_type(d.aggregate.get());
@@ -2133,9 +2145,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitInsertValueInst`.
     fn check_insert_value(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &InsertValueInstData,
     ) -> IrResult<()> {
         let agg_ty = self.value_type(d.aggregate.get());
@@ -2189,9 +2201,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// must equal the result type; the index must be integer-typed.
     fn check_extract_element(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &ExtractElementInstData,
     ) -> IrResult<()> {
         let vec_ty = self.value_type(d.vector.get());
@@ -2245,9 +2257,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitInsertElementInst`.
     fn check_insert_element(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &InsertElementInstData,
     ) -> IrResult<()> {
         let vec_ty = self.value_type(d.vector.get());
@@ -2322,14 +2334,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// instruction whose recorded result type does.
     fn check_shuffle_vector(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &ShuffleVectorInstData,
     ) -> IrResult<()> {
-        let lhs: Value<'ctx, B> =
+        let lhs: Value<'ctx, B, ReadOnly> =
             Value::from_parts(d.lhs.get(), self.module, self.value_type(d.lhs.get()));
-        let rhs: Value<'ctx, B> =
+        let rhs: Value<'ctx, B, ReadOnly> =
             Value::from_parts(d.rhs.get(), self.module, self.value_type(d.rhs.get()));
         if !ShuffleVectorInst::is_valid_operands(lhs, rhs, &d.mask) {
             return Err(self.fail(
@@ -2431,9 +2443,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `acquire`/`release`/`acq_rel`/`seq_cst`.
     fn check_fence(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &FenceInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
@@ -2471,9 +2483,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// operand — then `checkAtomicMemAccessSize(ElTy, &CXI)`.
     fn check_cmpxchg(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &AtomicCmpXchgInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
@@ -2567,9 +2579,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `AtomicRMWInst::Init` asserts them — so they keep llvmkit's wording.
     fn check_atomicrmw(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &AtomicRmwInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
@@ -2635,9 +2647,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitICmpInst`.
     fn check_icmp(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         c: &CmpInstData,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(c.lhs.get());
@@ -2691,9 +2703,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitFCmpInst`.
     fn check_fcmp(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         c: &FcmpInstData,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(c.lhs.get());
@@ -2741,9 +2753,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// family.
     fn check_cast(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         c: &CastOpData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(c.src.get());
@@ -3080,12 +3092,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitAllocaInst`.
     fn check_alloca(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         a: &AllocaInstData,
     ) -> IrResult<()> {
-        let allocated = Type::<B>::new(a.allocated_ty, self.module);
+        let allocated = Type::<B, ReadOnly>::new(a.allocated_ty, self.module);
         if SizedType::try_from(allocated).is_err() {
             return Err(self.fail(
                 f,
@@ -3174,9 +3186,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitLoadInst`.
     fn check_load(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         l: &LoadInstData,
     ) -> IrResult<()> {
         let ptr_ty = self.value_type(l.ptr.get());
@@ -3191,7 +3203,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        let pointee = Type::<B>::new(l.pointee_ty, self.module);
+        let pointee = Type::<B, ReadOnly>::new(l.pointee_ty, self.module);
         if SizedType::try_from(pointee).is_err() {
             return Err(self.fail(
                 f,
@@ -3253,9 +3265,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitStoreInst`.
     fn check_store(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         s: &StoreInstData,
     ) -> IrResult<()> {
         let ptr_ty = self.value_type(s.ptr.get());
@@ -3271,7 +3283,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             ));
         }
         let val_ty = self.value_type(s.value.get());
-        if SizedType::try_from(Type::<B>::new(val_ty, self.module)).is_err() {
+        if SizedType::try_from(Type::<B, ReadOnly>::new(val_ty, self.module)).is_err() {
             return Err(self.fail(
                 f,
                 bb,
@@ -3322,8 +3334,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `load` / `store` noun.
     fn check_atomic_access_type(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         ty: TypeSlot,
         message: &str,
     ) -> IrResult<()> {
@@ -3346,8 +3358,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// first, then power-of-two.
     fn check_atomic_access_size(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         ty: TypeSlot,
     ) -> IrResult<()> {
         let Some(bits) = type_bit_width(self.module, ty) else {
@@ -3387,9 +3399,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `docs/divergences.md` entry 120.
     fn check_gep(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         g: &GepInstData,
     ) -> IrResult<()> {
         let base_ty = self.value_type(g.ptr.get());
@@ -3404,7 +3416,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ),
             ));
         }
-        let source = Type::<B>::new(g.source_ty, self.module);
+        let source = Type::<B, ReadOnly>::new(g.source_ty, self.module);
         if SizedType::try_from(source).is_err() {
             return Err(self.fail(
                 f,
@@ -3529,9 +3541,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitCallBase`.
     fn check_call(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         c: &CallInstData,
         position: BlockPosition<'_, 'ctx, B>,
         cx: &FunctionContext<'_, B>,
@@ -3638,8 +3650,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// SwiftErrorVal is used as a swifterror argument in CS."
     fn verify_swift_error_call(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         call: CallBaseParts<'_>,
         swift_error_val: ValueSlot,
     ) -> IrResult<()> {
@@ -3676,11 +3688,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// two *values* (`SwiftErrorVal, U`) and prints no block at all.
     fn verify_swift_error_value(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        report_bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        report_bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         swift_error_val: ValueSlot,
     ) -> IrResult<()> {
-        let value = Value::<B>::from_parts(
+        let value = Value::<B, ReadOnly>::from_parts(
             swift_error_val,
             self.module,
             self.value_type(swift_error_val),
@@ -3749,8 +3761,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// underlying alloca/parameter it comes from has a swifterror as well."
     fn verify_call_swift_error_arguments(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         call: CallBaseParts<'_>,
     ) -> IrResult<()> {
         // `FTy = Call.getFunctionType()`; a payload whose recorded type is not
@@ -3775,7 +3787,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             let Some(swift_error_arg) = call.args.get(index) else {
                 continue;
             };
-            let swift_error_arg = Value::<B>::from_parts(
+            let swift_error_arg = Value::<B, ReadOnly>::from_parts(
                 swift_error_arg.get(),
                 self.module,
                 self.value_type(swift_error_arg.get()),
@@ -3838,9 +3850,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// where `Verifier::CheckFailed` prints the offending value itself.
     fn block_of(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
         instruction: ValueSlot,
-    ) -> Option<BasicBlock<'ctx, Dyn, Unterminated, B>> {
+    ) -> Option<BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>> {
         let ValueKindData::Instruction(data) = &self.module.context().value_data(instruction).kind
         else {
             return None;
@@ -3868,8 +3880,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// indirect destinations, `None` a `call` or an `invoke`.
     fn verify_inline_asm_call(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         call: CallBaseParts<'_>,
         indirect_dest_count: Option<usize>,
     ) -> IrResult<()> {
@@ -3880,7 +3892,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             ..
         } = call;
         // `const InlineAsm *IA = cast<InlineAsm>(Call.getCalledOperand());`
-        let inline_asm = InlineAsm::<B>::from_parts(callee, self.module, self.value_type(callee));
+        let inline_asm =
+            InlineAsm::<B, ReadOnly>::from_parts(callee, self.module, self.value_type(callee));
         // `unsigned ArgNo = 0; unsigned LabelNo = 0;`
         let mut arg_no = 0usize;
         let mut label_no = 0usize;
@@ -3983,8 +3996,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// it as well as the operand-bundle loop.
     fn verifier_check(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         condition: bool,
         rule: VerifierRule,
         message: &str,
@@ -4022,8 +4035,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// llvmkit stops, which is the house difference the file header records.
     fn visit_call_base_operand_bundles(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         call: CallBaseParts<'_>,
     ) -> IrResult<()> {
         let CallBaseParts {
@@ -4247,8 +4260,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Check` for `Check` in its own order.
     fn verify_attached_call_bundle(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         call: CallBaseParts<'_>,
         inputs: &[ValueSlot],
     ) -> IrResult<()> {
@@ -4282,7 +4295,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `CallBase::doesNotReturn()` is `hasFnAttr(Attribute::NoReturn)`,
         // ported once as `call_site_has_fn_attr`.
         let does_not_return = crate::instr_types::call_site_has_fn_attr(
-            ModuleRef::<B>::new(self.module),
+            ModuleRef::<B, ReadOnly>::new(self.module),
             callee,
             attrs,
             AttrKind::NoReturn,
@@ -4322,7 +4335,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     .to_owned(),
             ));
         };
-        let input_function = Value::<B>::from_parts(*input, self.module, input_data.ty);
+        let input_function = Value::<B, ReadOnly>::from_parts(*input, self.module, input_data.ty);
 
         // `Intrinsic::ID IID = Fn->getIntrinsicID(); if (IID) … else …`
         let intrinsic_id = crate::intrinsics::descriptor_for_callee(input_function)
@@ -4398,7 +4411,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let ValueKindData::Function(_) = &callee_data.kind else {
             return false;
         };
-        crate::intrinsics::descriptor_for_callee(Value::<B>::from_parts(
+        crate::intrinsics::descriptor_for_callee(Value::<B, ReadOnly>::from_parts(
             call.callee.get(),
             self.module,
             callee_data.ty,
@@ -4424,9 +4437,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `crates/llvmkit-asmparser/tests/fixtures/upstream/Verifier/`.
     fn verify_must_tail_call(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         c: &CallInstData,
         position: BlockPosition<'_, 'ctx, B>,
     ) -> IrResult<()> {
@@ -4671,8 +4684,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// Mirrors `Verifier::verifyTailCCMustTailAttrs`.
     fn verify_tail_cc_must_tail_attrs(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         attrs: &AttributeStorage,
         context: &str,
     ) -> IrResult<()> {
@@ -4711,7 +4724,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     /// `dyn_cast_or_null<BitCastInst>(Next)`, projected to `(the bitcast,
     /// its operand 0)`.
-    fn bitcast_source(inst: &InstructionView<'ctx, B>) -> Option<(ValueSlot, ValueSlot)> {
+    fn bitcast_source(inst: &InstructionView<'ctx, B, ReadOnly>) -> Option<(ValueSlot, ValueSlot)> {
         let ValueKindData::Instruction(i) = &inst.as_erased().data().kind else {
             return None;
         };
@@ -4726,7 +4739,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `dyn_cast_or_null<ReturnInst>(Next)` followed by `Ret->getReturnValue()`
     /// — `None` when the instruction is not a `ret`, `Some(None)` for
     /// `ret void`.
-    fn return_value_of(inst: &InstructionView<'ctx, B>) -> Option<Option<ValueSlot>> {
+    fn return_value_of(inst: &InstructionView<'ctx, B, ReadOnly>) -> Option<Option<ValueSlot>> {
         let ValueKindData::Instruction(i) = &inst.as_erased().data().kind else {
             return None;
         };
@@ -4743,7 +4756,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let ValueKindData::Function(_) = &callee_data.kind else {
             return false;
         };
-        crate::intrinsics::descriptor_for_callee(Value::<B>::from_parts(
+        crate::intrinsics::descriptor_for_callee(Value::<B, ReadOnly>::from_parts(
             callee,
             self.module,
             callee_data.ty,
@@ -4753,8 +4766,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn check_intrinsic_call(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         instruction: ValueSlot,
         call: CallBaseParts<'_>,
         cx: &FunctionContext<'_, B>,
@@ -4770,7 +4783,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let ValueKindData::Function(callee_function) = &callee_data.kind else {
             return Ok(());
         };
-        let callee = Value::<B>::from_parts(callee_id, self.module, callee_data.ty);
+        let callee = Value::<B, ReadOnly>::from_parts(callee_id, self.module, callee_data.ty);
         let Some(descriptor) = crate::intrinsics::descriptor_for_callee(callee) else {
             return Ok(());
         };
@@ -4874,8 +4887,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// and upstream's `intrinstic` typo, which is contractual.
     fn check_callbr_landingpad_intrinsic(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         instruction: ValueSlot,
         args: &[core::cell::Cell<ValueSlot>],
         cx: &FunctionContext<'_, B>,
@@ -5013,8 +5026,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// block been reachable through no funclet.
     fn verify_funclet_token(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         id: IntrinsicId,
         operand_bundles: &[OperandBundleData],
         cx: &FunctionContext<'_, B>,
@@ -5085,9 +5098,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitSelectInst`.
     fn check_select(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         s: &SelectInstData,
     ) -> IrResult<()> {
         let cond_ty = self.value_type(s.cond.get());
@@ -5141,9 +5154,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitPHINode`.
     fn check_phi(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         p: &PhiData,
         predecessors: &HashMap<ValueSlot, Vec<ValueSlot>>,
     ) -> IrResult<()> {
@@ -5156,7 +5169,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // the `is_first_class` conjunct on struct excluding opaque structs. This
         // runs before the coherence delegation so an invalid result type is
         // rejected regardless of incoming coherence.
-        let rty = Type::<B>::new(result_ty, self.module);
+        let rty = Type::<B, ReadOnly>::new(result_ty, self.module);
         let valid_result = rty.is_integer()
             || rty.is_floating_point()
             || rty.is_pointer()
@@ -5270,9 +5283,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitReturnInst`.
     fn check_ret(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         r: &ReturnOpData,
     ) -> IrResult<()> {
         let expected = f.return_type();
@@ -5321,9 +5334,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// (default + cases) must belong to the parent function.
     fn check_switch(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &SwitchInstData,
         block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
@@ -5385,9 +5398,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// pointer; every destination must belong to the parent function.
     fn check_indirectbr(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &IndirectBrInstData,
         block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
@@ -5423,9 +5436,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// but specialised inline since the storage payload differs.
     fn check_invoke(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &InvokeInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -5487,9 +5500,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ///   did before this port.
     fn check_callbr(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &CallBrInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -5500,7 +5513,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             // `const InlineAsm *IA = cast<InlineAsm>(CBI.getCalledOperand());
             //  Check(!IA->canThrow(), "Unwinding from Callbr is not allowed");`
             let inline_asm =
-                InlineAsm::<B>::from_parts(d.callee.get(), self.module, callee_data.ty);
+                InlineAsm::<B, ReadOnly>::from_parts(d.callee.get(), self.module, callee_data.ty);
             self.verifier_check(
                 f,
                 bb,
@@ -5536,11 +5549,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 "Callbr for intrinsics currently doesn't support operand bundles",
             )?;
             // `switch (CBI.getIntrinsicID())` — one case, plus `default:`.
-            let intrinsic_id = crate::intrinsics::descriptor_for_callee(Value::<B>::from_parts(
-                d.callee.get(),
-                self.module,
-                callee_data.ty,
-            ))
+            let intrinsic_id = crate::intrinsics::descriptor_for_callee(
+                Value::<B, ReadOnly>::from_parts(d.callee.get(), self.module, callee_data.ty),
+            )
             .map(|descriptor| descriptor.id());
             if intrinsic_id == Some(IntrinsicId::AMDGCN_KILL) {
                 // `Check(CBI.getNumIndirectDests() == 1, "Callbr amdgcn_kill
@@ -5643,9 +5654,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitBranchInst`.
     fn check_br(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        _inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        _inst: &InstructionView<'ctx, B, ReadOnly>,
         b: &BranchInstData,
         block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
@@ -5776,7 +5787,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `BasicBlock::getFirstNonPHIIt()` as a value id.
     fn first_non_phi_in_block(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
         block: ValueSlot,
     ) -> Option<ValueSlot> {
         crate::eh_personalities::first_non_phi_slot(f.as_erased(), block)
@@ -5832,7 +5843,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `SiblingFuncletInfo`, whose only writers store an `invoke`, a
     /// `catchswitch` or a `cleanupret` whose unwind destination has already
     /// been shown to start with an EH pad; `None` stands for those two.
-    fn succ_pad(&self, f: FunctionValue<'ctx, Dyn, B>, terminator: ValueSlot) -> Option<ValueSlot> {
+    fn succ_pad(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        terminator: ValueSlot,
+    ) -> Option<ValueSlot> {
         let unwind_dest = self.terminator_unwind_dest(terminator)??;
         self.first_non_phi_in_block(f, unwind_dest)
     }
@@ -5842,8 +5857,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `pad` is upstream's `Instruction &I`, and `bb` its parent block.
     fn visit_eh_pad_predecessors(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         pad: ValueSlot,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -5990,8 +6005,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     //          CalledFn->getIntrinsicID()))
                     //    continue;`
                     let callee = invoke.callee.get();
-                    let callee_value =
-                        Value::<B>::from_parts(callee, self.module, self.value_type(callee));
+                    let callee_value = Value::<B, ReadOnly>::from_parts(
+                        callee,
+                        self.module,
+                        self.value_type(callee),
+                    );
                     let stripped = crate::pointer_analysis::strip_pointer_casts(callee_value);
                     let intrinsic_id = crate::intrinsics::descriptor_for_callee(stripped)
                         .map(|descriptor| descriptor.id());
@@ -6000,7 +6018,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     // not the stripped `CalledFn`.
                     if let Some(id) = intrinsic_id
                         && crate::instr_types::call_site_has_fn_attr(
-                            ModuleRef::<B>::new(self.module),
+                            ModuleRef::<B, ReadOnly>::new(self.module),
                             callee,
                             self.module.context().call_attributes(invoke.attrs.get()),
                             AttrKind::NoUnwind,
@@ -6112,9 +6130,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitLandingPadInst`.
     fn check_landing_pad(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &LandingPadInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -6223,8 +6241,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitResumeInst`.
     fn check_resume(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         d: &ResumeInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -6258,9 +6276,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitCatchPadInst`.
     fn check_catch_pad(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &CatchPadInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -6307,8 +6325,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitCatchReturnInst`.
     fn check_catch_return(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         d: &CatchReturnInstData,
     ) -> IrResult<()> {
         // `Check(isa<CatchPadInst>(CatchReturn.getOperand(0)),
@@ -6331,9 +6349,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitCleanupPadInst`.
     fn check_cleanup_pad(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &CleanupPadInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -6384,9 +6402,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitCatchSwitchInst`.
     fn check_catch_switch(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         d: &CatchSwitchInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -6497,8 +6515,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// `Verifier::visitCleanupReturnInst`.
     fn check_cleanup_return(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         d: &CleanupReturnInstData,
     ) -> IrResult<()> {
         // `Check(isa<CleanupPadInst>(CRI.getOperand(0)), "CleanupReturnInst
@@ -6558,8 +6576,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// inner its token-none.
     fn visit_funclet_pad(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         fpi: ValueSlot,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
@@ -6585,8 +6603,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             )?;
             // `Value *UnresolvedAncestorPad = nullptr;`
             let mut unresolved_ancestor_pad: Option<Option<ValueSlot>> = None;
-            let current_pad_value =
-                Value::<B>::from_parts(current_pad, self.module, self.value_type(current_pad));
+            let current_pad_value = Value::<B, ReadOnly>::from_parts(
+                current_pad,
+                self.module,
+                self.value_type(current_pad),
+            );
             // `for (User *U : CurrentPad->users())`
             for user in current_pad_value.users() {
                 let u = user.slot_trusting_same_module();
@@ -6822,7 +6843,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// — the `Active` set — is unchanged.
     fn verify_sibling_funclet_unwinds(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
         // `SmallPtrSet<Instruction *, 8> Visited; SmallPtrSet<Instruction *, 8>
@@ -6886,9 +6907,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// using `DominatorTree` directly rather than the analysis manager.
     fn check_dominates_uses(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         dom_tree: &DominatorTree,
     ) -> IrResult<()> {
         let operands = inst.operand_ids();
@@ -6923,11 +6944,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// predecessor edge, not at the phi's own slot.
     fn check_self_reference_and_in_block_dom(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
-        inst: &InstructionView<'ctx, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        inst: &InstructionView<'ctx, B, ReadOnly>,
         index_in_block: usize,
-        block_instructions: &[InstructionView<'ctx, B>],
+        block_instructions: &[InstructionView<'ctx, B, ReadOnly>],
     ) -> IrResult<()> {
         let is_phi = matches!(inst.kind(), Some(crate::InstructionKind::Phi(_)));
         if is_phi {
@@ -6980,8 +7001,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn fail(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         rule: VerifierRule,
         message: String,
     ) -> IrError {
@@ -7000,7 +7021,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     }
 
     fn type_label(&self, id: TypeSlot) -> String {
-        format!("{}", Type::<B>::new(id, self.module))
+        format!("{}", Type::<B, ReadOnly>::new(id, self.module))
     }
 
     /// Read the width of `ty`'s scalar integer type — `ty` itself when it is a
@@ -7015,8 +7036,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// about element counts.
     fn scalar_int_width_or_err(
         &self,
-        f: FunctionValue<'ctx, Dyn, B>,
-        bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
         ty: TypeSlot,
         message: &str,
     ) -> IrResult<u32> {
@@ -7120,7 +7141,7 @@ fn parameter_abi_attributes_of_call_site(
 }
 
 fn build_predecessors<B: ModuleBrand>(
-    f: FunctionValue<'_, Dyn, B>,
+    f: FunctionValue<'_, Dyn, B, ReadOnly>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
     let cfg = FunctionCfg::new(f);
     f.basic_blocks()
@@ -7584,7 +7605,7 @@ mod tests {
         let i64_ty = m.i64_type().as_type();
         let void_ty = m.void_type().as_type();
         let (f_id, bb_id) = skeleton(&m, void_ty, &[i32_ty, i64_ty], "f");
-        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.capability_ref());
         let p0 = f.param(0).unwrap();
         let p1 = f.param(1).unwrap();
         fabricate_instruction(
@@ -7609,7 +7630,7 @@ mod tests {
         let void_ty = m.void_type().as_type();
         let i32_ty = m.i32_type().as_type();
         let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty], "f");
-        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.capability_ref());
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
         append_ret_void(&m, then_bb.slot_trusting_same_module());
@@ -7658,7 +7679,7 @@ mod tests {
         let i32_ty = m.i32_type().as_type();
         let void_ty = m.void_type().as_type();
         let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty, i32_ty], "f");
-        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.capability_ref());
         let p0 = f.param(0).unwrap();
         let p1 = f.param(1).unwrap();
         fabricate_instruction(
@@ -7771,7 +7792,7 @@ mod tests {
         let void_ty = m.void_type().as_type();
         let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
         let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
-        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.capability_ref());
         let dead = f.append_basic_block(&m, "dead");
         let dead_id = dead.slot_trusting_same_module();
         fabricate_instruction(
@@ -7800,7 +7821,7 @@ mod tests {
         let i32_ty = m.i32_type().as_type();
         let void_ty = m.void_type().as_type();
         let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
-        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.capability_ref());
         let target = f.append_basic_block(&m, "target");
         let cond_id = ValueSlotAccess::slot_trusting_same_module(f.param(0).unwrap());
         fabricate_instruction(
@@ -7846,7 +7867,7 @@ mod tests {
         let i32_ty = m.i32_type().as_type();
         let void_ty = m.void_type().as_type();
         let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
-        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.capability_ref());
         let target = f.append_basic_block(&m, "target");
         let unrelated = f.append_basic_block(&m, "unrelated");
         fabricate_instruction(

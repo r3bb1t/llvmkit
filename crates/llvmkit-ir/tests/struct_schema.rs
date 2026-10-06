@@ -1,15 +1,16 @@
 use llvmkit_ir::{
     Capability, Constant, Dyn, IntValue, IntoIrField, IrBuilder, IrError, IrField, Linkage, Module,
-    ModuleBrand, ModuleView, ReadOnly, StructFields, StructSchema, StructSchemaValue, StructValue,
-    Type, ValidatedStructValue, Value, module_new,
+    ModuleBrand, ModuleView, Mutable, ReadOnly, StructFields, StructSchema, StructSchemaValue,
+    StructValue, Type, ValidatedStructValue, Value, module_new,
 };
 use llvmkit_macros::Branded;
 
 struct Point;
 
+/// A hand-written schema value, capability-generic as the trait requires.
 #[derive(Branded)]
-struct PointValue<'ctx, B: ModuleBrand> {
-    raw: StructValue<'ctx, B>,
+struct PointValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    raw: StructValue<'ctx, B, C>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
@@ -42,12 +43,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, Point, B> for PointValue<'ctx, B> {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, Point, B, C>
+    for PointValue<'ctx, B, C>
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
@@ -62,7 +68,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Point, B> for PointValue<'ct
 }
 
 impl StructSchema for Point {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
     type FieldParams = (i32, i32);
 
     const NAME: &'static str = "Point";
@@ -91,18 +97,23 @@ impl StructSchema for Point {
 
 struct BadPoint;
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, BadPoint, B> for PointValue<'ctx, B> {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, BadPoint, B, C>
+    for PointValue<'ctx, B, C>
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
 
 impl StructSchema for BadPoint {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
     type FieldParams = (i64,);
 
     const NAME: &'static str = "Point";
@@ -126,20 +137,23 @@ impl StructSchema for BadPoint {
 
 struct RecursiveNode;
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, RecursiveNode, B>
-    for PointValue<'ctx, B>
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, RecursiveNode, B, C>
+    for PointValue<'ctx, B, C>
 {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
 
 impl StructSchema for RecursiveNode {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
     type FieldParams = (RecursiveNode,);
 
     const NAME: &'static str = "RecursiveNode";
@@ -165,18 +179,23 @@ impl StructSchema for RecursiveNode {
 
 struct EmptyName;
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, EmptyName, B> for PointValue<'ctx, B> {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, EmptyName, B, C>
+    for PointValue<'ctx, B, C>
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
 
 impl StructSchema for EmptyName {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
     type FieldParams = (i32,);
 
     const NAME: &'static str = "";
@@ -201,8 +220,8 @@ impl StructSchema for EmptyName {
 struct Rect;
 
 #[derive(Branded)]
-struct RectValue<'ctx, B: ModuleBrand> {
-    raw: StructValue<'ctx, B>,
+struct RectValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    raw: StructValue<'ctx, B, C>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
@@ -229,12 +248,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, Rect, B> for RectValue<'ctx, B> {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, Rect, B, C>
+    for RectValue<'ctx, B, C>
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
@@ -249,7 +273,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Rect, B> for RectValue<'ctx,
 }
 
 impl StructSchema for Rect {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = RectValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = RectValue<'ctx, B, C>;
     type FieldParams = (Point, Point);
 
     const NAME: &'static str = "Rect";

@@ -35,7 +35,7 @@ fn main() {
     let head = {
         let b = IrBuilder::new_for::<Dyn>(&m);
         let (head, _params) = b
-            .append_block_typed::<(i32,), _>(m.view(f), "head")
+            .append_block_typed::<(i32,), _, _>(m.view(f), "head")
             .expect("head");
         head.id()
     };

@@ -42,52 +42,59 @@ use std::collections::HashMap;
 use llvmkit_macros::Branded;
 
 use llvmkit_ir::{
-    Dyn, FunctionValue, GlobalAlias, GlobalIfunc, GlobalVariable, MetadataId, ModuleBrand, Type,
-    attributes::AttributeStorage,
+    Capability, Dyn, FunctionValue, GlobalAlias, GlobalIfunc, GlobalVariable, MetadataId,
+    ModuleBrand, Mutable, Type, attributes::AttributeStorage,
 };
 
 use crate::numbered_values::NumberedValues;
 
 /// Erased handle for a slot-numbered global. Mirrors the `GlobalValue *`
 /// payload of upstream `SlotMapping::GlobalValues`.
+///
+/// `C` is the capability of the global it holds (D8): the parser's slot table
+/// holds the `Mutable` handles of the module it builds.
 #[derive(Branded)]
-pub enum GlobalRef<'ctx, B: ModuleBrand> {
+pub enum GlobalRef<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     /// Function definition or declaration. Carries the [`Dyn`] return marker
     /// because the parser cannot pin the static return shape without
     /// depending on the IR-side typed-return surface.
-    Function(FunctionValue<'ctx, Dyn, B>),
+    Function(FunctionValue<'ctx, Dyn, B, C>),
     /// Module-level data — `@x = global ...` / `@x = constant ...`.
-    Variable(GlobalVariable<'ctx, B>),
+    Variable(GlobalVariable<'ctx, B, C>),
     /// Module-level alias — `@x = alias ...`.
-    Alias(GlobalAlias<'ctx, B>),
+    Alias(GlobalAlias<'ctx, B, C>),
     /// Module-level indirect function — `@x = ifunc ...`.
-    Ifunc(GlobalIfunc<'ctx, B>),
+    Ifunc(GlobalIfunc<'ctx, B, C>),
 }
 
-impl<'ctx, B: ModuleBrand> From<FunctionValue<'ctx, Dyn, B>> for GlobalRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> From<FunctionValue<'ctx, Dyn, B, C>>
+    for GlobalRef<'ctx, B, C>
+{
     #[inline]
-    fn from(v: FunctionValue<'ctx, Dyn, B>) -> Self {
+    fn from(v: FunctionValue<'ctx, Dyn, B, C>) -> Self {
         GlobalRef::Function(v)
     }
 }
 
-impl<'ctx, B: ModuleBrand> From<GlobalVariable<'ctx, B>> for GlobalRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> From<GlobalVariable<'ctx, B, C>>
+    for GlobalRef<'ctx, B, C>
+{
     #[inline]
-    fn from(v: GlobalVariable<'ctx, B>) -> Self {
+    fn from(v: GlobalVariable<'ctx, B, C>) -> Self {
         GlobalRef::Variable(v)
     }
 }
 
-impl<'ctx, B: ModuleBrand> From<GlobalAlias<'ctx, B>> for GlobalRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> From<GlobalAlias<'ctx, B, C>> for GlobalRef<'ctx, B, C> {
     #[inline]
-    fn from(v: GlobalAlias<'ctx, B>) -> Self {
+    fn from(v: GlobalAlias<'ctx, B, C>) -> Self {
         GlobalRef::Alias(v)
     }
 }
 
-impl<'ctx, B: ModuleBrand> From<GlobalIfunc<'ctx, B>> for GlobalRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> From<GlobalIfunc<'ctx, B, C>> for GlobalRef<'ctx, B, C> {
     #[inline]
-    fn from(v: GlobalIfunc<'ctx, B>) -> Self {
+    fn from(v: GlobalIfunc<'ctx, B, C>) -> Self {
         GlobalRef::Ifunc(v)
     }
 }

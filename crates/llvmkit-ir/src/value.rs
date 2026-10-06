@@ -1235,8 +1235,13 @@ impl<B: ModuleBrand, C: Capability> HasDebugLoc for Value<'_, B, C> {
 /// mostly by the handle-declaring macros via the crate-internal
 /// `impl_into_erased_value_for_handle!`.
 pub trait IntoErasedValue<'ctx, B: ModuleBrand>: Sized + into_erased_value_sealed::Sealed {
+    /// The value at `module`'s capability: a builder admits at its `Mutable`
+    /// reference, and a lift through a `ReadOnly` one is a read.
     #[doc(hidden)]
-    fn into_erased_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
+    fn into_erased_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<Value<'ctx, B, ModuleCapability>>;
 }
 
 /// Seals [`IntoErasedValue`] to the value handles plus the storable id family.
@@ -1279,10 +1284,10 @@ macro_rules! impl_into_erased_value_for_handle {
             for $name<'ctx, $($($mk,)+)? B, Cap>
         {
             #[inline]
-            fn into_erased_value(
+            fn into_erased_value<ModuleCapability: $crate::capability::Capability>(
                 self,
-                module: $crate::module::ModuleRef<'ctx, B>,
-            ) -> $crate::error::IrResult<$crate::value::Value<'ctx, B>> {
+                module: $crate::module::ModuleRef<'ctx, B, ModuleCapability>,
+            ) -> $crate::error::IrResult<$crate::value::Value<'ctx, B, ModuleCapability>> {
                 // Boundary: the caller's handle meets `module`. The checked
                 // door refuses one minted elsewhere; a handle of any
                 // capability is admitted and re-minted at `module`'s, so
@@ -3285,7 +3290,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for Value<'ctx, B,
 pub trait IntoPointerValue<'ctx, B: ModuleBrand>:
     Sized + into_pointer_value_sealed::Sealed
 {
-    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>>;
+    /// The pointer at `module`'s capability, as for
+    /// [`IntoIntValue`](crate::IntoIntValue).
+    fn into_pointer_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>>;
 }
 
 /// Seals [`IntoPointerValue`] to the pointer-value handles below.
@@ -3308,7 +3318,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'ctx, B>
     for PointerValue<'ctx, B, C>
 {
     #[inline]
-    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+    fn into_pointer_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module; one of any
         // capability is admitted and re-minted at `module`'s.
         Ok(PointerValue::from_value_unchecked(
@@ -3321,7 +3334,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'ctx, B>
     for ConstantPointerNull<'ctx, B, C>
 {
     #[inline]
-    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+    fn into_pointer_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module; one of any
         // capability is admitted and re-minted at `module`'s.
         Ok(PointerValue::from_value_unchecked(

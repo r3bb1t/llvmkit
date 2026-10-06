@@ -135,7 +135,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 #vis fn #field_ident<'m, F, R>(
                     self,
                     builder: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
-                ) -> #ir::IrResult<<#ty as #ir::IrField>::Value<'ctx, B>>
+                ) -> #ir::IrResult<<#ty as #ir::IrField>::Value<'ctx, B, #ir::Mutable>>
                 where
                     F: #ir::IrBuilderFolder<'ctx, B>,
                     R: #ir::ReturnMarker,
@@ -167,24 +167,37 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         .map(|(generic, ty)| quote! { #generic: #ir::IntoIrField<'ctx, #ty, B> });
 
     Ok(quote! {
-        #vis struct #value_ident<'ctx, B: #ir::ModuleBrand> {
-            raw: #ir::StructValue<'ctx, B>,
+        /// The value of a struct of this schema, at the capability of the
+        /// struct value it wraps (D8).
+        #vis struct #value_ident<
+            'ctx,
+            B: #ir::ModuleBrand,
+            #capability_param: #ir::Capability = #ir::Mutable,
+        > {
+            raw: #ir::StructValue<'ctx, B, #capability_param>,
         }
 
         // Bound-free std impls, spelled out instead of derived: a std derive
         // would demand `B: Clone`/`Debug`/… of the brand, and brands are bare
         // unit structs. Mirrors the `Branded` derive's output for this shape.
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand> ::core::clone::Clone for #value_ident<'ctx, B> {
+        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::clone::Clone
+            for #value_ident<'ctx, B, #capability_param>
+        {
             #[inline]
             fn clone(&self) -> Self {
                 *self
             }
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand> ::core::marker::Copy for #value_ident<'ctx, B> {}
+        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::marker::Copy
+            for #value_ident<'ctx, B, #capability_param>
+        {
+        }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand> ::core::fmt::Debug for #value_ident<'ctx, B> {
+        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::fmt::Debug
+            for #value_ident<'ctx, B, #capability_param>
+        {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 f.debug_struct(::core::stringify!(#value_ident))
                     .field("raw", &self.raw)
@@ -192,38 +205,57 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand> ::core::cmp::PartialEq for #value_ident<'ctx, B> {
+        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::cmp::PartialEq
+            for #value_ident<'ctx, B, #capability_param>
+        {
             #[inline]
             fn eq(&self, other: &Self) -> bool {
                 self.raw == other.raw
             }
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand> ::core::cmp::Eq for #value_ident<'ctx, B> {}
+        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::cmp::Eq
+            for #value_ident<'ctx, B, #capability_param>
+        {
+        }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand> ::core::hash::Hash for #value_ident<'ctx, B> {
+        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::hash::Hash
+            for #value_ident<'ctx, B, #capability_param>
+        {
             #[inline]
             fn hash<__H: ::core::hash::Hasher>(&self, state: &mut __H) {
                 ::core::hash::Hash::hash(&self.raw, state);
             }
+        }
+        #[automatically_derived]
+        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> #ir::CapabilityOf
+            for #value_ident<'ctx, B, #capability_param>
+        {
+            type Capability = #capability_param;
+        }
+
+        impl<'ctx, B, #capability_param> #value_ident<'ctx, B, #capability_param>
+        where
+            B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
+        {
+            #[inline]
+            #vis fn as_struct_value(self) -> #ir::StructValue<'ctx, B, #capability_param> {
+                self.raw
+            }
+
+            #[inline]
+            #vis fn as_erased(self) -> #ir::Value<'ctx, B, #capability_param> {
+                self.raw.as_erased()
+            }
+
+            #(#accessors)*
         }
 
         impl<'ctx, B> #value_ident<'ctx, B>
         where
             B: #ir::ModuleBrand + 'ctx,
         {
-            #[inline]
-            #vis fn as_struct_value(self) -> #ir::StructValue<'ctx, B> {
-                self.raw
-            }
-
-            #[inline]
-            #vis fn as_erased(self) -> #ir::Value<'ctx, B> {
-                self.raw.as_erased()
-            }
-
-            #(#accessors)*
-
             #[inline]
             #vis fn build<'m, F, R, Name, #(#build_generics,)*>(
                 #module_param: #ir::ModuleView<'ctx, B>,
@@ -243,7 +275,8 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         }
 
         impl #ir::StructSchema for #ident {
-            type Value<'ctx, B: #ir::ModuleBrand + 'ctx> = #value_ident<'ctx, B>;
+            type Value<'ctx, B: #ir::ModuleBrand + 'ctx, #capability_param: #ir::Capability> =
+                #value_ident<'ctx, B, #capability_param>;
             type FieldParams = (#(#field_tys,)*);
 
             const NAME: &'static str = #llvm_name;
@@ -268,68 +301,84 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
         }
 
-        impl<'ctx, B> #ir::StructSchemaValue<'ctx, #ident, B> for #value_ident<'ctx, B>
+        impl<'ctx, B, #capability_param> #ir::StructSchemaValue<'ctx, #ident, B, #capability_param>
+            for #value_ident<'ctx, B, #capability_param>
         where
             B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
         {
             #[inline]
-            fn as_struct_value(self) -> #ir::StructValue<'ctx, B> {
+            fn as_struct_value(self) -> #ir::StructValue<'ctx, B, #capability_param> {
                 self.raw
             }
 
             #[inline]
             fn from_struct_value(
-                raw: #ir::StructValue<'ctx, B>,
+                raw: #ir::StructValue<'ctx, B, #capability_param>,
                 _validated: &#ir::ValidatedStructValue<'_>,
             ) -> Self {
                 Self { raw }
             }
         }
 
-        impl<'ctx, B> ::core::convert::TryFrom<#ir::Argument<'ctx, B>> for #value_ident<'ctx, B>
+        impl<'ctx, B, #capability_param>
+            ::core::convert::TryFrom<#ir::Argument<'ctx, B, #capability_param>>
+            for #value_ident<'ctx, B, #capability_param>
         where
             B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
         {
             type Error = #ir::IrError;
 
             #[inline]
-            fn try_from(value: #ir::Argument<'ctx, B>) -> #ir::IrResult<Self> {
+            fn try_from(value: #ir::Argument<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
                 <#ident as #ir::StructSchema>::try_value_from_ir(value)
             }
         }
 
-        impl<'ctx, B> ::core::convert::TryFrom<#ir::StructValue<'ctx, B>> for #value_ident<'ctx, B>
+        impl<'ctx, B, #capability_param>
+            ::core::convert::TryFrom<#ir::StructValue<'ctx, B, #capability_param>>
+            for #value_ident<'ctx, B, #capability_param>
         where
             B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
         {
             type Error = #ir::IrError;
 
             #[inline]
-            fn try_from(value: #ir::StructValue<'ctx, B>) -> #ir::IrResult<Self> {
+            fn try_from(
+                value: #ir::StructValue<'ctx, B, #capability_param>,
+            ) -> #ir::IrResult<Self> {
                 <#ident as #ir::StructSchema>::try_value_from_ir(value)
             }
         }
 
-        impl<'ctx, B> ::core::convert::TryFrom<#ir::Value<'ctx, B>> for #value_ident<'ctx, B>
+        impl<'ctx, B, #capability_param>
+            ::core::convert::TryFrom<#ir::Value<'ctx, B, #capability_param>>
+            for #value_ident<'ctx, B, #capability_param>
         where
             B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
         {
             type Error = #ir::IrError;
 
             #[inline]
-            fn try_from(value: #ir::Value<'ctx, B>) -> #ir::IrResult<Self> {
+            fn try_from(value: #ir::Value<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
                 <#ident as #ir::StructSchema>::try_value_from_ir(value)
             }
         }
 
-        impl<'ctx, B> ::core::convert::TryFrom<#ir::Constant<'ctx, B>> for #value_ident<'ctx, B>
+        impl<'ctx, B, #capability_param>
+            ::core::convert::TryFrom<#ir::Constant<'ctx, B, #capability_param>>
+            for #value_ident<'ctx, B, #capability_param>
         where
             B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
         {
             type Error = #ir::IrError;
 
             #[inline]
-            fn try_from(value: #ir::Constant<'ctx, B>) -> #ir::IrResult<Self> {
+            fn try_from(value: #ir::Constant<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
                 <#ident as #ir::StructSchema>::try_value_from_ir(value)
             }
         }
@@ -349,41 +398,50 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
         }
 
-        impl<'ctx, B> #ir::IntoIrField<'ctx, #ident, B> for #value_ident<'ctx, B>
+        // The three operand lifts admit the value at the receiving module
+        // through the checked door — `IrError::ForeignValueId` for a value
+        // another module minted — and re-mint it at that module's reference,
+        // so a value of either capability is an operand: naming it is not
+        // mutating it.
+        impl<'ctx, B, #capability_param> #ir::IntoIrField<'ctx, #ident, B>
+            for #value_ident<'ctx, B, #capability_param>
         where
             B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
         {
             #[inline]
             fn into_ir_field(
                 self,
-                _module: #ir::ModuleRef<'ctx, B>,
+                module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.raw.as_erased())
+                #ir::IntoErasedValue::into_erased_value(self.raw, module)
             }
         }
 
-        impl<'ctx, B: #ir::ModuleBrand + 'ctx> #ir::IntoCallArg<'ctx, #ident, B>
-            for #value_ident<'ctx, B>
+        impl<'ctx, B: #ir::ModuleBrand + 'ctx, #capability_param: #ir::Capability>
+            #ir::IntoCallArg<'ctx, #ident, B> for #value_ident<'ctx, B, #capability_param>
         {
             #[inline]
             fn into_call_arg(
                 self,
-                _module: #ir::ModuleRef<'ctx, B>,
+                module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.as_struct_value().as_erased())
+                #ir::IntoErasedValue::into_erased_value(self.raw, module)
             }
         }
 
-        impl<'ctx, B> #ir::ir_builder::IntoReturnValue<'ctx, #ir::Dyn, B> for #value_ident<'ctx, B>
+        impl<'ctx, B, #capability_param> #ir::ir_builder::IntoReturnValue<'ctx, #ir::Dyn, B>
+            for #value_ident<'ctx, B, #capability_param>
         where
             B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
         {
             #[inline]
             fn into_return_value(
                 self,
-                _module: #ir::ModuleRef<'ctx, B>,
+                module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.raw.as_erased())
+                #ir::IntoErasedValue::into_erased_value(self.raw, module)
             }
         }
     })

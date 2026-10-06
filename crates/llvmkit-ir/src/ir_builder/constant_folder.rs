@@ -157,7 +157,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             return Ok(Some(folded.as_erased()));
         }
         let result_ty = gep_result_type(ptr.ty(), &index_constants)?;
-        let module = ptr.as_erased().module().core_ref();
+        let module = ptr.module;
         module
             .constant_expr_with_options(
                 result_ty,
@@ -244,9 +244,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             return Ok(None);
         };
         vector
-            .as_erased()
-            .module()
-            .core_ref()
+            .module
             .constant_expr(
                 result_ty,
                 ConstantExprOpcode::ExtractElement,
@@ -289,9 +287,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             return Ok(Some(folded.as_erased()));
         }
         vector
-            .as_erased()
-            .module()
-            .core_ref()
+            .module
             .constant_expr(
                 vector.ty(),
                 ConstantExprOpcode::InsertElement,
@@ -324,7 +320,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         {
             return Ok(Some(folded.as_erased()));
         }
-        let module: ModuleRef<'ctx, B> = lhs.as_erased().module().into();
+        let module = lhs.module;
         let Some(result_ty) = shuffle_result_type(lhs.ty(), mask)? else {
             return Ok(None);
         };
@@ -337,7 +333,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
                 .is_some_and(|(_, _, scalable)| scalable),
         )?;
         module
-            .module()
             .constant_expr(
                 result_ty,
                 ConstantExprOpcode::ShuffleVector,
@@ -644,9 +639,7 @@ fn fold_cast<'ctx, B: ModuleBrand + 'ctx>(
                 .map(|folded| folded.map(Constant::as_erased));
         };
         return value
-            .as_erased()
-            .module()
-            .core_ref()
+            .module
             .constant_expr(
                 dest_ty,
                 expr_opcode,
@@ -685,9 +678,7 @@ fn fold_binary_constants<'ctx, B: ModuleBrand + 'ctx>(
             return Ok(None);
         };
         return lhs
-            .as_erased()
-            .module()
-            .core_ref()
+            .module
             .constant_expr(
                 lhs.ty(),
                 expr_opcode,
@@ -810,7 +801,7 @@ fn ptr_or_ptr_vector_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u3
             Some(*addr_space)
         }
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            ptr_or_ptr_vector_address_space(Type::new(*elem, ty.module()))
+            ptr_or_ptr_vector_address_space(Type::new(*elem, ty.module))
         }
         _ => None,
     }
@@ -843,7 +834,7 @@ fn invalid_pointer_cast<T>() -> IrResult<T> {
 
 fn vector_element_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Type<'ctx, B>> {
     let (elem, _, _) = ty.data().as_vector()?;
-    Some(Type::new(elem, ty.module()))
+    Some(Type::new(elem, ty.module))
 }
 
 fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(

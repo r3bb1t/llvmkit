@@ -6,6 +6,7 @@
 //! can prove the replacement without materialising new IR.
 
 use super::IrResult;
+use super::capability::Capability;
 use super::constant::{Constant, is_poison, is_undef};
 use super::constant_folding::constant_fold_instruction;
 use super::data_layout::DataLayout;
@@ -125,18 +126,18 @@ impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
 /// Upstream's two guards on the blended return are ported with it:
 /// `valueDominatesPHI`, and `isGuaranteedNotToBePoison` when an `undef`
 /// incoming is present (do not replace an `undef` with a `poison`).
-fn simplify_phi_node<'ctx, B: ModuleBrand + 'ctx>(
-    view: &InstructionView<'ctx, B>,
+fn simplify_phi_node<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    view: &InstructionView<'ctx, B, C>,
     dominators: &DominatorTree,
     data_layout: &DataLayout,
-) -> IrResult<Option<Value<'ctx, B>>> {
+) -> IrResult<Option<Value<'ctx, B, C>>> {
     let Some(InstructionKind::Phi(kind)) = view.kind() else {
         return Ok(None);
     };
     let self_value = view.to_erased();
     // WARNING carried over from upstream: no PHI CSE here — the PHI this may
     // simplify to need not be def-reachable from the original PHI.
-    let mut common_value: Option<Value<'ctx, B>> = None;
+    let mut common_value: Option<Value<'ctx, B, C>> = None;
     let mut has_poison_input = false;
     let mut has_undef_input = false;
     for (incoming, _block) in kind.incomings() {
@@ -198,9 +199,9 @@ fn simplify_phi_node<'ctx, B: ModuleBrand + 'ctx>(
 /// Upstream's null-`DominatorTree` fallback (entry block, not `invoke` and not
 /// `callbr`) has no counterpart here: `InstSimplifyPass` names
 /// `DominatorTreeAnalysis` in its `Requires`, so the tree is never absent.
-fn value_dominates_phi<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    phi: &InstructionView<'ctx, B>,
+fn value_dominates_phi<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    phi: &InstructionView<'ctx, B, C>,
     dominators: &DominatorTree,
 ) -> bool {
     let Ok(instruction) = InstructionView::try_from(value) else {

@@ -7,7 +7,7 @@ error[E0061]: this function takes 2 arguments but 1 argument was supplied
 note: associated function defined here
   --> src/function_signature.rs
    |
-   |     fn value_from_argument<'ctx, B>(
+   |     fn value_from_argument<'ctx, B, C: Capability>(
    |        ^^^^^^^^^^^^^^^^^^^
 help: provide the argument
    |
@@ -23,7 +23,7 @@ error[E0061]: this function takes 2 arguments but 1 argument was supplied
 note: associated function defined here
   --> src/function_signature.rs
    |
-   |     fn values<'ctx, R, B>(
+   |     fn values<'ctx, R, B, C: Capability>(
    |        ^^^^^^
 help: provide the argument
    |

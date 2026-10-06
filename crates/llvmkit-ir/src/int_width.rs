@@ -623,11 +623,16 @@ decl_wider_than!(i128: bool, i8, i16, i32, i64);
 /// `module` argument exists so Rust-scalar inputs can route through the
 /// right [`IntType<'ctx, W>`] constructor, and so a handle impl can refuse a
 /// handle another module minted with
-/// [`IrError::ForeignValueId`].
+/// [`IrError::ForeignValueId`]. The value comes back at `module`'s
+/// capability: a builder admits at its `Mutable` reference, and a lift
+/// through a `ReadOnly` one is a read.
 pub trait IntoIntValue<'ctx, W: IntWidth, B: ModuleBrand>:
     Sized + into_int_value_sealed::Sealed
 {
-    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>>;
+    fn into_int_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<IntValue<'ctx, W, B, ModuleCapability>>;
 }
 
 /// Seals [`IntoIntValue`] to the identity/lift handles plus the kept
@@ -667,9 +672,12 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntoIntValue<'ctx,
     for IntValue<'ctx, W, B, C>
 {
     #[inline]
-    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+    fn into_int_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<IntValue<'ctx, W, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module.
-        Ok(IntValue::<W, B>::from_value_unchecked(
+        Ok(IntValue::from_value_unchecked(
             self.as_erased().admitted_at(module)?,
         ))
     }
@@ -680,9 +688,12 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntoIntValue<'ctx,
     for ConstantIntValue<'ctx, W, B, C>
 {
     #[inline]
-    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+    fn into_int_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<IntValue<'ctx, W, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module.
-        Ok(IntValue::<W, B>::from_value_unchecked(
+        Ok(IntValue::from_value_unchecked(
             IsValue::as_erased(self).admitted_at(module)?,
         ))
     }
@@ -698,15 +709,13 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntoIntValue<'ctx,
 macro_rules! impl_into_int_value_static {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, $marker, B> for $rust_ty {
-            fn into_int_value(
+            fn into_int_value<ModuleCapability: Capability>(
                 self,
-                module: ModuleRef<'ctx, B>,
-            ) -> IrResult<IntValue<'ctx, $marker, B>> {
-                let ty: IntType<'ctx, $marker, B> = module.$ty_method();
+                module: ModuleRef<'ctx, B, ModuleCapability>,
+            ) -> IrResult<IntValue<'ctx, $marker, B, ModuleCapability>> {
+                let ty: IntType<'ctx, $marker, B, ModuleCapability> = module.$ty_method();
                 match self.into_constant_int(ty) {
-                    Ok(c) => Ok(IntValue::<$marker, B>::from_value_unchecked(
-                        IsValue::as_erased(c),
-                    )),
+                    Ok(c) => Ok(IntValue::from_value_unchecked(IsValue::as_erased(c))),
                     Err(_) => unreachable!(
                         "IntoConstantInt for static target is infallible per the trait impls"
                     ),

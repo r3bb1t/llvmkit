@@ -86,6 +86,124 @@ cut, entries accumulate under **Unreleased**.
   `extern_weak_is_no_valid_alias_linkage` and
   `alias_builder_refuses_an_extern_weak_linkage`).
 
+### Changed — pass contexts hand out read-only handles *(breaking)*
+
+- **A bare module reference is `ReadOnly`** (R11, D8). `ModuleRef::from` a
+  `ModuleView` answers `ModuleRef<'ctx, B, ReadOnly>`, where it answered a
+  `Mutable` reference anyone could build: a `Mutable` reference now comes only
+  from an unverified module or a holder of its authority. Inside the crate,
+  `Module<B, Unverified>`, the declaration builders, `FnPatch` / `FnReshape` /
+  `ModRewrite` and `SsaBuilder` take theirs from the module they hold, and
+  `IrBuilder` — which stores only the module's core, because `IrBuilder::at_end`
+  mints one from a `Mutable` block alone — takes its through the one marked
+  door, so `mutable_at_marked_boundary()` has one call site
+  (`rg -c "mutable_at_marked_boundary\(\)" crates/llvmkit-ir/src`, on the
+  working tree over `6c1efac`). The verifier, the `AsmWriter` and the constant
+  validators read at `ReadOnly`.
+- **Breaking: what a `PatchBody` context hands out is `ReadOnly`.**
+  `FnPatch::body_instructions` and `WorklistScope::step` yield
+  `NonTerminator<'m, B, ReadOnly>`, and `FunctionBody::entry_block` and
+  `basic_blocks` — the blocks of `function_mut()` — yield `ReadOnly` blocks,
+  where they yielded `Mutable` ones; `FnPatch::erase` and
+  `replace_all_uses` already take an instruction of either capability, and
+  mutation goes through them or a builder from `builder_at`.
+  `rg -n "laundered until" crates/` finds nothing.
+- **The typed facades and typed values carry the capability.** `params()` on
+  `TypedFunctionValue` / `TypedVarArgsFunctionValue` answers at the facade's
+  capability, as does `TypedCallInst::result`; *breaking*: `FunctionParam`,
+  `FunctionParamList` and `FunctionReturn`'s value GATs, and `IrField::Value`
+  and `StructSchema::Value`, take a capability parameter; `StructSchemaValue`
+  and `TryIntoStructValue` take a trailing `C: Capability`; and the `IrStruct`
+  derive's value types take a trailing capability parameter (default
+  `Mutable`) and admit a value of either capability as an operand.
+- **The authoring entries that only name a function take one of either
+  capability** — `Module::block_address`, `dso_local_equivalent`, `no_cfi`,
+  `get_or_insert_intrinsic_declaration`; `SsaState::for_function`,
+  `SsaBuilder::for_function`, `with_folder_for_function`;
+  `IrBuilder::position_past_allocas`, `append_block_with_params`,
+  `append_block_with_named_params`, `append_block_typed`, `call_builder`,
+  `intrinsic_call`, `intrinsic_call_builder`, the `invoke` family and
+  `callbr_with_config` — and admit it (`IrError::ForeignValueId` for another
+  module's). `color_eh_funclets`, `check_function_phi_coherence`, the asm
+  parser's `AsmParserContext::function_location` and `GlobalRef` read either.
+- **Type operands of either capability are admitted** (R12). Every public
+  builder and module entry that takes a type — the casts, typed loads and
+  phis, `call_erased` and the indirect `invoke` / `callbr`, `struct_gep`,
+  `va_arg`, `landingpad`, `SsaBuilder`'s `declare_*_var_dyn(_poison)` and
+  `declare_pointer_var_in_addrspace(_poison)`,
+  `Module::function_builder`, `add_function_dyn`, `constant_expr(_with_options)`,
+  `set_struct_body(_dyn)`, `inline_asm`, `target_ext_none`, the detached
+  `call` / `invoke` constructors, `cast_is_valid`, `indexed_gep_type`,
+  `indexed_aggregate_type`, `float_value_is_valid_for_type`,
+  `IntrinsicDescriptor::match_signature` — takes it at any capability and
+  checks it belongs to the module (`IrError::ForeignType`);
+  `indexed_gep_type` and `indexed_aggregate_type` answer at the type's
+  capability. *Breaking*: `IrBuilder::append_block_with_params` and
+  `append_block_with_named_params` take parameter types of one capability,
+  either, so an empty slice no longer infers one — spell its element type, or
+  use `FunctionValue::append_basic_block` for a block with no parameters.
+  Three keep a `Mutable` type, each taking the unverified module in the same
+  call: the asm parser's `parse_constant_value` and
+  `parse_constant_value_with_slots`, whose `ParseError` has no variant for
+  another module's type, and `Module::get_or_insert_intrinsic_declaration_by_id`,
+  so that `by_id(id, [])` still infers. Their caller re-mints a `ReadOnly`
+  type with the new **`Module::admit_type`**, which re-mints a type of either
+  capability at the unverified module's `Mutable` and refuses another
+  module's. Derivation: `python
+  .superpowers/sdd/2026-10-04-capability-typestate-handles/count_fixed_capability_type_operands.py`,
+  which reads each `pub fn`'s parameters, generic bounds and `where` clause in
+  `crates/*/src` and flags a type handle whose last generic argument is the
+  brand, `Mutable` or `ReadOnly`, prints 99 on `6c1efac` and those 3 on the
+  working tree this entry was written against.
+- **Breaking: records keep the types they are given at `ReadOnly`.**
+  `Attribute::Type` and `Attribute::Range` hold a `Type<'ctx, B, ReadOnly>`
+  (`Attribute::type_attr` and `range` take a type of either capability);
+  `ConstantExprOptions::source_ty` takes either and `source_type` answers
+  `ReadOnly`; `CallSiteConfig::call_site_type` and the function builder's
+  signature take either and are admitted where they are consumed.
+- **Breaking: the sealed operand lifts answer at the reference's
+  capability.** `IntoIntValue::into_int_value`, `IntoFloatValue`,
+  `IntoPointerValue`, `IntoErasedValue` and `IntoBasicBlockLabel` take a
+  `ModuleRef` of either capability and lift at it, so a lift through a
+  `ReadOnly` reference is a read; the builders pass their `Mutable` one as
+  before. `Worklist::pop` likewise mints at the capability of the reference
+  it is given, and the asm parser's `GlobalRef` takes a trailing
+  `C: Capability = Mutable`.
+- **The constant folders fold at the operands' capability** (D1, D8). The
+  public functions of `constant_fold` and `constant_folding` take constants,
+  types and instruction views of either capability and answer at it;
+  *breaking*: `ConstantOffsetFromGlobal` takes a trailing
+  `C: Capability = Mutable` and its `global()` answers at it, and
+  `IntrinsicInst::descriptor` and `descriptor_for_callee` answer at the call's
+  capability. `GlobalVariable::read_only` lowers a global to `ReadOnly`.
+- `capability_typestate`'s `an_inspect_pass_sees_only_read_only_instruction_views`
+  walks a block view both ways — `instructions()` and `for … in block` — after
+  a mutation check found the second, a separate iterator, unobserved;
+  `a_patch_body_pass_builds_with_a_type_read_through_its_view` pins the type
+  admission, `Module::admit_type` and the `ReadOnly` blocks of
+  `function_mut()`; and `typed_values_keep_the_capability_and_authoring_entries_take_either`
+  appends blocks with `ReadOnly` parameter types.
+
+### Fixed — the `IrStruct` derive's value type is admitted as a call argument and a return value
+
+- A `#[derive(IrStruct)]` value type (`PairValue`) lifted its struct value
+  with `as_erased()` and no module check when it was passed as a call
+  argument or returned, so a value of another module sharing the brand got
+  past the lift. With the old lift put back, a call accepted it and wrote the
+  foreign value into the call's operands, and a `ret` into a `%Pair`-returning
+  function refused it only as `ReturnTypeMismatch { expected: Struct, got:
+  Struct }`, because type equality includes the module. All three lifts now
+  admit at the receiving module (`IrError::ForeignValueId`); as a field, the
+  `insertvalue` the lift feeds already checked again.
+  `cross_module_handles.rs::a_struct_schema_operand_rejects_a_value_from_another_module`
+  covers the three positions, returns into a `%Pair`-returning function so the
+  module is all that is wrong with the foreign value, and accepts a value of
+  the home module in both lifted positions.
+- Writing that test found a printer divergence, now
+  `docs/divergences.md` entry 143: llvmkit prints every named struct in the
+  module's type arena, where upstream's `TypePrinting` prints only the ones a
+  `TypeFinder` walk reaches.
+
 ### Changed — the analyses read handles of either capability *(breaking)*
 
 - **The value-tracking family is generic over the capability** (D1, D8). The
@@ -174,54 +292,12 @@ cut, entries accumulate under **Unreleased**.
   reads, so a facade of either capability is validated through them. A
   hand-written impl spells `Argument<'ctx, B, ReadOnly>` /
   `FunctionValue<'ctx, R, B, ReadOnly>`.
-- **Not at `ReadOnly` yet — a regression for a verified module until Task 6
-  of the capability-typestate program lifts them:**
-  - the typed facades' `params()` is on `Mutable` facades only: a schema's
-    `FunctionParam::Value` / `FunctionParamList::Values` (and what the
-    `IrStruct` derive emits for them) carry no capability, so its values are
-    `Mutable` handles a `ReadOnly` function cannot mint. The erased
-    `FunctionValue::param` / `params` answer at either capability.
-  - every public entry that takes, as an operand, a `Mutable` handle of one
-    of the nine types above refuses a `ReadOnly` one at compile time — a
-    verified module's `view(f)` / `view(g)`, a `ModuleView`'s `view`,
-    `FunctionBody::as_function()`, a `ReadOnly` function's
-    `intrinsic_descriptor()` — where it compiled while `view` handed out
-    `Mutable` handles. Read and analysis entries: `color_eh_funclets`,
-    `check_function_phi_coherence`, and in
-    `llvmkit-asmparser` `AsmParserContext::function_location` /
-    `add_function_location` and `GlobalRef` — its `Function`, `Variable`,
-    `Alias` and `Ifunc` variants and its `From` for each. Authoring entries,
-    which a `ReadOnly` function of an unverified module such as
-    `FunctionBody::as_function()` no longer reaches: `Module::block_address`,
-    `dso_local_equivalent`, `no_cfi`, `get_or_insert_intrinsic_declaration`;
-    `SsaState::for_function`, `SsaBuilder::for_function`,
-    `with_folder_for_function`; and `IrBuilder::position_past_allocas`,
-    `append_block_with_params`, `append_block_with_named_params`,
-    `append_block_typed`, `call_builder`, `intrinsic_call`,
-    `intrinsic_call_builder`, `invoke`, `invoke_with_config`,
-    `invoke_with_args`, `invoke_dyn`, `invoke_dyn_with_config`,
-    `invoke_dyn_with_args`, `callbr_with_config`. Analyses the pass manager
-    runs are unaffected; a pass that calls one of these on `as_function()` is
-    not. Derivation, run on this branch at `92b3e4a`: rust-analyzer
-    `findReferences` on each of the nine types that gained `C` —
-    `FunctionValue`, `GlobalVariable`, `GlobalAlias`, `GlobalIfunc`,
-    `ComdatRef`, `TypedFunctionValue`, `TypedVarArgsFunctionValue`,
-    `FunctionBasicBlocks` and `IntrinsicDescriptor`; for each reference in a
-    crate's `src`, the enclosing item printed by a scratch script and kept
-    when the type sits, without a capability parameter, in a public
-    function's parameter list or a trait impl's trait arguments; the
-    `verifier.rs` references were set aside because `Verifier` has no
-    function more visible than `pub(crate)`; `GlobalRef`'s variants come
-    from reading its `pub enum`. That reproduced the list above exactly, plus
-    `DominatorTree::new` / `recalculate`, `FunctionCfg::new`,
-    `get_vscale_range`, `fcmp_implies_class`, `fcmp_implies_class_of_constant`,
-    `fcmp_implies_class_of_class`, `fcmp_to_class_test` and
-    `fcmp_to_class_test_of_constant`, which Task 6 has since made generic over
-    the capability and are removed from it. The
-    entries this change made generic (`IntoCallee`, `IntoTypedCallee`,
-    `IntoVarArgsCallee`, the `comdat` setters, `try_delta_from(_plus)`,
-    `try_from_function`, `From` for `Value` / `Constant` / `FunctionView`)
-    accept either capability and are not listed.
+- **The `ReadOnly` regressions this change left are lifted** by *pass
+  contexts hand out read-only handles* (above): the typed facades' `params()`,
+  and every read, analysis and authoring entry that took one of these nine
+  types as a `Mutable` operand, now take it at either capability. The list
+  this bullet carried, and the derivation behind it, are in the history of
+  this file.
 - **Operands of any capability are admitted.** `IntoCallee`,
   `IntoTypedCallee` and `IntoVarArgsCallee` accept a function or facade of
   either capability, check it belongs to the builder's module

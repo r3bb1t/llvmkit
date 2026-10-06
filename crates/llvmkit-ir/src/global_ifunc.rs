@@ -551,8 +551,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
         let module = self.module;
         let (name, data, address_space) = self.into_data(value_type, resolver);
         module
-            .module()
-            .install_global_ifunc::<B>(name, data, address_space)
+            .install_global_ifunc(name, data, address_space)
             .map(|f| f.id())
     }
 

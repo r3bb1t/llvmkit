@@ -408,6 +408,21 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
         }
     }
 
+    /// Crate-internal: this type admitted at `module` through the checked
+    /// door — [`IrError::ForeignType`](crate::IrError::ForeignType) unless
+    /// `module` is this type's own — and re-minted at `module`'s capability.
+    /// The type twin of `Value::admitted_at`: how an authority takes a type
+    /// operand of any capability (R12), the capability coming from a
+    /// reference it already holds, never from the operand.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> crate::IrResult<Type<'ctx, B, C2>> {
+        let id = self.slot_in(module.id())?;
+        Ok(Type { id, module })
+    }
+
     /// Require `got` to be exactly `self`, reporting the most precise
     /// error available when it is not.
     ///
@@ -971,20 +986,19 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
             TypeData::TypedPointer {
                 pointee,
                 addr_space: 0,
-            } => write!(f, "{}*", Type::<B>::new(*pointee, self.module.module())),
+            } => write!(f, "{}*", Type::new(*pointee, self.module)),
             TypeData::TypedPointer {
                 pointee,
                 addr_space,
             } => write!(
                 f,
                 "{} addrspace({addr_space})*",
-                Type::<B>::new(*pointee, self.module.module())
+                Type::new(*pointee, self.module)
             ),
             TypeData::TargetExt(t) => {
                 write!(f, "target(\"{}\"", t.name)?;
-                let m = self.module.module();
                 for tp in t.type_params.iter() {
-                    write!(f, ", {}", Type::<B>::new(*tp, m))?;
+                    write!(f, ", {}", Type::new(*tp, self.module))?;
                 }
                 for ip in t.int_params.iter() {
                     write!(f, ", {ip}")?;
@@ -998,6 +1012,21 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
+
+/// `ty` under [`DynBrand`](crate::DynBrand) at [`ReadOnly`](crate::ReadOnly),
+/// for the layout queries ([`DataLayout`](crate::DataLayout)'s) declared over
+/// erased types. The one copy: `value_tracking`, `demanded_bits`,
+/// `constant_folding` and `constant_fold` import it. The brand changes and
+/// the module does not, and reading is a subset of mutating, so no check is
+/// owed.
+pub(crate) fn erase_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Type<'ctx, crate::DynBrand, crate::ReadOnly> {
+    Type {
+        id: ty.id,
+        module: ModuleRef::new(ty.module.module()),
+    }
+}
 
 /// `Type::getScalarType` one layer below [`Type::scalar_type`].
 ///

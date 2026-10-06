@@ -30,7 +30,7 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
     // Compile-time assertion: the returned block is stamped with the
     // `(i32, Ptr)` schema and the values are that schema's typed handles.
     // Split into per-binding annotations so each named type stays simple.
-    let (head, params) = b.append_block_typed::<(i32, Ptr), _>(m.view(f), "head")?;
+    let (head, params) = b.append_block_typed::<(i32, Ptr), _, _>(m.view(f), "head")?;
     let head: BasicBlock<'_, (), Unterminated, _, (i32, Ptr)> = head;
     let (p0, p1): (IntValue<'_, i32, _>, PointerValue<'_, _>) = params;
 
@@ -98,7 +98,7 @@ fn append_block_typed_unit_params() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<()>(&m);
 
     let (head, ()): (BasicBlock<'_, (), Unterminated, _, ()>, ()) =
-        b.append_block_typed::<(), _>(m.view(f), "head")?;
+        b.append_block_typed::<(), _, _>(m.view(f), "head")?;
 
     // No head-phis were materialised.
     assert_eq!(head.instructions().count(), 0);

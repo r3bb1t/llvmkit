@@ -78,6 +78,13 @@ macro_rules! decl_type_handle {
             pub fn as_type(self) -> Type<'ctx, B, C> {
                 Type::new(self.id, self.module)
             }
+
+            /// Drop to [`ReadOnly`](crate::ReadOnly). Always sound: reading
+            /// is a subset of mutating.
+            #[inline]
+            pub fn read_only(self) -> $name<'ctx, B, crate::ReadOnly> {
+                $name { id: self.id, module: self.module.read_only() }
+            }
         }
 
         impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for $name<'ctx, B, C> {}
@@ -366,6 +373,16 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
         }
     }
 
+    /// Crate-internal: this struct type admitted at `module` and re-minted at
+    /// its capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<StructType<'ctx, Body, B, C2>> {
+        Ok(StructType::new(self.slot_in(module.id())?, module))
+    }
+
     /// Re-tag the body-state marker. Crate-internal: only
     /// [`crate::Module::set_struct_body`] flips the public marker.
     #[inline]
@@ -602,6 +619,30 @@ decl_type_handle!(
     FunctionType, Function,
     predicate |d| matches!(d, TypeData::Function { .. })
 );
+
+impl<'ctx, B: ModuleBrand, C: Capability> FunctionType<'ctx, B, C> {
+    /// Crate-internal: this signature admitted at `module` and re-minted at
+    /// its capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<FunctionType<'ctx, B, C2>> {
+        Ok(FunctionType::new(self.slot_in(module.id())?, module))
+    }
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> PointerType<'ctx, B, C> {
+    /// Crate-internal: this pointer type admitted at `module` and re-minted
+    /// at its capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<PointerType<'ctx, B, C2>> {
+        Ok(PointerType::new(self.slot_in(module.id())?, module))
+    }
+}
 decl_type_handle!(
     /// `label`. Mirrors `Type::getLabelTy`.
     LabelType, Label,
@@ -697,6 +738,16 @@ impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> IntType<'ctx, W, B, C> {
     #[inline]
     pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
+    }
+
+    /// Crate-internal: this type admitted at `module` and re-minted at its
+    /// capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<IntType<'ctx, W, B, C2>> {
+        Ok(IntType::new(self.slot_in(module.id())?, module))
     }
 
     /// Bit width of this integer type. For static widths this is
@@ -896,6 +947,16 @@ impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> FloatType<'ctx, K, B, C>
     #[inline]
     pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
+    }
+
+    /// Crate-internal: this type admitted at `module` and re-minted at its
+    /// capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<FloatType<'ctx, K, B, C2>> {
+        Ok(FloatType::new(self.slot_in(module.id())?, module))
     }
 
     /// Erase the kind marker, producing a [`FloatDyn`]-tagged handle.

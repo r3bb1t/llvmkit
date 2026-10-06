@@ -32,13 +32,15 @@ use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
 use crate::marker::ReturnMarker;
 use crate::metadata::MetadataAttachmentKind;
-use crate::module::{DynBrand, ModuleBrand, ModuleRef};
+use crate::module::{ModuleBrand, ModuleRef};
 use crate::pass_context::FunctionView;
 use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
 // `Type::getScalarType` is ported once, at the slot layer, in `type.rs`;
 // `scalar_type_slot` is an import, not a local definition.
-use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess, scalar_type_slot};
+use crate::r#type::{
+    Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess, erase_type, scalar_type_slot,
+};
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::vector_utils::splat_value;
 use crate::{ApInt, IrError, IrResult, KnownBits, ShiftAmountKnowledge};
@@ -6476,15 +6478,6 @@ fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty.module
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-) -> Type<'ctx, DynBrand> {
-    Type::new(
-        ty.slot_trusting_same_module(),
-        ModuleRef::new(ty.module().core_ref()),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6528,7 +6521,7 @@ mod tests {
         id: ValueSlot,
         ty: TypeSlot,
     ) -> Value<'ctx, B> {
-        Value::from_parts(id, ModuleRef::new(m.core_ref()), ty)
+        Value::from_parts(id, m.capability_ref(), ty)
     }
 
     /// Mirrors `llvm/lib/Analysis/ValueTracking.cpp::computeKnownBitsFromOperator`

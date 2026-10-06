@@ -24,8 +24,9 @@ use super::ap_float::{ApFloat, ApFloatSemantics, LosesInfo, RoundingMode};
 use super::ap_int::ApInt;
 use super::array_len::ArrayLen;
 use super::basic_block::BasicBlock;
+use super::block_params::BlockParamsDyn;
 use super::block_state::BlockTerminationState;
-use super::capability::{CanMutate, Capability, CapabilityOf, Mutable};
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
     ForwardRefValue, IntoConstantValue, IsConstant,
@@ -812,7 +813,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> FloatType<'ctx, f32, B, Cap> 
 /// The three wide ones are pure allow-lists, since every narrower semantics
 /// they list is exactly representable in them.
 pub fn float_value_is_valid_for_type<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+    ty: Type<'ctx, B, impl Capability>,
     value: &ApFloat,
 ) -> bool {
     /// The semantics upstream treats as exactly representable everywhere
@@ -1088,7 +1089,9 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, Cap: Capability>
 #[derive(Branded)]
 #[branded(Debug, Clone)]
 pub struct ConstantExprOptions<'ctx, B: ModuleBrand> {
-    source_ty: Option<Type<'ctx, B>>,
+    /// A record, so the type is kept `ReadOnly` whatever capability it was
+    /// given at; the constructor admits it by slot.
+    source_ty: Option<Type<'ctx, B, ReadOnly>>,
     flags: ConstantExprFlags,
 }
 
@@ -1107,8 +1110,8 @@ impl<'ctx, B: ModuleBrand> ConstantExprOptions<'ctx, B> {
     }
 
     #[must_use]
-    pub fn source_ty(mut self, ty: Type<'ctx, B>) -> Self {
-        self.source_ty = Some(ty);
+    pub fn source_ty<C: Capability>(mut self, ty: Type<'ctx, B, C>) -> Self {
+        self.source_ty = Some(ty.read_only());
         self
     }
 
@@ -1119,7 +1122,7 @@ impl<'ctx, B: ModuleBrand> ConstantExprOptions<'ctx, B> {
     }
 
     #[inline]
-    pub const fn source_type(&self) -> Option<Type<'ctx, B>> {
+    pub const fn source_type(&self) -> Option<Type<'ctx, B, ReadOnly>> {
         self.source_ty
     }
 
@@ -1129,20 +1132,23 @@ impl<'ctx, B: ModuleBrand> ConstantExprOptions<'ctx, B> {
     }
 }
 
-impl<'ctx> ModuleCore {
+// The constant constructors run on a module reference and mint at its
+// capability (R12), as the type constructors do: interning a constant is
+// preservation-neutral, so `Module<B, Unverified>` calls them on its `Mutable`
+// reference and a folder on the reference of the operand it starts from.
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     /// Construct a parser-needed LLVM `ConstantExpr`.
-    pub fn constant_expr<B, Operands, Indices, Mask>(
-        &'ctx self,
-        result_ty: Type<'ctx, B>,
+    pub(crate) fn constant_expr<Operands, Indices, Mask>(
+        self,
+        result_ty: Type<'ctx, B, impl Capability>,
         opcode: ConstantExprOpcode,
         operands: Operands,
         indices: Indices,
         mask: Mask,
         flags: ConstantExprFlags,
-    ) -> IrResult<Constant<'ctx, B>>
+    ) -> IrResult<Constant<'ctx, B, C>>
     where
-        B: ModuleBrand + 'ctx,
-        Operands: IntoIterator<Item = Value<'ctx, B>>,
+        Operands: IntoIterator<Item = Value<'ctx, B, C>>,
         Indices: IntoIterator<Item = u32>,
         Mask: IntoIterator<Item = i32>,
     {
@@ -1158,25 +1164,26 @@ impl<'ctx> ModuleCore {
 
     /// Construct a parser-needed LLVM `ConstantExpr` with options such as an
     /// explicit `getelementptr` source element type.
-    pub fn constant_expr_with_options<B, Operands, Indices, Mask>(
-        &'ctx self,
-        result_ty: Type<'ctx, B>,
+    pub(crate) fn constant_expr_with_options<Operands, Indices, Mask>(
+        self,
+        result_ty: Type<'ctx, B, impl Capability>,
         opcode: ConstantExprOpcode,
         operands: Operands,
         indices: Indices,
         mask: Mask,
         options: ConstantExprOptions<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>>
+    ) -> IrResult<Constant<'ctx, B, C>>
     where
-        B: ModuleBrand + 'ctx,
-        Operands: IntoIterator<Item = Value<'ctx, B>>,
+        Operands: IntoIterator<Item = Value<'ctx, B, C>>,
         Indices: IntoIterator<Item = u32>,
         Mask: IntoIterator<Item = i32>,
     {
         // Every caller handle is admitted before anything is canonicalized,
         // folded or interned in this module.
         let owner = self.id();
-        let result_ty_slot = result_ty.slot_in(owner)?;
+        let result_ty = result_ty.admitted_at(self)?;
+        // Internal: admitted on the line above.
+        let result_ty_slot = result_ty.slot_trusting_same_module();
         let source_ty_id = options
             .source_type()
             .map(|ty| ty.slot_in(owner))
@@ -1194,28 +1201,26 @@ impl<'ctx> ModuleCore {
             mask: mask.into_iter().collect::<Vec<_>>().into_boxed_slice(),
             flags: canonical_constant_expr_flags(options.constant_flags().clone()),
         };
-        canonicalize_constant_expr_data(self, &mut data)?;
-        validate_constant_expr_data(self, &data)?;
-        if let Some(folded) = fold_constant_expr_data::<B>(self, result_ty, &data)? {
+        canonicalize_constant_expr_data(self.module(), &mut data)?;
+        validate_constant_expr_data(self.module(), &data)?;
+        if let Some(folded) = fold_constant_expr_data(self, result_ty, &data)? {
             return Ok(folded);
         }
         let id = self.context().intern_constant_expr(data);
-        Ok(constant_handle::<B, _, _>(
-            id,
-            ModuleRef::<B>::new(self),
-            result_ty_slot,
-        ))
+        Ok(constant_handle::<B, _, _>(id, self, result_ty_slot))
     }
 
     /// `blockaddress(@function, %block)`.
-    pub fn block_address<B: ModuleBrand + 'ctx, R, S>(
-        &'ctx self,
-        function: FunctionValue<'ctx, R, B>,
-        block: &BasicBlock<'ctx, R, S, B>,
-    ) -> IrResult<Constant<'ctx, B>>
+    pub(crate) fn block_address<R, S, FunctionCapability, BlockCapability>(
+        self,
+        function: FunctionValue<'ctx, R, B, FunctionCapability>,
+        block: &BasicBlock<'ctx, R, S, B, BlockParamsDyn, BlockCapability>,
+    ) -> IrResult<Constant<'ctx, B, C>>
     where
         R: ReturnMarker,
         S: BlockTerminationState,
+        FunctionCapability: Capability,
+        BlockCapability: Capability,
     {
         // Both handles are admitted before the parent check reads the block's
         // parent through this module.
@@ -1232,80 +1237,40 @@ impl<'ctx> ModuleCore {
             });
         }
         let ty = self
-            .ptr_type::<B>(function.address_space())
+            .ptr_type(function.address_space())
             .as_type()
             .slot_trusting_same_module();
         let id = self
             .context()
             .intern_constant_block_address(ty, function_slot, block_slot);
-        Ok(constant_handle::<B, _, _>(
-            id,
-            ModuleRef::<B>::new(self),
-            ty,
-        ))
-    }
-
-    /// Parser-only placeholder for a value referenced before it is defined.
-    /// It must be RAUW'd to the real definition before the parsed module is
-    /// observed.
-    ///
-    /// Mirrors the sentinel side of `LLParser::getGlobalVal` /
-    /// `PerFunctionState::getVal`: upstream mints an `Argument` (or, for a
-    /// `@`-reference, an external-weak `GlobalVariable`) of the demanded type
-    /// and remembers it until the definition arrives. The non-first-class
-    /// rejection is upstream's `invalid use of a non-first-class type`, which
-    /// the parser renders at the reference's own location.
-    #[doc(hidden)]
-    pub fn forward_ref_value_placeholder<B: ModuleBrand + 'ctx>(
-        &'ctx self,
-        ty: Type<'ctx, B>,
-    ) -> IrResult<ForwardRefValue<'ctx, B>> {
-        let ty_slot = ty.slot_in(self.id())?;
-        if !ty.is_first_class() {
-            return Err(IrError::InvalidOperation {
-                message: "forward-reference placeholder must have first-class type",
-            });
-        }
-        let id = self
-            .context()
-            .push_constant_forward_ref_placeholder(ty_slot);
-        Ok(ForwardRefValue::from_constant(constant_handle::<B, _, _>(
-            id,
-            ModuleRef::<B>::new(self),
-            ty_slot,
-        )))
+        Ok(constant_handle::<B, _, _>(id, self, ty))
     }
 
     /// `dso_local_equivalent @function`.
-    pub fn dso_local_equivalent<B: ModuleBrand + 'ctx>(
-        &'ctx self,
-        function: FunctionValue<'ctx, Dyn, B>,
-    ) -> Constant<'ctx, B> {
-        let ty = self
-            .ptr_type::<DynBrand>(0)
-            .as_type()
-            .slot_trusting_same_module();
+    pub(crate) fn dso_local_equivalent<FunctionCapability: Capability>(
+        self,
+        function: FunctionValue<'ctx, Dyn, B, FunctionCapability>,
+    ) -> Constant<'ctx, B, C> {
+        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
         // boundary (F1): refused by Task 26
         // Infallible, so a function from another module is interned by its slot.
         let function = function.slot_trusting_same_module();
         let id = self
             .context()
             .intern_constant_dso_local_equivalent(ty, function);
-        constant_handle::<B, _, _>(id, ModuleRef::<B>::new(self), ty)
+        constant_handle::<B, _, _>(id, self, ty)
     }
     /// `dso_local_equivalent` over a function, alias-to-function, or ifunc.
-    pub fn dso_local_equivalent_global<B: ModuleBrand + 'ctx>(
-        &'ctx self,
-        global: Constant<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>> {
+    pub(crate) fn dso_local_equivalent_global(
+        self,
+        global: Constant<'ctx, B, C>,
+    ) -> IrResult<Constant<'ctx, B, C>> {
         // Admitted before this module's arena is read at its slot.
         let global_slot = global.slot_in(self.id())?;
         let value = match &self.context().value_data(global_slot).kind {
-            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
-                *value,
-                ModuleRef::<B>::new(self),
-                self.context().value_data(*value).ty,
-            ),
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => {
+                Value::from_parts(*value, self, self.context().value_data(*value).ty)
+            }
             _ => global.as_erased(),
         };
         let value_slot = value.slot_trusting_same_module();
@@ -1324,49 +1289,37 @@ impl<'ctx> ModuleCore {
                 message: "dso_local_equivalent expects a function, alias to function, or ifunc",
             });
         }
-        let ty = self
-            .ptr_type::<DynBrand>(0)
-            .as_type()
-            .slot_trusting_same_module();
+        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
         let id = self
             .context()
             .intern_constant_dso_local_equivalent(ty, value_slot);
-        Ok(constant_handle::<B, _, _>(
-            id,
-            ModuleRef::<B>::new(self),
-            ty,
-        ))
+        Ok(constant_handle::<B, _, _>(id, self, ty))
     }
 
     /// `no_cfi @function`.
-    pub fn no_cfi<B: ModuleBrand + 'ctx>(
-        &'ctx self,
-        function: FunctionValue<'ctx, Dyn, B>,
-    ) -> Constant<'ctx, B> {
-        let ty = self
-            .ptr_type::<DynBrand>(0)
-            .as_type()
-            .slot_trusting_same_module();
+    pub(crate) fn no_cfi<FunctionCapability: Capability>(
+        self,
+        function: FunctionValue<'ctx, Dyn, B, FunctionCapability>,
+    ) -> Constant<'ctx, B, C> {
+        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
         // boundary (F1): refused by Task 26
         // Infallible, so a function from another module is interned by its slot.
         let function = function.slot_trusting_same_module();
         let id = self.context().intern_constant_no_cfi(ty, function);
-        constant_handle::<B, _, _>(id, ModuleRef::<B>::new(self), ty)
+        constant_handle::<B, _, _>(id, self, ty)
     }
 
     /// `no_cfi` over any global value reference.
-    pub fn no_cfi_global<B: ModuleBrand + 'ctx>(
-        &'ctx self,
-        global: Constant<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>> {
+    pub(crate) fn no_cfi_global(
+        self,
+        global: Constant<'ctx, B, C>,
+    ) -> IrResult<Constant<'ctx, B, C>> {
         // Admitted before this module's arena is read at its slot.
         let global_slot = global.slot_in(self.id())?;
         let value = match &self.context().value_data(global_slot).kind {
-            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
-                *value,
-                ModuleRef::<B>::new(self),
-                self.context().value_data(*value).ty,
-            ),
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => {
+                Value::from_parts(*value, self, self.context().value_data(*value).ty)
+            }
             _ => global.as_erased(),
         };
         let value_slot = value.slot_trusting_same_module();
@@ -1381,29 +1334,21 @@ impl<'ctx> ModuleCore {
                 });
             }
         }
-        let ty = self
-            .ptr_type::<DynBrand>(0)
-            .as_type()
-            .slot_trusting_same_module();
+        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
         let id = self.context().intern_constant_no_cfi(ty, value_slot);
-        Ok(constant_handle::<B, _, _>(
-            id,
-            ModuleRef::<B>::new(self),
-            ty,
-        ))
+        Ok(constant_handle::<B, _, _>(id, self, ty))
     }
 
     /// `ptrauth (ptr <pointer>, i32 <key>, i64 <discriminator>, ptr <addr-discriminator>, ptr <deactivation-symbol>)`.
-    pub fn ptr_auth<B, Pointer, Key, Discriminator, AddrDiscriminator, DeactivationSymbol>(
-        &'ctx self,
+    pub(crate) fn ptr_auth<Pointer, Key, Discriminator, AddrDiscriminator, DeactivationSymbol>(
+        self,
         pointer: Pointer,
         key: Key,
         discriminator: Discriminator,
         addr_discriminator: AddrDiscriminator,
         deactivation_symbol: DeactivationSymbol,
-    ) -> IrResult<Constant<'ctx, B>>
+    ) -> IrResult<Constant<'ctx, B, C>>
     where
-        B: ModuleBrand + 'ctx,
         Pointer: IsConstant<'ctx, B>,
         Key: IsConstant<'ctx, B>,
         Discriminator: IsConstant<'ctx, B>,
@@ -1428,22 +1373,18 @@ impl<'ctx> ModuleCore {
             });
         }
         if !is_int_constant_with_type(
-            self,
+            self.module(),
             key_slot,
-            self.i32_type::<DynBrand>()
-                .as_type()
-                .slot_trusting_same_module(),
+            self.i32_type().as_type().slot_trusting_same_module(),
         ) {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth key must be i32 constant",
             });
         }
         if !is_int_constant_with_type(
-            self,
+            self.module(),
             discriminator_slot,
-            self.i64_type::<DynBrand>()
-                .as_type()
-                .slot_trusting_same_module(),
+            self.i64_type().as_type().slot_trusting_same_module(),
         ) {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth integer discriminator must be i64 constant",
@@ -1459,7 +1400,7 @@ impl<'ctx> ModuleCore {
                 message: "constant ptrauth deactivation symbol must be a pointer",
             });
         }
-        if !is_global_value_or_null_constant(self, deactivation_symbol_slot) {
+        if !is_global_value_or_null_constant(self.module(), deactivation_symbol_slot) {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth deactivation symbol must be a global value or null",
             });
@@ -1473,28 +1414,21 @@ impl<'ctx> ModuleCore {
             addr_discriminator_slot,
             deactivation_symbol_slot,
         );
-        Ok(constant_handle::<B, _, _>(
-            id,
-            ModuleRef::<B>::new(self),
-            ty,
-        ))
+        Ok(constant_handle::<B, _, _>(id, self, ty))
     }
 
     /// `token none`.
-    pub fn token_none<B: ModuleBrand + 'ctx>(&'ctx self) -> Constant<'ctx, B> {
-        let ty = self
-            .token_type::<DynBrand>()
-            .as_type()
-            .slot_trusting_same_module();
+    pub(crate) fn token_none(self) -> Constant<'ctx, B, C> {
+        let ty = self.token_type().as_type().slot_trusting_same_module();
         let id = self.context().intern_constant_token_none(ty);
-        constant_handle::<B, _, _>(id, ModuleRef::<B>::new(self), ty)
+        constant_handle::<B, _, _>(id, self, ty)
     }
 
     /// `target(...) none`.
-    pub fn target_ext_none<B: ModuleBrand + 'ctx>(
-        &'ctx self,
-        ty: Type<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>> {
+    pub(crate) fn target_ext_none(
+        self,
+        ty: Type<'ctx, B, impl Capability>,
+    ) -> IrResult<Constant<'ctx, B, C>> {
         let ty_slot = ty.slot_in(self.id())?;
         let target_ty = TargetExtType::try_from(ty).map_err(|_| IrError::TypeMismatch {
             expected: TypeKindLabel::TargetExt,
@@ -1506,20 +1440,46 @@ impl<'ctx> ModuleCore {
             });
         }
         let id = self.context().intern_constant_target_ext_none(ty_slot);
-        Ok(constant_handle::<B, _, _>(
-            id,
-            ModuleRef::<B>::new(self),
-            ty_slot,
-        ))
+        Ok(constant_handle::<B, _, _>(id, self, ty_slot))
     }
 }
 
-fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
-    module: &'ctx ModuleCore,
-    result_ty: Type<'ctx, B>,
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
+    /// Parser-only placeholder for a value referenced before it is defined.
+    /// It must be RAUW'd to the real definition before the parsed module is
+    /// observed — so it is minted on the parsing module's `Mutable` reference.
+    ///
+    /// Mirrors the sentinel side of `LLParser::getGlobalVal` /
+    /// `PerFunctionState::getVal`: upstream mints an `Argument` (or, for a
+    /// `@`-reference, an external-weak `GlobalVariable`) of the demanded type
+    /// and remembers it until the definition arrives. The non-first-class
+    /// rejection is upstream's `invalid use of a non-first-class type`, which
+    /// the parser renders at the reference's own location.
+    pub(crate) fn forward_ref_value_placeholder(
+        self,
+        ty: Type<'ctx, B, impl Capability>,
+    ) -> IrResult<ForwardRefValue<'ctx, B>> {
+        let ty_slot = ty.slot_in(self.id())?;
+        if !ty.is_first_class() {
+            return Err(IrError::InvalidOperation {
+                message: "forward-reference placeholder must have first-class type",
+            });
+        }
+        let id = self
+            .context()
+            .push_constant_forward_ref_placeholder(ty_slot);
+        Ok(ForwardRefValue::from_constant(constant_handle::<B, _, _>(
+            id, self, ty_slot,
+        )))
+    }
+}
+
+fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    result_ty: Type<'ctx, B, C>,
     data: &ConstantExprData,
-) -> IrResult<Option<Constant<'ctx, B>>> {
-    let Some(operands) = constant_expr_operands::<B>(module, &data.operands) else {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    let Some(operands) = constant_expr_operands(module, &data.operands) else {
         return Ok(None);
     };
     match data.opcode {
@@ -1556,10 +1516,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
             constant_fold_cast_instruction_trusting_same_module(opcode, *operand, result_ty)
         }
         ConstantExprOpcode::GetElementPtr => {
-            let Some(source_ty) = data
-                .source_ty
-                .map(|id| Type::new(id, ModuleRef::<B>::new(module)))
-            else {
+            let Some(source_ty) = data.source_ty.map(|id| Type::new(id, module)) else {
                 return Ok(None);
             };
             let Some((base, indices)) = operands.split_first() else {
@@ -1595,16 +1552,16 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
-    module: &'ctx ModuleCore,
+fn constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     operands: &[ValueSlot],
-) -> Option<Vec<Constant<'ctx, B>>> {
+) -> Option<Vec<Constant<'ctx, B, C>>> {
     operands
         .iter()
         .map(|id| {
-            let data = module.context().value_data(*id);
+            let data = module.value_data(*id);
             matches!(&data.kind, ValueKindData::Constant(_))
-                .then(|| constant_handle::<B, _, _>(*id, ModuleRef::<B>::new(module), data.ty))
+                .then(|| constant_handle::<B, _, _>(*id, module, data.ty))
         })
         .collect()
 }
@@ -1719,10 +1676,14 @@ fn vector_splat_constant(
     let lane_count = usize::try_from(lanes).map_err(|_| IrError::InvalidOperation {
         message: "invalid getelementptr constant expression",
     })?;
-    let elem_ty = module.context().value_data(scalar).ty;
-    let vector_ty = module
-        .vector_type::<DynBrand, _>(Type::new(elem_ty, module), lanes, scalable)
-        .as_type();
+    let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+    let elem_ty = Type::new(module.context().value_data(scalar).ty, module_ref);
+    let vector_ty = if scalable {
+        module_ref.scalable_vector_type(elem_ty, lanes)
+    } else {
+        module_ref.vector_type(elem_ty, lanes)
+    }
+    .as_type();
     Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
 }
 /// Ports the mask-value tail of `ShuffleVectorInst::isValidOperands(const
@@ -1982,8 +1943,9 @@ fn constant_with_replaced_operand(
             }
             canonicalize_constant_expr_data(module, &mut expr)?;
             validate_constant_expr_data(module, &expr)?;
-            let result_ty = Type::<DynBrand>::new(expr.result_ty, module);
-            if let Some(folded) = fold_constant_expr_data(module, result_ty, &expr)? {
+            let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+            let result_ty = Type::new(expr.result_ty, module_ref);
+            if let Some(folded) = fold_constant_expr_data(module_ref, result_ty, &expr)? {
                 return Ok(Some(folded.slot_trusting_same_module()));
             }
             Ok(Some(module.context().intern_constant_expr(expr)))
@@ -2016,22 +1978,23 @@ fn constant_with_replaced_operand(
             if !changed {
                 return Ok(None);
             }
-            let rebuilt = module.ptr_auth::<DynBrand, _, _, _, _, _>(
-                constant_handle(pointer, module, module.context().value_data(pointer).ty),
-                constant_handle(key, module, module.context().value_data(key).ty),
+            let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+            let rebuilt = module_ref.ptr_auth(
+                constant_handle(pointer, module_ref, module.context().value_data(pointer).ty),
+                constant_handle(key, module_ref, module.context().value_data(key).ty),
                 constant_handle(
                     discriminator,
-                    module,
+                    module_ref,
                     module.context().value_data(discriminator).ty,
                 ),
                 constant_handle(
                     addr_discriminator,
-                    module,
+                    module_ref,
                     module.context().value_data(addr_discriminator).ty,
                 ),
                 constant_handle(
                     deactivation_symbol,
-                    module,
+                    module_ref,
                     module.context().value_data(deactivation_symbol).ty,
                 ),
             )?;
@@ -2201,7 +2164,7 @@ pub(super) fn validate_constant_expr_data(
     data: &ConstantExprData,
 ) -> IrResult<()> {
     let result_ty = Type::new(data.result_ty, module);
-    let operand_tys: Vec<Type<'_, DynBrand>> = data
+    let operand_tys: Vec<Type<'_, DynBrand, ReadOnly>> = data
         .operands
         .iter()
         .map(|id| Type::new(module.context().value_data(*id).ty, module))
@@ -2452,13 +2415,13 @@ pub(super) fn verify_constant_expr_data(
 ) -> IrResult<()> {
     validate_constant_expr_data(module, data)?;
     if matches!(data.opcode, ConstantExprOpcode::PtrToAddr) {
-        let result_ty = Type::<DynBrand>::new(data.result_ty, module);
+        let result_ty = Type::<DynBrand, ReadOnly>::new(data.result_ty, module);
         let [src] = data.operands.as_ref() else {
             return Err(IrError::InvalidOperation {
                 message: "ptrtoaddr constant expression expects one operand",
             });
         };
-        let src_ty = Type::<DynBrand>::new(module.context().value_data(*src).ty, module);
+        let src_ty = Type::<DynBrand, ReadOnly>::new(module.context().value_data(*src).ty, module);
         let addr_bits = pointer_address_space(
             module,
             scalar_type_slot(module, src_ty.slot_trusting_same_module()),
@@ -2476,10 +2439,13 @@ pub(super) fn verify_constant_expr_data(
 fn validate_gep_constant_expr(
     module: &ModuleCore,
     data: &ConstantExprData,
-    result_ty: Type<'_, DynBrand>,
-    operand_tys: &[Type<'_, DynBrand>],
+    result_ty: Type<'_, DynBrand, ReadOnly>,
+    operand_tys: &[Type<'_, DynBrand, ReadOnly>],
 ) -> IrResult<()> {
-    let Some(source_ty) = data.source_ty.map(|id| Type::<DynBrand>::new(id, module)) else {
+    let Some(source_ty) = data
+        .source_ty
+        .map(|id| Type::<DynBrand, ReadOnly>::new(id, module))
+    else {
         return Err(IrError::InvalidOperation {
             message: "getelementptr constant expression missing source type",
         });
@@ -2605,10 +2571,10 @@ fn valid_bitcast_constant(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> 
         }
         (Some(_), None) | (None, Some(_)) => false,
         (None, None) => {
-            Type::<DynBrand>::new(src_scalar, module).is_single_value()
-                && Type::<DynBrand>::new(dst_scalar, module).is_single_value()
-                && !Type::<DynBrand>::new(src_scalar, module).is_aggregate()
-                && !Type::<DynBrand>::new(dst_scalar, module).is_aggregate()
+            Type::<DynBrand, ReadOnly>::new(src_scalar, module).is_single_value()
+                && Type::<DynBrand, ReadOnly>::new(dst_scalar, module).is_single_value()
+                && !Type::<DynBrand, ReadOnly>::new(src_scalar, module).is_aggregate()
+                && !Type::<DynBrand, ReadOnly>::new(dst_scalar, module).is_aggregate()
                 && type_bit_width(module, src) == type_bit_width(module, dst)
         }
     }

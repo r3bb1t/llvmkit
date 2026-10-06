@@ -183,7 +183,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         R: ReturnMarker,
         Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let module: ModuleRef<'ctx, B> = self.function.module().into();
+        // The snapshot's own reference, at `ReadOnly`: resolving a block only
+        // reads.
+        let module = self.function.module;
         let tag = module.id();
         let slots: &'cfg [ValueSlot] = block
             .into_basic_block_label(module)

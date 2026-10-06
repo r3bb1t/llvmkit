@@ -1312,8 +1312,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B, Mut
         let intrinsic = if name.starts_with("llvm.") {
             match self
                 .module
-                .module()
-                .intrinsic_descriptor_from_signature::<B>(&name, self.signature())
+                .intrinsic_descriptor_from_signature(&name, self.signature())
             {
                 Ok(descriptor) => Some(descriptor.to_function_data()),
                 // `lookupIntrinsicID` finds no intrinsic of this name and
@@ -1603,6 +1602,22 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoCallee<'ct
         // Boundary: refuse a handle minted by another module. A handle of any
         // capability is admitted and re-minted at `module`'s, so naming a
         // function as a callee is not mutating it.
+        self.admitted_at(module)
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<'ctx, R, B, C> {
+    /// Crate-internal: this function admitted at `module` through the checked
+    /// door — [`IrError::ForeignValueId`] unless `module` is this function's
+    /// own — and re-minted at `module`'s capability. The function twin of
+    /// [`Value::admitted_at`](crate::value::Value): how an authority lifts a
+    /// function of any capability, taking the capability from a reference it
+    /// already holds, never from the operand.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<FunctionValue<'ctx, R, B, C2>> {
         let id = self.slot_in(module.id())?;
         Ok(FunctionValue {
             id,
@@ -1650,7 +1665,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for Fu
 pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    signature: FunctionType<'ctx, B>,
+    /// Kept at `ReadOnly` — a signature of any capability is accepted — and
+    /// admitted against the module at `build`.
+    signature: FunctionType<'ctx, B, ReadOnly>,
     linkage: Linkage,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
@@ -1685,7 +1702,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     pub(super) fn new<N>(
         module: ModuleRef<'ctx, B>,
         name: N,
-        signature: FunctionType<'ctx, B>,
+        signature: FunctionType<'ctx, B, impl Capability>,
     ) -> Self
     where
         N: Into<String>,
@@ -1693,7 +1710,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         Self {
             module,
             name: name.into(),
-            signature,
+            signature: signature.read_only(),
             linkage: Linkage::default(),
             visibility: Visibility::Default,
             dll_storage_class: DllStorageClass::Default,
@@ -1891,7 +1908,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         // function is created — `ForeignType` / `ForeignValueId` /
         // `ForeignComdat`.
         let owner = self.module.id();
-        self.signature.slot_in(owner)?;
+        let signature = self.signature.admitted_at(self.module)?;
         let prefix_data = self.prefix_data.map(|c| c.slot_in(owner)).transpose()?;
         let prologue_data = self.prologue_data.map(|c| c.slot_in(owner)).transpose()?;
         let personality_fn = self.personality_fn.map(|c| c.slot_in(owner)).transpose()?;
@@ -1899,11 +1916,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             .comdat
             .map(|comdat| comdat.name_in(owner).map(str::to_owned))
             .transpose()?;
-        let f = self.module.module().add_function_checked::<B, R, _>(
-            &self.name,
-            self.signature,
-            self.linkage,
-        )?;
+        let f = self
+            .module
+            .add_function_checked::<R, _>(&self.name, signature, self.linkage)?;
         *f.data().visibility.borrow_mut() = self.visibility;
         *f.data().dll_storage_class.borrow_mut() = self.dll_storage_class;
         *f.data().dso_locality.borrow_mut() = self.dso_locality;

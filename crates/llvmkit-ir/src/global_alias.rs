@@ -545,8 +545,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         let module = self.module;
         let (name, data, address_space) = self.into_data(value_type, aliasee);
         module
-            .module()
-            .install_global_alias::<B>(name, data, address_space)
+            .install_global_alias(name, data, address_space)
             .map(|a| a.id())
     }
 

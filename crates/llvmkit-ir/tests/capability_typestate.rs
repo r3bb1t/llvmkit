@@ -860,8 +860,14 @@ fn an_inspect_pass_sees_only_read_only_instruction_views() {
             'ctx: 'm,
             Self: 'ctx,
         {
+            // Both walks: the named `instructions()` and the block view's
+            // `IntoIterator` (`for instruction in block`), which is a
+            // separate iterator type.
             for block in cx.function().basic_blocks() {
                 for instruction in block.instructions() {
+                    self.0.borrow_mut().push(capability(instruction));
+                }
+                for instruction in block {
                     self.0.borrow_mut().push(capability(instruction));
                 }
             }
@@ -896,7 +902,7 @@ fn an_inspect_pass_sees_only_read_only_instruction_views() {
     )
     .expect("runs");
     let recorded = recorded.borrow();
-    assert_eq!(recorded.len(), 2, "the add and the ret");
+    assert_eq!(recorded.len(), 4, "the add and the ret, by each walk");
     assert!(
         recorded.iter().all(|id| *id == TypeId::of::<ReadOnly>()),
         "{recorded:?}"
@@ -1008,5 +1014,218 @@ fn the_value_tracking_analyses_read_values_of_either_capability() -> Result<(), 
         &mut analyses,
     )?;
     assert_eq!(*recorded.borrow(), [24]);
+    Ok(())
+}
+
+/// A typed facade's parameters and a typed call's result come back at the
+/// facade's and the call's capability — `ReadOnly` from a verified module —
+/// and the authoring entries that only name a function (`Module::no_cfi`,
+/// `dso_local_equivalent`, `block_address`, `IrBuilder::append_block_typed`,
+/// `append_block_with_params`, `position_past_allocas` and
+/// `SsaState::for_function`) accept a `ReadOnly` function of their own module,
+/// while an entry that admits it refuses one of another module; and
+/// `append_block_with_params` / `append_block_with_named_params` take
+/// `ReadOnly` parameter types, as a `ReshapeCfg` pass's view mints them.
+/// llvmkit-specific (D1, D8): upstream's `Function *` carries no capability.
+#[test]
+fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Result<(), IrError> {
+    use llvmkit_ir::SsaState;
+
+    let m = Module::dynamic("m");
+    let callee = m.add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?;
+    let caller = m.add_typed_function::<i32, (i32,), _>("caller", Linkage::External)?;
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let (x,) = m.view(caller).params();
+    assert_eq!(capability(x), TypeId::of::<Mutable>());
+    let call = b.call(callee, (x, m.i32_type().const_int(1_i32)), "r")?;
+    let r = b.view(call).result();
+    assert_eq!(capability(r), TypeId::of::<Mutable>());
+    b.ret(r)?;
+
+    // `@g`, `@k` and `@h` are each named only through a `ReadOnly` handle of
+    // this same module.
+    let g = m.add_typed_function::<(), (), _>("g", Linkage::External)?;
+    let g_read_only = m.view(g).as_function().read_only();
+    // An empty slice names no capability, so it spells one.
+    let no_parameters: &[llvmkit_ir::Type<'_, DynBrand, ReadOnly>] = &[];
+    let (body, _) = IrBuilder::new_for::<()>(&m).append_block_with_params(
+        g_read_only,
+        no_parameters,
+        "body",
+    )?;
+    let address = m.block_address(g_read_only, &body)?;
+    IrBuilder::new_for::<()>(&m)
+        .position_at_end(body)
+        .ret_void();
+    let _past_allocas = IrBuilder::new_for::<()>(&m).position_past_allocas(g_read_only);
+    assert!(
+        address.to_string().contains("blockaddress(@g, %body)"),
+        "{address}"
+    );
+    let no_cfi = m.no_cfi(g_read_only.as_dyn());
+    assert!(no_cfi.to_string().contains("no_cfi @g"), "{no_cfi}");
+    let equivalent = m.dso_local_equivalent(g_read_only.as_dyn());
+    assert!(
+        equivalent.to_string().contains("dso_local_equivalent @g"),
+        "{equivalent}"
+    );
+    let k = m.add_typed_function::<(), (), _>("k", Linkage::External)?;
+    let (k_body, ()) = IrBuilder::new_for::<()>(&m)
+        .append_block_typed::<(), _, _>(m.view(k).as_function().read_only(), "body")?;
+    IrBuilder::new_for::<()>(&m)
+        .position_at_end(k_body)
+        .ret_void();
+    let h = m.add_typed_function::<(), (), _>("h", Linkage::External)?;
+    SsaState::for_function(&m, m.view(h).as_function().read_only())?;
+
+    // Block parameter types of either capability: a view mints `ReadOnly`
+    // ones, and a `ReshapeCfg` pass holds no module token to re-mint them. In
+    // a module of its own, which is never verified — the blocks stay
+    // unterminated.
+    let scratch = Module::dynamic("scratch");
+    let p = scratch.add_typed_function::<(), (), _>("p", Linkage::External)?;
+    let read_only_i32 = scratch.as_view().i32_type();
+    assert_eq!(capability(read_only_i32), TypeId::of::<ReadOnly>());
+    let (_, parameters) = IrBuilder::new_for::<()>(&scratch).append_block_with_params(
+        scratch.view(p).as_function(),
+        &[read_only_i32.as_type()],
+        "join",
+    )?;
+    assert_eq!(parameters.len(), 1);
+    let (_, parameters) = IrBuilder::new_for::<()>(&scratch).append_block_with_named_params(
+        scratch.view(p).as_function(),
+        [(read_only_i32.as_type(), "x")],
+        "named",
+    )?;
+    assert_eq!(parameters.len(), 1);
+    assert!(scratch.to_string().contains("%x = phi i32"), "{scratch}");
+
+    // Admitting is still checking: a function of another module is refused,
+    // whatever its capability.
+    let other = Module::dynamic("other");
+    let foreign = other.add_typed_function::<(), (), _>("f", Linkage::External)?;
+    let refused = IrBuilder::new_for::<()>(&m)
+        .append_block_typed::<(), _, _>(other.view(foreign).as_function().read_only(), "x");
+    assert!(
+        matches!(refused, Err(IrError::ForeignValueId)),
+        "{refused:?}"
+    );
+
+    let verified = m.verify()?;
+    let (x,) = verified.view(caller).params();
+    assert_eq!(capability(x), TypeId::of::<ReadOnly>());
+    assert_eq!(
+        capability(verified.view(call).result()),
+        TypeId::of::<ReadOnly>()
+    );
+    Ok(())
+}
+
+/// A `PatchBody` pass builds with a type it read through `patch.module()` —
+/// `ReadOnly`, like every handle a pass context hands out, the body's blocks
+/// from `patch.function_mut()` included — and the builder admits it at its own
+/// reference. `Module::admit_type` does the same for an entry that takes a
+/// `Mutable` type; both refuse a type of another module. llvmkit-specific (D1,
+/// D8): upstream's `Type *` carries no capability.
+#[test]
+fn a_patch_body_pass_builds_with_a_type_read_through_its_view() -> Result<(), IrError> {
+    use core::cell::RefCell;
+    use llvmkit_ir::{
+        Analyses, FnCx, FnReport, FunctionPass, InsertPoint, IntValueId, IrResult, ModuleBrand,
+        PatchBody, run_function_pass,
+    };
+    use std::rc::Rc;
+
+    struct TruncateParameter<B: ModuleBrand> {
+        at: Option<InsertPoint<'static, Dyn, B>>,
+        parameter: IntValueId<i32, B>,
+        type_capability: Rc<RefCell<Option<TypeId>>>,
+        block_capabilities: Rc<RefCell<Vec<TypeId>>>,
+    }
+
+    impl<B: ModuleBrand> FunctionPass<B> for TruncateParameter<B> {
+        type Access = PatchBody;
+        type Requires = ();
+        const NAME: &'static str = "truncate-parameter";
+
+        fn run<'m, 'ctx>(
+            &mut self,
+            cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>,
+        ) -> IrResult<FnReport<B>>
+        where
+            'ctx: 'm,
+            Self: 'ctx,
+        {
+            let patch = cx.mutate();
+            // The body's blocks are `ReadOnly` too: the rung mutates through
+            // `patch`, not through them.
+            let body = patch.function_mut();
+            let mut block_capabilities = vec![capability(body.entry_block().expect("entry"))];
+            block_capabilities.extend(body.basic_blocks().map(capability));
+            *self.block_capabilities.borrow_mut() = block_capabilities;
+            let i8_ty = patch.module().i8_type();
+            *self.type_capability.borrow_mut() = Some(capability(i8_ty));
+            let at = self.at.take().expect("the pass runs once");
+            patch
+                .builder_at(at)?
+                .trunc::<i32, i8, _, _>(self.parameter, i8_ty, "t")?;
+            Ok(patch.done())
+        }
+    }
+
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let f = m.add_function_dyn(
+        "f",
+        m.function_type(i32_ty, [i32_ty.as_type()]),
+        Linkage::External,
+    )?;
+    let parameter: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let (_, ret) = IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(entry)
+        .ret(parameter)?;
+    let builder = IrBuilder::new_for::<Dyn>(&m).position_before(ret.placed())?;
+    // A type of another module is refused before anything is built.
+    let other = Module::dynamic("other");
+    let refused = builder.trunc::<i32, i8, _, _>(parameter, other.as_view().i8_type(), "u");
+    assert!(matches!(refused, Err(IrError::ForeignType)), "{refused:?}");
+    let at = builder.save_insert_point();
+    let parameter = parameter.id();
+    let verified = m.verify()?;
+
+    let type_capability = Rc::new(RefCell::new(None));
+    let block_capabilities = Rc::new(RefCell::new(Vec::new()));
+    let mut analyses = Analyses::new();
+    let patched = run_function_pass(
+        TruncateParameter {
+            at: Some(at),
+            parameter,
+            type_capability: type_capability.clone(),
+            block_capabilities: block_capabilities.clone(),
+        },
+        verified,
+        f,
+        &mut analyses,
+    )?;
+    assert_eq!(*type_capability.borrow(), Some(TypeId::of::<ReadOnly>()));
+    assert_eq!(
+        *block_capabilities.borrow(),
+        [TypeId::of::<ReadOnly>(); 2],
+        "the entry block, then the one block of the walk"
+    );
+    let printed = patched.to_string();
+    assert!(printed.contains("%t = trunc i32 %0 to i8"), "{printed}");
+
+    // `Module::admit_type`: a type read through the view comes back at the
+    // unverified module's `Mutable`; one of another module is refused, as the
+    // builder refused it above.
+    let read_only = patched.as_view().i8_type().as_type();
+    let admitted = patched.admit_type(read_only)?;
+    assert_eq!(capability(admitted), TypeId::of::<Mutable>());
+    assert_eq!(admitted, patched.i8_type().as_type());
+    let refused = patched.admit_type(other.as_view().i8_type().as_type());
+    assert!(matches!(refused, Err(IrError::ForeignType)), "{refused:?}");
     Ok(())
 }

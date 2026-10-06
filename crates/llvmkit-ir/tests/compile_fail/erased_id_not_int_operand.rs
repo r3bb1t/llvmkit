@@ -17,14 +17,19 @@
 //! llvmkit-authored bound, stable across rustc versions — not an incidental
 //! inference failure (`B` is pinned by the argument's own brand).
 
-use llvmkit_ir::{IntValue, IntoIntValue, Linkage, Module, ModuleBrand, ModuleRef, ValueId};
+use llvmkit_ir::{
+    Capability, IntValue, IntoIntValue, Linkage, Module, ModuleBrand, ModuleRef, ValueId,
+};
 
 /// Only accepts operands that lift into an `IntValue<i32>`. The bound is on the
 /// concrete `ValueId<B>` so `B` is fully determined by the caller — the sole
-/// failing obligation is `ValueId<B>: IntoIntValue<'ctx, i32, B>`.
-fn needs_int_operand<'ctx, B>(_id: ValueId<B>, _m: ModuleRef<'ctx, B>)
+/// failing obligation is `ValueId<B>: IntoIntValue<'ctx, i32, B>`. The module
+/// reference is of either capability: a view's is `ReadOnly`, and the lift
+/// takes either.
+fn needs_int_operand<'ctx, B, C>(_id: ValueId<B>, _m: ModuleRef<'ctx, B, C>)
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
     ValueId<B>: IntoIntValue<'ctx, i32, B>,
 {
 }

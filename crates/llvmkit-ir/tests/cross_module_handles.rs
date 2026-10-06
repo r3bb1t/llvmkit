@@ -25,9 +25,9 @@ use llvmkit_ir::{
     FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions,
     InstructionView, IntCastFlags, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
     IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
-    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind,
-    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, comdat::SelectionKind,
-    iter::BlockCursor, run_function_pass,
+    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, StructSchema, SyncScope,
+    TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags,
+    comdat::SelectionKind, iter::BlockCursor, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -35,6 +35,13 @@ use llvmkit_ir::{
 struct Pair {
     first: i32,
     second: i32,
+}
+
+/// A schema with a `Pair` field, so the derive's own value type meets a field
+/// operand position.
+#[derive(IrStruct)]
+struct Nest {
+    pair: Pair,
 }
 
 /// A positioned erased-return builder over a `DynBrand` module.
@@ -457,19 +464,29 @@ fn a_constant_operand_rejects_a_constant_from_another_module() {
 }
 
 /// The struct-schema arms of `IntoIrField` and `IntoCallArg` refuse a value
-/// from another module.
+/// from another module, and so does the `IrStruct` derive's own value type in
+/// each of its three operand positions. Its lifts once passed the struct value
+/// through unadmitted: as a call argument the value was accepted, and as a
+/// return value it was refused only as a type mismatch, because type equality
+/// includes the module; as a field, the insertion the lift feeds checks again.
+/// The returning function returns the struct type, so the module is all that
+/// is wrong with the foreign value and the assertion names the module check's
+/// error; a value of the home module is accepted in both lifted positions.
 ///
 /// No upstream counterpart: llvmkit's struct schemas have none, and
-/// `IRBuilderBase::CreateExtractValue` / `CreateCall` take `Value *`s.
+/// `IRBuilderBase::CreateExtractValue` / `CreateCall` / `CreateRet` take
+/// `Value *`s.
 #[test]
 fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     // `#[derive(IrStruct)]` is dual-purpose (Rust data + IR schema); read the
     // Rust side once, as `derived_struct_schema.rs` does, so it is not dead.
-    let rust_pair = Pair {
-        first: 1,
-        second: 2,
+    let rust_nest = Nest {
+        pair: Pair {
+            first: 1,
+            second: 2,
+        },
     };
-    let _ = rust_pair.first + rust_pair.second;
+    let _ = rust_nest.pair.first + rust_nest.pair.second;
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let g = foreign
@@ -481,21 +498,55 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
         .param(0)
         .expect("parameter")
         .as_erased();
+    let (foreign_pair_value,) = foreign.view(g).params();
     let h = home
         .add_typed_function::<i32, (Pair,), _>("h", Linkage::External)
         .expect("h");
     let b = builder(&home, "f");
+    // `%Pair name(%Pair)`, positioned at its entry, with its own parameter.
+    let returning = |name: &str| {
+        let k = home
+            .add_typed_function::<Pair, (Pair,), _>(name, Linkage::External)
+            .expect("returning function");
+        let entry = home.view(k).append_basic_block(&home, "entry");
+        let (parameter,) = home.view(k).params();
+        (
+            IrBuilder::new_for::<Dyn>(&home).position_at_end(entry),
+            parameter,
+        )
+    };
+    let (refusing, _) = returning("k");
+    // `NestValue::build` interns `%Nest` before it lifts its field, and
+    // llvmkit prints every named struct in the module's type arena where
+    // upstream prints only the ones a `TypeFinder` walk reaches
+    // (`docs/divergences.md`, entry 143). Intern it before the snapshot:
+    // interning a type is not the mutation under test — upstream's
+    // `StructType`s live in the `LLVMContext`, not the module.
+    <Nest as StructSchema>::ir_type(home.as_view()).expect("%Nest");
 
     let before = format!("{home}");
     let field = b.extract_field::<Pair, i32, _, _>(foreign_pair, 0, "first");
     assert!(matches!(field, Err(IrError::ForeignValueId)), "{field:?}");
     let call = b.call(home.view(h), (foreign_pair,), "r");
     assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");
+    let nested = NestValue::build(home.as_view(), &b, foreign_pair_value, "n");
+    assert!(matches!(nested, Err(IrError::ForeignValueId)), "{nested:?}");
+    let call = b.call(home.view(h), (foreign_pair_value,), "r");
+    assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");
+    let ret = refusing.ret(foreign_pair_value);
+    assert!(matches!(ret, Err(IrError::ForeignValueId)), "{ret:?}");
     assert_eq!(
         format!("{home}"),
         before,
         "a rejected operand must not mutate"
     );
+
+    // Positive control: the same two lifts accept a value of the home module.
+    let (accepting, home_pair_value) = returning("accepting");
+    let accepted = accepting.call(home.view(h), (home_pair_value,), "r");
+    assert!(accepted.is_ok(), "{accepted:?}");
+    let accepted = accepting.ret(home_pair_value);
+    assert!(accepted.is_ok(), "{accepted:?}");
 }
 
 /// `GlobalBuilder::initializer` then `build()` rejects a foreign constant and
@@ -2044,7 +2095,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
     );
     let (b, first, second) = builder_with_targets(&home, "i");
     let (_, invoke) = b
-        .invoke_dyn::<Dyn, _, _, _, _, _>(home.view(h), [home_arg], &first, &second, "i")
+        .invoke_dyn::<Dyn, _, _, _, _, _, _>(home.view(h), [home_arg], &first, &second, "i")
         .expect("invoke");
     let (b, first, second) = builder_with_targets(&home, "cb");
     let (_, call_br) = b
@@ -2425,7 +2476,7 @@ fn append_block_with_params_rejects_a_function_or_type_from_another_module() {
         (
             "append_block_typed function",
             IrError::ForeignValueId,
-            b.append_block_typed::<(i32,), _>(foreign.view(g), "p")
+            b.append_block_typed::<(i32,), _, _>(foreign.view(g), "p")
                 .map(|_| ()),
         ),
     ];

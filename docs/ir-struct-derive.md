@@ -95,7 +95,11 @@ entry:
 
 For `struct Point { x: i32, y: i32 }`, the derive creates:
 
-- `PointValue<'ctx, B>`: a branded wrapper around `StructValue<'ctx, B>`.
+- `PointValue<'ctx, B, C = Mutable>`: a branded wrapper around
+  `StructValue<'ctx, B, C>`, at the capability of the struct value it wraps. A
+  `PointValue` of either capability is an operand — a field, a call argument,
+  a return value — and is admitted at the receiving module, which refuses
+  another module's with `IrError::ForeignValueId`.
 - `impl StructSchema for Point`: returns `%Point = type { i32, i32 }` in the
   target module, reusing an existing matching `%Point` body and rejecting a
   mismatched one with `IrError::StructBodyMismatch`. Its `ir_type` /
@@ -230,7 +234,7 @@ let rebuilt = WindowPlacementValue::build(m.as_view(), &b, show_cmd, normal_posi
 
 `StructFields<S>` unpacks only `S`'s top-level fields. Nested structs remain
 their generated wrapper values, so `normal_position` above is still
-`RectValue<'ctx, B>`, not separate `%Point` fields.
+`RectValue<'ctx, B>` (at `Mutable`), not separate `%Point` fields.
 
 ## Error behavior
 

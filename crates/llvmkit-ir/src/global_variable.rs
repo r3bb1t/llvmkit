@@ -188,6 +188,17 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
+    /// This global at [`ReadOnly`](crate::ReadOnly). Always sound — reading
+    /// is a subset of mutating.
+    #[inline]
+    pub fn read_only(self) -> GlobalVariable<'ctx, B, crate::ReadOnly> {
+        GlobalVariable {
+            id: self.id,
+            module: self.module.read_only(),
+            ty: self.ty,
+        }
+    }
+
     /// Storable, module-tagged [`GlobalId`] for this global (0.0.4),
     /// resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
@@ -1094,8 +1105,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         let module = self.module;
         let (name, data, address_space) = self.into_data(value_type, initializer, comdat);
         module
-            .module()
-            .install_global_variable::<B>(name, data, address_space)
+            .install_global_variable(name, data, address_space)
             .map(|g| g.id())
     }
 

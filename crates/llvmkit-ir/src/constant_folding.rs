@@ -7,6 +7,7 @@
 
 use super::ap_float::{ApFloat, ApFloatSemantics, ApFloatSign};
 use super::ap_int::Signedness;
+use super::capability::{Capability, Mutable};
 use super::cmp_predicate::{CmpPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
@@ -37,9 +38,9 @@ use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::intrinsics::BinaryIntrinsic;
-use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
+use super::module::{ModuleBrand, ModuleRef};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
-use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlotAccess};
+use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlotAccess, erase_type};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
@@ -107,20 +108,22 @@ impl PreservedCastFlags {
 /// Constant pointer offset relative to one global object.
 #[derive(Branded)]
 #[branded(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ConstantOffsetFromGlobal<'ctx, B: ModuleBrand> {
-    global: GlobalVariable<'ctx, B>,
+pub struct ConstantOffsetFromGlobal<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    /// At the capability of the constant the analysis was asked about: the
+    /// global is reached through it (D1, D8).
+    global: GlobalVariable<'ctx, B, C>,
     offset: ApInt,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ConstantOffsetFromGlobal<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ConstantOffsetFromGlobal<'ctx, B, C> {
     #[inline]
-    pub(super) fn new(global: GlobalVariable<'ctx, B>, offset: ApInt) -> Self {
+    pub(super) fn new(global: GlobalVariable<'ctx, B, C>, offset: ApInt) -> Self {
         Self { global, offset }
     }
 
-    /// Base global object.
+    /// Base global object, at the analysed constant's capability.
     #[inline]
-    pub fn global(&self) -> GlobalVariable<'ctx, B> {
+    pub fn global(&self) -> GlobalVariable<'ctx, B, C> {
         self.global
     }
 
@@ -138,12 +141,12 @@ pub fn can_constant_fold_call_to(lib_func: LibFunc, tli: &TargetLibraryInfo) -> 
 }
 
 /// Flush one floating-point constant according to `mode`.
-pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx>(
-    operand: Constant<'ctx, B>,
+pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    operand: Constant<'ctx, B, C>,
     mode: DenormalMode,
     side: DenormalModeSide,
-) -> IrResult<Option<Constant<'ctx, B>>> {
-    if let Ok(fp) = ConstantFloatValue::<FloatDyn, B>::try_from(operand) {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    if let Ok(fp) = ConstantFloatValue::<FloatDyn, B, C>::try_from(operand) {
         let apf = fp.ap_float();
         if !apf.is_denormal() {
             return Ok(Some(operand));
@@ -170,7 +173,7 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx>(
         && let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
             &operand.as_erased().data().kind
     {
-        let module = operand.as_erased().module();
+        let module = operand.module;
         let mut flushed = Vec::with_capacity(elements.len());
         for id in elements.iter().copied() {
             let Some(element) = constant_from_id(module, id) else {
@@ -181,12 +184,12 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx>(
             };
             flushed.push(flushed_element);
         }
-        let Ok(vector_ty) = VectorType::<ElemDyn, LenDyn, B>::try_from(operand.ty()) else {
+        let Ok(vector_ty) = VectorType::<ElemDyn, LenDyn, B, C>::try_from(operand.ty()) else {
             return Ok(None);
         };
         return Ok(Some(
             vector_ty
-                .const_vector::<Constant<'ctx, B>, _>(flushed)?
+                .const_vector::<Constant<'ctx, B, C>, _>(flushed)?
                 .as_constant(),
         ));
     }
@@ -195,10 +198,10 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Resolve a constant pointer to a global plus byte offset.
-pub fn constant_offset_from_global<'ctx, B: ModuleBrand + 'ctx>(
-    pointer: Constant<'ctx, B>,
+pub fn constant_offset_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    pointer: Constant<'ctx, B, C>,
     dl: &DataLayout,
-) -> Option<ConstantOffsetFromGlobal<'ctx, B>> {
+) -> Option<ConstantOffsetFromGlobal<'ctx, B, C>> {
     constant_offset_from_global_with_offset(
         pointer,
         ApInt::zero(index_bits_for_constant_offset(pointer, dl)?),
@@ -208,10 +211,10 @@ pub fn constant_offset_from_global<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Resolve a constant pointer to a global plus byte offset.
 #[inline]
-pub fn is_constant_offset_from_global<'ctx, B: ModuleBrand + 'ctx>(
-    pointer: Constant<'ctx, B>,
+pub fn is_constant_offset_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    pointer: Constant<'ctx, B, C>,
     dl: &DataLayout,
-) -> Option<ConstantOffsetFromGlobal<'ctx, B>> {
+) -> Option<ConstantOffsetFromGlobal<'ctx, B, C>> {
     constant_offset_from_global(pointer, dl)
 }
 
@@ -219,12 +222,12 @@ pub fn is_constant_offset_from_global<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Errors with [`IrError::ForeignType`] if `ty` belongs to a module other than
 /// `pointer`'s.
-pub fn constant_fold_load_from_const_ptr<'ctx, B: ModuleBrand + 'ctx>(
-    pointer: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+pub fn constant_fold_load_from_const_ptr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    pointer: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     offset: ApInt,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's load type, admitted against `pointer`'s module.
     ty.slot_in(pointer.module.id())?;
     constant_fold_load_from_const_ptr_trusting_same_module(pointer, ty, offset, dl)
@@ -234,12 +237,13 @@ pub fn constant_fold_load_from_const_ptr<'ctx, B: ModuleBrand + 'ctx>(
 pub(crate) fn constant_fold_load_from_const_ptr_trusting_same_module<
     'ctx,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 >(
-    pointer: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+    pointer: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     offset: ApInt,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let Some(resolved) = constant_offset_from_global_with_offset(pointer, offset, dl) else {
         return Ok(None);
     };
@@ -268,24 +272,28 @@ pub(crate) fn constant_fold_load_from_const_ptr_trusting_same_module<
 ///
 /// Errors with [`IrError::ForeignType`] if `ty` belongs to a module other than
 /// `constant`'s.
-pub fn constant_fold_load_from_const<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+pub fn constant_fold_load_from_const<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     offset: ApInt,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's load type, admitted against `constant`'s module.
     ty.slot_in(constant.module.id())?;
     constant_fold_load_from_const_trusting_same_module(constant, ty, offset, dl)
 }
 
 /// [`constant_fold_load_from_const`] for a constant and type of one module.
-pub(crate) fn constant_fold_load_from_const_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+pub(crate) fn constant_fold_load_from_const_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    constant: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     offset: ApInt,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if offset.is_negative() {
         return Ok(None);
     }
@@ -329,11 +337,11 @@ pub(crate) fn constant_fold_load_from_const_trusting_same_module<'ctx, B: Module
 ///
 /// Errors with [`IrError::ForeignType`] if `ty` belongs to a module other than
 /// `constant`'s.
-pub fn constant_fold_load_from_uniform_value<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+pub fn constant_fold_load_from_uniform_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's load type, admitted against `constant`'s module.
     ty.slot_in(constant.module.id())?;
     constant_fold_load_from_uniform_value_trusting_same_module(constant, ty, dl)
@@ -344,11 +352,12 @@ pub fn constant_fold_load_from_uniform_value<'ctx, B: ModuleBrand + 'ctx>(
 pub(crate) fn constant_fold_load_from_uniform_value_trusting_same_module<
     'ctx,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 >(
-    constant: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+    constant: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     fold_uniform_constant_load(constant, ty, dl)
 }
 
@@ -357,12 +366,12 @@ pub(crate) fn constant_fold_load_from_uniform_value_trusting_same_module<
 ///
 /// Errors with [`IrError::ForeignType`] if `dest_ty` belongs to a module other
 /// than `operand`'s.
-pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: CastOpcode,
-    operand: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+    operand: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's destination type, admitted against `operand`'s
     // module.
     dest_ty.slot_in(operand.module.id())?;
@@ -370,12 +379,16 @@ pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// [`constant_fold_cast_operand`] for an operand and type of one module.
-pub(crate) fn constant_fold_cast_operand_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn constant_fold_cast_operand_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
     opcode: CastOpcode,
-    operand: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+    operand: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if let Some(folded) =
         constant_fold_cast_instruction_trusting_same_module(opcode, operand, dest_ty)?
     {
@@ -410,15 +423,17 @@ pub(crate) fn constant_fold_cast_operand_trusting_same_module<'ctx, B: ModuleBra
         let Some(expr_opcode) = cast_constant_expr_opcode(opcode) else {
             return Ok(None);
         };
-        let expr = operand.as_erased().module().core_ref().constant_expr(
-            erase_type(dest_ty),
-            expr_opcode,
-            [erase_value(operand.as_erased())],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        )?;
-        return Ok(Some(rebrand_constant(expr, operand.as_erased().module())));
+        return operand
+            .module
+            .constant_expr(
+                dest_ty,
+                expr_opcode,
+                [operand.as_erased()],
+                [],
+                [],
+                ConstantExprFlags::none(),
+            )
+            .map(Some);
     }
 
     Ok(None)
@@ -428,12 +443,12 @@ pub(crate) fn constant_fold_cast_operand_trusting_same_module<'ctx, B: ModuleBra
 ///
 /// Errors with [`IrError::ForeignType`] if `dest_ty` belongs to a module other
 /// than `constant`'s.
-pub fn constant_fold_integer_cast<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+pub fn constant_fold_integer_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     signedness: Signedness,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's destination type, admitted against `constant`'s
     // module.
     dest_ty.slot_in(constant.module.id())?;
@@ -441,12 +456,16 @@ pub fn constant_fold_integer_cast<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// [`constant_fold_integer_cast`] for a constant and type of one module.
-pub(crate) fn constant_fold_integer_cast_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+pub(crate) fn constant_fold_integer_cast_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    constant: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     signedness: Signedness,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     fold_integer_cast_constant(
         constant,
         dest_ty,
@@ -456,13 +475,14 @@ pub(crate) fn constant_fold_integer_cast_trusting_same_module<'ctx, B: ModuleBra
 }
 
 /// Fold an instruction using DataLayout-aware analysis rules.
-pub fn constant_fold_instruction<'ctx, B>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn constant_fold_instruction<'ctx, B, C>(
+    instruction: &InstructionView<'ctx, B, C>,
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
-) -> IrResult<Option<Constant<'ctx, B>>>
+) -> IrResult<Option<Constant<'ctx, B, C>>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     let value = instruction.as_erased();
     let ValueKindData::Instruction(data) = &value.data().kind else {
@@ -470,25 +490,25 @@ where
     };
 
     if let InstructionKindData::Phi(phi) = &data.kind {
-        return fold_phi(value.ty(), value.module(), phi);
+        return fold_phi(value.ty(), value.module, phi);
     }
 
     if let InstructionKindData::Call(call) = &data.kind {
         let Some(tli) = tli else {
             return Ok(None);
         };
-        let callee_data = value.module().context().value_data(call.callee.get());
+        let callee_data = value.module.context().value_data(call.callee.get());
         let ValueKindData::Function(_) = &callee_data.kind else {
             return Ok(None);
         };
         let function =
-            FunctionValue::<Dyn, B>::from_parts_unchecked(call.callee.get(), value.module());
+            FunctionValue::<Dyn, B, C>::from_parts_unchecked(call.callee.get(), value.module);
         let Some(lib_func) = tli.lib_func_for_name(&function.name().unwrap_or_default()) else {
             return Ok(None);
         };
         let mut args = Vec::with_capacity(call.args.len());
         for arg in call.args.iter().map(|arg| arg.get()) {
-            let Some(constant) = constant_from_id(value.module(), arg) else {
+            let Some(constant) = constant_from_id(value.module, arg) else {
                 return Ok(None);
             };
             args.push(constant_fold_constant(constant, dl, Some(tli))?);
@@ -504,7 +524,7 @@ where
 
     let mut operands = Vec::new();
     for id in data.kind.operand_ids() {
-        let Some(constant) = constant_from_id(value.module(), id) else {
+        let Some(constant) = constant_from_id(value.module, id) else {
             return Ok(None);
         };
         operands.push(constant_fold_constant(constant, dl, tli)?);
@@ -520,12 +540,12 @@ where
 }
 
 /// Fold a constant using DataLayout-aware analysis rules.
-pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
+pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
-) -> IrResult<Constant<'ctx, B>> {
-    let module = constant.as_erased().module();
+) -> IrResult<Constant<'ctx, B, C>> {
+    let module = constant.module;
     match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Expr(expr)) => {
             let Some(operands) =
@@ -576,13 +596,13 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Errors with [`IrError::ForeignValueId`] if an operand belongs to a module
 /// other than `instruction`'s.
-pub fn constant_fold_inst_operands<'ctx, B>(
-    instruction: &InstructionView<'ctx, B>,
-    operands: &[Constant<'ctx, B>],
+pub fn constant_fold_inst_operands<'ctx, B, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
+    operands: &[Constant<'ctx, B, C>],
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
     allow_non_deterministic: FoldNonDeterminism,
-) -> IrResult<Option<Constant<'ctx, B>>>
+) -> IrResult<Option<Constant<'ctx, B, C>>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -602,13 +622,13 @@ where
 }
 
 /// [`constant_fold_inst_operands`] for operands of the instruction's module.
-pub(crate) fn constant_fold_inst_operands_trusting_same_module<'ctx, B>(
-    instruction: &InstructionView<'ctx, B>,
-    operands: &[Constant<'ctx, B>],
+pub(crate) fn constant_fold_inst_operands_trusting_same_module<'ctx, B, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
+    operands: &[Constant<'ctx, B, C>],
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
     allow_non_deterministic: FoldNonDeterminism,
-) -> IrResult<Option<Constant<'ctx, B>>>
+) -> IrResult<Option<Constant<'ctx, B, C>>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -634,7 +654,7 @@ where
                 *lhs,
                 *rhs,
                 dl,
-                denormal_mode_for_instruction(data.parent.get(), value.module(), value.ty()),
+                denormal_mode_for_instruction(data.parent.get(), value.module, value.ty()),
                 binary_op_fmf(&data.kind),
                 allow_non_deterministic,
             )
@@ -673,7 +693,7 @@ where
                 dl,
                 Some(denormal_mode_for_instruction(
                     data.parent.get(),
-                    value.module(),
+                    value.module,
                     lhs.ty(),
                 )),
             )
@@ -732,7 +752,7 @@ where
             let Some((pointer, indices)) = operands.split_first() else {
                 return Ok(None);
             };
-            let source_ty = Type::new(gep.source_ty, value.module());
+            let source_ty = Type::new(gep.source_ty, value.module);
             if let Some(folded) =
                 symbolically_evaluate_gep(source_ty, *pointer, indices, gep.flags, None, dl)?
             {
@@ -774,12 +794,12 @@ where
             let Some(tli) = tli else {
                 return Ok(None);
             };
-            let callee_data = value.module().context().value_data(call.callee.get());
+            let callee_data = value.module.context().value_data(call.callee.get());
             let ValueKindData::Function(_) = &callee_data.kind else {
                 return Ok(None);
             };
             let function =
-                FunctionValue::<Dyn, B>::from_parts_unchecked(call.callee.get(), value.module());
+                FunctionValue::<Dyn, B, C>::from_parts_unchecked(call.callee.get(), value.module);
             let Some(lib_func) = tli.lib_func_for_name(&function.name().unwrap_or_default()) else {
                 return Ok(None);
             };
@@ -862,13 +882,13 @@ where
 ///
 /// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
 /// than `lhs`'s.
-pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: CmpPredicate,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
     denormal_mode: Option<DenormalMode>,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's operands, admitted against `lhs`'s module.
     rhs.slot_in(lhs.module.id())?;
     constant_fold_compare_inst_operands_trusting_same_module(predicate, lhs, rhs, dl, denormal_mode)
@@ -878,13 +898,14 @@ pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
 pub(crate) fn constant_fold_compare_inst_operands_trusting_same_module<
     'ctx,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 >(
     predicate: CmpPredicate,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
     denormal_mode: Option<DenormalMode>,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if is_constant_expr_like(lhs) {
         if let Some(result) = fold_ptr_int_cast_vs_null(predicate, lhs, rhs, dl, denormal_mode)? {
             return Ok(result);
@@ -945,7 +966,9 @@ pub(crate) fn constant_fold_compare_inst_operands_trusting_same_module<
 /// (see that variant's doc comment) so the folds below see through both
 /// representations exactly as upstream sees through the single
 /// `ConstantExpr` representation it has.
-fn is_constant_expr_like<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+fn is_constant_expr_like<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
     matches!(
         &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::Expr(_) | ConstantData::GepOffset { .. })
@@ -956,8 +979,8 @@ fn is_constant_expr_like<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B
 /// compact `GepOffset` encoding never carries one of the opcodes the folds
 /// below match against, so the narrower match is equivalent for their
 /// purposes.
-fn constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
+fn constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
 ) -> Option<&'ctx ConstantExprData> {
     match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Expr(expr)) => Some(expr),
@@ -975,20 +998,20 @@ fn constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
 /// inner `Option` is that recursion's own (possibly declining) answer,
 /// which the caller must return as-is rather than trying more folds,
 /// mirroring upstream's unconditional `return` inside the `if`.
-fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx>(
+fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: CmpPredicate,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
     denormal_mode: Option<DenormalMode>,
-) -> IrResult<Option<Option<Constant<'ctx, B>>>> {
+) -> IrResult<Option<Option<Constant<'ctx, B, C>>>> {
     if !constant_is_null_value(rhs) {
         return Ok(None);
     }
     let Some(expr) = constant_expr_data(lhs) else {
         return Ok(None);
     };
-    let module = lhs.as_erased().module();
+    let module = lhs.module;
 
     if expr.opcode == ConstantExprOpcode::IntToPtr
         && let [operand_id] = expr.operands.as_ref()
@@ -1019,9 +1042,9 @@ fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx>(
     ) && let [operand_id] = expr.operands.as_ref()
         && let Some(operand) = constant_from_id(module, *operand_id)
         && let Some(addr_bits) = index_bits_for_pointer(operand.ty(), dl)
-        && let Ok(lhs_int_ty) = IntType::<IntDyn, B>::try_from(lhs.ty())
+        && let Ok(lhs_int_ty) = IntType::<IntDyn, B, C>::try_from(lhs.ty())
         && lhs_int_ty.bit_width() == addr_bits
-        && let Ok(ptr_ty) = PointerType::<B>::try_from(operand.ty())
+        && let Ok(ptr_ty) = PointerType::<B, C>::try_from(operand.ty())
     {
         let null = ptr_ty.const_null().as_constant();
         return Ok(Some(
@@ -1047,13 +1070,13 @@ fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx>(
 /// 1239-1266). The caller has already confirmed both `lhs` and `rhs` are
 /// constant expressions. Same "commit once the precondition holds" contract
 /// as [`fold_ptr_int_cast_vs_null`].
-fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
+fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: CmpPredicate,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
     denormal_mode: Option<DenormalMode>,
-) -> IrResult<Option<Option<Constant<'ctx, B>>>> {
+) -> IrResult<Option<Option<Constant<'ctx, B, C>>>> {
     let Some(lhs_expr) = constant_expr_data(lhs) else {
         return Ok(None);
     };
@@ -1063,7 +1086,7 @@ fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
     if lhs_expr.opcode != rhs_expr.opcode {
         return Ok(None);
     }
-    let module = lhs.as_erased().module();
+    let module = lhs.module;
 
     if lhs_expr.opcode == ConstantExprOpcode::IntToPtr
         && let [lhs_operand_id] = lhs_expr.operands.as_ref()
@@ -1101,7 +1124,7 @@ fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
         && let Some(lhs_operand) = constant_from_id(module, *lhs_operand_id)
         && let Some(rhs_operand) = constant_from_id(module, *rhs_operand_id)
         && let Some(addr_bits) = index_bits_for_pointer(lhs_operand.ty(), dl)
-        && let Ok(lhs_int_ty) = IntType::<IntDyn, B>::try_from(lhs.ty())
+        && let Ok(lhs_int_ty) = IntType::<IntDyn, B, C>::try_from(lhs.ty())
         && lhs_int_ty.bit_width() == addr_bits
         && lhs_operand.ty() == rhs_operand.ty()
     {
@@ -1132,12 +1155,12 @@ fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
 /// trees for the same reason: LLVM uniques `Constant*`, and llvmkit uniques
 /// its `GlobalValueRef` / `GepOffset` constants, so two independently-built
 /// pointers into the same global strip down to the same arena id.
-fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
+fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: IntPredicate,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
-) -> Option<Constant<'ctx, B>> {
+) -> Option<Constant<'ctx, B, C>> {
     let index_bits = index_bits_for_pointer(lhs.ty(), dl)?;
     // This only works for equality and unsigned comparison, as inbounds
     // permits crossing the sign boundary. However, the offset comparison
@@ -1174,16 +1197,16 @@ fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
 /// under `LookThroughIntToPtr` are not ported either. All three are safe,
 /// narrower-coverage omissions: declining a peel only forgoes a fold
 /// upstream would still perform, never produces an incorrect one.
-fn strip_and_accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
-    pointer: Constant<'ctx, B>,
+fn strip_and_accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    pointer: Constant<'ctx, B, C>,
     index_bits: u32,
     allow_non_inbounds: bool,
     dl: &DataLayout,
-) -> (Constant<'ctx, B>, ApInt) {
+) -> (Constant<'ctx, B, C>, ApInt) {
     let mut offset = ApInt::zero(index_bits);
     let mut current = pointer;
     loop {
-        let module = current.as_erased().module();
+        let module = current.module;
         match &current.as_erased().data().kind {
             ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
                 // Only ever constructed for an inbounds GEP (see
@@ -1289,16 +1312,18 @@ fn swap_cmp_predicate(predicate: CmpPredicate) -> CmpPredicate {
 /// DataLayout-aware analysis module, mirroring that module's own existing
 /// `is_undef`/`is_poison` duplication here rather than threading
 /// cross-module visibility.
-fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
     match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Int(_)) => is_zero_int_constant(constant),
         ValueKindData::Constant(ConstantData::Float(_)) => {
-            ConstantFloatValue::<FloatDyn, B>::try_from(constant)
+            ConstantFloatValue::<FloatDyn, B, C>::try_from(constant)
                 .is_ok_and(|value| value.ap_float().is_pos_zero())
         }
         ValueKindData::Constant(ConstantData::PointerNull) => true,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let module = constant.as_erased().module();
+            let module = constant.module;
             elements
                 .iter()
                 .all(|id| constant_from_id(module, *id).is_some_and(constant_is_null_value))
@@ -1307,16 +1332,18 @@ fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, 
     }
 }
 
-fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    ConstantIntValue::<IntDyn, B>::try_from(constant).is_ok_and(|value| value.ap_int().is_zero())
+fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
+    ConstantIntValue::<IntDyn, B, C>::try_from(constant).is_ok_and(|value| value.ap_int().is_zero())
 }
 
 /// Fold a unary operation with a caller-provided constant operand.
-pub fn constant_fold_unary_op_operand<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_fold_unary_op_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: UnaryOpcode,
-    operand: Constant<'ctx, B>,
+    operand: Constant<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let _ = dl;
     constant_fold_unary_instruction(opcode, operand)
 }
@@ -1325,24 +1352,28 @@ pub fn constant_fold_unary_op_operand<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
 /// than `lhs`'s.
-pub fn constant_fold_binary_op_operands<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_fold_binary_op_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: BinaryOpcode,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's operands, admitted against `lhs`'s module.
     rhs.slot_in(lhs.module.id())?;
     constant_fold_binary_op_operands_trusting_same_module(opcode, lhs, rhs, dl)
 }
 
 /// [`constant_fold_binary_op_operands`] for operands of one module.
-pub(crate) fn constant_fold_binary_op_operands_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn constant_fold_binary_op_operands_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
     opcode: BinaryOpcode,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if let Some(folded) = constant_fold_binary_instruction_trusting_same_module(opcode, lhs, rhs)? {
         return Ok(Some(folded));
     }
@@ -1353,31 +1384,31 @@ pub(crate) fn constant_fold_binary_op_operands_trusting_same_module<'ctx, B: Mod
     let Some(expr_opcode) = binary_constant_expr_opcode(opcode) else {
         return Ok(None);
     };
-    let module = lhs.as_erased().module();
-    let expr = module.core_ref().constant_expr(
-        erase_type(lhs.ty()),
-        expr_opcode,
-        [erase_value(lhs.as_erased()), erase_value(rhs.as_erased())],
-        [],
-        [],
-        ConstantExprFlags::none(),
-    )?;
-    Ok(Some(rebrand_constant(expr, module)))
+    lhs.module
+        .constant_expr(
+            lhs.ty(),
+            expr_opcode,
+            [lhs.as_erased(), rhs.as_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )
+        .map(Some)
 }
 
 /// Fold a floating-point binary operation with denormal handling.
 ///
 /// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
 /// than `lhs`'s.
-pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: BinaryOpcode,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
     denormal_mode: DenormalMode,
     fmf: FastMathFlags,
     allow_non_deterministic: FoldNonDeterminism,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's operands, admitted against `lhs`'s module.
     rhs.slot_in(lhs.module.id())?;
     constant_fold_fp_inst_operands_trusting_same_module(
@@ -1392,15 +1423,19 @@ pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// [`constant_fold_fp_inst_operands`] for operands of one module.
-pub(crate) fn constant_fold_fp_inst_operands_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn constant_fold_fp_inst_operands_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
     opcode: BinaryOpcode,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
     dl: &DataLayout,
     denormal_mode: DenormalMode,
     fmf: FastMathFlags,
     allow_non_deterministic: FoldNonDeterminism,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let Some(lhs) = flush_fp_constant(lhs, denormal_mode, DenormalModeSide::Input)? else {
         return Ok(None);
     };
@@ -1438,13 +1473,13 @@ pub(crate) fn constant_fold_fp_inst_operands_trusting_same_module<'ctx, B: Modul
 ///
 /// Errors with [`IrError::ForeignValueId`] if `rhs`, or
 /// [`IrError::ForeignType`] if `ty`, belongs to a module other than `lhs`'s.
-pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     intrinsic: BinaryIntrinsic,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's operand and type, admitted against `lhs`'s
     // module.
     let owner = lhs.module.id();
@@ -1454,13 +1489,17 @@ pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// [`constant_fold_binary_intrinsic`] for operands and a type of one module.
-pub(crate) fn constant_fold_binary_intrinsic_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn constant_fold_binary_intrinsic_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
     intrinsic: BinaryIntrinsic,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let _ = (intrinsic, lhs, rhs, ty, dl);
     Ok(None)
 }
@@ -1469,11 +1508,11 @@ pub(crate) fn constant_fold_binary_intrinsic_trusting_same_module<'ctx, B: Modul
 ///
 /// Errors with [`IrError::ForeignType`] if `dest_ty` belongs to a module other
 /// than `constant`'s.
-pub fn constant_fold_load_through_bitcast<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+pub fn constant_fold_load_through_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's destination type, admitted against `constant`'s
     // module.
     dest_ty.slot_in(constant.module.id())?;
@@ -1485,11 +1524,12 @@ pub fn constant_fold_load_through_bitcast<'ctx, B: ModuleBrand + 'ctx>(
 pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
     'ctx,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 >(
-    constant: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+    constant: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let mut current = Some(constant);
     while let Some(value) = current {
         if value.ty() == dest_ty {
@@ -1528,12 +1568,12 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
 ///
 /// Errors with [`IrError::ForeignType`] if `inv_cast_to` belongs to a module
 /// other than `constant`'s.
-pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    inv_cast_to: Type<'ctx, B>,
+pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    inv_cast_to: Type<'ctx, B, C>,
     cast_op: CastOpcode,
     dl: &DataLayout,
-) -> IrResult<Option<(Constant<'ctx, B>, PreservedCastFlags)>> {
+) -> IrResult<Option<(Constant<'ctx, B, C>, PreservedCastFlags)>> {
     // Boundary: the caller's type, admitted against `constant`'s module before
     // either is read. `lossless_unsigned_trunc` and `lossless_signed_trunc`
     // forward their caller's pair here unread, so this is their check too.
@@ -1618,33 +1658,33 @@ pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Return a truncation that can be losslessly unsigned-extended back to `constant`.
-pub fn lossless_unsigned_trunc<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+pub fn lossless_unsigned_trunc<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<(Constant<'ctx, B>, PreservedCastFlags)>> {
+) -> IrResult<Option<(Constant<'ctx, B, C>, PreservedCastFlags)>> {
     lossless_inv_cast(constant, dest_ty, CastOpcode::Zext, dl)
 }
 
 /// Return a truncation that can be losslessly signed-extended back to `constant`.
-pub fn lossless_signed_trunc<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+pub fn lossless_signed_trunc<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<(Constant<'ctx, B>, PreservedCastFlags)>> {
+) -> IrResult<Option<(Constant<'ctx, B, C>, PreservedCastFlags)>> {
     lossless_inv_cast(constant, dest_ty, CastOpcode::Sext, dl)
 }
 /// Fold a known library call with constant operands.
 ///
 /// Errors with [`IrError::ForeignValueId`] if an operand belongs to a module
 /// other than `result_ty`'s.
-pub fn constant_fold_call<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_fold_call<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     lib_func: LibFunc,
-    operands: &[Constant<'ctx, B>],
-    result_ty: Type<'ctx, B>,
+    operands: &[Constant<'ctx, B, C>],
+    result_ty: Type<'ctx, B, C>,
     tli: &TargetLibraryInfo,
     allow_non_deterministic: FoldNonDeterminism,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's operands, admitted against `result_ty`'s module —
     // the one handle a call with no operands still carries.
     let owner = result_ty.module.id();
@@ -1661,13 +1701,17 @@ pub fn constant_fold_call<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// [`constant_fold_call`] for operands and a result type of one module.
-pub(crate) fn constant_fold_call_trusting_same_module<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn constant_fold_call_trusting_same_module<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
     lib_func: LibFunc,
-    operands: &[Constant<'ctx, B>],
-    result_ty: Type<'ctx, B>,
+    operands: &[Constant<'ctx, B, C>],
+    result_ty: Type<'ctx, B, C>,
     tli: &TargetLibraryInfo,
     allow_non_deterministic: FoldNonDeterminism,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if !can_constant_fold_call_to(lib_func, tli) {
         return Ok(None);
     }
@@ -1680,11 +1724,11 @@ pub(crate) fn constant_fold_call_trusting_same_module<'ctx, B: ModuleBrand + 'ct
     }
 }
 
-fn fold_phi<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
-    module: ModuleView<'ctx, B>,
+fn fold_phi<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+    module: ModuleRef<'ctx, B, C>,
     phi: &PhiData,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let mut common = None;
     for (incoming, _) in phi.incoming.borrow().iter() {
         let Some(constant) = constant_from_id(module, incoming.get()) else {
@@ -1711,14 +1755,14 @@ fn fold_phi<'ctx, B: ModuleBrand + 'ctx>(
     }))
 }
 
-fn fold_sqrt_call<'ctx, B: ModuleBrand + 'ctx>(
-    operands: &[Constant<'ctx, B>],
-    result_ty: Type<'ctx, B>,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+fn fold_sqrt_call<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    operands: &[Constant<'ctx, B, C>],
+    result_ty: Type<'ctx, B, C>,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let [operand] = operands else {
         return Ok(None);
     };
-    let Ok(src) = ConstantFloatValue::<FloatDyn, B>::try_from(*operand) else {
+    let Ok(src) = ConstantFloatValue::<FloatDyn, B, C>::try_from(*operand) else {
         return Ok(None);
     };
     if src.ty().as_type() != result_ty {
@@ -1764,11 +1808,11 @@ fn fold_sqrt_call<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn flush_denormal_float<'ctx, B: ModuleBrand + 'ctx>(
-    ty: FloatType<'ctx, FloatDyn, B>,
+fn flush_denormal_float<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: FloatType<'ctx, FloatDyn, B, C>,
     value: &ApFloat,
     mode: DenormalModeKind,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let folded = match mode {
         DenormalModeKind::Dynamic => return Ok(None),
         DenormalModeKind::Ieee => value.clone(),
@@ -1785,12 +1829,12 @@ fn flush_denormal_float<'ctx, B: ModuleBrand + 'ctx>(
     Ok(Some(ty.const_ap_float(&folded)?.as_constant()))
 }
 
-fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx>(
-    pointer: Constant<'ctx, B>,
+fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    pointer: Constant<'ctx, B, C>,
     offset: ApInt,
     dl: &DataLayout,
-) -> Option<ConstantOffsetFromGlobal<'ctx, B>> {
-    let module = pointer.as_erased().module();
+) -> Option<ConstantOffsetFromGlobal<'ctx, B, C>> {
+    let module = pointer.module;
     match &pointer.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => {
             let global_value =
@@ -1848,10 +1892,10 @@ fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx>(
-    source_ty: Type<'ctx, B>,
+fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    source_ty: Type<'ctx, B, C>,
     index_ids: &[ValueSlot],
-    module: ModuleView<'ctx, B>,
+    module: ModuleRef<'ctx, B, C>,
     index_bits: u32,
     dl: &DataLayout,
 ) -> Option<ApInt> {
@@ -1908,14 +1952,14 @@ fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx>(
     Some(offset)
 }
 
-fn constant_gep_index<'ctx, B: ModuleBrand + 'ctx>(
-    module: ModuleView<'ctx, B>,
+fn constant_gep_index<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     id: ValueSlot,
     index_bits: u32,
 ) -> Option<ApInt> {
     let constant = constant_from_id(module, id)?;
     Some(
-        ConstantIntValue::<IntDyn, B>::try_from(constant)
+        ConstantIntValue::<IntDyn, B, C>::try_from(constant)
             .ok()?
             .ap_int()
             .sext_or_trunc(index_bits),
@@ -1969,14 +2013,14 @@ fn scaled_offset(index: &ApInt, scale: u64, index_bits: u32) -> ApInt {
 ///    dereferenceable-bytes/pointer-capacity query. Simply omitted — the
 ///    produced no-wrap flags can be weaker (missing an inferable `inbounds`)
 ///    than upstream's, never wrong.
-fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
-    source_ty: Type<'ctx, B>,
-    pointer: Constant<'ctx, B>,
-    indices: &[Constant<'ctx, B>],
+fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    source_ty: Type<'ctx, B, C>,
+    pointer: Constant<'ctx, B, C>,
+    indices: &[Constant<'ctx, B, C>],
     nw: GepNoWrapFlags,
     in_range: Option<&ConstantExprInRange>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // `SrcElemTy->isSized() && !isa<ScalableVectorType>(SrcElemTy)`.
     if !source_ty.is_sized() || matches!(source_ty.data(), TypeData::ScalableVector { .. }) {
         return Ok(None);
@@ -1994,7 +2038,7 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(None);
     };
 
-    let module = pointer.as_erased().module();
+    let module = pointer.module;
     // Internal: the indices are operands of one fold, already of `pointer`'s
     // module.
     let index_ids: Vec<ValueSlot> = indices
@@ -2066,8 +2110,8 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
 /// attempting [`peel_one_gep_level`], so the intersection still happens on
 /// the level where the peel is about to fail and the merge loop is about to
 /// stop.
-fn gep_level_no_wrap_flags<'ctx, B: ModuleBrand + 'ctx>(
-    ptr: Constant<'ctx, B>,
+fn gep_level_no_wrap_flags<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ptr: Constant<'ctx, B, C>,
 ) -> Option<GepNoWrapFlags> {
     match &ptr.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::GepOffset { .. }) => Some(GepNoWrapFlags::inbounds()),
@@ -2097,12 +2141,12 @@ fn gep_level_no_wrap_flags<'ctx, B: ModuleBrand + 'ctx>(
 /// `ConstantFolding.cpp`), or (this port's addition) a nested
 /// GEP carrying `in_range` — see [`symbolically_evaluate_gep`]'s doc comment
 /// for why that last one isn't ported.
-fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
-    ptr: Constant<'ctx, B>,
+fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ptr: Constant<'ctx, B, C>,
     index_bits: u32,
     dl: &DataLayout,
-) -> Option<(Constant<'ctx, B>, ApInt)> {
-    let module = ptr.as_erased().module();
+) -> Option<(Constant<'ctx, B, C>, ApInt)> {
+    let module = ptr.module;
     match &ptr.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
             // `base_id` names the host global/function directly — its own
@@ -2167,7 +2211,9 @@ fn gep_offset_magnitude(off: i64, index_bits: u32) -> ApInt {
 /// `BaseIntVal` staying zero — and thus this condition staying false — for
 /// that shape, because its `BaseIntVal` is only written under
 /// `dyn_cast<ConstantInt>(CE->getOperand(0))`.
-fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx>(ptr: Constant<'ctx, B>) -> bool {
+fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ptr: Constant<'ctx, B, C>,
+) -> bool {
     if constant_is_null_value(ptr) {
         return true;
     }
@@ -2180,11 +2226,11 @@ fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx>(ptr: Constant<'
     let [operand_id] = expr.operands.as_ref() else {
         return false;
     };
-    let module = ptr.as_erased().module();
+    let module = ptr.module;
     let Some(operand) = constant_from_id(module, *operand_id) else {
         return false;
     };
-    let Ok(operand_int) = ConstantIntValue::<IntDyn, B>::try_from(operand) else {
+    let Ok(operand_int) = ConstantIntValue::<IntDyn, B, C>::try_from(operand) else {
         return false;
     };
     !operand_int.ap_int().is_zero()
@@ -2210,11 +2256,11 @@ fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx>(ptr: Constant<'
 /// result — safe by the same "dropping a no-wrap flag is always
 /// conservative" principle no-wrap flags rely on everywhere else — never
 /// mis-annotates it.
-fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
-    ptr: Constant<'ctx, B>,
+fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ptr: Constant<'ctx, B, C>,
     offset: &ApInt,
     nw: GepNoWrapFlags,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Matches the single-zero-index case of `ConstantFoldGetElementPtr`'s
     // `IsNoOp` (`in_range` is always `None` here — see the caller's doc
     // comment): the canonical form we're about to build would immediately
@@ -2223,7 +2269,7 @@ fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(ptr));
     }
 
-    let module = ptr.as_erased().module();
+    let module = ptr.module;
 
     if nw.contains(GepNoWrapFlags::IN_BOUNDS)
         && let ValueKindData::Constant(ConstantData::GlobalValueRef { value }) =
@@ -2247,7 +2293,6 @@ fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
     let i8_ty = int_type(module, 8)?;
     let offset_const = idx_ty.const_ap_int(offset)?.as_constant();
     module
-        .core_ref()
         .constant_expr_with_options(
             ptr.ty(),
             ConstantExprOpcode::GetElementPtr,
@@ -2261,11 +2306,11 @@ fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
         .map(Some)
 }
 
-fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
+fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
     offset: u64,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if offset == 0 {
         return Ok(Some(constant));
     }
@@ -2274,7 +2319,7 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx>(
     else {
         return Ok(None);
     };
-    let module = constant.as_erased().module();
+    let module = constant.module;
     match constant.ty().data() {
         TypeData::Array { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
@@ -2313,14 +2358,14 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn constant_at_indexed_offset<'ctx, B: ModuleBrand + 'ctx>(
+fn constant_at_indexed_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     elements: &[ValueSlot],
-    elem_ty: Type<'ctx, B>,
+    elem_ty: Type<'ctx, B, C>,
     stride: u64,
-    module: ModuleView<'ctx, B>,
+    module: ModuleRef<'ctx, B, C>,
     offset: u64,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if stride == 0 {
         return Ok(None);
     }
@@ -2340,11 +2385,11 @@ fn constant_at_indexed_offset<'ctx, B: ModuleBrand + 'ctx>(
     constant_at_offset(element, offset % stride, dl)
 }
 
-fn fold_uniform_constant_load<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
+fn fold_uniform_constant_load<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if is_poison(constant) {
         return Ok(Some(ty.poison().as_constant()));
     }
@@ -2365,18 +2410,18 @@ fn fold_uniform_constant_load<'ctx, B: ModuleBrand + 'ctx>(
     }
     Ok(None)
 }
-fn zero_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
-) -> IrResult<Option<Constant<'ctx, B>>> {
-    if let Ok(int_ty) = IntType::<IntDyn, B>::try_from(ty) {
+fn zero_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
         return Ok(Some(int_ty.const_zero().as_constant()));
     }
-    if let Ok(float_ty) = FloatType::<FloatDyn, B>::try_from(ty) {
+    if let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) {
         let zero = ApFloat::zero(float_ty.semantics(), ApFloatSign::Positive);
         return Ok(Some(float_ty.const_ap_float(&zero)?.as_constant()));
     }
     if matches!(ty.data(), TypeData::Pointer { .. }) {
-        let module = ty.module();
+        let module = ty.module;
         let id = module
             .context()
             .intern_constant_null(ty.slot_trusting_same_module());
@@ -2389,13 +2434,13 @@ fn zero_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
     Ok(None)
 }
 
-fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
-) -> IrResult<Option<Constant<'ctx, B>>> {
-    if let Ok(int_ty) = IntType::<IntDyn, B>::try_from(ty) {
+fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
         return Ok(Some(int_ty.const_all_ones().as_constant()));
     }
-    if let Ok(float_ty) = FloatType::<FloatDyn, B>::try_from(ty) {
+    if let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) {
         let bits = ApInt::all_ones(float_ty.semantics().bit_width());
         let value = ApFloat::from_bits(float_ty.semantics(), &bits)?;
         return Ok(Some(float_ty.const_ap_float(&value)?.as_constant()));
@@ -2403,12 +2448,12 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
     Ok(None)
 }
 
-fn folded_constants_from_ids<'ctx, B, I>(
-    module: ModuleView<'ctx, B>,
+fn folded_constants_from_ids<'ctx, B, C: Capability, I>(
+    module: ModuleRef<'ctx, B, C>,
     ids: I,
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
-) -> IrResult<Option<Vec<Constant<'ctx, B>>>>
+) -> IrResult<Option<Vec<Constant<'ctx, B, C>>>>
 where
     B: ModuleBrand + 'ctx,
     I: IntoIterator<Item = ValueSlot>,
@@ -2423,13 +2468,13 @@ where
     Ok(Some(folded))
 }
 
-fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
-    original: Constant<'ctx, B>,
+fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    original: Constant<'ctx, B, C>,
     expr: &ConstantExprData,
-    operands: &[Constant<'ctx, B>],
+    operands: &[Constant<'ctx, B, C>],
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let _ = tli;
     match expr.opcode {
         ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => {
@@ -2448,7 +2493,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             let Some((pointer, indices)) = operands.split_first() else {
                 return Ok(None);
             };
-            let source_ty = Type::new(source_ty, original.as_erased().module());
+            let source_ty = Type::new(source_ty, original.module);
             let (nw, in_range) = match &expr.flags {
                 ConstantExprFlags::Gep(flags) => (flags.no_wrap(), flags.in_range()),
                 _ => (GepNoWrapFlags::empty(), None),
@@ -2498,7 +2543,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             constant_fold_cast_operand_trusting_same_module(
                 opcode,
                 *operand,
-                Type::new(expr.result_ty, original.as_erased().module()),
+                Type::new(expr.result_ty, original.module),
                 dl,
             )
         }
@@ -2590,9 +2635,9 @@ fn cast_opcode_from_constant_expr(opcode: ConstantExprOpcode) -> Option<CastOpco
     }
 }
 
-fn load_through_bitcast_opcode<B: ModuleBrand>(
-    src_ty: Type<'_, B>,
-    dest_ty: Type<'_, B>,
+fn load_through_bitcast_opcode<B: ModuleBrand, C: Capability>(
+    src_ty: Type<'_, B, C>,
+    dest_ty: Type<'_, B, C>,
 ) -> CastOpcode {
     if matches!(src_ty.data(), TypeData::Integer { .. }) && pointer_address_space(dest_ty).is_some()
     {
@@ -2606,16 +2651,16 @@ fn load_through_bitcast_opcode<B: ModuleBrand>(
     }
 }
 
-fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
+fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
         &constant.as_erased().data().kind
     else {
         return Ok(None);
     };
-    let module = constant.as_erased().module();
+    let module = constant.module;
     match constant.ty().data() {
         TypeData::Struct(_) => {
             for id in elements.iter().copied() {
@@ -2648,13 +2693,15 @@ fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn constant_is_nan<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    ConstantFloatValue::<FloatDyn, B>::try_from(constant)
+fn constant_is_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
+    ConstantFloatValue::<FloatDyn, B, C>::try_from(constant)
         .is_ok_and(|value| value.ap_float().is_nan())
 }
 
-fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
+fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
     dl: &DataLayout,
 ) -> IrResult<Option<Vec<u8>>> {
     match &constant.as_erased().data().kind {
@@ -2670,7 +2717,7 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
             )))
         }
         ValueKindData::Constant(ConstantData::Float(_)) => {
-            let Ok(fp) = ConstantFloatValue::<FloatDyn, B>::try_from(constant) else {
+            let Ok(fp) = ConstantFloatValue::<FloatDyn, B, C>::try_from(constant) else {
                 return Ok(None);
             };
             let byte_len = usize_from_u64(dl.type_store_size(erase_type(constant.ty())))?;
@@ -2681,7 +2728,7 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
             )))
         }
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            aggregate_to_store_bytes(constant.ty(), elements, constant.as_erased().module(), dl)
+            aggregate_to_store_bytes(constant.ty(), elements, constant.module, dl)
         }
         ValueKindData::Constant(ConstantData::PointerNull) => {
             let Some(addr_space) = pointer_address_space(constant.ty()) else {
@@ -2697,10 +2744,10 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
     elements: &[ValueSlot],
-    module: ModuleView<'ctx, B>,
+    module: ModuleRef<'ctx, B, C>,
     dl: &DataLayout,
 ) -> IrResult<Option<Vec<u8>>> {
     match ty.data() {
@@ -2759,16 +2806,16 @@ fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn constant_from_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+fn constant_from_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
     bytes: &[u8],
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
-    if let Ok(int_ty) = IntType::<IntDyn, B>::try_from(ty) {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
         let ap = bytes_to_apint(int_ty.bit_width(), bytes, dl);
         return Ok(Some(int_ty.const_ap_int(&ap)?.as_constant()));
     }
-    if let Ok(float_ty) = FloatType::<FloatDyn, B>::try_from(ty) {
+    if let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) {
         let ap = bytes_to_apint(float_ty.semantics().bit_width(), bytes, dl);
         let fp = ApFloat::from_bits(float_ty.semantics(), &ap)?;
         return Ok(Some(float_ty.const_ap_float(&fp)?.as_constant()));
@@ -2776,12 +2823,12 @@ fn constant_from_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
     Ok(None)
 }
 
-fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
+fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: CastOpcode,
-    operand: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+    operand: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.as_erased().data().kind else {
         return Ok(None);
     };
@@ -2791,7 +2838,7 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
     if expr.opcode != ConstantExprOpcode::IntToPtr {
         return Ok(None);
     }
-    let module = operand.as_erased().module();
+    let module = operand.module;
     let source = Constant::from_parts(Value::from_parts(
         *src,
         module,
@@ -2818,11 +2865,11 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
     fold_integer_cast_constant(mid, dest_ty, false, dl)
 }
 
-fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx>(
-    operand: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    operand: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.as_erased().data().kind else {
         return Ok(None);
     };
@@ -2832,7 +2879,7 @@ fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx>(
     let [src] = expr.operands.as_ref() else {
         return Ok(None);
     };
-    let module = operand.as_erased().module();
+    let module = operand.module;
     let source = Constant::from_parts(Value::from_parts(
         *src,
         module,
@@ -2844,7 +2891,7 @@ fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx>(
     let Some(dst_as) = pointer_address_space(dest_ty) else {
         return Ok(None);
     };
-    let Ok(mid_ty) = IntType::<IntDyn, B>::try_from(operand.ty()) else {
+    let Ok(mid_ty) = IntType::<IntDyn, B, C>::try_from(operand.ty()) else {
         return Ok(None);
     };
     if mid_ty.bit_width() < dl.pointer_size_in_bits(src_as) || src_as != dst_as {
@@ -2853,16 +2900,16 @@ fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx>(
     fold_bitcast_with_layout(source, dest_ty, dl)
 }
 
-fn fold_integer_cast_constant<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+fn fold_integer_cast_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     is_signed: bool,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
-    let Ok(src_ty) = IntType::<IntDyn, B>::try_from(constant.ty()) else {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    let Ok(src_ty) = IntType::<IntDyn, B, C>::try_from(constant.ty()) else {
         return Ok(None);
     };
-    let Ok(dst_ty) = IntType::<IntDyn, B>::try_from(dest_ty) else {
+    let Ok(dst_ty) = IntType::<IntDyn, B, C>::try_from(dest_ty) else {
         return Ok(None);
     };
     if src_ty.bit_width() == dst_ty.bit_width() {
@@ -2878,11 +2925,11 @@ fn fold_integer_cast_constant<'ctx, B: ModuleBrand + 'ctx>(
     constant_fold_cast_operand_trusting_same_module(opcode, constant, dest_ty, dl)
 }
 
-fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx>(
-    operand: Constant<'ctx, B>,
-    dest_ty: Type<'ctx, B>,
+fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    operand: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B>>> {
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if let Some(folded) =
         constant_fold_cast_instruction_trusting_same_module(CastOpcode::BitCast, operand, dest_ty)?
     {
@@ -2916,29 +2963,26 @@ fn cast_constant_expr_opcode(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
     }
 }
 
-fn constant_from_id<'ctx, B: ModuleBrand + 'ctx>(
-    module: ModuleView<'ctx, B>,
+fn constant_from_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     id: ValueSlot,
-) -> Option<Constant<'ctx, B>> {
+) -> Option<Constant<'ctx, B, C>> {
     let data = module.context().value_data(id);
     matches!(&data.kind, ValueKindData::Constant(_))
         .then(|| Constant::from_parts(Value::from_parts(id, module, data.ty)))
 }
 
-fn int_type<'ctx, B: ModuleBrand + 'ctx>(
-    module: ModuleView<'ctx, B>,
+fn int_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     bits: u32,
-) -> IrResult<IntType<'ctx, IntDyn, B>> {
+) -> IrResult<IntType<'ctx, IntDyn, B, C>> {
     if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
         return Err(IrError::InvalidIntegerWidth { bits });
     }
-    Ok(IntType::new(
-        module.context().int_type(bits),
-        ModuleRef::<B>::new(module.core_ref()),
-    ))
+    Ok(IntType::new(module.context().int_type(bits), module))
 }
 
-fn pointer_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> Option<u32> {
     match ty.data() {
         TypeData::Pointer { addr_space } | TypeData::TypedPointer { addr_space, .. } => {
             Some(*addr_space)
@@ -2947,18 +2991,21 @@ fn pointer_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
     }
 }
 
-fn index_bits_for_pointer<B: ModuleBrand>(ty: Type<'_, B>, dl: &DataLayout) -> Option<u32> {
+fn index_bits_for_pointer<B: ModuleBrand, C: Capability>(
+    ty: Type<'_, B, C>,
+    dl: &DataLayout,
+) -> Option<u32> {
     pointer_address_space(ty).map(|addr_space| dl.index_size_in_bits(addr_space))
 }
 
-fn index_bits_for_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
+fn index_bits_for_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
     dl: &DataLayout,
 ) -> Option<u32> {
     if let Some(bits) = index_bits_for_pointer(constant.ty(), dl) {
         return Some(bits);
     }
-    let module = constant.as_erased().module();
+    let module = constant.module;
     let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.as_erased().data().kind
     else {
         return None;
@@ -2983,8 +3030,8 @@ fn index_bits_for_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn is_non_integral_pointer_type<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+fn is_non_integral_pointer_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
     dl: &DataLayout,
 ) -> bool {
     match ty.data() {
@@ -2992,18 +3039,18 @@ fn is_non_integral_pointer_type<'ctx, B: ModuleBrand + 'ctx>(
             dl.is_non_integral_address_space(*addr_space)
         }
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            is_non_integral_pointer_type(Type::new(*elem, ty.module()), dl)
+            is_non_integral_pointer_type(Type::new(*elem, ty.module), dl)
         }
         _ => false,
     }
 }
 
-fn denormal_mode_for_instruction<'ctx, B: ModuleBrand + 'ctx>(
+fn denormal_mode_for_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     parent_id: Option<ValueSlot>,
-    module: ModuleView<'ctx, B>,
-    ty: Type<'ctx, B>,
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
 ) -> DenormalMode {
-    let Ok(float_ty) = FloatType::<FloatDyn, B>::try_from(ty) else {
+    let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) else {
         return DenormalMode::dynamic();
     };
     // In no block, so in no function whose `denormal-fp-math` attribute could
@@ -3022,7 +3069,7 @@ fn denormal_mode_for_instruction<'ctx, B: ModuleBrand + 'ctx>(
     let ValueKindData::Function(_) = &module.context().value_data(function_id).kind else {
         return DenormalMode::dynamic();
     };
-    let function = FunctionValue::<Dyn, B>::from_parts_unchecked(function_id, module);
+    let function = FunctionValue::<Dyn, B, C>::from_parts_unchecked(function_id, module);
     function.denormal_mode(float_ty.semantics())
 }
 
@@ -3071,10 +3118,10 @@ fn usize_from_u64(value: u64) -> IrResult<usize> {
     })
 }
 
-fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
+fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
 ) -> bool {
-    let module = constant.as_erased().module();
+    let module = constant.module;
     match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => false,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
@@ -3118,8 +3165,8 @@ fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
-    module: ModuleView<'ctx, B>,
+fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     id: ValueSlot,
 ) -> bool {
     let data = module.context().value_data(id);
@@ -3129,32 +3176,4 @@ fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>
     is_guaranteed_not_to_be_undef_or_poison(Constant::from_parts(Value::from_parts(
         id, module, data.ty,
     )))
-}
-
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
-    Type::new(
-        ty.slot_trusting_same_module(),
-        ModuleRef::new(ty.module().core_ref()),
-    )
-}
-
-fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, DynBrand> {
-    // Internal: the brand changes, the module does not.
-    Value::from_parts(
-        value.slot_trusting_same_module(),
-        ModuleView::new(value.module().core_ref()),
-        value.ty().slot_trusting_same_module(),
-    )
-}
-
-fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, DynBrand>,
-    module: ModuleView<'ctx, B>,
-) -> Constant<'ctx, B> {
-    // Internal: every caller passes the module `constant` was built in.
-    Constant::from_parts(Value::from_parts(
-        constant.slot_trusting_same_module(),
-        module,
-        constant.ty().slot_trusting_same_module(),
-    ))
 }

@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `ValueId<_>: IntoIntValue<'_, i32, _>` is not satisfied
-  --> tests/compile_fail/erased_id_not_int_operand.rs:44:23
+  --> tests/compile_fail/erased_id_not_int_operand.rs:49:23
    |
-44 |     needs_int_operand(erased, ModuleRef::from(m.as_view()));
+49 |     needs_int_operand(erased, ModuleRef::from(m.as_view()));
    |     ----------------- ^^^^^^ the trait `IntoIntValue<'_, i32, _>` is not implemented for `ValueId<_>`
    |     |
    |     required by a bound introduced by this call
@@ -17,10 +17,10 @@ error[E0277]: the trait bound `ValueId<_>: IntoIntValue<'_, i32, _>` is not sati
              `i64` implements `IntoIntValue<'ctx, i64, B>`
            and $N others
 note: required by a bound in `needs_int_operand`
-  --> tests/compile_fail/erased_id_not_int_operand.rs:28:17
+  --> tests/compile_fail/erased_id_not_int_operand.rs:33:17
    |
-25 | fn needs_int_operand<'ctx, B>(_id: ValueId<B>, _m: ModuleRef<'ctx, B>)
+29 | fn needs_int_operand<'ctx, B, C>(_id: ValueId<B>, _m: ModuleRef<'ctx, B, C>)
    |    ----------------- required by a bound in this function
 ...
-28 |     ValueId<B>: IntoIntValue<'ctx, i32, B>,
+33 |     ValueId<B>: IntoIntValue<'ctx, i32, B>,
    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `needs_int_operand`

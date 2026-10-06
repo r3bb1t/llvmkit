@@ -92,7 +92,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntrinsicInst<
 
     /// Generated descriptor matched from the callee declaration.
     #[inline]
-    pub fn descriptor(self) -> IrResult<IntrinsicDescriptor<'ctx, B>> {
+    pub fn descriptor(self) -> IrResult<IntrinsicDescriptor<'ctx, B, C>> {
         let descriptor =
             descriptor_for_callee(self.call.callee()).ok_or(IrError::InvalidOperation {
                 message: "call is not an intrinsic",

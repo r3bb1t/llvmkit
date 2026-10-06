@@ -811,7 +811,7 @@ builder-constructed IR as much as for parsed IR.
 The block-argument surface above is width/type-erased: arity and per-argument
 types are checked at the *call site* (runtime `IrError`). A **typed** variant
 lifts the block's *parameter shape* into the type system so those checks move to
-*compile* time. `append_block_typed::<(i32, Ptr), _>(m.view(f), "hdr")` returns
+*compile* time. `append_block_typed::<(i32, Ptr), _, _>(m.view(f), "hdr")` returns
 the block stamped with that schema plus a typed tuple of parameter handles
 (`(IntValue<'_, i32, _>, PointerValue<'_, _>)`). The edge is then bundled
 separately: `hdr.call((a, b))` mints a `BlockCall`, consumed by `br_call` /

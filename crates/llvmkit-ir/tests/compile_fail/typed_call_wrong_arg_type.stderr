@@ -8,7 +8,7 @@ error[E0277]: `std::string::String` cannot fill a call-argument slot of schema `
    |
    = help: the trait `IntoCallArg<'_, Point, DynBrand>` is not implemented for `std::string::String`
    = help: the following other types implement trait `IntoCallArg<'ctx, P, B>`:
-             `PointValue<'ctx, B>` implements `IntoCallArg<'ctx, Point, B>`
+             `PointValue<'ctx, B, __LlvmkitCapability>` implements `IntoCallArg<'ctx, Point, B>`
              `llvmkit_ir::Argument<'ctx, B, C>` implements `IntoCallArg<'ctx, S, B>`
              `llvmkit_ir::Constant<'ctx, B, C>` implements `IntoCallArg<'ctx, S, B>`
              `llvmkit_ir::Instruction<'ctx, Attached, B>` implements `IntoCallArg<'ctx, S, B>`
