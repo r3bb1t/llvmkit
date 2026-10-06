@@ -612,14 +612,6 @@ pub const fn is_valid_alias_linkage(linkage: Linkage) -> bool {
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for GlobalAlias<'ctx, B, C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let alias = GlobalAlias::<B>::from_parts_unchecked(
-            self.id,
-            // capability (proof): laundered until Task 6 — the AsmWriter's
-            // `fmt_alias` takes a `Mutable` alias; the handle never leaves this
-            // formatter.
-            self.module.mutable_at_marked_boundary(),
-            self.ty,
-        );
-        crate::asm_writer::fmt_alias(f, alias)
+        crate::asm_writer::fmt_alias(f, *self)
     }
 }

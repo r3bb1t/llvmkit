@@ -109,7 +109,9 @@ impl SlotTracker {
     /// Build a slot tracker for a single function. Arguments come
     /// first, then each basic block (header counts as a value), then
     /// every instruction in program order.
-    pub(super) fn for_function<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>) -> Self {
+    pub(super) fn for_function<B: ModuleBrand, C: Capability>(
+        f: FunctionValue<'_, Dyn, B, C>,
+    ) -> Self {
         let mut local = HashMap::new();
         let mut blocks = HashMap::new();
         let mut next: u32 = 0;
@@ -3326,9 +3328,9 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     Ok(())
 }
 
-pub(super) fn fmt_function<B: ModuleBrand>(
+pub(super) fn fmt_function<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    func: FunctionValue<'_, Dyn, B>,
+    func: FunctionValue<'_, Dyn, B, C>,
 ) -> fmt::Result {
     fmt_function_with_use_lists(f, func, None)
 }
@@ -3336,9 +3338,9 @@ pub(super) fn fmt_function<B: ModuleBrand>(
 /// `AssemblyWriter::printFunction`. `use_lists` carries the directives
 /// `predictUseListOrder` filed under this function, present only when the
 /// caller asked to preserve use-list order.
-fn fmt_function_with_use_lists<B: ModuleBrand>(
+fn fmt_function_with_use_lists<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    func: FunctionValue<'_, Dyn, B>,
+    func: FunctionValue<'_, Dyn, B, C>,
     use_lists: Option<&Vec<UseListOrderDirective>>,
 ) -> fmt::Result {
     let slots = SlotTracker::for_function(func);
@@ -4183,9 +4185,9 @@ fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: ComdatRef<'_, DynBrand>) -> fmt::Re
     writeln!(f, " = comdat {}", c.selection_kind())
 }
 
-pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    g: GlobalVariable<'ctx, B>,
+    g: GlobalVariable<'ctx, B, C>,
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printGlobal` in
     // `lib/IR/AsmWriter.cpp`.
@@ -4330,9 +4332,9 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
 /// as one, so they answer to the same rule. `blockaddress`,
 /// `dso_local_equivalent`, `no_cfi` and `ptrauth` are separate `Constant`
 /// subclasses upstream, not `ConstantExpr`s, and keep their type.
-fn fmt_aliasee<'ctx, B: ModuleBrand + 'ctx>(
+fn fmt_aliasee<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    aliasee: Value<'ctx, B>,
+    aliasee: Value<'ctx, B, C>,
 ) -> fmt::Result {
     let is_constant_expr = matches!(
         &aliasee.data().kind,
@@ -4350,9 +4352,9 @@ fn fmt_aliasee<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    a: GlobalAlias<'ctx, B>,
+    a: GlobalAlias<'ctx, B, C>,
 ) -> fmt::Result {
     fmt_global_value_ref(f, a.as_erased())?;
     f.write_str(" = ")?;
@@ -4407,9 +4409,9 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     f.write_str("\n")
 }
 
-pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    i: GlobalIfunc<'ctx, B>,
+    i: GlobalIfunc<'ctx, B, C>,
 ) -> fmt::Result {
     fmt_global_value_ref(f, i.as_erased())?;
     f.write_str(" = ")?;

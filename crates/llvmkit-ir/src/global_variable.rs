@@ -793,15 +793,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for GlobalVa
     /// To print the global the way it appears as an instruction operand
     /// (`ptr @name`), go through [`GlobalVariable::as_erased`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let global = GlobalVariable::<B>::from_parts_unchecked(
-            self.id,
-            // capability (proof): laundered until Task 6 — the AsmWriter's
-            // `fmt_global` takes a `Mutable` global; the handle never leaves this
-            // formatter.
-            self.module.mutable_at_marked_boundary(),
-            self.ty,
-        );
-        crate::asm_writer::fmt_global(f, global)
+        crate::asm_writer::fmt_global(f, *self)
     }
 }
 

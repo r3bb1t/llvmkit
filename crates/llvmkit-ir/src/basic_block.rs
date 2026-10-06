@@ -1815,11 +1815,8 @@ impl<
         // Without an enclosing function, build a one-block slot tracker
         // ad hoc.
         if let Some(parent_id) = self.parent_id() {
-            // capability (proof): laundered until Task 6 — the slot tracker's
-            // `SlotTracker::for_function` takes a `Mutable` function; the
-            // function never leaves this formatter.
-            let module = self.module.mutable_at_marked_boundary();
-            let parent = FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, module);
+            let parent =
+                FunctionValue::<'_, Dyn, B, C>::from_parts_unchecked(parent_id, self.module);
             let slots = SlotTracker::for_function(parent);
             // `bool IsEntryBlock = BB->getParent() && BB->isEntryBlock();`
             let is_entry_block = parent

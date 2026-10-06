@@ -2005,13 +2005,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Dis
     /// function the way it appears as a call operand (`ptr @name`), go
     /// through [`FunctionValue::as_erased`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let function = FunctionValue::<Dyn, B>::from_parts_unchecked(
-            self.id,
-            // capability (proof): laundered until Task 6 — the AsmWriter's
-            // `fmt_function` takes a `Mutable` function; the handle never
-            // leaves this formatter.
-            self.module.mutable_at_marked_boundary(),
-        );
-        crate::asm_writer::fmt_function(f, function)
+        crate::asm_writer::fmt_function(f, self.as_dyn())
     }
 }

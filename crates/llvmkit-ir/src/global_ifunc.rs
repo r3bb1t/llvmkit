@@ -621,14 +621,6 @@ pub const fn is_valid_ifunc_linkage(linkage: Linkage) -> bool {
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for GlobalIfunc<'ctx, B, C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let ifunc = GlobalIfunc::<B>::from_parts_unchecked(
-            self.id,
-            // capability (proof): laundered until Task 6 — the AsmWriter's
-            // `fmt_ifunc` takes a `Mutable` ifunc; the handle never leaves this
-            // formatter.
-            self.module.mutable_at_marked_boundary(),
-            self.ty,
-        );
-        crate::asm_writer::fmt_ifunc(f, ifunc)
+        crate::asm_writer::fmt_ifunc(f, *self)
     }
 }

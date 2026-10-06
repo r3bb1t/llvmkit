@@ -730,3 +730,71 @@ fn read_only_predicates_take_each_operand_at_its_own_capability() -> Result<(), 
     assert!(PossiblyExactOperator::is_exact(&udiv));
     Ok(())
 }
+
+/// Every instruction view an `Inspect` pass reaches is `ReadOnly` — the
+/// guarantee that keeps a read-only rung read-only once mutators stop asking
+/// for a token. The pass is taken by value, so it records into a vector the
+/// test shares. llvmkit-specific (D1, D8): upstream's passes have no
+/// capability grading.
+#[test]
+fn an_inspect_pass_sees_only_read_only_instruction_views() {
+    use core::cell::RefCell;
+    use llvmkit_ir::{
+        Analyses, FnCx, FnReport, FunctionPass, Inspect, IrResult, ModuleBrand, run_function_pass,
+    };
+    use std::rc::Rc;
+
+    struct RecordCapabilities(Rc<RefCell<Vec<TypeId>>>);
+
+    impl<B: ModuleBrand> FunctionPass<B> for RecordCapabilities {
+        type Access = Inspect;
+        type Requires = ();
+        const NAME: &'static str = "record-capabilities";
+
+        fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport<B>>
+        where
+            'ctx: 'm,
+            Self: 'ctx,
+        {
+            for block in cx.function().basic_blocks() {
+                for instruction in block.instructions() {
+                    self.0.borrow_mut().push(capability(instruction));
+                }
+            }
+            Ok(cx.done())
+        }
+    }
+
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let f = m
+        .add_function_dyn(
+            "f",
+            m.function_type_no_parameters(i32_ty),
+            Linkage::External,
+        )
+        .expect("f");
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let sum = b
+        .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "s")
+        .expect("add");
+    b.ret(m.view(sum)).expect("ret");
+    let verified = m.verify().expect("verifies");
+
+    let recorded = Rc::new(RefCell::new(Vec::new()));
+    let mut analyses = Analyses::new();
+    run_function_pass(
+        RecordCapabilities(recorded.clone()),
+        verified,
+        f,
+        &mut analyses,
+    )
+    .expect("runs");
+    let recorded = recorded.borrow();
+    assert_eq!(recorded.len(), 2, "the add and the ret");
+    assert!(
+        recorded.iter().all(|id| *id == TypeId::of::<ReadOnly>()),
+        "{recorded:?}"
+    );
+}
