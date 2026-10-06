@@ -188,7 +188,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// This global at [`ReadOnly`](crate::ReadOnly). Always sound — reading
+    /// This global at [`ReadOnly`]. Always sound — reading
     /// is a subset of mutating.
     #[inline]
     pub fn read_only(self) -> GlobalVariable<'ctx, B, crate::ReadOnly> {
