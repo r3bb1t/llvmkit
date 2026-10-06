@@ -232,7 +232,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// infrastructure needs it. Upstream's `llvm::verifyModule` goes on after
     /// a failure — each failed `Check` returns from its own visitor only, so it
     /// reports one failure per failing visitor — and verifies the functions
-    /// first: `docs/divergences.md`, entry 139.
+    /// first: `docs/divergences.md`, entry 142.
     pub(crate) fn run(&self) -> IrResult<()> {
         for g in self.module.iter_globals() {
             self.visit_global_variable(g)?;
@@ -256,10 +256,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// space. Single-shot like the rest of this verifier: the first failing
     /// `Check` returns where upstream's `CheckFailed` records the failure and
     /// `Verifier::verify` goes on to the next ifunc (`docs/divergences.md`,
-    /// entry 139).
+    /// entry 142).
     ///
     /// Two of upstream's statements are unported, recorded as
-    /// `docs/divergences.md` entry 138: the leading `visitGlobalValue(GI)` —
+    /// `docs/divergences.md` entry 141: the leading `visitGlobalValue(GI)` —
     /// llvmkit's verifier has no `visitGlobalValue` for any global — and the
     /// `visitMDNode(*I.second, AreDebugLocsAllowed::No)` inside the loop.
     ///
@@ -308,7 +308,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
             // `visitMDNode(*I.second, AreDebugLocsAllowed::No)` — unported
-            // (entry 138).
+            // (entry 141).
         }
 
         if !crate::global_ifunc::is_valid_ifunc_linkage(i.linkage()) {
@@ -1258,7 +1258,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let descriptor = self
             .module
             .intrinsic_descriptor_from_signature::<B>(name, f.signature())?;
-        if f.is_intrinsic() && f.intrinsic_descriptor().as_ref() != Some(&descriptor) {
+        if f.intrinsic_id().is_some() && f.intrinsic_descriptor().as_ref() != Some(&descriptor) {
             return Err(IrError::IntrinsicSignatureMismatch {
                 name: name.to_owned(),
             });
@@ -1274,6 +1274,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `declaration_attributes` normalises every internal failure to
         // `IntrinsicSignatureMismatch` at its own `self.id` boundary now, so
         // there is nothing left here to renormalise either.
+        //
+        // The attribute check below is llvmkit's alone: upstream's `Verifier`
+        // never consults `Intrinsic::getAttributes`, so it accepts an
+        // intrinsic declaration without them (`docs/divergences.md`, the
+        // intrinsic declaration attributes entry).
         let expected_attrs = descriptor.declaration_attributes(f.signature())?;
         let Some(actual_attrs) = self.function_attrs_with_groups(f) else {
             return Err(IrError::InvalidOperation {
@@ -7482,9 +7487,12 @@ mod tests {
         }
     }
 
-    /// Mirrors `Verifier::visitFunction`: generated intrinsic declarations
-    /// must carry the generated declaration attributes, not a subset with
-    /// silently missing `immarg` / memory attributes.
+    /// Pins llvmkit's own rule that a generated intrinsic declaration carries
+    /// its generated declaration attributes, not a subset with silently
+    /// missing `immarg` / memory attributes. No upstream counterpart:
+    /// `Verifier::visitFunction` never consults `Intrinsic::getAttributes`, so
+    /// upstream accepts this module (`docs/divergences.md`, the intrinsic
+    /// declaration attributes entry).
     #[test]
     fn intrinsic_declaration_missing_generated_attrs_is_rejected() {
         let err = {
@@ -7505,8 +7513,11 @@ mod tests {
         }
     }
 
-    /// Mirrors `Verifier::visitFunction`: intrinsic declaration attribute
-    /// groups must resolve before generated attributes can be checked.
+    /// Pins llvmkit's own rule that an intrinsic declaration's attribute
+    /// groups resolve before its generated attributes are checked. No upstream
+    /// counterpart: `Verifier::visitFunction` never consults
+    /// `Intrinsic::getAttributes` (`docs/divergences.md`, the intrinsic
+    /// declaration attributes entry).
     #[test]
     fn intrinsic_declaration_extra_attr_group_is_rejected() {
         let err = {

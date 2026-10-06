@@ -56,6 +56,29 @@ fn known_intrinsic_auto_declares_direct_callee() {
     assert!(reparsed.contains("declare void @llvm.lifetime.start.p0(ptr captures(none) %0)"));
 }
 
+/// A declaration of a vector `llvm.scmp` parses. Upstream's `LLParser` takes it
+/// like any declaration, and `test/Verifier/intrinsic-cmp.ll` calls vector
+/// `llvm.scmp` overloads. llvmkit refused it ("intrinsic signature mismatch"):
+/// building the intrinsic's `Range<RetIndex, -1, 2>` attribute asked for a
+/// scalar integer result, where `getIntrinsicArgAttributeSet` uses
+/// `ArgType->getScalarSizeInBits()`. llvmkit-specific regression; positive
+/// control: the scalar overload parses too.
+#[test]
+fn a_vector_scmp_declaration_parses() {
+    let text = parse_and_render(concat!(
+        "declare i8 @llvm.scmp.i8.i32(i32, i32)\n",
+        "declare <4 x i8> @llvm.scmp.v4i8.v4i32(<4 x i32>, <4 x i32>)\n",
+    ));
+    assert!(
+        text.contains("@llvm.scmp.i8.i32("),
+        "AsmWriter output: {text}"
+    );
+    assert!(
+        text.contains("<4 x i8> @llvm.scmp.v4i8.v4i32("),
+        "AsmWriter output: {text}"
+    );
+}
+
 /// Mirrors `llvm/lib/IR/Verifier.cpp` intrinsic validation: unknown `llvm.*`
 /// names are rejected rather than modeled as ordinary functions.
 #[test]

@@ -14,7 +14,7 @@ help: the trait `CanMutate` is implemented for `Mutable`
 note: required by a bound in `IntValue::<'ctx, W, B, C>::set_name`
   --> src/value.rs
    |
-   |     pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+   |     pub fn set_name<Name>(
    |            -------- required by a bound in this associated function
 ...
    |         C: CanMutate,

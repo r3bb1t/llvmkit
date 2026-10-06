@@ -307,15 +307,34 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
     /// uniqued (`name.1`, or `name1` on an NVPTX module), and the intrinsic
     /// identity is recomputed from the new name
     /// (`Function::updateAfterNameChange`).
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name containing a NUL byte, which
+    /// `Value::setNameImpl` asserts against; the function keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this function's module — reachable
+    /// with two modules of one brand, such as two [`Module::dynamic`] values.
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
 
     /// Leave this function unnamed. Mirrors `Value::setName("")`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this function's module — reachable
+    /// with two modules of one brand, such as two [`Module::dynamic`] values.
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
     where
         C: CanMutate,
@@ -355,11 +374,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         IntrinsicDescriptor::new(data.id, overloads).ok()
     }
 
-    /// Whether this function's name and signature declare an intrinsic —
-    /// whether [`Self::intrinsic_id`] answers.
+    /// Whether this function's name starts with `llvm.`. Mirrors
+    /// `Function::isIntrinsic`, which answers `HasLLVMReservedName` — set from
+    /// the name alone, by `Function`'s constructor and
+    /// `Function::updateAfterNameChange`. As upstream warns, this can be
+    /// `true` while [`Self::intrinsic_id`] answers [`None`]: an `llvm.` name no
+    /// intrinsic has, or one whose signature is not the name's.
     #[inline]
     pub fn is_intrinsic(self) -> bool {
-        self.intrinsic_id().is_some()
+        self.name().is_some_and(|name| name.starts_with("llvm."))
     }
 
     /// Function return type, at this function's capability.
@@ -1203,11 +1226,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         }
         Ok(block)
     }
-    pub(super) fn set_local_value_name(
-        self,
-        id: ValueSlot,
-        requested: Option<&str>,
-    ) -> Option<String>
+    pub(super) fn set_local_value_name(self, id: ValueSlot, requested: Option<&str>)
     where
         C: CanMutate,
     {
@@ -1216,7 +1235,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         // function-local value never is.
         self.data()
             .symbol_table
-            .set_value_name(value, id, requested, false)
+            .set_value_name(value, id, requested, false);
     }
 
     pub(super) fn remove_local_value_name(self, id: ValueSlot)
@@ -1291,18 +1310,40 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B, Mut
     /// — a name-only identity has no spelling here (`docs/divergences.md`,
     /// the `updateAfterNameChange` entry). `LibFuncCache` and
     /// `HasLLVMReservedName` have no stored counterpart: llvmkit caches no
-    /// library-function classification on a function, and reads the reserved
-    /// prefix from the name where it is asked.
+    /// library-function classification on a function, and
+    /// [`Self::is_intrinsic`] reads the reserved prefix from the name.
     pub(crate) fn update_after_name_change(self) {
         let name = self.name().unwrap_or_default();
         let intrinsic = if name.starts_with("llvm.") {
-            // An error here is the answer "no intrinsic matches this name and
-            // signature", not a failure of the rename.
-            self.module
+            match self
+                .module
                 .module()
                 .intrinsic_descriptor_from_signature::<B>(&name, self.signature())
-                .ok()
-                .map(|descriptor| descriptor.to_function_data())
+            {
+                Ok(descriptor) => Some(descriptor.to_function_data()),
+                // `lookupIntrinsicID` finds no intrinsic of this name and
+                // answers `not_intrinsic`: upstream's answer too.
+                Err(IrError::UnknownIntrinsic { .. }) => None,
+                // The name resolves to an intrinsic, but no descriptor of it
+                // has this signature, or the name's overload suffix does not
+                // spell one: `descriptor_for_name`, `function_type_ref` and
+                // the final comparison all answer `IntrinsicSignatureMismatch`
+                // here. `InvalidOperation` is the same answer from inside the
+                // generated tables — an `IIT` entry `iit_descriptors` cannot
+                // decode, or an overload `append_mangled_type` cannot spell.
+                // Upstream would still store the id (`docs/divergences.md`,
+                // the `updateAfterNameChange` entry).
+                Err(
+                    IrError::IntrinsicSignatureMismatch { .. } | IrError::InvalidOperation { .. },
+                ) => None,
+                // Read off `intrinsic_descriptor_from_signature`,
+                // `descriptor_for_name` and `IntrinsicDescriptor::new`, the
+                // one other variant they return is `ForeignType`, which needs
+                // a type of another module: this function's own signature and
+                // the overloads demangled into its own module are neither.
+                // No identity either way.
+                Err(_) => None,
+            }
         } else {
             None
         };
@@ -1487,11 +1528,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B
     for FunctionValue<'ctx, R, B, C>
 {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        FunctionValue::set_name(self, module_token, name);
+        FunctionValue::set_name(self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {

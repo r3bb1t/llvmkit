@@ -54,7 +54,7 @@ cut, entries accumulate under **Unreleased**.
   and `ifunc-opaque.ll`, vendored whole and verified one ifunc per module,
   plus the unreduced fixture on its first `CHECK` — llvmkit's verifier stops
   at its first failure where `llvm::verifyModule` reports each failing entity
-  (`docs/divergences.md`, entry 139); the two attachment checks and their
+  (`docs/divergences.md`, entry 142); the two attachment checks and their
   kind-id order, the llvmkit-specific
   `an_ifunc_may_carry_neither_a_dbg_nor_a_prof_attachment`, since no upstream
   fixture writes either; the strip's `addrspacecast` and alias steps, the
@@ -73,7 +73,7 @@ cut, entries accumulate under **Unreleased**.
   llvmkit's can fail it and no test does. *Breaking:* two new `VerifierRule`
   variants, `IfuncMetadataAttachment` and `IfuncInvalidResolver`. Not ported:
   the `visitGlobalValue` call and the attachment loop's `visitMDNode`
-  (`docs/divergences.md`, entry 138).
+  (`docs/divergences.md`, entry 141).
 - **Fixed: `extern_weak` was accepted as an ifunc and an alias linkage.**
   `global_ifunc::is_valid_ifunc_linkage` and
   `global_alias::is_valid_alias_linkage` listed it, where
@@ -362,6 +362,54 @@ cut, entries accumulate under **Unreleased**.
 - Creation still refuses a taken name, and a function still refuses an
   `llvm.` name, where upstream uniques the one and accepts the other —
   `docs/divergences.md`, entry 137.
+- **Breaking: `set_name` returns `IrResult<()>`** — on `Value`, on `SetName`,
+  and on every handle's inherent `set_name` — and refuses with the new
+  `IrError::InvalidValueName` variant (breaking: a new `IrError` variant)
+  what `Value::setNameImpl` asserts against, the value keeping its name. Its
+  `InvalidValueNameReason` says which: `ContainsNul` (a NUL byte, which printed
+  as a `\00` escape the lexer will not read back), `VoidValue` (a name for a
+  `void` value, which used to be dropped without a word), and `InlineAsm` /
+  `MetadataAsValue` (values `getSymTab` asserts are not constants, which
+  used to be ignored). `clear_name` stays infallible. Creation does not run
+  these checks yet — `docs/divergences.md`, entry 140.
+- **Breaking: `get_or_insert_intrinsic_declaration*` ports the rest of
+  `getOrInsertIntrinsicDeclarationImpl`.** A function of another type that
+  holds the intrinsic's name is renamed `<name>.invalid` and the intrinsic is
+  declared afresh, where it used to be refused with
+  `IntrinsicSignatureMismatch`; a definition of the intrinsic's type is
+  returned, where it used to be refused. A holder of the right type without
+  the intrinsic's identity is still refused — `docs/divergences.md`, entry 138.
+  Every refusal now comes before the first mutation, so a refused call leaves
+  the module as it was; the `.invalid` arm's rename and declaration run in a
+  step whose signature cannot return an error.
+- **Breaking: `get_or_insert_intrinsic_declaration*` names no argument.** The
+  declaration's arguments used to take TableGen's `ArgName`s (`kind`,
+  `fill_mode`, …), and with the definition arm above that would have renamed a
+  caller's own function's arguments. Upstream names none: `ArgName` is
+  pretty-printer data, still read at each call site.
+- **Fixed: a vector `llvm.scmp` / `llvm.ucmp` could not be declared or
+  parsed.** Building their `Range<RetIndex, -1, 2>` attribute demanded a scalar
+  integer result, so `declare <4 x i8> @llvm.scmp.v4i8.v4i32(<4 x i32>, <4 x i32>)`
+  was refused as an intrinsic signature mismatch. The range is now sized by the
+  element type (`range(i8 -1, 2)`), as `getIntrinsicArgAttributeSet`'s
+  `ArgType->getScalarSizeInBits()` sizes it. The sample-overload sweep, which
+  declared scalar samples only and so never met a vector `scmp`, now also
+  declares again every sample that has a scalar integer or floating-point
+  overload, with those overloads widened to vectors.
+- **Breaking: `FunctionValue::is_intrinsic` mirrors `Function::isIntrinsic`**
+  — whether the name starts with `llvm.` — where it used to answer whether
+  `intrinsic_id()` does. A function named `llvm.` plus a name no intrinsic has
+  is now `true`, as upstream.
+- The unique-name counter wraps past `u32::MAX` to 0, as upstream's
+  `uint32_t` `LastUnique` does, where it used to panic.
+- Fixed before release: an unnamed global or function in a comdat named `""`
+  printed ` comdat($)`, a regression of this section's `Option<String>`
+  names; it prints a bare ` comdat`, as `maybePrintComdat` does.
+- The verifier's demand that an intrinsic declaration carry its generated
+  attributes is recorded as llvmkit's own (`docs/divergences.md`, entry 139):
+  upstream's `Verifier` never consults `Intrinsic::getAttributes`, and the
+  five tests that called it a mirror of `visitFunction` are relabelled (the
+  entry lists them and the search that finds them).
 
 ### Changed — value handles carry their capability *(breaking)*
 

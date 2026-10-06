@@ -840,15 +840,27 @@ impl<
         self.to_erased().name()
     }
 
-    /// Set or clear the textual name.
-    /// Set the textual name.
+    /// Set the textual name. [`crate::Value::set_name`] on this block.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the block keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this block's module.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.to_erased().set_name(module_token, name);
+        self.to_erased().set_name(module_token, name)
     }
 
     /// Clear the textual name.
@@ -1720,11 +1732,11 @@ impl<
 > SetName<'ctx, B> for BasicBlock<'ctx, R, Term, B, Params, C>
 {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        BasicBlock::set_name(&self, module_token, name);
+        BasicBlock::set_name(&self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {

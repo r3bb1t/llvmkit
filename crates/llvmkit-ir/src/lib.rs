@@ -258,8 +258,8 @@ pub use derived_types::{
 };
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{
-    Blame, BrandError, DataLayoutError, IrError, IrResult, RenderedType, TypeKindLabel,
-    ValueCategoryLabel, VerifierRule, VerifierSubject,
+    Blame, BrandError, DataLayoutError, InvalidValueNameReason, IrError, IrResult, RenderedType,
+    TypeKindLabel, ValueCategoryLabel, VerifierRule, VerifierSubject,
 };
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};

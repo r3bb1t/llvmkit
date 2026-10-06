@@ -467,6 +467,53 @@ fn comdat_any_emission() {
     );
 }
 
+/// `maybePrintComdat` (`lib/IR/AsmWriter.cpp`) returns after a bare
+/// `comdat` when `GO.getName() == C->getName()`, and an unnamed object's
+/// `getName()` is `""`: an unnamed global or function in a comdat named `""`
+/// prints a bare `comdat`. llvmkit-specific, derived from that routine: the
+/// unnamed objects upstream's tests print in a comdat (`@0` in
+/// `test/DebugInfo/COFF/vftables.ll`, for one) are in comdats with other
+/// names, `test/Assembler/unnamed-comdat.ll` is a parse rejection, and
+/// `rg -n -a '\$"" = comdat|comdat\(\$""\)' llvm/test` finds no `""` comdat at
+/// the vendored tag `llvmorg-22.1.4`. Positive controls: a named global in its
+/// own-named comdat prints bare, and one in another comdat prints
+/// `comdat($other)`.
+#[test]
+fn an_unnamed_object_in_an_empty_named_comdat_prints_a_bare_comdat() {
+    let m = module_new!("m").expect("fresh module");
+    let empty = m.get_or_insert_comdat("");
+    let own = m.get_or_insert_comdat("own");
+    let other = m.get_or_insert_comdat("other");
+    let i32_ty = m.i32_type();
+    for (name, comdat) in [("", empty), ("own", own), ("elsewhere", other)] {
+        m.global_builder(name, i32_ty.as_type())
+            .initializer(i32_ty.const_int(0i32))
+            .comdat(comdat)
+            .build()
+            .expect("build");
+    }
+    let f = m
+        .add_function_dyn(
+            "",
+            m.function_type_no_parameters(m.void_type()),
+            Linkage::External,
+        )
+        .expect("unnamed function");
+    m.view(f).set_comdat(&m, empty).expect("attach the comdat");
+
+    let text = module_text(&m);
+    assert!(text.contains("@0 = global i32 0, comdat\n"), "got:\n{text}");
+    assert!(text.contains("declare void @1() comdat\n"), "got:\n{text}");
+    assert!(
+        text.contains("@own = global i32 0, comdat\n"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("@elsewhere = global i32 0, comdat($other)\n"),
+        "got:\n{text}"
+    );
+}
+
 /// Mirrors `test/Bitcode/compatibility.ll`'s five `$comdat.* = comdat <kind>`
 /// directives together with the five `@comdat.* = global i32 0, comdat`
 /// globals that reference them — for the reason
@@ -1051,7 +1098,7 @@ fn alias_ifunc_partition_clear_apis() {
 ///
 /// llvmkit-specific: upstream's `GlobalAlias::create` (`lib/IR/Globals.cpp`)
 /// takes any linkage and leaves the check to `Verifier::visitGlobalAlias`,
-/// which llvmkit does not port (`docs/divergences.md`, entry 138); the
+/// which llvmkit does not port (`docs/divergences.md`, entry 141); the
 /// builder's refusal is that check moved to construction.
 #[test]
 fn alias_builder_refuses_an_extern_weak_linkage() {

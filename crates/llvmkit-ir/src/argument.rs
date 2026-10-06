@@ -87,14 +87,27 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Argument<'ctx, B, C> {
         self.as_erased().name()
     }
 
-    /// Set the textual name.
+    /// Set the textual name. [`crate::Value::set_name`] on this argument.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the argument keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this argument's module.
     #[inline]
-    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
 
     /// Clear the textual name.
@@ -139,11 +152,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for Argument<'
 }
 impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for Argument<'ctx, B, C> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        Argument::set_name(self, module_token, name);
+        Argument::set_name(self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {

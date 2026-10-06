@@ -465,7 +465,7 @@ fn file_check_matches(pattern: &str, line: &str) -> bool {
 /// `parser_calls.rs::upstream_musttail_invalid_fixture_messages_match` is
 /// per-function: `Module::verify_borrowed` reports the *first* failure, where
 /// `llvm::verifyModule` reports each failing entity (`docs/divergences.md`,
-/// entry 139).
+/// entry 142).
 /// Each case is the whole fixture with every other ifunc line removed, so
 /// every resolver, global and function the fixture defines is still there.
 /// Upstream's `CHECK-NEXT` line is `Verifier::Write(&GI)`'s operand print of
@@ -557,7 +557,7 @@ fn assert_ifunc_verifier_fixture(fixture: &str) {
 /// `Verifier::visitGlobalIFunc` the fixture reaches — the linkage, a resolver
 /// that is no `Function`, a declaration, an `available_externally`
 /// definition, and a resolver returning `i32` — with its message and the ifunc
-/// it names, one ifunc per module (`docs/divergences.md`, entry 139); and the
+/// it names, one ifunc per module (`docs/divergences.md`, entry 142); and the
 /// fixture as written, on its first `CHECK`.
 #[test]
 fn upstream_ifunc_verifier_fixture_messages_match() {
@@ -567,7 +567,7 @@ fn upstream_ifunc_verifier_fixture_messages_match() {
 /// Ports `test/Verifier/ifunc-opaque.ll` whole: a resolver behind a
 /// non-zero-index `getelementptr`, and one behind `inttoptr (add (ptrtoint …))`,
 /// are no `Function` once `Value::stripPointerCastsAndAliases` stops at them —
-/// one ifunc per module (`docs/divergences.md`, entry 139), and the fixture as
+/// one ifunc per module (`docs/divergences.md`, entry 142), and the fixture as
 /// written on its first `CHECK`.
 #[test]
 fn upstream_ifunc_opaque_verifier_fixture_messages_match() {

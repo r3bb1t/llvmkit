@@ -11640,7 +11640,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             expected: format!("function parameter slot {slot}: {e}").into(),
                             loc: decl_loc,
                         })?;
-                        arg.set_name(self.module, &name);
+                        // `set_name` refuses only what text cannot spell here:
+                        // the lexer rejects a NUL in a name, and an argument
+                        // is never `void`.
+                        arg.set_name(self.module, &name)
+                            .map_err(|e| self.builder_err_at(decl_loc, "parameter name", e))?;
                     }
                 }
                 return Ok(());
@@ -11677,7 +11681,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     expected: format!("function parameter slot {slot}: {e}").into(),
                     loc: decl_loc,
                 })?;
-                arg.set_name(self.module, &name);
+                // Unreachable from text, as in the intrinsic arm above.
+                arg.set_name(self.module, &name)
+                    .map_err(|e| self.builder_err_at(decl_loc, "parameter name", e))?;
             }
         }
         for group in suffix.attr_groups {
@@ -11883,7 +11889,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     expected: format!("function parameter slot {slot}: {e}").into(),
                     loc: decl_loc,
                 })?;
-                arg.set_name(self.module, n);
+                // `set_name` refuses only what text cannot spell here: the
+                // lexer rejects a NUL in a name, and an argument is never
+                // `void`.
+                arg.set_name(self.module, n)
+                    .map_err(|e| self.builder_err_at(decl_loc, "parameter name", e))?;
             }
         }
         for group in suffix.attr_groups {

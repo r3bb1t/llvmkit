@@ -111,7 +111,8 @@ use super::r#type::{
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse,
+    AdmittedRename, GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess,
+    ValueUse,
 };
 use super::value_id::{
     FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
@@ -2255,14 +2256,14 @@ impl<'ctx> ModuleCore {
             });
         }
 
-        self.push_function(
+        Ok(self.push_function(
             name,
             signature,
             linkage,
             crate::CallingConv::default(),
             None,
             None,
-        )
+        ))
     }
 
     fn push_function<B: ModuleBrand + 'ctx, R>(
@@ -2273,10 +2274,12 @@ impl<'ctx> ModuleCore {
         calling_conv: crate::CallingConv,
         intrinsic: Option<IntrinsicFunctionData>,
         attributes: Option<AttributeStorage>,
-    ) -> IrResult<FunctionValue<'ctx, R, B>>
+    ) -> FunctionValue<'ctx, R, B>
     where
         R: ReturnMarker,
     {
+        // Infallible: every check — the name, the signature, the attributes —
+        // is the caller's, made before this pushes anything.
         // Internal: every caller admitted `signature` against this module
         // (`add_function_dyn`, `FunctionBuilder::build`) or minted it here.
         let signature_id = signature.slot_trusting_same_module();
@@ -2324,12 +2327,15 @@ impl<'ctx> ModuleCore {
         }
 
         self.functions.borrow_mut().push(fn_id);
-        // `GlobalValue`'s constructor ends in `setName(Name)`.
+        // `getFunctionList().push_back(this)` in `Function`'s constructor:
+        // `SymbolTableListTraits::addNodeToList` then
+        // `ValueSymbolTable::reinsertValue` put the name in the module's
+        // table, uniquing a clash. (`GlobalValue`'s constructor runs
+        // `setName(Name)` before there is a parent, so `getSymTab` hands it no
+        // table.) Every caller refused a taken name against this same table,
+        // so the name is taken as given.
         self.set_global_value_name(fn_id, Some(name));
-        Ok(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
-            fn_id,
-            ModuleRef::<B>::new(self),
-        ))
+        FunctionValue::<'ctx, R, B>::from_parts_unchecked(fn_id, ModuleRef::<B>::new(self))
     }
 
     pub(crate) fn intrinsic_descriptor_from_signature<B: ModuleBrand + 'ctx>(
@@ -2372,41 +2378,136 @@ impl<'ctx> ModuleCore {
         // `get_or_insert_intrinsic_declaration_by_id` — admitted against this
         // module before a signature is built from them or they are stored.
         descriptor.admit_overloads(self.id())?;
+        // Ports `getOrInsertIntrinsicDeclarationImpl` (`lib/IR/Intrinsics.cpp`),
+        // which both `Intrinsic::getOrInsertDeclaration` overloads end in.
+        // `Name` is `Intrinsic::getName(id[, Tys, M, FT])`; `FT` is the
+        // descriptor's function type.
+        //
+        // Upstream's control flow and branch order are kept. What is llvmkit's
+        // alone is where the refusals sit: upstream's routine cannot fail, and
+        // llvmkit's can, so every value a step that can refuse produces — the
+        // name, the signature, the attributes, and in the `.invalid` arm the
+        // admitted rename — is computed before the step that uses it. The
+        // first `getOrInsertFunction` declares only when no global value holds
+        // the name, and then nothing after it can refuse (the cast sees a
+        // function, of the intrinsic's type and identity). The `.invalid` arm's
+        // mutations run in `rename_invalid_and_redeclare`, whose signature
+        // returns no `IrResult`: an error after the rename is not a state this
+        // routine avoids but one it cannot express.
         let name = descriptor.mangled_name()?;
-        let module_ref = ModuleRef::<B>::new(self);
-        let signature = descriptor.function_type_ref(module_ref)?;
-        // `Module::getOrInsertFunction` asks `getNamedValue(Name)`, which
-        // answers any kind of global value.
-        if let Some(existing_id) = self.named_value(&name) {
-            // `Intrinsic::getOrInsertDeclaration` then `cast<Function>`s what
-            // it got back — an assertion when a global variable, alias or
-            // ifunc holds the name. Refused here instead: hardening of an
-            // assert, not a divergence.
-            if !matches!(
-                self.ctx.value_data(existing_id).kind,
-                ValueKindData::Function(_)
-            ) {
-                return Err(IrError::DuplicateFunctionName { name });
-            }
-            let existing =
-                FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(existing_id, module_ref);
-            if existing.signature() != signature
-                || existing.basic_blocks().len() != 0
-                || existing.intrinsic_descriptor().as_ref() != Some(descriptor)
-            {
+        let signature = descriptor.function_type_ref(ModuleRef::<B>::new(self))?;
+        // The `Intrinsic::getAttributes` and the id that `Function`'s
+        // constructor gives a declaration `getOrInsertFunction` creates.
+        // Upstream's cannot fail; llvmkit's `declaration_attributes` can refuse
+        // an attribute its model cannot build, so it runs here.
+        let attributes = descriptor.declaration_attributes(signature)?;
+        let identity = descriptor.to_function_data();
+        // `Function *F = cast<Function>(M->getOrInsertFunction(Name,
+        // FT).getCallee());` — the cast refuses before anything is declared,
+        // since a declaration it would see is a function.
+        let function = self.function_holding_intrinsic_name(
+            self.get_or_insert_intrinsic_function(&name, signature, &identity, &attributes),
+            &name,
+        )?;
+        // `if (F->getFunctionType() == FT) return F;` — a definition included.
+        if function.signature() == signature {
+            // llvmkit-only, and no upstream arm: refuse a same-named function
+            // of the right type whose stored identity is not this descriptor.
+            // Upstream's identity is the name alone, so its `F` here is always
+            // the intrinsic. Where the holder lacks the identity because its
+            // name's overload suffix does not demangle to this signature,
+            // `IntrinsicCallBuilder::build` could not recover one either
+            // (`descriptor_for_callee`'s by-name fallback fails the same way),
+            // and it emits its call before it checks: returning the holder
+            // would turn that check into an error after a mutation
+            // (`docs/divergences.md`, the `getOrInsertIntrinsicDeclarationImpl`
+            // entry, which also records what else this guard refuses).
+            if function.intrinsic_descriptor().as_ref() != Some(descriptor) {
                 return Err(IrError::IntrinsicSignatureMismatch { name });
             }
-            return Ok(existing);
+            return Ok(function);
         }
-        let attributes = descriptor.declaration_attributes(signature)?;
+        // "It's possible that a declaration for this intrinsic already exists
+        // with an incorrect signature … rename the invalid declaration and
+        // insert a new one with the correct signature." The `.invalid` name's
+        // refusals — `setNameImpl`'s guards — are made here, by
+        // `admit_rename`; its uniquing, which cannot fail, happens when the
+        // rename is applied, as `createValueName` uniques at insertion.
+        let invalid_name = format!("{}.invalid", function.name().unwrap_or_default());
+        let rename = function.as_erased().admit_rename(&invalid_name)?;
+        Ok(self.rename_invalid_and_redeclare(rename, &name, signature, &identity, &attributes))
+    }
+
+    /// The `.invalid` arm's mutations, from values its caller has already
+    /// computed: `F->setName(F->getName() + ".invalid")`, then
+    /// `return cast<Function>(M->getOrInsertFunction(Name, FT).getCallee())`.
+    /// Infallible by signature — the reason this step is a function of its
+    /// own: an error after the rename cannot be written here.
+    fn rename_invalid_and_redeclare<B: ModuleBrand + 'ctx>(
+        &'ctx self,
+        rename: AdmittedRename<'ctx, B, Mutable>,
+        name: &str,
+        signature: FunctionType<'ctx, B>,
+        identity: &IntrinsicFunctionData,
+        attributes: &AttributeStorage,
+    ) -> FunctionValue<'ctx, Dyn, B> {
+        // `F->setName(F->getName() + ".invalid");` — the one `setName` port,
+        // `updateAfterNameChange` tail included.
+        rename.apply();
+        // `return cast<Function>(M->getOrInsertFunction(Name,
+        // FT).getCallee());`. The rename moved `F`, the one holder of `Name`,
+        // to a name that is not `Name` (it ends in `.invalid`, uniqued or not),
+        // so `getOrInsertFunction` reaches `Function::Create` and the cast
+        // holds by construction.
+        let declared = self.get_or_insert_intrinsic_function(name, signature, identity, attributes);
+        FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(declared, ModuleRef::<B>::new(self))
+    }
+
+    /// `Module::getOrInsertFunction(Name, FT)` as
+    /// `getOrInsertIntrinsicDeclarationImpl` calls it: the global value
+    /// `getNamedValue(Name)` answers — of any kind — or else a fresh
+    /// declaration, `Function::Create(FT, ExternalLinkage, …, Name, M)`, whose
+    /// constructor gives an intrinsic its `identity` and `attributes`
+    /// (`Intrinsic::getAttributes`), both computed by the caller.
+    fn get_or_insert_intrinsic_function<B: ModuleBrand + 'ctx>(
+        &'ctx self,
+        name: &str,
+        signature: FunctionType<'ctx, B>,
+        identity: &IntrinsicFunctionData,
+        attributes: &AttributeStorage,
+    ) -> ValueSlot {
+        if let Some(existing) = self.named_value(name) {
+            return existing;
+        }
         self.push_function::<B, Dyn>(
-            &name,
+            name,
             signature,
             Linkage::External,
             crate::CallingConv::default(),
-            Some(descriptor.to_function_data()),
-            Some(attributes),
+            Some(identity.clone()),
+            Some(attributes.clone()),
         )
+        .slot_trusting_same_module()
+    }
+
+    /// `cast<Function>` on what `getOrInsertFunction` returned: an assertion
+    /// when a global variable, alias or ifunc holds the name. Refused here
+    /// with [`IrError::DuplicateFunctionName`] instead — hardening of an
+    /// assert, not a divergence.
+    fn function_holding_intrinsic_name<B: ModuleBrand + 'ctx>(
+        &'ctx self,
+        holder: ValueSlot,
+        name: &str,
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+        if !matches!(self.ctx.value_data(holder).kind, ValueKindData::Function(_)) {
+            return Err(IrError::DuplicateFunctionName {
+                name: name.to_owned(),
+            });
+        }
+        Ok(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
+            holder,
+            ModuleRef::<B>::new(self),
+        ))
     }
 
     pub(crate) fn get_or_insert_intrinsic_declaration_by_name<B: ModuleBrand + 'ctx>(
@@ -2531,7 +2632,11 @@ impl<'ctx> ModuleCore {
             seeded_initializer,
         );
         self.globals.borrow_mut().push(value_id);
-        // `GlobalValue`'s constructor ends in `setName(Name)`.
+        // `M.insertGlobalVariable(this)` in `GlobalVariable`'s constructor:
+        // `SymbolTableListTraits::addNodeToList` then
+        // `ValueSymbolTable::reinsertValue`, as for a function in
+        // `push_function`; the check above refused a taken name against this
+        // same table.
         self.set_global_value_name(value_id, Some(&name));
         Ok(GlobalVariable::from_parts_unchecked(
             value_id,
@@ -2567,7 +2672,11 @@ impl<'ctx> ModuleCore {
             Some(seeded_aliasee),
         );
         self.aliases.borrow_mut().push(value_id);
-        // `GlobalValue`'s constructor ends in `setName(Name)`.
+        // `ParentModule->insertAlias(this)` in `GlobalAlias`'s constructor:
+        // `SymbolTableListTraits::addNodeToList` then
+        // `ValueSymbolTable::reinsertValue`, as for a function in
+        // `push_function`; the check above refused a taken name against this
+        // same table.
         self.set_global_value_name(value_id, Some(&name));
         Ok(GlobalAlias::from_parts_unchecked(
             value_id,
@@ -2603,7 +2712,11 @@ impl<'ctx> ModuleCore {
             Some(seeded_resolver),
         );
         self.ifuncs.borrow_mut().push(value_id);
-        // `GlobalValue`'s constructor ends in `setName(Name)`.
+        // `ParentModule->insertIFunc(this)` in `GlobalIFunc`'s constructor:
+        // `SymbolTableListTraits::addNodeToList` then
+        // `ValueSymbolTable::reinsertValue`, as for a function in
+        // `push_function`; the check above refused a taken name against this
+        // same table.
         self.set_global_value_name(value_id, Some(&name));
         Ok(GlobalIfunc::from_parts_unchecked(
             value_id,
@@ -2632,20 +2745,16 @@ impl<'ctx> ModuleCore {
     }
 
     /// Name the global value `id` `requested` through this module's symbol
-    /// table, returning the name it ends up with. Ports `Value::setNameImpl`
-    /// for the values `getSymTab` answers the parent module's table for:
-    /// `createValueName` takes the name or uniques a clash, the old name is
-    /// removed, and an absent or empty name leaves the value unnamed.
-    /// `ValueSymbolTable::makeUniqueName` marks a uniqued global value with a
-    /// dot unless the module targets NVPTX.
-    pub(crate) fn set_global_value_name(
-        &self,
-        id: ValueSlot,
-        requested: Option<&str>,
-    ) -> Option<String> {
+    /// table; the name it ends up with is on the value. The table step of
+    /// `Value::setNameImpl` for the values `getSymTab` answers the parent
+    /// module's table for: `createValueName` takes the name or uniques a
+    /// clash, the old name is removed, and an absent or empty name leaves the
+    /// value unnamed. `ValueSymbolTable::makeUniqueName` marks a uniqued
+    /// global value with a dot unless the module targets NVPTX.
+    pub(crate) fn set_global_value_name(&self, id: ValueSlot, requested: Option<&str>) {
         let append_dot = !self.targets_nvptx();
         self.symbol_table
-            .set_value_name(self.ctx.value_data(id), id, requested, append_dot)
+            .set_value_name(self.ctx.value_data(id), id, requested, append_dot);
     }
 
     /// `M->getTargetTriple().isNVPTX()`. `Triple::isNVPTX` asks for the
@@ -3737,30 +3846,22 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     where
         R: ReturnMarker,
     {
-        let Some(id) = self.core().named_value(name) else {
-            return Ok(None);
-        };
         // `Module::getFunction` is `dyn_cast_or_null<Function>`: a name
         // another kind of global value holds is no function.
-        let ValueKindData::Function(function) = &self.core().ctx.value_data(id).kind else {
+        let Some(id) = self
+            .core()
+            .named_value_of_kind(name, |kind| matches!(kind, ValueKindData::Function(_)))
+        else {
             return Ok(None);
         };
-        let signature_id = function.signature;
-        let ret_id = self
-            .core()
-            .ctx
-            .type_data(signature_id)
-            .as_function()
-            .unwrap_or_else(|| unreachable!("function value carries a function signature"))
-            .0;
-        let ret_data = self.core().ctx.type_data(ret_id);
-        if !crate::function::signature_matches_marker::<R>(ret_data) {
-            let got =
-                crate::r#type::Type::new(ret_id, ModuleRef::<B>::new(self.core())).kind_label();
+        let return_type =
+            FunctionValue::<'_, Dyn, B>::from_parts_unchecked(id, ModuleRef::<B>::new(self.core()))
+                .return_type();
+        if !crate::function::signature_matches_marker::<R>(return_type.data()) {
             return Err(IrError::ReturnTypeMismatch {
                 expected: crate::marker::marker_kind_label::<R>()
                     .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got,
+                got: return_type.kind_label(),
             });
         }
         Ok(Some(FunctionId::<R, B>::from_raw(self.core().id, id)))
@@ -4575,14 +4676,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
                 name: name.to_owned(),
             });
         }
-        self.core().push_function(
+        Ok(self.core().push_function(
             name,
             signature,
             linkage,
             crate::CallingConv::default(),
             None,
             None,
-        )
+        ))
     }
 
     /// Add a function whose return marker is erased to [`Dyn`].
@@ -4627,21 +4728,46 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Return the existing declaration for `descriptor`, or insert its canonical
-    /// generated declaration.
+    /// generated declaration. Mirrors `Intrinsic::getOrInsertDeclaration`: a
+    /// function of the intrinsic's type that holds the name is returned, a
+    /// definition included; a function of another type is renamed
+    /// `<name>.invalid` (uniqued on a clash) and a fresh declaration takes the
+    /// name. No argument is named: the TableGen `ArgName`s are pretty-printer
+    /// data, which the printer reads at each call site.
+    ///
+    /// # Errors
+    ///
+    /// Each before anything is declared or renamed:
+    /// [`IrError::ForeignType`] if an overload type of `descriptor` belongs to
+    /// another module; [`IrError::InvalidOperation`] if an overload type is an
+    /// unnamed struct without a body, which has no mangled spelling;
+    /// [`IrError::DuplicateFunctionName`] if a global variable, alias or ifunc
+    /// holds the name, where upstream's `cast<Function>` asserts;
+    /// [`IrError::IntrinsicSignatureMismatch`] if the generated signature or
+    /// declaration attributes cannot be built, or if a function of the right
+    /// type holds the name without this intrinsic's identity, which upstream
+    /// has no counterpart for (`docs/divergences.md`, the
+    /// `getOrInsertIntrinsicDeclarationImpl` entry).
     pub fn get_or_insert_intrinsic_declaration(
         &'ctx self,
         descriptor: &IntrinsicDescriptor<'ctx, B>,
     ) -> IrResult<FunctionId<Dyn, B>> {
-        let function = self
-            .core()
-            .get_or_insert_intrinsic_declaration::<B>(descriptor)?;
-        for (arg_index, name) in descriptor.argument_names() {
-            let arg = function.param(arg_index)?;
-            arg.set_name(self, name);
-        }
-        Ok(function.id())
+        self.core()
+            .get_or_insert_intrinsic_declaration::<B>(descriptor)
+            .map(|function| function.id())
     }
 
+    /// [`Self::get_or_insert_intrinsic_declaration`] for the descriptor
+    /// [`IntrinsicDescriptor::new`] builds from `id` and `overloads`.
+    ///
+    /// # Errors
+    ///
+    /// [`IntrinsicDescriptor::new`]'s — [`IrError::ForeignType`] if the
+    /// overloads belong to more than one module,
+    /// [`IrError::IntrinsicSignatureMismatch`] if they do not fit the
+    /// intrinsic — then [`Self::get_or_insert_intrinsic_declaration`]'s,
+    /// [`IrError::ForeignType`] included when the overloads belong to another
+    /// module than this one.
     pub fn get_or_insert_intrinsic_declaration_by_id<Overloads>(
         &'ctx self,
         id: IntrinsicId,
@@ -4654,6 +4780,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
+    /// [`Self::get_or_insert_intrinsic_declaration`] for the intrinsic `name`
+    /// spells, overload suffix included (`llvm.abs.i32`).
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::UnknownIntrinsic`] if no intrinsic has the name;
+    /// [`IrError::IntrinsicSignatureMismatch`] if its overload suffix does not
+    /// demangle to a signature of that intrinsic; then
+    /// [`Self::get_or_insert_intrinsic_declaration`]'s.
     pub fn get_or_insert_intrinsic_declaration_by_name<Name>(
         &'ctx self,
         name: Name,

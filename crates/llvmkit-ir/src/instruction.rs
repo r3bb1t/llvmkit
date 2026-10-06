@@ -698,13 +698,27 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().push_debug_record(module_token, record)
     }
 
-    /// Set the textual name.
+    /// Set the textual name. [`crate::Value::set_name`] on this instruction.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against — a `void` instruction refuses any non-empty name; the
+    /// instruction keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this instruction's module.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.as_view().set_name(module_token, name);
+        self.as_view().set_name(module_token, name)
     }
 
     /// Clear the textual name.
@@ -883,14 +897,28 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> InstructionView<'ctx, B, C> {
         Ok(())
     }
 
-    /// Set the textual name.
+    /// Set the textual name. [`crate::Value::set_name`] on this instruction.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against — a `void` instruction refuses any non-empty name; the
+    /// instruction keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this instruction's module.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    pub fn set_name<Name>(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
     where
         Name: Into<String>,
         C: CanMutate,
     {
-        self.to_erased().set_name(module_token, name);
+        self.to_erased().set_name(module_token, name)
     }
 
     /// Clear the textual name.
@@ -1986,11 +2014,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for Instructio
 }
 impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for InstructionView<'ctx, B, C> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        InstructionView::set_name(&self, module_token, name);
+        InstructionView::set_name(&self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
@@ -2045,11 +2073,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Instruction<'ctx, state::
 }
 impl<'ctx, B: ModuleBrand + 'ctx> SetName<'ctx, B> for Instruction<'ctx, state::Attached, B> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        Instruction::set_name(&self, module_token, name);
+        Instruction::set_name(&self, module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
@@ -2563,8 +2591,9 @@ pub(crate) fn push_instruction(
 /// Crate-internal: create `kind` named `name` in no block, as an `Instruction`
 /// constructor with no insert position does, and hand back the linear handle,
 /// which the caller must insert or drop. A `void` instruction is left
-/// unnamed, as every naming path leaves one ([`Value::set_name`]); upstream's
-/// `Value::setName` asserts instead.
+/// unnamed, as the builders leave one; upstream's `Value::setName` asserts
+/// instead, and [`Value::set_name`] refuses (`docs/divergences.md`, the
+/// `setNameImpl` assertions entry).
 pub(crate) fn create_detached_instruction<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
     ty: TypeSlot,

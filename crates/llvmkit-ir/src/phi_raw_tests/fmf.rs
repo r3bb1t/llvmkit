@@ -207,7 +207,7 @@ fn ambiguous_phi_names_the_block_asm_writer_prints() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    m.view(f).param(0)?.set_name(&m, "i");
+    m.view(f).param(0)?.set_name(&m, "i")?;
     // An UNNAMED entry block: `SlotTracker::for_function` numbers it, and
     // with the one parameter named it takes slot 0 — the same `%0` the
     // vendored `test/Verifier/AmbiguousPhi.ll` writes for its own implicit

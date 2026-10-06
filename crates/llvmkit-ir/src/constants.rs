@@ -150,7 +150,7 @@ macro_rules! decl_constant_handle {
         }
         impl<'ctx, B: ModuleBrand + 'ctx, Cap: CanMutate> SetName<'ctx, B> for $name<'ctx, B, Cap> {
             #[inline]
-            fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) where Name: Into<String> { self.as_erased().set_name(module_token, name); }
+            fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()> where Name: Into<String> { self.as_erased().set_name(module_token, name) }
             #[inline]
             fn clear_name(self, module_token: &'ctx Module<B, Unverified>) { self.as_erased().clear_name(module_token); }
         }
@@ -325,11 +325,11 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, Cap: Capability> HasName<'ctx, B>
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, Cap: CanMutate> SetName<'ctx, B>
     for ConstantIntValue<'ctx, W, B, Cap>
 {
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.as_erased().clear_name(module_token);
@@ -538,11 +538,11 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, Cap: Capability> HasName<'ctx, B
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, Cap: CanMutate> SetName<'ctx, B>
     for ConstantFloatValue<'ctx, K, B, Cap>
 {
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.as_erased().clear_name(module_token);
