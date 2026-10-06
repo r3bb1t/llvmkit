@@ -2444,12 +2444,7 @@ pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     //  return false;`
     match &module.value_data(callee).kind {
         ValueKindData::Function(_) => {
-            // capability (proof): laundered until Task 4 — `FunctionValue`
-            // carries no capability yet; the function is read for one
-            // attribute and never leaves this routine.
-            let function_module = module.mutable_at_marked_boundary();
-            FunctionValue::<Dyn, B>::from_parts_unchecked(callee, function_module)
-                .has_fn_attribute(kind)
+            FunctionValue::<Dyn, B, C>::from_parts_unchecked(callee, module).has_fn_attribute(kind)
         }
         _ => false,
     }

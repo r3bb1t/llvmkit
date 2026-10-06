@@ -1258,30 +1258,6 @@ pub(crate) mod into_erased_value_sealed {
 /// This exists because [`IntoErasedValue`] cannot be blanket-implemented over
 /// [`IsValue`] without colliding with the id-family impls; see the trait docs.
 macro_rules! impl_into_erased_value_for_handle {
-    // A handle that does not carry a capability yet: functions and globals
-    // until Task 4 of the capability plan, which moves each to the arm below;
-    // this arm is deleted once nothing uses it.
-    (capability_free: $( $name:ident $([$($mk:ident : $mkb:path),+ $(,)?])? ),+ $(,)?) => { $(
-        impl<'ctx, $($($mk: $mkb,)+)? B: $crate::module::ModuleBrand + 'ctx>
-            $crate::value::into_erased_value_sealed::Sealed
-            for $name<'ctx, $($($mk,)+)? B>
-        {
-        }
-        impl<'ctx, $($($mk: $mkb,)+)? B: $crate::module::ModuleBrand + 'ctx>
-            $crate::value::IntoErasedValue<'ctx, B>
-            for $name<'ctx, $($($mk,)+)? B>
-        {
-            #[inline]
-            fn into_erased_value(
-                self,
-                module: $crate::module::ModuleRef<'ctx, B>,
-            ) -> $crate::error::IrResult<$crate::value::Value<'ctx, B>> {
-                // Boundary: the caller's handle meets `module`; the checked
-                // door refuses one minted elsewhere.
-                $crate::value::IsValue::as_erased(self).admitted_at(module)
-            }
-        }
-    )+ };
     ($( $name:ident $([$($mk:ident : $mkb:path),+ $(,)?])? ),+ $(,)?) => { $(
         impl<
             'ctx,

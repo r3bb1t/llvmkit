@@ -38,6 +38,7 @@ use super::ap_float::ApFloatSemantics;
 use super::argument::Argument;
 use super::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored, StrBoolAttrKind};
 use super::basic_block::{BasicBlock, BasicBlockData};
+use super::block_params::BlockParamsDyn;
 use super::block_state::{BlockTerminationState, Terminated, Unterminated};
 use super::calling_conv::CallingConv;
 use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
@@ -1148,10 +1149,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         Ok(())
     }
 
-    /// Iterate the basic blocks in insertion order as non-insertion labels/views.
+    /// Iterate the basic blocks in insertion order as non-insertion
+    /// labels/views, at this function's capability.
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Terminated, B>>
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
@@ -1160,26 +1162,19 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             .label_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        // capability (proof): laundered until Task 5 — the block family
-        // carries no capability yet, so a block can only be minted `Mutable`;
-        // this edge stays `Mutable` until it migrates and Task 6 removes the
-        // marker.
-        let block_module = self.module.mutable_at_marked_boundary();
+        let block_module = self.module;
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
             .map(move |id| BasicBlock::from_parts(id, block_module, label_ty))
     }
 
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Terminated, B>> {
+    /// The entry block, at this function's capability.
+    pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>> {
         let id = *self.data().basic_blocks.borrow().first()?;
         let module = self.module.module();
         Some(BasicBlock::from_parts(
             id,
-            // capability (proof): laundered until Task 5 — the block family
-            // carries no capability yet, so a block can only be minted
-            // `Mutable`; this edge stays `Mutable` until it migrates and Task 6
-            // removes the marker.
-            self.module.mutable_at_marked_boundary(),
+            self.module,
             module
                 .label_type::<B>()
                 .as_type()
@@ -1355,8 +1350,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B, Mut
 /// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
 /// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
 /// up front, so IR mutation during the walk does not disturb it. `C` is the
-/// capability of the function it walks. The blocks it yields are `Mutable`
-/// whatever `C` is, until [`BasicBlock`] carries a capability of its own.
+/// capability of the function it walks, and of the blocks it yields.
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability = Mutable> {
@@ -1375,25 +1369,18 @@ impl<R: ReturnMarker, B: ModuleBrand, C: Capability> CapabilityOf
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability>
     FunctionBasicBlocks<'ctx, R, B, C>
 {
-    /// The block at `id`, as the walk yields it.
+    /// The block at `id`, as the walk yields it: at the walked function's
+    /// capability.
     #[inline]
-    fn block(&self, id: ValueSlot) -> BasicBlock<'ctx, R, Terminated, B> {
-        BasicBlock::from_parts(
-            id,
-            // capability (proof): laundered until Task 5 — the block family
-            // carries no capability yet, so a block can only be minted
-            // `Mutable`; this edge stays `Mutable` until it migrates and Task 6
-            // removes the marker.
-            self.module.mutable_at_marked_boundary(),
-            self.label_ty,
-        )
+    fn block(&self, id: ValueSlot) -> BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C> {
+        BasicBlock::from_parts(id, self.module, self.label_ty)
     }
 }
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> Iterator
     for FunctionBasicBlocks<'ctx, R, B, C>
 {
-    type Item = BasicBlock<'ctx, R, Terminated, B>;
+    type Item = BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -1438,7 +1425,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FusedIterator
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoIterator
     for FunctionValue<'ctx, R, B, C>
 {
-    type Item = BasicBlock<'ctx, R, Terminated, B>;
+    type Item = BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>;
     type IntoIter = FunctionBasicBlocks<'ctx, R, B, C>;
 
     #[inline]
@@ -2020,9 +2007,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Dis
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let function = FunctionValue::<Dyn, B>::from_parts_unchecked(
             self.id,
-            // capability (proof): laundered until Task 5 — the AsmWriter reads
-            // through block and instruction handles that carry no capability
-            // yet; the handle never leaves this formatter.
+            // capability (proof): laundered until Task 6 — the AsmWriter's
+            // `fmt_function` takes a `Mutable` function; the handle never
+            // leaves this formatter.
             self.module.mutable_at_marked_boundary(),
         );
         crate::asm_writer::fmt_function(f, function)

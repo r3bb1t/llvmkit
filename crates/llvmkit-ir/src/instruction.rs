@@ -2679,9 +2679,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display
         });
         let slots = match parent_fn_id {
             Some(parent_fn_id) => {
-                // capability (proof): laundered until Task 4 — the slot
-                // tracker numbers through a `FunctionValue`, which carries no
-                // capability yet; the function never leaves this formatter.
+                // capability (proof): laundered until Task 6 — the slot
+                // tracker's `SlotTracker::for_function` takes a `Mutable`
+                // function; the function never leaves this formatter.
                 let function_module = self.module.mutable_at_marked_boundary();
                 let parent_fn = FunctionValue::<'_, Dyn, B>::from_parts_unchecked(
                     parent_fn_id,

@@ -7,13 +7,14 @@
 use core::any::TypeId;
 use llvmkit_ir::{
     AddFlags, AtomicCmpXchgConfig, AtomicCmpXchgInstId, AtomicOrdering, AtomicRmwBinOp,
-    AtomicRmwConfig, AtomicRmwInstId, BlockId, CallInstId, CapabilityOf, Dyn, DynBrand, FloatDyn,
-    FpPhiInstId, FreezeInstId, InstructionKind, InstructionView, IntDyn, IntValue,
-    IntrinsicDescriptor, IntrinsicId, IntrinsicInstId, IrBuilder, IrError, Linkage, Module,
-    ModuleState, Mutable, NoFolder, OtherPhiInstId, OverflowingBinaryOperator, PhiInstId, PhiKind,
-    PointerPhiInstId, PointerValue, PossiblyExactOperator, ReadOnly, ShuffleMaskElem,
-    ShuffleVectorInst, SyncScope, TerminatorKind, TypedCallInstId, UdivFlags, Unverified, User,
-    VaArgInstId, Value, ValueId, Verified, is_supported_floating_point_type,
+    AtomicRmwConfig, AtomicRmwInstId, BlockId, CallInstId, Callee, CapabilityOf, Dyn, DynBrand,
+    FloatDyn, FpPhiInstId, FreezeInstId, FunctionId, FunctionValue, InstructionKind,
+    InstructionView, IntDyn, IntValue, IntrinsicDescriptor, IntrinsicId, IntrinsicInstId,
+    IrBuilder, IrError, Linkage, Module, ModuleState, Mutable, NoFolder, OtherPhiInstId,
+    OverflowingBinaryOperator, PhiInstId, PhiKind, PointerPhiInstId, PointerValue,
+    PossiblyExactOperator, ReadOnly, ShuffleMaskElem, ShuffleVectorInst, SyncScope, TerminatorKind,
+    TypedCallInstId, UdivFlags, Unverified, User, VaArgInstId, Value, ValueId, Verified,
+    is_supported_floating_point_type,
 };
 
 fn capability_of<S: ModuleState>() -> TypeId {
@@ -378,6 +379,8 @@ struct InstructionIds {
     cmpxchg: AtomicCmpXchgInstId<DynBrand>,
     /// `@f`'s pointer parameter, which the memory instructions use.
     pointer: ValueId<DynBrand>,
+    /// `@f` itself, whose blocks the function routes walk.
+    function: FunctionId<Dyn, DynBrand>,
 }
 
 /// The capability the reader routes named here hand back from `m`, keyed by
@@ -385,11 +388,13 @@ struct InstructionIds {
 /// `users()`, `InstructionView::try_from` a value, the `kind()` and
 /// `terminator_kind()` payloads, and an operand. A viewed block id is a
 /// `BasicBlockLabel`; the branch route below goes on from it through
-/// `to_erased`. A `BasicBlock`'s own readers are not asserted here: `view` of
-/// a block id mints a `BasicBlockLabel`, and `FunctionValue::basic_blocks` /
-/// `entry_block` mint at the `Mutable` default until functions carry the
-/// capability, so neither route yields a `ReadOnly` `BasicBlock` to call
-/// them on.
+/// `to_erased`. Then the routes that pass through a function, which close
+/// only once both functions and blocks carry the capability: a function's
+/// `entry_block` and `basic_blocks`, a block's `parent_function`, and a call's
+/// `classify_callee` and its `callee()` narrowed by `FunctionValue::try_from`.
+/// (An operand naming a global is llvmkit's interned `ptr @g` wrapper, which
+/// `GlobalVariable::try_from` refuses — `docs/divergences.md` D3 — so no route
+/// narrows an operand back to a global to assert.)
 fn instruction_routes<S: ModuleState>(
     m: &Module<DynBrand, S>,
     ids: &InstructionIds,
@@ -439,6 +444,26 @@ fn instruction_routes<S: ModuleState>(
         "InstructionView::terminator_kind payload",
         capability(branch),
     ));
+
+    let function = m.view(ids.function);
+    let entry = function.entry_block().expect("@f has an entry block");
+    let parent = entry.parent_function().expect("the entry is attached");
+    routes.push(("FunctionValue::entry_block", capability(entry)));
+    routes.push((
+        "FunctionValue::basic_blocks",
+        capability(function.basic_blocks().next().expect("@f has blocks")),
+    ));
+    routes.push(("BasicBlock::parent_function", capability(parent)));
+    let Callee::Direct(direct) = m.view(ids.call).classify_callee() else {
+        panic!("@callee is called directly");
+    };
+    routes.push(("CallInst::classify_callee", capability(direct)));
+    let callee =
+        FunctionValue::try_from(m.view(ids.call).callee()).expect("the callee is a function");
+    routes.push((
+        "CallInst::callee -> FunctionValue::try_from",
+        capability(callee),
+    ));
     routes
 }
 
@@ -472,7 +497,9 @@ fn block_view_routes<S: ModuleState>(m: &Module<DynBrand, S>) -> [(&'static str,
 /// routes this test names: `view` of a block id and of the call, typed-call,
 /// intrinsic, four phi, freeze, `va_arg`, `atomicrmw` and `cmpxchg` ids, a
 /// value's `users()`, `InstructionView::try_from`, the `kind()` /
-/// `terminator_kind()` payloads and an operand — and a pass context's
+/// `terminator_kind()` payloads and an operand, and the routes through a
+/// function: its blocks, a block's parent and a call's callee — and a pass
+/// context's
 /// `BasicBlockView` hands out `ReadOnly` instructions, placement witnesses and
 /// terminator. Positive control: the same routes through the unverified
 /// module, the `BasicBlockView` ones aside, are `Mutable`. A `BasicBlockView`
@@ -580,6 +607,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
         atomicrmw,
         cmpxchg,
         pointer: pointer.as_erased().id(),
+        function: f,
     };
 
     // Positive control: through the unverified module every route but the

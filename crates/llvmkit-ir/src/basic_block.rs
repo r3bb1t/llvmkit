@@ -661,23 +661,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlock<'ctx, Dyn, Unterminated, B> {
     }
 }
 
-// Only on a `Mutable` block (the `C` default): `FunctionValue` carries no
-// capability yet, so the parent could only be handed out at `Mutable`, and
-// from a `ReadOnly` block that would launder its way back to `Mutable` blocks
-// and their setters. This becomes generic over `C` at the integration step,
-// once `FunctionValue` carries `C` and the parent keeps the block's.
-impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
-    BasicBlock<'ctx, R, Term, B, Params>
+impl<
+    'ctx,
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
+> BasicBlock<'ctx, R, Term, B, Params, C>
 {
-    /// Parent function as a runtime-checked [`FunctionValue<Dyn>`](FunctionValue).
-    /// `None` if the block is an orphan (no parent attached). The
-    /// caller can narrow back to its static `R` via
+    /// Parent function as a runtime-checked [`FunctionValue<Dyn>`](FunctionValue),
+    /// at this block's capability. `None` if the block is an orphan (no
+    /// parent attached). The caller can narrow back to its static `R` via
     /// [`crate::FunctionValue::as_dyn`] / `try_into` if needed.
-    ///
-    /// Only on a [`Mutable`] block for now; see the comment on this impl.
-    pub fn parent_function(&self) -> Option<FunctionValue<'ctx, Dyn, B>> {
+    pub fn parent_function(&self) -> Option<FunctionValue<'ctx, Dyn, B, C>> {
         let id = self.parent_id()?;
-        Some(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
+        Some(FunctionValue::<'ctx, Dyn, B, C>::from_parts_unchecked(
             id,
             self.module,
         ))
@@ -1816,9 +1815,9 @@ impl<
         // Without an enclosing function, build a one-block slot tracker
         // ad hoc.
         if let Some(parent_id) = self.parent_id() {
-            // capability (proof): laundered until Task 4 — the slot tracker
-            // numbers through a `FunctionValue`, which carries no capability
-            // yet; the function never leaves this formatter.
+            // capability (proof): laundered until Task 6 — the slot tracker's
+            // `SlotTracker::for_function` takes a `Mutable` function; the
+            // function never leaves this formatter.
             let module = self.module.mutable_at_marked_boundary();
             let parent = FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, module);
             let slots = SlotTracker::for_function(parent);

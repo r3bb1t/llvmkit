@@ -148,13 +148,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub fn parent_function(&self) -> Option<FunctionView<'ctx, B>> {
         let id = self.as_basic_block().parent_id()?;
-        // capability (proof): laundered until Task 4 — `FunctionView` wraps a
-        // `FunctionValue`, which carries no capability yet; the view exposes
-        // no mutator of it.
-        let module = self.module.mutable_at_marked_boundary();
-        Some(FunctionView::new(FunctionValue::from_parts_unchecked(
-            id, module,
-        )))
+        Some(FunctionView::new(
+            FunctionValue::<'ctx, Dyn, B, ReadOnly>::from_parts_unchecked(id, self.module),
+        ))
     }
 
     /// Number of instructions in program order.
@@ -493,13 +489,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
         self.function.name()
     }
 
-    /// Entry block if the function is a definition.
+    /// Entry block if the function is a definition, at [`Mutable`]: the
+    /// body's blocks are what its rung mutates.
     #[inline]
     pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn, Terminated, B>> {
-        self.function.entry_block()
+        self.function_of_blocks().entry_block()
     }
 
-    /// Basic blocks in insertion order.
+    /// Basic blocks in insertion order, at [`Mutable`] (see
+    /// [`Self::entry_block`]).
     #[inline]
     pub fn basic_blocks(
         self,
@@ -507,7 +505,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        self.function.basic_blocks()
+        self.function_of_blocks().basic_blocks()
+    }
+
+    /// The function at [`Mutable`], to mint its blocks at `Mutable`; never
+    /// handed out, so the function's own setters stay unreachable.
+    #[inline]
+    fn function_of_blocks(self) -> FunctionValue<'ctx, Dyn, B> {
+        FunctionValue::from_parts_unchecked(
+            self.function.slot_trusting_same_module(),
+            // capability (proof): FnPatch holds the module's Unverified token
+            // — a `FunctionBody` is minted only by `FnPatch::function_mut`
+            // (`FnReshape` delegates to it), and its blocks are what that
+            // rung mutates.
+            self.function.module.mutable_at_marked_boundary(),
+        )
     }
 }
 

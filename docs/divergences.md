@@ -153,6 +153,20 @@ expressions name it. Closing it needs `constant_with_replaced_operand` to
 match wrapper-held operands too, which is why it was not done with the
 global-field half.
 
+**Also open — the handles' narrowing does not read through the wrapper.**
+Upstream's `dyn_cast<GlobalVariable>(LI->getPointerOperand())` on
+`load i32, ptr @g` answers `@g`. llvmkit's `GlobalVariable::try_from` of that
+operand — the interned wrapper — answers
+`IrError::ValueCategoryMismatch { expected: GlobalVariable, got: Constant }`
+(found 2026-10-06 while asserting capability routes at the capability-plan
+integration). The analyses each unwrap by hand (`global_value_or_self` in
+`pointer_analysis.rs`, `global_value_name_and_type` in `eh_personalities.rs`,
+the `GlobalValueRef` arms in `constant_fold.rs` and `constant_folding.rs`);
+the public `TryFrom<Value>` impls of `GlobalVariable`, `GlobalAlias`,
+`GlobalIfunc` and `FunctionValue` match only the global's own kind. Fix: those
+impls unwrap a `GlobalValueRef` whose referent is their kind, as D3 says the
+wrapper *is* the global.
+
 ### D4 — Two uses by the same user are indistinguishable
 
 **Severity:** wrong-output (narrow)

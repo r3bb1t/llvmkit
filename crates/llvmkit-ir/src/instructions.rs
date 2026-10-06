@@ -784,11 +784,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepInst<'ctx, B, C> {
 }
 
 /// The called operand of a call, split into the direct/indirect cases.
-/// Returned by [`CallInst::classify_callee`].
+/// Returned by [`CallInst::classify_callee`], at the call's capability.
 #[derive(Branded)]
 pub enum Callee<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     /// A direct call to a known function global.
-    Direct(FunctionValue<'ctx, Dyn, B>),
+    Direct(FunctionValue<'ctx, Dyn, B, C>),
     /// An indirect call through a function pointer.
     Indirect(PointerValue<'ctx, B, C>),
 }
@@ -992,20 +992,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx,
     }
 }
 
-// Only on a `Mutable` call (the `C` default): `FunctionValue` carries no
-// capability yet, so a direct callee could only be handed out at `Mutable`,
-// and from a `ReadOnly` call that would launder its way back to `Mutable`
-// blocks and their setters. This becomes generic over `C` at the integration
-// step, once `FunctionValue` carries `C` and `Callee::Direct` keeps the
-// call's.
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx, R, B, C> {
     /// Split the callee into a direct call to a known [`FunctionValue`] or
     /// an indirect call through a [`PointerValue`]. Mirrors the common
     /// `CallBase::getCalledFunction()` "is this direct?" question, but the
-    /// answer is a typed enum instead of a nullable pointer.
-    ///
-    /// Only on a [`Mutable`] call for now; see the comment on this impl.
-    pub fn classify_callee(self) -> Callee<'ctx, B> {
+    /// answer is a typed enum instead of a nullable pointer. Both cases keep
+    /// this call's capability, so a `ReadOnly` call's callee is `ReadOnly`
+    /// and no setter is reachable through it.
+    pub fn classify_callee(self) -> Callee<'ctx, B, C> {
         let callee = self.callee();
         match FunctionValue::try_from(callee) {
             Ok(function) => Callee::Direct(function),

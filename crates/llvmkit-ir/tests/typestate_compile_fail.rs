@@ -266,6 +266,15 @@ fn typestate_compile_fail() {
     // a verified call's callee, its entry block and an instruction there must
     // not come back `Mutable`.
     t.compile_fail("tests/compile_fail/verified_call_callee_is_not_a_mutable_route.rs");
+    // The same through an argument: `Argument::parent_function` keeps the
+    // argument's capability, so an operand that is an argument does not lead
+    // back to `Mutable` blocks.
+    t.compile_fail(
+        "tests/compile_fail/verified_argument_parent_function_is_not_a_mutable_route.rs",
+    );
+    // A verified module's blocks are `ReadOnly`: every block mutator, inherent
+    // or through `SetName`, and a setter on the block's parent function.
+    t.compile_fail("tests/compile_fail/verified_block_is_read_only.rs");
     // The instruction mutators whose bodies need no `Mutable` reference have
     // only their `C: CanMutate` bound between a `ReadOnly` handle and the
     // module; this fixture is what fails if one of those bounds goes.

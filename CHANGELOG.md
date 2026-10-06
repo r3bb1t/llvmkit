@@ -113,15 +113,19 @@ cut, entries accumulate under **Unreleased**.
   those that does not pass through a block or instruction, is `ReadOnly`, so
   the call is a compile error carrying `CanMutate`'s own message (locked by
   `compile_fail/verified_global_cannot_be_mutated.rs`). The same holds for
-  `ComdatRef::set_selection_kind` on a verified module's comdat. **Not yet
-  closed:** routes through blocks and instructions still hand back `Mutable`
-  handles — `entry_block()` / `basic_blocks()` → `parent_function()`, a
-  call's `callee()` → `FunctionValue::try_from`, an instruction operand →
-  `GlobalVariable::try_from`, and `Value::users()` → an instruction → its
-  operand → `GlobalVariable::try_from`, which reaches a global from the global
-  itself without a block — and so reach every setter; they stay `Mutable`
-  until the block and instruction family carries a capability and Task 6 of
-  the capability-typestate program removes the `laundered until` markers.
+  `ComdatRef::set_selection_kind` on a verified module's comdat. The routes
+  through blocks and instructions keep the capability too since the block and
+  instruction family carries it: `entry_block()` / `basic_blocks()`, a
+  block's `parent_function()`, an argument's `parent_function()`, and a
+  call's `classify_callee()` / `callee()` → `FunctionValue::try_from` all
+  stay `ReadOnly` from a verified module (locked by `capability_typestate`'s
+  `a_verified_modules_blocks_and_instructions_are_read_only`, and by
+  `compile_fail/verified_block_is_read_only`,
+  `verified_argument_parent_function_is_not_a_mutable_route` and
+  `verified_call_callee_is_not_a_mutable_route` for the mutators those routes
+  reach). An instruction operand that names a global is llvmkit's interned
+  `ptr @g` wrapper, which `GlobalVariable::try_from` refuses, so no route
+  narrows an operand back to a global at all (`docs/divergences.md`, D3).
 - **Breaking: `FunctionBody::as_function` returns a `ReadOnly` function**, and
   a `FunctionView` holds one: a function rung's body is mutated through its
   blocks and the rung's mutator, never through the function's own setters.
@@ -264,35 +268,35 @@ cut, entries accumulate under **Unreleased**.
     (`SetName::set_name` / `clear_name` on an instruction) and
     `compile_fail/verified_call_base_trait_is_read_only`
     (`CallBase::with_operand_bundles` / `set_attributes` on the call, invoke
-    and `callbr` handles). Only the `BasicBlock` receivers — a block's
+    and `callbr` handles), and the `BasicBlock` receivers — a block's
     `set_name` / `clear_name`, inherent or through `SetName`, `splice_into`,
-    `split_at` / `split_before` and `call` — wait for the integration step for
-    theirs, when a function's blocks come back `ReadOnly`.
+    `split_at` / `split_before`, `call`, and a setter on its
+    `parent_function()` — by `compile_fail/verified_block_is_read_only`.
 
   `capability_typestate`'s
   `a_verified_modules_blocks_and_instructions_are_read_only` locks the
-  routes that mint these handles `ReadOnly`, not the mutators. Function
-  handles are not covered yet: a function reached through `view` of its id,
-  or through an argument operand's `Argument::parent_function`, is still a
-  `Mutable` `FunctionValue`, whose blocks and instructions are `Mutable`,
-  until functions carry the capability.
-- **Breaking: `CallInst::classify_callee` and `BasicBlock::parent_function`
-  exist only on a `Mutable` handle.** Both hand out a `FunctionValue`, which
-  carries no capability yet, so on a `ReadOnly` call or block they would lead
-  back to `Mutable` blocks and instructions; they become generic over the
-  capability once functions carry it. `classify_callee`'s restriction is
-  locked by `compile_fail/verified_call_callee_is_not_a_mutable_route`.
-  `parent_function`'s has no fixture yet: one becomes writable at the
-  integration step, when a function's blocks, which it is called on, come
-  back `ReadOnly`.
+  routes that mint these handles `ReadOnly`, not the mutators — including the
+  routes through a function: its `entry_block` / `basic_blocks`, a block's
+  `parent_function`, and a call's `classify_callee` and `callee()`.
+- **Breaking: `FunctionValue::basic_blocks`, `entry_block` and its
+  `IntoIterator` hand out blocks at the function's capability**
+  (`BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>`), and
+  `CallInst::classify_callee` and `BasicBlock::parent_function` keep the
+  call's / block's: `Callee::Direct` holds a `FunctionValue<'ctx, Dyn, B, C>`.
+  A verified module's function, call or block therefore leads only to
+  `ReadOnly` blocks and instructions; spellings that omit `C` keep meaning
+  `Mutable`. Locked by `compile_fail/verified_call_callee_is_not_a_mutable_route`
+  and `verified_block_is_read_only`. `FunctionBody::basic_blocks` /
+  `entry_block` still hand out `Mutable` blocks: a `FunctionBody` comes only
+  from a mutating rung's `function_mut()`.
 - **Breaking: a `BasicBlockView` hands out `ReadOnly` handles** —
   `instructions()`, `placed_instructions()` and its `IntoIterator` — so the
   instructions of a walk an `Inspect` pass receives, and what they narrow to,
-  are `ReadOnly`. A route from them to a setter stays open until the
-  integration step, when functions carry the capability: an operand that is
-  an argument hands out `Argument::parent_function` at `Mutable`, and that
-  function's `entry_block` leads to `Mutable` instructions and the tokenless
-  `set_fast_math_flags`. Until the
+  are `ReadOnly`, and so is every route on from them: an operand that is an
+  argument hands out `Argument::parent_function` at the argument's capability,
+  so that function's `entry_block` leads only to `ReadOnly` instructions (locked
+  by `compile_fail/verified_argument_parent_function_is_not_a_mutable_route`).
+  Until the
   value-tracking analyses accept either capability, that walk cannot feed
   them: they take `Mutable` values, so a caller holding the unverified module
   walks `module.view(function.id()).basic_blocks()` instead. A mutating context's

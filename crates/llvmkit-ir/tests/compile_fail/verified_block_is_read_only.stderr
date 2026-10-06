@@ -1,0 +1,168 @@
+error[E0277]: a `C` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_block_is_read_only.rs:32:19
+   |
+32 |     let _ = block.call((seven,));
+   |                   ^^^^ this handle was minted read-only
+   |
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+note: required by a bound in `llvmkit_ir::BasicBlock::<'ctx, R, Term, B, Params, C>::call`
+  --> src/basic_block.rs
+   |
+   |     pub fn call<A>(&self, args: A) -> BlockCall<R, B, Params>
+   |            ---- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `BasicBlock::<'ctx, R, Term, B, Params, C>::call`
+help: consider further restricting type parameter `C` with trait `CanMutate`
+   |
+28 | fn call_at_any_capability<'a, C: Capability + llvmkit_ir::CanMutate>(
+   |                                             +++++++++++++++++++++++
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_block_is_read_only.rs:64:13
+   |
+64 |     block().set_name(&other, "renamed").expect("set");
+   |             ^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `llvmkit_ir::BasicBlock::<'ctx, R, Term, B, Params, C>::set_name`
+  --> src/basic_block.rs
+   |
+   |     pub fn set_name<Name>(
+   |            -------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `BasicBlock::<'ctx, R, Term, B, Params, C>::set_name`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_block_is_read_only.rs:65:13
+   |
+65 |     block().clear_name(&other);
+   |             ^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `llvmkit_ir::BasicBlock::<'ctx, R, Term, B, Params, C>::clear_name`
+  --> src/basic_block.rs
+   |
+   |     pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>)
+   |            ---------- required by a bound in this associated function
+   |     where
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `BasicBlock::<'ctx, R, Term, B, Params, C>::clear_name`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_block_is_read_only.rs:66:23
+   |
+66 |     SetName::set_name(block(), &other, "renamed").expect("set");
+   |     ----------------- ^^^^^^^ this handle was minted read-only
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `llvmkit_ir::BasicBlock<'_, Dyn, Terminated, DynBrand, BlockParamsDyn, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_block_is_read_only.rs:67:13
+   |
+67 |     block().splice_into(&other, dest).expect("splice");
+   |             ^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `llvmkit_ir::BasicBlock::<'ctx, R, Term, B, Params, C>::splice_into`
+  --> src/basic_block.rs
+   |
+   |     pub fn splice_into<R2: ReturnMarker, S2: BlockTerminationState>(
+   |            ----------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `BasicBlock::<'ctx, R, Term, B, Params, C>::splice_into`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_block_is_read_only.rs:68:21
+   |
+68 |     let _ = block().split_at(&other, &first, "tail");
+   |                     ^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `llvmkit_ir::BasicBlock::<'ctx, R, Terminated, B, Params, C>::split_at`
+  --> src/basic_block.rs
+   |
+   |     pub fn split_at<Name, C2>(
+   |            -------- required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `BasicBlock::<'ctx, R, Terminated, B, Params, C>::split_at`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_block_is_read_only.rs:69:21
+   |
+69 |     let _ = block().split_before(&other, &first, "tail");
+   |                     ^^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `llvmkit_ir::BasicBlock::<'ctx, R, Terminated, B, Params, C>::split_before`
+  --> src/basic_block.rs
+   |
+   |     pub fn split_before<Name, C2>(
+   |            ------------ required by a bound in this associated function
+...
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `BasicBlock::<'ctx, R, Terminated, B, Params, C>::split_before`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_block_is_read_only.rs:73:10
+   |
+73 |         .set_linkage(&other, Linkage::Internal);
+   |          ^^^^^^^^^^^ this handle was minted read-only
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `FunctionValue::<'ctx, R, B, C>::set_linkage`
+  --> src/function.rs
+   |
+   |     pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage)
+   |            ----------- required by a bound in this associated function
+   |     where
+   |         C: CanMutate,
+   |            ^^^^^^^^^ required by this bound in `FunctionValue::<'ctx, R, B, C>::set_linkage`

@@ -614,9 +614,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for GlobalAl
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let alias = GlobalAlias::<B>::from_parts_unchecked(
             self.id,
-            // capability (proof): laundered until Task 5 — the AsmWriter reads
-            // through block and instruction handles that carry no capability
-            // yet; the handle never leaves this formatter.
+            // capability (proof): laundered until Task 6 — the AsmWriter's
+            // `fmt_alias` takes a `Mutable` alias; the handle never leaves this
+            // formatter.
             self.module.mutable_at_marked_boundary(),
             self.ty,
         );
