@@ -28,6 +28,7 @@ use core::iter::FusedIterator;
 
 use crate::attributes::AttrKind;
 use crate::basic_block::BasicBlockData;
+use crate::capability::Capability;
 use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
 use crate::function::FunctionValue;
@@ -79,13 +80,14 @@ const MAX_INSTRUCTIONS_TO_CHECK_FOR_FREE: usize = 16;
 /// more than once for the same value; de-duplication is the caller's job, as it
 /// is upstream — [`AssumptionCache`] and [`DomConditionCache`] each do their
 /// own.
-pub fn find_values_affected_by_condition<'ctx, B, F>(
-    condition: Value<'ctx, B>,
+pub fn find_values_affected_by_condition<'ctx, B, C, F>(
+    condition: Value<'ctx, B, C>,
     is_assume: bool,
     mut insert_affected: F,
 ) where
     B: ModuleBrand + 'ctx,
-    F: FnMut(Value<'ctx, B>),
+    C: Capability,
+    F: FnMut(Value<'ctx, B, C>),
 {
     let mut worklist = vec![condition];
     let mut visited: HashSet<ValueSlot> = HashSet::new();
@@ -157,20 +159,21 @@ pub fn find_values_affected_by_condition<'ctx, B, F>(
 }
 
 /// The operands and predicate of an `icmp`, resolved to values.
-struct IntCompareParts<'ctx, B: ModuleBrand> {
+struct IntCompareParts<'ctx, B: ModuleBrand, C: Capability> {
     predicate: IntPredicate,
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
 }
 
 /// The `m_ICmp` arm of [`find_values_affected_by_condition`].
-fn add_int_compare_affected<'ctx, B, F>(
-    cmp: &IntCompareParts<'ctx, B>,
+fn add_int_compare_affected<'ctx, B, C, F>(
+    cmp: &IntCompareParts<'ctx, B, C>,
     is_assume: bool,
     insert_affected: &mut F,
 ) where
     B: ModuleBrand + 'ctx,
-    F: FnMut(Value<'ctx, B>),
+    C: Capability,
+    F: FnMut(Value<'ctx, B, C>),
 {
     let has_rhs_constant = is_constant_int(cmp.rhs);
     let lhs = cmp.lhs;
@@ -237,10 +240,11 @@ fn add_int_compare_affected<'ctx, B, F>(
 /// Ports `addValueAffectedByCondition`: record `value` itself, then peek
 /// through the two unary operators that do not change what a condition says
 /// about the source.
-fn add_value_affected_by_condition<'ctx, B, F>(value: Value<'ctx, B>, insert_affected: &mut F)
+fn add_value_affected_by_condition<'ctx, B, C, F>(value: Value<'ctx, B, C>, insert_affected: &mut F)
 where
     B: ModuleBrand + 'ctx,
-    F: FnMut(Value<'ctx, B>),
+    C: Capability,
+    F: FnMut(Value<'ctx, B, C>),
 {
     match &value.data().kind {
         ValueKindData::Argument { .. }
@@ -266,14 +270,15 @@ where
 
 /// Ports the `AddCmpOperands` lambda: for an assume both operands are affected,
 /// for a branch only the left one and only when the right is constant.
-fn add_compare_operands<'ctx, B, F>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+fn add_compare_operands<'ctx, B, C, F>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     is_assume: bool,
     insert_affected: &mut F,
 ) where
     B: ModuleBrand + 'ctx,
-    F: FnMut(Value<'ctx, B>),
+    C: Capability,
+    F: FnMut(Value<'ctx, B, C>),
 {
     if is_assume {
         add_value_affected_by_condition(lhs, insert_affected);
@@ -303,9 +308,9 @@ fn add_compare_operands<'ctx, B, F>(
 /// Without a `dominator_tree` the cross-block case falls back to the two shapes
 /// that dominate trivially: the assume is in `context`'s single predecessor, or
 /// in the entry block.
-pub fn is_valid_assume_for_context<'ctx, B: ModuleBrand + 'ctx>(
-    assume: &InstructionView<'ctx, B>,
-    context: &InstructionView<'ctx, B>,
+pub fn is_valid_assume_for_context<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    assume: &InstructionView<'ctx, B, C>,
+    context: &InstructionView<'ctx, B, C>,
     dominator_tree: Option<&DominatorTree>,
     allow_ephemerals: bool,
 ) -> bool {
@@ -371,9 +376,9 @@ pub fn is_valid_assume_for_context<'ctx, B: ModuleBrand + 'ctx>(
 /// Two block layouts are accepted, matching upstream: `context` after `assume`
 /// in the same block, or `context` in a block whose single predecessor is the
 /// assume's, in which case both halves of the split range are scanned.
-pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
-    assume: &InstructionView<'ctx, B>,
-    context: &InstructionView<'ctx, B>,
+pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    assume: &InstructionView<'ctx, B, C>,
+    context: &InstructionView<'ctx, B, C>,
 ) -> bool {
     let anchor = assume.to_erased();
     // As in `is_valid_assume_for_context`: no block, no layout to scan.
@@ -432,8 +437,8 @@ pub fn will_not_free_between<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports the `hasNoFreeCalls` lambda. Upstream's `Idx > MaxInstrsToCheckForFree`
 /// bails *after* looking at instruction 17, so the limit is inclusive of it.
-fn has_no_free_calls<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn has_no_free_calls<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     instructions: &[ValueSlot],
 ) -> bool {
     for (index, slot) in instructions.iter().enumerate() {
@@ -447,7 +452,7 @@ fn has_no_free_calls<'ctx, B: ModuleBrand + 'ctx>(
         let Some((callee, attrs)) = call_parts(kind) else {
             continue;
         };
-        let module: ModuleRef<B> = ModuleRef::new(anchor.module().core_ref());
+        let module = anchor.module;
         if !call_site_has_fn_attr(
             module,
             callee,
@@ -467,8 +472,8 @@ fn has_no_free_calls<'ctx, B: ModuleBrand + 'ctx>(
 /// comment on the first test — "The instruction defining an assumption's
 /// condition itself is always considered ephemeral to that assumption (even if
 /// it has other non-ephemeral users)" — is load-bearing and is reproduced.
-fn is_ephemeral_value_of<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn is_ephemeral_value_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     assume: ValueSlot,
     context: ValueSlot,
 ) -> bool {
@@ -552,11 +557,11 @@ pub struct Assumption {
 }
 
 impl Assumption {
-    /// The `@llvm.assume` call, as a view onto `module`.
-    pub fn assume<'ctx, B: ModuleBrand + 'ctx>(
+    /// The `@llvm.assume` call, as a view onto `module`, at its capability.
+    pub fn assume<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        module: ModuleRef<'ctx, B>,
-    ) -> Option<InstructionView<'ctx, B>> {
+        module: ModuleRef<'ctx, B, C>,
+    ) -> Option<InstructionView<'ctx, B, C>> {
         let data = module.value_data(self.assume);
         InstructionView::try_from(Value::from_parts(self.assume, module, data.ty)).ok()
     }
@@ -590,16 +595,7 @@ impl AssumptionCache {
         let mut cache = Self::default();
         for block in function.basic_blocks() {
             for instruction in block.instructions() {
-                // capability (proof): laundered until Task 6 — a block view
-                // hands out `ReadOnly` instructions, and the scan's helpers
-                // take `Mutable` values until the analyses go
-                // capability-generic; the scan only reads.
-                let module = instruction.module.mutable_at_marked_boundary();
-                let value = Value::from_parts(
-                    instruction.slot_trusting_same_module(),
-                    module,
-                    instruction.ty().slot_trusting_same_module(),
-                );
+                let value = instruction.to_erased();
                 if !is_assume_call(value) {
                     continue;
                 }
@@ -623,10 +619,10 @@ impl AssumptionCache {
     /// chains off a borrowed cache.
     ///
     /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
-    pub fn assumptions<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn assumptions<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        module: ModuleRef<'ctx, B>,
-    ) -> impl DoubleEndedIterator<Item = InstructionView<'ctx, B>> + FusedIterator + use<'ctx, B>
+        module: ModuleRef<'ctx, B, C>,
+    ) -> impl DoubleEndedIterator<Item = InstructionView<'ctx, B, C>> + FusedIterator + use<'ctx, B, C>
     {
         let assumes = self.assumes.clone();
         assumes.into_iter().filter_map(move |slot| {
@@ -638,9 +634,9 @@ impl AssumptionCache {
     /// The assumptions that mention `value`.
     ///
     /// Ports `AssumptionCache::assumptionsFor`.
-    pub fn assumptions_for<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn assumptions_for<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        value: Value<'ctx, B>,
+        value: Value<'ctx, B, C>,
     ) -> &[Assumption] {
         self.affected
             // boundary (F2): Task 27
@@ -652,7 +648,10 @@ impl AssumptionCache {
     /// Ports `AssumptionCache::updateAffectedValues`, whose own `findAffectedValues`
     /// helper is inlined here — it is one loop over the bundles plus one call to
     /// [`find_values_affected_by_condition`].
-    fn update_affected_values<'ctx, B: ModuleBrand + 'ctx>(&mut self, assume: Value<'ctx, B>) {
+    fn update_affected_values<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &mut self,
+        assume: Value<'ctx, B, C>,
+    ) {
         let mut affected: Vec<(ValueSlot, AssumptionSource)> = Vec::new();
 
         for (index, bundle) in assume_bundle_operands(assume).into_iter().enumerate() {
@@ -714,7 +713,10 @@ impl DomConditionCache {
     /// Ports `DomConditionCache::registerBranch`. Upstream asserts the branch
     /// is conditional; an unconditional one has no condition to index, so it is
     /// accepted and ignored rather than made a panic in a production path.
-    pub fn register_branch<'ctx, B: ModuleBrand + 'ctx>(&mut self, branch: Value<'ctx, B>) {
+    pub fn register_branch<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &mut self,
+        branch: Value<'ctx, B, C>,
+    ) {
         let Some(condition) = conditional_branch_condition(branch) else {
             return;
         };
@@ -738,11 +740,13 @@ impl DomConditionCache {
     /// The slot list is snapshotted (a `Vec<ValueSlot>` clone) rather than
     /// borrowed, so the receiver stays out of the returned opaque type; every
     /// slot maps to a value, so the count is exact.
-    pub fn conditions_for<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn conditions_for<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        value: Value<'ctx, B>,
-    ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + use<'ctx, B>
-    {
+        value: Value<'ctx, B, C>,
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B, C>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, B, C> {
         let slots = self
             .affected
             // boundary (F2): Task 27
@@ -763,8 +767,8 @@ impl DomConditionCache {
 /// Whether `earlier` precedes `later` in `block`. Ports `Instruction::comesBefore`,
 /// whose order cache llvmkit has no counterpart for — the instruction list is
 /// the order.
-fn instruction_comes_before<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn instruction_comes_before<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
     earlier: ValueSlot,
     later: ValueSlot,
@@ -785,13 +789,13 @@ fn instruction_comes_before<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the `make_range(CxtI->getIterator(), Inv->getIterator())` argument
 /// upstream hands `isGuaranteedToTransferExecutionToSuccessor` together with
 /// its [`ASSUME_SCAN_LIMIT`].
-fn instructions_between_transfer<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn instructions_between_transfer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
     from: ValueSlot,
     to: ValueSlot,
 ) -> bool {
-    let module: ModuleRef<B> = ModuleRef::new(anchor.module().core_ref());
+    let module = anchor.module;
     let instructions = block_instructions(anchor, block);
     let (Some(from_index), Some(to_index)) = (
         instructions.iter().position(|slot| *slot == from),
@@ -813,15 +817,18 @@ fn instructions_between_transfer<'ctx, B: ModuleBrand + 'ctx>(
 
 /// `block`'s instruction list, copied out so the `RefCell` borrow does not
 /// outlive the call.
-fn block_instructions<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn block_instructions<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
 ) -> Vec<ValueSlot> {
     with_block_data(anchor, block, |data| data.instructions.borrow().clone()).unwrap_or_default()
 }
 
 /// Whether `block` is its function's entry block. Ports `BasicBlock::isEntryBlock`.
-fn is_entry_block<'ctx, B: ModuleBrand + 'ctx>(anchor: Value<'ctx, B>, block: ValueSlot) -> bool {
+fn is_entry_block<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    block: ValueSlot,
+) -> bool {
     let Some(Some(parent)) = with_block_data(anchor, block, |data| *data.parent.borrow()) else {
         return false;
     };
@@ -834,8 +841,8 @@ fn is_entry_block<'ctx, B: ModuleBrand + 'ctx>(anchor: Value<'ctx, B>, block: Va
 
 /// Whether the function containing `block` carries `attribute`: upstream's
 /// `F->hasFnAttribute(Kind)`, ported once as `FunctionValue::has_fn_attribute`.
-fn enclosing_function_has_attribute<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn enclosing_function_has_attribute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
     attribute: AttrKind,
 ) -> bool {
@@ -851,12 +858,13 @@ fn enclosing_function_has_attribute<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Run `f` over `block`'s [`BasicBlockData`], or answer `None` when the slot is
 /// not a block.
-fn with_block_data<'ctx, B, T, F>(anchor: Value<'ctx, B>, block: ValueSlot, f: F) -> Option<T>
+fn with_block_data<'ctx, B, C, T, F>(anchor: Value<'ctx, B, C>, block: ValueSlot, f: F) -> Option<T>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
     F: FnOnce(&BasicBlockData) -> T,
 {
-    let module: ModuleRef<B> = ModuleRef::new(anchor.module().core_ref());
+    let module = anchor.module;
     match &module.value_data(block).kind {
         ValueKindData::BasicBlock(data) => Some(f(data)),
         _ => None,
@@ -864,10 +872,10 @@ where
 }
 
 /// The terminator of `block`, as a value.
-pub(crate) fn terminator_of_block<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+pub(crate) fn terminator_of_block<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let terminator = *block_instructions(anchor, block).last()?;
     Some(value_from_slot(anchor, terminator))
 }
@@ -878,9 +886,9 @@ pub(crate) fn terminator_of_block<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The condition of a conditional `br`. Ports the `m_Br` half of
 /// `DomConditionCache::registerBranch`'s precondition.
-fn conditional_branch_condition<'ctx, B: ModuleBrand + 'ctx>(
-    branch: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn conditional_branch_condition<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    branch: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let InstructionKindData::Br(data) = instruction_kind(branch)? else {
         return None;
     };
@@ -892,7 +900,7 @@ fn conditional_branch_condition<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Whether `value` is a call to `@llvm.assume`.
-fn is_assume_call<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_assume_call<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
     let Some(InstructionKindData::Call(data)) = instruction_kind(value) else {
         return false;
     };
@@ -902,7 +910,9 @@ fn is_assume_call<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
 }
 
 /// The condition operand of an `@llvm.assume`.
-fn assume_condition<'ctx, B: ModuleBrand + 'ctx>(assume: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn assume_condition<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    assume: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let InstructionKindData::Call(data) = instruction_kind(assume)? else {
         return None;
     };
@@ -918,9 +928,9 @@ fn assume_condition<'ctx, B: ModuleBrand + 'ctx>(assume: Value<'ctx, B>) -> Opti
 /// `"ignore"` tag. Those choices belong with `getKnowledgeFromBundle`, which is
 /// not ported — see the module header — so every input is recorded and the
 /// index is what a consumer keys on.
-fn assume_bundle_operands<'ctx, B: ModuleBrand + 'ctx>(
-    assume: Value<'ctx, B>,
-) -> Vec<Vec<Value<'ctx, B>>> {
+fn assume_bundle_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    assume: Value<'ctx, B, C>,
+) -> Vec<Vec<Value<'ctx, B, C>>> {
     let Some(InstructionKindData::Call(data)) = instruction_kind(assume) else {
         return Vec::new();
     };
@@ -938,9 +948,9 @@ fn assume_bundle_operands<'ctx, B: ModuleBrand + 'ctx>(
 /// The two operands of a logical `and`/`or`, in either the bitwise or the
 /// `select` spelling. Ports `m_LogicalOp`, whose `LogicalOp_match` requires an
 /// `i1` result and, for the `select` forms, a condition of the same type.
-fn logical_op_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+fn logical_op_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     if !value.ty().is_int_or_int_vector_of_width(1) {
         return None;
     }
@@ -956,10 +966,10 @@ fn logical_op_operands<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The `select` spellings of a logical operator: `L ? R : false` is `L && R`,
 /// `L ? true : R` is `L || R`.
-fn logical_select_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn logical_select_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &SelectInstData,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     let condition = value_from_slot(value, data.cond.get());
     if condition.ty().slot_trusting_same_module() != value.ty().slot_trusting_same_module() {
         return None;
@@ -976,9 +986,9 @@ fn logical_select_operands<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The predicate and operands of an `icmp`.
-fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<IntCompareParts<'ctx, B>> {
+fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<IntCompareParts<'ctx, B, C>> {
     let InstructionKindData::Icmp(data) = instruction_kind(value)? else {
         return None;
     };
@@ -990,9 +1000,9 @@ fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The operands of an `fcmp`.
-fn float_compare_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+fn float_compare_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     let InstructionKindData::Fcmp(data) = instruction_kind(value)? else {
         return None;
     };
@@ -1003,7 +1013,9 @@ fn float_compare_operands<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The operand of `xor X, -1`. Ports `m_Not`.
-fn not_operand<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn not_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let InstructionKindData::Xor(data) = instruction_kind(value)? else {
         return None;
     };
@@ -1019,14 +1031,16 @@ fn not_operand<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Val
 }
 
 /// The source of a `trunc`. Ports `m_Trunc`.
-fn trunc_source<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn trunc_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     cast_source_with_opcode(value, |kind| kind == CastOpcode::Trunc)
 }
 
 /// The source of a `ptrtoint` or `ptrtoaddr`. Ports `m_PtrToIntOrAddr`.
-fn ptr_to_int_or_addr_source<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn ptr_to_int_or_addr_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     cast_source_with_opcode(value, |kind| {
         matches!(kind, CastOpcode::PtrToInt | CastOpcode::PtrToAddr)
     })
@@ -1034,9 +1048,9 @@ fn ptr_to_int_or_addr_source<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The source of a `bitcast` that changes neither scalar-vs-vector nor the
 /// element count. Ports `m_ElementWiseBitCast`.
-fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let source = cast_source_with_opcode(value, |kind| kind == CastOpcode::BitCast)?;
     if vector_shape(source) != vector_shape(value) {
         return None;
@@ -1047,7 +1061,9 @@ fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx>(
 /// The lane count and scalability of a vector-typed value, or `None` for a
 /// scalar. A fixed and a scalable vector of the same count differ, which is the
 /// `getElementCount()` comparison upstream makes.
-fn vector_shape<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<(u32, bool)> {
+fn vector_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(u32, bool)> {
     value
         .ty()
         .data()
@@ -1056,9 +1072,13 @@ fn vector_shape<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<(u
 }
 
 /// The source of a cast whose opcode `accepts`.
-fn cast_source_with_opcode<'ctx, B, F>(value: Value<'ctx, B>, accepts: F) -> Option<Value<'ctx, B>>
+fn cast_source_with_opcode<'ctx, B, C, F>(
+    value: Value<'ctx, B, C>,
+    accepts: F,
+) -> Option<Value<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
     F: FnOnce(CastOpcode) -> bool,
 {
     let InstructionKindData::Cast(data) = instruction_kind(value)? else {
@@ -1069,9 +1089,9 @@ where
 
 /// The source and shift amount of `shl`/`lshr`/`ashr` by a constant. Ports
 /// `m_Shift(m_Value(X), m_ConstantInt())`.
-fn shift_by_constant<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, ApInt)> {
+fn shift_by_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, ApInt)> {
     let data = match instruction_kind(value)? {
         InstructionKindData::Shl(data)
         | InstructionKindData::Lshr(data)
@@ -1084,9 +1104,9 @@ fn shift_by_constant<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The operands of `and`, `or` or `sub`. Ports the three-way alternation in the
 /// equality arm of `findValuesAffectedByCondition`.
-fn and_or_sub_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+fn and_or_sub_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     match instruction_kind(value)? {
         InstructionKindData::And(data)
         | InstructionKindData::Or(data)
@@ -1097,9 +1117,9 @@ fn and_or_sub_operands<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The operands of `and`, `or` or `add nuw`. Ports the alternation in the
 /// unsigned arm.
-fn and_or_nuw_add_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+fn and_or_nuw_add_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     match instruction_kind(value)? {
         InstructionKindData::And(data) | InstructionKindData::Or(data) => {
             Some(binary_operands(value, data))
@@ -1112,9 +1132,9 @@ fn and_or_nuw_add_operands<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The operands of `sub nuw`. Ports `m_NUWSub`.
-fn nuw_sub_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+fn nuw_sub_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     let InstructionKindData::Sub(data) = instruction_kind(value)? else {
         return None;
     };
@@ -1123,9 +1143,9 @@ fn nuw_sub_operands<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The non-constant operand of `add X, C` or `or disjoint X, C`. Ports
 /// `m_AddLike(m_Value(X), m_ConstantInt())`.
-fn add_like_by_constant<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, ApInt)> {
+fn add_like_by_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, ApInt)> {
     let data = match instruction_kind(value)? {
         InstructionKindData::Add(data) => data,
         InstructionKindData::Or(data) if data.disjoint => data,
@@ -1137,9 +1157,9 @@ fn add_like_by_constant<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The operand of `fneg`, or of an `fsub` against negative zero.
-fn float_negation_source<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn float_negation_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let InstructionKindData::Fneg(data) = instruction_kind(value)? else {
         return None;
     };
@@ -1147,29 +1167,31 @@ fn float_negation_source<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The operand of `@llvm.fabs`.
-fn float_absolute_source<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn float_absolute_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     intrinsic_first_argument(value, "llvm.fabs")
 }
 
 /// The operand of `@llvm.ctpop`.
-fn ctpop_operand<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn ctpop_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     intrinsic_first_argument(value, "llvm.ctpop")
 }
 
 /// The tested operand of `@llvm.is.fpclass`.
-fn is_fpclass_operand<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn is_fpclass_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     intrinsic_first_argument(value, "llvm.is.fpclass")
 }
 
 /// The first argument of a call to the intrinsic named `base_name`.
-fn intrinsic_first_argument<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn intrinsic_first_argument<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     base_name: &str,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let InstructionKindData::Call(data) = instruction_kind(value)? else {
         return None;
     };
@@ -1182,10 +1204,10 @@ fn intrinsic_first_argument<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Both operands of a binary operator, as values.
-fn binary_operands<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn binary_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
-) -> (Value<'ctx, B>, Value<'ctx, B>) {
+) -> (Value<'ctx, B, C>, Value<'ctx, B, C>) {
     (
         value_from_slot(anchor, data.lhs.get()),
         value_from_slot(anchor, data.rhs.get()),
@@ -1193,18 +1215,20 @@ fn binary_operands<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Whether `value` is any constant. Ports `m_Constant`.
-fn is_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
     matches!(value.data().kind, ValueKindData::Constant(_))
 }
 
 /// Whether `value` is a constant integer, scalar or splat. Ports
 /// `m_ConstantInt()` in its no-capture form.
-fn is_constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_constant_int<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
     constant_int(value).is_some()
 }
 
 /// The scalar integer constant `value` holds.
-fn constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApInt> {
+fn constant_int<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApInt> {
     let TypeKind::Integer { bits } = value.ty().kind() else {
         return None;
     };
@@ -1217,8 +1241,8 @@ fn constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Ap
 /// Whether the instruction may have side effects. Ports
 /// `Instruction::mayHaveSideEffects`, which is `mayWriteToMemory() ||
 /// mayThrow() || !willReturn()`; [`crate::speculation`] owns those three.
-fn may_have_side_effects<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn may_have_side_effects<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
     instruction_may_have_side_effects(value, kind)
@@ -1235,8 +1259,8 @@ fn call_parts(kind: &InstructionKindData) -> Option<(ValueSlot, CallAttributesSl
 }
 
 /// The instruction payload behind `value`, or `None` when it is not one.
-fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<&'ctx InstructionKindData> {
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => Some(&instruction.kind),
@@ -1245,11 +1269,11 @@ fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Re-anchor a slot as a value in the same module.
-fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn value_from_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     slot: ValueSlot,
-) -> Value<'ctx, B> {
-    let module: ModuleRef<B> = ModuleRef::new(anchor.module().core_ref());
+) -> Value<'ctx, B, C> {
+    let module = anchor.module;
     let data = module.value_data(slot);
     Value::from_parts(slot, module, data.ty)
 }

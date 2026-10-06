@@ -295,20 +295,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
         self.function
     }
 
-    /// Crate-internal: the viewed function at [`Mutable`], for the analyses
-    /// (`DominatorTree`, `DemandedBits`) that still read through entry points
-    /// taking a `Mutable` handle. They only read.
-    #[inline]
-    pub(super) fn function_for_analysis(self) -> FunctionValue<'ctx, Dyn, B> {
-        FunctionValue::from_parts_unchecked(
-            self.function.slot_trusting_same_module(),
-            // capability (proof): laundered until Task 6 — the analyses take a
-            // `Mutable` function handle, and a function's mutators still
-            // demand a `&Module<B, Unverified>` token.
-            self.function.module.mutable_at_marked_boundary(),
-        )
-    }
-
     /// Storable, module-tagged id for the viewed function. The lifetime-free
     /// half of this view: stash the id, re-`view` it when a read is needed.
     #[inline]

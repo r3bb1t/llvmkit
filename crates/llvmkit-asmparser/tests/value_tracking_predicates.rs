@@ -30,12 +30,16 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 ///
 /// Parameters go through `Module::view` because the pass-layer `FunctionView`
 /// exposes blocks but not parameters; only the `FunctionValue` handle has
-/// `params()`.
-fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+/// `params()`. A `ModuleView` walk hands out `ReadOnly` instructions, so the
+/// parameters are read at `ReadOnly` too.
+fn named<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     let view = module.as_view();
     let instruction = view
         .functions()
-        .flat_map(|f| module.view(f.id()).basic_blocks())
+        .flat_map(|f| f.basic_blocks())
         .flat_map(|block| block.instructions())
         .map(|instruction| instruction.to_erased())
         .find(|value| value.name().as_deref() == Some(name));
@@ -45,7 +49,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
     let ids: Vec<_> = view.functions().map(|f| f.id()).collect();
     ids.into_iter()
         .flat_map(|id| module.view(id).params())
-        .map(|param| param.as_erased())
+        .map(|param| param.as_erased().read_only())
         .find(|value| value.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
 }

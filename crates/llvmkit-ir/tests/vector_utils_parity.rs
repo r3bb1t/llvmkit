@@ -159,7 +159,7 @@ const GAPS: &[(&str, &str)] = &[
 #[test]
 fn exercises_every_modeled_entry_point() {
     use llvmkit_ir::{
-        DynBrand, create_interleave_mask, create_replicated_mask, create_sequential_mask,
+        DynBrand, ReadOnly, create_interleave_mask, create_replicated_mask, create_sequential_mask,
         create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor, find_scalar_element,
         horizontal_demanded_elements_for_first_operand, interleave_intrinsic_factor,
         is_splat_value, is_trivially_scalarizable, is_trivially_vectorizable,
@@ -187,14 +187,15 @@ fn exercises_every_modeled_entry_point() {
     let _sequential = create_sequential_mask;
     let _unary = create_unary_mask;
 
-    // Value-taking functions: instantiated at a concrete brand.
-    let _get_splat_value = splat_value::<DynBrand>;
-    let _is_splat_value = is_splat_value::<DynBrand>;
-    let _find_scalar_element = find_scalar_element::<DynBrand>;
-    let _all_zero = mask_is_all_zero_or_undefined::<DynBrand>;
-    let _all_one = mask_is_all_one_or_undefined::<DynBrand>;
-    let _contains_one = mask_contains_all_one_or_undefined::<DynBrand>;
-    let _possibly_demanded = possibly_demanded_elements_in_mask::<DynBrand>;
+    // Value-taking functions: instantiated at a concrete brand, and at the
+    // read-only capability a verified module's values carry.
+    let _get_splat_value = splat_value::<DynBrand, ReadOnly>;
+    let _is_splat_value = is_splat_value::<DynBrand, ReadOnly>;
+    let _find_scalar_element = find_scalar_element::<DynBrand, ReadOnly>;
+    let _all_zero = mask_is_all_zero_or_undefined::<DynBrand, ReadOnly>;
+    let _all_one = mask_is_all_one_or_undefined::<DynBrand, ReadOnly>;
+    let _contains_one = mask_contains_all_one_or_undefined::<DynBrand, ReadOnly>;
+    let _possibly_demanded = possibly_demanded_elements_in_mask::<DynBrand, ReadOnly>;
 
     // Intrinsic classifiers: no brand, and no target — see the GAPS note.
     let _vectorizable = is_trivially_vectorizable;

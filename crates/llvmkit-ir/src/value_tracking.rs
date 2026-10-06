@@ -14,6 +14,7 @@ use crate::assumptions::{
     is_valid_assume_for_context,
 };
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
+use crate::capability::{Capability, ReadOnly};
 use crate::cmp_predicate::IntPredicate;
 use crate::constant::{ConstantData, ConstantExprData, ConstantExprOpcode};
 use crate::constant_range::{
@@ -136,33 +137,33 @@ impl KnownBitsAnalysisResult {
     }
 
     #[inline]
-    pub fn compute_known_bits<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn compute_known_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        value: Value<'ctx, B>,
+        value: Value<'ctx, B, C>,
     ) -> IrResult<KnownBits> {
         compute_known_bits(value, &self.query())
     }
 
     #[inline]
-    pub fn is_known_non_zero<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn is_known_non_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        value: Value<'ctx, B>,
+        value: Value<'ctx, B, C>,
     ) -> IrResult<bool> {
         is_known_non_zero(value, &self.query())
     }
 
     #[inline]
-    pub fn is_known_zero<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn is_known_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        value: Value<'ctx, B>,
+        value: Value<'ctx, B, C>,
     ) -> IrResult<bool> {
         is_known_zero(value, &self.query())
     }
 
     #[inline]
-    pub fn is_known_one<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn is_known_one<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        value: Value<'ctx, B>,
+        value: Value<'ctx, B, C>,
         bit: u32,
     ) -> IrResult<bool> {
         is_known_one(value, bit, &self.query())
@@ -224,11 +225,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for KnownBitsA
 }
 
 /// Per-query state for known-bits computations.
+///
+/// The query only reads the handles it is given, so it keeps them at
+/// [`ReadOnly`] whatever capability they arrive at: a query serves values of
+/// either capability, and a value an entry point hands back keeps the
+/// capability of the value it was asked about, never the context's.
 pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand> {
     data_layout: &'a DataLayout,
     max_depth: u32,
     dominator_tree: Option<&'a DominatorTree>,
-    context_instruction: Option<Value<'ctx, B>>,
+    context_instruction: Option<Value<'ctx, B, ReadOnly>>,
     demanded_elements: Option<&'a ApInt>,
     use_instr_info: bool,
     assumptions: Option<&'a AssumptionCache>,
@@ -325,8 +331,11 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
 
     #[inline]
     #[must_use]
-    pub fn with_context_instruction(mut self, instruction: &InstructionView<'ctx, B>) -> Self {
-        self.context_instruction = Some(instruction.to_erased());
+    pub fn with_context_instruction<C: Capability>(
+        mut self,
+        instruction: &InstructionView<'ctx, B, C>,
+    ) -> Self {
+        self.context_instruction = Some(instruction.to_erased().read_only());
         self
     }
 
@@ -393,7 +402,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
     }
 
     #[inline]
-    pub fn context_instruction(&self) -> Option<Value<'ctx, B>> {
+    pub fn context_instruction(&self) -> Option<Value<'ctx, B, ReadOnly>> {
         self.context_instruction
     }
 
@@ -432,8 +441,8 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
 }
 
 /// Determine which bits of `value` are known zero/one.
-pub fn compute_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<KnownBits> {
     compute_known_bits_at_depth(value, query, 0)
@@ -447,8 +456,8 @@ pub fn compute_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// caller. Only the depth is threaded: llvmkit's cycle set has no upstream
 /// counterpart (upstream bounds recursion with the depth limit alone), so it
 /// starts fresh here as it does at depth zero.
-pub(crate) fn compute_known_bits_at_depth<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub(crate) fn compute_known_bits_at_depth<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> IrResult<KnownBits> {
@@ -464,8 +473,8 @@ pub(crate) fn compute_known_bits_at_depth<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// [`compute_known_bits`], which proves less on the shapes that walk special-
 /// cases but never proves something false; only the last is spelled out here,
 /// because no amount of known-bits reasoning reaches it.
-pub fn is_known_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     if compute_known_bits(value, query)?.is_non_zero() {
@@ -481,16 +490,16 @@ pub fn is_known_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Return true when `value` is known zero.
-pub fn is_known_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_zero<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     Ok(compute_known_bits(value, query)?.is_zero())
 }
 
 /// Return true when `bit` of `value` is known one.
-pub fn is_known_one<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_one<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     bit: u32,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
@@ -498,8 +507,8 @@ pub fn is_known_one<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Compute known bits for an instruction/operator value, or unknown for non-operators.
-pub fn known_bits_from_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn known_bits_from_operator<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<KnownBits> {
     let mut stack = HashSet::new();
@@ -515,8 +524,8 @@ pub fn known_bits_from_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
@@ -604,8 +613,8 @@ fn leaf_constant_known_bits(constant: &ConstantData, width: u32) -> Option<Known
     })
 }
 
-fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     constant: &ConstantData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -649,8 +658,8 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     })
 }
 
-fn compute_constant_expr_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn compute_constant_expr_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     expr: &ConstantExprData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -733,8 +742,8 @@ fn compute_constant_expr_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     })
 }
 
-fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     inst: &InstructionData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -957,8 +966,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     )
 }
 
-fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     inst: &InstructionData,
     bit_width: u32,
 ) -> KnownBits {
@@ -980,8 +989,8 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     ranges_known_bits(ranges, bit_width)
 }
 
-fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     attrs: &AttributeStorage,
     bit_width: u32,
 ) -> KnownBits {
@@ -1052,8 +1061,8 @@ struct CallKnownBitsInputs<'a> {
 /// … there might be conflicts between the argument value and the range
 /// metadata") names exactly that pair. `KnownBits::unionWith` ORs the known-bit
 /// masks, so it is the operation that *creates* the conflict this discards.
-fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     inputs: CallKnownBitsInputs<'_>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -1124,9 +1133,9 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// slice index, not the key. A **`Function`**'s single `AttributeList` keys
 /// parameter `i` at `AttrIndex::Param(i)`. Reading either storage with the
 /// other's key silently answers `None`.
-pub(crate) fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
-    call: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+pub(crate) fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    call: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     // `dyn_cast<CallBase>`.
     let (args, callee, attrs) = match instruction_kind(call)? {
         InstructionKindData::Call(data) => (&data.args, data.callee.get(), data.attrs.get()),
@@ -1178,15 +1187,15 @@ fn has_returned(attrs: &[AttributeStored]) -> bool {
         .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::Returned)))
 }
 
-fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     callee_id: ValueSlot,
 ) -> Option<IntrinsicSemantic> {
     semantic_for_callee(value_from_slot(anchor, callee_id))
 }
 
-fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     semantic: IntrinsicSemantic,
     args: &[Cell<ValueSlot>],
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -1347,8 +1356,8 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `ConstantRange` constructor and llvmkit returns the error instead. The one
 /// input that can trip it is a `vscale_range(min, max)` with `max + 1 == min`,
 /// which the verifier rejects.
-pub fn get_vscale_range<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
-    function: FunctionValue<'ctx, R, B>,
+pub fn get_vscale_range<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability>(
+    function: FunctionValue<'ctx, R, B, C>,
     bit_width: u32,
 ) -> IrResult<ConstantRange> {
     let Some((attr_min, attr_max)) = function_vscale_range(function.as_erased()) else {
@@ -1376,8 +1385,8 @@ pub fn get_vscale_range<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
 
 /// The `vscale_range` pair on `function`, if that value really is a function
 /// and carries the attribute. Ports `F->getFnAttribute(Attribute::VScaleRange)`.
-fn function_vscale_range<'ctx, B: ModuleBrand + 'ctx>(
-    function: Value<'ctx, B>,
+fn function_vscale_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    function: Value<'ctx, B, C>,
 ) -> Option<(u32, Option<u32>)> {
     let ValueKindData::Function(data) = &function.data().kind else {
         return None;
@@ -1386,7 +1395,7 @@ fn function_vscale_range<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// `match(V, m_VScale())`: a call to `@llvm.vscale`.
-fn is_vscale_call<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_vscale_call<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
     let callee = match instruction_kind(value) {
         Some(InstructionKindData::Call(data)) => data.callee.get(),
         Some(InstructionKindData::Invoke(data)) => data.callee.get(),
@@ -1399,14 +1408,16 @@ fn is_vscale_call<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
 /// `Q.CxtI->getFunction()`; the walk itself is
 /// [`crate::known_fp_class::enclosing_function_slot`], which already ports
 /// `Instruction::getFunction`.
-fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: Value<'ctx, B>,
-) -> Option<FunctionValue<'ctx, crate::marker::Dyn, B>> {
+fn enclosing_function<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: Value<'ctx, B, C>,
+) -> Option<FunctionValue<'ctx, crate::marker::Dyn, B, C>> {
     let slot = crate::known_fp_class::enclosing_function_slot(instruction)?;
     FunctionValue::try_from(value_from_slot(instruction, slot)).ok()
 }
 
-fn argument_constant<'ctx, B: ModuleBrand + 'ctx>(value: Option<Value<'ctx, B>>) -> Option<ApInt> {
+fn argument_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Option<Value<'ctx, B, C>>,
+) -> Option<ApInt> {
     let value = value?;
     let width = value_bit_width(value, &value.module().data_layout()).unwrap_or(0);
     match &value.data().kind {
@@ -1415,7 +1426,9 @@ fn argument_constant<'ctx, B: ModuleBrand + 'ctx>(value: Option<Value<'ctx, B>>)
     }
 }
 
-fn argument_is_const_one<'ctx, B: ModuleBrand + 'ctx>(value: Option<Value<'ctx, B>>) -> bool {
+fn argument_is_const_one<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Option<Value<'ctx, B, C>>,
+) -> bool {
     argument_constant(value).is_some_and(|constant| constant.is_one())
 }
 
@@ -1441,8 +1454,8 @@ fn bit_width_u32(value: u32) -> u32 {
 /// inheriting the caller's, and that is reproduced: only the odd-operand
 /// refinement reads them, and it recurses on an operand of the whole
 /// operation, not on a lane of it.
-pub fn analyze_known_bits_from_and_xor_or<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    operation: Value<'ctx, B>,
+pub fn analyze_known_bits_from_and_xor_or<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    operation: Value<'ctx, B, C>,
     known_lhs: &KnownBits,
     known_rhs: &KnownBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -1486,8 +1499,8 @@ struct BinaryOperands {
     rhs: KnownBits,
 }
 
-fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -1508,8 +1521,8 @@ fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     Ok(BinaryOperands { lhs, rhs })
 }
 
-fn binary_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn binary_known<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -1520,8 +1533,8 @@ fn binary_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     Ok(f(&lhs, &rhs))
 }
 
-fn mul_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn mul_known<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -1558,8 +1571,8 @@ fn mul_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     Ok(known)
 }
 
-fn bitwise_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn bitwise_known<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
     opcode: BinaryOpcode,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -1590,8 +1603,8 @@ struct OperandKnownBits<'k> {
 /// Ports `getKnownBitsFromAndXorOr`: the `and` / `or` / `xor` answer given both
 /// operands' known bits, plus the two idiom arms and the odd-operand
 /// refinement that sharpen it.
-fn and_xor_or_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn and_xor_or_known<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
     opcode: BinaryOpcode,
     operands: OperandKnownBits<'_>,
@@ -1661,8 +1674,8 @@ fn and_xor_or_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// Whether the two operands are `x` and `-x` in either order. Ports
 /// `m_c_And(m_Value(X), m_Neg(m_Deferred(X)))`.
-fn is_negation_pair<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn is_negation_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
 ) -> bool {
     let lhs = value_from_slot(anchor, data.lhs.get());
@@ -1672,8 +1685,8 @@ fn is_negation_pair<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The `x` of `xor(x, add(x, -1))`, matched in either order. Ports
 /// `m_c_Xor(m_Value(X), m_Add(m_Deferred(X), m_AllOnes()))`.
-fn xor_with_self_minus_one<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn xor_with_self_minus_one<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
 ) -> Option<ValueSlot> {
     let lhs = data.lhs.get();
@@ -1688,8 +1701,8 @@ fn xor_with_self_minus_one<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Whether `candidate` is `add base, -1`, with the `add` matched commutatively.
-fn is_add_of_all_ones<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn is_add_of_all_ones<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     candidate: ValueSlot,
     base: ValueSlot,
 ) -> bool {
@@ -1702,21 +1715,21 @@ fn is_add_of_all_ones<'ctx, B: ModuleBrand + 'ctx>(
         || (rhs == base && is_all_ones_constant(value_from_slot(candidate, lhs)))
 }
 
-fn bitwise_self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn bitwise_self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &BinaryOpData,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let lhs_id = data.lhs.get();
     let rhs_id = data.rhs.get();
     self_plus_odd_operand(anchor, lhs_id, rhs_id)
         .or_else(|| self_plus_odd_operand(anchor, rhs_id, lhs_id))
 }
 
-fn self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     base_id: ValueSlot,
     expr_id: ValueSlot,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let expr = value_from_slot(anchor, expr_id);
     let ValueKindData::Instruction(inst) = &expr.data().kind else {
         return None;
@@ -1736,11 +1749,11 @@ fn self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn odd_operand_from_commutative<'ctx, B: ModuleBrand + 'ctx>(
+fn odd_operand_from_commutative<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     base_id: ValueSlot,
     data: &BinaryOpData,
-    anchor: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+    anchor: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     if data.lhs.get() == base_id {
         Some(value_from_slot(anchor, data.rhs.get()))
     } else if data.rhs.get() == base_id {
@@ -1750,8 +1763,8 @@ fn odd_operand_from_commutative<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn cast_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn cast_known<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &CastOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -1778,8 +1791,8 @@ fn cast_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     })
 }
 
-fn icmp_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn icmp_known<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &CmpInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -1929,8 +1942,8 @@ pub(crate) fn binary_operator_parts(
 ///
 /// Ports `matchSimpleRecurrence` / `matchTwoInputRecurrence`
 /// (`ValueTracking.cpp`).
-fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
-    phi: Value<'ctx, B>,
+fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    phi: Value<'ctx, B, C>,
     data: &PhiData,
     uses_instruction_info: bool,
 ) -> Option<SimpleRecurrence> {
@@ -1996,8 +2009,8 @@ fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
 /// of the same value. The result is that llvmkit can answer *more* precisely
 /// than upstream for a shallow phi, never less; keying the known-bits cache by
 /// depth is what makes the fixed depth portable.
-fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &PhiData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -2055,8 +2068,8 @@ fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The simple-recurrence half of the `PHI` arm.
-fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    phi: Value<'ctx, B>,
+fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    phi: Value<'ctx, B, C>,
     recurrence: &SimpleRecurrence,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -2184,8 +2197,8 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// At least one bit always equals the sign bit (itself), so the answer is
 /// never zero. Ports `llvm::ComputeNumSignBits` (`ValueTracking.cpp`).
-pub fn compute_num_sign_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_num_sign_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<u32> {
     let mut stack = HashSet::new();
@@ -2195,8 +2208,8 @@ pub fn compute_num_sign_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Bits needed to represent `value` as a signed number — its scalar width less
 /// the replicated sign bits, plus one for the sign itself. Ports
 /// `llvm::ComputeMaxSignificantBits`.
-pub fn compute_max_significant_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_max_significant_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<u32> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
@@ -2208,8 +2221,8 @@ pub fn compute_max_significant_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `ComputeNumSignBitsImpl`, which upstream uses to hold the "at least one
 /// sign bit" invariant. Here the floor is enforced rather than asserted, so a
 /// zero can never escape into arithmetic that subtracts from it.
-fn compute_num_sign_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn compute_num_sign_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
@@ -2224,8 +2237,8 @@ fn compute_num_sign_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `getShuffleDemandedElts`, which llvmkit does not model. Each falls through
 /// to the `computeKnownBits` tail, which is what upstream's own `break` in
 /// those arms does when the pattern does not match — weaker, never wrong.
-fn compute_num_sign_bits_impl<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn compute_num_sign_bits_impl<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
@@ -2287,8 +2300,8 @@ impl SignBitsFromOperator {
 }
 
 /// The operator switch of `ComputeNumSignBitsImpl`.
-fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
@@ -2553,8 +2566,8 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `ValueKindData`, so a caller that wants both has to ask twice; every arm
 /// ported below inspects instructions only, matching what upstream's switches
 /// actually reach for the opcodes they name.
-pub(crate) fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub(crate) fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<&'ctx InstructionKindData> {
     match &value.data().kind {
         ValueKindData::Instruction(inst) => Some(&inst.kind),
@@ -2565,8 +2578,8 @@ pub(crate) fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
 /// Return true when the sign bit of `value` is known zero.
 ///
 /// Ports `llvm::isKnownNonNegative` (`ValueTracking.cpp`).
-pub fn is_known_non_negative<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_non_negative<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     Ok(compute_known_bits(value, query)?.is_non_negative())
@@ -2575,8 +2588,8 @@ pub fn is_known_non_negative<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Return true when the sign bit of `value` is known one.
 ///
 /// Ports `llvm::isKnownNegative` (`ValueTracking.cpp`).
-pub fn is_known_negative<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_negative<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     Ok(compute_known_bits(value, query)?.is_negative())
@@ -2592,8 +2605,8 @@ pub fn is_known_negative<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// call is kept in the shape upstream wrote it rather than folded away: when
 /// `is_known_non_zero` grows its own walk this becomes load-bearing with no
 /// second edit here.
-pub fn is_known_positive<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_positive<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     if let Some(constant) = argument_constant(Some(value)) {
@@ -2606,8 +2619,8 @@ pub fn is_known_positive<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Return true when every bit set in `mask` is known zero in `value`.
 ///
 /// Ports `llvm::MaskedValueIsZero` (`ValueTracking.cpp`).
-pub fn masked_value_is_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn masked_value_is_zero<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     mask: &ApInt,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
@@ -2651,7 +2664,9 @@ pub fn is_sign_bit_check(predicate: IntPredicate, rhs: &ApInt) -> Option<bool> {
 /// `Constant::isNullValue` test its two callers pair it with. `Some(true)`
 /// means matched *and* null; `Some(false)` means matched with at least one
 /// poison lane standing in for a zero; `None` means no match.
-fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<bool> {
+fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<bool> {
     match &value.data().kind {
         ValueKindData::Constant(ConstantData::Int(_)) => {
             argument_constant(Some(value))?.is_zero().then_some(true)
@@ -2705,15 +2720,15 @@ pub enum PoisonPolicy {
 /// Ports `llvm::isKnownNegation(X, Y, bool NeedNSW, bool AllowPoison)`
 /// (`ValueTracking.cpp`). The two `bool`s become [`NswRequirement`] and
 /// [`PoisonPolicy`] — same logic, same branches, only the spelling differs.
-pub fn is_known_negation<'ctx, B: ModuleBrand + 'ctx>(
-    x: Value<'ctx, B>,
-    y: Value<'ctx, B>,
+pub fn is_known_negation<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    x: Value<'ctx, B, C>,
+    y: Value<'ctx, B, C>,
     nsw: NswRequirement,
     poison: PoisonPolicy,
 ) -> bool {
     let need_nsw = matches!(nsw, NswRequirement::Required);
     let allow_poison = matches!(poison, PoisonPolicy::Allow);
-    let is_negation_of = |x: Value<'ctx, B>, y: Value<'ctx, B>| -> bool {
+    let is_negation_of = |x: Value<'ctx, B, C>, y: Value<'ctx, B, C>| -> bool {
         // `m_Neg(m_Specific(Y))` is `m_Sub(m_ZeroInt(), Y)`.
         let Some(InstructionKindData::Sub(data)) = instruction_kind(x) else {
             return false;
@@ -2753,9 +2768,9 @@ pub fn is_known_negation<'ctx, B: ModuleBrand + 'ctx>(
 /// Return true when `x` and `y` are provably inverse boolean conditions.
 ///
 /// Ports `llvm::isKnownInversion` (`ValueTracking.cpp`).
-pub fn is_known_inversion<'ctx, B: ModuleBrand + 'ctx>(
-    x: Value<'ctx, B>,
-    y: Value<'ctx, B>,
+pub fn is_known_inversion<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    x: Value<'ctx, B, C>,
+    y: Value<'ctx, B, C>,
 ) -> bool {
     // X = icmp pred1 A, B and Y = icmp pred2 A, C — the second commutatively,
     // which swaps its predicate when A is on the right.
@@ -2806,8 +2821,8 @@ pub fn is_known_inversion<'ctx, B: ModuleBrand + 'ctx>(
 /// Return true when every user of `instruction` compares it against zero.
 ///
 /// Ports `llvm::isOnlyUsedInZeroComparison` (`ValueTracking.cpp`).
-pub fn is_only_used_in_zero_comparison<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: Value<'ctx, B>,
+pub fn is_only_used_in_zero_comparison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: Value<'ctx, B, C>,
 ) -> bool {
     zero_comparison_users(instruction, |_| true)
 }
@@ -2816,8 +2831,8 @@ pub fn is_only_used_in_zero_comparison<'ctx, B: ModuleBrand + 'ctx>(
 /// an equality predicate.
 ///
 /// Ports `llvm::isOnlyUsedInZeroEqualityComparison` (`ValueTracking.cpp`).
-pub fn is_only_used_in_zero_equality_comparison<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: Value<'ctx, B>,
+pub fn is_only_used_in_zero_equality_comparison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: Value<'ctx, B, C>,
 ) -> bool {
     zero_comparison_users(instruction, |predicate| {
         matches!(predicate, IntPredicate::Eq | IntPredicate::Ne)
@@ -2826,8 +2841,8 @@ pub fn is_only_used_in_zero_equality_comparison<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Shared body of the two zero-comparison predicates: a non-empty user list
 /// whose every member is an `icmp` against zero accepted by `predicate_ok`.
-fn zero_comparison_users<'ctx, B: ModuleBrand + 'ctx, F>(
-    instruction: Value<'ctx, B>,
+fn zero_comparison_users<'ctx, B: ModuleBrand + 'ctx, C: Capability, F>(
+    instruction: Value<'ctx, B, C>,
     predicate_ok: F,
 ) -> bool
 where
@@ -2861,16 +2876,16 @@ where
 /// omission only makes the answer weaker: the `@llvm.assume` refinement (no
 /// `AssumptionCache`) and the dominating-condition refinement (no
 /// `DomConditionCache`).
-pub fn is_known_to_be_a_power_of_two<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_to_be_a_power_of_two<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     or_zero: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     is_known_to_be_a_power_of_two_inner(value, or_zero, query, 0)
 }
 
-fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     or_zero: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -2927,7 +2942,7 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
     let depth = depth + 1;
     let operand = |slot: &Cell<ValueSlot>| value_from_slot(value, slot.get());
-    let recurse = |operand: Value<'ctx, B>, or_zero: bool| {
+    let recurse = |operand: Value<'ctx, B, C>, or_zero: bool| {
         is_known_to_be_a_power_of_two_inner(operand, or_zero, query, depth)
     };
 
@@ -2992,9 +3007,9 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// `m_Neg(m_Specific(other))` restricted to what the `and` arm of
 /// `isKnownToBeAPowerOfTwo` asks: is `candidate` the negation of `other`?
-fn is_negation_of_operand<'ctx, B: ModuleBrand + 'ctx>(
-    candidate: Value<'ctx, B>,
-    other: Value<'ctx, B>,
+fn is_negation_of_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    candidate: Value<'ctx, B, C>,
+    other: Value<'ctx, B, C>,
 ) -> bool {
     let Some(InstructionKindData::Sub(data)) = instruction_kind(candidate) else {
         return false;
@@ -3004,8 +3019,8 @@ fn is_negation_of_operand<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The `Instruction::Add` arm of `isKnownToBeAPowerOfTwo`.
-fn power_of_two_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn power_of_two_add<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &BinaryOpData,
     or_zero: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -3051,7 +3066,7 @@ fn power_of_two_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     // `lshr(UINT_MAX, Y) + 1` is a power of two (when the add is `nuw`) or zero.
     if or_zero || (query.uses_instruction_info() && data.no_unsigned_wrap) {
-        let is_all_ones_lshr = |candidate: Value<'ctx, B>| {
+        let is_all_ones_lshr = |candidate: Value<'ctx, B, C>| {
             matches!(instruction_kind(candidate), Some(InstructionKindData::Lshr(shift))
                 if argument_constant(Some(value_from_slot(candidate, shift.lhs.get())))
                     .is_some_and(|constant| constant.is_all_ones()))
@@ -3065,9 +3080,9 @@ fn power_of_two_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// `m_c_And(m_Specific(other), m_Value())` — is `candidate` an `and` with
 /// `other` as one of its operands?
-fn is_and_with_operand<'ctx, B: ModuleBrand + 'ctx>(
-    candidate: Value<'ctx, B>,
-    other: Value<'ctx, B>,
+fn is_and_with_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    candidate: Value<'ctx, B, C>,
+    other: Value<'ctx, B, C>,
 ) -> bool {
     matches!(instruction_kind(candidate), Some(InstructionKindData::And(data))
         if data.lhs.get() == other.slot_trusting_same_module()
@@ -3080,8 +3095,8 @@ fn is_and_with_operand<'ctx, B: ModuleBrand + 'ctx>(
 /// terminator before recursing; llvmkit does not model a per-edge context, so
 /// that refinement is skipped exactly as the known-bits phi arm skips it. It
 /// can only leave an answer weaker.
-fn power_of_two_phi<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn power_of_two_phi<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &PhiData,
     or_zero: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -3113,8 +3128,8 @@ fn power_of_two_phi<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `isPowerOfTwoRecurrence` (`ValueTracking.cpp`).
-fn is_power_of_two_recurrence<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn is_power_of_two_recurrence<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &PhiData,
     or_zero: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -3162,8 +3177,8 @@ fn is_power_of_two_recurrence<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// The `Instruction::Call` / `Instruction::Invoke` arm of
 /// `isKnownToBeAPowerOfTwo`.
-fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     or_zero: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -3218,10 +3233,10 @@ fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The operand pair of a binary instruction with the given opcode.
-fn binary_operands_of<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn binary_operands_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     opcode: BinaryOpcode,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     let (found, data) = instruction_kind(value).and_then(binary_operator_parts)?;
     (found == opcode).then(|| {
         (
@@ -3235,7 +3250,9 @@ fn binary_operands_of<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `cst_pred_ty<is_all_ones>`, which accepts a scalar `-1` *and* a
 /// vector constant whose every lane is one — the form a vector `not` takes.
-fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     match &value.data().kind {
         ValueKindData::Constant(ConstantData::Int(_)) => {
             argument_constant(Some(value)).is_some_and(|constant| constant.is_all_ones())
@@ -3251,9 +3268,9 @@ fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
 }
 
 /// `m_Not(V)`: `xor V, -1`, matched commutatively.
-pub(crate) fn not_operand<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+pub(crate) fn not_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let (lhs, rhs) = binary_operands_of(value, BinaryOpcode::Xor)?;
     if is_all_ones_constant(rhs) {
         Some(lhs)
@@ -3284,12 +3301,12 @@ pub(crate) fn not_operand<'ctx, B: ModuleBrand + 'ctx>(
 /// contain, a `ConstantExpr`". llvmkit keeps constant expressions in their own
 /// `ConstantData::Expr` arm, so the check is structural here rather than a
 /// predicate over one flat `Constant` class.
-pub fn collect_possible_values<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn collect_possible_values<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     max_count: usize,
     allow_undef_or_poison: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
-) -> IrResult<Option<Vec<Value<'ctx, B>>>> {
+) -> IrResult<Option<Vec<Value<'ctx, B, C>>>> {
     let mut state = PossibleValues {
         constants: Vec::new(),
         visited: HashSet::new(),
@@ -3341,19 +3358,19 @@ pub fn collect_possible_values<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// The running state of [`collect_possible_values`] — upstream's `Constants`,
 /// `Visited` and `Worklist` locals, plus the two bounds its `Push` lambda
 /// closes over.
-struct PossibleValues<'ctx, B: ModuleBrand> {
-    constants: Vec<Value<'ctx, B>>,
+struct PossibleValues<'ctx, B: ModuleBrand, C: Capability> {
+    constants: Vec<Value<'ctx, B, C>>,
     visited: HashSet<ValueSlot>,
-    worklist: Vec<Value<'ctx, B>>,
+    worklist: Vec<Value<'ctx, B, C>>,
     max_count: usize,
     allow_undef_or_poison: bool,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> PossibleValues<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PossibleValues<'ctx, B, C> {
     /// Ports the `Push` lambda. `false` is upstream's "give up".
     fn push<'a>(
         &mut self,
-        value: Value<'ctx, B>,
+        value: Value<'ctx, B, C>,
         query: &ValueTrackingQuery<'a, 'ctx, B>,
     ) -> IrResult<bool> {
         if is_immediate_constant(value) {
@@ -3391,7 +3408,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> PossibleValues<'ctx, B> {
 /// scalable splats held as a `ConstantExpr` and is marked with a `TODO` to
 /// delete; llvmkit stores aggregate elements as slots, so a splat with no
 /// expression in it already passes the recursive check.
-fn is_immediate_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_immediate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     let ValueKindData::Constant(constant) = &value.data().kind else {
         return false;
     };
@@ -3420,9 +3439,9 @@ fn is_immediate_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> 
 /// spellings agree because the two operands share no set bit.
 ///
 /// Upstream answers a null `Value *` for no match, which is the `None` here.
-pub fn strip_null_test<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+pub fn strip_null_test<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     // Upstream's `m_c_BinOp` is guarded by an opcode check for `add` or `or`.
     let data = match instruction_kind(value)? {
         InstructionKindData::Add(data) | InstructionKindData::Or(data) => data,
@@ -3436,10 +3455,10 @@ pub fn strip_null_test<'ctx, B: ModuleBrand + 'ctx>(
 
 /// One operand order of [`strip_null_test`]'s commutative match: `shifted` as
 /// `lshr X, C1` and `flag` as `zext(icmp ne (and X, mask(C2)), 0)`.
-fn null_test_operands<'ctx, B: ModuleBrand + 'ctx>(
-    shifted: Value<'ctx, B>,
-    flag: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn null_test_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    shifted: Value<'ctx, B, C>,
+    flag: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     // m_LShr(m_Value(X), m_APInt(C1))
     let (base, shift_amount) = binary_operands_of(shifted, BinaryOpcode::Lshr)?;
     let shift_amount = splat_or_scalar_constant(shift_amount)?;
@@ -3482,7 +3501,9 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx>(
 /// Upstream reaches the vector case through `getSplatValue(AllowPoison=true)`,
 /// so a poison lane is skipped rather than treated as a disagreement — it can
 /// be read as whatever the other lanes hold.
-fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApInt> {
+fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApInt> {
     match &value.data().kind {
         ValueKindData::Constant(ConstantData::Int(_)) => argument_constant(Some(value)),
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
@@ -3509,7 +3530,9 @@ fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) 
 }
 
 /// The source of a `zext`, matching upstream's `m_ZExt`.
-fn zext_source<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn zext_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     match instruction_kind(value)? {
         InstructionKindData::Cast(data) if data.kind == CastOpcode::Zext => {
             Some(value_from_slot(value, data.src.get()))
@@ -3519,9 +3542,9 @@ fn zext_source<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Val
 }
 
 /// The source of a `zext` or `sext`, matching upstream's `m_ZExtOrSExt`.
-fn zext_or_sext_source<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn zext_or_sext_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     match instruction_kind(value)? {
         InstructionKindData::Cast(data)
             if matches!(data.kind, CastOpcode::Zext | CastOpcode::Sext) =>
@@ -3543,9 +3566,9 @@ fn zext_or_sext_source<'ctx, B: ModuleBrand + 'ctx>(
 /// pattern upstream accepts may fall through to the plain known-bits test.
 /// That answers `false` where upstream answers `true` — a missed fact, never a
 /// wrong one.
-pub fn have_no_common_bits_set<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+pub fn have_no_common_bits_set<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     if have_no_common_bits_set_special_cases(lhs, rhs, query)?
@@ -3559,12 +3582,12 @@ pub fn have_no_common_bits_set<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `haveNoCommonBitsSetSpecialCases`. Called once per operand order.
-fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
-    let and_pair = |value: Value<'ctx, B>| binary_operands_of(value, BinaryOpcode::And);
+    let and_pair = |value: Value<'ctx, B, C>| binary_operands_of(value, BinaryOpcode::And);
 
     // Look for an inverted mask: (X & ~M) op (Y & M).
     if let Some((left_a, left_b)) = and_pair(lhs) {
@@ -3659,9 +3682,9 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// One half of the shift pattern above: `lhs` shifts by `V` in `lhs_opcode`'s
 /// direction while `rhs` shifts by `R - V` in the other, with `R` at least the
 /// scalar bit width.
-fn complementary_shift_pair<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+fn complementary_shift_pair<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     lhs_opcode: BinaryOpcode,
     rhs_opcode: BinaryOpcode,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -3697,17 +3720,17 @@ fn complementary_shift_pair<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `isNonEqualPointersWithRecursiveGEP` (needs
 /// `stripAndAccumulateInBoundsConstantOffsets`) and `isKnownNonEqualFromContext`
 /// (needs an `AssumptionCache`).
-pub fn is_known_non_equal<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
-    v2: Value<'ctx, B>,
+pub fn is_known_non_equal<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
+    v2: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     is_known_non_equal_inner(v1, v2, query, 0)
 }
 
-fn is_known_non_equal_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
-    v2: Value<'ctx, B>,
+fn is_known_non_equal_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
+    v2: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> IrResult<bool> {
@@ -3788,13 +3811,13 @@ fn is_known_non_equal_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports `getInvertibleOperands`: when `v1` and `v2` are the same invertible
 /// function, the operand pair whose equality decides theirs.
-fn invertible_operands<'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
-    v2: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+fn invertible_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
+    v2: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     let kind1 = instruction_kind(v1)?;
     let kind2 = instruction_kind(v2)?;
-    let operand = |value: Value<'ctx, B>, slot: ValueSlot| value_from_slot(value, slot);
+    let operand = |value: Value<'ctx, B, C>, slot: ValueSlot| value_from_slot(value, slot);
 
     match (kind1, kind2) {
         // `or disjoint` behaves as `add`; a plain `or` is not invertible.
@@ -3861,12 +3884,12 @@ fn invertible_operands<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The commutative arm of `getInvertibleOperands` (`or disjoint` / `xor` /
 /// `add`): whichever operand of `v2` matches one of `v1`'s pins the other pair.
-fn invertible_commutative<'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
+fn invertible_commutative<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
     a: &BinaryOpData,
-    v2: Value<'ctx, B>,
+    v2: Value<'ctx, B, C>,
     b: &BinaryOpData,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     for (pinned, other) in [(a.lhs.get(), a.rhs.get()), (a.rhs.get(), a.lhs.get())] {
         if b.lhs.get() == pinned {
             return Some((value_from_slot(v1, other), value_from_slot(v2, b.rhs.get())));
@@ -3886,12 +3909,12 @@ fn no_wrap_pair(a: &BinaryOpData, b: &BinaryOpData) -> bool {
 /// The `Instruction::PHI` arm of `getInvertibleOperands`: two recurrences in
 /// the same block whose increments are a single invertible function of the
 /// start values.
-fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
+fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
     p1: &PhiData,
-    v2: Value<'ctx, B>,
+    v2: Value<'ctx, B, C>,
     p2: &PhiData,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     if parent_block(v1)? != parent_block(v2)? {
         return None;
     }
@@ -3917,8 +3940,8 @@ fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The block an instruction belongs to.
-pub(crate) fn parent_block<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub(crate) fn parent_block<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<ValueSlot> {
     match &value.data().kind {
         ValueKindData::Instruction(inst) => inst.parent.get(),
@@ -3927,10 +3950,10 @@ pub(crate) fn parent_block<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `isNonEqualPHIs`.
-fn non_equal_phis<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
+fn non_equal_phis<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
     p1: &PhiData,
-    v2: Value<'ctx, B>,
+    v2: Value<'ctx, B, C>,
     p2: &PhiData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -3979,9 +4002,9 @@ fn non_equal_phis<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `is_known_non_zero` answers from known bits and carries no depth of its own,
 /// so there is nothing to thread; the recursion it would bound happens inside
 /// `compute_known_bits`, which has its own limit.
-fn modifying_binop_of_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
-    v2: Value<'ctx, B>,
+fn modifying_binop_of_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
+    v2: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     let Some(kind) = instruction_kind(v1) else {
@@ -4009,9 +4032,9 @@ fn modifying_binop_of_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// non-zero, `C` non-trivial, and the operation no-wrap.
 ///
 /// The depth note on `modifying_binop_of_non_zero` applies here too.
-fn non_equal_scaled<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
-    v2: Value<'ctx, B>,
+fn non_equal_scaled<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
+    v2: Value<'ctx, B, C>,
     opcode: BinaryOpcode,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
@@ -4036,9 +4059,9 @@ fn non_equal_scaled<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `isNonEqualSelect`.
-fn non_equal_select<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    v1: Value<'ctx, B>,
-    v2: Value<'ctx, B>,
+fn non_equal_select<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    v1: Value<'ctx, B, C>,
+    v2: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> IrResult<bool> {
@@ -4069,10 +4092,10 @@ fn non_equal_select<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports `m_PtrToIntSameSize`: a `ptrtoint` whose result width equals the
 /// pointer's index width, returning the pointer operand.
-fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let InstructionKindData::Cast(data) = instruction_kind(value)? else {
         return None;
     };
@@ -4096,17 +4119,21 @@ fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `AffectedValues` for the caller to fill; [`Self::new`] fills it by running
 /// [`find_values_affected_by_condition`], which is what upstream's callers do
 /// immediately after constructing one.
+///
+/// Like the [`ValueTrackingQuery`] it is attached to, it only reads its
+/// condition, so it keeps it at [`ReadOnly`] whatever capability it arrives at.
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct CondContext<'ctx, B: ModuleBrand> {
-    condition: Value<'ctx, B>,
+    condition: Value<'ctx, B, ReadOnly>,
     invert: bool,
     affected_values: HashSet<ValueSlot>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
     /// Assume `condition` holds, and index the values it constrains.
-    pub fn new(condition: Value<'ctx, B>) -> Self {
+    pub fn new<C: Capability>(condition: Value<'ctx, B, C>) -> Self {
+        let condition = condition.read_only();
         let mut affected_values = HashSet::new();
         find_values_affected_by_condition(condition, false, |affected| {
             affected_values.insert(affected.slot_trusting_same_module());
@@ -4127,7 +4154,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
     }
 
     /// The condition being assumed.
-    pub fn condition(&self) -> Value<'ctx, B> {
+    pub fn condition(&self) -> Value<'ctx, B, ReadOnly> {
         self.condition
     }
 
@@ -4137,7 +4164,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
     }
 
     /// Whether `value` is one of the values the condition constrains.
-    pub fn affects(&self, value: Value<'ctx, B>) -> bool {
+    pub fn affects<C: Capability>(&self, value: Value<'ctx, B, C>) -> bool {
         // boundary (F2): Task 27
         // A caller's value against the set this condition's own module filled.
         self.affected_values
@@ -4162,8 +4189,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
 /// `getKnowledgeFromBundle` (`llvm/Analysis/AssumeBundleQueries.h`) — see the
 /// [`assumptions`](crate::assumptions) module header. Its absence only leaves
 /// bits unknown.
-pub fn compute_known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     known: KnownBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> KnownBits {
@@ -4171,12 +4198,16 @@ pub fn compute_known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `computeKnownBitsFromContext` at an explicit recursion depth.
-fn known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     known: KnownBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> KnownBits {
+    // The query keeps its context at `ReadOnly`, and every fact below pairs
+    // `value` with it; the answer carries no handle, so reading `value` at the
+    // context's capability changes nothing a caller sees.
+    let value = value.read_only();
     let mut known = known;
 
     // Handle the injected condition.
@@ -4238,7 +4269,7 @@ fn known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return known;
     };
     let bit_width = known.bit_width();
-    let valid_here = |assume: &InstructionView<'ctx, B>| {
+    let valid_here = |assume: &InstructionView<'ctx, B, ReadOnly>| {
         is_valid_assume_for_context(assume, &context_view, query.dominator_tree(), false)
     };
 
@@ -4309,10 +4340,10 @@ fn known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// 64) : y` contradicts itself at bit 6, and the select is about to be
 /// simplified away, so the original `known` comes back rather than a
 /// contradiction.
-pub fn adjust_known_bits_for_select_arm<'a, 'ctx, B: ModuleBrand + 'ctx>(
+pub fn adjust_known_bits_for_select_arm<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     known: KnownBits,
-    condition: Value<'ctx, B>,
-    arm: Value<'ctx, B>,
+    condition: Value<'ctx, B, C>,
+    arm: Value<'ctx, B, C>,
     invert: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<KnownBits> {
@@ -4347,9 +4378,9 @@ pub fn adjust_known_bits_for_select_arm<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `computeKnownBitsFromCond`.
-fn known_bits_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    condition: Value<'ctx, B>,
+fn known_bits_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    condition: Value<'ctx, B, C>,
     known: KnownBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     invert: bool,
@@ -4359,7 +4390,11 @@ fn known_bits_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let bit_width = known.bit_width();
 
     if depth < query.max_depth()
-        && let Some((a, b, is_and)) = logical_op_parts(condition)
+        && let Some(LogicalOperation {
+            lhs: a,
+            rhs: b,
+            operator,
+        }) = logical_op_parts(condition)
     {
         let from_a = known_bits_from_cond(
             value,
@@ -4379,7 +4414,7 @@ fn known_bits_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
         );
         // An assumed `and`, or an inverted `or`, gives both legs; the other way
         // round, only what the two legs agree on.
-        let combined = if invert == is_and {
+        let combined = if invert == (operator == LogicalOperator::And) {
             from_a.intersect_with(&from_b)
         } else {
             from_a.union_with(&from_b)
@@ -4420,9 +4455,9 @@ fn known_bits_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `computeKnownBitsFromICmpCond`.
-fn known_bits_from_int_compare_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    compare: Value<'ctx, B>,
+fn known_bits_from_int_compare_cond<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    compare: Value<'ctx, B, C>,
     known: KnownBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     invert: bool,
@@ -4463,11 +4498,11 @@ fn known_bits_from_int_compare_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `computeKnownBitsFromCmp`.
-fn known_bits_from_compare<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn known_bits_from_compare<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     predicate: IntPredicate,
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     known: KnownBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> KnownBits {
@@ -4489,7 +4524,7 @@ fn known_bits_from_compare<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     let bit_width = known.bit_width();
     // Upstream's `m_V` is `m_CombineOr(m_Specific(V), m_PtrToIntSameSize(DL, m_Specific(V)))`.
-    let is_v = |candidate: Value<'ctx, B>| -> bool {
+    let is_v = |candidate: Value<'ctx, B, C>| -> bool {
         candidate == value || ptr_to_int_same_size(candidate, query) == Some(value)
     };
     let Some(constant) = argument_constant(Some(rhs)) else {
@@ -4607,14 +4642,15 @@ enum WrapKind {
 
 /// The other operand when `value` is `and`/`or` with one operand accepted by
 /// `is_wanted`. Ports `m_c_And(m_V, m_Value(Y))` and its `or` twin.
-fn commutative_operand_beside<'ctx, B, F>(
-    value: Value<'ctx, B>,
+fn commutative_operand_beside<'ctx, B, C, F>(
+    value: Value<'ctx, B, C>,
     op: BitwiseOp,
     is_wanted: &F,
-) -> Option<Value<'ctx, B>>
+) -> Option<Value<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
-    F: Fn(Value<'ctx, B>) -> bool,
+    C: Capability,
+    F: Fn(Value<'ctx, B, C>) -> bool,
 {
     let data = match (instruction_kind(value)?, op) {
         (InstructionKindData::And(data), BitwiseOp::And) => data,
@@ -4631,14 +4667,15 @@ where
 
 /// The shift amount when `value` shifts an operand accepted by `is_wanted` by a
 /// constant. Ports `m_Shl(m_V, m_ConstantInt(ShAmt))` and `m_Shr`.
-fn shift_of_by_constant<'ctx, B, F>(
-    value: Value<'ctx, B>,
+fn shift_of_by_constant<'ctx, B, C, F>(
+    value: Value<'ctx, B, C>,
     is_wanted: &F,
     direction: ShiftDirection,
 ) -> Option<u32>
 where
     B: ModuleBrand + 'ctx,
-    F: Fn(Value<'ctx, B>) -> bool,
+    C: Capability,
+    F: Fn(Value<'ctx, B, C>) -> bool,
 {
     let data = match (instruction_kind(value)?, direction) {
         (InstructionKindData::Shl(data), ShiftDirection::Left) => data,
@@ -4660,10 +4697,11 @@ where
 /// The constant offset when `value` is `add`/`or disjoint` of an operand
 /// accepted by `is_wanted` and a constant. Ports
 /// `m_AddLike(m_V, m_APInt(Offset))`.
-fn add_like_offset_beside<'ctx, B, F>(value: Value<'ctx, B>, is_wanted: &F) -> Option<ApInt>
+fn add_like_offset_beside<'ctx, B, C, F>(value: Value<'ctx, B, C>, is_wanted: &F) -> Option<ApInt>
 where
     B: ModuleBrand + 'ctx,
-    F: Fn(Value<'ctx, B>) -> bool,
+    C: Capability,
+    F: Fn(Value<'ctx, B, C>) -> bool,
 {
     let data = match instruction_kind(value)? {
         InstructionKindData::Add(data) => data,
@@ -4676,10 +4714,15 @@ where
 
 /// Whether `value` is `sub nuw` with an operand accepted by `is_wanted` on the
 /// left. Ports `m_NUWSub(m_V, m_Value())`.
-fn no_wrap_sub_beside<'ctx, B, F>(value: Value<'ctx, B>, is_wanted: &F, wrap: WrapKind) -> bool
+fn no_wrap_sub_beside<'ctx, B, C, F>(
+    value: Value<'ctx, B, C>,
+    is_wanted: &F,
+    wrap: WrapKind,
+) -> bool
 where
     B: ModuleBrand + 'ctx,
-    F: Fn(Value<'ctx, B>) -> bool,
+    C: Capability,
+    F: Fn(Value<'ctx, B, C>) -> bool,
 {
     let Some(InstructionKindData::Sub(data)) = instruction_kind(value) else {
         return false;
@@ -4692,10 +4735,11 @@ where
 
 /// Whether `value` is `add nuw` with an operand accepted by `is_wanted` on
 /// either side. Ports `m_c_NUWAdd(m_V, m_Value())`.
-fn no_wrap_add_beside<'ctx, B, F>(value: Value<'ctx, B>, is_wanted: &F) -> bool
+fn no_wrap_add_beside<'ctx, B, C, F>(value: Value<'ctx, B, C>, is_wanted: &F) -> bool
 where
     B: ModuleBrand + 'ctx,
-    F: Fn(Value<'ctx, B>) -> bool,
+    C: Capability,
+    F: Fn(Value<'ctx, B, C>) -> bool,
 {
     let Some(InstructionKindData::Add(data)) = instruction_kind(value) else {
         return false;
@@ -4709,23 +4753,23 @@ where
 ///
 /// Ports `m_LogicalOp`: the bitwise spelling on an `i1`, or the poison-blocking
 /// `select` spelling — `L ? R : false` for `and`, `L ? true : R` for `or`.
-pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>, bool)> {
+pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<LogicalOperation<'ctx, B, C>> {
     if !matches!(scalar_type_kind(value), Some(TypeKind::Integer { bits: 1 })) {
         return None;
     }
     match instruction_kind(value)? {
-        InstructionKindData::And(data) => Some((
-            value_from_slot(value, data.lhs.get()),
-            value_from_slot(value, data.rhs.get()),
-            true,
-        )),
-        InstructionKindData::Or(data) => Some((
-            value_from_slot(value, data.lhs.get()),
-            value_from_slot(value, data.rhs.get()),
-            false,
-        )),
+        InstructionKindData::And(data) => Some(LogicalOperation {
+            lhs: value_from_slot(value, data.lhs.get()),
+            rhs: value_from_slot(value, data.rhs.get()),
+            operator: LogicalOperator::And,
+        }),
+        InstructionKindData::Or(data) => Some(LogicalOperation {
+            lhs: value_from_slot(value, data.lhs.get()),
+            rhs: value_from_slot(value, data.rhs.get()),
+            operator: LogicalOperator::Or,
+        }),
         InstructionKindData::Select(data) => {
             let condition = value_from_slot(value, data.cond.get());
             // Don't match a scalar select of bool vectors.
@@ -4736,21 +4780,47 @@ pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx>(
             let true_value = value_from_slot(value, data.true_val.get());
             let false_value = value_from_slot(value, data.false_val.get());
             if argument_constant(Some(false_value)).is_some_and(|c| c.is_zero()) {
-                return Some((condition, true_value, true));
+                return Some(LogicalOperation {
+                    lhs: condition,
+                    rhs: true_value,
+                    operator: LogicalOperator::And,
+                });
             }
             argument_constant(Some(true_value))
                 .is_some_and(|c| c.is_all_ones())
-                .then_some((condition, false_value, false))
+                .then_some(LogicalOperation {
+                    lhs: condition,
+                    rhs: false_value,
+                    operator: LogicalOperator::Or,
+                })
         }
         _ => None,
     }
 }
 
+/// A logical `and` / `or` [`logical_op_parts`] matched: its two operands and
+/// which operator it is — `m_LogicalOp`'s captures plus the
+/// `m_LogicalAnd` / `m_LogicalOr` split upstream's callers branch on.
+pub(crate) struct LogicalOperation<'ctx, B: ModuleBrand, C: Capability> {
+    pub(crate) lhs: Value<'ctx, B, C>,
+    pub(crate) rhs: Value<'ctx, B, C>,
+    pub(crate) operator: LogicalOperator,
+}
+
+/// Which logical operator a [`LogicalOperation`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LogicalOperator {
+    /// `and`, or `select L, R, false`.
+    And,
+    /// `or`, or `select L, true, R`.
+    Or,
+}
+
 /// The source of a `trunc` and whether it carries `nuw`. Ports the
 /// `dyn_cast<TruncInst>` / `hasNoUnsignedWrap` pair.
-fn trunc_source_and_no_unsigned_wrap<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, bool)> {
+fn trunc_source_and_no_unsigned_wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(Value<'ctx, B, C>, bool)> {
     let InstructionKindData::Cast(data) = instruction_kind(value)? else {
         return None;
     };
@@ -4759,9 +4829,9 @@ fn trunc_source_and_no_unsigned_wrap<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The condition operand of an `@llvm.assume`.
-pub(crate) fn assume_argument<'ctx, B: ModuleBrand + 'ctx>(
-    assume: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+pub(crate) fn assume_argument<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    assume: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let InstructionKindData::Call(data) = instruction_kind(assume)? else {
         return None;
     };
@@ -4769,7 +4839,7 @@ pub(crate) fn assume_argument<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Whether `value` is the null pointer constant. Ports `m_Zero` at pointer type.
-fn is_null_pointer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_null_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
     matches!(
         value.data().kind,
         ValueKindData::Constant(ConstantData::PointerNull)
@@ -4777,10 +4847,12 @@ fn is_null_pointer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
 }
 
 /// The kind of the value's scalar type, peeling one vector layer.
-fn scalar_type_kind<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<TypeKind> {
+fn scalar_type_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<TypeKind> {
     let ty = value.ty();
     Some(match ty.data().as_vector() {
-        Some((element, _, _)) => Type::new(element, ty.module()).kind(),
+        Some((element, _, _)) => Type::new(element, ty.module).kind(),
         None => ty.kind(),
     })
 }
@@ -4823,8 +4895,8 @@ impl UndefPoisonKind {
 /// `consider_flags_and_metadata` mirrors upstream's parameter: with it set, an
 /// operator carrying a poison-generating annotation (`nsw`, `nuw`, `exact`,
 /// `inbounds`, `nneg`, `disjoint`) answers true on that basis alone.
-pub fn can_create_poison<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn can_create_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     consider_flags_and_metadata: bool,
 ) -> bool {
     can_create_undef_or_poison_kind(
@@ -4836,8 +4908,8 @@ pub fn can_create_poison<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Return true when the operator can create undef *or* poison. Ports
 /// `llvm::canCreateUndefOrPoison`.
-pub fn can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     consider_flags_and_metadata: bool,
 ) -> bool {
     can_create_undef_or_poison_kind(
@@ -4848,8 +4920,8 @@ pub fn can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports the static `canCreateUndefOrPoison(Op, Kind, ConsiderFlagsAndMetadata)`.
-fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     kind: UndefPoisonKind,
     consider_flags_and_metadata: bool,
 ) -> bool {
@@ -4958,7 +5030,9 @@ fn has_poison_generating_annotations(kind: &InstructionKindData) -> bool {
 
 /// Ports `shiftAmountKnownInRange`: a constant shift amount strictly below the
 /// bit width. A non-constant amount answers false.
-fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx>(shift_amount: Value<'ctx, B>) -> bool {
+fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    shift_amount: Value<'ctx, B, C>,
+) -> bool {
     let data_layout = shift_amount.module().data_layout();
     let Some(width) = value_bit_width(shift_amount, &data_layout) else {
         return false;
@@ -4973,9 +5047,9 @@ fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx>(shift_amount: Value<
 /// A scalable vector answers false: upstream compares against
 /// `getKnownMinValue()`, which cannot bound the real length, and llvmkit
 /// declines rather than guessing.
-fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx>(
-    vector: Value<'ctx, B>,
-    index: Value<'ctx, B>,
+fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    vector: Value<'ctx, B, C>,
+    index: Value<'ctx, B, C>,
 ) -> bool {
     if vector.ty().kind() != TypeKind::FixedVector {
         return false;
@@ -4988,8 +5062,8 @@ fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// True when the call/invoke/callbr's return carries `noundef`.
-fn call_returns_noundef<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn call_returns_noundef<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
     call_return_attrs(anchor, kind).is_some_and(|stored| {
@@ -5006,8 +5080,8 @@ fn call_returns_noundef<'ctx, B: ModuleBrand + 'ctx>(
 /// which accepts all three because the two dereferenceability attributes imply
 /// `noundef`. [`call_returns_noundef`] is the narrower `canCreateUndefOrPoison`
 /// test, which reads only the first.
-fn call_return_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn call_return_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
     call_return_attrs(anchor, kind)
@@ -5016,8 +5090,8 @@ fn call_return_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The return-position attributes of a call/invoke/callbr. `anchor` is any
 /// value of `kind`'s module, whose context holds the interned attribute list.
-fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> Option<&'ctx [AttributeStored]> {
     let attrs = match kind {
@@ -5039,8 +5113,8 @@ fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx>(
 /// Upstream takes a `Use`, which names both the user and the operand position.
 /// llvmkit has no `Use` type — operands are read positionally — so the pair is
 /// spelled out.
-pub fn propagates_poison<'ctx, B: ModuleBrand + 'ctx>(
-    user: Value<'ctx, B>,
+pub fn propagates_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    user: Value<'ctx, B, C>,
     operand_index: usize,
 ) -> bool {
     let ValueKindData::Instruction(inst) = &user.data().kind else {
@@ -5074,18 +5148,18 @@ fn is_binary_operator_kind(kind: &InstructionKindData) -> bool {
 
 /// Return true when poison in `value_assumed_poison` implies poison in
 /// `value`. Ports `llvm::impliesPoison`.
-pub fn implies_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value_assumed_poison: Value<'ctx, B>,
-    value: Value<'ctx, B>,
+pub fn implies_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value_assumed_poison: Value<'ctx, B, C>,
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     implies_poison_inner(value_assumed_poison, value, query, 0)
 }
 
 /// Ports the static `impliesPoison(ValAssumedPoison, V, Depth)`.
-fn implies_poison_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value_assumed_poison: Value<'ctx, B>,
-    value: Value<'ctx, B>,
+fn implies_poison_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value_assumed_poison: Value<'ctx, B, C>,
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> IrResult<bool> {
@@ -5128,9 +5202,9 @@ fn implies_poison_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// The `extractvalue` / `WithOverflowInst` arm is not ported: llvmkit does not
 /// model the overflow intrinsics as a distinct instruction class, so the
 /// pattern it matches cannot arise. Its absence only makes the answer weaker.
-fn directly_implies_poison<'ctx, B: ModuleBrand + 'ctx>(
-    value_assumed_poison: Value<'ctx, B>,
-    value: Value<'ctx, B>,
+fn directly_implies_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value_assumed_poison: Value<'ctx, B, C>,
+    value: Value<'ctx, B, C>,
     depth: u32,
 ) -> bool {
     // boundary (F2): Task 27
@@ -5154,7 +5228,9 @@ fn directly_implies_poison<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The SSA operands of `value`, as values. Empty for a non-instruction.
-fn operands_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Vec<Value<'ctx, B>> {
+fn operands_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Vec<Value<'ctx, B, C>> {
     match &value.data().kind {
         ValueKindData::Instruction(inst) => inst
             .kind
@@ -5168,8 +5244,8 @@ fn operands_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Vec<Value<
 
 /// Return true when `value` is guaranteed to be neither poison nor a value
 /// derived from poison. Ports `llvm::isGuaranteedNotToBePoison`.
-pub fn is_known_not_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_not_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     is_guaranteed_not_to_be_undef_or_poison(value, query, 0, UndefPoisonKind::PoisonOnly)
@@ -5177,8 +5253,8 @@ pub fn is_known_not_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// Return true when `value` is guaranteed not to be undef.
 /// Ports `llvm::isGuaranteedNotToBeUndef`.
-pub fn is_known_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     is_guaranteed_not_to_be_undef_or_poison(value, query, 0, UndefPoisonKind::UndefOnly)
@@ -5186,8 +5262,8 @@ pub fn is_known_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// Return true when `value` is guaranteed to be neither undef nor poison.
 /// Ports `llvm::isGuaranteedNotToBeUndefOrPoison`.
-pub fn is_known_not_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_not_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     is_guaranteed_not_to_be_undef_or_poison(value, query, 0, UndefPoisonKind::UndefOrPoison)
@@ -5208,16 +5284,16 @@ pub fn is_known_not_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `@llvm.assume`-driven refinement (no `AssumptionCache`), the select-pattern
 /// clamp (no `SelectPatternResult` — tranche 4), and `!range` metadata on
 /// `call` returns. Each omission only widens the answer.
-pub fn compute_constant_range<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_constant_range<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     signedness: Signedness,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<ConstantRange> {
     compute_constant_range_inner(value, matches!(signedness, Signedness::Signed), query, 0)
 }
 
-fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     for_signed: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -5276,8 +5352,13 @@ fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// The two sources are independent — known bits can pin bits a range cannot
 /// express, and a range can bound values the bits cannot — so upstream
 /// intersects them, and so does this.
-pub fn compute_constant_range_including_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_constant_range_including_known_bits<
+    'a,
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    value: Value<'ctx, B, C>,
     signedness: Signedness,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<ConstantRange> {
@@ -5298,9 +5379,9 @@ fn preferred_for(for_signed: bool) -> PreferredRangeType {
 
 /// Whether `lhs + rhs` overflows unsigned. Ports
 /// `llvm::computeOverflowForUnsignedAdd`.
-pub fn compute_overflow_for_unsigned_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+pub fn compute_overflow_for_unsigned_add<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
     let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Unsigned, query)?;
@@ -5316,9 +5397,9 @@ pub fn compute_overflow_for_unsigned_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// llvmkit does not model. Only the value-pair form is ported; the extra
 /// refinement can only turn `MayOverflow` into `NeverOverflows`, so its
 /// absence is conservative.
-pub fn compute_overflow_for_signed_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+pub fn compute_overflow_for_signed_add<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
     let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Signed, query)?;
@@ -5328,9 +5409,9 @@ pub fn compute_overflow_for_signed_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// Whether `lhs - rhs` overflows unsigned. Ports
 /// `llvm::computeOverflowForUnsignedSub`.
-pub fn compute_overflow_for_unsigned_sub<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+pub fn compute_overflow_for_unsigned_sub<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
     let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Unsigned, query)?;
@@ -5340,9 +5421,9 @@ pub fn compute_overflow_for_unsigned_sub<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// Whether `lhs - rhs` overflows signed. Ports
 /// `llvm::computeOverflowForSignedSub`.
-pub fn compute_overflow_for_signed_sub<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+pub fn compute_overflow_for_signed_sub<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
     let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Signed, query)?;
@@ -5355,9 +5436,9 @@ pub fn compute_overflow_for_signed_sub<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// `is_nsw` carries the `mul nsw` promise: a signed-non-wrapping product of
 /// two non-negative values cannot wrap unsigned either.
-pub fn compute_overflow_for_unsigned_mul<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+pub fn compute_overflow_for_unsigned_mul<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     is_nsw: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
@@ -5375,9 +5456,9 @@ pub fn compute_overflow_for_unsigned_mul<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// The reasoning is sign-bit counting rather than ranges: multiplying values
 /// with `n` and `m` significant bits needs `n + m`, so enough leading sign
 /// bits guarantees the product fits. Upstream credits *Hacker's Delight*.
-pub fn compute_overflow_for_signed_mul<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+pub fn compute_overflow_for_signed_mul<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
     let bit_width = value_bit_width(lhs, query.data_layout()).unwrap_or(0);
@@ -5406,8 +5487,8 @@ pub fn compute_overflow_for_signed_mul<'a, 'ctx, B: ModuleBrand + 'ctx>(
     Ok(OverflowResult::MayOverflow)
 }
 
-fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &AllocaInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> KnownBits {
@@ -5429,8 +5510,8 @@ fn known_low_zero_bits(width: u32, align: Align) -> KnownBits {
     .unwrap_or_else(|_| KnownBits::unknown(width))
 }
 
-fn gep_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn gep_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &GepInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -5457,27 +5538,29 @@ fn gep_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     )
 }
 
-struct GepKnownBitsInput<'ctx, B, I>
+struct GepKnownBitsInput<'ctx, B, C, I>
 where
     B: ModuleBrand + 'ctx,
-    I: IntoIterator<Item = Value<'ctx, B>>,
+    C: Capability,
+    I: IntoIterator<Item = Value<'ctx, B, C>>,
 {
-    anchor: Value<'ctx, B>,
+    anchor: Value<'ctx, B, C>,
     width: u32,
     known: KnownBits,
     source_ty: TypeSlot,
     indices: I,
 }
 
-fn gep_known_bits_from_values<'a, 'ctx, B, I>(
-    input: GepKnownBitsInput<'ctx, B, I>,
+fn gep_known_bits_from_values<'a, 'ctx, B, C, I>(
+    input: GepKnownBitsInput<'ctx, B, C, I>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits>
 where
     B: ModuleBrand + 'ctx,
-    I: IntoIterator<Item = Value<'ctx, B>>,
+    C: Capability,
+    I: IntoIterator<Item = Value<'ctx, B, C>>,
 {
     let GepKnownBitsInput {
         anchor,
@@ -5591,10 +5674,10 @@ struct GepIndexScale {
     pointer_width: u32,
 }
 
-fn add_gep_index<'a, 'ctx, B: ModuleBrand + 'ctx>(
+fn add_gep_index<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     known: &mut KnownBits,
     offset: &mut ApInt,
-    index_value: Value<'ctx, B>,
+    index_value: Value<'ctx, B, C>,
     scale: GepIndexScale,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -5633,7 +5716,9 @@ fn add_gep_index_bits(
     }
 }
 
-fn pointer_addr_space<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<u32> {
+fn pointer_addr_space<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Option<u32> {
     match ty.data() {
         TypeData::Pointer { addr_space } | TypeData::TypedPointer { addr_space, .. } => {
             Some(*addr_space)
@@ -5645,8 +5730,8 @@ fn pointer_addr_space<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<
     }
 }
 
-fn struct_field_type_id<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+fn struct_field_type_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
     field_index: usize,
 ) -> Option<TypeSlot> {
     let TypeData::Struct(data) = ty.data() else {
@@ -5658,8 +5743,8 @@ fn struct_field_type_id<'ctx, B: ModuleBrand + 'ctx>(
         .and_then(|body| body.elements.get(field_index).copied())
 }
 
-fn extract_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn extract_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &ExtractElementInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -5683,8 +5768,8 @@ fn extract_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     compute_known_bits_for_demanded(vector, &demanded, query, depth + 1, stack)
 }
 
-fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &InsertElementInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -5749,12 +5834,12 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// demanded set, resolve the operand values), so they share them here rather
 /// than in `vector_utils`, which stays a faithful port of the upstream
 /// signature.
-pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &ShuffleVectorInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     allow_undefined_elements: bool,
-) -> Option<(Value<'ctx, B>, ApInt, Value<'ctx, B>, ApInt)> {
+) -> Option<ShuffleSourceDemands<'ctx, B, C>> {
     let lhs = value_from_slot(value, data.lhs.get());
     let rhs = value_from_slot(value, data.rhs.get());
 
@@ -5779,7 +5864,12 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let (_, result_scalable) = vector_shape(value)?;
     if result_scalable {
         let demanded = ApInt::all_ones(1);
-        return Some((lhs, demanded.clone(), rhs, demanded));
+        return Some(ShuffleSourceDemands {
+            lhs,
+            lhs_demanded: demanded.clone(),
+            rhs,
+            rhs_demanded: demanded,
+        });
     }
 
     let result_lanes = u32::try_from(data.mask.len()).ok()?;
@@ -5801,7 +5891,21 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
         &demanded,
         allow_undefined_elements,
     )?;
-    Some((lhs, demand.lhs, rhs, demand.rhs))
+    Some(ShuffleSourceDemands {
+        lhs,
+        lhs_demanded: demand.lhs,
+        rhs,
+        rhs_demanded: demand.rhs,
+    })
+}
+
+/// A shuffle's two source operands and the lanes demanded of each: what
+/// [`shuffle_source_demands`] resolves for its two callers.
+pub(crate) struct ShuffleSourceDemands<'ctx, B: ModuleBrand, C: Capability> {
+    pub(crate) lhs: Value<'ctx, B, C>,
+    pub(crate) lhs_demanded: ApInt,
+    pub(crate) rhs: Value<'ctx, B, C>,
+    pub(crate) rhs_demanded: ApInt,
 }
 
 /// Ports `case Instruction::ShuffleVector:` of `computeKnownBits`.
@@ -5811,8 +5915,8 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `m_ZeroMask` accepts — from being answered as "nothing known": the
 /// demanded-lane path below sees a demanded poison lane and gives up, while
 /// the splat match reads straight through to the scalar.
-fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &ShuffleVectorInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -5829,8 +5933,12 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    let Some((lhs, lhs_demand, rhs, rhs_demand)) =
-        shuffle_source_demands(value, data, query, false)
+    let Some(ShuffleSourceDemands {
+        lhs,
+        lhs_demanded: lhs_demand,
+        rhs,
+        rhs_demanded: rhs_demand,
+    }) = shuffle_source_demands(value, data, query, false)
     else {
         return Ok(KnownBits::unknown(width));
     };
@@ -5853,8 +5961,8 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     elements: &[ValueSlot],
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -5888,8 +5996,8 @@ fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn compute_known_bits_for_demanded<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn compute_known_bits_for_demanded<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     demanded: &ApInt,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -5899,8 +6007,8 @@ fn compute_known_bits_for_demanded<'a, 'ctx, B: ModuleBrand + 'ctx>(
     compute_known_bits_inner(value, &subquery, depth, stack)
 }
 
-pub(crate) fn demanded_elements_for<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub(crate) fn demanded_elements_for<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> Option<ApInt> {
     let (lanes, scalable) = vector_shape(value)?;
@@ -5916,8 +6024,8 @@ pub(crate) fn demanded_elements_for<'a, 'ctx, B: ModuleBrand + 'ctx>(
     )
 }
 
-pub(crate) fn vector_shape<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub(crate) fn vector_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<(u32, bool)> {
     value
         .ty()
@@ -5926,8 +6034,8 @@ pub(crate) fn vector_shape<'ctx, B: ModuleBrand + 'ctx>(
         .map(|(_, lanes, scalable)| (lanes, scalable))
 }
 
-fn value_bit_width<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn value_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     dl: &DataLayout,
 ) -> Option<u32> {
     type_bit_width(value.ty(), dl)
@@ -5947,8 +6055,8 @@ fn value_bit_width<'ctx, B: ModuleBrand + 'ctx>(
 /// two spellings of one condition drift, and the wrong answer this replaced
 /// came from precisely that gap — the width was `None`, the caller substituted
 /// `0`, and a zero-width `ApInt` made `KnownBits::is_zero` vacuously true.
-fn require_int_or_pointer_width<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn require_int_or_pointer_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     dl: &DataLayout,
 ) -> IrResult<u32> {
     value_bit_width(value, dl).ok_or_else(|| IrError::NotIntOrPointerType {
@@ -5971,8 +6079,8 @@ fn require_int_or_pointer_width<'ctx, B: ModuleBrand + 'ctx>(
 /// this routine never inserted into that set, only threaded it down to the one
 /// `compute_known_bits_inner` call the arm made, and upstream bounds this walk
 /// with `Depth` alone.
-fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     kind: UndefPoisonKind,
@@ -6098,7 +6206,9 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the `dyn_cast<LoadInst>` arm's `hasMetadata` triple. The two
 /// dereferenceability kinds imply `noundef`, which is why upstream accepts any
 /// of the three.
-fn load_metadata_asserts_well_defined<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn load_metadata_asserts_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     let ValueKindData::Instruction(instruction) = &value.data().kind else {
         return false;
     };
@@ -6132,8 +6242,8 @@ fn load_metadata_asserts_well_defined<'ctx, B: ModuleBrand + 'ctx>(value: Value<
 /// two early `return false`s — no context instruction or dominator tree, and an
 /// unreachable context block — are `false` here rather than early returns,
 /// because llvmkit has one more arm after this point.
-fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     kind: UndefPoisonKind,
 ) -> bool {
@@ -6192,10 +6302,10 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The terminator of `block`, as a value.
-fn block_terminator<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn block_terminator<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let module = module_ref(anchor);
     let ValueKindData::BasicBlock(data) = &module.value_data(block).kind else {
         return None;
@@ -6207,8 +6317,8 @@ fn block_terminator<'ctx, B: ModuleBrand + 'ctx>(
 /// The condition of a conditional `br` or a `switch`. Ports the
 /// `dyn_cast_or_null<BranchInst>` / `dyn_cast_or_null<SwitchInst>` pair of the
 /// dominating-condition walk.
-fn branch_or_switch_condition<'ctx, B: ModuleBrand + 'ctx>(
-    terminator: Value<'ctx, B>,
+fn branch_or_switch_condition<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    terminator: Value<'ctx, B, C>,
 ) -> Option<ValueSlot> {
     match instruction_kind(terminator)? {
         InstructionKindData::Br(data) => match &*data.kind.borrow() {
@@ -6222,8 +6332,8 @@ fn branch_or_switch_condition<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The `dyn_cast<Argument>` arm: `noundef`, `dereferenceable` and
 /// `dereferenceable_or_null` each imply a well-defined parameter.
-fn argument_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn argument_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     parent_fn: ValueSlot,
     slot: u32,
 ) -> bool {
@@ -6249,8 +6359,8 @@ fn is_well_defined_attribute(attribute: &AttributeStored) -> bool {
 
 /// The `dyn_cast<Constant>` arm. `None` means the constant fell through to the
 /// operator tests, exactly as upstream's `ConstantExpr` case does.
-fn constant_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn constant_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     constant: &ConstantData,
     kind: UndefPoisonKind,
 ) -> Option<bool> {
@@ -6293,7 +6403,10 @@ fn constant_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn type_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>, dl: &DataLayout) -> Option<u32> {
+fn type_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+    dl: &DataLayout,
+) -> Option<u32> {
     match ty.kind() {
         TypeKind::Integer { bits } => Some(bits),
         TypeKind::Pointer { addr_space } => Some(dl.pointer_size_in_bits(addr_space)),
@@ -6338,24 +6451,34 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>, dl: &DataLayou
 /// This was `value_from_id` while `pointer_analysis` and `demanded_bits` each
 /// kept a byte-identical private copy under the correct name; all three are
 /// now this one function.
-pub(crate) fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+pub(crate) fn value_from_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     id: ValueSlot,
-) -> Value<'ctx, B> {
+) -> Value<'ctx, B, C> {
     let module = module_ref(anchor);
     let data = module.value_data(id);
     Value::from_parts(id, module, data.ty)
 }
 
-fn module_ref<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> ModuleRef<'ctx, B> {
-    ModuleRef::new(value.module().core_ref())
+/// The value's own module reference, at the value's capability — a handle
+/// minted from it is navigation, so it keeps what the caller held.
+fn module_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> ModuleRef<'ctx, B, C> {
+    value.module
 }
 
-fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> ModuleRef<'ctx, B> {
-    ModuleRef::new(ty.module().core_ref())
+/// The type's own module reference, at the type's capability; see
+/// [`module_ref`].
+fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> ModuleRef<'ctx, B, C> {
+    ty.module
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Type<'ctx, DynBrand> {
     Type::new(
         ty.slot_trusting_same_module(),
         ModuleRef::new(ty.module().core_ref()),

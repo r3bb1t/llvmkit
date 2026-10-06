@@ -278,9 +278,12 @@ where
     (expected.as_type().slot_trusting_same_module() == function.signature).then_some(descriptor)
 }
 
-pub(crate) fn semantic_for_callee<'ctx, B>(callee: Value<'ctx, B>) -> Option<IntrinsicSemantic>
+pub(crate) fn semantic_for_callee<'ctx, B, C>(
+    callee: Value<'ctx, B, C>,
+) -> Option<IntrinsicSemantic>
 where
     B: ModuleBrand + 'ctx,
+    C: crate::capability::Capability,
 {
     let descriptor = descriptor_for_callee(callee)?;
     descriptor.id.semantic_kind()

@@ -18,7 +18,8 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    DynBrand, Module, ShuffleMaskElem, Unverified, Value, is_splat_value, splat_index, splat_value,
+    DynBrand, Module, ReadOnly, ShuffleMaskElem, Unverified, Value, is_splat_value, splat_index,
+    splat_value,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -29,15 +30,12 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 }
 
 /// Upstream's harness: find the instruction named `%A` in `@test`.
-fn instruction_a<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynBrand> {
-    let function = module
+fn instruction_a<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynBrand, ReadOnly> {
+    module
         .as_view()
         .functions()
         .find(|function| function.name().as_deref() == Some("test"))
         .expect("@test must have a function named @test")
-        .id();
-    module
-        .view(function)
         .basic_blocks()
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some("A"))

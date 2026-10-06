@@ -133,8 +133,8 @@ impl SpeculationOptions {
 /// without introducing undefined behaviour.
 ///
 /// Ports `llvm::isSafeToSpeculativelyExecute`.
-pub fn is_safe_to_speculatively_execute<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn is_safe_to_speculatively_execute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
     options: SpeculationOptions,
 ) -> bool {
     is_safe_to_speculatively_execute_with_opcode(instruction.opcode(), instruction, options)
@@ -151,14 +151,14 @@ pub fn is_safe_to_speculatively_execute<'ctx, B: ModuleBrand + 'ctx>(
 /// the operand count and types fit the override. llvmkit has no assertion
 /// channel and no runtime panics in production paths, so the arms that read
 /// operands answer conservatively when the operand is missing instead.
-pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>(
+pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: Opcode,
-    instruction: &InstructionView<'ctx, B>,
+    instruction: &InstructionView<'ctx, B, C>,
     options: SpeculationOptions,
 ) -> bool {
     let anchor = instruction.to_erased();
     let kind = view_kind(instruction);
-    let operand = |index: usize| -> Option<Value<'ctx, B>> {
+    let operand = |index: usize| -> Option<Value<'ctx, B, C>> {
         let slot = kind.operand_ids().get(index).copied()?;
         Some(value_from_slot(anchor, slot))
     };
@@ -291,8 +291,12 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
 ///
 /// Ports the inline `llvm::isSafeToSpeculativelyExecuteWithVariableReplaced`,
 /// which is exactly the base call with `UseVariableInfo = false`.
-pub fn is_safe_to_speculatively_execute_with_variable_replaced<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn is_safe_to_speculatively_execute_with_variable_replaced<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    instruction: &InstructionView<'ctx, B, C>,
     options: SpeculationOptions,
 ) -> bool {
     is_safe_to_speculatively_execute(instruction, options.without_variable_info())
@@ -302,8 +306,8 @@ pub fn is_safe_to_speculatively_execute_with_variable_replaced<'ctx, B: ModuleBr
 /// for a reason other than an SSA def-use edge.
 ///
 /// Ports `llvm::mayHaveNonDefUseDependency`.
-pub fn may_have_non_def_use_dependency<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn may_have_non_def_use_dependency<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
 ) -> bool {
     if may_read_or_write_memory(instruction) {
         // A memory dependency is possible.
@@ -336,12 +340,6 @@ pub fn is_guaranteed_to_transfer_execution_to_successor<
 >(
     instruction: &InstructionView<'ctx, B, C>,
 ) -> bool {
-    // capability (proof): laundered until Task 6 — the helpers below take
-    // `Mutable` handles until the analyses go capability-generic; this
-    // routine only reads, and the view never leaves it.
-    let module = instruction.module.mutable_at_marked_boundary();
-    let instruction =
-        &InstructionView::<'ctx, B>::from_parts(instruction.slot_trusting_same_module(), module);
     let anchor = instruction.to_erased();
     let kind = view_kind(instruction);
 
@@ -392,13 +390,14 @@ pub fn block_transfers_execution_to_successor<'ctx, B: ModuleBrand + 'ctx>(
 /// "gave up before looking" is the answer its own `--ScanLimit == 0` test
 /// reaches one instruction later, so declining is the faithful reading rather
 /// than a panic.
-pub fn instructions_transfer_execution_to_successor<'ctx, B, I>(
+pub fn instructions_transfer_execution_to_successor<'ctx, B, C, I>(
     instructions: I,
     scan_limit: u32,
 ) -> bool
 where
     B: ModuleBrand + 'ctx,
-    I: IntoIterator<Item = InstructionView<'ctx, B>>,
+    C: Capability,
+    I: IntoIterator<Item = InstructionView<'ctx, B, C>>,
 {
     let mut remaining = scan_limit;
     for instruction in instructions {
@@ -429,8 +428,8 @@ where
 /// test; its trailing `llvm_unreachable` ("Instruction not contained in its own
 /// parent basic block") is unreachable here for the same reason, so it has no
 /// counterpart.
-pub fn is_guaranteed_to_execute_for_every_iteration<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn is_guaranteed_to_execute_for_every_iteration<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
     loop_header: BasicBlockView<'ctx, B>,
 ) -> bool {
     // `I->getParent() != Header` — an instruction in no block is in no header
@@ -462,8 +461,8 @@ pub fn is_guaranteed_to_execute_for_every_iteration<'ctx, B: ModuleBrand + 'ctx>
 /// Here it is a set of storable [`ValueId`]s, and membership compares the
 /// module tag as upstream's pointer identity compares the object: a value of
 /// another module is never one of this instruction's operands.
-pub fn must_trigger_ub<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn must_trigger_ub<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
     known_poison: &HashSet<ValueId<B>>,
 ) -> bool {
     let module = instruction.to_erased().module.id();
@@ -478,8 +477,8 @@ pub fn must_trigger_ub<'ctx, B: ModuleBrand + 'ctx>(
 /// module — the forward-propagation walk in
 /// [`must_execute_ub_if_poison_on_path_to`], which only ever collects this
 /// function's instructions.
-fn must_trigger_ub_for_own_slots<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+fn must_trigger_ub_for_own_slots<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
     known_poison: &HashSet<ValueSlot>,
 ) -> bool {
     guaranteed_non_poison_operands(instruction.to_erased(), |operand| {
@@ -490,8 +489,8 @@ fn must_trigger_ub_for_own_slots<'ctx, B: ModuleBrand + 'ctx>(
 /// Whether the program has undefined behaviour if `instruction` yields poison.
 ///
 /// Ports `llvm::programUndefinedIfPoison`.
-pub fn program_undefined_if_poison<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn program_undefined_if_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
 ) -> bool {
     program_undefined_for_value(instruction.to_erased(), true)
 }
@@ -500,8 +499,8 @@ pub fn program_undefined_if_poison<'ctx, B: ModuleBrand + 'ctx>(
 /// poison.
 ///
 /// Ports `llvm::programUndefinedIfUndefOrPoison`.
-pub fn program_undefined_if_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn program_undefined_if_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
 ) -> bool {
     program_undefined_for_value(instruction.to_erased(), false)
 }
@@ -511,8 +510,8 @@ pub fn program_undefined_if_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
 /// Crate-visible rather than public because the surface `ValueTracking.h`
 /// declares takes an `Instruction`; the `Argument` arm exists only to serve
 /// `is_known_not_undef_or_poison`, which asks about arbitrary values.
-pub(crate) fn program_undefined_for_value<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub(crate) fn program_undefined_for_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     poison_only: bool,
 ) -> bool {
     // Only uses within one basic block are considered, so that "the use runs if
@@ -617,9 +616,9 @@ pub(crate) fn program_undefined_for_value<'ctx, B: ModuleBrand + 'ctx>(
 /// how a caller decides whether adding a new use of `root` control-equivalent
 /// with `on_path_to` would introduce UB that did not previously exist. As
 /// upstream's comment records, a `false` answer conveys no information.
-pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx>(
-    root: &InstructionView<'ctx, B>,
-    on_path_to: &InstructionView<'ctx, B>,
+pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    root: &InstructionView<'ctx, B, C>,
+    on_path_to: &InstructionView<'ctx, B, C>,
     dominator_tree: &DominatorTree,
 ) -> bool {
     // Assume `root` is poison, propagate that forward through every user whose
@@ -627,7 +626,7 @@ pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx>(
     // that must run before `on_path_to`.
     let root_slot = root.slot_trusting_same_module();
     let mut known_poison: HashSet<ValueSlot> = HashSet::new();
-    let mut worklist: VecDeque<InstructionView<'ctx, B>> = VecDeque::new();
+    let mut worklist: VecDeque<InstructionView<'ctx, B, C>> = VecDeque::new();
     worklist.push_back(*root);
 
     while let Some(view) = worklist.pop_back() {
@@ -671,8 +670,8 @@ pub fn must_execute_ub_if_poison_on_path_to<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `llvm::isAssumeLikeIntrinsic`, whose body is
 /// `IntrinsicInst::isAssumeLikeIntrinsic` (`IntrinsicInst.h`).
-pub fn is_assume_like_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn is_assume_like_intrinsic<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
 ) -> bool {
     let Some(id) = called_intrinsic(instruction.to_erased()) else {
         return false;
@@ -797,8 +796,8 @@ pub fn intrinsic_propagates_poison(intrinsic: IntrinsicId) -> bool {
 /// Whether `instruction` computes each result lane from the same input lane.
 ///
 /// Ports `llvm::isNotCrossLaneOperation`.
-pub fn is_not_cross_lane_operation<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+pub fn is_not_cross_lane_operation<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
 ) -> bool {
     let anchor = instruction.to_erased();
     if let Some(id) = called_intrinsic(anchor) {
@@ -909,9 +908,13 @@ fn is_trivially_vectorizable(intrinsic: IntrinsicId) -> bool {
 /// Ports the template `handleGuaranteedWellDefinedOps`: visit every operand of
 /// `instruction` that must be well defined, stopping at the first `handle` that
 /// answers true.
-fn guaranteed_well_defined_operands<'ctx, B, F>(instruction: Value<'ctx, B>, mut handle: F) -> bool
+fn guaranteed_well_defined_operands<'ctx, B, C, F>(
+    instruction: Value<'ctx, B, C>,
+    mut handle: F,
+) -> bool
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
     F: FnMut(ValueSlot) -> bool,
 {
     let Some(kind) = instruction_kind(instruction) else {
@@ -961,9 +964,13 @@ where
 
 /// Ports the template `handleGuaranteedNonPoisonOps`: the well-defined operands
 /// plus the divisors, which may be *partially* undef but never poison.
-fn guaranteed_non_poison_operands<'ctx, B, F>(instruction: Value<'ctx, B>, mut handle: F) -> bool
+fn guaranteed_non_poison_operands<'ctx, B, C, F>(
+    instruction: Value<'ctx, B, C>,
+    mut handle: F,
+) -> bool
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
     F: FnMut(ValueSlot) -> bool,
 {
     if guaranteed_well_defined_operands(instruction, &mut handle) {
@@ -985,8 +992,8 @@ where
 // --------------------------------------------------------------------------
 
 /// Ports `Instruction::mayThrow` at its default `IncludePhaseOneUnwind = false`.
-fn may_throw<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn may_throw<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
     match kind {
@@ -1022,8 +1029,8 @@ fn may_throw<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports the static `canUnwindPastLandingPad(LP, /*IncludePhaseOneUnwind=*/false)`.
-fn can_unwind_past_landing_pad<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn can_unwind_past_landing_pad<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     landing_pad: &LandingPadInstData,
 ) -> bool {
     if landing_pad.cleanup.get() {
@@ -1058,8 +1065,8 @@ fn can_unwind_past_landing_pad<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `Instruction::willReturn`.
-fn will_return<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn will_return<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
     match kind {
@@ -1087,8 +1094,8 @@ fn will_return<'ctx, B: ModuleBrand + 'ctx>(
 /// The two upstream switches are folded into one: `load` is an unconditional
 /// read and `store` an unconditional write, so their `isUnordered` tests — the
 /// only place the two lists disagree — cannot change the union.
-fn may_read_or_write_memory<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: &InstructionView<'ctx, B>,
+fn may_read_or_write_memory<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionView<'ctx, B, C>,
 ) -> bool {
     let anchor = instruction.to_erased();
     let kind = view_kind(instruction);
@@ -1116,8 +1123,8 @@ fn may_read_or_write_memory<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `Instruction::mayWriteToMemory`.
-fn may_write_to_memory<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn may_write_to_memory<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
     match kind {
@@ -1145,8 +1152,8 @@ fn may_write_to_memory<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports `Instruction::mayHaveSideEffects`, which is `mayWriteToMemory() ||
 /// mayThrow() || !willReturn()`.
-pub(crate) fn instruction_may_have_side_effects<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+pub(crate) fn instruction_may_have_side_effects<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
     may_write_to_memory(anchor, kind) || may_throw(anchor, kind) || !will_return(anchor, kind)
@@ -1169,8 +1176,8 @@ enum ScanStart {
 /// Ports the `dyn_cast<Instruction>` / `dyn_cast<Argument>` prologue of the
 /// static `programUndefinedIfUndefOrPoison`: which block to scan, and where in
 /// it to start.
-fn scan_origin<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn scan_origin<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<(ValueSlot, ScanStart)> {
     match &value.data().kind {
         // An instruction in no block has no block to scan.
@@ -1192,11 +1199,11 @@ fn scan_origin<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The instructions of `block` from `start` to the end, as values.
-fn block_instructions_from<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn block_instructions_from<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
     start: ScanStart,
-) -> Vec<Value<'ctx, B>> {
+) -> Vec<Value<'ctx, B, C>> {
     let module = module_ref(anchor);
     let ValueKindData::BasicBlock(data) = &module.value_data(block).kind else {
         return Vec::new();
@@ -1224,10 +1231,10 @@ fn block_instructions_from<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The first non-phi instruction of `block`. Ports `BasicBlock::getFirstNonPHIIt`.
-fn first_non_phi<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn first_non_phi<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     block_instructions_from(anchor, block, ScanStart::AfterLeadingPhis)
         .into_iter()
         .next()
@@ -1235,8 +1242,8 @@ fn first_non_phi<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports `BasicBlock::getSingleSuccessor`: the unique successor, or `None` when
 /// there are none or more than one distinct one.
-fn single_successor<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn single_successor<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     block: ValueSlot,
 ) -> Option<ValueSlot> {
     let module = module_ref(anchor);
@@ -1254,7 +1261,9 @@ fn single_successor<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// [`is_guaranteed_to_transfer_execution_to_successor`] on a bare value.
-fn transfers_execution<'ctx, B: ModuleBrand + 'ctx>(instruction: Value<'ctx, B>) -> bool {
+fn transfers_execution<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: Value<'ctx, B, C>,
+) -> bool {
     match InstructionView::try_from(instruction) {
         Ok(view) => is_guaranteed_to_transfer_execution_to_successor(&view),
         Err(_) => false,
@@ -1262,8 +1271,8 @@ fn transfers_execution<'ctx, B: ModuleBrand + 'ctx>(instruction: Value<'ctx, B>)
 }
 
 /// The instruction payload behind `value`, or `None` when it is not one.
-fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<&'ctx InstructionKindData> {
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => Some(&instruction.kind),
@@ -1272,8 +1281,8 @@ fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The payload behind an [`InstructionView`], which is one by construction.
-fn view_kind<'ctx, B: ModuleBrand + 'ctx>(
-    view: &InstructionView<'ctx, B>,
+fn view_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    view: &InstructionView<'ctx, B, C>,
 ) -> &'ctx InstructionKindData {
     match instruction_kind(view.to_erased()) {
         Some(kind) => kind,
@@ -1292,8 +1301,8 @@ struct CallParts<'a> {
 /// Ports the `cast<CallBase>` that upstream reaches all three call forms
 /// through. `anchor` is any value of `kind`'s module, whose context holds the
 /// interned attribute list.
-fn call_parts<'a, 'ctx: 'a, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn call_parts<'a, 'ctx: 'a, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     kind: &'a InstructionKindData,
 ) -> Option<CallParts<'a>> {
     let module = module_ref(anchor);
@@ -1319,8 +1328,8 @@ fn call_parts<'a, 'ctx: 'a, B: ModuleBrand + 'ctx>(
 
 /// The memory effects of a call site: the `memory(...)` attribute if present,
 /// otherwise the callee's, otherwise unknown. Ports `CallBase::getMemoryEffects`.
-fn call_site_memory_effects<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn call_site_memory_effects<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     callee: ValueSlot,
     attrs: &CallAttributeData,
 ) -> MemoryEffects {
@@ -1412,7 +1421,9 @@ fn is_ub_implying_attribute(attribute: &AttributeStored) -> bool {
 
 /// Whether the enclosing function's return carries `noundef`. Ports
 /// `I->getFunction()->hasRetAttribute(Attribute::NoUndef)`.
-fn function_returns_noundef<'ctx, B: ModuleBrand + 'ctx>(instruction: Value<'ctx, B>) -> bool {
+fn function_returns_noundef<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: Value<'ctx, B, C>,
+) -> bool {
     let Some(function) = enclosing_function(instruction) else {
         return false;
     };
@@ -1427,9 +1438,9 @@ fn function_returns_noundef<'ctx, B: ModuleBrand + 'ctx>(instruction: Value<'ctx
 }
 
 /// The function `instruction` belongs to. Ports `Instruction::getFunction`.
-fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn enclosing_function<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let ValueKindData::Instruction(data) = &instruction.data().kind else {
         return None;
     };
@@ -1444,13 +1455,15 @@ fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Whether `callee` is anything other than a direct reference to a function.
 /// Ports `CallBase::isIndirectCall`.
-fn is_indirect_callee<'ctx, B: ModuleBrand + 'ctx>(callee: Value<'ctx, B>) -> bool {
+fn is_indirect_callee<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    callee: Value<'ctx, B, C>,
+) -> bool {
     !matches!(&callee.data().kind, ValueKindData::Function(_))
 }
 
 /// The intrinsic `instruction` calls, when it is a direct call to one.
-fn called_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
-    instruction: Value<'ctx, B>,
+fn called_intrinsic<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: Value<'ctx, B, C>,
 ) -> Option<IntrinsicId> {
     let kind = instruction_kind(instruction)?;
     let call = call_parts(instruction, kind)?;
@@ -1462,7 +1475,9 @@ fn called_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
 /// `Function::isSpeculatable`, which is
 /// `hasFnAttribute(Attribute::Speculatable)` — ported once, as
 /// `FunctionValue::has_fn_attribute`.
-fn callee_is_speculatable<'ctx, B: ModuleBrand + 'ctx>(callee: Value<'ctx, B>) -> bool {
+fn callee_is_speculatable<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    callee: Value<'ctx, B, C>,
+) -> bool {
     match FunctionValue::try_from(callee) {
         Ok(function) => function.has_fn_attribute(AttrKind::Speculatable),
         // Upstream's `if (!Callee)`: an indirect call could do anything.
@@ -1472,8 +1487,8 @@ fn callee_is_speculatable<'ctx, B: ModuleBrand + 'ctx>(callee: Value<'ctx, B>) -
 
 /// Ports `ShuffleVectorInst::isSelect`: the mask does not change the length,
 /// and every element picks its own lane from one input or the other.
-fn shuffle_is_select<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn shuffle_is_select<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &ShuffleVectorInstData,
 ) -> bool {
     let lhs = value_from_slot(anchor, data.lhs.get());
@@ -1517,7 +1532,9 @@ fn is_unordered(ordering: AtomicOrdering, volatile: bool) -> bool {
 }
 
 /// The `ApInt` behind a scalar integer constant.
-fn int_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApInt> {
+fn int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApInt> {
     let TypeKind::Integer { bits } = value.ty().kind() else {
         return None;
     };
@@ -1527,15 +1544,19 @@ fn int_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Ap
     }
 }
 
-fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn value_from_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     slot: ValueSlot,
-) -> Value<'ctx, B> {
+) -> Value<'ctx, B, C> {
     let module = module_ref(anchor);
     let data = module.value_data(slot);
     Value::from_parts(slot, module, data.ty)
 }
 
-fn module_ref<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> ModuleRef<'ctx, B> {
-    ModuleRef::new(value.module().core_ref())
+/// The value's own module reference, at the value's capability — a handle
+/// minted from it is navigation, so it keeps what the caller held.
+fn module_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> ModuleRef<'ctx, B, C> {
+    value.module
 }

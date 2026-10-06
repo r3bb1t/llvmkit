@@ -86,6 +86,46 @@ cut, entries accumulate under **Unreleased**.
   `extern_weak_is_no_valid_alias_linkage` and
   `alias_builder_refuses_an_extern_weak_linkage`).
 
+### Changed — the analyses read handles of either capability *(breaking)*
+
+- **The value-tracking family is generic over the capability** (D1, D8). The
+  public functions of `value_tracking`, `known_fp_class`, `select_pattern`,
+  `implied_conditions`, `assumptions`, `speculation`, `pointer_analysis`,
+  `fp_predicate`, `vector_utils` and `demanded_bits`, and `DataLayout`'s type
+  queries, take a value, instruction view, type or function at any
+  capability, where they took `Mutable` handles only — so a verified module's
+  values, a `ModuleView` walk and an `Inspect` pass's `BasicBlockView` walk
+  reach them directly. Derivation, on the working tree this entry was written
+  against: a scratch script read each `pub fn`'s parameter list in those
+  eleven files and flagged any `Value`, `InstructionView`, `Type`,
+  `FunctionValue`, `BasicBlock`, `Use`, `IntType` or `PointerType` spelled
+  without a capability argument; of the 124 that take one, it flagged none,
+  and it flagged both handles of a two-function control file that spelled one
+  without. What an entry hands back keeps the capability of the value it was
+  asked about: `strip_null_test`, `find_scalar_element`, `splat_value`, the
+  object walks, and the result types `SelectPatternMatch`, `ImpliedFpClasses`,
+  `ConstantDataArraySlice` and `BytewiseValue`, which each take a trailing
+  `C: Capability = Mutable`. `fcmp_implies_class` and its `_of_constant` /
+  `_of_class` forms and `fcmp_to_class_test` and its `_of_constant` form take
+  the function at its own capability (`C2`), beside the operands'.
+- **Breaking: `ValueTrackingQuery` and `CondContext` keep their context at
+  `ReadOnly`.** They only read it, so `with_context_instruction` and
+  `CondContext::new` / `affects` accept either capability, and
+  `context_instruction()` and `condition()` answer `ReadOnly`; a query serves
+  values of either capability, and its type names none.
+- **Breaking: `Assumption::assume` and `AssumptionCache::assumptions` mint at
+  the capability of the module reference they are given.**
+- **No laundering door remains.** `AssumptionCache::new`,
+  `is_guaranteed_to_transfer_execution_to_successor` and the `DemandedBits`
+  analysis read the pass context's `ReadOnly` handles directly, and
+  `FunctionView`'s crate-private `function_for_analysis` — which minted the
+  viewed function `Mutable` for them — is gone: `rg -n "laundered until"
+  crates/` finds nothing. The asmparser tests that walk `as_view()` feed that
+  walk to the analyses again, instantiating them at `ReadOnly`, and
+  `capability_typestate`'s
+  `the_value_tracking_analyses_read_values_of_either_capability` runs them on
+  both capabilities and from an `Inspect` pass.
+
 ### Changed — a verified module's globals and functions are read-only by type *(breaking)*
 
 - **`GlobalVariable`, `GlobalAlias`, `GlobalIfunc`, `FunctionValue`,
@@ -147,9 +187,7 @@ cut, entries accumulate under **Unreleased**.
     `FunctionBody::as_function()`, a `ReadOnly` function's
     `intrinsic_descriptor()` — where it compiled while `view` handed out
     `Mutable` handles. Read and analysis entries: `color_eh_funclets`,
-    `check_function_phi_coherence`, `get_vscale_range`, `fcmp_implies_class`,
-    `fcmp_implies_class_of_constant`, `fcmp_implies_class_of_class`,
-    `fcmp_to_class_test`, `fcmp_to_class_test_of_constant`, and in
+    `check_function_phi_coherence`, and in
     `llvmkit-asmparser` `AsmParserContext::function_location` /
     `add_function_location` and `GlobalRef` — its `Function`, `Variable`,
     `Alias` and `Ifunc` variants and its `From` for each. Authoring entries,
@@ -175,8 +213,11 @@ cut, entries accumulate under **Unreleased**.
     `verifier.rs` references were set aside because `Verifier` has no
     function more visible than `pub(crate)`; `GlobalRef`'s variants come
     from reading its `pub enum`. That reproduced the list above exactly, plus
-    `DominatorTree::new` / `recalculate` and `FunctionCfg::new`, which Task 6
-    has since made generic over the capability and are removed from it. The
+    `DominatorTree::new` / `recalculate`, `FunctionCfg::new`,
+    `get_vscale_range`, `fcmp_implies_class`, `fcmp_implies_class_of_constant`,
+    `fcmp_implies_class_of_class`, `fcmp_to_class_test` and
+    `fcmp_to_class_test_of_constant`, which Task 6 has since made generic over
+    the capability and are removed from it. The
     entries this change made generic (`IntoCallee`, `IntoTypedCallee`,
     `IntoVarArgsCallee`, the `comdat` setters, `try_delta_from(_plus)`,
     `try_from_function`, `From` for `Value` / `Constant` / `FunctionView`)
@@ -297,10 +338,9 @@ cut, entries accumulate under **Unreleased**.
   argument hands out `Argument::parent_function` at the argument's capability,
   so that function's `entry_block` leads only to `ReadOnly` instructions (locked
   by `compile_fail/verified_argument_parent_function_is_not_a_mutable_route`).
-  Until the
-  value-tracking analyses accept either capability, that walk cannot feed
-  them: they take `Mutable` values, so a caller holding the unverified module
-  walks `module.view(function.id()).basic_blocks()` instead. A mutating context's
+  That walk feeds the value-tracking analyses directly: they accept either
+  capability (see *the analyses read handles of either capability*, above). A
+  mutating context's
   `erase`, `replace_all_uses` and `split_block`, `IrBuilder::position_before`, the
   `Instruction` insert and move entries, and `BasicBlock::split_at` /
   `split_before` take handles and witnesses of either capability; the entry

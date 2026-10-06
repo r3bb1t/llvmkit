@@ -342,7 +342,9 @@ pub fn select_pattern(
 // Matching a `select` against the flavours above
 // --------------------------------------------------------------------------
 
+use crate::Branded;
 use crate::ap_float::ApFloatCmpResult;
+use crate::capability::{Capability, Mutable};
 use crate::constant::{Constant, ConstantData};
 use crate::constants::{ConstantFloatValue, ConstantIntValue};
 use crate::float_kind::FloatDyn;
@@ -350,7 +352,7 @@ use crate::fmf::FastMathFlags;
 use crate::instr_types::CastOpcode;
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::int_width::IntDyn;
-use crate::module::{ModuleBrand, ModuleRef};
+use crate::module::ModuleBrand;
 use crate::operator::is_supported_floating_point_type;
 use crate::r#type::TypeSlotAccess;
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
@@ -368,15 +370,19 @@ use crate::{ApFloat, IrResult};
 /// callers should not use these anyway" — is why the whole record sits behind an
 /// `Option` here: a caller that did not match cannot read operands that were
 /// never meaningfully set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SelectPatternMatch<'ctx, B: ModuleBrand> {
+///
+/// The operands carry the capability of the `select` the match was asked
+/// about, as any navigation from it would.
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SelectPatternMatch<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     /// The recognised idiom. Never [`SelectPatternFlavor::Unknown`] — that is
     /// the `None` of the enclosing `Option`.
     pub result: SelectPatternResult,
     /// Upstream's `LHS`.
-    pub lhs: Value<'ctx, B>,
+    pub lhs: Value<'ctx, B, C>,
     /// Upstream's `RHS`.
-    pub rhs: Value<'ctx, B>,
+    pub rhs: Value<'ctx, B, C>,
     /// The cast that was looked through, when the caller asked for one and one
     /// was found. Upstream's `Instruction::CastOps *CastOp` out-parameter.
     pub cast: Option<CastOpcode>,
@@ -394,12 +400,12 @@ pub struct SelectPatternMatch<'ctx, B: ModuleBrand> {
 /// `nsz` is the flag that only ever reaches the matcher this way or through the
 /// `fptosi`/`fptoui` cast path — `matchDecomposedSelectPattern` takes `nnan`
 /// from the `fcmp` but never `nsz`.
-pub fn match_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn match_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     look_through_cast: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-) -> IrResult<Option<SelectPatternMatch<'ctx, B>>> {
+) -> IrResult<Option<SelectPatternMatch<'ctx, B, C>>> {
     if depth >= MAX_ANALYSIS_RECURSION_DEPTH {
         return Ok(None);
     }
@@ -443,17 +449,22 @@ pub fn match_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::matchDecomposedSelectPattern`, which exists so a caller holding
 /// the compare and the two arms separately — InstCombine mid-rewrite — need not
 /// build a `select` to ask.
-pub fn match_decomposed_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    compare: &InstructionView<'ctx, B>,
-    true_value: Value<'ctx, B>,
-    false_value: Value<'ctx, B>,
+pub fn match_decomposed_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    compare: &InstructionView<'ctx, B, C>,
+    true_value: Value<'ctx, B, C>,
+    false_value: Value<'ctx, B, C>,
     fast_math_flags: FastMathFlags,
     look_through_cast: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-) -> IrResult<Option<SelectPatternMatch<'ctx, B>>> {
+) -> IrResult<Option<SelectPatternMatch<'ctx, B, C>>> {
     let anchor = compare.to_erased();
-    let Some((predicate, compare_lhs, compare_rhs)) = compare_parts(anchor) else {
+    let Some(CompareParts {
+        predicate,
+        lhs: compare_lhs,
+        rhs: compare_rhs,
+    }) = compare_parts(anchor)
+    else {
         return Ok(None);
     };
     let mut fast_math_flags = fast_math_flags;
@@ -538,23 +549,24 @@ pub fn match_decomposed_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// A decomposed comparison: upstream's `Pred` / `CmpLHS` / `CmpRHS` triple,
 /// which travels together through every function in this family.
-#[derive(Clone, Copy)]
-struct CompareParts<'ctx, B: ModuleBrand> {
+#[derive(Branded)]
+#[branded(Clone, Copy)]
+struct CompareParts<'ctx, B: ModuleBrand, C: Capability> {
     predicate: CmpPredicate,
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
 }
 
 /// Ports the static `matchSelectPattern(Pred, FMF, CmpLHS, CmpRHS, TrueVal,
 /// FalseVal, LHS, RHS, Depth)`.
-fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    compare: CompareParts<'ctx, B>,
+fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    compare: CompareParts<'ctx, B, C>,
     fast_math_flags: FastMathFlags,
-    true_value: Value<'ctx, B>,
-    false_value: Value<'ctx, B>,
+    true_value: Value<'ctx, B, C>,
+    false_value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-) -> IrResult<Option<SelectPatternMatch<'ctx, B>>> {
+) -> IrResult<Option<SelectPatternMatch<'ctx, B, C>>> {
     let mut predicate = compare.predicate;
     let mut compare_lhs = compare.lhs;
     let mut compare_rhs = compare.rhs;
@@ -713,13 +725,13 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Upstream matches the arm against `CmpLHS` *or* `sext(CmpLHS)`, because
 /// sign-extending a value does not change its sign.
-fn match_abs<'ctx, B: ModuleBrand + 'ctx>(
+fn match_abs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: CmpPredicate,
-    compare_lhs: Value<'ctx, B>,
-    compare_rhs: Value<'ctx, B>,
-    true_value: Value<'ctx, B>,
-    false_value: Value<'ctx, B>,
-) -> Option<SelectPatternMatch<'ctx, B>> {
+    compare_lhs: Value<'ctx, B, C>,
+    compare_rhs: Value<'ctx, B, C>,
+    true_value: Value<'ctx, B, C>,
+    false_value: Value<'ctx, B, C>,
+) -> Option<SelectPatternMatch<'ctx, B, C>> {
     let CmpPredicate::Int(predicate) = predicate else {
         return None;
     };
@@ -787,15 +799,15 @@ fn match_abs<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports the static `matchMinMax(Pred, CmpLHS, CmpRHS, TrueVal, FalseVal, LHS,
 /// RHS, Depth)`.
-fn match_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
+fn match_min_max<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: IntPredicate,
-    compare_lhs: Value<'ctx, B>,
-    compare_rhs: Value<'ctx, B>,
-    true_value: Value<'ctx, B>,
-    false_value: Value<'ctx, B>,
+    compare_lhs: Value<'ctx, B, C>,
+    compare_rhs: Value<'ctx, B, C>,
+    true_value: Value<'ctx, B, C>,
+    false_value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-) -> IrResult<Option<SelectPatternMatch<'ctx, B>>> {
+) -> IrResult<Option<SelectPatternMatch<'ctx, B, C>>> {
     // Upstream's "assume success" sets `LHS`/`RHS` to the select arms up front;
     // every arm below that matches reports the same pair.
     let report = |flavor: SelectPatternFlavor| {
@@ -908,12 +920,12 @@ fn match_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports the static `matchClamp`: a min/max whose other arm is itself a
 /// saturating min/max against a constant.
-fn match_clamp<'ctx, B: ModuleBrand + 'ctx>(
+fn match_clamp<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: IntPredicate,
-    compare_lhs: Value<'ctx, B>,
-    compare_rhs: Value<'ctx, B>,
-    true_value: Value<'ctx, B>,
-    false_value: Value<'ctx, B>,
+    compare_lhs: Value<'ctx, B, C>,
+    compare_rhs: Value<'ctx, B, C>,
+    true_value: Value<'ctx, B, C>,
+    false_value: Value<'ctx, B, C>,
 ) -> Option<SelectPatternFlavor> {
     // Swap the select operands and predicate to match the patterns below.
     let (predicate, true_value, false_value) = if compare_rhs == true_value {
@@ -984,12 +996,12 @@ enum Signedness {
 
 /// Ports the static `matchMinMaxOfMinMax`: `x pred y ? min(a, b) : min(c, d)`,
 /// where the compare lines up with the inner min/max operands.
-fn match_min_max_of_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
+fn match_min_max_of_min_max<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: IntPredicate,
-    compare_lhs: Value<'ctx, B>,
-    compare_rhs: Value<'ctx, B>,
-    true_value: Value<'ctx, B>,
-    false_value: Value<'ctx, B>,
+    compare_lhs: Value<'ctx, B, C>,
+    compare_rhs: Value<'ctx, B, C>,
+    true_value: Value<'ctx, B, C>,
+    false_value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> IrResult<Option<SelectPatternFlavor>> {
@@ -1046,7 +1058,7 @@ fn match_min_max_of_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // or with both sides inverted:
     //     (CmpLHS == first && CmpRHS == other)
     //  || (other == ~CmpLHS && first == ~CmpRHS)
-    let lines_up = |first: Value<'ctx, B>, other: Value<'ctx, B>| {
+    let lines_up = |first: Value<'ctx, B, C>, other: Value<'ctx, B, C>| {
         (compare_lhs == first && compare_rhs == other)
             || (not_value(other).is_some_and(|not| not == compare_lhs)
                 && not_value(first).is_some_and(|not| not == compare_rhs))
@@ -1065,13 +1077,13 @@ fn match_min_max_of_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the static `matchFastFloatClamp`:
 ///   X < C1 ? C1 : Min(X, C2) --> Max(C1, Min(X, C2))
 ///   X > C1 ? C1 : Max(X, C2) --> Min(C1, Max(X, C2))
-fn match_fast_float_clamp<'ctx, B: ModuleBrand + 'ctx>(
+fn match_fast_float_clamp<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: FloatPredicate,
-    compare_lhs: Value<'ctx, B>,
-    compare_rhs: Value<'ctx, B>,
-    true_value: Value<'ctx, B>,
-    false_value: Value<'ctx, B>,
-) -> Option<SelectPatternMatch<'ctx, B>> {
+    compare_lhs: Value<'ctx, B, C>,
+    compare_rhs: Value<'ctx, B, C>,
+    true_value: Value<'ctx, B, C>,
+    false_value: Value<'ctx, B, C>,
+) -> Option<SelectPatternMatch<'ctx, B, C>> {
     // First, check whether the select has inverse order.
     let (predicate, true_value, false_value) = if compare_rhs == false_value {
         (predicate.inverse(), false_value, true_value)
@@ -1128,13 +1140,14 @@ fn match_fast_float_clamp<'ctx, B: ModuleBrand + 'ctx>(
 /// [`MinMaxOperation`]: upstream's switch maps the four integer flavours to
 /// `smin`/`smax`/`umin`/`umax` and `SPF_FMAXNUM` / `SPF_FMINNUM` to
 /// `maxnum` / `minnum`.
-pub fn can_convert_to_min_or_max_intrinsic<'a, 'ctx, B, Values>(
+pub fn can_convert_to_min_or_max_intrinsic<'a, 'ctx, B, C, Values>(
     values: Values,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<Option<(MinMaxOperation, bool)>>
 where
     B: ModuleBrand + 'ctx,
-    Values: IntoIterator<Item = Value<'ctx, B>>,
+    C: Capability,
+    Values: IntoIterator<Item = Value<'ctx, B, C>>,
 {
     let mut flavor: Option<SelectPatternFlavor> = None;
     let mut all_compares_single_use = true;
@@ -1186,11 +1199,11 @@ fn min_max_operation(flavor: SelectPatternFlavor) -> Option<MinMaxOperation> {
 
 /// Wrap a successful classification. `Unknown` is the `None`, so a caller
 /// cannot read operands the match never set.
-fn matched<'ctx, B: ModuleBrand + 'ctx>(
+fn matched<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     result: SelectPatternResult,
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
-) -> Option<SelectPatternMatch<'ctx, B>> {
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
+) -> Option<SelectPatternMatch<'ctx, B, C>> {
     (result.flavor != SelectPatternFlavor::Unknown).then_some(SelectPatternMatch {
         result,
         lhs,
@@ -1200,8 +1213,8 @@ fn matched<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports the static `isKnownNonNaN(V, FMF)`.
-fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     fast_math_flags: FastMathFlags,
 ) -> bool {
     if fast_math_flags.contains(FastMathFlags::NO_NANS) {
@@ -1242,7 +1255,9 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx>(
 /// never consults known bits. llvmkit called the known-bits routine here, which
 /// answered `false` for a non-zero float constant like `1.0` where upstream
 /// answers `true`, so a signed-zero guard declined matches upstream accepts.
-fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     match &value.data().kind {
         ValueKindData::Constant(ConstantData::Float(_)) => {
             float_constant(value).is_some_and(|constant| !constant.is_zero())
@@ -1282,7 +1297,9 @@ fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -
 /// constant operand; minting a constant is a module mutation, so this reports
 /// only the `xor X, -1` form. The effect is that a `not` written as a folded
 /// constant is not recognised, which forgoes a match rather than inventing one.
-fn not_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn not_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let Some(InstructionKindData::Xor(data)) = instruction_kind(value) else {
         return None;
     };
@@ -1297,9 +1314,9 @@ fn not_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value
 }
 
 /// Whether `value` is `sub 0, negated` — upstream's `m_Neg(m_Specific(..))`.
-fn is_negation_of<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    negated: Value<'ctx, B>,
+fn is_negation_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    negated: Value<'ctx, B, C>,
 ) -> bool {
     let Some(InstructionKindData::Sub(data)) = instruction_kind(value) else {
         return false;
@@ -1311,9 +1328,9 @@ fn is_negation_of<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Upstream's `m_CombineOr(m_Specific(CmpLHS), m_SExt(m_Specific(CmpLHS)))`:
 /// sign-extending a value does not change its sign, so an arm may match either.
-fn is_compare_lhs_or_its_sext<'ctx, B: ModuleBrand + 'ctx>(
-    arm: Value<'ctx, B>,
-    compare_lhs: Value<'ctx, B>,
+fn is_compare_lhs_or_its_sext<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    arm: Value<'ctx, B, C>,
+    compare_lhs: Value<'ctx, B, C>,
 ) -> bool {
     if arm == compare_lhs {
         return true;
@@ -1332,9 +1349,9 @@ fn is_compare_lhs_or_its_sext<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the `m_SMin(m_Specific(CmpLHS), m_APInt(C2))` family
 /// [`match_clamp`] uses — the **non**-commutative spelling, so `C` must be the
 /// second operand.
-fn int_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    expected_operand: Value<'ctx, B>,
+fn int_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    expected_operand: Value<'ctx, B, C>,
     flavor: SelectPatternFlavor,
 ) -> Option<ApInt> {
     let (left, right) = int_min_max_operands(value, flavor)?;
@@ -1347,11 +1364,11 @@ fn int_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the `m_c_SMax(m_Specific(LHS), m_Value())` family — the commutative
 /// spelling of [`int_min_max_operands`]'s matcher, which is how every use site
 /// in `isTruePredicate` reads it.
-pub(crate) fn int_min_max_over<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    expected: Value<'ctx, B>,
+pub(crate) fn int_min_max_over<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    expected: Value<'ctx, B, C>,
     flavor: SelectPatternFlavor,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let (left, right) = int_min_max_operands(value, flavor)?;
     if left == expected {
         return Some(right);
@@ -1371,23 +1388,27 @@ pub(crate) fn int_min_max_over<'ctx, B: ModuleBrand + 'ctx>(
 /// For the select shape the operands come back in the *compare's* order, not
 /// the select's arms: upstream binds `L` to `Cmp->getOperand(0)` and inverts
 /// the predicate when the true arm is the compare's right-hand side.
-fn int_min_max_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn int_min_max_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     flavor: SelectPatternFlavor,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     if let Some(operands) = min_max_intrinsic_operands(value, flavor) {
         return Some(operands);
     }
-    let (left, right, predicate) = select_over_icmp_of_its_own_arms(value)?;
+    let OwnArmsCompare {
+        left,
+        right,
+        predicate,
+    } = select_over_icmp_of_its_own_arms(value)?;
     min_max_predicate_matches(flavor, predicate).then_some((left, right))
 }
 
 /// The `dyn_cast<IntrinsicInst>` arm of `MaxMin_match`: a direct call to
 /// `llvm.smin` / `llvm.smax` / `llvm.umin` / `llvm.umax`.
-fn min_max_intrinsic_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn min_max_intrinsic_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     flavor: SelectPatternFlavor,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+) -> Option<(Value<'ctx, B, C>, Value<'ctx, B, C>)> {
     let Some(InstructionKindData::Call(call)) = instruction_kind(value) else {
         return None;
     };
@@ -1438,9 +1459,9 @@ fn min_max_predicate_matches(flavor: SelectPatternFlavor, predicate: IntPredicat
 /// operand — together with the predicate `MaxMin_match` tests, which is the
 /// compare's own when its left operand is the true arm and the **inverse**
 /// otherwise.
-fn select_over_icmp_of_its_own_arms<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(Value<'ctx, B>, Value<'ctx, B>, IntPredicate)> {
+fn select_over_icmp_of_its_own_arms<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<OwnArmsCompare<'ctx, B, C>> {
     let Some(InstructionKindData::Select(select)) = instruction_kind(value) else {
         return None;
     };
@@ -1454,12 +1475,28 @@ fn select_over_icmp_of_its_own_arms<'ctx, B: ModuleBrand + 'ctx>(
     let false_value = value_from_slot(value, select.false_val.get());
 
     if compare_lhs == true_value && compare_rhs == false_value {
-        Some((compare_lhs, compare_rhs, compare.predicate))
+        Some(OwnArmsCompare {
+            left: compare_lhs,
+            right: compare_rhs,
+            predicate: compare.predicate,
+        })
     } else if compare_lhs == false_value && compare_rhs == true_value {
-        Some((compare_lhs, compare_rhs, compare.predicate.inverse()))
+        Some(OwnArmsCompare {
+            left: compare_lhs,
+            right: compare_rhs,
+            predicate: compare.predicate.inverse(),
+        })
     } else {
         None
     }
+}
+
+/// What [`select_over_icmp_of_its_own_arms`] finds: the compare's two operands
+/// and the predicate `MaxMin_match` tests against them.
+struct OwnArmsCompare<'ctx, B: ModuleBrand, C: Capability> {
+    left: Value<'ctx, B, C>,
+    right: Value<'ctx, B, C>,
+    predicate: IntPredicate,
 }
 
 /// The constant a floating-point min/max compares `x` against, when `value` is
@@ -1468,9 +1505,9 @@ fn select_over_icmp_of_its_own_arms<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the `m_OrdOrUnordFMin(m_Specific(CmpLHS), m_APFloat(C2))` family,
 /// which matches the structural `select(fcmp PRED L, R, L, R)` shape directly
 /// rather than going through `matchSelectPattern`.
-fn float_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    expected_operand: Value<'ctx, B>,
+fn float_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    expected_operand: Value<'ctx, B, C>,
     flavor: SelectPatternFlavor,
 ) -> Option<ApFloat> {
     let Some(InstructionKindData::Select(select)) = instruction_kind(value) else {
@@ -1524,11 +1561,11 @@ fn float_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx>(
 /// constant with `ConstantExpr::getTrunc` / `ConstantFoldCastOperand` and
 /// checks it round-trips. Minting a constant is a module mutation, so that arm
 /// is not ported; the two shapes that need no new value are.
-fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx>(
-    compare: Value<'ctx, B>,
-    first: Value<'ctx, B>,
-    second: Value<'ctx, B>,
-) -> Option<(CastOpcode, Value<'ctx, B>)> {
+fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    compare: Value<'ctx, B, C>,
+    first: Value<'ctx, B, C>,
+    second: Value<'ctx, B, C>,
+) -> Option<(CastOpcode, Value<'ctx, B, C>)> {
     let Some(InstructionKindData::Cast(cast)) = instruction_kind(first) else {
         return None;
     };
@@ -1555,7 +1592,7 @@ fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx>(
     if cast.kind != CastOpcode::Trunc {
         return None;
     }
-    let (_, _, compare_rhs) = compare_parts(compare)?;
+    let compare_rhs = compare_parts(compare)?.rhs;
     let Some(InstructionKindData::Cast(widened)) = instruction_kind(compare_rhs) else {
         return None;
     };
@@ -1569,7 +1606,9 @@ fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The value a cast instruction casts.
-fn cast_source<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn cast_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let Some(InstructionKindData::Cast(data)) = instruction_kind(value) else {
         return None;
     };
@@ -1577,20 +1616,20 @@ fn cast_source<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Val
 }
 
 /// The predicate and operands of an `icmp` or `fcmp`.
-fn compare_parts<'ctx, B: ModuleBrand + 'ctx>(
-    compare: Value<'ctx, B>,
-) -> Option<(CmpPredicate, Value<'ctx, B>, Value<'ctx, B>)> {
+fn compare_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    compare: Value<'ctx, B, C>,
+) -> Option<CompareParts<'ctx, B, C>> {
     match instruction_kind(compare)? {
-        InstructionKindData::Icmp(data) => Some((
-            CmpPredicate::Int(data.predicate),
-            value_from_slot(compare, data.lhs.get()),
-            value_from_slot(compare, data.rhs.get()),
-        )),
-        InstructionKindData::Fcmp(data) => Some((
-            CmpPredicate::Float(data.predicate),
-            value_from_slot(compare, data.lhs.get()),
-            value_from_slot(compare, data.rhs.get()),
-        )),
+        InstructionKindData::Icmp(data) => Some(CompareParts {
+            predicate: CmpPredicate::Int(data.predicate),
+            lhs: value_from_slot(compare, data.lhs.get()),
+            rhs: value_from_slot(compare, data.rhs.get()),
+        }),
+        InstructionKindData::Fcmp(data) => Some(CompareParts {
+            predicate: CmpPredicate::Float(data.predicate),
+            lhs: value_from_slot(compare, data.lhs.get()),
+            rhs: value_from_slot(compare, data.rhs.get()),
+        }),
         _ => None,
     }
 }
@@ -1604,14 +1643,16 @@ fn swapped_predicate(predicate: CmpPredicate) -> CmpPredicate {
 }
 
 /// Upstream's `m_AnyZeroFP()`: `+0.0` or `-0.0`.
-fn is_any_zero_fp<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_any_zero_fp<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
     float_constant(value).is_some_and(|constant| constant.is_zero())
 }
 
 /// Whether every user of `value`'s `select` condition is that select.
 /// Ports the `m_Select(m_OneUse(m_Value()), ..)` half of
 /// `canConvertToMinOrMaxIntrinsic`.
-fn select_condition_has_one_use<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn select_condition_has_one_use<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     let Some(InstructionKindData::Select(select)) = instruction_kind(value) else {
         return false;
     };
@@ -1619,21 +1660,25 @@ fn select_condition_has_one_use<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, 
 }
 
 /// The `ApInt` behind a scalar integer constant.
-fn int_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApInt> {
-    ConstantIntValue::<IntDyn, B>::try_from(Constant::try_from(value).ok()?)
+fn int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApInt> {
+    ConstantIntValue::<IntDyn, B, C>::try_from(Constant::try_from(value).ok()?)
         .ok()
         .map(|constant| constant.ap_int())
 }
 
 /// The `ApFloat` behind a scalar floating-point constant.
-fn float_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApFloat> {
-    ConstantFloatValue::<FloatDyn, B>::try_from(Constant::try_from(value).ok()?)
+fn float_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApFloat> {
+    ConstantFloatValue::<FloatDyn, B, C>::try_from(Constant::try_from(value).ok()?)
         .ok()
         .map(|constant| constant.ap_float())
 }
 
-fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<&'ctx InstructionKindData> {
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => Some(&instruction.kind),
@@ -1641,11 +1686,11 @@ fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn value_from_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     slot: ValueSlot,
-) -> Value<'ctx, B> {
-    let module = ModuleRef::<B>::new(anchor.module().core_ref());
+) -> Value<'ctx, B, C> {
+    let module = anchor.module;
     let data = module.value_data(slot);
     Value::from_parts(slot, module, data.ty)
 }

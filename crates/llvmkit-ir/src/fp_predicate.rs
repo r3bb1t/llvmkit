@@ -19,9 +19,14 @@
 //! only in the arm comparing against a zero. That function is a parameter here
 //! too, because it is the function holding the *comparison*, which is not
 //! always the one holding the value being asked about.
+//!
+//! The function is only read, so it is taken at its own capability (`C2`)
+//! beside the comparison's operands (`C`): a caller holding the function at
+//! one capability and the operands at another need not normalise either.
 
 use crate::Branded;
 use crate::ap_float::ApFloatSemantics;
+use crate::capability::{Capability, Mutable};
 use crate::cmp_predicate::FloatPredicate;
 use crate::constant::ConstantData;
 use crate::denormal_mode::{DenormalMode, DenormalModeKind};
@@ -30,7 +35,7 @@ use crate::function::FunctionValue;
 use crate::instruction::InstructionKindData;
 use crate::intrinsics::descriptor_for_callee;
 use crate::marker::Dyn;
-use crate::module::{ModuleBrand, ModuleRef};
+use crate::module::ModuleBrand;
 use crate::r#type::{Type, TypeKind};
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::{ApFloat, ApInt};
@@ -43,29 +48,32 @@ use crate::{ApFloat, ApInt};
 /// the value before reading the masks; that sentinel becomes `None` on the
 /// functions returning this type, so a value in hand always carries a real
 /// answer.
+///
+/// The tested value carries the capability of the comparison's operands, as
+/// any navigation from them would.
 #[derive(Branded)]
 #[branded(Debug)]
-pub struct ImpliedFpClasses<'ctx, B: ModuleBrand> {
-    tested: Value<'ctx, B>,
+pub struct ImpliedFpClasses<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    tested: Value<'ctx, B, C>,
     if_true: FpClassTest,
     if_false: FpClassTest,
 }
 
 // A `derive` would bound `B: Clone + Copy`, which a bare brand does not satisfy.
-impl<B: ModuleBrand> Clone for ImpliedFpClasses<'_, B> {
+impl<B: ModuleBrand, C: Capability> Clone for ImpliedFpClasses<'_, B, C> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<B: ModuleBrand> Copy for ImpliedFpClasses<'_, B> {}
+impl<B: ModuleBrand, C: Capability> Copy for ImpliedFpClasses<'_, B, C> {}
 
-impl<'ctx, B: ModuleBrand + 'ctx> ImpliedFpClasses<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ImpliedFpClasses<'ctx, B, C> {
     /// The value the classes describe.
     ///
     /// This is the comparison's left-hand side, or — when the caller asked to
     /// look through it and it was an `llvm.fabs` — that call's operand.
-    pub fn tested(self) -> Value<'ctx, B> {
+    pub fn tested(self) -> Value<'ctx, B, C> {
         self.tested
     }
 
@@ -99,10 +107,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ImpliedFpClasses<'ctx, B> {
 
 /// Ports the private `exactClass` helper: a comparison that decides membership
 /// answers `M` when true and everything else when false.
-fn exact_class<'ctx, B: ModuleBrand + 'ctx>(
-    tested: Value<'ctx, B>,
+fn exact_class<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    tested: Value<'ctx, B, C>,
     mask: FpClassTest,
-) -> Option<ImpliedFpClasses<'ctx, B>> {
+) -> Option<ImpliedFpClasses<'ctx, B, C>> {
     Some(ImpliedFpClasses {
         tested,
         if_true: mask,
@@ -111,11 +119,11 @@ fn exact_class<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// A non-exact answer, where the true and false masks are independent.
-fn implied<'ctx, B: ModuleBrand + 'ctx>(
-    tested: Value<'ctx, B>,
+fn implied<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    tested: Value<'ctx, B, C>,
     if_true: FpClassTest,
     if_false: FpClassTest,
-) -> Option<ImpliedFpClasses<'ctx, B>> {
+) -> Option<ImpliedFpClasses<'ctx, B, C>> {
     Some(ImpliedFpClasses {
         tested,
         if_true,
@@ -135,13 +143,13 @@ fn implied<'ctx, B: ModuleBrand + 'ctx>(
 /// With `look_through_source` set, an `llvm.fabs` on the left-hand side is
 /// seen through: the answer then describes that call's operand, which
 /// [`ImpliedFpClasses::tested`] reports.
-pub fn fcmp_implies_class<'ctx, B: ModuleBrand + 'ctx>(
+pub fn fcmp_implies_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C2: Capability>(
     predicate: FloatPredicate,
-    function: FunctionValue<'ctx, Dyn, B>,
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+    function: FunctionValue<'ctx, Dyn, B, C2>,
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     look_through_source: bool,
-) -> Option<ImpliedFpClasses<'ctx, B>> {
+) -> Option<ImpliedFpClasses<'ctx, B, C>> {
     let constant_rhs = match_constant_float(rhs)?;
     fcmp_implies_class_of_constant(predicate, function, lhs, &constant_rhs, look_through_source)
 }
@@ -152,13 +160,18 @@ pub fn fcmp_implies_class<'ctx, B: ModuleBrand + 'ctx>(
 /// job is to recognise the two comparisons against the smallest normal value
 /// that `__builtin_isnormal` expands to; everything else forwards to the
 /// class-keyed form.
-pub fn fcmp_implies_class_of_constant<'ctx, B: ModuleBrand + 'ctx>(
+pub fn fcmp_implies_class_of_constant<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+    C2: Capability,
+>(
     predicate: FloatPredicate,
-    function: FunctionValue<'ctx, Dyn, B>,
-    lhs: Value<'ctx, B>,
+    function: FunctionValue<'ctx, Dyn, B, C2>,
+    lhs: Value<'ctx, B, C>,
     constant_rhs: &ApFloat,
     look_through_source: bool,
-) -> Option<ImpliedFpClasses<'ctx, B>> {
+) -> Option<ImpliedFpClasses<'ctx, B, C>> {
     // Checks against the smallest normal — equivalently the largest subnormal —
     // refine to an exact class test.
     if !constant_rhs.is_negative() && constant_rhs.is_smallest_normalized() {
@@ -220,13 +233,13 @@ pub fn fcmp_implies_class_of_constant<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the `FPClassTest RHSClass` overload of `fcmpImpliesClass`, which is
 /// where the reasoning lives. Upstream asserts `RHSClass != fcNone`; an empty
 /// class describes no value at all, so that precondition becomes `None`.
-pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx>(
+pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C2: Capability>(
     predicate: FloatPredicate,
-    function: FunctionValue<'ctx, Dyn, B>,
-    lhs: Value<'ctx, B>,
+    function: FunctionValue<'ctx, Dyn, B, C2>,
+    lhs: Value<'ctx, B, C>,
     rhs_class: FpClassTest,
     look_through_source: bool,
-) -> Option<ImpliedFpClasses<'ctx, B>> {
+) -> Option<ImpliedFpClasses<'ctx, B, C>> {
     if rhs_class.is_none() {
         return None;
     }
@@ -601,13 +614,13 @@ pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The relational tail shared by the negative and positive right-hand cases:
 /// the same four predicate groups against a pair of already-computed bounds.
-fn ordered_bound<'ctx, B: ModuleBrand + 'ctx>(
+fn ordered_bound<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: FloatPredicate,
-    source: Value<'ctx, B>,
+    source: Value<'ctx, B, C>,
     rhs_class: FpClassTest,
     classes_ge: FpClassTest,
     classes_le: FpClassTest,
-) -> Option<ImpliedFpClasses<'ctx, B>> {
+) -> Option<ImpliedFpClasses<'ctx, B, C>> {
     // The false mask keeps the right-hand class itself: `x > k` being false
     // leaves `x <= k`, and `x == k` is in that.
     let ordered = |bound: FpClassTest| implied(source, bound, bound.complement().union(rhs_class));
@@ -631,13 +644,13 @@ fn ordered_bound<'ctx, B: ModuleBrand + 'ctx>(
 /// where that narrows the class either way the comparison goes, this succeeds
 /// only when the comparison *decides* membership — upstream's example is that
 /// `x > 0` implies positive but `x > 1` does not.
-pub fn fcmp_to_class_test<'ctx, B: ModuleBrand + 'ctx>(
+pub fn fcmp_to_class_test<'ctx, B: ModuleBrand + 'ctx, C: Capability, C2: Capability>(
     predicate: FloatPredicate,
-    function: FunctionValue<'ctx, Dyn, B>,
-    lhs: Value<'ctx, B>,
-    rhs: Value<'ctx, B>,
+    function: FunctionValue<'ctx, Dyn, B, C2>,
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
     look_through_source: bool,
-) -> Option<(Value<'ctx, B>, FpClassTest)> {
+) -> Option<(Value<'ctx, B, C>, FpClassTest)> {
     let constant_rhs = match_constant_float(rhs)?;
     fcmp_to_class_test_of_constant(predicate, function, lhs, &constant_rhs, look_through_source)
 }
@@ -645,13 +658,18 @@ pub fn fcmp_to_class_test<'ctx, B: ModuleBrand + 'ctx>(
 /// [`fcmp_to_class_test`] against a constant already in hand.
 ///
 /// Ports the `const APFloat &ConstRHS` overload of `fcmpToClassTest`.
-pub fn fcmp_to_class_test_of_constant<'ctx, B: ModuleBrand + 'ctx>(
+pub fn fcmp_to_class_test_of_constant<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+    C2: Capability,
+>(
     predicate: FloatPredicate,
-    function: FunctionValue<'ctx, Dyn, B>,
-    lhs: Value<'ctx, B>,
+    function: FunctionValue<'ctx, Dyn, B, C2>,
+    lhs: Value<'ctx, B, C>,
     constant_rhs: &ApFloat,
     look_through_source: bool,
-) -> Option<(Value<'ctx, B>, FpClassTest)> {
+) -> Option<(Value<'ctx, B, C>, FpClassTest)> {
     let implied = fcmp_implies_class_of_constant(
         predicate,
         function,
@@ -672,9 +690,9 @@ pub fn fcmp_to_class_test_of_constant<'ctx, B: ModuleBrand + 'ctx>(
 /// from the function the caller passes — which is the enclosing function of the
 /// comparison, not of the value. A value that is a bare argument still gets a
 /// mode this way.
-fn query_denormal_mode<'ctx, B: ModuleBrand + 'ctx>(
-    function: FunctionValue<'ctx, Dyn, B>,
-    value: Value<'ctx, B>,
+fn query_denormal_mode<'ctx, B: ModuleBrand + 'ctx, C: Capability, C2: Capability>(
+    function: FunctionValue<'ctx, Dyn, B, C2>,
+    value: Value<'ctx, B, C>,
 ) -> DenormalMode {
     // Upstream's `getFltSemantics()` asserts on a non-float type; only float
     // comparisons reach here, so the fallback is unreachable in practice and
@@ -691,7 +709,9 @@ fn query_denormal_mode<'ctx, B: ModuleBrand + 'ctx>(
 /// : DenormalMode::getDynamic()` idiom that `computeKnownFPClass` repeats in
 /// every arm needing one. A value outside any function has no attribute to read,
 /// which is exactly upstream's null-`F` case.
-pub(crate) fn denormal_mode_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> DenormalMode {
+pub(crate) fn denormal_mode_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> DenormalMode {
     match enclosing_function(value) {
         Some(function) => query_denormal_mode(function, value),
         None => DenormalMode::dynamic(),
@@ -699,9 +719,9 @@ pub(crate) fn denormal_mode_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B
 }
 
 /// The function `value` is computed in, for callers outside this module.
-pub(crate) fn enclosing_function_of<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<FunctionValue<'ctx, Dyn, B>> {
+pub(crate) fn enclosing_function_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<FunctionValue<'ctx, Dyn, B, C>> {
     enclosing_function(value)
 }
 
@@ -709,10 +729,10 @@ pub(crate) fn enclosing_function_of<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `FloatingPointPredicateUtils::lookThroughFAbs` together with its
 /// `LookThroughSrc &&` guard at every call site.
-fn look_through_fabs<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn look_through_fabs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     look_through_source: bool,
-) -> (Value<'ctx, B>, bool) {
+) -> (Value<'ctx, B, C>, bool) {
     if !look_through_source {
         return (value, false);
     }
@@ -723,7 +743,9 @@ fn look_through_fabs<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The operand of an `llvm.fabs` call. Ports `m_FAbs(m_Value(Src))`.
-fn fabs_operand<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn fabs_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let ValueKindData::Instruction(instruction) = &value.data().kind else {
         return None;
     };
@@ -745,7 +767,9 @@ fn fabs_operand<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Va
 /// `m_APFloatAllowPoison`. llvmkit stores a scalar float constant as its raw bit
 /// pattern, so the splat-with-poison-elements half of that matcher has nothing
 /// to look at here and only the scalar case is recognised.
-fn match_constant_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApFloat> {
+fn match_constant_float<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApFloat> {
     let ValueKindData::Constant(ConstantData::Float(bits)) = &value.data().kind else {
         return None;
     };
@@ -759,9 +783,9 @@ fn match_constant_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> O
 }
 
 /// The function `value` is computed in. Ports `Instruction::getFunction`.
-fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<FunctionValue<'ctx, Dyn, B>> {
+fn enclosing_function<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<FunctionValue<'ctx, Dyn, B, C>> {
     let ValueKindData::Instruction(data) = &value.data().kind else {
         return None;
     };
@@ -775,9 +799,11 @@ fn enclosing_function<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The `ApFloat` semantics of a scalar or per-lane floating-point type.
-fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<ApFloatSemantics> {
+fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Option<ApFloatSemantics> {
     let kind = match ty.data().as_vector() {
-        Some((element, _, _)) => Type::new(element, ty.module()).kind(),
+        Some((element, _, _)) => Type::new(element, ty.module).kind(),
         None => ty.kind(),
     };
     Some(match kind {
@@ -792,12 +818,13 @@ fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Ap
     })
 }
 
-/// Re-anchor a slot as a value in the same module.
-fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+/// Re-anchor a slot as a value in the same module, at the anchor's
+/// capability.
+fn value_from_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     slot: ValueSlot,
-) -> Value<'ctx, B> {
-    let module: ModuleRef<B> = ModuleRef::new(anchor.module().core_ref());
+) -> Value<'ctx, B, C> {
+    let module = anchor.module;
     let data = module.value_data(slot);
     Value::from_parts(slot, module, data.ty)
 }

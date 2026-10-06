@@ -3269,16 +3269,10 @@ attributes #0 = { speculatable }
         .parse_module()
         .expect("parser succeeds");
     let view = module.as_view();
-    // The module's own blocks: the speculation queries take `Mutable` views,
-    // and a `ModuleView` walk hands out `ReadOnly` ones.
     let call = |name: &str| {
-        let function = view
-            .functions()
+        view.functions()
             .find(|function| function.name().as_deref() == Some("f"))
             .expect("the source defines @f")
-            .id();
-        module
-            .view(function)
             .basic_blocks()
             .flat_map(|block| block.instructions())
             .find(|instruction| instruction.name().as_deref() == Some(name))

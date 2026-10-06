@@ -30,6 +30,7 @@ use core::iter::FusedIterator;
 use core::str::FromStr;
 
 use crate::align::{Align, MaybeAlign};
+use crate::capability::Capability;
 use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
@@ -597,45 +598,54 @@ impl DataLayout {
     /// Bit-size of `ty` when held as an SSA value. Mirrors
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
-    pub fn type_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
         self.type_size_in_bits_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
-    pub fn type_store_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_store_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
         let bits = self.type_size_in_bits(ty);
         align_to_power_of_two(bits, 8) / 8
     }
 
     /// Mirrors `DataLayout::getTypeStoreSizeInBits`.
-    pub fn type_store_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_store_size_in_bits<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> u64 {
         let bits = self.type_size_in_bits(ty);
         align_to_power_of_two(bits, 8)
     }
 
     /// Mirrors `DataLayout::typeSizeEqualsStoreSize`.
-    pub fn type_size_equals_store_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> bool {
+    pub fn type_size_equals_store_size<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> bool {
         self.type_size_in_bits(ty) == self.type_store_size_in_bits(ty)
     }
 
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
-    pub fn type_alloc_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
         self.type_alloc_size_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
-    pub fn type_alloc_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_alloc_size_in_bits<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> u64 {
         self.type_alloc_size(ty).saturating_mul(8)
     }
 
     /// Mirrors `DataLayout::getABITypeAlign`.
-    pub fn abi_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
+    pub fn abi_type_align<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> Align {
         self.alignment(ty.module().core_ref(), ty.slot_trusting_same_module(), true)
     }
 
     /// Mirrors `DataLayout::getPrefTypeAlign`.
-    pub fn pref_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
+    pub fn pref_type_align<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> Align {
         self.alignment(
             ty.module().core_ref(),
             ty.slot_trusting_same_module(),
@@ -645,10 +655,10 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If
     /// `alignment` is set, returns it; otherwise the ABI alignment.
-    pub fn value_or_abi_type_align<B: ModuleBrand>(
+    pub fn value_or_abi_type_align<B: ModuleBrand, C: Capability>(
         &self,
         alignment: MaybeAlign,
-        ty: Type<'_, B>,
+        ty: Type<'_, B, C>,
     ) -> Align {
         alignment.align().unwrap_or_else(|| self.abi_type_align(ty))
     }
@@ -884,7 +894,10 @@ impl DataLayout {
 
     /// Compute (without caching) the layout of an aggregate struct.
     /// Mirrors `StructLayout::StructLayout` in `DataLayout.cpp`.
-    pub fn struct_layout<B: ModuleBrand>(&self, ty: Type<'_, B>) -> StructLayoutInfo {
+    pub fn struct_layout<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> StructLayoutInfo {
         self.struct_layout_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 

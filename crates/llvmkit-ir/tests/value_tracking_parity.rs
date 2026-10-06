@@ -724,9 +724,10 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         underlying_object_aggressive, underlying_objects, underlying_objects_for_code_gen,
     };
     use llvmkit_ir::{
-        DynBrand, SpeculationOptions, block_transfers_execution_to_successor, can_create_poison,
-        instructions_transfer_execution_to_successor, intrinsic_propagates_poison,
-        is_assume_like_intrinsic, is_guaranteed_to_execute_for_every_iteration,
+        DynBrand, ReadOnly, SpeculationOptions, block_transfers_execution_to_successor,
+        can_create_poison, instructions_transfer_execution_to_successor,
+        intrinsic_propagates_poison, is_assume_like_intrinsic,
+        is_guaranteed_to_execute_for_every_iteration,
         is_guaranteed_to_transfer_execution_to_successor, is_not_cross_lane_operation,
         is_safe_to_speculatively_execute, is_safe_to_speculatively_execute_with_opcode,
         is_safe_to_speculatively_execute_with_variable_replaced, may_have_non_def_use_dependency,
@@ -748,40 +749,43 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         propagates_poison,
     };
 
-    let _compute_known_bits = compute_known_bits::<DynBrand>;
-    let _compute_num_sign_bits = compute_num_sign_bits::<DynBrand>;
-    let _compute_max_significant_bits = compute_max_significant_bits::<DynBrand>;
-    let _can_create_poison = can_create_poison::<DynBrand>;
-    let _can_create_undef_or_poison = can_create_undef_or_poison::<DynBrand>;
-    let _implies_poison = implies_poison::<DynBrand>;
-    let _is_known_not_poison = is_known_not_poison::<DynBrand>;
-    let _propagates_poison = propagates_poison::<DynBrand>;
-    let _compute_constant_range = compute_constant_range::<DynBrand>;
+    let _compute_known_bits = compute_known_bits::<DynBrand, ReadOnly>;
+    let _compute_num_sign_bits = compute_num_sign_bits::<DynBrand, ReadOnly>;
+    let _compute_max_significant_bits = compute_max_significant_bits::<DynBrand, ReadOnly>;
+    let _can_create_poison = can_create_poison::<DynBrand, ReadOnly>;
+    let _can_create_undef_or_poison = can_create_undef_or_poison::<DynBrand, ReadOnly>;
+    let _implies_poison = implies_poison::<DynBrand, ReadOnly>;
+    let _is_known_not_poison = is_known_not_poison::<DynBrand, ReadOnly>;
+    let _propagates_poison = propagates_poison::<DynBrand, ReadOnly>;
+    let _compute_constant_range = compute_constant_range::<DynBrand, ReadOnly>;
     let _compute_constant_range_including_known_bits =
-        compute_constant_range_including_known_bits::<DynBrand>;
-    let _compute_overflow_for_signed_add = compute_overflow_for_signed_add::<DynBrand>;
-    let _compute_overflow_for_signed_mul = compute_overflow_for_signed_mul::<DynBrand>;
-    let _compute_overflow_for_signed_sub = compute_overflow_for_signed_sub::<DynBrand>;
-    let _compute_overflow_for_unsigned_add = compute_overflow_for_unsigned_add::<DynBrand>;
-    let _compute_overflow_for_unsigned_mul = compute_overflow_for_unsigned_mul::<DynBrand>;
-    let _compute_overflow_for_unsigned_sub = compute_overflow_for_unsigned_sub::<DynBrand>;
+        compute_constant_range_including_known_bits::<DynBrand, ReadOnly>;
+    let _compute_overflow_for_signed_add = compute_overflow_for_signed_add::<DynBrand, ReadOnly>;
+    let _compute_overflow_for_signed_mul = compute_overflow_for_signed_mul::<DynBrand, ReadOnly>;
+    let _compute_overflow_for_signed_sub = compute_overflow_for_signed_sub::<DynBrand, ReadOnly>;
+    let _compute_overflow_for_unsigned_add =
+        compute_overflow_for_unsigned_add::<DynBrand, ReadOnly>;
+    let _compute_overflow_for_unsigned_mul =
+        compute_overflow_for_unsigned_mul::<DynBrand, ReadOnly>;
+    let _compute_overflow_for_unsigned_sub =
+        compute_overflow_for_unsigned_sub::<DynBrand, ReadOnly>;
     // Takes a `FunctionValue<R, B>`, so both markers have to be named.
-    let _get_vscale_range = get_vscale_range::<llvmkit_ir::Dyn, DynBrand>;
-    let _is_known_non_zero = is_known_non_zero::<DynBrand>;
-    let _masked_value_is_zero = masked_value_is_zero::<DynBrand>;
-    let _have_no_common_bits_set = have_no_common_bits_set::<DynBrand>;
-    let _is_known_not_undef = is_known_not_undef::<DynBrand>;
-    let _is_known_not_undef_or_poison = is_known_not_undef_or_poison::<DynBrand>;
-    let _is_known_inversion = is_known_inversion::<DynBrand>;
-    let _is_known_negation = is_known_negation::<DynBrand>;
-    let _is_known_negative = is_known_negative::<DynBrand>;
-    let _is_known_non_equal = is_known_non_equal::<DynBrand>;
-    let _is_known_non_negative = is_known_non_negative::<DynBrand>;
-    let _is_known_positive = is_known_positive::<DynBrand>;
-    let _is_known_to_be_a_power_of_two = is_known_to_be_a_power_of_two::<DynBrand>;
-    let _is_only_used_in_zero_comparison = is_only_used_in_zero_comparison::<DynBrand>;
+    let _get_vscale_range = get_vscale_range::<llvmkit_ir::Dyn, DynBrand, ReadOnly>;
+    let _is_known_non_zero = is_known_non_zero::<DynBrand, ReadOnly>;
+    let _masked_value_is_zero = masked_value_is_zero::<DynBrand, ReadOnly>;
+    let _have_no_common_bits_set = have_no_common_bits_set::<DynBrand, ReadOnly>;
+    let _is_known_not_undef = is_known_not_undef::<DynBrand, ReadOnly>;
+    let _is_known_not_undef_or_poison = is_known_not_undef_or_poison::<DynBrand, ReadOnly>;
+    let _is_known_inversion = is_known_inversion::<DynBrand, ReadOnly>;
+    let _is_known_negation = is_known_negation::<DynBrand, ReadOnly>;
+    let _is_known_negative = is_known_negative::<DynBrand, ReadOnly>;
+    let _is_known_non_equal = is_known_non_equal::<DynBrand, ReadOnly>;
+    let _is_known_non_negative = is_known_non_negative::<DynBrand, ReadOnly>;
+    let _is_known_positive = is_known_positive::<DynBrand, ReadOnly>;
+    let _is_known_to_be_a_power_of_two = is_known_to_be_a_power_of_two::<DynBrand, ReadOnly>;
+    let _is_only_used_in_zero_comparison = is_only_used_in_zero_comparison::<DynBrand, ReadOnly>;
     let _is_only_used_in_zero_equality_comparison =
-        is_only_used_in_zero_equality_comparison::<DynBrand>;
+        is_only_used_in_zero_equality_comparison::<DynBrand, ReadOnly>;
     let _is_sign_bit_check = is_sign_bit_check;
     // A type rather than a function: `OverflowResult` is what the six
     // `compute_overflow_for_*` entry points return.
@@ -791,11 +795,11 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     // `isGuaranteedToTransferExecutionToSuccessor` four times over — for an
     // instruction, a block, and two spellings of an instruction range — which
     // is one ledger row and three functions here.
-    let _is_safe_to_speculatively_execute = is_safe_to_speculatively_execute::<DynBrand>;
+    let _is_safe_to_speculatively_execute = is_safe_to_speculatively_execute::<DynBrand, ReadOnly>;
     let _is_safe_to_speculatively_execute_with_opcode =
-        is_safe_to_speculatively_execute_with_opcode::<DynBrand>;
+        is_safe_to_speculatively_execute_with_opcode::<DynBrand, ReadOnly>;
     let _is_safe_to_speculatively_execute_with_variable_replaced =
-        is_safe_to_speculatively_execute_with_variable_replaced::<DynBrand>;
+        is_safe_to_speculatively_execute_with_variable_replaced::<DynBrand, ReadOnly>;
     let _is_guaranteed_to_transfer_execution_to_successor =
         is_guaranteed_to_transfer_execution_to_successor::<DynBrand, llvmkit_ir::ReadOnly>;
     let _block_transfers_execution_to_successor =
@@ -803,17 +807,20 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _instructions_transfer_execution_to_successor =
         instructions_transfer_execution_to_successor::<
             DynBrand,
-            Vec<llvmkit_ir::InstructionView<'static, DynBrand>>,
+            ReadOnly,
+            Vec<llvmkit_ir::InstructionView<'static, DynBrand, ReadOnly>>,
         >;
     let _is_guaranteed_to_execute_for_every_iteration =
-        is_guaranteed_to_execute_for_every_iteration::<DynBrand>;
-    let _may_have_non_def_use_dependency = may_have_non_def_use_dependency::<DynBrand>;
-    let _must_trigger_ub = must_trigger_ub::<DynBrand>;
-    let _must_execute_ub_if_poison_on_path_to = must_execute_ub_if_poison_on_path_to::<DynBrand>;
-    let _program_undefined_if_poison = program_undefined_if_poison::<DynBrand>;
-    let _program_undefined_if_undef_or_poison = program_undefined_if_undef_or_poison::<DynBrand>;
-    let _is_assume_like_intrinsic = is_assume_like_intrinsic::<DynBrand>;
-    let _is_not_cross_lane_operation = is_not_cross_lane_operation::<DynBrand>;
+        is_guaranteed_to_execute_for_every_iteration::<DynBrand, ReadOnly>;
+    let _may_have_non_def_use_dependency = may_have_non_def_use_dependency::<DynBrand, ReadOnly>;
+    let _must_trigger_ub = must_trigger_ub::<DynBrand, ReadOnly>;
+    let _must_execute_ub_if_poison_on_path_to =
+        must_execute_ub_if_poison_on_path_to::<DynBrand, ReadOnly>;
+    let _program_undefined_if_poison = program_undefined_if_poison::<DynBrand, ReadOnly>;
+    let _program_undefined_if_undef_or_poison =
+        program_undefined_if_undef_or_poison::<DynBrand, ReadOnly>;
+    let _is_assume_like_intrinsic = is_assume_like_intrinsic::<DynBrand, ReadOnly>;
+    let _is_not_cross_lane_operation = is_not_cross_lane_operation::<DynBrand, ReadOnly>;
     let _intrinsic_propagates_poison = intrinsic_propagates_poison;
     // The options record `isSafeToSpeculativelyExecute`'s two defaulted `bool`
     // parameters; `Default` is upstream's no-argument call.
@@ -823,94 +830,102 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _default_transfer_scan_limit = llvmkit_ir::DEFAULT_TRANSFER_SCAN_LIMIT;
 
     // Pointer and object analysis (tranche 5).
-    let _get_underlying_object = underlying_object::<DynBrand>;
-    let _get_underlying_object_aggressive = underlying_object_aggressive::<DynBrand>;
-    let _get_underlying_objects = underlying_objects::<DynBrand>;
-    let _get_underlying_objects_for_code_gen = underlying_objects_for_code_gen::<DynBrand>;
-    let _pointer_base_with_constant_offset = pointer_base_with_constant_offset::<DynBrand>;
-    let _find_alloca_for_value = find_alloca_for_value::<DynBrand>;
-    let _only_used_by_lifetime_markers = only_used_by_lifetime_markers::<DynBrand>;
+    let _get_underlying_object = underlying_object::<DynBrand, ReadOnly>;
+    let _get_underlying_object_aggressive = underlying_object_aggressive::<DynBrand, ReadOnly>;
+    let _get_underlying_objects = underlying_objects::<DynBrand, ReadOnly>;
+    let _get_underlying_objects_for_code_gen =
+        underlying_objects_for_code_gen::<DynBrand, ReadOnly>;
+    let _pointer_base_with_constant_offset =
+        pointer_base_with_constant_offset::<DynBrand, ReadOnly>;
+    let _find_alloca_for_value = find_alloca_for_value::<DynBrand, ReadOnly>;
+    let _only_used_by_lifetime_markers = only_used_by_lifetime_markers::<DynBrand, ReadOnly>;
     let _only_used_by_lifetime_markers_or_droppable_instructions =
-        only_used_by_lifetime_markers_or_droppable_instructions::<DynBrand>;
-    let _argument_aliasing_to_returned_pointer = argument_aliasing_to_returned_pointer::<DynBrand>;
+        only_used_by_lifetime_markers_or_droppable_instructions::<DynBrand, ReadOnly>;
+    let _argument_aliasing_to_returned_pointer =
+        argument_aliasing_to_returned_pointer::<DynBrand, ReadOnly>;
     let _is_intrinsic_returning_pointer_aliasing_argument_without_capturing =
-        is_intrinsic_returning_pointer_aliasing_argument_without_capturing::<DynBrand>;
-    let _get_constant_data_array_info = constant_data_array_info::<DynBrand>;
-    let _get_constant_string_info = constant_string_info::<DynBrand>;
-    let _get_string_length = string_length::<DynBrand>;
-    let _is_bytewise_value = is_bytewise_value::<DynBrand>;
-    let _find_inserted_value = find_inserted_value::<DynBrand>;
+        is_intrinsic_returning_pointer_aliasing_argument_without_capturing::<DynBrand, ReadOnly>;
+    let _get_constant_data_array_info = constant_data_array_info::<DynBrand, ReadOnly>;
+    let _get_constant_string_info = constant_string_info::<DynBrand, ReadOnly>;
+    let _get_string_length = string_length::<DynBrand, ReadOnly>;
+    let _is_bytewise_value = is_bytewise_value::<DynBrand, ReadOnly>;
+    let _find_inserted_value = find_inserted_value::<DynBrand, ReadOnly>;
     // A type rather than a function: what `constant_data_array_info`
     // returns, and the window `string_length` reads through.
     let _slice_accessors = (
-        ConstantDataArraySlice::<DynBrand>::array,
-        ConstantDataArraySlice::<DynBrand>::offset,
-        ConstantDataArraySlice::<DynBrand>::len,
-        ConstantDataArraySlice::<DynBrand>::is_empty,
-        ConstantDataArraySlice::<DynBrand>::moved,
-        ConstantDataArraySlice::<DynBrand>::element,
+        ConstantDataArraySlice::<DynBrand, ReadOnly>::array,
+        ConstantDataArraySlice::<DynBrand, ReadOnly>::offset,
+        ConstantDataArraySlice::<DynBrand, ReadOnly>::len,
+        ConstantDataArraySlice::<DynBrand, ReadOnly>::is_empty,
+        ConstantDataArraySlice::<DynBrand, ReadOnly>::moved,
+        ConstantDataArraySlice::<DynBrand, ReadOnly>::element,
     );
     let _max_lookup_search_depth = llvmkit_ir::MAX_LOOKUP_SEARCH_DEPTH;
 
     // Tranche 7 — floating-point classification.
     let _compute_known_fp_class = (
-        llvmkit_ir::compute_known_fp_class::<DynBrand>,
-        llvmkit_ir::compute_known_fp_class_all::<DynBrand>,
-        llvmkit_ir::compute_known_fp_class_with_flags::<DynBrand>,
+        llvmkit_ir::compute_known_fp_class::<DynBrand, ReadOnly>,
+        llvmkit_ir::compute_known_fp_class_all::<DynBrand, ReadOnly>,
+        llvmkit_ir::compute_known_fp_class_with_flags::<DynBrand, ReadOnly>,
     );
     let _fp_predicates = (
-        llvmkit_ir::is_known_never_nan::<DynBrand>,
-        llvmkit_ir::is_known_never_infinity::<DynBrand>,
-        llvmkit_ir::is_known_never_infinity_or_nan::<DynBrand>,
-        llvmkit_ir::cannot_be_negative_zero::<DynBrand>,
-        llvmkit_ir::cannot_be_ordered_less_than_zero::<DynBrand>,
-        llvmkit_ir::compute_known_fp_sign_bit::<DynBrand>,
+        llvmkit_ir::is_known_never_nan::<DynBrand, ReadOnly>,
+        llvmkit_ir::is_known_never_infinity::<DynBrand, ReadOnly>,
+        llvmkit_ir::is_known_never_infinity_or_nan::<DynBrand, ReadOnly>,
+        llvmkit_ir::cannot_be_negative_zero::<DynBrand, ReadOnly>,
+        llvmkit_ir::cannot_be_ordered_less_than_zero::<DynBrand, ReadOnly>,
+        llvmkit_ir::compute_known_fp_sign_bit::<DynBrand, ReadOnly>,
     );
     let _sign_bit_indifference = (
         llvmkit_ir::can_ignore_sign_bit_of_zero::<DynBrand, llvmkit_ir::ReadOnly>,
         llvmkit_ir::can_ignore_sign_bit_of_nan::<DynBrand, llvmkit_ir::ReadOnly>,
     );
     let _adjust_known_fp_class_for_select_arm =
-        llvmkit_ir::adjust_known_fp_class_for_select_arm::<DynBrand>;
+        llvmkit_ir::adjust_known_fp_class_for_select_arm::<DynBrand, ReadOnly>;
     let _analyze_known_bits_from_and_xor_or =
-        llvmkit_ir::analyze_known_bits_from_and_xor_or::<DynBrand>;
+        llvmkit_ir::analyze_known_bits_from_and_xor_or::<DynBrand, ReadOnly>;
 
     // Tranche 8 — assumptions and implied conditions.
-    let _compute_known_bits_from_context = llvmkit_ir::compute_known_bits_from_context::<DynBrand>;
+    let _compute_known_bits_from_context =
+        llvmkit_ir::compute_known_bits_from_context::<DynBrand, ReadOnly>;
     let _adjust_known_bits_for_select_arm =
-        llvmkit_ir::adjust_known_bits_for_select_arm::<DynBrand>;
-    let _is_valid_assume_for_context = llvmkit_ir::is_valid_assume_for_context::<DynBrand>;
-    let _will_not_free_between = llvmkit_ir::will_not_free_between::<DynBrand>;
-    let _find_values_affected_by_condition =
-        llvmkit_ir::find_values_affected_by_condition::<DynBrand, fn(llvmkit_ir::Value<DynBrand>)>;
+        llvmkit_ir::adjust_known_bits_for_select_arm::<DynBrand, ReadOnly>;
+    let _is_valid_assume_for_context =
+        llvmkit_ir::is_valid_assume_for_context::<DynBrand, ReadOnly>;
+    let _will_not_free_between = llvmkit_ir::will_not_free_between::<DynBrand, ReadOnly>;
+    let _find_values_affected_by_condition = llvmkit_ir::find_values_affected_by_condition::<
+        DynBrand,
+        ReadOnly,
+        fn(llvmkit_ir::Value<DynBrand, ReadOnly>),
+    >;
     // Both overloads of each, as upstream declares them.
     let _is_implied_condition = (
-        llvmkit_ir::is_implied_condition::<DynBrand>,
-        llvmkit_ir::is_implied_condition_decomposed::<DynBrand>,
+        llvmkit_ir::is_implied_condition::<DynBrand, ReadOnly>,
+        llvmkit_ir::is_implied_condition_decomposed::<DynBrand, ReadOnly>,
     );
     let _is_implied_by_dom_condition = (
-        llvmkit_ir::is_implied_by_dom_condition::<DynBrand>,
-        llvmkit_ir::is_implied_by_dom_condition_decomposed::<DynBrand>,
+        llvmkit_ir::is_implied_by_dom_condition::<DynBrand, ReadOnly>,
+        llvmkit_ir::is_implied_by_dom_condition_decomposed::<DynBrand, ReadOnly>,
     );
     // The condition-injection vehicle `computeKnownBitsFromContext` reads.
     let _cond_context = (
-        llvmkit_ir::CondContext::<DynBrand>::new,
+        llvmkit_ir::CondContext::<DynBrand>::new::<ReadOnly>,
         llvmkit_ir::CondContext::<DynBrand>::inverted,
-        llvmkit_ir::CondContext::<DynBrand>::affects,
+        llvmkit_ir::CondContext::<DynBrand>::affects::<ReadOnly>,
     );
     let _assumption_caches = (
         llvmkit_ir::AssumptionCache::new::<DynBrand>,
-        llvmkit_ir::AssumptionCache::assumptions_for::<DynBrand>,
-        llvmkit_ir::DomConditionCache::register_branch::<DynBrand>,
-        llvmkit_ir::DomConditionCache::conditions_for::<DynBrand>,
+        llvmkit_ir::AssumptionCache::assumptions_for::<DynBrand, ReadOnly>,
+        llvmkit_ir::DomConditionCache::register_branch::<DynBrand, ReadOnly>,
+        llvmkit_ir::DomConditionCache::conditions_for::<DynBrand, ReadOnly>,
     );
     // Not in the table — the answer shape of `isBytewiseValue`, which upstream
     // spells as a `Value *` because it can mint the constant.
-    let _bytewise_value = BytewiseValue::<DynBrand>::AnyByte;
+    let _bytewise_value = BytewiseValue::<DynBrand, ReadOnly>::AnyByte;
 
     // Residue ported 2026-08-04.
-    let _collect_possible_values = collect_possible_values::<DynBrand>;
-    let _strip_null_test = strip_null_test::<DynBrand>;
+    let _collect_possible_values = collect_possible_values::<DynBrand, ReadOnly>;
+    let _strip_null_test = strip_null_test::<DynBrand, ReadOnly>;
 
     // The min/max vocabulary. `getInverseMinMaxIntrinsic` spans both halves of
     // the family, so all three spellings of its ledger row are named here.
@@ -930,17 +945,20 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _select_pattern_result = SelectPatternResult::unknown;
 
     // Select-pattern matching (tranche 4b).
-    let _match_select_pattern = match_select_pattern::<DynBrand>;
-    let _match_decomposed_select_pattern = match_decomposed_select_pattern::<DynBrand>;
-    let _can_convert_to_min_or_max_intrinsic =
-        can_convert_to_min_or_max_intrinsic::<DynBrand, Vec<llvmkit_ir::Value<'static, DynBrand>>>;
+    let _match_select_pattern = match_select_pattern::<DynBrand, ReadOnly>;
+    let _match_decomposed_select_pattern = match_decomposed_select_pattern::<DynBrand, ReadOnly>;
+    let _can_convert_to_min_or_max_intrinsic = can_convert_to_min_or_max_intrinsic::<
+        DynBrand,
+        ReadOnly,
+        Vec<llvmkit_ir::Value<'static, DynBrand, ReadOnly>>,
+    >;
     // Not in the table — the record `matchSelectPattern` fills in through its
     // `LHS` / `RHS` / `CastOp` out-parameters.
-    let _select_pattern_match = |m: SelectPatternMatch<'static, DynBrand>| m.result;
+    let _select_pattern_match = |m: SelectPatternMatch<'static, DynBrand, ReadOnly>| m.result;
     // Not in the table — llvmkit-specific conveniences with no upstream entry
     // point of their own.
-    let _is_known_zero = is_known_zero::<DynBrand>;
-    let _is_known_one = is_known_one::<DynBrand>;
+    let _is_known_zero = is_known_zero::<DynBrand, ReadOnly>;
+    let _is_known_one = is_known_one::<DynBrand, ReadOnly>;
 }
 
 /// The ledger tables stay readable: sorted, duplicate-free, every gap carries a

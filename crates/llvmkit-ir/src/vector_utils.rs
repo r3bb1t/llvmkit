@@ -100,6 +100,7 @@
 //! definitions here.
 
 use crate::ap_int::ApInt;
+use crate::capability::Capability;
 use crate::constant::{Constant, ConstantData};
 use crate::instr_types::BinaryOpcode;
 use crate::instr_types::ShuffleMaskElem;
@@ -160,7 +161,9 @@ pub fn splat_index(mask: &[ShuffleMaskElem]) -> Option<u32> {
 /// [`is_splat_value`] answers a *weaker* question — "are all lanes equal" —
 /// without needing to name the scalar, and so succeeds in cases this returns
 /// `None` for. Neither subsumes the other; upstream ships both.
-pub fn splat_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+pub fn splat_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     // `isa<VectorType>(V->getType())` guarding `dyn_cast<Constant>(V)`. The
     // `return` is upstream's: a vector-typed constant answers here whatever
     // `Constant::getSplatValue` says, including `None`, and never falls
@@ -211,15 +214,15 @@ pub fn splat_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option
 /// rejected outright even though the lane in question may be defined. Both
 /// behaviours are ported as-is — the upstream unit tests pin them, so
 /// "improving" either would be a silent divergence.
-pub fn is_splat_value<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_splat_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     index: Option<u32>,
 ) -> bool {
     is_splat_value_at_depth(value, index, 0)
 }
 
-fn is_splat_value_at_depth<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn is_splat_value_at_depth<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     index: Option<u32>,
     depth: u32,
 ) -> bool {
@@ -317,12 +320,12 @@ fn is_splat_value_at_depth<'ctx, B: ModuleBrand + 'ctx>(
 /// does: every recursive call walks to an operand, and the one shape that can
 /// close a cycle in malformed IR — an `insertelement` whose vector operand is
 /// itself — is guarded explicitly below, again as upstream guards it.
-pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     element: u32,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let (element_ty, lanes, scalable) = value.ty().data().as_vector()?;
-    let element_ty = Type::new(element_ty, value.module());
+    let element_ty = Type::new(element_ty, value.module);
 
     // For fixed-length vector, return poison for out of range access.
     if !scalable && element >= lanes {
@@ -552,7 +555,9 @@ pub fn horizontal_demanded_elements_for_first_operand(
 /// instead, since "not known to be all-zero" is the conservative reading and
 /// the repo forbids panics on production paths. A non-constant mask, and any
 /// scalable one that is not wholly null or undefined, likewise answer `false`.
-pub fn mask_is_all_zero_or_undefined<'ctx, B: ModuleBrand + 'ctx>(mask: Value<'ctx, B>) -> bool {
+pub fn mask_is_all_zero_or_undefined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    mask: Value<'ctx, B, C>,
+) -> bool {
     constant_mask_lanes_satisfy(mask, MaskLaneTest::Zero, MaskQuantifier::Every)
 }
 
@@ -561,7 +566,9 @@ pub fn mask_is_all_zero_or_undefined<'ctx, B: ModuleBrand + 'ctx>(mask: Value<'c
 ///
 /// Ports `llvm::maskIsAllOneOrUndef`. Same shape and same conservative `false`
 /// as [`mask_is_all_zero_or_undefined`].
-pub fn mask_is_all_one_or_undefined<'ctx, B: ModuleBrand + 'ctx>(mask: Value<'ctx, B>) -> bool {
+pub fn mask_is_all_one_or_undefined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    mask: Value<'ctx, B, C>,
+) -> bool {
     constant_mask_lanes_satisfy(mask, MaskLaneTest::One, MaskQuantifier::Every)
 }
 
@@ -572,8 +579,8 @@ pub fn mask_is_all_one_or_undefined<'ctx, B: ModuleBrand + 'ctx>(mask: Value<'ct
 /// [`mask_is_all_one_or_undefined`], the quantifier is the opposite one:
 /// upstream's loop `return`s `true` on the first qualifying lane rather than
 /// `continue`ing past it.
-pub fn mask_contains_all_one_or_undefined<'ctx, B: ModuleBrand + 'ctx>(
-    mask: Value<'ctx, B>,
+pub fn mask_contains_all_one_or_undefined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    mask: Value<'ctx, B, C>,
 ) -> bool {
     constant_mask_lanes_satisfy(mask, MaskLaneTest::One, MaskQuantifier::Any)
 }
@@ -594,8 +601,8 @@ enum MaskQuantifier {
 
 /// The body the three `maskIs…`/`maskContains…` predicates share verbatim
 /// upstream, differing only in the lane test and the quantifier.
-fn constant_mask_lanes_satisfy<'ctx, B: ModuleBrand + 'ctx>(
-    mask: Value<'ctx, B>,
+fn constant_mask_lanes_satisfy<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    mask: Value<'ctx, B, C>,
     test: MaskLaneTest,
     quantifier: MaskQuantifier,
 ) -> bool {
@@ -657,8 +664,8 @@ fn constant_mask_lanes_satisfy<'ctx, B: ModuleBrand + 'ctx>(
 /// llvmkit stores both spellings as one element list, so the loop runs and the
 /// answer is the exact zero. Over-approximating fewer lanes is always safe for
 /// this query; the divergence can only make a caller more precise.
-pub fn possibly_demanded_elements_in_mask<'ctx, B: ModuleBrand + 'ctx>(
-    mask: Value<'ctx, B>,
+pub fn possibly_demanded_elements_in_mask<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    mask: Value<'ctx, B, C>,
 ) -> Option<ApInt> {
     let (_, lanes, scalable) = mask.ty().data().as_vector()?;
     if scalable {
@@ -786,7 +793,7 @@ pub fn create_unary_mask(mask: &[ShuffleMaskElem], lane_count: u32) -> Vec<Shuff
 }
 
 /// Whether `value` is the constant integer zero, upstream's `m_ZeroInt()`.
-fn is_zero_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_zero_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
     matches!(constant_lane(value), Some(0))
 }
 
@@ -795,7 +802,9 @@ fn is_zero_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool 
 /// `None` covers both a non-constant operand and one too wide to be a lane
 /// index; upstream's `uint64_t` would take the latter and then fail the
 /// comparison, so the answers agree.
-fn constant_lane<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<u32> {
+fn constant_lane<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<u32> {
     let ValueKindData::Constant(ConstantData::Int(words)) = &value.data().kind else {
         return None;
     };

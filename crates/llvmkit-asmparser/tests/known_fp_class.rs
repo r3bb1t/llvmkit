@@ -26,11 +26,14 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 }
 
 /// The instruction named `%name`.
-fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn named<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
-        .flat_map(|function| module.view(function.id()).basic_blocks())
+        .flat_map(|function| function.basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|candidate| candidate.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -41,11 +44,11 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
 fn instruction<'m>(
     module: &'m Module<DynBrand, Unverified>,
     name: &str,
-) -> InstructionView<'m, DynBrand> {
+) -> InstructionView<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
-        .flat_map(|function| module.view(function.id()).basic_blocks())
+        .flat_map(|function| function.basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|candidate| candidate.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -457,8 +460,7 @@ if.else:
     let function = defined_function(&module);
     let dominator_tree = DominatorTree::new(module.view(function.id()));
     let mut conditions = DomConditionCache::new();
-    let branch = module
-        .view(function.id())
+    let branch = function
         .basic_blocks()
         .next()
         .and_then(|block| block.instructions().last())
@@ -522,8 +524,7 @@ if.end:
     let function = defined_function(&module);
     let dominator_tree = DominatorTree::new(module.view(function.id()));
     let mut conditions = DomConditionCache::new();
-    let branch = module
-        .view(function.id())
+    let branch = function
         .basic_blocks()
         .next()
         .and_then(|block| block.instructions().last())

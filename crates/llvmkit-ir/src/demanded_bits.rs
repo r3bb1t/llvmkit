@@ -8,6 +8,7 @@ use super::analysis::{
     AllAnalysesOnFunction, FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisManager,
     FunctionAnalysisResult, PrefetchableAnalysis, PreservedAnalyses,
 };
+use super::capability::Capability;
 use super::constant::ConstantData;
 use super::data_layout::DataLayout;
 use super::derived_types::IntType;
@@ -82,8 +83,8 @@ impl<B: ModuleBrand> SimplifyDemandedBitsResult<B> {
 
 /// Compute whether `value` can be replaced by an integer constant for all bits
 /// demanded by its current users.
-pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<SimplifyDemandedBitsResult<B>> {
@@ -101,12 +102,12 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let known_mask = known.zero_mask().bitor(known.one_mask());
     let unknown_demanded = demanded.bitand(&known_mask.not());
     let replacement = if unknown_demanded.is_zero() {
-        let int_ty = IntType::<IntDyn, B>::try_from(value.ty())?;
+        let int_ty = IntType::<IntDyn, B, C>::try_from(value.ty())?;
         // Mint the *typed* id: an int constant is an int value, so the
         // narrowing is total here (the type came from `value.ty()`), and a
         // typed id keeps the no-silent-erasure law's guarantee that a caller
         // never has to re-narrow an erased id to use it as an int operand.
-        let konst: IntValue<'ctx, IntDyn, B> = int_ty
+        let konst: IntValue<'ctx, IntDyn, B, C> = int_ty
             .const_ap_int(known.one_mask())?
             .as_erased()
             .try_into()?;
@@ -166,7 +167,10 @@ impl DemandedBits {
     }
 
     /// Return the bits demanded from an instruction value.
-    pub fn demanded_bits<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> ApInt {
+    pub fn demanded_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        value: Value<'ctx, B, C>,
+    ) -> ApInt {
         // boundary (F2): Task 27
         // A caller's value looked up in a result computed for one function.
         if let Some(bits) = self.alive_bits.get(&value.slot_trusting_same_module()) {
@@ -179,9 +183,9 @@ impl DemandedBits {
     }
 
     /// Return the bits demanded from operand `operand_index` of instruction `user`.
-    pub fn operand_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn operand_demanded_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         operand_index: usize,
     ) -> IrResult<ApInt> {
         let operands = instruction_operands(user)?;
@@ -212,7 +216,10 @@ impl DemandedBits {
     }
 
     /// Return true if `value` was unreachable from any live root during analysis.
-    pub fn is_instruction_dead<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> bool {
+    pub fn is_instruction_dead<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        value: Value<'ctx, B, C>,
+    ) -> bool {
         {
             // boundary (F2): Task 27
             let slot = value.slot_trusting_same_module();
@@ -223,9 +230,9 @@ impl DemandedBits {
     }
 
     /// Return true if operand `operand_index` of instruction `user` has no demanded bits.
-    pub fn is_use_dead<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn is_use_dead<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         operand_index: usize,
     ) -> IrResult<bool> {
         let operands = instruction_operands(user)?;
@@ -280,7 +287,7 @@ impl DemandedBits {
     ) -> IrResult<()> {
         let mut worklist = VecDeque::new();
         let mut queued = HashSet::new();
-        let analysed = function.function_for_analysis();
+        let analysed = function.as_function();
         let anchor = analysed.as_erased();
 
         for block in analysed.basic_blocks() {
@@ -370,10 +377,10 @@ impl DemandedBits {
         Ok(())
     }
 
-    fn determine_live_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn determine_live_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
-        operand: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
+        operand: Value<'ctx, B, C>,
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<ApInt> {
@@ -495,9 +502,9 @@ impl DemandedBits {
         })
     }
 
-    fn known_binary_operands<'ctx, B: ModuleBrand + 'ctx>(
+    fn known_binary_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         bin: &BinaryOpData,
     ) -> IrResult<OperandKnownBits> {
         let query = ValueTrackingQuery::new(&self.data_layout);
@@ -506,9 +513,9 @@ impl DemandedBits {
         Ok(OperandKnownBits { lhs, rhs })
     }
 
-    fn known_shift_range<'ctx, B: ModuleBrand + 'ctx>(
+    fn known_shift_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         bin: &BinaryOpData,
         width: u32,
     ) -> IrResult<ShiftRange> {
@@ -521,9 +528,9 @@ impl DemandedBits {
         Ok(ShiftRange { min, max })
     }
 
-    fn shift_left_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn shift_left_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         bin: &BinaryOpData,
         operand_index: usize,
         alive_out: &ApInt,
@@ -557,9 +564,9 @@ impl DemandedBits {
         }
     }
 
-    fn logical_shift_right_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn logical_shift_right_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         bin: &BinaryOpData,
         operand_index: usize,
         alive_out: &ApInt,
@@ -589,9 +596,9 @@ impl DemandedBits {
         }
     }
 
-    fn arithmetic_shift_right_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn arithmetic_shift_right_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         bin: &BinaryOpData,
         operand_index: usize,
         alive_out: &ApInt,
@@ -627,9 +634,9 @@ impl DemandedBits {
         }
     }
 
-    fn intrinsic_call_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn intrinsic_call_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         call: &CallInstData,
         operand_index: usize,
         alive_out: &ApInt,
@@ -637,9 +644,9 @@ impl DemandedBits {
         self.intrinsic_operand_bits(user, call.callee.get(), operand_index, alive_out)
     }
 
-    fn intrinsic_invoke_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn intrinsic_invoke_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         invoke: &InvokeInstData,
         operand_index: usize,
         alive_out: &ApInt,
@@ -647,9 +654,9 @@ impl DemandedBits {
         self.intrinsic_operand_bits(user, invoke.callee.get(), operand_index, alive_out)
     }
 
-    fn intrinsic_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn intrinsic_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         callee_id: ValueSlot,
         operand_index: usize,
         alive_out: &ApInt,
@@ -705,9 +712,9 @@ impl DemandedBits {
         })
     }
 
-    fn funnel_shift_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn funnel_shift_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         semantic: IntrinsicSemantic,
         arg_index: usize,
         alive_out: &ApInt,
@@ -735,9 +742,9 @@ impl DemandedBits {
         })
     }
 
-    fn and_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn and_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         bin: &BinaryOpData,
         operand_index: usize,
         alive_out: &ApInt,
@@ -752,9 +759,9 @@ impl DemandedBits {
         Ok(bits)
     }
 
-    fn or_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
+    fn or_operand_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
-        user: Value<'ctx, B>,
+        user: Value<'ctx, B, C>,
         bin: &BinaryOpData,
         operand_index: usize,
         alive_out: &ApInt,
@@ -990,10 +997,10 @@ fn apint_unsigned_rem_u32(value: &ApInt, divisor: u32) -> u32 {
         .unwrap_or(0)
 }
 
-fn operand_value<'ctx, B: ModuleBrand + 'ctx>(
-    user: Value<'ctx, B>,
+fn operand_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    user: Value<'ctx, B, C>,
     operand_index: usize,
-) -> IrResult<Value<'ctx, B>> {
+) -> IrResult<Value<'ctx, B, C>> {
     let operands = instruction_operands(user)?;
     let Some(id) = operands.get(operand_index).copied() else {
         return Err(IrError::InvalidOperation {
@@ -1315,8 +1322,8 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     Ok(true)
 }
 
-fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx>(
-    callee: Value<'ctx, B>,
+fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    callee: Value<'ctx, B, C>,
 ) -> Option<IntrinsicSemantic> {
     semantic_for_callee(callee)
 }
@@ -1325,7 +1332,9 @@ fn is_power_of_two_u32(value: u32) -> bool {
     value != 0 && (value & (value - 1)) == 0
 }
 
-fn constant_ap_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApInt> {
+fn constant_ap_int<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApInt> {
     let width = int_scalar_bit_width(value.ty())?;
     match &value.data().kind {
         ValueKindData::Constant(ConstantData::Int(words)) => Some(ApInt::from_words(width, words)),
@@ -1333,8 +1342,8 @@ fn constant_ap_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option
     }
 }
 
-fn instruction_operands<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn instruction_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> IrResult<Vec<ValueSlot>> {
     match &value.data().kind {
         ValueKindData::Instruction(inst) => Ok(inst.kind.operand_ids()),
@@ -1360,7 +1369,9 @@ fn is_always_live(inst: &InstructionData) -> bool {
         )
 }
 
-fn is_simplify_candidate<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_simplify_candidate<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     if int_scalar_bit_width(value.ty()).is_none() {
         return false;
     }
@@ -1395,15 +1406,23 @@ fn enqueue(id: ValueSlot, worklist: &mut VecDeque<ValueSlot>, queued: &mut HashS
     }
 }
 
-fn is_instruction_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_instruction_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     matches!(value.data().kind, ValueKindData::Instruction(_))
 }
 
-fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> ModuleRef<'ctx, B> {
-    ModuleRef::new(ty.module().core_ref())
+/// The type's own module reference, at the type's capability — a type minted
+/// from it is navigation, so it keeps what the caller held.
+fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> ModuleRef<'ctx, B, C> {
+    ty.module
 }
 
-fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<u32> {
+fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Option<u32> {
     match ty.kind() {
         TypeKind::Integer { bits } => Some(bits),
         TypeKind::FixedVector | TypeKind::ScalableVector => {
@@ -1432,8 +1451,8 @@ fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Optio
     }
 }
 
-fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     dl: &DataLayout,
 ) -> u32 {
     if let Some(width) = int_scalar_bit_width(value.ty()) {
@@ -1442,7 +1461,9 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx>(
     u32::try_from(dl.type_size_in_bits(erase_type(value.ty()))).unwrap_or(0)
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Type<'ctx, DynBrand> {
     Type::new(
         ty.slot_trusting_same_module(),
         ModuleRef::new(ty.module().core_ref()),

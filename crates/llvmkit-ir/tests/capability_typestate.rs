@@ -902,3 +902,111 @@ fn an_inspect_pass_sees_only_read_only_instruction_views() {
         "{recorded:?}"
     );
 }
+
+/// The value-tracking analyses read values of either capability and answer
+/// alike, and what one hands back keeps the capability of the value it was
+/// asked about. `compute_known_bits`, `match_select_pattern` and
+/// `is_guaranteed_to_transfer_execution_to_successor` run on a module's
+/// `Mutable` handles and, once it is verified, on its `ReadOnly` ones; then an
+/// `Inspect` pass feeds its `BasicBlockView` walk straight to
+/// `AssumptionCache::new` and `compute_known_bits` — the routes that read
+/// through a laundering door before. llvmkit-specific (D1, D8): upstream's
+/// analyses take a `const Value *`, which carries no capability.
+#[test]
+fn the_value_tracking_analyses_read_values_of_either_capability() -> Result<(), IrError> {
+    use core::cell::RefCell;
+    use llvmkit_ir::{
+        Analyses, AssumptionCache, FnCx, FnReport, FunctionPass, Inspect, IntPredicate, IrResult,
+        ModuleBrand, SelectPatternFlavor, ValueTrackingQuery, compute_known_bits,
+        is_guaranteed_to_transfer_execution_to_successor, match_select_pattern, run_function_pass,
+    };
+    use std::rc::Rc;
+
+    struct KnownBitsOfTheWalk(Rc<RefCell<Vec<u32>>>);
+
+    impl<B: ModuleBrand> FunctionPass<B> for KnownBitsOfTheWalk {
+        type Access = Inspect;
+        type Requires = ();
+        const NAME: &'static str = "known-bits-of-the-walk";
+
+        fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport<B>>
+        where
+            'ctx: 'm,
+            Self: 'ctx,
+        {
+            let function = cx.function();
+            let assumptions = AssumptionCache::new(function);
+            let data_layout = function.module().data_layout().clone();
+            let query = ValueTrackingQuery::new(&data_layout).with_assumptions(&assumptions);
+            for block in function.basic_blocks() {
+                for instruction in block.instructions() {
+                    if instruction.name().as_deref() == Some("masked") {
+                        let known = compute_known_bits(instruction.to_erased(), &query)?;
+                        self.0.borrow_mut().push(known.count_min_leading_zeros());
+                    }
+                }
+            }
+            Ok(cx.done())
+        }
+    }
+
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let f = m.add_function_dyn(
+        "f",
+        m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]),
+        Linkage::External,
+    )?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
+    // `%masked = and i32 %x, 255`: its top 24 bits are known zero.
+    let masked = b.int_and(x, i32_ty.const_int(255_i32), "masked")?;
+    // `%min = select (icmp slt %x, %y), %x, %y`: an `smin` of the parameters.
+    let less = b.int_cmp(IntPredicate::Slt, x, y, "less")?;
+    let min = b.select(less, x, y, "min")?;
+    let sum = b.int_add(m.view(masked), m.view(min), "sum")?;
+    b.ret(m.view(sum))?;
+
+    // The answers on the `Mutable` handles, kept as data: the handles borrow
+    // the module that verification consumes.
+    let (mutable_known, mutable_operands) = {
+        let data_layout = m.data_layout();
+        let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
+        let known = compute_known_bits(m.view(masked).as_erased(), &query)?;
+        let matched = match_select_pattern(m.view(min).as_erased(), false, &query, 0)?
+            .expect("%min is an smin");
+        assert_eq!(capability(matched.lhs), TypeId::of::<Mutable>());
+        (known, (matched.lhs.id(), matched.rhs.id()))
+    };
+    assert_eq!(mutable_known.count_min_leading_zeros(), 24);
+
+    let verified = m.verify()?;
+    {
+        let data_layout = verified.data_layout();
+        let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
+        let masked = verified.view(masked).as_erased();
+        assert_eq!(capability(masked), TypeId::of::<ReadOnly>());
+        assert_eq!(compute_known_bits(masked, &query)?, mutable_known);
+        let matched = match_select_pattern(verified.view(min).as_erased(), false, &query, 0)?
+            .expect("%min is an smin");
+        assert_eq!(matched.result.flavor, SelectPatternFlavor::Smin);
+        assert_eq!(capability(matched.lhs), TypeId::of::<ReadOnly>());
+        assert_eq!((matched.lhs.id(), matched.rhs.id()), mutable_operands);
+        assert!(is_guaranteed_to_transfer_execution_to_successor(
+            &InstructionView::try_from(masked)?
+        ));
+    }
+
+    let recorded = Rc::new(RefCell::new(Vec::new()));
+    let mut analyses = Analyses::new();
+    run_function_pass(
+        KnownBitsOfTheWalk(recorded.clone()),
+        verified,
+        f,
+        &mut analyses,
+    )?;
+    assert_eq!(*recorded.borrow(), [24]);
+    Ok(())
+}

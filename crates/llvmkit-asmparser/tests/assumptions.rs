@@ -34,7 +34,10 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 }
 
 /// The instruction named `%name` in the module's definitions.
-fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn named<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     instruction(module, name).to_erased()
 }
 
@@ -42,11 +45,11 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
 fn instruction<'m>(
     module: &'m Module<DynBrand, Unverified>,
     name: &str,
-) -> llvmkit_ir::InstructionView<'m, DynBrand> {
+) -> llvmkit_ir::InstructionView<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
-        .flat_map(|function| module.view(function.id()).basic_blocks())
+        .flat_map(|function| function.basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|candidate| candidate.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -56,11 +59,11 @@ fn instruction<'m>(
 fn assume<'m>(
     module: &'m Module<DynBrand, Unverified>,
     index: usize,
-) -> llvmkit_ir::InstructionView<'m, DynBrand> {
+) -> llvmkit_ir::InstructionView<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
-        .flat_map(|function| module.view(function.id()).basic_blocks())
+        .flat_map(|function| function.basic_blocks())
         .flat_map(|block| block.instructions())
         .filter(|candidate| format!("{candidate}").contains("@llvm.assume"))
         .nth(index)
@@ -87,17 +90,24 @@ fn dominator_tree(module: &Module<DynBrand, Unverified>) -> DominatorTree {
 }
 
 /// The defined function's parameter at `index`.
-fn parameter<'m>(module: &'m Module<DynBrand, Unverified>, index: usize) -> Value<'m, DynBrand> {
+fn parameter<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    index: usize,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .view(defined_function(module).id())
         .params()
         .nth(index)
         .expect("fixture has that many parameters")
         .as_erased()
+        .read_only()
 }
 
 /// The right-hand operand of the `icmp` named `%name`.
-fn compare_rhs<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn compare_rhs<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     instruction(module, name)
         .kind()
         .and_then(|kind| kind.as_cmp())
@@ -523,8 +533,7 @@ else:
     let function = defined_function(&module);
     let dominator_tree = dominator_tree(&module);
     let mut conditions = DomConditionCache::new();
-    let branch = module
-        .view(function.id())
+    let branch = function
         .basic_blocks()
         .next()
         .and_then(|block| block.instructions().last())

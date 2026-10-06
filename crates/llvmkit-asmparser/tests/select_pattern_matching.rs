@@ -23,11 +23,14 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
     }
 }
 
-fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn named<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
-        .flat_map(|function| module.view(function.id()).basic_blocks())
+        .flat_map(|function| function.basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -453,8 +456,8 @@ define i32 @test(i32 %x, i32 %y) {
     let matched = match_select_pattern(named(&module, "A"), true, &query, 0)
         .expect("query succeeds")
         .expect("this is an smin");
-    assert_eq!(matched.lhs, params[0].as_erased());
-    assert_eq!(matched.rhs, params[1].as_erased());
+    assert_eq!(matched.lhs, params[0].as_erased().read_only());
+    assert_eq!(matched.rhs, params[1].as_erased().read_only());
     assert_eq!(matched.cast, None);
 
     // A `select` whose condition is not a compare at all matches nothing.

@@ -19,8 +19,8 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    DynBrand, Module, Unverified, Value, ValueTrackingQuery, compute_known_bits, is_known_non_zero,
-    strip_null_test,
+    DynBrand, Module, ReadOnly, Unverified, Value, ValueTrackingQuery, compute_known_bits,
+    is_known_non_zero, strip_null_test,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -30,11 +30,14 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
     }
 }
 
-fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn named<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, ReadOnly> {
     module
         .as_view()
         .functions()
-        .flat_map(|function| module.view(function.id()).basic_blocks())
+        .flat_map(|function| function.basic_blocks())
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
@@ -44,7 +47,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
 /// The parameter of the fixture's *defined* function, which is every case's
 /// `X`. Some fixtures declare `@use` first, so this skips declarations rather
 /// than taking whichever function comes first.
-fn only_param<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynBrand> {
+fn only_param<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynBrand, ReadOnly> {
     let function = module
         .as_view()
         .functions()
@@ -57,6 +60,7 @@ fn only_param<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynBran
         .next()
         .expect("fixture's function takes a parameter")
         .as_erased()
+        .read_only()
 }
 
 /// Assert that `strip_null_test` recovers the function's parameter from the

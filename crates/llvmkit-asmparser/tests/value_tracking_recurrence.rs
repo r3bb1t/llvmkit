@@ -101,8 +101,7 @@ fn folded_result(module: &Module<DynBrand, Unverified>, function: &str) -> Optio
         .functions()
         .find(|f| f.name().as_deref() == Some(function))
         .unwrap_or_else(|| panic!("fixture defines @{function}"));
-    let result = module
-        .view(f.id())
+    let result = f
         .basic_blocks()
         .flat_map(|block| block.instructions())
         .find(|instruction| instruction.name().as_deref() == Some("res"))

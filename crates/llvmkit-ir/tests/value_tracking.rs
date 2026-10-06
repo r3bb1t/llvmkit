@@ -630,7 +630,11 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
         .with_demanded_elements(&demanded)
         .without_instruction_info();
 
-    assert_eq!(query.context_instruction(), Some(load_inst.to_erased()));
+    // The query keeps its context at `ReadOnly`; compare at that capability.
+    assert_eq!(
+        query.context_instruction(),
+        Some(load_inst.to_erased().read_only())
+    );
     assert_eq!(query.demanded_elements(), Some(&demanded));
     assert!(!query.uses_instruction_info());
     assert!(query.with_instruction_info().uses_instruction_info());

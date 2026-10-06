@@ -61,9 +61,9 @@ use crate::r#type::{Type, TypeKind};
 use crate::r#use::Use;
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{
-    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, compute_known_bits_at_depth,
-    is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
-    shuffle_source_demands,
+    LogicalOperation, LogicalOperator, MAX_ANALYSIS_RECURSION_DEPTH, ShuffleSourceDemands,
+    ValueTrackingQuery, assume_argument, compute_known_bits_at_depth, is_known_not_undef,
+    is_sign_bit_check, logical_op_parts, not_operand, parent_block, shuffle_source_demands,
 };
 use crate::vector_utils::splat_value;
 use crate::{ApFloat, ApInt};
@@ -78,8 +78,8 @@ use crate::{ApFloat, ApInt};
 /// "Queries not specified in `InterestedClasses` should be reliable if they are
 /// determined during the query" — so passing [`FpClassTest::ALL`] is always
 /// correct and only ever slower.
-pub fn compute_known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> KnownFpClass {
@@ -90,8 +90,8 @@ pub fn compute_known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports the `(const Value *V, const DataLayout &DL, ...)` overload at its
 /// defaulted `InterestedClasses = fcAllFlags`.
-pub fn compute_known_fp_class_all<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_known_fp_class_all<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> KnownFpClass {
     compute_known_fp_class(value, FpClassTest::ALL, query)
@@ -102,8 +102,8 @@ pub fn compute_known_fp_class_all<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the `(const Value *V, FastMathFlags FMF, FPClassTest, const
 /// SimplifyQuery &, unsigned)` overload: a use site that carries `nnan` or
 /// `ninf` can rule those out even when the definition does not.
-pub fn compute_known_fp_class_with_flags<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_known_fp_class_with_flags<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     flags: FastMathFlags,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -127,8 +127,8 @@ pub fn compute_known_fp_class_with_flags<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `computeKnownFPClass` at an explicit recursion depth.
-fn known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -197,8 +197,8 @@ fn known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 /// The opcode switch. Arms not listed here leave the answer unknown; the module
 /// header names each one.
-fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     kind: &'ctx InstructionKindData,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -302,8 +302,8 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `case Instruction::ExtractElement:`: a constant, in-range index
 /// demands only the lane it names; anything else demands them all.
-fn extract_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn extract_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &ExtractElementInstData,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -329,8 +329,8 @@ fn extract_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `case Instruction::InsertElement:`: the answer is the union of the
 /// inserted element and whatever lanes of the source vector are still demanded
 /// after the inserted lane is cleared.
-fn insert_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn insert_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &InsertElementInstData,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -404,9 +404,9 @@ fn is_ieee_like(semantics: ApFloatSemantics) -> bool {
 /// Upstream's `m_ElementWiseBitCast` requires the cast not to change the
 /// element count, so a `<2 x float>` to `i64` bitcast — which reinterprets
 /// lanes — is declined rather than misread.
-fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    source: Value<'ctx, B>,
+fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    source: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> KnownFpClass {
@@ -496,8 +496,8 @@ fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `m_ZeroMask` accepts — from being answered as "nothing known": the
 /// demanded-lane path below sees a demanded poison lane and gives up, while
 /// the splat match reads straight through to the scalar.
-fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &ShuffleVectorInstData,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -513,8 +513,12 @@ fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return known_fp_class(splat, interested_classes, query, depth + 1);
     }
 
-    let Some((lhs, lhs_demand, rhs, rhs_demand)) =
-        shuffle_source_demands(value, data, query, false)
+    let Some(ShuffleSourceDemands {
+        lhs,
+        lhs_demanded: lhs_demand,
+        rhs,
+        rhs_demanded: rhs_demand,
+    }) = shuffle_source_demands(value, data, query, false)
     else {
         return KnownFpClass::unknown();
     };
@@ -549,8 +553,8 @@ fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// direct self references skipped and the recursion capped two levels below
 /// the general limit, because a loop would otherwise be walked repeatedly for
 /// no gain.
-fn phi_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn phi_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data: &PhiData,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -602,7 +606,9 @@ fn phi_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The lane count and scalability of `value`'s type, or `None` for a scalar.
-fn vector_lanes<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<(u32, bool)> {
+fn vector_lanes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<(u32, bool)> {
     value
         .ty()
         .data()
@@ -611,8 +617,8 @@ fn vector_lanes<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<(u
 }
 
 /// A constant, in-range lane index, if the operand is one.
-fn constant_lane_index<'ctx, B: ModuleBrand + 'ctx>(
-    index: Value<'ctx, B>,
+fn constant_lane_index<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    index: Value<'ctx, B, C>,
     lanes: u32,
 ) -> Option<u32> {
     let ValueKindData::Constant(ConstantData::Int(words)) = &index.data().kind else {
@@ -645,7 +651,9 @@ fn demanded_lanes<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `CallBase::getRetNoFPClass` for a call, and `Argument::getNoFPClass` for a
 /// parameter. Anything else carries no such attribute, which is
 /// [`FpClassTest::NONE`] — nothing ruled out.
-fn no_fp_class_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> FpClassTest {
+fn no_fp_class_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> FpClassTest {
     let mask = match &value.data().kind {
         ValueKindData::Argument { parent_fn, slot } => {
             function_no_fp_class(value, *parent_fn, AttrIndex::Param(*slot))
@@ -689,8 +697,8 @@ fn function_no_fp_class<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// error answers `false`: the special case is skipped and the arm falls back to
 /// the general operand-by-operand reasoning, which is the weaker answer and
 /// never the wrong one.
-fn is_definitely_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn is_definitely_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> bool {
     is_known_not_undef(value, query).unwrap_or(false)
@@ -700,8 +708,8 @@ fn is_definitely_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports the shared `case Instruction::FAdd: case Instruction::FSub:` block of
 /// `computeKnownFPClassFromOperator`.
-fn add_or_subtract_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn add_or_subtract_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     lhs_slot: ValueSlot,
     rhs_slot: ValueSlot,
     is_add: bool,
@@ -822,8 +830,8 @@ fn add_or_subtract_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `case Instruction::FMul:`, which does its work in
 /// `KnownFPClass::fmul` and `KnownFPClass::square` — both already ported — and
 /// adds the denormal-scaling refinement on a constant right-hand side.
-fn multiply_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn multiply_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     lhs_slot: ValueSlot,
     rhs_slot: ValueSlot,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -877,8 +885,8 @@ fn multiply_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports the shared `case Instruction::FDiv: case Instruction::FRem:` block of
 /// `computeKnownFPClassFromOperator`.
-fn divide_or_remainder_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn divide_or_remainder_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     lhs_slot: ValueSlot,
     rhs_slot: ValueSlot,
     is_divide: bool,
@@ -1013,8 +1021,8 @@ fn divide_or_remainder_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The `FPExt` / `FPTrunc` / `SIToFP` / `UIToFP` arms.
-fn cast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn cast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     opcode: CastOpcode,
     source_slot: ValueSlot,
     interested_classes: FpClassTest,
@@ -1075,8 +1083,8 @@ fn cast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `computeKnownFPClassForFPTrunc`.
-fn fp_trunc_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    source: Value<'ctx, B>,
+fn fp_trunc_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    source: Value<'ctx, B, C>,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -1103,8 +1111,8 @@ fn fp_trunc_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The `call` arm's intrinsic switch.
-fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     kind: &'ctx InstructionKindData,
     interested_classes: FpClassTest,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -1118,7 +1126,7 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return KnownFpClass::unknown();
     };
     let name = descriptor.id().base_name();
-    let argument = |index: usize| -> Option<Value<'ctx, B>> {
+    let argument = |index: usize| -> Option<Value<'ctx, B, C>> {
         data.args
             .get(index)
             .map(|arg| value_from_slot(value, arg.get()))
@@ -1306,10 +1314,10 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// checks that the arm is not `undef` before trusting the refinement; upstream
 /// leaves a `TODO` asking whether this one should too, and that question is
 /// inherited rather than answered.
-pub fn adjust_known_fp_class_for_select_arm<'a, 'ctx, B: ModuleBrand + 'ctx>(
+pub fn adjust_known_fp_class_for_select_arm<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     known: KnownFpClass,
-    condition: Value<'ctx, B>,
-    arm: Value<'ctx, B>,
+    condition: Value<'ctx, B, C>,
+    arm: Value<'ctx, B, C>,
     invert: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -1327,10 +1335,14 @@ pub fn adjust_known_fp_class_for_select_arm<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// also needs a dominator tree), and the `@llvm.assume` calls
 /// ([`ValueTrackingQuery::with_assumptions`], which also needs a context
 /// instruction). A query carrying none of them proves nothing.
-fn known_fp_class_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn known_fp_class_from_context<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> KnownFpClass {
+    // The query keeps its context at `ReadOnly`, and every fact below pairs
+    // `value` with it; the answer carries no handle, so reading `value` at the
+    // context's capability changes nothing a caller sees.
+    let value = value.read_only();
     let mut known = KnownFpClass::unknown();
 
     // Handle the injected condition.
@@ -1420,9 +1432,9 @@ fn known_fp_class_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Upstream also takes the context instruction, but never reads it; the
 /// parameter is not reproduced.
-fn known_fp_class_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    condition: Value<'ctx, B>,
+fn known_fp_class_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    condition: Value<'ctx, B, C>,
     condition_is_true: bool,
     known: &mut KnownFpClass,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
@@ -1431,8 +1443,12 @@ fn known_fp_class_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // `and` splits a true condition into two true conditions, `or` a false one
     // into two false ones; either way both halves hold.
     if depth < query.max_depth()
-        && let Some((a, b, is_and)) = logical_op_parts(condition)
-        && is_and == condition_is_true
+        && let Some(LogicalOperation {
+            lhs: a,
+            rhs: b,
+            operator,
+        }) = logical_op_parts(condition)
+        && (operator == LogicalOperator::And) == condition_is_true
     {
         known_fp_class_from_cond(value, a, condition_is_true, known, query, depth + 1);
         known_fp_class_from_cond(value, b, condition_is_true, known, query, depth + 1);
@@ -1446,7 +1462,12 @@ fn known_fp_class_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return;
     }
 
-    if let Some((predicate, lhs, rhs)) = float_compare_parts(condition) {
+    if let Some(CompareParts {
+        predicate,
+        lhs,
+        rhs,
+    }) = float_compare_parts(condition)
+    {
         // Upstream passes `*cast<Instruction>(Cond)->getParent()->getParent()`:
         // the function holding the *condition*, which is what supplies the
         // denormal mode. A condition that is not an instruction would trip that
@@ -1478,7 +1499,11 @@ fn known_fp_class_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // An `icmp` against the value's own bit pattern can be a sign-bit test.
-    if let Some((predicate, lhs, rhs)) = int_compare_parts(condition)
+    if let Some(CompareParts {
+        predicate,
+        lhs,
+        rhs,
+    }) = int_compare_parts(condition)
         && element_wise_bitcast_source(lhs) == Some(value)
         && let Some(rhs) = constant_int(rhs)
         && let Some(true_if_signed) = is_sign_bit_check(predicate, &rhs)
@@ -1498,8 +1523,8 @@ fn known_fp_class_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Whether `value` is provably never a NaN.
 ///
 /// Ports `llvm::isKnownNeverNaN`.
-pub fn is_known_never_nan<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_never_nan<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> bool {
     compute_known_fp_class(value, FpClassTest::NAN, query).is_known_never_nan()
@@ -1508,8 +1533,8 @@ pub fn is_known_never_nan<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Whether `value` is provably never an infinity.
 ///
 /// Ports `llvm::isKnownNeverInfinity`.
-pub fn is_known_never_infinity<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_never_infinity<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> bool {
     compute_known_fp_class(value, FpClassTest::INFINITY, query).is_known_never_infinity()
@@ -1519,8 +1544,8 @@ pub fn is_known_never_infinity<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `llvm::isKnownNeverInfOrNaN`. Upstream asks the lattice both questions
 /// separately rather than using `isKnownNeverInfOrNaN`, and that is reproduced.
-pub fn is_known_never_infinity_or_nan<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_known_never_infinity_or_nan<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> bool {
     let known = compute_known_fp_class(value, FpClassTest::INFINITY.union(FpClassTest::NAN), query);
@@ -1532,8 +1557,8 @@ pub fn is_known_never_infinity_or_nan<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::cannotBeNegativeZero`. Upstream's own caution applies: this is
 /// the *literal* `-0.0`, so a caller under a `PreserveSign` denormal mode must
 /// think about subnormals separately.
-pub fn cannot_be_negative_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn cannot_be_negative_zero<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> bool {
     compute_known_fp_class(value, FpClassTest::NEGATIVE_ZERO, query).is_known_never_negative_zero()
@@ -1542,8 +1567,8 @@ pub fn cannot_be_negative_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Whether `value` is provably NaN or never less than `-0.0`.
 ///
 /// Ports `llvm::cannotBeOrderedLessThanZero`.
-pub fn cannot_be_ordered_less_than_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn cannot_be_ordered_less_than_zero<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> bool {
     compute_known_fp_class(value, KnownFpClass::ORDERED_LESS_THAN_ZERO, query)
@@ -1554,8 +1579,8 @@ pub fn cannot_be_ordered_less_than_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports `llvm::computeKnownFPSignBit`: `Some(false)` for a provably clear sign
 /// bit, `Some(true)` for a provably set one, `None` otherwise.
-pub fn compute_known_fp_sign_bit<'a, 'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn compute_known_fp_sign_bit<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> Option<bool> {
     compute_known_fp_class(value, FpClassTest::ALL, query).sign_bit()
@@ -1732,32 +1757,40 @@ fn is_fpclass_mask_zero_agnostic<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
 /// The predicate and operands of an `fcmp`. Ports
 /// `m_FCmp(Pred, m_Value(LHS), m_Value(RHS))`.
-fn float_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(FloatPredicate, Value<'ctx, B>, Value<'ctx, B>)> {
+fn float_compare_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<CompareParts<'ctx, B, C, FloatPredicate>> {
     let InstructionKindData::Fcmp(data) = instruction_kind(value)? else {
         return None;
     };
-    Some((
-        data.predicate,
-        value_from_slot(value, data.lhs.get()),
-        value_from_slot(value, data.rhs.get()),
-    ))
+    Some(CompareParts {
+        predicate: data.predicate,
+        lhs: value_from_slot(value, data.lhs.get()),
+        rhs: value_from_slot(value, data.rhs.get()),
+    })
 }
 
 /// The predicate and operands of an `icmp`. Ports
 /// `m_ICmp(Pred, m_Value(LHS), m_Value(RHS))`.
-fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<(IntPredicate, Value<'ctx, B>, Value<'ctx, B>)> {
+fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<CompareParts<'ctx, B, C, IntPredicate>> {
     let InstructionKindData::Icmp(data) = instruction_kind(value)? else {
         return None;
     };
-    Some((
-        data.predicate,
-        value_from_slot(value, data.lhs.get()),
-        value_from_slot(value, data.rhs.get()),
-    ))
+    Some(CompareParts {
+        predicate: data.predicate,
+        lhs: value_from_slot(value, data.lhs.get()),
+        rhs: value_from_slot(value, data.rhs.get()),
+    })
+}
+
+/// What [`float_compare_parts`] and [`int_compare_parts`] capture: the
+/// `(Pred, LHS, RHS)` of `m_FCmp` / `m_ICmp`, with the predicate kind `P`.
+struct CompareParts<'ctx, B: ModuleBrand, C: Capability, P> {
+    predicate: P,
+    lhs: Value<'ctx, B, C>,
+    rhs: Value<'ctx, B, C>,
 }
 
 /// The tested value and mask of an `@llvm.is.fpclass` call. Ports
@@ -1780,9 +1813,9 @@ fn is_fpclass_call_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
 /// The source of a `bitcast` that changes neither scalar-vs-vector nor the
 /// element count. Ports `m_ElementWiseBitCast`.
-fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     let InstructionKindData::Cast(data) = instruction_kind(value)? else {
         return None;
     };
@@ -1792,7 +1825,7 @@ fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx>(
     let source = value_from_slot(value, data.src.get());
     // A fixed and a scalable vector of the same count differ, which is the
     // `getElementCount()` comparison upstream makes.
-    let shape = |value: Value<'ctx, B>| {
+    let shape = |value: Value<'ctx, B, C>| {
         value
             .ty()
             .data()
@@ -1835,7 +1868,9 @@ fn min_max_kind(name: &str) -> Option<MinMaxKind> {
 ///
 /// Ports `m_APFloat`'s scalar case: the constant behind an operand, which the
 /// `fmul` arm reads for its denormal-scaling refinement.
-fn constant_ap_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApFloat> {
+fn constant_ap_float<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ApFloat> {
     let ValueKindData::Constant(ConstantData::Float(bits)) = &value.data().kind else {
         return None;
     };
@@ -1856,15 +1891,17 @@ fn constant_ap_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Opti
 /// Deliberately not [`denormal_mode_of`], which answers `dynamic()` for a value
 /// with no function — sound, but able to prove things upstream declines to,
 /// which would be a divergence rather than a port.
-fn scalar_denormal_mode<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn scalar_denormal_mode<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<DenormalMode> {
     let function = enclosing_function_of(value)?;
     let semantics = scalar_semantics(value.ty())?;
     Some(function.denormal_mode(semantics))
 }
 
-fn constant_fp_class<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<KnownFpClass> {
+fn constant_fp_class<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<KnownFpClass> {
     match &value.data().kind {
         ValueKindData::Constant(ConstantData::Float(_)) => {
             constant_ap_float(value).map(|float| KnownFpClass::of(&float))
@@ -1894,12 +1931,16 @@ fn fast_math_flags(kind: &InstructionKindData) -> Option<FastMathFlags> {
 
 /// Whether the type is one of the multi-unit floating-point formats — in
 /// practice `ppc_fp128`. Ports `Type::isMultiUnitFPType`.
-fn is_multi_unit_float_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
+fn is_multi_unit_float_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> bool {
     matches!(scalar_kind(ty), TypeKind::PpcFp128)
 }
 
 /// The `ApFloat` semantics of a scalar or per-lane floating-point type.
-fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<ApFloatSemantics> {
+fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Option<ApFloatSemantics> {
     Some(match scalar_kind(ty) {
         TypeKind::Half => ApFloatSemantics::IeeeHalf,
         TypeKind::Bfloat => ApFloatSemantics::Bfloat,
@@ -1913,9 +1954,9 @@ fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Ap
 }
 
 /// The kind of the type's scalar, peeling one vector layer.
-fn scalar_kind<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> TypeKind {
+fn scalar_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(ty: Type<'ctx, B, C>) -> TypeKind {
     match ty.data().as_vector() {
-        Some((element, _, _)) => Type::new(element, ty.module()).kind(),
+        Some((element, _, _)) => Type::new(element, ty.module).kind(),
         None => ty.kind(),
     }
 }
@@ -1941,7 +1982,9 @@ fn value_from_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Value::from_parts(slot, module, data.ty)
 }
 
-/// The module `value` lives in.
-fn module_ref<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> ModuleRef<'ctx, B> {
-    ModuleRef::new(value.module().core_ref())
+/// The module `value` lives in, at the value's capability.
+fn module_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> ModuleRef<'ctx, B, C> {
+    value.module
 }

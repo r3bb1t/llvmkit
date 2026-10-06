@@ -31,8 +31,8 @@
 //!   element width, or a zeroinitializer, are read. Declining to read narrows
 //!   coverage; it never reads the wrong bytes.
 
-use crate::ApInt;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
+use crate::capability::{Capability, Mutable};
 use crate::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
 };
@@ -46,6 +46,7 @@ use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{returned_arg_operand, value_from_slot};
+use crate::{ApInt, Branded};
 use std::collections::HashSet;
 
 /// How many layers [`underlying_object`] peels before giving up.
@@ -72,10 +73,10 @@ const MAX_VISITED_AGGRESSIVE: usize = 8;
 /// at whatever it cannot peel, which may be a `load`, an argument, or `value`
 /// itself. [`underlying_objects_for_code_gen`] is the variant that insists
 /// on identifiability.
-pub fn underlying_object<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn underlying_object<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     max_lookup: u32,
-) -> Value<'ctx, B> {
+) -> Value<'ctx, B, C> {
     let mut current = value;
     let mut count = 0u32;
     while max_lookup == 0 || count < max_lookup {
@@ -89,7 +90,9 @@ pub fn underlying_object<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// One step of [`underlying_object`]'s loop, or `None` when nothing peels.
-fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Value<'ctx, B, C>> {
     // `dyn_cast<GEPOperator>`: a `getelementptr` instruction or the constant
     // expression of the same name. Only a scalar pointer base peels — a vector
     // of pointers is where the walk stops.
@@ -142,13 +145,13 @@ fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<
 /// Ports `llvm::getUnderlyingObjectAggressive`. When the paths disagree, or
 /// more than eight distinct objects turn up, the answer falls back to
 /// `underlying_object(value)`.
-pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Value<'ctx, B> {
+pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Value<'ctx, B, C> {
     let first_object = underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     let mut worklist = vec![value];
-    let mut object: Option<Value<'ctx, B>> = None;
+    let mut object: Option<Value<'ctx, B, C>> = None;
     let mut first = true;
 
     while let Some(candidate) = worklist.pop() {
@@ -203,10 +206,10 @@ pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::getUnderlyingObjects`. Where
 /// [`underlying_object_aggressive`] gives up on disagreement, this collects
 /// each answer: given `select %c, ptr %a, ptr %b` it returns both.
-pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     max_lookup: u32,
-) -> Vec<Value<'ctx, B>> {
+) -> Vec<Value<'ctx, B, C>> {
     let mut objects = Vec::new();
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     let mut worklist = vec![value];
@@ -243,9 +246,9 @@ pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::getUnderlyingObjectsForCodeGen`. Upstream returns a `bool` and
 /// clears its out-parameter on failure; here failure is `None`, so a caller
 /// cannot read a half-filled list.
-pub fn underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Vec<Value<'ctx, B>>> {
+pub fn underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Vec<Value<'ctx, B, C>>> {
     let mut objects = Vec::new();
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     let mut working = vec![value];
@@ -285,11 +288,11 @@ pub fn underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// `allow_non_inbounds` is upstream's parameter: with it clear, only `inbounds`
 /// `getelementptr`s peel.
-pub fn pointer_base_with_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
-    pointer: Value<'ctx, B>,
+pub fn pointer_base_with_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    pointer: Value<'ctx, B, C>,
     data_layout: &DataLayout,
     allow_non_inbounds: bool,
-) -> (Value<'ctx, B>, i64) {
+) -> (Value<'ctx, B, C>, i64) {
     let index_bits = index_type_size_in_bits(pointer.ty(), data_layout);
     let (base, offset) =
         strip_and_accumulate_offset(pointer, index_bits, allow_non_inbounds, data_layout);
@@ -299,12 +302,12 @@ pub fn pointer_base_with_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
 /// The base and accumulated offset [`pointer_base_with_constant_offset`]
 /// reports, kept as an `ApInt` for the in-crate callers that need the full
 /// width.
-fn strip_and_accumulate_offset<'ctx, B: ModuleBrand + 'ctx>(
-    pointer: Value<'ctx, B>,
+fn strip_and_accumulate_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    pointer: Value<'ctx, B, C>,
     index_bits: u32,
     allow_non_inbounds: bool,
     data_layout: &DataLayout,
-) -> (Value<'ctx, B>, ApInt) {
+) -> (Value<'ctx, B, C>, ApInt) {
     let mut offset = ApInt::zero(index_bits);
     let mut current = pointer;
     // Bounded the same way the underlying-object walk is; upstream relies on
@@ -329,18 +332,18 @@ fn strip_and_accumulate_offset<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// `None` covers both of upstream's failure spellings — no alloca found, and
 /// more than one found — because neither hands the caller an alloca.
-pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     offset_zero: bool,
-) -> Option<Value<'ctx, B>> {
-    let mut result: Option<Value<'ctx, B>> = None;
+) -> Option<Value<'ctx, B, C>> {
+    let mut result: Option<Value<'ctx, B, C>> = None;
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     let mut worklist = Vec::new();
     visited.insert(value.slot_trusting_same_module());
     worklist.push(value);
 
     while let Some(current) = worklist.pop() {
-        let mut pending: Vec<Value<'ctx, B>> = Vec::new();
+        let mut pending: Vec<Value<'ctx, B, C>> = Vec::new();
         match instruction_kind(current)? {
             InstructionKindData::Alloca(_) => match result {
                 Some(known)
@@ -397,7 +400,9 @@ pub fn find_alloca_for_value<'ctx, B: ModuleBrand + 'ctx>(
 /// Whether every user of `value` is a lifetime marker.
 ///
 /// Ports `llvm::onlyUsedByLifetimeMarkers`.
-pub fn only_used_by_lifetime_markers<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+pub fn only_used_by_lifetime_markers<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     only_used_by_markers(
         value,
         AllowedMarkers {
@@ -414,8 +419,12 @@ pub fn only_used_by_lifetime_markers<'ctx, B: ModuleBrand + 'ctx>(value: Value<'
 /// `User::isDroppable` (`llvm/lib/IR/User.cpp`): `@llvm.assume`,
 /// `@llvm.pseudoprobe` and `@llvm.experimental.noalias.scope.decl`, the
 /// intrinsics a transform may delete rather than update.
-pub fn only_used_by_lifetime_markers_or_droppable_instructions<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn only_used_by_lifetime_markers_or_droppable_instructions<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    value: Value<'ctx, B, C>,
 ) -> bool {
     only_used_by_markers(
         value,
@@ -445,8 +454,8 @@ struct AllowedMarkers {
 }
 
 /// Ports the static `onlyUsedByLifetimeMarkersOrDroppableInstsHelper`.
-fn only_used_by_markers<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn only_used_by_markers<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     allowed: AllowedMarkers,
 ) -> bool {
     let AllowedMarkers {
@@ -477,17 +486,17 @@ fn only_used_by_markers<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::getArgumentAliasingToReturnedPointer`. As upstream's comment
 /// warns, this is an *aliasing* property: it says two values name the same
 /// object, not that one may be substituted for the other.
-pub fn argument_aliasing_to_returned_pointer<'ctx, B: ModuleBrand + 'ctx>(
-    call: &InstructionView<'ctx, B>,
+pub fn argument_aliasing_to_returned_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    call: &InstructionView<'ctx, B, C>,
     must_preserve_nullness: bool,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     argument_aliasing_to_returned_pointer_impl(call.to_erased(), must_preserve_nullness)
 }
 
-fn argument_aliasing_to_returned_pointer_impl<'ctx, B: ModuleBrand + 'ctx>(
-    call: Value<'ctx, B>,
+fn argument_aliasing_to_returned_pointer_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    call: Value<'ctx, B, C>,
     must_preserve_nullness: bool,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     if let Some(returned) = returned_arg_operand(call) {
         return Some(returned);
     }
@@ -507,15 +516,16 @@ fn argument_aliasing_to_returned_pointer_impl<'ctx, B: ModuleBrand + 'ctx>(
 pub fn is_intrinsic_returning_pointer_aliasing_argument_without_capturing<
     'ctx,
     B: ModuleBrand + 'ctx,
+    C: Capability,
 >(
-    call: &InstructionView<'ctx, B>,
+    call: &InstructionView<'ctx, B, C>,
     must_preserve_nullness: bool,
 ) -> bool {
     intrinsic_returns_aliasing_argument(call.to_erased(), must_preserve_nullness)
 }
 
-fn intrinsic_returns_aliasing_argument<'ctx, B: ModuleBrand + 'ctx>(
-    call: Value<'ctx, B>,
+fn intrinsic_returns_aliasing_argument<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    call: Value<'ctx, B, C>,
     must_preserve_nullness: bool,
 ) -> bool {
     let Some(name) = called_intrinsic_name(call) else {
@@ -557,16 +567,17 @@ fn intrinsic_returns_aliasing_argument<'ctx, B: ModuleBrand + 'ctx>(
 /// perfectly good initializer that simply does not fit the `ConstantDataArray`
 /// interface. [`Self::element`] reads `0` from it, as upstream's `operator[]`
 /// does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ConstantDataArraySlice<'ctx, B: ModuleBrand> {
-    array: Option<Value<'ctx, B>>,
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConstantDataArraySlice<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    array: Option<Value<'ctx, B, C>>,
     offset: u64,
     length: u64,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ConstantDataArraySlice<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ConstantDataArraySlice<'ctx, B, C> {
     /// The backing array constant, or `None` for a zeroinitializer.
-    pub fn array(&self) -> Option<Value<'ctx, B>> {
+    pub fn array(&self) -> Option<Value<'ctx, B, C>> {
         self.array
     }
 
@@ -638,12 +649,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> ConstantDataArraySlice<'ctx, B> {
 ///
 /// `offset` is upstream's starting element offset, added to whatever the
 /// pointer arithmetic contributes.
-pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     element_size: u32,
     offset: u64,
     data_layout: &DataLayout,
-) -> Option<ConstantDataArraySlice<'ctx, B>> {
+) -> Option<ConstantDataArraySlice<'ctx, B, C>> {
     if element_size == 0 || !element_size.is_multiple_of(8) {
         return None;
     }
@@ -728,8 +739,8 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
 /// Upstream writes a `StringRef` into the caller's buffer and returns a
 /// `bool`; here the string is the `Some`. It is a `Vec<u8>` rather than a
 /// `String` because the bytes are IR data and need not be UTF-8.
-pub fn constant_string_info<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn constant_string_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     trim_at_nul: bool,
     data_layout: &DataLayout,
 ) -> Option<Vec<u8>> {
@@ -769,8 +780,8 @@ pub fn constant_string_info<'ctx, B: ModuleBrand + 'ctx>(
 /// tell"; that is `None` here, so a caller cannot mistake it for a length.
 ///
 /// `char_size` is in bits and defaults to 8 upstream.
-pub fn string_length<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn string_length<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     char_size: u32,
     data_layout: &DataLayout,
 ) -> Option<u64> {
@@ -797,8 +808,8 @@ enum StringLength {
 }
 
 /// Ports the static `GetStringLengthH`.
-fn string_length_recursive<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn string_length_recursive<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     phis: &mut HashSet<ValueSlot>,
     char_size: u32,
     data_layout: &DataLayout,
@@ -889,10 +900,10 @@ fn string_length_recursive<'ctx, B: ModuleBrand + 'ctx>(
 /// Building a constant is a module mutation, so this returns the *byte* instead
 /// and spells undef as [`BytewiseValue::AnyByte`]. The one case upstream can
 /// return a non-constant, an `i8`-typed value, is [`BytewiseValue::Value`].
-pub fn is_bytewise_value<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn is_bytewise_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     data_layout: &DataLayout,
-) -> Option<BytewiseValue<'ctx, B>> {
+) -> Option<BytewiseValue<'ctx, B, C>> {
     // Undef does not care which byte.
     //
     // Ordered before the `i8` arm, where upstream orders it after. Upstream can
@@ -965,8 +976,12 @@ pub fn is_bytewise_value<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// What [`is_bytewise_value`] found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BytewiseValue<'ctx, B: ModuleBrand> {
+///
+/// A [`Value`](Self::Value) answer carries the capability of the value asked
+/// about.
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BytewiseValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     /// A concrete byte. Upstream mints `ConstantInt::get(i8, byte)`.
     Byte(u8),
     /// Every byte is undef or padding, so any byte will do. Upstream's
@@ -974,14 +989,14 @@ pub enum BytewiseValue<'ctx, B: ModuleBrand> {
     AnyByte,
     /// An `i8`-typed value that is not a constant — upstream returns `V` itself
     /// from the first arm.
-    Value(Value<'ctx, B>),
+    Value(Value<'ctx, B, C>),
 }
 
 /// Ports the `Merge` lambda inside `isBytewiseValue`.
-fn merge_bytewise<'ctx, B: ModuleBrand + 'ctx>(
-    lhs: BytewiseValue<'ctx, B>,
-    rhs: BytewiseValue<'ctx, B>,
-) -> Option<BytewiseValue<'ctx, B>> {
+fn merge_bytewise<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: BytewiseValue<'ctx, B, C>,
+    rhs: BytewiseValue<'ctx, B, C>,
+) -> Option<BytewiseValue<'ctx, B, C>> {
     match (lhs, rhs) {
         (BytewiseValue::AnyByte, other) | (other, BytewiseValue::AnyByte) => Some(other),
         (BytewiseValue::Byte(a), BytewiseValue::Byte(b)) if a == b => Some(BytewiseValue::Byte(a)),
@@ -1005,10 +1020,10 @@ fn merge_bytewise<'ctx, B: ModuleBrand + 'ctx>(
 /// Upstream's `InsertBefore` variant additionally *builds* `insertvalue`
 /// instructions to reassemble a sub-aggregate; see the module docs for why that
 /// half is absent.
-pub fn find_inserted_value<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+pub fn find_inserted_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     indices: &[u32],
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     // Nothing to index? The value itself — useful at the end of the recursion.
     let Some((&first, rest)) = indices.split_first() else {
         return Some(value);
@@ -1063,9 +1078,9 @@ pub fn find_inserted_value<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Ports the static `getUnderlyingObjectFromInt`: walk back through integer
 /// arithmetic to the `ptrtoint` that started it.
-fn underlying_object_from_int<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Value<'ctx, B> {
+fn underlying_object_from_int<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Value<'ctx, B, C> {
     let mut current = value;
     loop {
         let Some(opcode) = operator_opcode(current) else {
@@ -1130,10 +1145,10 @@ enum PointerStripKind {
 /// interned `ptr @g` constant (`ConstantData::GlobalValueRef`) *is* upstream's
 /// `GlobalValue` (`docs/divergences.md` D3), so every value the walk reaches —
 /// the input, each step, and so the answer — is read as the global it names.
-fn strip_pointer_casts_and_offsets<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn strip_pointer_casts_and_offsets<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     kind: PointerStripKind,
-) -> Value<'ctx, B> {
+) -> Value<'ctx, B, C> {
     // `if (!V->getType()->isPointerTy()) return V;` — `isPointerTy` is the
     // opaque `PointerTyID` only; a `TypedPointerType` is not one.
     if !is_opaque_pointer(value.ty()) {
@@ -1213,9 +1228,9 @@ fn strip_pointer_casts_and_offsets<'ctx, B: ModuleBrand + 'ctx>(
 /// ([`string_length`]), `classifyEHPersonality`
 /// ([`crate::eh_personalities::classify_eh_personality`]) and
 /// `Verifier::visitEHPadPredecessors`'s invoke-callee test.
-pub(crate) fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Value<'ctx, B> {
+pub(crate) fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Value<'ctx, B, C> {
     strip_pointer_casts_and_offsets(value, PointerStripKind::ZeroIndices)
 }
 
@@ -1225,9 +1240,9 @@ pub(crate) fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// `Verifier::visitCallBase`'s `swifterror` loop is its one caller here:
 /// `dyn_cast<AllocaInst>(SwiftErrorArg->stripInBoundsOffsets())`.
-pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Value<'ctx, B> {
+pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Value<'ctx, B, C> {
     strip_pointer_casts_and_offsets(value, PointerStripKind::InBounds)
 }
 
@@ -1267,15 +1282,17 @@ pub(crate) fn strip_in_bounds_offsets<'ctx, B: ModuleBrand + 'ctx>(
 ///   an instruction GEP: [`returned_arg_operand`] answers only for a `call`,
 ///   `invoke` or `callbr` instruction. Both are ported for a caller that hands
 ///   in an instruction.
-pub(crate) fn strip_pointer_casts_and_aliases<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Value<'ctx, B> {
+pub(crate) fn strip_pointer_casts_and_aliases<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Value<'ctx, B, C> {
     strip_pointer_casts_and_offsets(value, PointerStripKind::ZeroIndicesAndAliases)
 }
 
 /// The global an interned `ptr @g` constant names, or `value` itself — the
 /// D3 reading [`strip_pointer_casts_and_offsets`] applies at every step.
-fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, B> {
+fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Value<'ctx, B, C> {
     match &value.data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value: global }) => {
             value_from_slot(value, *global)
@@ -1286,7 +1303,7 @@ fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> V
 
 /// `isPointerTy`: the opaque `PointerTyID` only, not a `TypedPointerType`
 /// (which [`is_pointer`] also admits).
-fn is_opaque_pointer<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
+fn is_opaque_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(ty: Type<'ctx, B, C>) -> bool {
     matches!(ty.kind(), TypeKind::Pointer { .. })
 }
 
@@ -1294,9 +1311,9 @@ fn is_opaque_pointer<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
 /// instruction, a `getelementptr` constant expression, or llvmkit's compact
 /// `getelementptr inbounds (i8, ptr @g, i64 off)` (`ConstantData::GepOffset`),
 /// which stands for the constant expression of that spelling.
-struct GepOperator<'ctx, B: ModuleBrand> {
+struct GepOperator<'ctx, B: ModuleBrand, C: Capability> {
     /// `GEPOperator::getPointerOperand`.
-    pointer_operand: Value<'ctx, B>,
+    pointer_operand: Value<'ctx, B, C>,
     form: GepForm<'ctx>,
 }
 
@@ -1311,9 +1328,9 @@ enum GepForm<'ctx> {
     },
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> GepOperator<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepOperator<'ctx, B, C> {
     /// `dyn_cast<GEPOperator>(V)`.
-    fn of(value: Value<'ctx, B>) -> Option<Self> {
+    fn of(value: Value<'ctx, B, C>) -> Option<Self> {
         if let Some(InstructionKindData::Gep(data)) = instruction_kind(value) {
             return Some(Self {
                 pointer_operand: value_from_slot(value, data.ptr.get()),
@@ -1364,7 +1381,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepOperator<'ctx, B> {
 }
 
 /// `isa<ConstantInt>(V) && cast<ConstantInt>(V)->isZero()`.
-fn is_zero_constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_zero_constant_int<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     matches!(
         &value.data().kind,
         ValueKindData::Constant(ConstantData::Int(words)) if words.iter().all(|word| *word == 0)
@@ -1386,9 +1405,13 @@ fn is_zero_constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
 ///
 /// Crate-visible rather than public: `Value.h` is not a surface the
 /// ValueTracking parity ledger tracks.
-pub(crate) fn strip_pointer_casts_same_representation<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Value<'ctx, B> {
+pub(crate) fn strip_pointer_casts_same_representation<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    value: Value<'ctx, B, C>,
+) -> Value<'ctx, B, C> {
     strip_pointer_casts_and_offsets(value, PointerStripKind::ZeroIndicesSameRepresentation)
 }
 
@@ -1397,7 +1420,9 @@ pub(crate) fn strip_pointer_casts_same_representation<'ctx, B: ModuleBrand + 'ct
 /// Not public: it belongs to `AliasAnalysis.h`, a surface the ValueTracking
 /// parity ledger does not track, and only
 /// [`underlying_objects_for_code_gen`] reads it.
-fn is_identified_object<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_identified_object<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
     if matches!(
         instruction_kind(value),
         Some(InstructionKindData::Alloca(_))
@@ -1429,8 +1454,8 @@ fn is_identified_object<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
 }
 
 /// Whether parameter `slot` of `parent_fn` carries any of `wanted`.
-fn argument_has_any_attribute<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn argument_has_any_attribute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     parent_fn: ValueSlot,
     slot: u32,
     wanted: &[AttrKind],
@@ -1458,7 +1483,7 @@ fn is_interposable_linkage(linkage: Linkage) -> bool {
 }
 
 /// Ports `Constant::isNullValue` for the constant forms llvmkit stores.
-fn is_null_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+fn is_null_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
     matches!(&value.data().kind, ValueKindData::Constant(_))
         && Constant::from_parts(value).is_null_value()
 }
@@ -1488,7 +1513,9 @@ fn splat_byte(bits: &ApInt) -> Option<u8> {
 
 /// The integer width `isBytewiseValue` reinterprets a float at, or `None` for
 /// the long-double formats upstream declines.
-fn float_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<u32> {
+fn float_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Option<u32> {
     match ty.kind() {
         TypeKind::Half | TypeKind::Bfloat => Some(16),
         TypeKind::Float => Some(32),
@@ -1512,7 +1539,9 @@ fn to_words(bits: u128) -> [u64; 2] {
 /// `GetElementPtr`. [`operator_operand`] cannot hand out its offset, which is
 /// no arena value; [`GepOperator`] reads the pointer operand, indices and
 /// flags of all three forms.
-fn operator_opcode<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Opcode> {
+fn operator_opcode<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<Opcode> {
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => Some(instruction.kind.opcode()),
         ValueKindData::Constant(ConstantData::GepOffset { .. }) => Some(Opcode::GetElementPtr),
@@ -1537,10 +1566,10 @@ fn operator_opcode<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option
 
 /// Operand `index` of an instruction or constant expression, in the order
 /// `User::operands` yields them.
-fn operator_operand<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn operator_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     index: usize,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => {
             let slot = *instruction.kind.operand_ids().get(index)?;
@@ -1554,10 +1583,10 @@ fn operator_operand<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Argument `index` of a call/invoke/callbr.
-fn call_argument<'ctx, B: ModuleBrand + 'ctx>(
-    call: Value<'ctx, B>,
+fn call_argument<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    call: Value<'ctx, B, C>,
     index: usize,
-) -> Option<Value<'ctx, B>> {
+) -> Option<Value<'ctx, B, C>> {
     let args = match instruction_kind(call)? {
         InstructionKindData::Call(data) => &data.args,
         InstructionKindData::Invoke(data) => &data.args,
@@ -1568,8 +1597,8 @@ fn call_argument<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The return-position attributes of a call/invoke/callbr.
-fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx>(
-    call: Value<'ctx, B>,
+fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    call: Value<'ctx, B, C>,
 ) -> Option<&'ctx [AttributeStored]> {
     let attrs = match instruction_kind(call)? {
         InstructionKindData::Call(data) => data.attrs.get(),
@@ -1584,8 +1613,8 @@ fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The base name of the intrinsic `call` invokes directly.
-fn called_intrinsic_name<'ctx, B: ModuleBrand + 'ctx>(
-    call: Value<'ctx, B>,
+fn called_intrinsic_name<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    call: Value<'ctx, B, C>,
 ) -> Option<&'static str> {
     let callee = match instruction_kind(call)? {
         InstructionKindData::Call(data) => data.callee.get(),
@@ -1598,8 +1627,8 @@ fn called_intrinsic_name<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Ports `GetElementPtrInst::hasAllZeroIndices`.
-fn gep_has_all_zero_indices<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn gep_has_all_zero_indices<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &GepInstData,
 ) -> bool {
     data.indices
@@ -1614,12 +1643,12 @@ fn gep_has_all_zero_indices<'ctx, B: ModuleBrand + 'ctx>(
 /// (`llvm/lib/IR/Value.cpp`). `addrspacecast` is deliberately not peeled, for
 /// the reason upstream's own comment gives: crossing one can change the index
 /// width mid-walk, and this keeps a single width throughout.
-fn peel_one_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn peel_one_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
     index_bits: u32,
     allow_non_inbounds: bool,
     data_layout: &DataLayout,
-) -> Option<(Value<'ctx, B>, ApInt)> {
+) -> Option<(Value<'ctx, B, C>, ApInt)> {
     if let Some(InstructionKindData::Gep(data)) = instruction_kind(value) {
         if !allow_non_inbounds && !data.flags.contains(GepNoWrapFlags::IN_BOUNDS) {
             return None;
@@ -1644,8 +1673,8 @@ fn peel_one_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
 
 /// The constant byte offset a `getelementptr` adds, or `None` when any index is
 /// not a constant or a type is not walkable.
-fn gep_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
+fn gep_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
     data: &GepInstData,
     index_bits: u32,
     data_layout: &DataLayout,
@@ -1689,10 +1718,10 @@ fn gep_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
     Some(offset)
 }
 
-fn struct_field_type<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+fn struct_field_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
     field: usize,
-) -> Option<Type<'ctx, B>> {
+) -> Option<Type<'ctx, B, C>> {
     let TypeData::Struct(data) = ty.data() else {
         return None;
     };
@@ -1704,7 +1733,9 @@ fn struct_field_type<'ctx, B: ModuleBrand + 'ctx>(
     Some(Type::new(slot, module_ref_from_type(ty)))
 }
 
-fn element_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Type<'ctx, B>> {
+fn element_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Option<Type<'ctx, B, C>> {
     let module = module_ref_from_type(ty);
     if let Some((element, _)) = ty.data().as_array() {
         return Some(Type::new(element, module));
@@ -1714,8 +1745,8 @@ fn element_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Type<'
 }
 
 /// The index width `DataLayout::getIndexTypeSizeInBits` gives for `ty`.
-fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
     data_layout: &DataLayout,
 ) -> u32 {
     match ty.kind() {
@@ -1732,12 +1763,12 @@ fn signed_ap_int(value: i64, bits: u32) -> ApInt {
     ApInt::from_words(64, &[value.cast_unsigned()]).sext_or_trunc(bits)
 }
 
-fn is_pointer<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
+fn is_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(ty: Type<'ctx, B, C>) -> bool {
     matches!(ty.kind(), TypeKind::Pointer { .. } | TypeKind::TypedPointer)
 }
 
-fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
+fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
 ) -> Option<&'ctx InstructionKindData> {
     match &value.data().kind {
         ValueKindData::Instruction(instruction) => Some(&instruction.kind),
@@ -1745,10 +1776,18 @@ fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn module_ref<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> ModuleRef<'ctx, B> {
-    ModuleRef::new(value.module().core_ref())
+/// The value's own module reference, at the value's capability — a handle
+/// minted from it is navigation, so it keeps what the caller held.
+fn module_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> ModuleRef<'ctx, B, C> {
+    value.module
 }
 
-fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> ModuleRef<'ctx, B> {
-    ModuleRef::new(ty.module().core_ref())
+/// The type's own module reference, at the type's capability; see
+/// [`module_ref`].
+fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> ModuleRef<'ctx, B, C> {
+    ty.module
 }
