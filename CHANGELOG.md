@@ -146,8 +146,7 @@ cut, entries accumulate under **Unreleased**.
     verified module's `view(f)` / `view(g)`, a `ModuleView`'s `view`,
     `FunctionBody::as_function()`, a `ReadOnly` function's
     `intrinsic_descriptor()` — where it compiled while `view` handed out
-    `Mutable` handles. Read and analysis entries: `DominatorTree::new` /
-    `recalculate`, `FunctionCfg::new`, `color_eh_funclets`,
+    `Mutable` handles. Read and analysis entries: `color_eh_funclets`,
     `check_function_phi_coherence`, `get_vscale_range`, `fcmp_implies_class`,
     `fcmp_implies_class_of_constant`, `fcmp_implies_class_of_class`,
     `fcmp_to_class_test`, `fcmp_to_class_test_of_constant`, and in
@@ -175,7 +174,9 @@ cut, entries accumulate under **Unreleased**.
     function's parameter list or a trait impl's trait arguments; the
     `verifier.rs` references were set aside because `Verifier` has no
     function more visible than `pub(crate)`; `GlobalRef`'s variants come
-    from reading its `pub enum`. That reproduced the list above exactly. The
+    from reading its `pub enum`. That reproduced the list above exactly, plus
+    `DominatorTree::new` / `recalculate` and `FunctionCfg::new`, which Task 6
+    has since made generic over the capability and are removed from it. The
     entries this change made generic (`IntoCallee`, `IntoTypedCallee`,
     `IntoVarArgsCallee`, the `comdat` setters, `try_delta_from(_plus)`,
     `try_from_function`, `From` for `Value` / `Constant` / `FunctionView`)

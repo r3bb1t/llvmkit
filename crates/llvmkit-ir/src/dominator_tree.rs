@@ -211,15 +211,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockV
 impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {}
 
 impl DominatorTree {
-    /// Recompute dominance for `function`.
-    pub fn new<'ctx, B: ModuleBrand + 'ctx>(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+    /// Recompute dominance for `function` — a function of either capability:
+    /// the tree only reads it.
+    pub fn new<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        function: FunctionValue<'ctx, Dyn, B, C>,
+    ) -> Self {
         compute(function)
     }
 
     /// Recalculate this tree for a function. Mirrors LLVM's `recalculate`.
-    pub fn recalculate<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn recalculate<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &mut self,
-        function: FunctionValue<'ctx, Dyn, B>,
+        function: FunctionValue<'ctx, Dyn, B, C>,
     ) {
         *self = compute(function);
     }
@@ -563,7 +566,9 @@ impl DominatorTree {
     }
 }
 
-fn compute<'ctx, B: ModuleBrand + 'ctx>(function: FunctionValue<'ctx, Dyn, B>) -> DominatorTree {
+fn compute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    function: FunctionValue<'ctx, Dyn, B, C>,
+) -> DominatorTree {
     let cfg = FunctionCfg::new(function);
     let reachable = compute_reachable(function, &cfg);
     let dominators = compute_dominators(function, &cfg, &reachable);
@@ -581,8 +586,8 @@ fn compute<'ctx, B: ModuleBrand + 'ctx>(function: FunctionValue<'ctx, Dyn, B>) -
     }
 }
 
-fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
-    function: FunctionValue<'ctx, Dyn, B>,
+fn compute_reachable<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    function: FunctionValue<'ctx, Dyn, B, C>,
     cfg: &FunctionCfg<'ctx, B>,
 ) -> HashSet<ValueSlot> {
     let mut reachable = HashSet::new();
@@ -606,8 +611,8 @@ fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
     reachable
 }
 
-fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
-    function: FunctionValue<'ctx, Dyn, B>,
+fn compute_dominators<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    function: FunctionValue<'ctx, Dyn, B, C>,
     cfg: &FunctionCfg<'ctx, B>,
     reachable: &HashSet<ValueSlot>,
 ) -> HashMap<ValueSlot, HashSet<ValueSlot>> {
@@ -659,8 +664,8 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
 /// The predecessor map, read off [`FunctionCfg`] rather than re-derived by
 /// transposing its edge list — `pred_iterator` is a use-list view and the
 /// edge list is in block order, so the two answer in different orders.
-fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
-    function: FunctionValue<'ctx, Dyn, B>,
+fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    function: FunctionValue<'ctx, Dyn, B, C>,
     cfg: &FunctionCfg<'ctx, B>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
     function
@@ -679,8 +684,8 @@ type InstructionMaps = (
     HashMap<ValueSlot, Vec<ValueSlot>>,
 );
 
-fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
-    function: FunctionValue<'ctx, Dyn, B>,
+fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    function: FunctionValue<'ctx, Dyn, B, C>,
 ) -> InstructionMaps {
     let mut parent = HashMap::new();
     let mut order = HashMap::new();

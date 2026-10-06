@@ -8,9 +8,9 @@ use core::iter::FusedIterator;
 use std::collections::HashMap;
 
 use super::basic_block::{BasicBlock, IntoBasicBlockLabel};
-use super::block_params::BlockParams;
+use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{BlockTerminationState, Unterminated};
-use super::capability::Capability;
+use super::capability::{Capability, ReadOnly};
 use super::function::FunctionValue;
 use super::instr_types::{BranchInstData, BranchKind};
 use super::instruction::{InstructionKindData, InstructionView};
@@ -56,7 +56,9 @@ impl<B: ModuleBrand> BasicBlockEdge<B> {
 #[derive(Branded)]
 #[branded(Debug, Clone)]
 pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx> {
-    function: FunctionValue<'ctx, Dyn, B>,
+    /// The function the snapshot was taken of, kept at [`ReadOnly`]: a CFG
+    /// only reads it.
+    function: FunctionValue<'ctx, Dyn, B, ReadOnly>,
     successors: HashMap<ValueSlot, Vec<ValueSlot>>,
     predecessors: HashMap<ValueSlot, Vec<ValueSlot>>,
     edges: Vec<BasicBlockEdge<B>>,
@@ -64,9 +66,10 @@ pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
     /// Build a fresh CFG snapshot from the function's current terminators.
-    pub fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+    /// A function of either capability: building the snapshot only reads it.
+    pub fn new<C: Capability>(function: FunctionValue<'ctx, Dyn, B, C>) -> Self {
         let module = function.module();
-        let module_ref: ModuleRef<'ctx, B> = module.into();
+        let module_ref = function.module;
         let label_ty = module.label_type().as_type().slot_trusting_same_module();
         let mut successors = HashMap::new();
         let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
@@ -79,8 +82,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
             for succ_id in &succ_ids {
                 edges.push(BasicBlockEdge::new(
                     block.id(),
-                    BasicBlock::<Dyn, Unterminated, B>::from_parts(*succ_id, module_ref, label_ty)
-                        .id(),
+                    BasicBlock::<Dyn, Unterminated, B, BlockParamsDyn, C>::from_parts(
+                        *succ_id, module_ref, label_ty,
+                    )
+                    .id(),
                 ));
             }
             successors.insert(block_id, succ_ids);
@@ -95,7 +100,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         }
 
         Self {
-            function,
+            function: function.read_only(),
             successors,
             predecessors,
             edges,

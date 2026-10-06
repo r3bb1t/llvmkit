@@ -1371,7 +1371,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DominatorTreeAna
     where
         'ctx: 'v,
     {
-        Ok(DominatorTree::new(function.function_for_analysis()))
+        Ok(DominatorTree::new(function.as_function()))
     }
 }
 
@@ -1423,7 +1423,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
     where
         'ctx: 'v,
     {
-        *self = DominatorTree::new(function.function_for_analysis());
+        *self = DominatorTree::new(function.as_function());
         RepairOutcome::Repaired
     }
 
@@ -1432,7 +1432,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
     where
         'ctx: 'v,
     {
-        DominatorTree::new(function.function_for_analysis())
+        DominatorTree::new(function.as_function())
     }
 }
 

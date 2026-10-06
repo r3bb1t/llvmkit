@@ -731,6 +731,110 @@ fn read_only_predicates_take_each_operand_at_its_own_capability() -> Result<(), 
     Ok(())
 }
 
+/// The function-level analyses read a function of either capability and answer
+/// the same: `DominatorTree::new` / `recalculate` and `FunctionCfg::new` on a
+/// verified module's `ReadOnly` function agree with the same entries on the
+/// `Mutable` function they were built from, over a diamond with an unreachable
+/// block. llvmkit-specific (D1, D8): upstream's analyses take a `Function &`,
+/// which carries no capability.
+#[test]
+fn the_function_analyses_read_a_function_of_either_capability() -> Result<(), IrError> {
+    use llvmkit_ir::{DominatorTree, FunctionCfg, IntPredicate};
+
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let f = m.add_function_dyn(
+        "f",
+        m.function_type(i32_ty, [i32_ty.as_type()]),
+        Linkage::External,
+    )?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let then_block = m.view(f).append_basic_block(&m, "then");
+    let else_block = m.view(f).append_basic_block(&m, "else");
+    let join = m.view(f).append_basic_block(&m, "join");
+    let dead = m.view(f).append_basic_block(&m, "dead");
+    let blocks = [
+        entry.id(),
+        then_block.id(),
+        else_block.id(),
+        join.id(),
+        dead.id(),
+    ];
+    let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let cond = b.int_cmp(IntPredicate::Eq, x, 0_i32, "cond")?;
+    b.cond_br(cond, blocks[1], blocks[2])?;
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(then_block)
+        .br(blocks[3])?;
+    IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(else_block)
+        .br(blocks[3])?;
+    IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(x)?;
+    IrBuilder::new_for::<Dyn>(&m).position_at_end(dead).ret(x)?;
+
+    let mutable_tree = DominatorTree::new(m.view(f));
+    // A CFG snapshot borrows its module, so read the `Mutable` one out before
+    // verification consumes the module.
+    let mutable_cfg = FunctionCfg::new(m.view(f));
+    let mutable_edges: Vec<_> = mutable_cfg
+        .edges()
+        .map(|edge| (edge.start(), edge.end()))
+        .collect();
+    let mutable_adjacency = blocks.map(|block| {
+        (
+            mutable_cfg.successors(block).collect::<Vec<_>>(),
+            mutable_cfg.predecessors(block).collect::<Vec<_>>(),
+        )
+    });
+    drop(mutable_cfg);
+    let m = m.verify()?;
+    let function = m.view(f);
+    assert_eq!(capability(function), TypeId::of::<ReadOnly>());
+    let read_only_tree = DominatorTree::new(function);
+    let mut recalculated = DominatorTree::new(function);
+    recalculated.recalculate(function);
+    let read_only_cfg = FunctionCfg::new(function);
+
+    assert_eq!(read_only_cfg.function(), f);
+    let read_only_edges: Vec<_> = read_only_cfg
+        .edges()
+        .map(|edge| (edge.start(), edge.end()))
+        .collect();
+    assert_eq!(read_only_edges, mutable_edges);
+    assert_eq!(
+        read_only_edges.len(),
+        4,
+        "entry→then, entry→else, then→join, else→join"
+    );
+    for (block, (successors, predecessors)) in blocks.into_iter().zip(&mutable_adjacency) {
+        assert_eq!(
+            &read_only_cfg.successors(block).collect::<Vec<_>>(),
+            successors
+        );
+        assert_eq!(
+            &read_only_cfg.predecessors(block).collect::<Vec<_>>(),
+            predecessors
+        );
+        for tree in [&read_only_tree, &recalculated] {
+            assert_eq!(
+                tree.is_reachable_from_entry(block),
+                mutable_tree.is_reachable_from_entry(block)
+            );
+            for other in blocks {
+                assert_eq!(
+                    tree.dominates_block(block, other),
+                    mutable_tree.dominates_block(block, other)
+                );
+            }
+        }
+    }
+    assert!(!read_only_tree.is_reachable_from_entry(blocks[4]));
+    assert!(read_only_tree.dominates_block(blocks[0], blocks[3]));
+    assert!(!read_only_tree.dominates_block(blocks[1], blocks[3]));
+    Ok(())
+}
+
 /// Every instruction view an `Inspect` pass reaches is `ReadOnly` — the
 /// guarantee that keeps a read-only rung read-only once mutators stop asking
 /// for a token. The pass is taken by value, so it records into a vector the
