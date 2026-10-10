@@ -1847,6 +1847,20 @@ already carry uses that the move must not disturb. No upstream test that
 llvmkit ports needs it yet; it wants its own port, test-first, rather than a
 rider on the bundle copy.
 
+## `ConstantDataSequential` has no raw-data surface (found 2026-10-10, capability plan Task 6.1)
+
+`unittests/IR/ConstantsTest.cpp`'s `BuildConstantDataArrays` and
+`BuildConstantDataVectors` round-trip each sequential constant through
+`ConstantDataArray::getRaw(CDA->getRawDataValues(), CDA->getNumElements(),
+CDA->getElementType())` and assert the result is the same uniqued constant.
+llvmkit has neither half: no accessor for a sequential constant's packed bytes
+and no constructor from them (`rg -n "raw_data|get_raw" crates/llvmkit-ir/src`
+found nothing on 2026-10-10). `crates/llvmkit-ir/tests/constant_kind.rs` ports
+the class assertions of both tests and names the round trip as their blocked
+half. Closing it means a `getRawDataValues` / `getRaw` pair on the
+`ConstantDataKind::Sequential` constants, after which the two tests take their
+second assertion back.
+
 ## Ergonomics backlog (from the core audit)
 
 - `Display` for the 39 typed instruction handles (`LoadInst`, `CallInst`, …;

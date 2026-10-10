@@ -209,8 +209,9 @@ pub use cfg_update::{CfgEdge, CfgUpdate};
 pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate, PredicateWithSameSign};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{
-    Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantGepFlags,
-    ForwardRefValue, IntoConstantValue, IsConstant, OverflowingConstantExprFlags,
+    Constant, ConstantAggregateKind, ConstantDataKind, ConstantExprFlags, ConstantExprInRange,
+    ConstantExprOpcode, ConstantGepFlags, ConstantKind, ConstantSequentialKind, ForwardRefValue,
+    IntoConstantValue, IsConstant, OverflowingConstantExprFlags, Undefined,
 };
 pub use constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,

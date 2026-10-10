@@ -19,6 +19,46 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — a constant says which LLVM class it is
+
+- **`Constant::kind()`** answers which of upstream's constant classes a
+  constant is, as an algebraic enum nested the way `Value.def` groups them:
+  `ConstantKind::Data(ConstantDataKind)` (`Undef(Undefined)`, where
+  `Undefined::Poison` is `PoisonValue`, the subclass of `UndefValue`;
+  `AggregateZero`; `Sequential(ConstantSequentialKind)`; `Int` and `Float`
+  carrying their typed handles; `TargetNone`; `PointerNull`; `TokenNone`),
+  `Aggregate(ConstantAggregateKind)`, `GlobalValue`, `BlockAddress`,
+  `Expr(ConstantExprOpcode)`, `DsoLocalEquivalent`, `NoCfi`, `PtrAuth`, and
+  `ForwardReference` for llvmkit's parser placeholder (`docs/divergences.md`
+  entry 144). llvmkit stores every element list in one form, so an array,
+  struct or vector constant is classified by replaying upstream's
+  construction rules — `ConstantArray::getImpl`, `ConstantStruct::get`,
+  `ConstantVector::getImpl`, and `ConstantVector::getSplat` for a scalable
+  vector. `crates/llvmkit-ir/tests/constant_kind.rs` ports
+  `ConstantsTest.cpp`'s `BuildConstantDataArrays` / `BuildConstantDataVectors`
+  (their `getRaw` round trip is blocked and recorded in `docs/future-work.md`)
+  and pins each construction rule.
+
+### Fixed — `Constant::is_constant_data` follows upstream's `ConstantData` class
+
+- It counted an element list as `ConstantData` only when every element was
+  null, so a `ConstantDataVector` / `ConstantDataArray` (`<4 x i32> <i32 0, i32
+  1, i32 2, i32 3>`) and an all-`undef` or all-`poison` list answered `false`
+  where upstream answers `true`. `Value::has_use_list` (`Value::hasUseList`'s
+  port) inherited the wrong answer, and the `AsmWriter`'s use-list ordering
+  walked such a constant's elements where upstream's `orderValue` returns at
+  `isa<ConstantData>`. It is now `matches!(self.kind(), ConstantKind::Data(_))`.
+- It reached `unreachable!` on a `Constant` wrapping a global's own slot —
+  `as_constant` on a global variable, alias or ifunc, or an aliasee, resolver,
+  personality or initializer that names a global — on the premise that a
+  `Constant` only ever wraps a constant-kind slot. A global is now
+  `ConstantKind::GlobalValue`, as upstream's `GlobalValue` is a `Constant`.
+- Neither was covered: `rg -n "has_use_list\(|is_constant_data\(" crates --type rust`
+  found only production callers on 2026-10-10.
+  `constant_kind.rs::constant_data_membership_follows_the_class` and
+  `::a_global_widened_to_a_constant_is_a_global_value` fail against the old
+  body (the second by its `unreachable!`).
+
 ### Fixed — the pointer-strip walks are one port of `stripPointerCastsAndOffsets`
 
 - **`Value::stripPointerCasts` and `stripPointerCastsSameRepresentation`

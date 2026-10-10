@@ -2203,6 +2203,34 @@ answer — a hypothesis until one does)
   caller that relies on the refusal — or record the refusal as deliberate
   hardening.
 
+### 144. The parser's forward-reference placeholder is a bare constant, not a `GlobalVariable`
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-ir/src/constant.rs` — `ConstantData::ForwardRefPlaceholder`,
+answered by `Constant::kind` as `ConstantKind::ForwardReference`
+
+- **LLVM:** a global referenced before its definition, and a `blockaddress` or
+  `dso_local_equivalent` the parser must defer, are each held by a placeholder
+  `GlobalVariable` — `createGlobalFwdRef` builds it, and the two deferrals in
+  `LLParser::parseValID` do too — so `isa<GlobalValue>` answers `true` for it
+  until the real value replaces it.
+- **llvmkit:** the placeholder is `ConstantData::ForwardRefPlaceholder`, a
+  constant with no global behind it — no name, no linkage, no `GlobalValue`
+  handle to narrow to. `Constant::kind` therefore answers
+  `ConstantKind::ForwardReference` rather than `GlobalValue`, and
+  `is_constant_data` answers `false`, as upstream does for its placeholder. The
+  difference is observable only while a parse is in flight — every placeholder
+  is replaced before a parse succeeds — or through the public
+  `Module::forward_ref_value_placeholder`.
+- **Found:** 2026-10-10, writing `Constant::kind` (capability plan Task 6.1).
+  `rg -n "ForwardRefPlaceholder|forward.reference placeholder|createGlobalFwdRef" docs/divergences.md docs/future-work.md`
+  found only D2's passing mention of the `no_cfi` deferral. The same task
+  corrected `is_constant_data`'s doc comment, which said upstream's stand-in is
+  "a `GlobalValue` or instruction".
+- **Fix:** mint the placeholder as a global (a `GlobalVariable` with no
+  initializer, removed when replaced), so `kind()` answers `GlobalValue` as
+  upstream does — or keep the bare constant as deliberate and say so here.
+
 ## Coverage, tooling and provenance
 
 Nothing changes for a well-formed module; these are gaps in what is measured, guarded or recorded.
