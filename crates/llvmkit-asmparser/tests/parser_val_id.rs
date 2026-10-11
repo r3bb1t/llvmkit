@@ -7,7 +7,7 @@ use llvmkit_ir::module_new;
 
 pub mod support;
 
-use support::line_and_column;
+use support::reported_line_and_column;
 
 fn parse_err(src: &str) -> ParseError {
     let module = Module::dynamic("parser_val_id");
@@ -54,10 +54,8 @@ fn fadd_constant_expr_rejected_as_unsupported() {
 fn assert_diagnostic(src: &str, expected: &str, expected_loc: (u32, u32)) {
     let err = parse_err(src);
     assert_eq!(err.to_string(), expected, "message text");
-    let start = err.loc().start;
-    let offset = usize::try_from(start).unwrap_or(usize::MAX);
     assert_eq!(
-        line_and_column(src.as_bytes(), offset),
+        reported_line_and_column(src.as_bytes(), &err),
         expected_loc,
         "caret position for `{expected}`"
     );

@@ -190,8 +190,9 @@ pub fn reported_line_and_column(source: &[u8], error: &ParseError) -> (u32, u32)
 /// Comparing the text alone is what let a diagnostic carry upstream's exact
 /// wording from an unrelated token. `test/Verifier/invalid-label-param.ll`
 /// was one: its `CHECK` pins only the message, and llvmkit raised that
-/// message from another routine at another token (`docs/divergences.md`
-/// entry 145). A caller that does not care about the anchor projects `.0`.
+/// message from another routine at another token, because its call sites
+/// lacked `LLParser::parseParameterList`'s argument-type guard. A caller that
+/// does not care about the anchor projects `.0`.
 pub fn rejection_at(source: impl AsRef<[u8]>) -> (String, (u32, u32)) {
     let source = source.as_ref();
     let module = Module::dynamic("rejection_at");

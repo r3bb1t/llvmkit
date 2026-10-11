@@ -1237,8 +1237,9 @@ fn the_header_checks_its_return_type() {
 /// is caught here rather than at `validateEndOfModule`.
 ///
 /// `test/Assembler/invalid-label-call-arg.ll` shares the message but reaches
-/// it through a call's parameter list, where llvmkit has not ported the guard
-/// (`docs/divergences.md` entry 145).
+/// it through a call's parameter list — `LLParser::parseParameterList`'s own
+/// guard — and is ported by
+/// `parser_calls.rs::upstream_label_call_argument_fixture_is_rejected_at_the_argument`.
 #[test]
 fn the_header_checks_its_argument_types() {
     for fixture in [

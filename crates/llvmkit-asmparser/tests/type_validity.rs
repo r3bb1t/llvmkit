@@ -17,7 +17,7 @@
 //! built in Rust can hold and print, and no parser reads back.
 
 use llvmkit_asmparser::ll_parser::Parser;
-use llvmkit_asmparser::{SlotMapping, parse_type, parse_type_with_slots};
+use llvmkit_asmparser::{SlotMapping, parse_type, parse_type_at_beginning, parse_type_with_slots};
 use llvmkit_ir::{AnyTypeEnum, DynBrand, IrError, Module, Type};
 
 pub mod support;
@@ -64,22 +64,20 @@ fn upstream_target_type_without_the_vector_property_is_rejected() {
 /// Ports `test/Verifier/invalid-label-param.ll`: a `label` parameter fails
 /// `FunctionType::isValidArgumentType` (`invalid type for function argument`).
 ///
-/// **Blocked port — `docs/divergences.md` entry 145 names the blocker.**
-/// Upstream raises the message from `LLParser::parseParameterList`, anchored
-/// at its `ArgLoc`: the `label` in `@invalid_arg_type`'s `call`, `(5, 18)`.
-/// llvmkit's call-argument loop has no `isValidArgumentType` guard, so it
-/// accepts that call and raises the same text from its port of
-/// `LLParser::parseArgumentList` at the `label` in the later
-/// `declare void @foo(label)`. The message half is ported; the position
-/// asserted is llvmkit's current one, so closing the entry fails this test.
+/// The fixture's `CHECK` pins only the text. Upstream raises it from
+/// `LLParser::parseParameterList`, as `error(ArgLoc, …)`, at the `label` in
+/// `@invalid_arg_type`'s `call` — before the later `declare void @foo(label)`
+/// is read, whose own refusal comes from `LLParser::parseArgumentList` with
+/// the same text. Comparing the text alone cannot tell the two sites apart,
+/// so the position is asserted too.
 #[test]
 fn upstream_label_parameter_is_rejected() {
-    let (message, at) = rejection_at(include_bytes!(
-        "fixtures/upstream/Verifier/invalid-label-param.ll"
-    ));
-    assert_eq!(message, "invalid type for function argument");
-    // Current behaviour (entry 145); upstream anchors at (5, 18).
-    assert_eq!(at, (9, 19));
+    assert_eq!(
+        rejection_at(include_bytes!(
+            "fixtures/upstream/Verifier/invalid-label-param.ll"
+        )),
+        ("invalid type for function argument".to_owned(), (5, 18))
+    );
 }
 
 /// Ports `test/Verifier/target-ext-vector.ll`'s `RUN` half: a vector of
@@ -103,23 +101,36 @@ fn upstream_target_type_with_the_vector_property_verifies() {
     m.verify_borrowed().expect("fixture verifies");
 }
 
-/// `llvm::parseType` refuses a bare `void`: `LLParser::parseTypeAtBeginning`
-/// calls `parseType(Ty)` with `AllowVoid` left `false`, so the suffix loop's
-/// default arm reports `void type only allowed for function results`.
-/// llvmkit's standalone entry points pass `allow_void = true` and hand back
-/// the `void` type.
+/// `llvm::parseType` and `llvm::parseTypeAtBeginning` refuse a bare `void`:
+/// `LLParser::parseTypeAtBeginning` calls `parseType(Ty)`, and `LLParser.h`
+/// declares `parseType`'s `AllowVoid` parameter with a `false` default, so the
+/// suffix loop's `default:` arm reports
+/// `error(TypeLoc, "void type only allowed for function results")` — anchored
+/// at the `void` token itself, which is what the span assertion checks.
 ///
-/// **Blocked — `docs/divergences.md` entry 146 names the defect.** This
-/// asserts llvmkit's current answer, so closing the entry fails it. No
-/// upstream test parses a bare `void` standalone
-/// (`rg -n 'parseType(AtBeginning)?\("void' llvm/unittests` finds nothing in
-/// the vendored `llvmorg-22.1.4` tree); the refusal is derived from the
-/// routine.
+/// llvmkit-specific (rule anchor): no upstream test parses a bare `void`
+/// standalone (`rg -n 'parseType(AtBeginning)?\("void' llvm/unittests` finds
+/// nothing in the vendored `llvmorg-22.1.4` tree); the refusal is derived from
+/// the routine.
 #[test]
-fn a_bare_void_is_accepted_by_the_standalone_type_parser() {
+fn a_bare_void_is_refused_by_the_standalone_type_parser() {
+    const SOURCE: &[u8] = b"void";
     let m = Module::dynamic("type_validity");
-    let void = parse_type(b"void", &m).expect("llvmkit accepts a bare `void` (entry 146)");
-    assert_eq!(void, m.void_type().as_type());
+    for error in [
+        parse_type(SOURCE, &m).expect_err("`parse_type` refuses a bare `void`"),
+        parse_type_at_beginning(SOURCE, &m)
+            .expect_err("`parse_type_at_beginning` refuses a bare `void`"),
+    ] {
+        assert_eq!(
+            error.to_string(),
+            "void type only allowed for function results"
+        );
+        let span = error.loc();
+        let start = usize::try_from(span.start).expect("span start fits in usize");
+        let end = usize::try_from(span.end).expect("span end fits in usize");
+        assert_eq!(&SOURCE[start..end], b"void");
+        assert_eq!(support::reported_line_and_column(SOURCE, &error), (1, 1));
+    }
 }
 
 /// The module every grid test parses first: it declares the grid's one named
@@ -272,7 +283,8 @@ impl Container {
 
 /// `(container, element)` pairs the builder still accepts while the parser
 /// refuses them. Each task of the type-constructor plan removes its own rows;
-/// the list ends empty and is then deleted.
+/// the list ends empty and is then deleted. A task that removes rows here
+/// re-measures the module doc's "built but not parsed" count in that commit.
 const KNOWN_DISAGREEMENTS: &[(&str, &str)] = &[
     // vector — removed by Task 2.
     ("vector", "void"),
@@ -388,9 +400,9 @@ fn the_builder_and_the_parser_agree_on_every_derived_type() {
 /// where both halves refuse.
 ///
 /// `void` is read back as the result of `void ()`, because `llvm::parseType`
-/// refuses a bare `void` and llvmkit's acceptance of it is a divergence
-/// ([`a_bare_void_is_accepted_by_the_standalone_type_parser`],
-/// `docs/divergences.md` entry 146) this control must not lean on.
+/// refuses a bare `void`: `LLParser::parseTypeAtBeginning` calls `parseType`
+/// with `AllowVoid` left at its `false` default
+/// ([`a_bare_void_is_refused_by_the_standalone_type_parser`]).
 #[test]
 fn each_element_spells_the_type_the_builder_builds() {
     let m = Module::dynamic("agreement");

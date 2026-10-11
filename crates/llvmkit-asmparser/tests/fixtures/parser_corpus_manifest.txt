@@ -12,7 +12,10 @@
 #   status=xfail-verify llvmkit gap: parses, but does not verify.
 #   error=<text>        `reject` only. Upstream's FileCheck diagnostic text; the
 #                       rendered message must contain it, FileCheck's own rule.
-#   loc=<line>:<col>    `reject` only. Upstream's `<stdin>:LINE:COL:` pin.
+#   loc=<line>:<col>    `reject` only. Upstream's `<stdin>:LINE:COL:` pin, or,
+#                       where the fixture's CHECK pins only the text, the token
+#                       the raising LLParser routine reports at -- such a row
+#                       has a `#` line above it naming that routine.
 #   expect=<fixture>    golden print to compare against.
 #
 # The two xfail statuses have no rows: `grep 'status=xfail' ` over this file
@@ -384,6 +387,8 @@ upstream/assembler-corpus/invalid-immarg2.ll | test/Assembler/invalid-immarg2.ll
 upstream/assembler-corpus/invalid-immarg3.ll | test/Assembler/invalid-immarg3.ll | status=reject | error=this attribute does not apply to return values
 upstream/assembler-corpus/invalid-inline-constraint.ll | test/Assembler/invalid-inline-constraint.ll | status=reject | error=failed to parse constraints
 upstream/assembler-corpus/invalid-inttype.ll | test/Assembler/invalid-inttype.ll | status=reject | error=bitwidth for integer type out of range | loc=5:21
+# The CHECK pins only the text; loc= is LLParser::parseParameterList's ArgLoc.
+upstream/assembler-corpus/invalid-label-call-arg.ll | test/Assembler/invalid-label-call-arg.ll | status=reject | error=invalid type for function argument | loc=6:24
 upstream/assembler-corpus/invalid-label.ll | test/Assembler/invalid-label.ll | status=reject | error=invalid type for function argument
 upstream/assembler-corpus/invalid-landingpad.ll | test/Assembler/invalid-landingpad.ll | status=reject | error='filter' clause has an invalid type | loc=6:24
 upstream/assembler-corpus/invalid-load-missing-explicit-type.ll | test/Assembler/invalid-load-missing-explicit-type.ll | status=reject | loc=4:17 | error=expected comma after load's type
@@ -451,8 +456,10 @@ upstream/assembler-corpus/multi-summary-disassemble.ll | test/Assembler/multi-su
 upstream/assembler-corpus/mustprogress-parse-error-0.ll | test/Assembler/mustprogress-parse-error-0.ll | status=reject | error=this attribute does not apply to parameters | loc=4:35
 upstream/assembler-corpus/mustprogress-parse-error-1.ll | test/Assembler/mustprogress-parse-error-1.ll | status=reject | error=this attribute does not apply to return values | loc=4:8
 upstream/assembler-corpus/mustprogress-parse-error-2.ll | test/Assembler/mustprogress-parse-error-2.ll | status=reject | error=expected '{' in function body | loc=4:51
-upstream/assembler-corpus/musttail-invalid-1.ll | test/Assembler/musttail-invalid-1.ll | status=reject | error=unexpected ellipsis in argument list for musttail call in non-varargs function
-upstream/assembler-corpus/musttail-invalid-2.ll | test/Assembler/musttail-invalid-2.ll | status=reject | error=expected '...' at end of argument list for musttail call in varargs function
+# The two CHECKs pin only the text; each loc= is the token LLParser::parseParameterList's
+# tokError reports at: the `...`, then the `)` it tests before lexing it.
+upstream/assembler-corpus/musttail-invalid-1.ll | test/Assembler/musttail-invalid-1.ll | status=reject | error=unexpected ellipsis in argument list for musttail call in non-varargs function | loc=11:52
+upstream/assembler-corpus/musttail-invalid-2.ll | test/Assembler/musttail-invalid-2.ll | status=reject | error=expected '...' at end of argument list for musttail call in varargs function | loc=10:50
 upstream/assembler-corpus/musttail.ll | test/Assembler/musttail.ll | status=pass
 upstream/assembler-corpus/mutually-recursive-types.ll | test/Assembler/mutually-recursive-types.ll | status=reject | error=identified structure type 'rt3' is recursive
 upstream/assembler-corpus/no-mdstring-upgrades.ll | test/Assembler/no-mdstring-upgrades.ll | status=pass

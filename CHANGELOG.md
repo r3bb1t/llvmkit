@@ -19,6 +19,64 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Fixed — a call site's argument list is one port of `LLParser::parseParameterList`; the standalone type parser refuses a bare `void`
+
+`call`, `invoke` and `callbr` each carried an inline copy of the argument loop,
+none of them with the routine's argument-type guard. They now share
+`Parser::parse_parameter_list`, ported arm by arm. What answers differently,
+each as upstream:
+
+- **A call-site argument of an invalid type is refused at its type**
+  (accepts-invalid): `invalid type for function argument`, from
+  `FunctionType::isValidArgumentType`, for a `label`, a function type or an
+  opaque struct, through all three instructions. `call void (...) @f(label
+  %bb)` and its `invoke` / `callbr` twins parsed and printed.
+  `test/Verifier/invalid-label-param.ll` was refused with the right text at the
+  wrong token (the later `declare`), and `test/Assembler/invalid-label-call-arg.ll`
+  reported `number of input constraints does not match number of parameters`;
+  the second is now a corpus row.
+- **`parse_type`, `parse_type_with_slots`, `parse_type_at_beginning` and
+  `parse_type_at_beginning_with_slots` refuse a bare `void`** (accepts-invalid)
+  with `void type only allowed for function results` at the `void`, as
+  `LLParser::parseTypeAtBeginning` reads its type with `AllowVoid` off. They
+  returned the `void` type.
+- **A parameter attribute after a `metadata` argument type is refused**
+  (accepts-invalid): upstream's `metadata` branch reads no attributes, so
+  `call void @f(metadata noundef i32 0)` is `expected metadata operand` at
+  `noundef`. llvmkit read the attributes before branching on `metadata`.
+- A missing `(` is `expected '(' in call` for all three instructions; it was
+  `expected '(' in call argument list`, `… in invoke argument list` and
+  `… in callbr argument list`.
+- A missing comma between arguments is `expected ',' in argument list`, at the
+  token where the comma belongs, including in front of a forwarding `...`; it
+  was `expected ')' to close call argument list` (or its `invoke` / `callbr`
+  wording).
+- An ellipsis outside a musttail call is
+  `unexpected ellipsis in argument list for non-musttail call`, and a musttail
+  `...` in a non-varargs function is
+  `unexpected ellipsis in argument list for musttail call in non-varargs function`.
+  Both carried a leading `expected ` upstream never prints, and are now
+  `ParseError::Message` rather than `ParseError::Expected`.
+- An argument after a forwarding `...` is `expected ')' at end of argument
+  list`; it was `expected ')' to close call argument list`.
+- `expected '...' at end of argument list for musttail call in varargs
+  function` is anchored at the `)`, which upstream tests before lexing it; it
+  pointed at the token after the `)`.
+- Tests: `type_validity.rs::upstream_label_parameter_is_rejected` (now at
+  upstream's anchor) and `::a_bare_void_is_refused_by_the_standalone_type_parser`;
+  in `parser_calls.rs`, the three ellipsis tests (now exact text and anchor),
+  `::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`,
+  `::every_caller_reports_a_missing_open_paren_as_in_call`,
+  `::a_missing_comma_between_arguments_is_reported_where_it_belongs`,
+  `::a_forwarding_ellipsis_must_close_the_argument_list`,
+  `::an_invoke_or_callbr_ellipsis_is_a_non_musttail_ellipsis`,
+  `::upstream_label_call_argument_fixture_is_rejected_at_the_argument`,
+  `::every_caller_refuses_an_invalid_argument_type_at_the_type` and
+  `::a_metadata_argument_takes_no_parameter_attributes`; and `loc=` pins on the
+  corpus rows for `musttail-invalid-1.ll` and `musttail-invalid-2.ll`. The
+  musttail rows matched by containment, which is how `expected unexpected
+  ellipsis …` passed one of them; the exact-text test closes that.
+
 ### Added — a constant says which LLVM class it is
 
 - **`Constant::kind()`** answers which of upstream's constant classes a

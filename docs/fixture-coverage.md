@@ -65,7 +65,9 @@ A `ported` negative asserts the parse **fails**, and on almost every `reject`
 row also that the message contains upstream's own `FileCheck` text. A smaller
 subset additionally pins upstream's `<stdin>:LINE:COL:` through a `loc=` option.
 Each of those pins was re-derived from the cited upstream file, not from
-llvmkit's output.
+llvmkit's output: from the fixture's own `CHECK` where it carries a position,
+and otherwise from the `LLParser` routine that raises the message, which a `#`
+line above the manifest row names.
 
 That is a **containment lock, not a text-parity measure**: the harness matches
 with `rendered.contains(pin)`
@@ -74,9 +76,11 @@ that wraps upstream's satisfies the row, and a message *shorter* than upstream's
 is invisible too, since the pin is itself `FileCheck` text and `FileCheck`
 matches substrings. Only the `loc=` rows assert the caret; on the rest the
 anchor is unchecked. Some rows pass while diverging in text —
-`musttail-invalid-1` / `invalid-datalayout-override` under **G17** below, plus
-rows where llvmkit is exactly right and the pin is a truncated `FileCheck`
-fragment. `target-type-properties.ll`'s `zeroinit-error` split was the worked
+`invalid-datalayout-override` under **G17** below, plus rows where llvmkit is
+exactly right and the pin is a truncated `FileCheck` fragment.
+`musttail-invalid-1` was one until its `expected ` wrapper was removed;
+`parser_calls.rs::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`
+now compares its text for equality. `target-type-properties.ll`'s `zeroinit-error` split was the worked
 example until its wrapper was removed; the row that hid it is unchanged, and
 what now pins that arm is a unit test asserting the `ParseError` variant and
 the column. See the corpus-oracle item in
@@ -172,7 +176,7 @@ Which fixture sits on which gap:
 - **G15**: `skip-value-numbers-globals.ll`
 - **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
 - **G17**: `2007-01-16-CrashOnBadCast.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `ptrtoaddr-invalid.ll`
-- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid-label-call-arg.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
+- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
 - **G19**: `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
 - **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
 - **G21**: `thinlto-summary.ll`
@@ -254,15 +258,16 @@ These came out of the measurement and are recorded here rather than buried:
    ok, as it's unreachable!*") and `2004-06-07-VerifierBug.ll`. llvmkit rejects
    both. Gap **G22**.
 7. **A recurring wording bug: a complete upstream message routed through an
-   `expected …` wrapper.** `expected
-   unexpected ellipsis in argument list for musttail call in non-varargs
-   function`, `expected valid datalayout: address space must be a 24-bit
-   integer`, `expected valid mask value for 'nofpclass'`, `expected valid
+   `expected …` wrapper.** `expected valid datalayout: address space must be a
+   24-bit integer`, `expected valid mask value for 'nofpclass'`, `expected valid
    ptrtoaddr: …`, `expected valid trunc: …`, `expected valid alias definition:
    …`, `expected intrinsic signature mismatch`, `expected unknown intrinsic`.
    Upstream reaches all of these through `error(...)`, not `tokError("expected
    …")`. This is the single largest share of **G17** and the cheapest parity
-   work left in the directory.
+   work left in the directory. The list opened with `expected unexpected
+   ellipsis in argument list for musttail call in non-varargs function` until
+   `LLParser::parseParameterList` was ported once; its two ellipsis refusals
+   are upstream's whole `tokError` sentences now.
 
 ## A directory-name trap
 
@@ -622,7 +627,7 @@ collision.
 | `invalid-immarg5.ll` | blocked-model | **G3** — reported `expected unknown intrinsic`, upstream `(no CHECK text)` |
 | `invalid-inline-constraint.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-inttype.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `invalid-label-call-arg.ll` | blocked-model | **G18** — llvmkit does not run the call site's `isValidArgumentType` check at all (`docs/divergences.md` entry 145). This fixture is still rejected, by the later inline-asm constraint check: reported `number of input constraints does not match number of parameters`, upstream `invalid type for function argument` |
+| `invalid-label-call-arg.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-label.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-landingpad.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-load-missing-explicit-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

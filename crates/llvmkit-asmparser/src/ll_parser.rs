@@ -207,6 +207,27 @@ struct ArgInfo<'ctx, B: ModuleBrand> {
     has_attributes: bool,
 }
 
+/// One argument of a call site's parameter list — mirrors
+/// `LLParser::ParamInfo` (`LLParser.h`), which
+/// [`Parser::parse_parameter_list`] fills for `parseCall`, `parseInvoke` and
+/// `parseCallBr`.
+struct ParamInfo<'ctx, B: ModuleBrand> {
+    /// Upstream's `Loc`: the argument type's first token (`ArgLoc`), where
+    /// `too many arguments specified` and `argument is not of expected type`
+    /// are anchored.
+    loc: Span,
+    /// The type `parseType(ArgTy, ArgLoc)` read. Upstream's `ParamInfo` has no
+    /// such field; its consumers ask `Arg.V->getType()`, which is `ArgTy`
+    /// because `parseValue(ArgTy, V, PFS)` and `parseMetadataAsValue` only
+    /// ever produce a value of that type. llvmkit's consumers read it here.
+    ty: Type<'ctx, B>,
+    /// Upstream's `V`.
+    value: llvmkit_ir::Value<'ctx, B>,
+    /// Upstream's `Attrs`, `AttributeSet::get(Ctx, ArgAttrs)`: empty for a
+    /// `metadata` argument, whose branch reads no attributes.
+    attrs: AttributeStorage,
+}
+
 /// Whether `attrs` carries anything at `index`.
 ///
 /// `AttributeStorage::get` is private to `llvmkit-ir`, so ask the public
@@ -2299,9 +2320,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// Mirrors `LLParser::parseTypeAtBeginning`, whose `parseType(Ty)` leaves
+    /// `AllowVoid` at the `false` default `LLParser.h` declares — so a bare
+    /// `void` is `void type only allowed for function results`, anchored at
+    /// the `void`.
     pub(super) fn parse_type_at_beginning(mut self) -> ParseResult<(Type<'ctx, B>, usize)> {
         let start = self.loc().start;
-        let ty = self.parse_type(true)?;
+        let ty = self.parse_type(false)?;
         let consumed = self.loc().start.saturating_sub(start);
         let consumed = usize::try_from(consumed).map_err(|_| ParseError::Expected {
             expected: "type byte count fits in usize".into(),
@@ -2310,8 +2335,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok((ty, consumed))
     }
 
+    /// `llvm::parseType`: `LLParser::parseTypeAtBeginning`, then
+    /// `expected end of string` unless the type consumed the whole buffer.
+    /// The type is read with `AllowVoid` off, as there.
     pub(super) fn parse_standalone_type(mut self) -> ParseResult<Type<'ctx, B>> {
-        let ty = self.parse_type(true)?;
+        let ty = self.parse_type(false)?;
         self.require_eof()?;
         Ok(ty)
     }
@@ -10014,46 +10042,54 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Err(self.message("expected scope value for catchpad"))
     }
 
-    /// The argument-agreement walk `parseCall`, `parseInvoke` and
-    /// `parseCallBr` each carry *verbatim* — three copies of the same loop in
-    /// upstream, and the reason its three diagnostics appear three times each
-    /// in `LLParser.cpp`.
+    /// The argument loop `parseCall`, `parseInvoke` and `parseCallBr` each
+    /// carry *verbatim* — three copies of the same loop in upstream, and the
+    /// reason its three diagnostics appear three times each in `LLParser.cpp`.
+    /// Both halves of it: each `ParamInfo` is checked against the call-site
+    /// type, then its `V` and `Attrs` are gathered (`Args.push_back(Arg.V);`
+    /// / `Attrs.push_back(Arg.Attrs);`) for the caller's `AttributeList PAL`
+    /// and instruction.
     ///
-    /// It only bites when the callee was written with an explicit function
-    /// type (`call i32 (i32, i32) @f(i32 1)`): otherwise `resolveFunctionType`
-    /// *builds* the signature from the arguments, so they agree by
-    /// construction. llvmkit deferred all of this to the verifier, which the
-    /// no-divergence directive reverses.
-    fn check_call_argument_agreement(
+    /// The check only bites when the callee was written with an explicit
+    /// function type (`call i32 (i32, i32) @f(i32 1)`): otherwise
+    /// `resolveFunctionType` *builds* the signature from the arguments, so they
+    /// agree by construction. llvmkit deferred all of this to the verifier,
+    /// which the no-divergence directive reverses.
+    fn gather_call_arguments(
         &self,
         fn_ty: llvmkit_ir::FunctionType<'ctx, B>,
-        arg_tys: &[Type<'ctx, B>],
-        arg_locs: &[Span],
+        arg_list: Vec<ParamInfo<'ctx, B>>,
         call_loc: Span,
-    ) -> ParseResult<()> {
+    ) -> ParseResult<(Vec<llvmkit_ir::Value<'ctx, B>>, Vec<AttributeStorage>)> {
         let params: Vec<Type<'ctx, B>> = fn_ty.params().collect();
         let mut expected = params.iter();
-        for (arg_ty, arg_loc) in arg_tys.iter().zip(arg_locs) {
+        let mut args = Vec::with_capacity(arg_list.len());
+        let mut attrs = Vec::with_capacity(arg_list.len());
+        // `for (const ParamInfo &Arg : ArgList) {`
+        for arg in arg_list {
             let expected_ty = match expected.next() {
                 Some(expected_ty) => Some(*expected_ty),
                 // A varargs signature simply stops checking once its declared
                 // parameters run out.
                 None if fn_ty.is_var_arg() => None,
-                None => return Err(self.message_at(*arg_loc, "too many arguments specified")),
+                None => return Err(self.message_at(arg.loc, "too many arguments specified")),
             };
+            // `ExpectedTy != Arg.V->getType()` — `ParamInfo::ty` is that type.
             if let Some(expected_ty) = expected_ty
-                && expected_ty != *arg_ty
+                && expected_ty != arg.ty
             {
                 return Err(self.message_at(
-                    *arg_loc,
+                    arg.loc,
                     format!("argument is not of expected type '{expected_ty}'"),
                 ));
             }
+            args.push(arg.value);
+            attrs.push(arg.attrs);
         }
         if expected.next().is_some() {
             return Err(self.message_at(call_loc, "not enough parameters specified for call"));
         }
-        Ok(())
+        Ok((args, attrs))
     }
 
     /// `parseFunctionHeader`'s redefinition arm.
@@ -14246,9 +14282,111 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `'(' ')'` / `'(' Arg (',' Arg)* ')'`, where
+    /// `Arg ::= Type OptionalAttributes Value OptionalAttributes` — mirrors
+    /// `LLParser::parseParameterList`, the one routine `parseCall`,
+    /// `parseInvoke` and `parseCallBr` share.
+    ///
+    /// `is_must_tail_call` and `in_var_args_func` are upstream's
+    /// `IsMustTailCall` and `InVarArgsFunc`; `parseInvoke` and `parseCallBr`
+    /// leave both at their `false` defaults. A forwarding `...` adds no
+    /// argument and is not reported to the caller: upstream returns from
+    /// inside the loop once the `)` after it is eaten.
+    fn parse_parameter_list(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
+        is_must_tail_call: bool,
+        in_var_args_func: bool,
+    ) -> ParseResult<Vec<ParamInfo<'ctx, B>>> {
+        // `if (parseToken(lltok::lparen, "expected '(' in call")) return true;`
+        // — the same text for an `invoke` and a `callbr`.
+        self.expect_punct(PunctKind::LParen, "'(' in call")?;
+        let mut arg_list: Vec<ParamInfo<'ctx, B>> = Vec::new();
+        // `while (Lex.getKind() != lltok::rparen) {`
+        while !matches!(self.peek(), Token::RParen) {
+            // `// If this isn't the first argument, we need a comma.`
+            // `if (!ArgList.empty() && parseToken(lltok::comma, "expected ','
+            // in argument list")) return true;`
+            if !arg_list.is_empty() {
+                self.expect_punct(PunctKind::Comma, "',' in argument list")?;
+            }
+
+            // `// parse an ellipsis if this is a musttail call in a variadic
+            // function.` Both refusals are `tokError(Twine(Msg) + …)` with
+            // `Msg = "unexpected ellipsis in argument list for "`: a whole
+            // sentence at the `...`, not an `expected …` production.
+            if matches!(self.peek(), Token::DotDotDot) {
+                if !is_must_tail_call {
+                    return Err(
+                        self.message("unexpected ellipsis in argument list for non-musttail call")
+                    );
+                }
+                if !in_var_args_func {
+                    return Err(self.message(
+                        "unexpected ellipsis in argument list for musttail call in non-varargs function",
+                    ));
+                }
+                // `Lex.Lex(); // Lex the '...', it is purely for readability.`
+                self.bump()?;
+                // `return parseToken(lltok::rparen, "expected ')' at end of
+                // argument list");` — the ellipsis must be the last thing in
+                // the list.
+                self.expect_punct(PunctKind::RParen, "')' at end of argument list")?;
+                return Ok(arg_list);
+            }
+
+            // `// parse the argument.` `parseType(ArgTy, ArgLoc)` leaves
+            // `AllowVoid` at its `false` default and records `ArgLoc` first.
+            let arg_loc = self.loc();
+            let arg_ty = self.parse_type(false)?;
+            // `if (!FunctionType::isValidArgumentType(ArgTy))
+            //    return error(ArgLoc, "invalid type for function argument");`
+            if !arg_ty.is_valid_function_argument() {
+                return Err(self.message_at(arg_loc, "invalid type for function argument"));
+            }
+
+            // `AttrBuilder ArgAttrs(M->getContext());` — the `metadata` branch
+            // reads no attributes, so a `metadata` argument's set stays empty.
+            let (value, attrs) = if arg_ty.is_metadata() {
+                // `if (parseMetadataAsValue(V, PFS)) return true;`
+                (
+                    self.parse_metadata_as_value(state)?,
+                    AttributeStorage::new(),
+                )
+            } else {
+                // `// Otherwise, handle normal operands.`
+                // `if (parseOptionalParamAttrs(ArgAttrs) || parseValue(ArgTy, V,
+                // PFS)) return true;`
+                let attrs = self.parse_optional_param_attrs()?;
+                (self.parse_value(state, arg_ty)?, attrs)
+            };
+            // `ArgList.push_back(ParamInfo(ArgLoc, V, AttributeSet::get(…)));`
+            arg_list.push(ParamInfo {
+                loc: arg_loc,
+                ty: arg_ty,
+                value,
+                attrs,
+            });
+        }
+
+        // `if (IsMustTailCall && InVarArgsFunc) return tokError("expected
+        // '...' at end of argument list for musttail call in varargs
+        // function");` — tested before the `)` is lexed, so it is anchored at
+        // the `)` itself.
+        if is_must_tail_call && in_var_args_func {
+            return Err(self.message(
+                "expected '...' at end of argument list for musttail call in varargs function",
+            ));
+        }
+
+        // `Lex.Lex(); // Lex the ')'.`
+        self.bump()?;
+        Ok(arg_list)
+    }
+
     /// `call [tail] [cc] [ret-attrs] <ret-ty> @func(<args>) [fn-attrs]`.
     /// Handles both void and value-returning calls. Mirrors
-    /// `LLParser::parseCall` (LLParser.cpp ~8250).
+    /// `LLParser::parseCall`.
     ///
     /// Upstream: `test/Assembler/call.ll`.
     fn parse_call(
@@ -14304,69 +14442,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let ret_ty_loc = self.loc();
         let callee_ty = self.parse_type(true)?;
         let parsed_callee = self.parse_direct_callee_ref(state, call_addr_space)?;
-        self.expect_punct(PunctKind::LParen, "'(' in call argument list")?;
-        let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
-        let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
-        let mut arg_locs: Vec<Span> = Vec::new();
-        let mut arg_attrs = Vec::new();
-        let musttail = matches!(tail_kind, llvmkit_ir::instr_types::TailCallKind::MustTail);
-        let enclosing_varargs = state.func.signature().is_var_arg();
-        let mut var_args = false;
-        if !matches!(self.peek(), Token::RParen) {
-            loop {
-                if matches!(self.peek(), Token::DotDotDot) {
-                    // Musttail forwarding ellipsis (`LLParser::parseParameterList`):
-                    // valid only in a musttail call inside a varargs function.
-                    if !musttail {
-                        return Err(self.expected(
-                            "unexpected ellipsis in argument list for non-musttail call",
-                        ));
-                    }
-                    if !enclosing_varargs {
-                        return Err(self.expected(
-                            "unexpected ellipsis in argument list for musttail call in non-varargs function",
-                        ));
-                    }
-                    self.bump()?;
-                    var_args = true;
-                    break;
-                }
-                let arg_loc = self.loc();
-                let arg_ty = self.parse_type(false)?;
-                let one_arg_attrs = self.parse_optional_param_attrs()?;
-                // `parseParameterList` branches on the argument type: a
-                // `metadata` parameter takes `parseMetadataAsValue`, not
-                // `parseValue`, which is what makes `metadata i32 %a` — every
-                // old-format debug intrinsic operand — legal.
-                let arg_v = if arg_ty.is_metadata() {
-                    self.parse_metadata_as_value(state)?
-                } else {
-                    self.parse_value(state, arg_ty)?
-                };
-                arg_tys.push(arg_ty);
-                arg_locs.push(arg_loc);
-                arg_attrs.push(one_arg_attrs);
-                args.push(arg_v);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
-            }
-        }
-        self.expect_punct(PunctKind::RParen, "')' to close call argument list")?;
-        // Reciprocal rule: a musttail call in a varargs function must forward
-        // the varargs with a trailing `...`.
-        if musttail && enclosing_varargs && !var_args {
-            return Err(self
-                .expected("'...' at end of argument list for musttail call in varargs function"));
-        }
+        // `parseParameterList(ArgList, PFS, TCK == CallInst::TCK_MustTail,
+        // PFS.getFunction().isVarArg())`.
+        let arg_list = self.parse_parameter_list(
+            state,
+            matches!(tail_kind, llvmkit_ir::instr_types::TailCallKind::MustTail),
+            state.func.signature().is_var_arg(),
+        )?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
-        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
-            return_attrs,
-            arg_attrs.into_boxed_slice(),
-            function_attrs,
-        )
-        .function_attr_groups(function_attr_groups.into_boxed_slice());
         // `resolveFunctionType`: an explicit function type is used as written;
         // anything else is a bare *return* type and the signature is built
         // from the arguments — which is why the walk below only bites on the
@@ -14387,7 +14471,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
-                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), false)
+                function_type_with_variadic(
+                    self.module,
+                    callee_ty,
+                    arg_list.iter().map(|arg| arg.ty),
+                    false,
+                )
             }
         };
         // `CalleeID.StrVal` survives `convertValIDToValue` upstream because
@@ -14402,7 +14491,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // immediately after `CalleeID.FTy = Ty` and *before* the argument loop
         // — so a bad callee is reported ahead of a bad argument.
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty, call_addr_space)?;
-        self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
+        let (args, arg_attrs) = self.gather_call_arguments(parsed_fn_ty, arg_list, call_loc)?;
+        // `AttributeList PAL = AttributeList::get(Context,
+        // AttributeSet::get(Context, FnAttrs), AttributeSet::get(Context,
+        // RetAttrs), Attrs);`
+        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
+            return_attrs,
+            arg_attrs.into_boxed_slice(),
+            function_attrs,
+        )
+        .function_attr_groups(function_attr_groups.into_boxed_slice());
         // `LLParser::parseCall`'s FMF guard. Upstream builds the `CallInst`
         // first and runs `if (FMF.any()) { if (!isa<FPMathOperator>(CI)) {
         // CI->deleteValue(); return error(CallLoc, …); } }`. This parser builds
@@ -15489,59 +15587,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let ret_ty_loc = self.loc();
         let callee_ty = self.parse_type(true)?;
         let parsed_callee = self.parse_direct_callee_ref(state, invoke_addr_space)?;
-        self.expect_punct(PunctKind::LParen, "'(' in invoke argument list")?;
-        let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
-        let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
-        let mut arg_locs: Vec<Span> = Vec::new();
-        let mut arg_attrs = Vec::new();
-        // invoke can never be varargs-forwarding (only musttail calls are).
-        let var_args = false;
-        if !matches!(self.peek(), Token::RParen) {
-            loop {
-                if matches!(self.peek(), Token::DotDotDot) {
-                    // An invoke can never be musttail, so a forwarding
-                    // ellipsis is always invalid here (`parseParameterList`
-                    // is called with `IsMustTailCall = false`).
-                    return Err(
-                        self.expected("unexpected ellipsis in argument list for non-musttail call")
-                    );
-                }
-                let arg_loc = self.loc();
-                let arg_ty = self.parse_type(false)?;
-                let one_arg_attrs = self.parse_optional_param_attrs()?;
-                // `parseParameterList` branches on the argument type: a
-                // `metadata` parameter takes `parseMetadataAsValue`, not
-                // `parseValue`, which is what makes `metadata i32 %a` — every
-                // old-format debug intrinsic operand — legal.
-                let arg_v = if arg_ty.is_metadata() {
-                    self.parse_metadata_as_value(state)?
-                } else {
-                    self.parse_value(state, arg_ty)?
-                };
-                arg_attrs.push(one_arg_attrs);
-                arg_tys.push(arg_ty);
-                arg_locs.push(arg_loc);
-                args.push(arg_v);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
-            }
-        }
-        self.expect_punct(PunctKind::RParen, "')' to close invoke argument list")?;
+        // `parseParameterList(ArgList, PFS)` — `IsMustTailCall` and
+        // `InVarArgsFunc` left at their `false` defaults, so a forwarding
+        // `...` is the non-musttail refusal.
+        let arg_list = self.parse_parameter_list(state, false, false)?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
-        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
-            return_attrs,
-            arg_attrs.into_boxed_slice(),
-            function_attrs,
-        )
-        .function_attr_groups(function_attr_groups.into_boxed_slice());
         self.expect_keyword(Keyword::To, "'to' in invoke")?;
         let normal_bb = self.parse_type_and_basic_block(state)?;
         self.expect_keyword(Keyword::Unwind, "'unwind' in invoke")?;
         let unwind_bb = self.parse_type_and_basic_block(state)?;
         // Upstream `resolveFunctionType`: an explicitly written function
-        // type IS the call-site type; otherwise infer from the arguments.
+        // type IS the call-site type; otherwise infer from the arguments, with
+        // the variadic bit hardcoded off (`FunctionType::get(RetType,
+        // ParamTypes, false)`).
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
             _ => {
@@ -15550,13 +15609,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
-                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
+                function_type_with_variadic(
+                    self.module,
+                    callee_ty,
+                    arg_list.iter().map(|arg| arg.ty),
+                    false,
+                )
             }
         };
         // `parseInvoke` resolves the callee before the argument loop, exactly
         // as `parseCall` does.
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty, invoke_addr_space)?;
-        self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
+        let (args, arg_attrs) = self.gather_call_arguments(parsed_fn_ty, arg_list, call_loc)?;
+        // `AttributeList PAL = AttributeList::get(Context,
+        // AttributeSet::get(Context, FnAttrs), AttributeSet::get(Context,
+        // RetAttrs), ArgAttrs);`
+        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
+            return_attrs,
+            arg_attrs.into_boxed_slice(),
+            function_attrs,
+        )
+        .function_attr_groups(function_attr_groups.into_boxed_slice());
         let name = result_name.as_str();
         let (_, inst) = match callee {
             ParsedCallee::Function(callee) => b
@@ -15637,52 +15710,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // site rather than hidden in a callee helper's default.
         let callbr_addr_space = 0;
         let parsed_callee = self.parse_direct_callee_ref(state, callbr_addr_space)?;
-        self.expect_punct(PunctKind::LParen, "'(' in callbr argument list")?;
-        let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
-        let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
-        let mut arg_locs: Vec<Span> = Vec::new();
-        let mut arg_attrs = Vec::new();
-        // callbr can never be varargs-forwarding (only musttail calls are).
-        let var_args = false;
-        if !matches!(self.peek(), Token::RParen) {
-            loop {
-                if matches!(self.peek(), Token::DotDotDot) {
-                    // A callbr can never be musttail, so a forwarding
-                    // ellipsis is always invalid here.
-                    return Err(
-                        self.expected("unexpected ellipsis in argument list for non-musttail call")
-                    );
-                }
-                let arg_loc = self.loc();
-                let arg_ty = self.parse_type(false)?;
-                let one_arg_attrs = self.parse_optional_param_attrs()?;
-                // `parseParameterList` branches on the argument type: a
-                // `metadata` parameter takes `parseMetadataAsValue`, not
-                // `parseValue`, which is what makes `metadata i32 %a` — every
-                // old-format debug intrinsic operand — legal.
-                let arg_v = if arg_ty.is_metadata() {
-                    self.parse_metadata_as_value(state)?
-                } else {
-                    self.parse_value(state, arg_ty)?
-                };
-                arg_attrs.push(one_arg_attrs);
-                arg_tys.push(arg_ty);
-                arg_locs.push(arg_loc);
-                args.push(arg_v);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
-            }
-        }
-        self.expect_punct(PunctKind::RParen, "')' to close callbr argument list")?;
+        // `parseParameterList(ArgList, PFS)` — `IsMustTailCall` and
+        // `InVarArgsFunc` left at their `false` defaults, so a forwarding
+        // `...` is the non-musttail refusal.
+        let arg_list = self.parse_parameter_list(state, false, false)?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
-        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
-            return_attrs,
-            arg_attrs.into_boxed_slice(),
-            function_attrs,
-        )
-        .function_attr_groups(function_attr_groups.into_boxed_slice());
         self.expect_keyword(Keyword::To, "'to' in callbr")?;
         let fallthrough = self.parse_type_and_basic_block(state)?;
         // Optional `[ label %ind1, ... ]`
@@ -15705,7 +15738,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.expect_punct(PunctKind::RSquare, "']' at end of block list")?;
         // Upstream `resolveFunctionType`: an explicitly written function
-        // type IS the call-site type; otherwise infer from the arguments.
+        // type IS the call-site type; otherwise infer from the arguments, with
+        // the variadic bit hardcoded off (`FunctionType::get(RetType,
+        // ParamTypes, false)`).
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
             _ => {
@@ -15714,13 +15749,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
-                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
+                function_type_with_variadic(
+                    self.module,
+                    callee_ty,
+                    arg_list.iter().map(|arg| arg.ty),
+                    false,
+                )
             }
         };
         // `parseCallBr` resolves the callee before the argument loop, exactly
         // as `parseCall` does.
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty, callbr_addr_space)?;
-        self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
+        let (args, arg_attrs) = self.gather_call_arguments(parsed_fn_ty, arg_list, call_loc)?;
+        // `AttributeList PAL = AttributeList::get(Context,
+        // AttributeSet::get(Context, FnAttrs), AttributeSet::get(Context,
+        // RetAttrs), ArgAttrs);`
+        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
+            return_attrs,
+            arg_attrs.into_boxed_slice(),
+            function_attrs,
+        )
+        .function_attr_groups(function_attr_groups.into_boxed_slice());
         let name = result_name.as_str();
         let (_, inst) = match callee {
             ParsedCallee::Function(callee) => b

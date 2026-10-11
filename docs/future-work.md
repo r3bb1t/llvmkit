@@ -2754,9 +2754,12 @@ match struct element type` while `LLParser::convertValIDToValue` prints
 fixture's own `RUN` line is a divergence exactly as being weaker is, so neither
 of those is work — the pin is what would change if a strict tier ever covered
 them. Genuine defects the sweep has surfaced so far are recorded where they
-belong: `zeroinit-error` in [`divergences.md`](divergences.md),
-`musttail-invalid-1` and `invalid-datalayout-override` under **G17** in
+belong: `zeroinit-error` in [`divergences.md`](divergences.md), and
+`invalid-datalayout-override` under **G17** in
 [`fixture-coverage.md`](fixture-coverage.md), with the fix stated there.
+`musttail-invalid-1`, once listed beside it, is fixed, and
+`parser_calls.rs::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`
+holds its text to equality.
 
 **The work, in three tiers.** Not one switch: the oracle has to come from each
 fixture's own `FileCheck` line, not from a house preference.
