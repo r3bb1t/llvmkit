@@ -79,7 +79,7 @@ assert!(m.to_string().contains("declare void @undefined()"));
 ```
 
 What each setting actually selects — and what two of them do not yet — is in
-[`docs/divergences.md`](../../docs/divergences.md) D11-D13.
+[`docs/divergences.md`](../../docs/divergences.md), entries D11 and D13.
 
 ## Lexer usage
 
@@ -121,13 +121,24 @@ success and a `(line:col)` diagnostic with a caret underline on failure.
 ## Parser corpus
 
 `tests/parser_corpus.rs` reads `tests/fixtures/parser_corpus_manifest.txt`.
-Each row names an llvmkit fixture, its upstream provenance, optional
-`expect=<file>` canonical AsmWriter output, and `status=pass|xfail-parse|xfail-verify`.
-The `xfail-*` rows are the explicit allowlist for upstream-negative or
-not-yet-supported shapes; passing rows must parse, verify, and match the
-checked-in expected output when one is listed. Fixture comments cite upstream
-inputs as provenance, not as a claim that upstream's FileCheck text is identical
-to llvmkit's current expected output.
+Each row names a fixture — most are byte-for-byte copies of
+`llvm/test/Assembler/*.ll`, or one part of a `split-file` container — and the
+upstream file it came from, then a status:
+
+- `status=pass` — upstream's `RUN` line accepts it, so the fixture must parse,
+  verify, and print, re-parse and print to the same bytes; `expect=<file>`
+  also pins the canonical AsmWriter output.
+- `status=reject` — upstream runs `not llvm-as` over it, so the parse must
+  fail; `error=<text>` pins upstream's `FileCheck` diagnostic, matched as
+  `FileCheck` matches it, by containment, and `loc=<line>:<col>` pins where it
+  is reported.
+
+The manifest's own header is the full reference, including `config=` and the
+two `xfail-*` statuses, which no row uses. A fixture the parser cannot handle
+yet gets no row at all: it is classified `blocked-model` in
+[`docs/fixture-coverage.md`](../../docs/fixture-coverage.md), which accounts
+for every `llvm/test/Assembler` fixture and names the gap each blocked one is
+waiting on.
 
 ## License
 

@@ -71,6 +71,31 @@ instead (`append_block_with_params` / `append_block_typed`, branched to with
 `br_with_args` / `cond_br_with_args`), or let `SsaBuilder` discover
 them for you. Inside a pass, `FnReshape::insert_phi` is the third route.
 
+## Building types
+
+LLVM's type constructors `assert` what may go inside a type — a vector holds
+integers, floats and pointers, and has at least one lane — and an `assert` is
+compiled out of a release build. llvmkit's vector constructors check instead.
+`VectorType::of` / `VectorType::scalable_of` take an integer, float or pointer
+handle and a lane count from `lanes::<N>()`, and cannot fail; the wrong program
+does not compile. Any runtime `Type` goes through `vector_type` /
+`scalable_vector_type`, which return `IrResult`:
+
+```rust
+use llvmkit_ir::{IrError, Module, VectorType, lanes};
+
+let m = Module::dynamic("types");
+let v4i32 = VectorType::of(m.i32_type(), lanes::<4>()); // <4 x i32>
+// `lanes::<0>()` and `VectorType::of(m.void_type(), …)` do not compile.
+
+let refused = m.vector_type(m.void_type(), lanes::<4>());
+assert!(matches!(refused, Err(IrError::InvalidTypeComponent { .. })));
+```
+
+The array, struct and function-type constructors do not check their
+components yet: `llvmkit-asmparser`'s `tests/type_validity.rs` lists each type
+the builder makes and the parser refuses.
+
 ## Module brands
 
 Every module carries a compile-time brand — a `'static` type that names it.
