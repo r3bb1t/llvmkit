@@ -1,8 +1,8 @@
 //! **The consumer proof for 0.0.4.** A binary lifter as a plain,
 //! re-entrant, movable value.
 //!
-//! This example is the shape the pre-2.0 API could not express at all, and
-//! every cycle of the redesign shows up in it:
+//! This example is the shape the API before the 0.0.4 redesign could not
+//! express at all, and every cycle of that redesign shows up in it:
 //!
 //! - **Cycle A/B (ids).** Every IR reference the session stores between steps
 //!   is a `Copy`, module-tagged id: the `HashMap<u64, SsaBlock<..>>` mapping
@@ -240,8 +240,9 @@ impl<B: ModuleBrand> LifterSession<B> {
     ///
     /// The pre-pass computes the leader set (block starts): the entry address,
     /// every branch target, and every address that falls through out of a
-    /// terminator. Mirrors what any real lifter does before it emits — LLVM's
-    /// own `MCDisassembler` clients build the same set.
+    /// terminator. Mirrors what any real lifter does before it emits —
+    /// `llvm-objdump`'s `collectLocalBranchTargets` builds the branch-target
+    /// part of the same set.
     pub fn new(module: Module<B, Unverified>, program: &[(u64, Pseudo)]) -> Result<Self, IrError> {
         let i32_ty = module.i32_type();
         let _ = i32_ty;
@@ -292,9 +293,6 @@ impl<B: ModuleBrand> LifterSession<B> {
         let mut state = SsaState::for_function(&module, module.view(function))?;
         let registers = {
             let mut b = SsaBuilder::for_function(&module, module.view(function), &mut state)?;
-            // `from_fn` cannot be used here: `IntVariable` is `Copy` but the
-            // closure would have to borrow `b` mutably per element, which is
-            // exactly what a plain loop expresses more clearly anyway.
             let r0 = b.declare_int_var::<i32, _>("r0");
             let r1 = b.declare_int_var::<i32, _>("r1");
             [r0, r1]

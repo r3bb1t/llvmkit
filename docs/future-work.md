@@ -67,7 +67,7 @@ here so the run-time refusal is known-deferred rather than mistaken for an
 oversight; the guarantee as it stands is stated in `README.md` § *Instruction
 lifecycle safety* and in `docs/type-safety-vs-llvm.md`.
 
-## LLParser diagnostics — 46 real gaps left of 516 messages (recounted 2026-08-16, LLParser parity W14d; 8 closed since, see below)
+## LLParser diagnostics — 46 real gaps left of 516 messages (recounted 2026-08-16, LLParser parity W14d; 9 closed since, see below)
 
 The parity ledger was regenerated at this commit. Of the **516 exact message
 literals** `LLParser.cpp` reaches through its five diagnostic channels
@@ -87,7 +87,7 @@ The four `N/A`s, each checked against `LLParser.cpp` rather than assumed:
 - `name is too long …` — see the divergence below.
 
 The remainder are almost all one shape: llvmkit runs the check at the same point
-and words it differently (`expected '>' at end of packed struct` where upstream
+and words it differently (`expected '}' to close struct body` where upstream
 says `expected '}' at end of struct`). They are concentrated in `parseValID`'s
 blockaddress and vector-splat forms (5), `parseArrayVectorType` (4) and `parsePHI`
 (2). **The count of 46 predates 0.0.4's funclet work** (2026-08-20), which
@@ -100,7 +100,12 @@ not in the tree (`find . -name 'ledger*.py'` returns nothing). One further
 message closed after that, on 2026-08-21: `expected 'tail call', 'musttail
 call', or 'notail call'`, when `LLParser::parseCall`'s first guard was ported
 (it had been not merely missing but a verdict difference — llvmkit accepted
-`tail void @f()`). Re-run the ledger before quoting either number. This overlaps gap **G17** in [`fixture-coverage.md`](fixture-coverage.md)
+`tail void @f()`). Re-derive before quoting either number: `ledger_v2.py`
+cannot be re-run, and the nearest in-tree instrument, the `#[ignore]`d
+`crates/llvmkit-asmparser/tests/parse_error_upstream_inventory.rs` (2026-09-02,
+`591ec98`), prints a coarse list of upstream texts llvmkit renders nowhere that
+its own comment says over-reports, so it does not reproduce the ledger's
+figure either. This overlaps gap **G17** in [`fixture-coverage.md`](fixture-coverage.md)
 but is not the same set: G17 counts *fixtures* that fail on wording, this counts
 *messages*. The full per-message list, with llvmkit's current spelling beside
 each, is the classification section of the parity ledger.
@@ -163,17 +168,19 @@ missing *provenance*, never "no upstream counterpart".
 **Its size is not stated here, and no longer in `UPSTREAM.md`'s header either.**
 Every version of that figure was carried forward by arithmetic from an older
 audit rather than re-derived, and successive carries ended up disagreeing with
-each other inside one paragraph. Nor is a naive re-derivation available: a
-`sort -u` of the rows' `::name` segments against the `#[test]` attributes counts
-every test covered by a *group* row — `` `…/module_ownership.rs` (whole file) ``
-and its kind — as unrowed, and there are enough of those to dominate the answer.
-A fresh audit means expanding those rows against the files they cite, by hand.
-`UPSTREAM.md`'s header says the same and names what it would take.
+each other inside one paragraph. The residue itself is enumerated instead:
+`crates/llvmkit-ir/tests/fixtures/upstream_provenance_debt.txt` lists, one per
+line, every test that carries no row, and is frozen — derive its size from that
+file rather than writing one here.
 
-What *is* mechanically checked, since 2026-08-22, is the half that can be:
-`crates/llvmkit-ir/tests/upstream_registry_drift.rs` fails if any row names a
-file that does not exist, or a test its cited file does not define — the failure
-mode that had put eleven rows on the wrong file and survived earlier sweeps.
+Both directions are mechanically checked by
+`crates/llvmkit-ir/tests/upstream_registry_drift.rs`. Since 2026-08-22 it fails
+if any row names a file that does not exist, or a test its cited file does not
+define — the failure mode that had put eleven rows on the wrong file and
+survived earlier sweeps. Since 2026-08-29 (`9e094c0`,
+`every_test_carries_a_registry_row_or_a_line_in_the_frozen_debt_list`) it also
+fails a `#[test]` with neither a row (its own, or a whole-file row) nor a debt
+line, and a debt line that no longer names an unrowed test.
 
 ## `llvm/test/Assembler` — the blocked fixtures, by gap
 
@@ -186,7 +193,7 @@ branch out of date within a week of being written: the gap catalogue moves
 whenever a gap closes, and only one file can be the source. Counts, per-gap
 lists and the derivation command all live there.
 
-The gaps with the most fixtures behind them, and why each is worth pulling out:
+Three gaps worth pulling out, and why:
 
 - **G18** — a check upstream's `llvm-as` performs at parse or verify time
   that llvmkit does not: the `MDSignedOrMDField` / `MDUnsignedOrMDField` range
@@ -304,15 +311,15 @@ The largest item, and the one every clang-21 module needs
   that llvmkit refuses to create. Porting the arms is only useful once the
   legacy signature can *exist* long enough to be upgraded, which means moving
   the descriptor check out of `parse_declare` /`resolve_direct_callee` and into
-  the end-of-module path — the same restructuring `docs/divergences.md`
-  entries 15 and 19 describe.
+  the end-of-module path — the restructuring `docs/divergences.md` entry 19
+  names.
 * `UpgradeIntrinsicCall`'s generic arms then need instruction-level surgery
-  llvmkit has only in part: `Instruction::erase_from_parent` and
-  `replace_all_uses_with` exist, but there is no way to erase a `Function` from
-  a module (`F->eraseFromParent()`), and no builder entry point that inserts a
-  call *at* an existing instruction's position outside the pass framework.
-  The lifetime arm needs both, plus `stripPointerCasts` (present, but
-  `pub(crate)` in `pointer_analysis.rs`).
+  llvmkit has only in part: `Instruction::erase_from_parent`,
+  `replace_all_uses_with` and `IrBuilder::position_before` (a call inserted
+  *at* an existing instruction's position) exist, but there is no way to erase
+  a `Function` from a module (`F->eraseFromParent()`). The lifetime arm needs
+  that, plus `stripPointerCasts` (present, but `pub(crate)` in
+  `pointer_analysis.rs`).
 
 The generic (non-target) arms of `upgradeIntrinsicFunction1`, extracted so the
 next pass does not have to re-read 600 lines of C++: `ctlz.`/`cttz.` with one
@@ -466,8 +473,9 @@ execution time is dominated by the same handful below. The slowest five:
 > W14b's `lexer_token_drift.rs`; the earlier 212 predates that and one other
 > target added before it.
 
-The 66 s entry is one `#[test]` that is really 87 `rustc` invocations plus that
-dev-profile dependency build. It is on the slow `cargo build` path rather than
+The 66 s entry is one `#[test]` that is really one `rustc` invocation per
+registered fixture plus that dev-profile dependency build. It is on the slow
+`cargo build` path rather than
 `cargo check` **deliberately**, and the reason is in the test's own doc
 comment: `extract_value_empty_indices.rs` asserts a `const { assert!(N > 0) }`
 (D3) whose `E0080` is a monomorphisation-time diagnostic, and under `check`
@@ -476,24 +484,26 @@ switching to `check` would silently stop testing a type-level law.
 
 The `known_bits` / `constant_range_*` cost is inherited: they are ports of
 upstream's `KnownBitsTest` and `ConstantRangeTest`, which verify by exhaustive
-enumeration over small bit widths (43 exhaustive loops in `known_bits.rs`
-alone). Cutting it means weakening the port.
+enumeration over small bit widths. Cutting it means weakening the port.
 
-**The build cost, not the test cost, is the target.** The workspace has no
-`[profile]` section and no `.cargo/config.toml`, so `--release` means cargo's
-defaults: `opt-level = 3`, `codegen-units = 16`, and incremental **off**
-(release disables it). And there are **192 integration test files**, each built
-as its own crate and linked as its own binary against the whole `llvmkit-ir`
-rlib. Three levers, unranked because none has been measured against the others:
+**The build cost, not the test cost, is the target.** There is no
+`.cargo/config.toml`, and the workspace's one profile section is
+`[profile.release] opt-level = 1` (lever 2 below); otherwise `--release` means
+cargo's defaults: `codegen-units = 16`, and incremental **off** (release
+disables it). And every integration test file is built as its own crate and
+linked as its own binary against the whole `llvmkit-ir` rlib. Three levers,
+unranked because none has been measured against the others:
 
-1. **Consolidate the 192 binaries into ~10** (`mod` per area). Removes the
-   dominant cost rather than shrinking it. Does not touch trybuild.
-2. **A profile with `debug = false` and a lower `opt-level`.** The disk rule is
-   about debuginfo, not optimisation, so this preserves it. Note that dropping
-   to a dev-like profile turns on `debug_assert!` and overflow checks — argued
-   as a *benefit* for this codebase, since it forbids `as` casts and uses
-   `wrapping_*`/`saturating_*` deliberately, but it can surface new failures
-   that are findings rather than regressions.
+1. **Consolidate the integration-test binaries into ~10** (`mod` per area).
+   Removes the dominant cost rather than shrinking it. Does not touch trybuild.
+2. ~~**A profile with `debug = false` and a lower `opt-level`.**~~ Landed
+   2026-09-05 (`cdafa76`) as `[profile.release] opt-level = 1` in the workspace
+   `Cargo.toml`; release already has `debug = false`. It stopped short of a
+   dev-like profile, so `debug_assert!` and overflow checks stay off — the
+   *benefit* this lever argued for them (the codebase forbids `as` casts and
+   uses `wrapping_*`/`saturating_*` deliberately) is still unclaimed. trybuild
+   does not see this profile either: per the subsection above, its scratch
+   crate builds `dev`.
 3. **`rust-lld` via `.cargo/config.toml`.** Link-bound builds on Windows
    typically gain; costs nothing semantically.
 
@@ -502,19 +512,20 @@ has not been run.
 
 ## Summary index — printing a module and its index is two calls (found 2026-08-15, LLParser parity W10)
 
-`llvm-dis` prints a module and its summary index together because
-`AssemblyWriter` is handed both, and `printModuleSummaryIndex` runs after
-`printModule`. llvmkit keeps them apart: the index comes back in
-`ParsedModule::summary_index`, it is not attached to the `Module`, and
-`format!("{module}")` therefore never emits `^N` entries. A caller reproducing
-`llvm-dis` writes the module and then the index.
-
-That is a plumbing difference, not a byte difference — `Display for
+This is parity, not a gap. Upstream prints a module and its summary index with
+two calls too: `llvm-dis` (`tools/llvm-dis/llvm-dis.cpp`) calls `M->print(...)`
+and then `Index->print(...)` on the same stream, and each `AssemblyWriter`
+constructor (`lib/IR/AsmWriter.cpp`) takes either a module or an index, never
+both; `Module::print` reaches only `printModule`. llvmkit has the same split:
+the index comes back in `ParsedModule::summary_index`, it is not attached to
+the `Module`, and `format!("{module}")` never emits `^N` entries, so a caller
+reproducing `llvm-dis` writes the module and then the index. `Display for
 ModuleSummaryIndex` reproduces `printModuleSummaryIndex` exactly, leading blank
-line included. It is recorded so the absence of `^N` from a printed module is
-not read as a missing feature. Attaching the index to the module would mean
-giving `Module` a field that only the parser ever fills, which is a bigger
-question than W10 needed to answer.
+line included.
+
+It is recorded so the absence of `^N` from a printed module is not read as a
+missing feature. Attaching the index to the module would be the divergence,
+not the fix: `llvm::Module` owns no index.
 
 ## Summary index — two things the `.ll` surface cannot reach (found 2026-08-15, LLParser parity W10)
 
@@ -690,9 +701,11 @@ Consequences, all real:
   `attributes #0 = { align = 8 }` re-prints as `define void @f() align 8`
   with the attribute gone from the group. llvmkit keeps it in the group.
 
-Land it with the `validateEndOfModule` group-merge work (W13) rather than
-alone: the merge is what decides which attributes survive into the printed
-group, so doing the writer first would pin output the merge then changes.
+Land it with the `validateEndOfModule` group-merge work rather than alone — W13
+shipped without that merge, which is open as [`divergences.md`](divergences.md)
+D9, and this entry's printer half is entry 58 there: the merge is what decides
+which attributes survive into the printed group, so doing the writer first
+would pin output the merge then changes.
 
 ## Parser — a misplaced `phi` is rejected at parse time, not by the verifier (found 2026-08-08, LLParser parity W1)
 
@@ -704,7 +717,8 @@ layer, and a message upstream never prints.
 
 **Do not "fix" this by deleting the parser check** — that was the LLParser
 parity plan's first instinct and it is wrong. Every phi llvmkit builds goes
-through `IrBuilder::make_phi_in_block`, which calls
+through `IrBuilder::append_phi_instruction` (the `phi` builders) or
+`IrBuilder::make_phi_in_block` (block parameters), and both call
 `BasicBlock::insert_instruction_at_phi_head`: the phi is placed at the block's
 phi head regardless of the builder's insertion point. Drop the parse-time
 check and a misplaced phi is *silently hoisted* into a legal position, so the
@@ -952,7 +966,7 @@ is the honest record.
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | ~~`getInverseMinMaxIntrinsic`~~ | 0 | **done** — all ten arms, see below |
 | sibling | 1 | `matchSimpleBinaryIntrinsicRecurrence` |
-| blocked | 1 | `getVScaleRange`, see above |
+| ~~blocked~~ | 0 | **done** — `getVScaleRange` is `value_tracking::get_vscale_range`; the "blocked" reason was false, see item 3 below |
 
 ### Found while porting tranche 4b: three sites inherited one false premise — **closed 2026-08-04**
 
@@ -997,8 +1011,8 @@ inventing one. `TryFrom<Value> for IntValue<IntDyn>` requires
 `TypeData::Integer`, so a vector converts to no typed integer handle at all;
 binops and compares had already grown erased builders for exactly that reason
 (`int_binop_erased`, `int_cmp_erased`), and the casts had not.
-`int_cast_erased` is the third, with `IntCastFlags` as the runtime-opcode
-counterpart of `IntBinOpFlags`, and the parser branches on
+`int_cast_erased` was the third, with `IntCastFlags` as the runtime-opcode
+counterpart of `IntBinOpFlags`, and the parser branched on
 `is_vector_type` the way `parse_int_binop` already did.
 
 **The verifier had the same scalar assumption and it was the harder half.**
@@ -1144,7 +1158,7 @@ were therefore unportable; that had been false since `no_fp_class_of` landed
 `Argument::getNoFPClass`), and the stale sentence outlived the work by weeks
 because nothing re-derives a blocker before it is used to schedule.
 
-### Order for the remaining 8 (recorded 2026-08-04)
+### Order for the remaining gaps (recorded 2026-08-04)
 
 1. **Residue (3 left of 5).** `stripNullTest` and `collectPossibleValues`
    landed 2026-08-04 — both were pure pattern/worklist code with no missing
@@ -1313,8 +1327,8 @@ is recorded on `VALUE_TRACKING_SURFACE_AUDITED` in
 **101 entry points** — 96 namespace-scope functions plus 5 types defined in the
 header (`ConstantDataArraySlice`, `OverflowResult`, `SelectPatternFlavor`,
 `SelectPatternNaNBehavior`, `SelectPatternResult`). **At the time of the audit**
-32 were modeled and 69 were not; the running count lives at the top of this
-section (93 / 8 as of 2026-08-04 — the eight rows of `VALUE_TRACKING_GAPS`).
+32 were modeled and 69 were not; the running count is not kept here — read
+`VALUE_TRACKING_GAPS`'s rows (93 / 8 as of 2026-08-04).
 The 101 is the part that does not move.
 
 The audit's real finding was about the ledger, not the port. The gap table was
@@ -1350,7 +1364,7 @@ what the sizing looked like going in, with each row re-measured 2026-08-04.
 | `AssumptionCache` | 280 + 310 | `assumptions.rs`, with `DomConditionCache` alongside | **done 2026-08-04** (tranche 8) |
 | `SelectPatternResult` | declared in `ValueTracking.h` | `select_pattern.rs` | **done 2026-08-03** (tranches 4a/4b) |
 | `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; check what it already answers before recording `getIntrinsicForCallSite` as blocked on it |
-| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 6062 | the remaining 8 gaps are listed above, not a line-count gap |
+| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 6062 | the remaining gaps are `VALUE_TRACKING_GAPS`'s rows, not a line-count gap |
 
 The original estimate — roughly 12–14k lines of ported logic plus D11-compliant
 tests, comparable to the whole ApFloat/ApInt sweep — held. It was delivered as
@@ -1385,18 +1399,22 @@ sequenced:
    range is not poison, where upstream's `shiftAmountKnownInRange` demands a
    literal constant.
 
-   Two upstream fixtures do **not** port, and each gap is recorded rather than
-   papered over:
+   Two upstream fixtures did **not** port, and each gap was recorded rather
+   than papered over; one has since closed:
 
-   - The `<2 x i32>` third of `TEST_F(ValueTrackingTest, HaveNoCommonBitsSet)`.
-     llvmkit cannot express it — see the vector-binop entry below.
-   - `known-power-of-two.ll`'s positive cases (`@shl_is_pow2`,
-     `@trunc_is_pow2_or_zero`, and their siblings). Their `shl` carries no
-     `nuw`/`nsw` in the source; upstream reaches `true` only because
-     `instcombine` infers the flags first, which the printed `CHECK` line shows
-     (`shl nuw nsw`). That is a missing transform, not a missing analysis.
-     `crates/llvmkit-asmparser/tests/value_tracking_predicates.rs` asserts them
-     **false** so closing the gap trips the test rather than passing silently.
+   - ~~The `<2 x i32>` third of `TEST_F(ValueTrackingTest, HaveNoCommonBitsSet)`.
+     llvmkit cannot express it — see the vector-binop entry below.~~ Ported
+     once that entry closed (2026-08-03):
+     `value_tracking_predicates.rs::have_no_common_bits_set_fixtures` runs all
+     three blocks.
+   - `known-power-of-two.ll`'s `shl` group positive case, `@shl_is_pow2`. Its
+     `shl` carries no `nuw`/`nsw` in the source; upstream reaches `true` only
+     because `instcombine` infers the flags first, which the printed `CHECK`
+     line shows (`shl nuw nsw`). That is a missing transform, not a missing
+     analysis.
+     `crates/llvmkit-asmparser/tests/value_tracking_predicates.rs::known_power_of_two_shl_fixtures`
+     asserts it **false** so closing the gap trips the test rather than passing
+     silently.
 2. ~~**Poison / UB family**~~ ✅ **done 2026-08-03** (tranche 6) —
    `canCreatePoison`, `canCreateUndefOrPoison`, `impliesPoison`,
    `propagatesPoison`, `programUndefinedIfPoison`, `mustTriggerUB`,
@@ -1576,14 +1594,14 @@ sweep for an upstream fixture that exercises them.
   If it ever stabilizes at or below the pinned toolchain, the migration is one
   re-export line (`lib.rs`'s `pub(crate) use llvmkit_macros::Branded`) — worth
   doing only if `llvmkit-macros` optionality matters then.
-- **Fold backlog: ~30 hand-written bound-free impl families remain** (≈150
-  impls) that predate the derive and could migrate to `#[derive(Branded)]`
-  one family at a time: `Type`, `Value`, `IntValue`, `FloatValue`,
-  `ArrayValue`, `VectorValue`, `ModuleRef`, `ModuleView`, `FunctionValue`,
-  `CallInst`/`TypedCallInst`, the phi handles, `SwitchInst`/`IndirectBrInst`/
-  `InvokeInst`/`LandingPadInst`/`CatchSwitchInst`, `IntType`/`FloatType`/
+- **Fold backlog: hand-written bound-free impl families remain** that predate
+  the derive and could migrate to `#[derive(Branded)]` one family at a time:
+  `Type`, `Value`, `IntValue`, `FloatValue`, `ArrayValue`, `VectorValue`,
+  `ModuleRef`, `FunctionValue`, `TypedCallInst`, `IntType`/`FloatType`/
   `ArrayType`/`StructType`/`VectorType`, `TypedPointerValue`, `SsaBlock`, the
-  SSA variables, `MetadataId`, `Instruction`. Each fold must compare the
+  SSA variables, `MetadataId`, `Instruction`. (`ModuleView`, `CallInst`, the
+  phi handles, `SwitchInst`, `IndirectBrInst`, `InvokeInst`, `LandingPadInst`
+  and `CatchSwitchInst` have since folded.) Each fold must compare the
   hand-written `PartialEq`/`Hash` field walk against the full field list and
   keep custom `Debug` bodies manual (several print computed values). Sound as
   they are; this is deduplication, not a fix.
@@ -1624,8 +1642,9 @@ supertrait drop above), three resolved by record — reality wins:
 C-CUSTOM-TYPE ("do not use raw types where a bespoke one carries the
 invariant") drove the 0.0.4 renames — `Signedness` for the signedness bools,
 the per-opcode flag structs, `ModuleFlagBehavior` / `ModuleFlagKey` for module
-flags, `NamedMetadataName` for named-metadata keys. Six surfaces are still raw
-`String` or bare tuple where a type belongs. They are listed here so the next
+flags, `NamedMetadataName` for named-metadata keys. Six surfaces were left raw
+`String` or bare tuple where a type belongs; the three struck through below
+have since closed. They are listed here so the next
 sweep does not re-derive the list — and because five of the six are **not**
 rename work: they need a port, a generated table, or a consumer that does not
 exist yet. Each bullet says which. Where no reason is on record, the bullet
@@ -1636,10 +1655,11 @@ says that too rather than inventing one.
   `DW_OP_*`, `DW_MACINFO_*` and `DW_APPLE_ENUM_KIND_*` word is lexed to its own
   `Token::Dwarf*` variant carrying the **full keyword text**
   (`crates/llvmkit-asmparser/src/ll_token.rs`), and the parser then collapses
-  all nine — plus `DIFlag*`, `DISPFlag*`, `CSK_*`, and the emission-,
-  name-table- and fixed-point-kind keywords — into a single
-  `MetadataFieldValue::Enum(String)` (`parse_metadata_field_value`,
-  `ll_parser.rs`). Nothing validates the spelling, and a consumer that wants
+  all nine — plus `CSK_*`, and the emission-, name-table- and fixed-point-kind
+  keywords — into a single `MetadataFieldValue::Enum(String)`
+  (`parse_metadata_field_value`, `ll_parser.rs`). (`DIFlag*` / `DISPFlag*` used
+  to collapse there too; they have their own bitfield variants since the bullet
+  below closed.) Nothing validates the spelling, and a consumer that wants
   the tag has to string-match. The typed form is the `Dwarf.def` tables
   (`llvm/BinaryFormat/Dwarf.def`, surfaced as `llvm::dwarf::Tag` and friends in
   `Dwarf.h`) — several hundred constants across nine families, which is
@@ -1688,8 +1708,8 @@ says that too rather than inventing one.
   [[verify-recorded-premises]]
 - **`MetadataField::name` is a `String` — validated, but still stringly typed.**
   ~~Nothing validates it~~ — **the divergence half is closed (2026-08-07).**
-  `SpecializedMetadataKind::fields` / `required_fields` port each class's
-  `VISIT_MD_FIELDS` block from `LLParser.cpp`, and the specialized-node loop in
+  `SpecializedMetadataKind::declared_fields` / `required_fields` port each
+  class's `VISIT_MD_FIELDS` block from `LLParser.cpp`, and the specialized-node loop in
   `ll_parser.rs` now makes all three of upstream's rejections: `invalid field
   '<name>'` (the `PARSE_MD_FIELD` fall-through), `field '<name>' cannot be
   specified more than once` (`LLParser::parseMDField`'s `Result.Seen` guard),
@@ -1698,9 +1718,11 @@ says that too rather than inventing one.
   `test/Assembler/invalid-di*.ll` family.
 
   What remains is the ergonomics half: the field name is still a `String`
-  checked against a `&'static [&'static str]` table, not a per-node
-  `MetadataFieldName` enum. That enum is worth writing only alongside the
-  per-node modeling it would key, so it stays with the same milestone. The
+  checked against `SpecializedMetadataKind::declared_fields`'s
+  `&'static [SpecializedMetadataField]` table, whose entries name the field by
+  `&'static str`, not a per-node `MetadataFieldName` enum. That enum is worth
+  writing only alongside the per-node modeling it would key, so it stays with
+  the same milestone. The
   table also cannot be drift-tested the way `attribute_td_drift.rs` tests
   `Attributes.td`, for two reasons worth recording so nobody re-derives them:
   that `.td` is **vendored and tracked** under
@@ -1708,21 +1730,24 @@ says that too rather than inventing one.
   `LLParser.cpp` under the **gitignored** `orig_cpp/`, so a test reading it
   would pass locally and fail in CI; and even vendored, the lists are
   `VISIT_MD_FIELDS` preprocessor macro blocks rather than a re-readable `.def`.
-  Vendoring an 8k-line C++ file to scrape macro text is a far larger commitment
+  Vendoring an 11k-line C++ file to scrape macro text is a far larger commitment
   than vendoring a `.td`. The two halves are pinned against each other instead
-  (`required_fields ⊆ fields`, per kind), which catches a typo'd or dropped
-  required field but not upstream adding one.
+  (`required_fields ⊆ declared_fields`, per kind), which catches a typo'd or
+  dropped required field but not upstream adding one.
 
   **Half of that reason is now spent (W14b, 2026-08-16).** `LLLexer.cpp` and
   `LLToken.h` *are* vendored under `crates/llvmkit-asmparser/tablegen/`, and
   `lexer_token_drift.rs` scrapes their `KEYWORD` / `TYPEKEYWORD` /
   `INSTKEYWORD` / `DWKEYWORD` macro tables with a paren-balanced reader — so
   "vendored and tracked" is no longer a property only `.td` files have, and
-  scraping C++ macro text is no longer unprecedented. What still holds for
-  `LLParser.cpp` is the size (8k lines against `LLLexer.cpp`'s 1.2k) and the
-  shape: `VISIT_MD_FIELDS` interleaves the field name with a *type* and a
-  default, so a reader must parse three things per entry rather than lift one
-  identifier. Weigh it on those grounds now, not on the vendoring question.
+  scraping C++ macro text is no longer unprecedented. **The other half is spent
+  too (2026-09-02, `591ec98`):** `LLParser.cpp` itself is now vendored and
+  tracked there (11,108 lines against `LLLexer.cpp`'s 1,265, `wc -l` at
+  `7d0540c`), and `parse_error_upstream_inventory.rs` reads it. What still
+  holds is the shape: `VISIT_MD_FIELDS` interleaves the field name with a
+  *type* and a default, so a reader must parse three things per entry rather
+  than lift one identifier. Weigh it on that ground now, not on the vendoring
+  question.
 - **`Module::target_triple` returns `Option<String>`.** The triple is stored
   and printed verbatim, never decoded, so nothing can ask for the architecture,
   vendor, OS or environment without re-splitting the string. A structured
@@ -1732,13 +1757,10 @@ says that too rather than inventing one.
   and target-backend work that is permanently out of scope, so the port would
   have to justify itself on IR-level consumers alone (DataLayout consistency
   checks are the only candidate today).
-- **`SourceMap::line_col` returns a bare `(u32, u32)`** (`llvmkit-support`), so
-  a caller can transpose line and column with no complaint from the compiler —
-  exactly the shape C-CUSTOM-TYPE exists to prevent. A `LineCol { line, column }`
-  struct is a contained change with one in-tree consumer (the parser's own
-  diagnostics) and no dependency on anything else — it is the smallest item in
-  this list. No reason for the 0.0.4 sweep passing it over is recorded, so do
-  not assume one; take it whenever `llvmkit-support` is next touched.
+- ~~**`SourceMap::line_col` returns a bare `(u32, u32)`** (`llvmkit-support`),
+  so a caller can transpose line and column with no complaint from the
+  compiler.~~ **Closed 2026-09-05** (`384a7f2`): it returns
+  `llvmkit_support::LineCol { line, column }`.
 - ~~**Inline-asm constraints are never parsed.**~~ **Closed 2026-08-12**
   (LLParser parity W4). `parse_constraints` / `verify_inline_asm` in
   `inline_asm.rs` port `InlineAsm::ParseConstraints` and the static
@@ -1776,7 +1798,8 @@ says that too rather than inventing one.
 
   **The crate graph is the real constraint, and this sketch skips it.**
   `llvmkit-ir` does not depend on `llvmkit-support` — its only intra-workspace
-  dependency is `llvmkit-macros` (`crates/llvmkit-ir/Cargo.toml`), and no file
+  dependency is `llvmkit-macros`, beside the build-time `llvmkit-tablegen`
+  (`crates/llvmkit-ir/Cargo.toml`), and no file
   under `crates/llvmkit-ir/src/` names `llvmkit_support`. Support enters the
   graph one level up, at `llvmkit-asmparser`. So the verifier half of this
   design needs a **new** `llvmkit-ir → llvmkit-support` edge, or the renderer
@@ -1804,9 +1827,11 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   `CreateUnaryIntrinsic`, `CreateBinaryIntrinsic` -- the latter returns
   `Value*` because it folds), `CreateStepVector`, `CreateAggregateRet`
   (explicitly deferred in AGENTS.md).
-- FMF-variant family completion: `CreateSelectFMF`, `CreateFPTruncFMF`,
-  `CreateFPExtFMF` analogs (llvmkit has binop/fcmp `_fmf` variants already);
-  consider an `FMFSource`-style "inherit FMF from instruction" helper.
+- ~~FMF-variant family completion: `CreateSelectFMF`, `CreateFPTruncFMF`,
+  `CreateFPExtFMF` analogs (llvmkit has binop/fcmp `_fmf` variants already)~~
+  **done 2026-08-08** (`8b2e3de`) as `select_erased_with_fmf`,
+  `fp_trunc_dyn_with_fmf` and `fp_ext_dyn_with_fmf`. Still open: an
+  `FMFSource`-style "inherit FMF from instruction" helper.
 - Const-index GEP shortcuts (`CreateConstGEP1_32` etc.).
 - Named `icmp_*` per-predicate wrappers already exist; audit found no
   gap there.
@@ -1873,7 +1898,7 @@ Upstream canonicalises an all-`undef` or all-`poison` element list to one
 `ConstantStruct::get`, `ConstantVector::getImpl`). llvmkit keeps the list, so
 a routine that ports `isa<UndefValue>(C)` by matching `ConstantData::Undef` /
 `ConstantData::Poison` on the storage answers `false` for such a list where
-upstream answers `true`. `Constant::is_undef`, `is_poison` and
+upstream answers `true`. `constant.rs`'s `is_undef`, `is_poison` and
 `is_undef_or_poison` now answer through `Constant::kind`, and the review that
 moved them found the folders' whole-value `isa<PoisonValue>` reads wrong
 (`constant_kind.rs::a_whole_value_fold_sees_an_all_poison_list_as_poison`).
@@ -1901,7 +1926,9 @@ moves to `Constant::kind`.
 
 - `Display` for the 39 typed instruction handles (`LoadInst`, `CallInst`, …;
   every `pub struct *Inst` under `crates/llvmkit-ir/src/`, all 39 re-exported.
-  This read "~25" until it was re-counted 2026-08-06).
+  This read "~25" until it was re-counted 2026-08-06; 39 again at `7d0540c` by
+  `rg -o '^pub struct [A-Za-z]*Inst\b' crates/llvmkit-ir/src`, each name found
+  in `lib.rs`).
   Cycle C gave `Display` to every public *value* handle, which prints the
   operand form, but deliberately stopped at the instruction handles: their
   natural rendering is a full instruction line, not an operand, so they need
@@ -2085,7 +2112,8 @@ moves to `Constant::kind`.
     `StoredBrand`; the two forms meet at exactly two crate-internal
     conversions — `into_stored`, which performs the tag check, and
     `from_stored`, a pure retag of ids the arena already owns.
-  - The check lands at **one** choke point. `MetadataId::slot` exists only on
+  - The check lands at **one** choke point. `MetadataId::slot` (since
+    2026-09-19 `slot_trusting_same_module`) exists only on
     `MetadataId<StoredBrand>`, so the only route from a caller's id to an arena
     index is `MetadataId::into_stored` / `ModuleCore::metadata_slot_of`, which
     compares the `ModuleId` first. Forgetting the check one level up is not
@@ -2136,7 +2164,9 @@ moves to `Constant::kind`.
   - **Composite-element arrays** (`[N x {..}]` / `[N x [..]]` / `[N x <..>]`) — a
     scalar element marker can't name a composite element (**scoped out**).
   - **Float / div / rem vector binops and vector `icmp`/`fcmp`** — **scoped out**;
-    no existing erased `_dyn` lowering to reuse.
+    there was then no erased lowering to reuse. There is now
+    (`int_binop_erased`, `fp_binop_erased`, `int_cmp_erased`,
+    `fp_cmp_erased`), so the typed tier is unbuilt rather than blocked.
   - `vector_splat` can't infer its element from the scalar (a Rust
     associated-type-projection limitation), so its callers annotate / turbofish
     the result.
@@ -2358,7 +2388,8 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
 
   Because pass-side labels arrive erased-by-origin (from
   `FunctionView::basic_blocks()`), a typed twin would also force a narrowing
-  round-trip (`try_into_typed::<Params>`) that the erased redirect avoids. Typed
+  round-trip back to `BasicBlockLabel<Params>` (a conversion no llvmkit method
+  offers) that the erased redirect avoids. Typed
   `BlockCall` earns its keep at block *creation*, where the typed label is in
   hand; it has no consumer at pass-side redirect. Revisit only if a pass appears
   that authors fresh, statically-shaped merge blocks *and* redirects existing
@@ -2389,8 +2420,9 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   cycle cycle D/E)**. There were never two "environmental" drifts: gated on the
   pinned CI toolchain (`cargo +1.96.0`), `folder_typed_wrong_width` and
   `extract_value_empty_indices` both pass, and the whole suite's baseline is
-  **0 failures** across the registered fixtures — `CLAUDE.md` carries the live
-  count, which this entry used to duplicate and had let drift to 83. The
+  **0 failures** across the registered fixtures. No file carries a live count —
+  `CLAUDE.md` says to run the gate instead; this entry used to carry one and
+  had let it drift to 83. The
   mismatch only ever appeared
   when the suite was run on a *newer* rustc than the pin. Every `.stderr` in
   the tree is blessed on 1.96.0; re-bless there and nowhere else.
@@ -2437,11 +2469,14 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   unwitnessed -- so this waits on a decision about `module_mut`, not on
   plumbing alone. Wire the flush through the iterators if per-function analyses
   are ever threaded into them.
-- **New `.stderr` under the canonical-rustc bless caveat.**
+- ~~**New `.stderr` under the canonical-rustc bless caveat.**
   `reshape_stale_cfg_analysis_across_edit` is blessed on the local rustc like
   the pass-API fixtures above; its `E0502` borrow-error wording is stable
   across toolchains, but it joins the set that should be re-blessed on the
-  reference rustc.
+  reference rustc.~~ **Closed** with the Pass API section's bless entry
+  (2026-07-26): the fixture is registered in `typestate_compile_fail.rs`, its
+  `.stderr` last changed in that cycle (`e23b6cd`), and CI runs it on
+  `dtolnay/rust-toolchain@1.96.0` (green at `d708758`).
 
 ## Phi authoring — shipped
 
@@ -2470,7 +2505,7 @@ form. It has one — `AsmWriter`'s phi arm prints the type and then an empty
 their pair loop at the first token that is not `[`, and
 `test/Assembler/zero-input-phi.ll` round-trips exactly that through
 `llvm-as | llvm-dis`. The rule rejected IR LLVM accepts, so it is gone;
-`check_phi_incoming`'s `numIncoming == numPreds` guard — upstream's own, from
+`check_phi`'s `numIncoming == numPreds` guard — upstream's own, from
 `Verifier::visitBasicBlock` — is the only length rule again.
 
 The former follow-up here — **edge ops on `invoke`/`callbr`** — has also
@@ -2489,7 +2524,7 @@ sealed marker with the erased `BlockParamsDyn` default sits as the last,
 defaulted `Params` type parameter on `BasicBlockLabel`/`BasicBlock`, so all
 erased authoring is unchanged; `IrBuilder::append_block_typed::<Params>` appends
 a `Params`-stamped block with typed head-phi parameter handles; and the
-`BlockCall<'ctx, R, B, Params>` edge (`head.call(args)` consumed by
+`BlockCall<R, B, Params>` edge (`head.call(args)` consumed by
 `br_call`/`cond_br_call`) makes a wrong-arity or wrong-typed
 block-argument a *compile* error. The erased surface
 (`append_block_with_params`, `br_with_args`, `cond_br_with_args`) is
@@ -2563,8 +2598,8 @@ than pending:
   API-idioms sweep dropped the `build_` prefix from every `IrBuilder` emitter,
   so `build_body` no longer fits the naming law it was written against.
 
-  Until then the rule stays a `Module::verify()` check — see the "br
-  target is not a basic block of the parent function" family in `verifier.rs`.
+  Until then the rule stays a `Module::verify()` check — see the "Referring
+  to a basic block in another function!" family in `verifier.rs`.
   Revisit only as its own opt-in cycle if a concrete authoring need appears.
 
   **The id-first revival shape, sketched 2026-09-04.** Asked for again in a
@@ -2744,8 +2779,10 @@ number written into a backlog paragraph is re-derived by nothing. Derive it when
 you do the work: run `target/release/examples/parse_file.exe` over each `error=`
 row's fixture, take the first stderr line, strip the `<path>:<line>:<col>: `
 prefix (which yields exactly the harness's `rendered`, since
-`examples/parse_file.rs` prints `eprintln!("{path}:{line}:{col}: {err}")` and the
-harness compares `format!("{error}")`), and bucket against the pin.
+`crates/llvmkit-asmparser/examples/parse_file.rs` prints
+`eprintln!("{path}:{at}: {err}")`, `at` being a `LineCol` that displays as
+`line:column`, and the harness compares `format!("{error}")`), and bucket
+against the pin.
 
 Two things that sweep will show, and they are the point of it. First, the sweep
 is small and per-*site* rather than per-row: the rows that fail an equality
@@ -2760,9 +2797,9 @@ match struct element type` while `LLParser::convertValIDToValue` prints
 `'%0' defined with type 'i1' but expected 'i32'`. Being *stricter* than the
 fixture's own `RUN` line is a divergence exactly as being weaker is, so neither
 of those is work — the pin is what would change if a strict tier ever covered
-them. Genuine defects the sweep has surfaced so far are recorded where they
-belong: `zeroinit-error` in [`divergences.md`](divergences.md), and
-`invalid-datalayout-override` under **G17** in
+them. Genuine defects the sweep has surfaced so far: `zeroinit-error`, fixed
+as the worked example above records (its `divergences.md` entry closed with it,
+`5750b65`), and `invalid-datalayout-override` under **G17** in
 [`fixture-coverage.md`](fixture-coverage.md), with the fix stated there.
 `musttail-invalid-1`, once listed beside it, is fixed, and
 `parser_calls.rs::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`
@@ -2888,7 +2925,7 @@ correct rows. The prefix shortcut was wrong too — it flags only the mid-messag
 rows and would have missed the `nofpclass` rows, the largest genuine group at
 the time, because those added a *suffix*.
 
-## Docs — the cite-by-symbol sweep (found 2026-08-20, fix round 3)
+## ~~Docs — the cite-by-symbol sweep~~ (found 2026-08-20, fix round 3; closed 2026-10-04)
 
 `docs/divergences.md` states the law for its own file ("Upstream is cited **by
 symbol, never by line number**") and its body breaks it about **157** times —
@@ -2962,19 +2999,26 @@ use list from a shuffled `uselistorder` directive and compares, so every fixture
 carrying that RUN line is a half-port wherever a row cites it.
 
 **The class is far wider than those two, and almost none of it is disclosed.**
-Measured at this commit: **219** `UPSTREAM.md` rows cite one of **47** distinct
-upstream `.ll` fixtures whose RUN lines include `verify-uselistorder` without
-naming that line — `test/Bitcode/compatibility.ll` alone accounts for 102 of
-them and `test/Assembler/flags.ll` for 34 — against exactly **3** rows that do
-disclose it (`parser_function_body.rs::an_unreachable_block_prints_no_predecessors`
-over `2002-08-15-ConstantExprProblem.ll`, and
+Measured at `7d0540c` with the derivation below: **230** `UPSTREAM.md` rows
+cite one of **51** distinct upstream `.ll` fixtures whose RUN lines include
+`verify-uselistorder` without naming that line — `test/Bitcode/compatibility.ll`
+alone accounts for 104 of them and `test/Assembler/flags.ll` for 35 (the same
+row filter, `grep -cF` on each path) — against **5** rows that do disclose it
+(`` grep '^| `' UPSTREAM.md | grep -c verify-uselistorder ``):
+`parser_function_body.rs::an_unreachable_block_prints_no_predecessors` over
+`2002-08-15-ConstantExprProblem.ll`,
 `parser_debug_metadata.rs::diexpression_forms_round_trip` /
 `::metadata_string_hex_escapes_print_uppercase` over `diexpression.ll` and
-`debug-info.ll`). At `ea57b14`, where this measurement was first taken, it read
-220 / 47 / 2; the one-row move is fix round 4's own disclosure on the
-`debug-info.ll` row. So fix round 3's sweep disclosed the line on rows it
-rewrote for other reasons, not on the class; the rows it regraded for hex-case,
-block-label and `compatibility.ll` reasons are themselves inside the 219.
+`debug-info.ll`,
+`parser_module_level.rs::an_alias_forward_referenced_from_a_constant_expression_resolves`
+over `alias-use-list-order.ll`, and
+`parser_calls.rs::a_call_to_an_already_defined_ifunc_resolves_to_the_ifunc`
+over `ifunc-use-list-order.ll`. At `ea57b14`, where this measurement was first
+taken, it read 220 / 47 / 2, and at fix round 4 219 / 47 / 3, the one-row move
+then being fix round 4's own disclosure on the `debug-info.ll` row. So fix
+round 3's sweep disclosed the line on rows it rewrote for other reasons, not on
+the class; the rows it regraded for hex-case, block-label and
+`compatibility.ll` reasons are themselves inside the count.
 `numbered-values.ll` is no longer cited by any `UPSTREAM.md` row at all (the
 fixture itself is still driven at `status=pass` by the corpus manifest), so the
 pair named above is a sweep finding, not a disclosure pair. Derivation:
@@ -2984,9 +3028,9 @@ R=orig_cpp/llvm-project-llvmorg-22.1.4/llvm
 grep -o 'test/[A-Za-z0-9_./+-]*\.ll' UPSTREAM.md | sort -u |
   while read -r f; do [ -f "$R/$f" ] &&
     grep -qE '^; *RUN:.*verify-uselistorder' "$R/$f" && echo "$f"; done > ul.txt
-grep '^| `' UPSTREAM.md | grep -v verify-uselistorder | grep -cF -f ul.txt   # 219
+grep '^| `' UPSTREAM.md | grep -v verify-uselistorder | grep -cF -f ul.txt   # 230 at 7d0540c
 grep '^| `' UPSTREAM.md | grep -v verify-uselistorder |
-  grep -oF -f ul.txt | sort -u | wc -l                                      # 47
+  grep -oF -f ul.txt | sort -u | wc -l                                      # 51 at 7d0540c
 ```
 
 ## `IrResult` over-declaration — the sites left after the intrinsic-mismatch fix (found 2026-09-04, `ParseError` surface narrowing task 7)
@@ -3013,18 +3057,20 @@ catch-alls are provably dead and were deleted. `ll_parser.rs`'s
 The brief's own Step 1 recipe (`grep "IrResult<" | grep "pub fn"`, both on one
 line) was re-run and confirmed to be the wrong denominator the supplement said
 it was: it requires `pub fn` and `IrResult<` on the *same* source line, so it
-misses every multi-line signature. Measured at this commit:
+misses every multi-line signature. Measured when this entry was written, and
+re-derived at `7d0540c`:
 
 ```bash
-grep -rn "IrResult<" crates/llvmkit-ir/src/ --include=*.rs | grep "pub fn" | wc -l   # 139
+grep -rn "IrResult<" crates/llvmkit-ir/src/ --include=*.rs | grep "pub fn" | wc -l   # 139 then; 132 at 7d0540c
 # functions whose `pub`/`pub(crate) fn` and `-> IrResult<` are on different
 # lines, i.e. invisible to the recipe above, per source file:
 for f in $(grep -rl "IrResult<" crates/llvmkit-ir/src/ --include=*.rs); do
   perl -0777 -ne 'my @m = /pub(?:\(crate\))? fn \w+[^{;]*?\n[^{;]*?->\s*IrResult</gs;
     print scalar(@m), " $ARGV\n" if @m' "$f"
 done | grep -v "^0 "
-# ir_builder.rs alone has 220 such signatures; module.rs 31; several other
-# files 1-35 each. The true count is several hundred, not 139, which is why
+# ir_builder.rs alone had 220 such signatures, module.rs 31 (226 and 36 at
+# 7d0540c); several other files 1-35 each. The true count is several hundred,
+# not what the one-line recipe reports, which is why
 # this entry does not attempt a full enumeration — see the supplement's own
 # framing, reproduced in the task-7 report.
 ```
@@ -3115,7 +3161,8 @@ alone because no consumer lies about it yet.
   decisive test and is recorded rather than changed here.
 
 - **`into_slot_mapping` (`crates/llvmkit-asmparser/src/ll_parser.rs`).** Two
-  `let _ = numbered.add(slot, value);` calls discard a `Result<(),
+  calls — `let _ = metadata_nodes.add(slot, …)` and
+  `let _ = attribute_groups.add(slot, …)` — discard a `Result<(),
   numbered_values::AddError>`. `AddError::StaleId` fires only on a
   non-ascending or duplicate slot; both call sites insert from a
   `sort_by_key`-sorted, already-deduplicated (map-derived) sequence, so the
@@ -3138,8 +3185,9 @@ above superseded ones the supplement made without being able to verify them
 ## Two-or-more adjacent `bool` parameters: the sixteen left, and why
 
 The C-CUSTOM-TYPE sweep of 2026-09-05 converted three functions whose adjacent
-`bool`s were llvmkit's own shape. Sixteen were left, and this records why so the
-next sweep does not re-litigate them. Re-derive the full list with:
+`bool`s were llvmkit's own shape. Sixteen were left (16 again at `7d0540c` by
+the command below), and this records why so the next sweep does not
+re-litigate them. Re-derive the full list with:
 
 ```bash
 for f in crates/llvmkit-ir/src/*.rs crates/llvmkit-support/src/*.rs crates/llvmkit-asmparser/src/*.rs; do
@@ -3192,6 +3240,11 @@ exists to prevent:
   matrix and named arguments would obscure it.
 - `ll_parser.rs::int_binop_flags(nuw, nsw, exact, disjoint)` — builds
   `IntBinOpFlags` from four parsed keyword presences, same circularity as above.
+- `data_layout.rs::with_pointer_flags(has_unstable_repr, has_external_state)` —
+  a private builder step carrying `DataLayout::setPointerSpec`'s
+  `bool HasUnstableRepr, bool HasExternalState` pair; its one call site passes
+  parsed variables, never literals. (This list omitted it until the 2026-10-11
+  audit, though the command below has always reported it.)
 
 **The trigger to revisit**: a call site appearing that passes two or more of
 these as bare literals. That is what made `round_to_integral(finite, false,

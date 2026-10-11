@@ -39,9 +39,9 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Add a wrong-width case value to a `switch` | D4 | Builder accepts any `ConstantInt *`; a case whose integer width ≠ the condition is caught later by `Verifier::visitSwitchInst` (`"Switch constants must all be same type as switch value!"`) | `switch::<W>` pins the condition width `W`, and `SwitchInst::add_case` then carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width case is a compile error; the erased `switch_dyn` (`IntDyn`) keeps the same rule as a runtime `IrError::TypeMismatch` check for parsed / SSA-builder input |
 | Jump through a non-pointer `indirectbr` address | D4 | `CreateIndirectBr` accepts any `Value *`; a non-pointer address is caught later by `Verifier::visitIndirectBrInst` (`"Indirectbr operand must have pointer type!"`) | `indirectbr`'s address is bound `IntoPointerValue<'ctx, B>`, so a typed non-pointer address is a compile error. There is no erased overload: `IntoPointerValue` has no impl for a bare `Value`, so a parsed address must first be narrowed by `TryFrom` (`ll_parser.rs::parse_indirectbr` does exactly that), which is where the pointer check lands. Either way the rule is out of `Module::verify()` |
 | Make a structurally-invalid CFG edge edit — remove an `invoke`/`callbr` edge or the sole edge of an unconditional `br`, remove a `switch` default, or collapse a `cond_br` twice | D1, D2 | Edge edits are raw pointer manipulation (`setSuccessor` / `removePredecessor` / branch replacement); an edit that orphans a mandatory edge yields malformed IR the verifier catches later, if at all | `FnReshape::edit_terminator` narrows the terminator into a per-kind typed handle (`BrEdit` / `CondBrEdit` / `SwitchEdit` / `InvokeEdit` / `CallBrEdit`) whose method set fixes the legal edits: a removal that would orphan a mandatory edge has no method to spell (`E0599`), and `remove_then` / `remove_else` consume the handle, so a double collapse is use-after-move (`E0382`). Each redirect/remove maintains the successors' phis mechanically, poison-erasing an emptied phi for `BasicBlock::removePredecessor` parity |
-| Insert a wrong-typed element into a vector or aggregate (`insertelement` / `insertvalue`) | D4, D6 | Builder accepts `Value *`; the verifier later reports the element/field type mismatch | `vector_insert` / `array_insert` take a value typed by the handle's element marker `E`, so a wrong element type is a compile error (typed handle); the erased `VectorValue<'ctx>` / `ArrayValue<'ctx>` (`Dyn`) path stays verifier-checked as the escape hatch |
-| Elementwise vector binop on mismatched lane count or element type | D4, D6 | Builder accepts two `Value *`; the verifier later reports the operand type mismatch | `vector_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` take two `VectorValue<E, Len<N>>` with the *same* `E`,`N`, so a mismatched length or element has no matching impl (compile error, typed handle); the erased `_dyn` / `VectorValue<'ctx>` path stays verifier-checked |
-| `<N x T>` / `[N x T]` length mismatch at a typed vector/array op | D6 | Builder accepts the mis-sized operand; the verifier later reports the length/type mismatch | The length marker (`Len<N>` for vectors, `ArrLen<N>` for arrays) is part of the handle type, so a typed op on a wrong-length value is a compile error; the all-`Dyn` `VectorValue<'ctx>` / `ArrayValue<'ctx>` form narrows via `TryFrom` (`OperandWidthMismatch` / `IrError::ArrayLengthMismatch`) as the escape hatch |
+| Insert a wrong-typed element into a vector or aggregate (`insertelement` / `insertvalue`) | D4, D6 | Builder accepts `Value *`; the verifier later reports the element/field type mismatch | `vector_insert` / `array_insert` take a value typed by the handle's element marker `E`, so a wrong element type is a compile error (typed handle). The erased escape hatches differ: the erased `insert_element` stays verifier-checked, while the erased `insert_value` / `insert_value_dyn` check the inserted value against the indexed type at the call site (`IrError::TypeIdentityMismatch`) |
+| Elementwise vector binop on mismatched lane count or element type | D4, D6 | Builder accepts two `Value *`; the verifier later reports the operand type mismatch | `vector_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` take two `VectorValue<E, Len<N>>` with the *same* `E`,`N`, so a mismatched length or element has no matching impl (compile error, typed handle); the erased `int_*_dyn` / `int_binop_erased` path checks at the call site instead, rejecting operands of different types with `IrError::InvalidOperation` |
+| `<N x T>` / `[N x T]` length mismatch at a typed vector/array op | D6 | Builder accepts the mis-sized operand; the verifier later reports the length/type mismatch | The length marker (`Len<N>` for vectors, `ArrLen<N>` for arrays) is part of the handle type, so a typed op on a wrong-length value is a compile error; an erased `Value` (or the all-`Dyn` `VectorValue<'ctx, ElemDyn, LenDyn, B>` / `ArrayValue<'ctx, ElemDyn, ArrLenDyn, B>` form, through `as_erased()`) narrows into the typed handle via `TryFrom` (`OperandWidthMismatch` / `IrError::ArrayLengthMismatch`) as the escape hatch |
 | Run verified-only analyses after a transform | D8 | Verifier pass convention | A pass pipeline's output is `Module<B, Unverified>` whenever any member mutates (derived from the members' rungs), so verified-only analyses require an explicit `verify()` first |
 | Pass mutates IR but reports everything preserved | D8, D1 | Pass returns a hand-written `PreservedAnalyses`; over-claiming leaves stale analyses that later passes miscompile against, caught only if a verifier/analysis-checker pass is opted in | Preservation is *derived* from the pass's capability rung, so over-claiming is a compile error: a mutating rung's `done()` floor is fixed by the rung, and `Access = Inspect` has no `mutate()` at all |
 | Declare an analysis dependency | D8, D1 | Fallible `getResult` / `getCachedResult`; querying an undeclared or uncomputed analysis returns null and is undefined behavior | `type Requires` is prefetched, then read through the infallible `cx.analysis::<A, _>()`; an undeclared analysis has no `AnalysisSelector` impl, so the access is a compile error |
@@ -159,10 +159,10 @@ pub trait ModuleBrand: 'static {}
 
 impl Module<DynBrand, Unverified> {
     // At most one live module per brand; the brand is freed on drop.
-    pub fn branded<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    pub fn branded<B, N>(name: N) -> Result<Module<B, Unverified>, BrandError>
     where B: ModuleBrand, N: Into<String>;
     // ...or retired permanently on drop, so no successor can ever claim it.
-    pub fn branded_once<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    pub fn branded_once<B, N>(name: N) -> Result<Module<B, Unverified>, BrandError>
     where B: ModuleBrand, N: Into<String>;
     // Registry-exempt: arbitrarily many live at once, separated by the runtime tag alone.
     pub fn dynamic<N>(name: N) -> Module<DynBrand, Unverified>
@@ -200,15 +200,17 @@ Both are why every id also carries a runtime `ModuleId` tag: the type separates
 Values carry that brand:
 
 ```rust
-pub struct Value<'ctx, B: ModuleBrand> {
+pub struct Value<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
-    module: ModuleRef<'ctx, B>,
+    module: ModuleRef<'ctx, B, C>,
     ty: TypeSlot,
 }
 ```
 
 The `'ctx` is the borrow of the module the handle came from; the brand `B` is
-what separates modules.
+what separates modules. (`C` is the handle's capability — `ReadOnly` when a
+`Module<B, Verified>`, a `ModuleView` or a read-only pass context minted it;
+see §10.)
 
 That borrow is load-bearing, and it is the second half of the story. A module is
 an ordinary owned value that can be dropped, so a `Value`, `BasicBlock`,
@@ -321,7 +323,9 @@ id/view split as the rest of the handle model:
   module *of the same brand* yields `IrError::ForeignValueId` rather than
   silently naming a same-numbered slot here.
 - `BasicBlockLabel<'ctx, R, B>` is the **borrowing view** a `BlockId` resolves
-  to through `Module::view`; its impl is the identity.
+  to through `Module::view`; its impl compares the label's module with the
+  receiving one (`IrError::ForeignValueId` on a mismatch) and re-mints the
+  label at the receiving module's capability.
 - `BasicBlock<'ctx, R, Term, B>` (and `&BasicBlock`) at any termination state,
   so an in-scope block can name itself as a target without a round trip through
   the module, and `SsaBlock<R, B>` for the SSA layer.
@@ -331,7 +335,8 @@ impl is parameterised over the SAME `B` as the builder, so a target block minted
 under a *different named brand* has no impl to satisfy the bound at all — the
 rejection is static, not a resolve failure. Under the *same* brand (two
 `DynBrand` modules, or two generations of one `branded` brand) the impl does
-resolve and the `BlockId` bullet above is what catches it, at run time.
+resolve, and its module check — `IrError::ForeignValueId`, for a `BlockId`, a
+label or a block handle alike — is what catches it, at run time.
 
 Note what the trait deliberately does **not** carry: `Params`. Its `BlockId`
 impl calls `BasicBlockLabel::erase_params`, so a parameterised block is an
@@ -653,7 +658,7 @@ The caller must inspect types to know whether a usable result exists.
 `llvmkit` carries the callee return marker into the instruction handle:
 
 ```rust
-pub struct CallInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
+pub struct CallInst<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability = Mutable> {
     /* fields omitted */
 }
 ```
@@ -661,24 +666,27 @@ pub struct CallInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
 Typed accessors are gated by `R`:
 
 ```rust
-impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, i32, B> {
-    /// Typed result handle for an integer-returning call.
-    pub fn return_int_value(self) -> IntValue<'ctx, i32, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx, i32, B, C> {
+    /// Typed result handle for an integer-returning call, at the
+    /// call's capability.
+    pub fn return_int_value(self) -> IntValue<'ctx, i32, B, C> {
         /* construct typed value handle */
     }
 }
 ```
 
-The accessor family is generated per return marker (`return_int_value` for each
-integer width including `IntDyn`, plus `return_float_value` /
+The accessor family is generated per return marker (`return_int_value` for the
+markers `instructions.rs::call_inst_int_return!` lists — `bool`, `i8` … `i128`
+and `IntDyn`, but not `Width<N>` — plus `return_float_value` /
 `return_pointer_value`), so a `CallInst<'ctx, (), B>` has no typed result
 accessor at all — the `impl` block that would carry one does not exist for `()`.
 The generic `return_value()` method still exists and returns `None` for a `void`
 return type, so a void call cannot be mistaken for a typed value.
 
-The call builders themselves hand back a storable `CallInstId<R, B>` (or
-`TypedCallInstId<Ret>`), which `Module::view` resolves back into the
-`CallInst<'ctx, R, B>` handle above with the return marker intact.
+The call builders themselves hand back a storable `CallInstId<R, B>`, which
+`Module::view` resolves back into the `CallInst<'ctx, R, B>` handle above with
+the return marker intact, or a `TypedCallInstId<Ret, B>`, which resolves into a
+`TypedCallInst<Ret>` carrying the full return schema.
 
 ## 8. Instruction lifecycle is linear
 
@@ -843,7 +851,7 @@ an external caller can ignore. So the visibility keeps a phi unobservable
 mid-construction from *ordinary* outside code, not from determined outside code:
 
 ```rust
-pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand> {
+pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand, C: Capability = Mutable> {
     /* fields omitted */
 }
 ```
@@ -933,8 +941,8 @@ could not reach it.)
 **How far "every mutator" has actually been checked.** A scan over every `pub
 fn` in the workspace taking `self`/`&self`, mutating interior state
 (`Cell::set` / `RefCell::borrow_mut` / `replace`), and *not* naming
-`Unverified` returns 53 candidates. They fall into four groups, none of which is
-an escape:
+`Unverified` turns up candidates in the groups below, none of which is an
+escape:
 
 - **Value types** (`ap_int.rs`, `known_bits.rs`) — `ApInt::set_sign_bit` and
   friends mutate a local numeric value, not module storage.
@@ -948,6 +956,12 @@ an escape:
   private field, mintable only by the builder that just created the terminator;
   every reading path yields `Closed`. That is a stronger guarantee than the
   token, not a weaker one.
+- **Token-less mutators guarded by the handle's capability** —
+  `Value::sort_use_list` / `sort_use_list_by` and the phi handles'
+  `set_fast_math_flags` take no token; their `C: CanMutate` bound is the guard,
+  and a verified module mints only `ReadOnly` handles
+  (`tests/compile_fail/verified_value_use_list_is_immutable.rs`,
+  `verified_phi_fast_math_flags_are_immutable.rs`).
 
 The scan is mechanical and its triage is by category, so read this as "no escape
 found by a systematic sweep", not as a proof.
@@ -965,11 +979,12 @@ the token; only the instruction pair did not. All four now take it:
 ```rust
 let verified = m.verify().unwrap();          // consumes the Unverified token
 
-let view = verified.as_view();
-let inst = /* ... a read-only InstructionView reached through `view` ... */;
+// A `Mutable` view, from a second unverified module `n` of the same brand, so
+// the view's own capability does not refuse the call below — only the token can.
+let inst = /* ... an InstructionView reached through `n` ... */;
 
-// No `&Module<B, Unverified>` is left in scope, and the `Verified` module
-// cannot supply one — so this call cannot be written.
+// The `Verified` module cannot stand in for the `Unverified` token — so this
+// call cannot be written with it.
 inst.set_metadata(&verified, MetadataAttachmentKind::Dbg, node);
 ```
 
@@ -977,18 +992,23 @@ Result: compile error `E0308` — *expected `&Module<DynBrand>`, found
 `&Module<DynBrand, Verified>`*, with the `note:` spelling out the elided default:
 *expected reference `&Module<DynBrand, Unverified>` / found reference
 `&Module<DynBrand, Verified>`*. Locked by
-`tests/compile_fail/verified_module_metadata_is_immutable.rs`. Upstream has no
-analogue: `Instruction::setMetadata` is a plain non-const method, `verifyModule`
-is a free function returning a `bool` a caller may ignore, and nothing connects
-the two.
+`tests/compile_fail/verified_module_metadata_is_immutable.rs`. A view reached
+through `verified` itself is refused one step earlier, whatever token is
+offered: a verified module mints `ReadOnly` handles, and `set_metadata`'s
+`C: CanMutate` bound rejects one (`E0277`, locked by
+`tests/compile_fail/verified_instruction_metadata_is_read_only.rs`). Upstream
+has no analogue: `Instruction::setMetadata` is a plain non-const method,
+`verifyModule` is a free function returning a `bool` a caller may ignore, and
+nothing connects the two.
 
 That bounds *reachability* of the metadata arena — mutating it requires code
 that already holds the target module's token. The polish freeze then made the
-metadata **currency** module-safe as well: `set_metadata` and
-`push_debug_record` take `MetadataId<B>` rather than a bare slot, and the token
-they already demanded is what supplies the `ModuleId` the id's tag is compared
-against, so both calls now return `IrResult<()>` and reject a foreign node with
-`IrError::ForeignMetadataId`. See carve-out (b) under the summary table.
+metadata **currency** module-safe as well: `set_metadata` takes `MetadataId<B>`
+and `push_debug_record` a `DebugRecord<B>` built from such ids, rather than a
+bare slot, and the token they already demanded is what supplies the `ModuleId`
+the id's tag is compared against, so both calls now return `IrResult<()>` and
+reject a foreign node with `IrError::ForeignMetadataId`. See carve-out (b) under
+the summary table.
 
 This does not remove the verifier. It makes the verifier's result impossible to
 forget in typed APIs.
@@ -1320,13 +1340,14 @@ emits, so they are documented here rather than left to surprise a diff:
 
 ## Proof in the repository
 
-The compile-fail suite locks these guarantees with `trybuild`. As of 0.0.4 it
-registers **87 fixtures — 86 `t.compile_fail` plus 1 `t.pass` — and the baseline
-is 0 failures** on the pinned toolchain (`cargo +1.96.0`; a newer rustc rewords
-diagnostics and produces `.stderr` mismatches that are not regressions). All of
-them live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in
-`crates/llvmkit-ir/tests/typestate_compile_fail.rs`, which is the count's
-source of truth — `CLAUDE.md` tracks the same figure.
+The compile-fail suite locks these guarantees with `trybuild`:
+`t.compile_fail` cases plus the `t.pass` case the sketch below explains, and
+the baseline is 0 failures on the pinned toolchain (`cargo +1.96.0`; a newer
+rustc rewords diagnostics and produces `.stderr` mismatches that are not
+regressions). The fixtures live in `crates/llvmkit-ir/tests/compile_fail/` and
+are registered in `crates/llvmkit-ir/tests/typestate_compile_fail.rs`; a
+fixture runs only if it is registered there, so that file — not the directory
+listing, and not this page — is the place to count them.
 
 The sketch below is **abridged and regrouped by section of this page** — it is
 not the file's registration order, and the grouping comments are this page's,
@@ -1365,7 +1386,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/raw_phi_builder_is_unnameable.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
-    /* 67 further fixtures omitted; see the file for the full list */
+    /* further fixtures omitted; see the file for the full list */
 }
 ```
 

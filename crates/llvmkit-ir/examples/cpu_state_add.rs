@@ -1,4 +1,4 @@
-//! End-to-end Phase A3 + Phase D-lite + Phase C `trunc` demo.
+//! End-to-end `trunc` + `add` demo.
 //!
 //! Builds the equivalent of:
 //!
@@ -69,9 +69,9 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let rax: IntValue<'_, i64, _> = m.view(add_fn).param(0)?.try_into()?;
     let rbx: IntValue<'_, i64, _> = m.view(add_fn).param(1)?.try_into()?;
     let rcx: IntValue<'_, i64, _> = m.view(add_fn).param(2)?.try_into()?;
-    // `rdx` is part of the signature but unused in the priorities-section
-    // body; read it anyway so the example shows all four register params
-    // arriving as typed `i64` values.
+    // `rdx` is part of the signature but unused in the body; read it anyway
+    // so the example shows all four register params arriving as typed `i64`
+    // values.
     let _rdx: IntValue<'_, i64, _> = m.view(add_fn).param(3)?.try_into()?;
 
     let t0 = b.trunc(rax, i32_ty, "")?;

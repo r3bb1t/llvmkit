@@ -33,8 +33,8 @@
 //!   `SlotMapping`, because upstream merges every `#N` into its objects in
 //!   `validateEndOfModule` and then discards the numbering; llvmkit keeps the
 //!   groups (`docs/divergences.md` D9) and therefore has to hand them back so
-//!   a follow-on `parse_constant_value` / `parse_type` call sees the same
-//!   table.
+//!   a follow-on `parse_constant_value_with_slots` / `parse_type_with_slots`
+//!   call sees the same table.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -101,8 +101,8 @@ impl<'ctx, B: ModuleBrand, C: Capability> From<GlobalIfunc<'ctx, B, C>> for Glob
 
 /// Slot-numbering tables a textual-IR parser fills in while it walks a
 /// module. Public so callers can re-use the tables across follow-on
-/// `parse_constant_value` / `parse_type` calls (mirrors the upstream
-/// pass-pointer-and-fill-it pattern in `parseAssemblyString` /
+/// `parse_constant_value_with_slots` / `parse_type_with_slots` calls (mirrors
+/// the upstream pass-pointer-and-fill-it pattern in `parseAssemblyString` /
 /// `parseConstantValue`).
 ///
 /// Lifetime brand: `'ctx` ties every stored handle to a single

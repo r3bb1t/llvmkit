@@ -38,8 +38,8 @@ Shipped today:
 - Capability-graded module/function passes: a pass declares a
   capability rung and the driver derives preservation and the output module's
   verified-state, so over-claiming what a pass preserves is a compile error.
-- Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`,
-  `DemandedBitsAnalysis`, and `PassInstrumentationAnalysis`.
+- Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`, and
+  `DemandedBitsAnalysis`.
 - Built-in transform passes: worklist-driven `DcePass` and `InstSimplifyPass`
   (fold-to-constant), plus `SimplifyDemandedBitsPass`.
 - LLVM 22.1.4-style `ConstantFolder` for the modeled IR-builder surface plus
@@ -69,17 +69,16 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
   0). `clang -O0` / `-O2` output parses, verifies, and round-trips; a guard over
   the vendored `Attributes.td` keeps the keyword table from drifting again.
 - No runnable pass pipeline. `pass_pipeline.rs` parses
-  `"cleanup-lift,instcombine"` into scope-typed data, and nothing consumes it:
-  there is no NAME→pass-constructor registry, so a parsed recipe cannot be run
-  (Milestone 8). The shipped transform inventory is three passes — `DcePass`,
-  `InstSimplifyPass`, `SimplifyDemandedBitsPass` — over four analyses
-  (`DominatorTreeAnalysis`, `KnownBitsAnalysis`, `DemandedBitsAnalysis`,
-  `PassInstrumentationAnalysis`).
-- Roughly a quarter of the public API carries documentation. `missing_docs` is
-  denied per-module in seven `llvmkit-ir` modules (`analysis`, `cfg_update`,
-  `error`, `pass_access`, `pass_context`, `pass_manager`, `worklist`), so the
-  ratchet has started — but no crate-level `#![deny(missing_docs)]` holds the
-  line anywhere, so the figure is still free to drift.
+  `"cleanup-lift,instcombine"` into an erased AST (`PassPipeline`), and nothing
+  consumes it: there is no NAME→pass-constructor registry, so a parsed recipe
+  cannot be run (Milestone 8). The shipped transform inventory is `DcePass`,
+  `InstSimplifyPass` and `SimplifyDemandedBitsPass`, over the analyses
+  `DominatorTreeAnalysis`, `KnownBitsAnalysis` and `DemandedBitsAnalysis`.
+- Public API documentation is incomplete. `missing_docs` is denied per-module
+  in `llvmkit-ir`'s `analysis`, `cfg_update`, `error`, `pass_access`,
+  `pass_context`, `pass_manager` and `worklist` modules, so the ratchet has
+  started — but no crate-level `#![deny(missing_docs)]` holds the line
+  anywhere, so coverage is still free to drift.
 - Constant folding outside the modeled target-independent builder surface is
   still partial: DataLayout / TLI / libcall / load-through-bitcast folds are
   represented only where the analysis APIs implement them, and InstSimplify-
@@ -100,22 +99,18 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
 - No alias analysis, MemorySSA, ScalarEvolution, LazyValueInfo, or post-dominance.
 - No bitcode reader/writer.
 - Metadata is parsed in places but instruction metadata propagation and full debug-info modeling are incomplete.
-- Metadata *nodes* are the one currency the id work did not tag. 0.0.4 closed
-  half of this: named metadata now has `NamedMetadataId<B>`, which carries a
-  `ModuleId` tag and a brand like every other id. Metadata nodes themselves did
-  not follow — `MetadataSlot` (and the `ValueSlot` inside
-  `DebugMetadataOperand::Value`) is still a bare arena index
-  carrying neither a `ModuleId` tag nor a brand, so neither half of D7 reaches
-  it. An out-of-range slot is rejected
-  (`IrError::UnknownMetadataSlot`); an *in-range* slot from another module still
-  mis-resolves silently when printed. Every API that attaches one demands the
-  target module's `Unverified` token, which bounds the exposure but does not
-  close it. Tracked in `docs/future-work.md`.
+- ~~Metadata *nodes* are the one currency the id work did not tag.~~ **Closed
+  at the 0.0.4 freeze (2026-07-27).** `MetadataId<B>` carries a `ModuleId` tag
+  and a brand, `MetadataSlot` is crate-internal, `DebugMetadataOperand::Value`
+  holds a `ValueId<B>`, and a foreign id is refused with
+  `IrError::ForeignMetadataId` instead of mis-resolving. Recorded in
+  `docs/future-work.md`.
 - Intrinsic *modeling* is not yet broad enough for arbitrary optimized or lifted
   IR. The distinction matters: every `llvm.*` name in the vendored LLVM 22.1.4
   TableGen data is recognized, target-specific ones included, so the names are
-  not the limit. What is narrow is the represented signature families and the
-  KnownBits / DemandedBits facts attached to them (Milestone 2).
+  not the limit — and neither are the signatures, which are decoded from the
+  same data. What is narrow is the KnownBits / DemandedBits facts attached to
+  them (Milestone 2).
 
 ## External workload reference: Mergen
 
@@ -150,7 +145,7 @@ llvmkit does not need to copy Mergen. The actionable takeaway is that a practica
 | P2 | Obfuscation passes | Useful once CFG/analysis/pipeline infrastructure is stable. |
 | P2 | Loop / CGSCC PM | Needed for serious optimization composition. |
 | P2 | Bitcode + richer metadata/intrinsics | Needed for broader LLVM ecosystem interop. |
-| P2 | Public API documentation coverage | `docs.rs` is the storefront, and it currently reports roughly a quarter of the crate documented. |
+| P2 | Public API documentation coverage | `docs.rs` is the storefront, and no crate carries a crate-level `#![deny(missing_docs)]` yet. |
 
 ---
 
@@ -187,7 +182,7 @@ date:
   accepted by the parser in a declared position or named in an explicit
   `NOT_YET_MODELED` list. Generating the keyword table outright was considered
   and rejected: llvmkit deliberately models a subset, so generation would force
-  modeling all of it and would mean generating part of the 700-variant
+  modeling all of it and would mean generating part of the
   `Keyword` enum. The guard gives the same "cannot silently drift" property —
   verified red-green in both directions — at a fraction of the cost. Growing
   the modeled set is a matter of deleting lines from that list; the list is now
@@ -367,27 +362,21 @@ The current baseline already includes:
      shifts, division/remainder, comparisons, `abs`, `sextInReg`,
      concat/extract, bit permutations, high-half multiply, averages, and
      reduction helpers.
-   - Conservative or enumerated fallbacks remain only for other
-     unsupported-by-representation cases while the parity ledger tracks the
-     remaining direct ports.
    - ValueTracking already uses the shipped integer/pointer operator subset:
      signed div/rem, casts, select/phi/freeze/icmp, null pointer, alloca, and
      DataLayout-derived pointer low-zero-bit facts.
 
-3. **Represented intrinsic subset and intrinsic facts**
-   - The represented `llvm.*` intrinsic signature families are
-     `llvm.assume(i1)`; integer or fixed-vector integer overloads of `abs`,
-     `bswap`, `bitreverse`, `ctlz`, `cttz`, `ctpop`, `fshl`, `fshr`, `umax`,
-     `umin`, `smax`, `smin`, `uadd.sat`, `usub.sat`, `sadd.sat`, and
-     `ssub.sat`; fixed-vector `vector.reduce.add`; `ptrmask`; `vscale`; and
-     the lifetime/memory/runtime helpers `lifetime.start`, `lifetime.end`,
-     `memcpy`, `memmove`, `memset`, `trap`, `donothing`, `readcyclecounter`,
-     `read_register.i64`, and `write_register.i64`.
-   - ValueTracking computes known bits for the represented integer facts:
+3. **Intrinsic signatures and intrinsic facts**
+   - Signatures are not a hand-listed subset: a recognized `llvm.*` name is
+     checked against the signature its TableGen IIT entry decodes to
+     (`Module::intrinsic_descriptor_from_signature`; the verifier runs the
+     same check), and a name the vendored data does not define is refused
+     (`IrError::UnknownIntrinsic`).
+   - ValueTracking computes known bits for these intrinsic facts:
      `abs`, `bswap`, `bitreverse`, `ctlz`, `cttz`, `ctpop`, constant-amount
      `fshl`/`fshr`, `uadd.sat`, `usub.sat`, `sadd.sat`, `ssub.sat`,
-     `umax`, `umin`, `smax`, `smin`, fixed-vector `vector.reduce.add`, and
-     `ptrmask`; represented intrinsics outside that fact subset return
+     `umax`, `umin`, `smax`, `smin`, fixed-vector `vector.reduce.add`,
+     `ptrmask`, and `vscale`; intrinsics outside that fact subset return
      unknown facts.
    - DemandedBits intrinsic operand masks are shipped for `bitreverse`,
      `bswap`, `ctlz`, `cttz`, constant-amount `fshl`/`fshr` source masks plus
@@ -473,18 +462,16 @@ The current baseline already includes:
    `known_fp_class.rs`'s module header.
 
 3. **Attribute and intrinsic dependencies**
-   - Remaining intrinsic work means additional or currently unrepresented
-     `llvm.*` IDs/signature families, or new facts beyond the shipped intrinsic
-     facts above. Add IDs and verifier signatures before adding KnownBits or
-     DemandedBits facts; unsupported ordinary functions stay unknown, and
-     unsupported `llvm.*` intrinsics stay errors until represented.
+   - Remaining intrinsic work means new facts beyond the shipped intrinsic
+     facts above; IDs and signatures already come from the vendored TableGen
+     data. Unsupported ordinary functions stay unknown, and an `llvm.*` name
+     that data does not define stays an error.
 
 4. **DemandedBits parity**
-   - Extend demanded-bit rules only for additional intrinsic IDs/signatures or
-     facts beyond the shipped `bitreverse` / `bswap` / `ctlz` / `cttz` /
-     constant-amount `fshl` / `fshr` source masks, funnel-shift amount masks,
-     and `umax` / `umin` / `smax` / `smin` operand-mask subset as those IDs,
-     signatures, and facts land.
+   - Extend demanded-bit rules only for intrinsic facts beyond the shipped
+     `bitreverse` / `bswap` / `ctlz` / `cttz` / constant-amount `fshl` /
+     `fshr` source masks, funnel-shift amount masks, and `umax` / `umin` /
+     `smax` / `smin` operand-mask subset as those facts land.
    - Add printer/display support only after the analysis facts are verified.
 
 5. **SimplifyDemandedBits parity**
@@ -644,7 +631,8 @@ Implement passes equivalent in spirit to the Mergen custom cleanup loop while ke
 
 - Pass order is explicit: concrete loads before pseudo-memory lowering.
 - Passes are configurable and not hardcoded to one binary format.
-- Each pass returns precise `PreservedAnalyses`.
+- Each pass declares the narrowest capability rung its rewrite needs, so the
+  `PreservedAnalyses` the driver derives from that rung is precise.
 - Golden IR tests cover before/after outputs.
 
 ---
@@ -767,8 +755,9 @@ let verified = unverified.verify()?;
 
 > Partly shipped: the named recipes (`cleanup-min`/`cleanup-lift`/`cleanup-o1-ish`,
 > `llvmkit-default<O0/O1>`) and a recursive-descent parser for the `name(a,b)`
-> syntax already ship as typed data (`pass_pipeline.rs`, tested in
-> `pass_pipeline_data.rs`). The names are scope-typed: `CLEANUP_MIN` /
+> syntax already ship (`pass_pipeline.rs`, tested in `pass_pipeline_data.rs`):
+> the recipes as typed data, the parser's output as an erased AST
+> (`PassPipeline`). The names are scope-typed: `CLEANUP_MIN` /
 > `CLEANUP_LIFT` / `CLEANUP_O1_ISH` are `PipelineName<FunctionPipelineScope>`,
 > `DEFAULT_O0` / `DEFAULT_O1` are `PipelineName<ModulePipelineScope>`. What
 > remains is the `PassBuilder` and an execution engine — a NAME→pass-constructor
@@ -835,8 +824,7 @@ The per-API delta is tracked in [`docs/inkwell-migration.md`](docs/inkwell-migra
 >   (`crates/llvmkit-asmparser/tests/attribute_td_drift.rs`, the list's own
 >   declaration). This line used to say 42 keywords remained.
 > - **Intrinsic declaration APIs.** `get_or_insert_intrinsic_declaration`, plus
->   its `_by_id` and `_by_name` twins. Overloaded-intrinsic *typing* beyond the
->   represented signature families is still open (Milestone 2).
+>   its `_by_id` and `_by_name` twins.
 > - **Inline asm.** `Module::inline_asm` plus `inline_asm_call` /
 >   `inline_asm_invoke` / `inline_asm_callbr` on the builder; the textual form
 >   parses and round-trips.
@@ -846,7 +834,6 @@ The per-API delta is tracked in [`docs/inkwell-migration.md`](docs/inkwell-migra
 - Builder coverage for remaining common LLVM IR operations and intrinsics.
 - Full metadata attachment storage and printing.
 - Debug-info model sufficient to preserve parsed debug metadata conservatively.
-- Overloaded intrinsic typing beyond the represented signature families.
 - Bitcode reader/writer or an explicit bridge plan if bitcode stays out longer.
 - Better error spans for parser/verifier failures. The *message* half landed in
   0.0.4 — asmparser errors no longer embed `{:?}`-formatted locations, and
@@ -953,9 +940,9 @@ Widen from controlled textual IR to broader LLVM ecosystem compatibility.
 - More complete metadata/debug-info round-trip.
 - Broader intrinsic modeling.
 - **AutoUpgrade completeness.** `llvm/lib/IR/AutoUpgrade.cpp`'s module-level,
-  target-independent half landed at LLParser parity W13d as
-  `crates/llvmkit-ir/src/auto_upgrade.rs` (`UpgradeModuleFlags`,
-  `UpgradeSectionAttributes`, `UpgradeTBAANode`). What belongs to this
+  target-independent half landed as `crates/llvmkit-ir/src/auto_upgrade.rs`:
+  `UpgradeModuleFlags`, `UpgradeSectionAttributes` and `UpgradeTBAANode` at
+  LLParser parity W13d, `UpgradeNVVMAnnotations` after it. What belongs to this
   milestone is the remainder: the intrinsic-upgrade framework
   (`UpgradeIntrinsicFunction` / `UpgradeIntrinsicCall` /
   `UpgradeCallsToIntrinsic`) with both its generic and its target-specific
@@ -1111,7 +1098,7 @@ through 0.0.3. What is left:
       the published artifact builds, and nothing in CI covers it today.
 - [ ] Give `[0.0.4]` a date in `CHANGELOG.md` and collapse the two
       "unreleased" headings into one at release time.
-- [ ] Re-point the handful of rustdoc comments that cite `docs/…` paths; `docs/`
+- [ ] Re-point the rustdoc comments that cite `docs/…` paths; `docs/`
       sits outside every package directory, so those references dangle for a
       docs.rs reader.
 - [ ] Tag the release. The repository currently carries no tags at all.
@@ -1190,7 +1177,7 @@ table a wrapper still has to supply itself.
 - Do not add memory transforms without alias/memory safety checks or conservative refusal paths.
 - Do not make obfuscation passes part of default optimization pipelines.
 - Every optimization must preserve verifier correctness.
-- Every pass must return accurate `PreservedAnalyses`.
+- Every pass must declare the narrowest capability rung it needs; its `PreservedAnalyses` is derived by the driver from that rung, never returned by the pass.
 - Every new analysis/transform needs upstream-provenance tests where LLVM has coverage, plus llvmkit-specific tests for typestate and Rust-only APIs.
 - Prefer conservative no-op over an unsound rewrite.
 

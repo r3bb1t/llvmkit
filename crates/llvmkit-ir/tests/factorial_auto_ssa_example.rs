@@ -1,6 +1,6 @@
 //! Locks the auto-SSA factorial example's `.ll` output byte-for-byte
 //! against the SAME expected string `tests/factorial_example.rs` locks
-//! for the manual (hand-rolled phi) factorial example.
+//! for the block-argument factorial example.
 //!
 //! ## Upstream provenance
 //!
@@ -11,8 +11,8 @@
 //! IR built through a different construction path.
 //!
 //! This is the flagship D11 example-lock: [`SsaBuilder`]'s Braun
-//! on-the-fly SSA engine and the manual `int_phi`/`add_incoming`
-//! construction in `examples/factorial.rs` print IDENTICAL `.ll` for the
+//! on-the-fly SSA engine and the block-parameter construction
+//! (`cond_br_with_args`) in `examples/factorial.rs` print IDENTICAL `.ll` for the
 //! same factorial loop. The expected string below is DUPLICATED from
 //! `tests/factorial_example.rs::factorial_example_emits_locked_ir`
 //! rather than shared via a common `include!` -- the manual test's own

@@ -3,7 +3,7 @@
 //!
 //! Expands an inherent `impl Pass { fn run(&mut self, cx: ModCx<Self>) -> .. }`
 //! block into exactly the raw [`ModulePass`] trait impl: the
-//! `impl<'ctx, B: ModuleBrand + 'ctx>` header, the associated-item block, and the
+//! `impl<B: ModuleBrand>` header, the associated-item block, and the
 //! canonical `run` signature with its four-lifetime [`ModCx`]. Zero runtime cost.
 
 use proc_macro::TokenStream;

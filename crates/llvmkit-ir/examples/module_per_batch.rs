@@ -15,11 +15,12 @@
 //! sequence. The batches all run under **one named brand**, `Jit`. The
 //! registry allows one live module per non-`Dyn` brand — and the claim is
 //! released when the module drops, which here is when the consumer that took
-//! it by value returns. So each round can claim `Jit` again, and no two
-//! batches' ids are ever confusable, either at compile time (they are all
-//! `Jit`-branded) or at run time (each module carries its own process-unique
-//! tag, so a leftover id from batch 0 is *refused* by batch 1 rather than
-//! silently resolving).
+//! it by value returns. So each round can claim `Jit` again. Ids from
+//! different batches share one static type (they are all `Jit`-branded), so
+//! the compiler cannot tell them apart; at run time they are still never
+//! confusable, because each module carries its own process-unique tag, so a
+//! leftover id from batch 0 is *refused* by batch 1 rather than silently
+//! resolving.
 //!
 //! Run:
 //!
@@ -81,8 +82,9 @@ pub fn run_batches(count: i32) -> Result<Vec<String>, IrError> {
 /// `Jit`-branded and so indistinguishable to the type system. `true` if the
 /// successor refused it, which is the whole point.
 pub fn stale_id_is_refused_by_the_next_batch() -> Result<bool, IrError> {
-    // `first` drops at the end of this block: the brand claim is released and
-    // the storage is freed. The id outlives it — ids are `'static`.
+    // `first` is dropped by the explicit `drop(first)` below: the brand claim
+    // is released and the storage is freed. The id outlives it — ids are
+    // `'static`.
     let first = compile_batch(Module::branded::<Jit, _>("batch0")?, 0)?;
     let batch_fn = first.function_dyn("batch").expect("declared just above");
     let stale: ValueId<Jit> = first

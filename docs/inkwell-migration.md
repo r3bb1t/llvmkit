@@ -219,7 +219,7 @@ takes the typed route, which is why its call reads
 |storing an `IntValue<'ctx>` in a struct or `HashMap`|store the id (`IntValueId<W, B>`, `FunctionId<R, B>`, `BlockId<R, B, Params>`, …); read through `m.view(id)` / `m.try_view(id)`|ids are `Copy + Send + 'static` and borrow nothing. `handle.id()` mints one from a handle. A stale or foreign id is `IrError::ForeignValueId`, `None`, or a panic — never a dangling read (`#![forbid(unsafe_code)]` workspace-wide)|
 |`context.i32_type()`|`m.i32_type()`|on the module (or its `ModuleView`), not on a context|
 |`context.custom_width_int_type(n)`|`m.custom_width_int_type(n)?`|fallible (returns `IrResult<IntType<'ctx, IntDyn, B>>`)|
-|`context.struct_type(&fields, packed)`|`m.struct_type(fields)` / `m.packed_struct_type(fields)`|takes any `IntoIterator<Item = impl Into<Type<'ctx, B>>>`; packed-ness is the method, not a trailing `bool`|
+|`context.struct_type(&fields, packed)`|`m.struct_type(fields)` / `m.packed_struct_type(fields)`|takes any `IntoIterator<Item = T>` with `T: IrType<'ctx, B>`; packed-ness is the method, not a trailing `bool`|
 |`context.opaque_struct_type(n)`|`m.get_or_insert_named_struct(n)`|get-or-create, name preserved; the bare noun `m.named_struct(n)` is the lookup (`Option`), and `m.opaque_struct(n)?` is the typestate form (`StructType<'ctx, Opaque, B>`, `Err(IrError::StructBodyAlreadySet)` if that name already has a body)|
 |`StructType::set_body(...)`|`m.set_struct_body(opaque, fields, packed)?`|on `Module`; upgrades `Opaque` → `BodySet` in the type system. `set_struct_body_dyn(st, fields, packed)?` is the runtime-checked erased path (returns `Err` on second-set or non-named struct)|
 |`fn_type(&params, var_args)`|`m.function_type(ret, params)` / `m.variadic_function_type(ret, params)`|return type explicit; variadic-ness is the method, not a trailing `bool` (`*_no_parameters` twins cover the empty parameter list)|
@@ -274,7 +274,7 @@ takes the typed route, which is why its call reads
 |`Builder::build_phi(ty, name)` + `phi.add_incoming(&[...])`|`b.append_block_with_named_params(m.view(f), [(i32_ty.as_type(), "acc")], "loop")?` returns the block plus its head-phi parameter values; each edge then supplies them, e.g. `b.cond_br_with_args(cond, other_id, &[], loop_id, &[init.as_erased()])?`|**Replaced, not renamed.** The marker-typed phi builders and `PhiInst::add_incoming` are crate-internal; block arguments are the public phi-authoring surface. A block declares its head-phis as *parameters* and each incoming edge supplies *block arguments*, so an edge and its phi operands are written together instead of being patched afterwards. `append_block_with_params` is the unnamed form; `IrBuilder::append_block_typed::<Params>` is the compile-time-checked form, whose `label.call(args)` edge — consumed by `br_call` / `cond_br_call` — makes a wrong-arity or wrong-typed block argument a compile error. `crates/llvmkit-ir/examples/factorial.rs` builds a loop this way end to end.|
 |—|`b.phi_dyn(ty, name)?` / `int_phi_dyn` / `fp_phi_dyn` / `pointer_phi_in_addrspace`|the erased phi builders that remain public for parser- and pass-shaped code that must materialise a bare phi. They return a phi id; `m.view(id).remove_incoming(&m, index)?` mirrors `PHINode::removeIncomingValue`. Prefer block arguments in new construction code|
 |manual `builder.build_phi` + `phi.add_incoming` for loop-carried values|`SsaState::for_function(&m, m.view(f))?` then `SsaBuilder::for_function(&m, m.view(f), &mut state)?`, plus `declare_int_var::<W, _>` / `declare_float_var` / `declare_pointer_var` and `def_*_var` / `use_*_var`|no direct inkwell counterpart. Braun et al. on-the-fly SSA construction: declare a typed variable once, then read/write it like a mutable local. The engine inserts, completes, and trivial-phi-eliminates the phis itself as blocks are sealed (`seal_block` / `finish`); no manual phi pre-declaration or incoming-edge patching. `SsaState<B>` is owned, `'static`, `Send` and `Clone`, so a lifter can park it in a struct field between steps. See the README's "Auto-SSA" section and `crates/llvmkit-ir/examples/factorial_auto_ssa.rs`.|
-|`value.into_pointer_value()` narrowing plus manual bookkeeping of "what this pointer points to"|`ptr.with_pointee::<T>()` → `TypedPointerValue<'ctx, T, B>`|no direct inkwell counterpart. Rust-side-only pointee-schema overlay on an opaque pointer; `typed_alloca::<T, _>(name)` / `typed_load` / `typed_store` / `field_gep::<S, I, _>` skip the runtime type-narrow the erased path needs. These four return the `TypedPointerValue` handle (or the loaded value) rather than an id, since the pointee schema is a Rust-side overlay. Printed IR is byte-identical to the erased path — this is a compile-time ergonomics layer, not a new IR construct.|
+|`value.into_pointer_value()` narrowing plus manual bookkeeping of "what this pointer points to"|`ptr.with_pointee::<T>()` → `TypedPointerValue<'ctx, T, B>`|no direct inkwell counterpart. Rust-side-only pointee-schema overlay on an opaque pointer; `typed_alloca::<T, _>(name)` / `typed_load` / `typed_store` / `field_gep::<S, I, _>` skip the runtime type-narrow the erased path needs. `typed_alloca` and `field_gep` return the `TypedPointerValue` handle, `typed_load` the loaded value, and `typed_store` the `StoreInst` handle, rather than an id; the pointee schema is a Rust-side overlay. Printed IR is byte-identical to the erased path — this is a compile-time ergonomics layer, not a new IR construct.|
 
 ## Error model
 
@@ -292,7 +292,8 @@ a named brand is re-issued once the previous module drops — the runtime
 `ModuleId` tag on the id is the backstop, and it reports
 `IrError::ForeignValueId` (or `None` from `try_view`, or a panic from `view`).
 
-`IrError` is `#[non_exhaustive]`, so matching on it needs a `_` arm.
+`IrError` is exhaustive (no `#[non_exhaustive]`), so a `match` on it needs no
+`_` arm, and a new variant is a breaking change flagged in `CHANGELOG.md`.
 
 ## Module brand
 
@@ -367,8 +368,9 @@ instruction results), matching the upstream `SlotTracker`.
 
 llvmkit promotes LLVM runtime checks into Rust types where the modeled surface
 can make invalid states unrepresentable. The current ledger of bugs that
-compile down to a Rust type error rather than a runtime `IrError` — 86
-compile-fail fixtures in `crates/llvmkit-ir/tests/compile_fail/` lock these:
+compile down to a Rust type error rather than a runtime `IrError` — the
+compile-fail fixtures in `crates/llvmkit-ir/tests/compile_fail/`, registered in
+`crates/llvmkit-ir/tests/typestate_compile_fail.rs`, lock these:
 
 - The IrBuilder must be positioned (`Unpositioned` has no emitter methods).
 - Terminator builders consume the `Positioned` builder *and* the block token,
@@ -405,8 +407,10 @@ compile-fail fixtures in `crates/llvmkit-ir/tests/compile_fail/` lock these:
 - A pass pipeline's output typestate is derived from its members' capability
   rungs: an all-`Inspect` (read-only) run preserves `Module<B, Verified>`, while
   any mutating pass downgrades it to `Module<B, Unverified>`.
-- Saved-handle mutators require `&Module<B, Unverified>`, so verified modules
-  cannot be mutated through old handles without explicitly `unverify()`ing. As
+- Saved-handle mutators require a `CanMutate` handle (`Module::view` on a
+  `Module<B, Verified>` mints `ReadOnly` ones, which have no mutators), and
+  most also take the `&Module<B, Unverified>` token, so verified modules cannot
+  be mutated through old ids or handles without explicitly `unverify()`ing. As
   of 0.0.4 this includes the instruction metadata mutators
   (`InstructionView::set_metadata`, `push_debug_record`, and their
   `Instruction` twins), which previously took no token.

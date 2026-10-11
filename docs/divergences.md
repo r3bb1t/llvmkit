@@ -32,9 +32,14 @@ the block you are trusting or replacing — on its `<summary>` line.
 
 Entry prose cites **by symbol, never by line number** — upstream and our own
 tree alike (repo law: an upstream coordinate rots when the vendored tree moves,
-and one into our own files rots by the next refactor). Every entry bullet here
-already satisfies that, and a test now keeps it so:
-`crates/llvmkit-ir/tests/upstream_registry_drift.rs::no_live_doc_page_cites_a_line_number`.
+and one into our own files rots by the next refactor).
+`crates/llvmkit-ir/tests/upstream_registry_drift.rs::no_live_doc_page_cites_a_line_number`
+keeps it so. Its evidence-block counter used to open on any line containing
+`<details`, so this preamble's prose mention of the block opened a block
+nothing closed and the rest of the file went unchecked; it now opens only on a
+real `<details>` tag at the start of a line, which
+`upstream_registry_drift.rs::a_prose_mention_of_details_does_not_silence_the_rest_of_a_page`
+pins.
 
 The `Correction from verification` and `<details>` blocks are **deliberately
 exempt**, and that is not a backlog item. They are dated snapshots of one
@@ -42,8 +47,10 @@ verification pass, so their coordinates are the *record of what was checked*,
 not a claim about where something lives; rewriting them would be falsifying the
 record. Treat those coordinates as valid only against the vendored 22.1.4 tree
 and against the commit the block was written at, and re-derive the symbol before
-quoting one anywhere else. The guard knows about this exemption, so do not
-"clean up" an evidence block to make a test pass — it already passes.
+quoting one anywhere else. The guard exempts both: a `<details>` block until its
+`</details>`, and a `Correction from verification` paragraph, which is one
+bullet line starting `- **Correction from verification`. Do not "clean up"
+an evidence block to make a test pass.
 
 Severities:
 
@@ -75,7 +82,7 @@ its incoming blocks live in a hung-off array reached by `block_begin` and are
 **llvmkit:** blocks *do* now carry use edges — W12 added
 `block_operand_ids()` and registers it everywhere `operand_ids()` is
 registered, so `uselistorder label %bb` and `uselistorder_bb` work. But the
-two lists stay **separate**: `operand_ids()` is what 21 crate-internal
+two lists stay **separate**: `operand_ids()` is what the crate-internal
 consumers walk, and they assume an operand is a first-class SSA value.
 
 **Consequence:** `User::operand_count` on a conditional `br` answers 1 where
@@ -83,21 +90,10 @@ upstream answers 3, and `User::operand(i)` indices do not match
 `Use::getOperandNo()`. Nothing in the tree reads those indices for a
 terminator today.
 
-**Fix:** merge the two, and re-check the four index-keyed consumers plus every
+**Fix:** merge the two, and re-check the index-keyed consumers plus every
 site that assumes `operand(i)` is first-class. Upstream's true order is
 `br` = `[cond, else, then]`, `switch` = `[cond, default, (val, dest)*]`,
 `invoke` = `[args…, normal, unwind, callee]`.
-
-### D1a — Two block operands cannot be RAUW-rewritten
-
-**Severity:** model-gap (latent — no caller today)
-**Where:** `crates/llvmkit-ir/src/instr_types.rs` —
-`CleanupReturnInstData::unwind_dest`, `CatchReturnInstData::target_bb`
-
-Every other block-holding field is a `Cell` or lives inside a `RefCell`, so a
-future block-RAUW could rewrite it. These two are plain fields with no
-interior mutability. Nothing performs block RAUW today, so this is latent;
-adding one without changing these two field types would silently skip them.
 
 ### D2 — Constants wrapping a global register no operand use
 
@@ -403,13 +399,13 @@ selects:
 |---|---|
 | `data_layout_callback` | **implemented.** `parse_target_definitions` holds the layout string tentative across the leading `target` / `source_filename` run and offers `(triple, tentative)` to the callback before `DataLayout::parse`. |
 | `allow_incomplete_ir` | **partly implemented.** The declaration-synthesis half is a whole port of `validateEndOfModule`'s `GetCommonFunctionType` block, callee references included; the metadata half is not — see D13. |
-| `upgrade_debug_info` | **selects nothing.** llvmkit has no `AutoUpgrade` port (see the inventory entry on `lib/IR/AutoUpgrade.cpp`), so there is no `UpgradeDebugInfo` call for the flag to guard. |
+| `upgrade_debug_info` | **selects nothing.** llvmkit's `AutoUpgrade` port is partial (inventory entry 19) and `llvm::UpgradeDebugInfo` is not among the ported call sites, so there is no `UpgradeDebugInfo` call for the flag to guard. |
 
 **Consequence:** a caller that sets `upgrade_debug_info: false` (what `llvm-as`
 and `opt -disable-upgrade-debug-info` do) gets the same module as one that
-leaves it `true`. Nothing is silently *wrong* — llvmkit never upgrades — but
-the setting is a promise about a future behaviour rather than a live switch,
-and the rustdoc says so.
+leaves it `true`. Nothing is silently *wrong* — llvmkit never upgrades debug
+info — but the setting is a promise about a future behaviour rather than a
+live switch, and the rustdoc says so.
 
 **Also:** the standalone `parse_type*` / `parse_constant_value*` family and
 `parse_summary_index_assembly*` correctly take no `*_with_config` twin: their
@@ -418,8 +414,8 @@ the file-path convenience forms, `parse_file_branded` and `parse_file_dynamic`,
 as the same kind of correct exception. Both are gone now — the parser reads no
 files at all — so there is no longer a file-path form to except.)
 
-**Fix:** lands with `AutoUpgrade`. The flag already reaches
-`Parser::parse_module_with_config`; only the guarded call is missing.
+**Fix:** lands with the `llvm::UpgradeDebugInfo` port. The flag already
+reaches `Parser::parse_module_with_config`; only the guarded call is missing.
 
 *(A second entry — "No `ParserConfig`: `AllowIncompleteIR`, the DataLayout
 callback and the UpgradeDebugInfo flag are unmodelled" — sat in the model-gap
@@ -452,8 +448,10 @@ by reserve-then-fill on a stable `MetadataId` (`resolve_md_slot` ->
 parser's own `metadata_slots` table rather than of the node — answerable, but
 different. The blocker is the second: `MetadataAttachmentSet` has `insert` and
 `get` and no removal, none of the four attachment holders has an
-`eraseMetadataIf`, and an `InstructionView` cannot be erased from its block
-(erasure takes the linear `Instruction<Attached>` handle). Closing this is
+`eraseMetadataIf`, and outside a pass context an `InstructionView` cannot be
+erased from its block (`Instruction::erase_from_parent` takes the linear
+`Instruction<Attached>` handle; `FnPatch::erase` takes a view's
+`NonTerminator` but needs a pass's mutation context). Closing this is
 `llvmkit-ir` surface work, not parser work.
 
 **Fix:** add `MetadataAttachmentSet::retain` plus `erase_metadata_if` on
@@ -691,7 +689,7 @@ llvmkit (absent): directory listing of crates/llvmkit-ir/src/ shows no auto_upgr
 
 ### 101. Six `LLLexer::LexError` sites are non-fatal upstream and fatal here — **NARROWED (W9)**
 
-*lexer* — crates/llvmkit-asmparser/src/ll_lexer.rs (`lex_uint`, `LexError::IntegerOverflow64` / `IntegerOverflow128`)
+*lexer* — crates/llvmkit-asmparser/src/ll_lexer.rs (`lex_uint`, `LexError::IdOverflow`, `LexError::IntegerOverflow64`)
 
 Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously recorded.
 
@@ -931,8 +929,7 @@ did not exist here.
 **Narrowed 2026-08-29 (W9).** Three of those four now run, from
 `crates/llvmkit-asmparser/tests/parser_calls.rs::upstream_callbr_landingpad_fixture_messages_match`.
 `check_intrinsic_call` carries the preamble's `Intrinsic functions should never
-be defined!`, its `Intrinsic name not mangled correctly for type arguments!
-Should be: …`, the `const x86_amx is not allowed in argument!` half of its
+be defined!`, the `const x86_amx is not allowed in argument!` half of its
 argument walk, and the `switch`'s `case Intrinsic::callbr_landingpad:` arm
 whole. What is left is below.
 
@@ -968,17 +965,23 @@ whole. What is left is below.
 
   `test/Verifier/callbr.ll`'s `@callbrpad_bad_type` is the fixture this blocks;
   `upstream_callbr_label_constraint_fixture_messages_match` says so at the site.
-- **`test/Verifier/x86_amx9.ll` cannot be loaded**, though the `Check` it pins
-  now exists. Its argument is `x86_amx bitcast (<256 x i32> … to x86_amx)`, and
-  llvmkit's parser answers `invalid bitcast constant expression` for a
-  `bitcast` to `x86_amx`, so the module never reaches the verifier.
-  `verifier_basic.rs::const_x86_amx_intrinsic_argument_is_rejected` builds an
-  `undef` of that type instead and says why.
+- **`test/Verifier/x86_amx9.ll` is not ported**, though the `Check` it pins
+  now exists. Its argument is `x86_amx bitcast (<256 x i32> … to x86_amx)`. The
+  blocker recorded here — the parser answering `invalid bitcast constant
+  expression` — is gone since `7efef7f`: `validate_constant_expr_data`'s
+  `bitcast` arm now asks `cast_is_valid`, whose non-pointer arm compares
+  `primitive_size_in_bits` (8192 for both types), and `valid_bitcast_constant`,
+  which refused `x86_amx`, is deleted. Whether the fixture now parses and
+  reaches the verifier has not been run.
+  `verifier_basic.rs::const_x86_amx_intrinsic_argument_is_rejected` still builds
+  an `undef` of that type instead, and its doc comment still gives the old
+  reason.
 - **`visitMetadataAsValue` on every `MetadataAsValue` argument.** The other half
   of the argument walk, and a whole routine of its own — it is what rejects an
   `MDNode` local to another function.
   `rg -n "visit_metadata_as_value|MetadataAsValue" crates/llvmkit-ir/src/verifier.rs`
-  returns nothing.
+  returns only comment lines in `check_intrinsic_call` quoting upstream's loop
+  and naming the half as unported.
 - **Every `switch (ID)` arm except `Intrinsic::callbr_landingpad`** — `llvm.assume`'s
   operand bundles, the `experimental.gc.*` family, the constrained-FP family,
   `Intrinsic::ucmp` / `Intrinsic::scmp`, and the rest. Each needs the
@@ -1010,7 +1013,7 @@ whole. What is left is below.
 
 ### 23. `Verifier::verifyFunctionAttrs` is unported, so two attribute-level `swifterror` rules do not fire — **NARROWED**
 
-*verifier* — crates/llvmkit-ir/src/verifier.rs (no counterpart routine; the module header lists "Per-function attribute coherence rules … are out of scope")
+*verifier* — crates/llvmkit-ir/src/verifier.rs (no counterpart routine; the module header's "Coverage gaps (deferred)" list says the two routines "have no counterpart here")
 
 **Narrowed 2026-08-27.** The use-site half of this entry is closed:
 `Verifier::verifySwiftErrorValue` and `Verifier::verifySwiftErrorCall` are
@@ -1034,7 +1037,7 @@ What is left is that fixture's last two lines, both `declare`s.
   multiple|applied to incompatible type" crates/llvmkit-ir/src/` matches one
   line and `grep -rn -a -E "verifyFunctionAttrs|verifyParameterAttrs"
   crates/llvmkit-ir/src/` matches two, and every one of the three is prose: the
-  first two are `verifier.rs`'s module header naming what is out of scope, the
+  first two are `verifier.rs`'s module header naming what has no counterpart, the
   third a comment in `constant_range_list.rs` naming `verifyParameterAttrs` as
   the place an empty `initializes` list is rejected. None of the three
   `declare`s is rejected.
@@ -1226,7 +1229,7 @@ llvmkit: `crates/llvmkit-asmparser/src/ll_parser.rs` — `let mut seen_non_phi =
 
 ### 32. Attribute-group reference error is fatal here, non-fatal upstream
 
-*parser (attribute groups)* — crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:899-935
+*parser (attribute groups)* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_fn_attribute_value_pairs`'s `Token::AttrGrpId` arm), pinned by crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_diagnostics_match_upstream_text
 
 - **LLVM:** `LLParser::parseUnnamedAttrGrp` reports `cannot have an attribute group reference in an attribute group` non-fatally — it keeps parsing and accumulates further diagnostics.
 - **llvmkit:** llvmkit reports the first and stops. The message text matches; the recovery does not.
@@ -1406,7 +1409,7 @@ The parser/printer contract is that printed output matches `AsmWriter.cpp` byte 
 
 ### 43. DWARF enumerations and `DIExpression` operands are stored as spellings, so numeric forms never normalise
 
-*IR model* — crates/llvmkit-asmparser/src/ll_token.rs (the nine `Token::Dwarf*` variants), crates/llvmkit-asmparser/src/ll_parser.rs:5865-5878 (`parse_metadata_field_value`'s enum arms), crates/llvmkit-ir/src/asm_writer.rs:3491, :3497
+*IR model* — crates/llvmkit-asmparser/src/ll_token.rs (the nine `Token::Dwarf*` variants), crates/llvmkit-asmparser/src/ll_parser.rs (`parse_metadata_field_value`'s enum arms), crates/llvmkit-ir/src/asm_writer.rs (`fmt_specialized_metadata_node`'s `MetadataFieldValue::Integer` and `MetadataFieldValue::Enum` arms)
 
 - **LLVM:** `LLParser::parseDIExpressionBody` and the DWARF `MDField` readers convert each keyword to its integer encoding via `dwarf::getOperationEncoding` / `getAttributeEncoding` and store a `uint64_t`; the printer maps the encoding back to a name, so `!DIExpression(15)` prints as the `DW_OP_*` that 15 encodes and a numeric `DW_ATE`/`DW_TAG` field likewise comes back named.
 - **llvmkit:** Every `DW_TAG_*`, `DW_ATE_*`, `DW_VIRTUALITY_*`, `DW_LANG_*`, `DW_LNAME_*`, `DW_CC_*`, `DW_OP_*`, `DW_MACINFO_*` and `DW_APPLE_ENUM_KIND_*` word is lexed into its own token carrying the full keyword text and collapses into `MetadataFieldValue::Enum(String)`; `DwarfExpressionOperand::Operation` keeps the source spelling. The AsmWriter writes `Enum(s)` verbatim and `Integer(v)` as the number, so a numerically-written operand or field prints back as a number where `llvm-dis` prints a name. Spellings are now *validated* against the same tables (W11: `invalid DWARF op '...'`, `invalid DWARF attribute encoding '...'`), so only the normalisation half is left.
@@ -1422,7 +1425,7 @@ Cited lines all check out exactly. crates/llvmkit-asmparser/src/ll_token.rs:88-1
 
 ### 44. `ptrtoint`/`ptrtoaddr` mid-width folding diverges on `pointer_size != index_size` layouts
 
-*constant folder* — crates/llvmkit-ir/src/constant_folding.rs:2432 (`fold_ptr_to_int_pair`)
+*constant folder* — crates/llvmkit-ir/src/constant_folding.rs (`fold_ptr_to_int_pair`)
 
 - **LLVM:** In `isEliminableCastPair`'s case-11 *declined* sub-case (`MidSize < SrcSize && MidSize < DstSize`), `ConstantFoldCastOperand` falls to its switch path, where `PtrToInt` takes `DL.getAddressType` and `PtrToAddr` takes `DL.getIntPtrType` — the inverse of each other. On `p:128:128:128:64`, `ptrtoaddr(inttoptr(i128 x)):i128` folds to `x`.
 - **llvmkit:** `fold_ptr_to_int_pair` always two-steps through the case-11 mid (`ptrtoint` to the pointer size, `ptrtoaddr` to the index/address size), so the same expression folds to `x mod 2^64` — the semantically correct address extraction, and a different constant from upstream's.
@@ -1437,7 +1440,7 @@ Confirmed real and unchanged. (1) llvmkit: crates/llvmkit-ir/src/constant_foldin
 
 ### 45. DCE keeps calls and allocations upstream deletes
 
-*passes* — crates/llvmkit-ir/src/dce.rs:49-79 (`is_trivially_dead`); crates/llvmkit-ir/src/value.rs:570 (`has_uses`)
+*passes* — crates/llvmkit-ir/src/dce.rs (`is_trivially_dead`); crates/llvmkit-ir/src/value.rs (`Value::has_uses`)
 
 - **LLVM:** `wouldInstructionBeTriviallyDead` (`lib/Transforms/Utils/Local.cpp`) deletes unused `willReturn`+readnone calls, removable allocation-function calls, `free(null)`, and lifetime-only allocas; `Value::use_empty` ignores debug-record uses, and upstream salvages debug info instead of being blocked by it.
 - **llvmkit:** `is_trivially_dead` returns `false` for every `Call` (and every `VaArg`/pad/atomic), so `DcePass` leaves all of the above in place; the module after DCE differs from upstream's. The record also notes `Value::has_uses` counts debug-record uses upstream ignores, which keeps further instructions alive.
@@ -1468,7 +1471,7 @@ Read `C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/constant_folding.rs:1
 
 ### 50. `possibly_demanded_elements_in_mask` answers exactly for a `zeroinitializer` mask
 
-*analysis / VectorUtils* — crates/llvmkit-ir/src/vector_utils.rs:641 (definition), reason at crates/llvmkit-ir/src/vector_utils.rs:634-640
+*analysis / VectorUtils* — crates/llvmkit-ir/src/vector_utils.rs (`possibly_demanded_elements_in_mask`, whose doc comment records the reason)
 
 - **LLVM:** `llvm::possiblyDemandedEltsInMask` reaches its per-element loop only through `dyn_cast<ConstantVector>`. A `zeroinitializer` mask is a `ConstantAggregateZero`, not a `ConstantVector`, so the cast fails and upstream returns "every lane demanded" for a mask that demands none.
 - **llvmkit:** llvmkit stores `ConstantVector` and `ConstantAggregateZero` as one element list, so the loop runs for a `zeroinitializer` mask and the function returns the exact all-zero `ApInt`.
@@ -1483,7 +1486,7 @@ CONFIRMED — real, accurate, and still present in the committed tree. Upstream 
 
 ### 56. ppc_fp128 component pair stored mirrored from upstream
 
-*IR model / ApFloat* — crates/llvmkit-ir/tests/ap_float_ppc_word_order.rs:1-20; crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs:57-77; crates/llvmkit-asmparser/tests/parser_hex_float_word_order.rs:22-26
+*IR model / ApFloat* — crates/llvmkit-ir/src/ap_float.rs (`ppc_words`); crates/llvmkit-ir/tests/ap_float_ppc_word_order.rs (module doc); crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::get_zero; crates/llvmkit-asmparser/tests/parser_hex_float_word_order.rs (module doc)
 
 - **LLVM:** `DoubleAPFloat::bitcastToAPInt` builds `Data[] = {Floats[0]…, Floats[1]…}` then `APInt(128, 2, Data)`, and APInt word 0 is least significant — so the *leading* double lands in the **low** 64 bits. `TEST(APFloatTest, getZero)` therefore expects `PPCDoubleDouble` negative zero as `{0x8000000000000000, 0}`.
 - **llvmkit:** `ppc_words` reads the **high** word as the leading double. `ap_float_upstream_predicates.rs::get_zero` pins the mirrored row `(PPC, true, [0, 0x8000_0000_0000_0000])` with an inline comment `// Upstream: {0x8000000000000000, 0} — mirrored here`. `ap_float_ppc_word_order.rs` pins the mirroring itself and states outright that `to_bits` "does **not** agree with upstream's `bitcastToAPInt` for this one semantics".
@@ -1569,7 +1572,7 @@ from a different angle and neither adding a defect the other lacked:
 - **Why:** the fix is a real `SlotTracker` port, not a patch: upstream's numbering is *encounter* order over a specific traversal, so switching to reachability also changes which number every surviving node gets. That is a workstream of its own, and doing it inside an AutoUpgrade stage would have re-pinned every metadata-bearing expected output at the same time.
 - **Fix:** port `SlotTracker::processModule` / `processFunction`'s metadata pre-pass and drive `metadata_slot_map` from it, then re-bless the metadata numbering in the corpus in the same commit. `crates/llvmkit-asmparser/tests/parser_auto_upgrade.rs` asserts on flag *contents* rather than `!N` numbering precisely because of this, and says so.
 
-### 104. The metadata no-slot fallback prints an arena index, and detached IR cannot be built — **NARROWED**
+### 104. The metadata no-slot fallback prints an arena index, and a detached argument cannot be built — **NARROWED**
 
 **Severity:** wrong-output (unreachable today) / model-gap
 
@@ -1595,15 +1598,18 @@ pins the string. What survives is the metadata half and a model gap.
   for an `MDString` and for an inline node, and `metadata_slot_map` gives a slot
   to every *other* node in the store, so the fallback needs a `MetadataSlot`
   the store does not hold.
-- **A detached `Argument` or `Instruction` is not constructible**, so
-  `unittests/IR/AsmWriterTest.cpp`'s `DebugPrintDetachedArgument` and
-  `DebugPrintDetachedInstruction` are ported with an *attached* unnamed value
-  instead. For the argument the substitution is provably output-identical —
-  `Value::print` sends an `Argument` to `printAsOperand`, which never calls
-  `incorporateFunction`, so the local slot is -1 either way — and the
-  substitution is stated in the test. `DebugPrintDetachedInstruction` is
-  unported: it needs a `BinaryOperator` with no parent block, and llvmkit's
-  builder has no such state.
+- **A detached `Argument` is not constructible**, so
+  `unittests/IR/AsmWriterTest.cpp`'s `DebugPrintDetachedArgument` is ported
+  with an *attached* unnamed value instead. The substitution is provably
+  output-identical — `Value::print` sends an `Argument` to `printAsOperand`,
+  which never calls `incorporateFunction`, so the local slot is -1 either way —
+  and the substitution is stated in the test. `DebugPrintDetachedInstruction`
+  is unported. It needs a `BinaryOperator` with no parent block, which this
+  entry used to say llvmkit cannot hold; it can — `Instruction::detach_from_parent`
+  returns an `Instruction<Detached>` that still has `set_metadata` and
+  `to_erased` — so the recorded blocker does not hold. Whether such an
+  instruction prints upstream's `<badref> = add i32 poison, poison, !<empty`
+  has not been checked.
 - **Out of scope, deliberately** (three `%<unnumbered>` sites with no upstream
   `<badref>` twin, listed so the next reader does not re-derive it): the
   function-signature argument printer in `fmt_function_with_use_lists`, whose
@@ -1690,7 +1696,7 @@ Deleted at W11 rather than left to be closed twice.
 > which point all three land together. It is recorded so the weaker answers are
 > not read as an oversight; do not re-triage it.
 
-*analysis* — crates/llvmkit-ir/src/select_pattern.rs:1210-1216 (`not_value`), :1449-1456 (`look_through_cast_arm`)
+*analysis* — crates/llvmkit-ir/src/select_pattern.rs (`not_value`, `look_through_cast_arm`)
 
 - **LLVM:** `getNotValue`'s second arm folds `~C` for a constant operand via `ConstantInt::get(V->getType(), ~*C)`, and `lookThroughCastConst` builds a casted constant with `ConstantExpr::getTrunc` / `ConstantFoldCastOperand` and checks it round-trips. Both let `matchSelectPattern` recognise shapes llvmkit's ports do not.
 - **llvmkit:** `not_value` reports only the `xor X, -1` form, and `look_through_cast_arm` ports only the two arrangements that need no new value. A `not` written as a folded constant, and the cast arrangement needing a materialised constant, are not recognised — each forgoes a match rather than inventing one, so the select-pattern result is weaker than upstream's.
@@ -1717,11 +1723,11 @@ Claim is accurate and the divergence is unchanged in the working tree (`git stat
 > count guard. The `Fix:` bullet below records the two shapes a future
 > ergonomic improvement could take; neither is a defect to schedule.
 
-*IR model / Instructions* — crates/llvmkit-ir/src/instructions.rs:1430 (helper), crates/llvmkit-ir/src/instructions.rs:1637 (public `PhiInstDyn::remove_incoming` doc), crates/llvmkit-ir/src/phi_raw_tests/remove_incoming.rs:13
+*IR model / Instructions* — crates/llvmkit-ir/src/instructions.rs (`phi_remove_incoming`, and the public doc on `PhiInst::remove_incoming`), crates/llvmkit-ir/src/phi_raw_tests/remove_incoming.rs (module doc)
 
 - **LLVM:** `PHINode::removeIncomingValue(unsigned Idx, bool DeletePHIIfEmpty = true)` (`lib/IR/Instructions.cpp`) defaults to `true`: after `swap_remove`ing the entry, if the phi has no operands left it is `replaceAllUsesWith(PoisonValue)`d and `eraseFromParent()`ed. Callers that drop a predecessor rely on that.
 - **llvmkit:** `phi_remove_incoming` (the shared body of all four phi handles' `remove_incoming`) mirrors the `swap_remove` exactly but stops there. Removing the last incoming leaves a live phi with zero incomings — a node that prints as `%p = phi i32` with no `[ … ]` pairs. `LLParser::parsePHI` **does** re-read that (it breaks cleanly out of its loop on the missing `[` and builds a zero-incoming PHINode); what rejects it is the *Verifier*, and only in a reachable block that has predecessors — a zero-incoming phi in an unreachable block is legal upstream, and llvmkit pins both halves. The caller is expected to finish the job.
-- **Why:** Recorded at `crates/llvmkit-ir/src/instructions.rs:1417`: erasure in llvmkit goes through `Instruction::erase_from_parent`, which *consumes* the linear lifecycle handle so use-after-erase is a compile error; a `Copy` opcode handle cannot express that consumption, so self-erasure here would hand the caller a live handle to an erased instruction. The auto-erase behaviour does ship where it can be sound — inside the `ReshapeCfg` pass surface, whose edge edits RAUW an emptied phi with poison and erase it, mirroring `removePredecessor`.
+- **Why:** Recorded on `instructions.rs::phi_remove_incoming`: erasure in llvmkit goes through `Instruction::erase_from_parent`, which *consumes* the linear lifecycle handle so use-after-erase is a compile error; a `Copy` opcode handle cannot express that consumption, so self-erasure here would hand the caller a live handle to an erased instruction. The auto-erase behaviour does ship where it can be sound — inside the `ReshapeCfg` pass surface, whose edge edits RAUW an emptied phi with poison and erase it, mirroring `removePredecessor`.
 - **Fix:** Either (a) give the erased phi surface a linear, consuming variant — `remove_incoming_or_erase(self, …) -> Either<Value, ErasedPhi>` taking the phi by value so the handle cannot outlive the erase; or (b) return a `PhiEmptied` marker the caller must destructure, making the leftover unignorable. (b) is cheaper and preserves the `Copy` handle for the common case. The verifier already flags the leftover through `check_phi`'s count guard — a block whose other predecessors survive now has more predecessors than the emptied phi has entries — so the gap is authoring ergonomics, not soundness.
 - **Correction from verification:** The core divergence is accurate and unchanged. One supporting detail is wrong: the claim (and llvmkit's own comments) say a bracket-less phi is something "LLParser::parsePHI cannot re-read". LLParser::parsePHI actually accepts it — on the first loop iteration `if (Lex.getKind() != lltok::lsquare) break;` exits cleanly and it builds a PHINode with zero incomings, returning InstNormal. The rejection is the Verifier's ("PHI node entries do not match predecessors"), not the parser's, and only for a reachable block that has predecessors; a zero-incoming phi in an unreachable block is legal upstream and llvmkit pins both halves (zero_incoming_phi.rs:298 rejected-in-reachable, :339 accepted-in-unreachable). llvmkit's own in-tree comments at zero_incoming_phi.rs:162 and :269 ("the shape LLVM's LL parser rejects") carry the same imprecision and should be reworded to blame the verifier. Everything else in the claim — the swap_remove-only body, the missing DeletePHIIfEmpty half, the four shared call sites, the caller-finishes-the-job contract, and all three cited line numbers — is correct.
 
@@ -1787,7 +1793,7 @@ crates/llvmkit-ir/src/instructions.rs:1430 `fn phi_remove_incoming` — body is 
 > `UPSTREAM.md` rows marked "no llvmkit spelling" so the coverage gap reads as
 > deliberate. Do not re-triage the transforms themselves.
 
-*analysis / VectorUtils* — crates/llvmkit-ir/src/vector_utils.rs:34-43 (module header), crates/llvmkit-ir/src/vector_utils.rs:208-213
+*analysis / VectorUtils* — crates/llvmkit-ir/src/vector_utils.rs (module header, and `widen_shuffle_mask_elements`'s doc)
 
 - **LLVM:** `widenShuffleMaskElts`, `narrowShuffleMaskElts` and friends read mask elements as raw `int`s, so the same functions serve both the IR alphabet `{lane, poison}` and the wider one SelectionDAG and the X86 backend use, where `SM_SentinelZero` is `-2`. The widening rule is "negatives must be *equal* across a widened group", which distinguishes `-1` from `-2`.
 - **llvmkit:** The transforms take `&[ShuffleMaskElem]`, which has only `Lane(n)` and `Poison`, so the equal-negatives rule collapses to "all poison". Three upstream assertions in `VectorUtilsTest.cpp` have no llvmkit spelling as a result.
@@ -1844,7 +1850,8 @@ crates/llvmkit-ir/src/instr_types.rs:2575-2613 — `pub enum ShuffleMaskElem { L
 > `LLParser.h` says so in as many words. llvmkit has no `AssignmentIDToInstrs`
 > equivalent
 > (`grep -rn "AssignmentIDToInstrs\|assignment_id_to_instr\|assignment_tracking" crates/`
-> returns nothing), so the machinery has nothing to protect. The gap becomes
+> returns only prose — the module doc of `tests/di_assign_id_attachment.rs`
+> saying llvmkit models no such map), so the machinery has nothing to protect. The gap becomes
 > real only if llvmkit ports assignment tracking; that is the trigger.
 >
 > **The residual is an opposite-direction difference, and its upstream half is
@@ -1919,7 +1926,7 @@ crates/llvmkit-ir/src/instr_types.rs:2575-2613 — `pub enum ShuffleMaskElem { L
 > string→`Keyword` map would sidestep that; nobody has costed it. **Not
 > scheduled** — it buys no behaviour the guard does not already hold.
 
-*parser — attributes* — crates/llvmkit-asmparser/src/ll_parser.rs (`attr_kind_for_keyword`), crates/llvmkit-ir/src/attributes.rs, crates/llvmkit-asmparser/tests/attribute_td_drift.rs, crates/llvmkit-asmparser/tablegen/llvm-22.1.4/Attributes.td
+*parser — attributes* — crates/llvmkit-asmparser/src/ll_parser.rs (`attr_kind_for_keyword`), crates/llvmkit-ir/src/attributes.rs, crates/llvmkit-asmparser/tests/attribute_td_drift.rs, crates/llvmkit-asmparser/tablegen/llvm-22.1.4/include/llvm/IR/Attributes.td
 
 - **LLVM:** `LLParser::tokenToAttribute` is generated from `llvm/IR/Attributes.td`, so a new attribute cannot be silently missing.
 - **llvmkit:** The keyword→`AttrKind` mapping is a hand list. `attribute_td_drift.rs` stands in for generation and has caught five separate holes, but the table itself is still transcribed.
@@ -2238,7 +2245,7 @@ Nothing changes for a well-formed module; these are gaps in what is measured, gu
 
 ### 92. Bare riscv_vls_cc swallows the following token (upstream bug, reproduced deliberately)
 
-*parser (calling conventions)* — crates/llvmkit-asmparser/tests/calling_conv_drift.rs:172-195
+*parser (calling conventions)* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_riscv_vls_calling_conv`), pinned by crates/llvmkit-asmparser/tests/calling_conv_drift.rs::a_bare_riscv_vls_cc_swallows_the_next_token
 
 - **LLVM:** `parseOptionalCallingConv`'s `kw_riscv_vls_cc` arm consumes its own keyword and, finding no `(`, `break`s to the switch tail — which consumes a second token. So `declare riscv_vls_cc void @f()` loses its return type. This is upstream's actual behaviour, not its intent.
 - **llvmkit:** Reproduced exactly and pinned: `declare riscv_vls_cc void @f()` is an error, and `declare riscv_vls_cc void void @f()` parses at the default ABI_VLEN of 128.
@@ -2310,10 +2317,10 @@ re-derives them; each was a recorded belief that the tree no longer supports.
 
 ### A parsed module's summary index is not attached to the module, so `Display` never emits `^N`
 
-*IR model* — crates/llvmkit-asmparser/src/ll_parser.rs:421 (`ParsedModule::summary_index`), :1428 and :1482 (where it is handed back); crates/llvmkit-ir/src/module_summary_index.rs (the model and its `Display`)
+*IR model* — crates/llvmkit-asmparser/src/ll_parser.rs (`ParsedModule::summary_index`, filled at both of `Parser::parse_module_with_config`'s returns); crates/llvmkit-ir/src/module_summary_index.rs (the model and its `Display`)
 
 - **Was claimed:** The index comes back separately in `ParsedModule::summary_index`, is not attached to the `Module`, and `format!("{module}")` therefore never emits `^N`. Reproducing `llvm-dis` is two calls: print the module, then print the index.
-- **Verdict:** NOT A DIVERGENCE — the llvmkit-side facts are true, but the upstream half of the claim is false, so this is parity, not a gap. Accurate as written: `ParsedModule::summary_index` (crates/llvmkit-asmparser/src/ll_parser.rs:421) returns the index separately, it is not attached to `Module`, `format!("{module}")` never emits `^N`, and reproducing `llvm-dis` is two calls. Wrong as written: "`llvm-dis` hands `AssemblyWriter` both the module and its index, and `printModuleSummaryIndex` runs after `printModule`, so one print emits the module followed by its `^N` entries." Upstream does exactly what llvmkit does. `AssemblyWriter` has two disjoint constructors — one takes `const Module *` and leaves `TheIndex` null, the other takes `const ModuleSummaryIndex *` and leaves `TheModule` null — and is never handed both. `Module::print` calls only `W.printModule(this)`; `printModuleSummaryIndex` is reached only from `ModuleSummaryIndex::print`, which builds its own second `SlotTracker` and its own second `AssemblyWriter`, and opens with `assert(TheIndex)`. `llvm-dis` makes two consecutive calls on the same stream (`M->print(...)` then `Index->print(...)`), as does `llvm-as`. `llvm::Module` owns no index at all (Module.h has only a forward declaration), and the parser entry point returns the pair `ParsedModuleAndIndex { Mod, Index }` — the same split shape llvmkit's `ParsedModule` mirrors. So the correct statement is: llvmkit's two-call print and separately-returned index MATCH upstream LLVM 22.1.4. The entry at docs/future-work.md:15-29 should be rewritten — its premise sentence ("`llvm-dis` prints a module and its summary index together because `AssemblyWriter` is handed both") is factually incorrect, and its closing suggestion that "attaching the index to the module" is an open design question is backwards: attaching it would be the divergence from upstream, not the fix.
+- **Verdict:** NOT A DIVERGENCE — the llvmkit-side facts are true, but the upstream half of the claim is false, so this is parity, not a gap. Accurate as written: `ParsedModule::summary_index` (crates/llvmkit-asmparser/src/ll_parser.rs, the `ParsedModule` struct) returns the index separately, it is not attached to `Module`, `format!("{module}")` never emits `^N`, and reproducing `llvm-dis` is two calls. Wrong as written: "`llvm-dis` hands `AssemblyWriter` both the module and its index, and `printModuleSummaryIndex` runs after `printModule`, so one print emits the module followed by its `^N` entries." Upstream does exactly what llvmkit does. `AssemblyWriter` has two disjoint constructors — one takes `const Module *` and leaves `TheIndex` null, the other takes `const ModuleSummaryIndex *` and leaves `TheModule` null — and is never handed both. `Module::print` calls only `W.printModule(this)`; `printModuleSummaryIndex` is reached only from `ModuleSummaryIndex::print`, which builds its own second `SlotTracker` and its own second `AssemblyWriter`, and opens with `assert(TheIndex)`. `llvm-dis` makes two consecutive calls on the same stream (`M->print(...)` then `Index->print(...)`), as does `llvm-as`. `llvm::Module` owns no index at all (Module.h has only a forward declaration), and the parser entry point returns the pair `ParsedModuleAndIndex { Mod, Index }` — the same split shape llvmkit's `ParsedModule` mirrors. So the correct statement is: llvmkit's two-call print and separately-returned index MATCH upstream LLVM 22.1.4. The `docs/future-work.md` entry "Summary index — printing a module and its index is two calls" should be rewritten (it was, 2026-10-11) — its premise sentence ("`llvm-dis` prints a module and its summary index together because `AssemblyWriter` is handed both") is factually incorrect, and its closing suggestion that "attaching the index to the module" is an open design question is backwards: attaching it would be the divergence from upstream, not the fix.
 
 <details><summary>Verification evidence</summary>
 
@@ -2326,7 +2333,7 @@ llvmkit side, confirmed present: crates/llvmkit-asmparser/src/ll_parser.rs:419-4
 *IR model / parser — aliases and ifuncs* — crates/llvmkit-ir/src/global_ifunc.rs, crates/llvmkit-ir/src/global_alias.rs (the shape to mirror), crates/llvmkit-asmparser/src/ll_parser.rs (`parse_alias_or_ifunc`)
 
 - **Was claimed:** `GlobalIfuncBuilder` has no `thread_local_mode` / `unnamed_addr` / `dll_storage_class` setters (the sibling `global_alias.rs` does), and ifunc metadata attachments are not stored.
-- **Verdict:** CLOSED — the divergence no longer exists. All four items the claim calls missing are present in the tree today, and the parser and printer both wire them up. In `crates/llvmkit-ir/src/global_ifunc.rs`: - `GlobalIfuncBuilder::dll_storage_class` (line 402), `::thread_local_mode` (line 408), `::unnamed_addr` (line 414) — all three `#[must_use]` setters exist, with a doc comment citing `parseAliasOrIFunc` as the reason ifunc carries them. - `GlobalIfuncData` (lines 33-37) stores `dll_storage_class`, `thread_local_mode`, `unnamed_addr` as `Cell`s plus `metadata: RefCell<MetadataAttachmentSet<StoredBrand>>`; `into_data` (lines 473-486) threads all four through. - `GlobalIfunc` has the matching accessors/mutators (lines 192-248), including `metadata()`, `metadata_stored()` and `set_metadata()`. The shape now matches `global_alias.rs` field-for-field; both files are structurally parallel (513 vs 518 lines, same field list on the data struct and the builder). Two secondary details in the claim's framing are also worth correcting: - ifunc/alias are NOT symmetric on metadata upstream, so "the same set GlobalAlias carries" is imprecise. `parseAliasOrIFunc`'s property loop guards metadata with `} else if (!IsAlias && Lex.getKind() == lltok::MetadataVar)` — only an **ifunc** may carry attachments; an alias with `!dbg !0` is still the "unknown alias or ifunc property!" error. llvmkit reproduces exactly this at `ll_parser.rs:7136-7147`, including the bang in the message. - The three global properties are stored but deliberately NOT printed for an ifunc. Upstream `AssemblyWriter::printIFunc` emits linkage, `printDSOLocation`, `printVisibility`, then goes straight to `"ifunc "` — it never prints DLL storage class, thread-local, or unnamed_addr, even though `parseAliasOrIFunc` applies all of them to `GV` in both branches. `fmt_ifunc` (asm_writer.rs) mirrors that omission, and an in-source comment at ll_parser.rs:7197-7199 records the choice. Closed by commit e02815d (2026-08-14) "feat(ir,asmparser)!: ifunc properties, global redefinition, named-metadata operands (LLParser parity W7, part 5)", which added exactly these six accessor/setter pairs to global_ifunc.rs (+71 lines) plus parser support (+73 lines) and tests in parser_module_level.rs and parser_debug_metadata.rs.
+- **Verdict:** CLOSED — the divergence no longer exists. All four items the claim calls missing are present in the tree today, and the parser and printer both wire them up. In `crates/llvmkit-ir/src/global_ifunc.rs`: - `GlobalIfuncBuilder::dll_storage_class`, `::thread_local_mode` and `::unnamed_addr` — all three `#[must_use]` setters exist, with a doc comment citing `parseAliasOrIFunc` as the reason ifunc carries them. - `GlobalIfuncData` stores `dll_storage_class`, `thread_local_mode`, `unnamed_addr` as `Cell`s plus `metadata: RefCell<MetadataAttachmentSet<StoredBrand>>`; `GlobalIfuncBuilder::into_data` threads all four through. - `GlobalIfunc` has the matching accessors/mutators, including `metadata()`, `metadata_stored()` and `set_metadata()`. The shape now matches `global_alias.rs` field-for-field; both files are structurally parallel (513 vs 518 lines, same field list on the data struct and the builder). Two secondary details in the claim's framing are also worth correcting: - ifunc/alias are NOT symmetric on metadata upstream, so "the same set GlobalAlias carries" is imprecise. `parseAliasOrIFunc`'s property loop guards metadata with `} else if (!IsAlias && Lex.getKind() == lltok::MetadataVar)` — only an **ifunc** may carry attachments; an alias with `!dbg !0` is still the "unknown alias or ifunc property!" error. llvmkit reproduces exactly this in `ll_parser.rs::parse_alias_or_ifunc`'s property loop, including the bang in the message. - The three global properties are stored but deliberately NOT printed for an ifunc. Upstream `AssemblyWriter::printIFunc` emits linkage, `printDSOLocation`, `printVisibility`, then goes straight to `"ifunc "` — it never prints DLL storage class, thread-local, or unnamed_addr, even though `parseAliasOrIFunc` applies all of them to `GV` in both branches. `fmt_ifunc` (asm_writer.rs) mirrors that omission, and an in-source comment in `ll_parser.rs::parse_alias_or_ifunc` records the choice. Closed by commit e02815d (2026-08-14) "feat(ir,asmparser)!: ifunc properties, global redefinition, named-metadata operands (LLParser parity W7, part 5)", which added exactly these six accessor/setter pairs to global_ifunc.rs (+71 lines) plus parser support (+73 lines) and tests in parser_module_level.rs and parser_debug_metadata.rs.
 
 <details><summary>Verification evidence</summary>
 
@@ -2336,7 +2343,7 @@ Read all 518 lines of C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/globa
 
 ### The summary index is not attached to the module, so `format!("{module}")` never prints `^N`
 
-*printer / API surface* — crates/llvmkit-ir/src/module_summary_index.rs, crates/llvmkit-ir/src/asm_writer.rs, crates/llvmkit-asmparser/src/parser.rs (`ParsedModule::summary_index`)
+*printer / API surface* — crates/llvmkit-ir/src/module_summary_index.rs, crates/llvmkit-ir/src/asm_writer.rs, crates/llvmkit-asmparser/src/ll_parser.rs (`ParsedModule::summary_index`)
 
 - **Was claimed:** The index comes back in `ParsedModule::summary_index`, is not attached to the `Module`, and a caller reproducing `llvm-dis` prints the module and then the index. `Display for ModuleSummaryIndex` reproduces `printModuleSummaryIndex` exactly, leading blank line included.
 - **Verdict:** The llvmkit-side description is accurate, but it is NOT a divergence — it is exact parity, because the "Upstream does" half of the claim is factually wrong. Upstream does not hand one `AssemblyWriter` both a module and an index, and `printModuleSummaryIndex` is not run "after `printModule`" in one print call. The two are mutually exclusive by construction: `AssemblyWriter` has two distinct constructors, one taking `const Module *` (sets `TheModule`) and one taking `const ModuleSummaryIndex *` (sets `TheIndex`, and passes `TypePrinter(/*Module=*/nullptr)`), so a single writer never holds both. `Module::print` calls `W.printModule(this)` and nothing else; `ModuleSummaryIndex::print` builds its own separate `AssemblyWriter` and calls `W.printModuleSummaryIndex()`. `llvm-dis` itself makes two calls — `M->print(Out->os(), Annotator.get(), /*ShouldPreserveUseListOrder*/ false);` and then, separately, `if (Index) Index->print(Out->os());`. Likewise, upstream's parse-both interface returns `ParsedModuleAndIndex { std::unique_ptr<Module> Mod; std::unique_ptr<ModuleSummaryIndex> Index; }` — the index is a separate owned object, never attached to the `Module`. So llvmkit's shape (index in `ParsedModule::summary_index`, not on `Module`; `Display for Module` printing no `^N`; a separate `Display for ModuleSummaryIndex` carrying the leading blank line; caller prints module then index to reproduce `llvm-dis`) mirrors upstream one-for-one. Upstream's own `Module::print` also never emits `^N`. The correct statement is: "llvmkit splits module printing and summary-index printing exactly as upstream does, including the index's leading blank line and the two-call `llvm-dis` reproduction." This is the design already recorded in CLAUDE.md as intentional parity, not a gap.

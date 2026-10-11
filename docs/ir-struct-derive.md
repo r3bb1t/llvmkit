@@ -214,7 +214,11 @@ let (placement,) = m.view(f).params(); // WindowPlacementValue<'ctx, B>
 
 The function-pointer alias is parsed at compile time. `fn`, `unsafe fn`,
 `extern "C" fn`, `unsafe extern "C" fn`, `extern "system" fn`, and
-`unsafe extern "system" fn` aliases are supported up to arity 16.
+`unsafe extern "system" fn` aliases are supported up to arity 16 (the widest
+`impl_function_signature!` and `impl_param_list_tuple!` invocations in
+`crates/llvmkit-ir/src/function_signature.rs` take sixteen parameters; derived
+with `rg "^impl_(function_signature|param_list_tuple)!" crates/llvmkit-ir/src/function_signature.rs`
+at `7d0540c`).
 
 A bare schema parameter remains one by-value LLVM struct parameter. Use
 `StructFields<S>` to opt into one LLVM parameter per top-level field:

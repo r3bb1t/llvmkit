@@ -1,8 +1,12 @@
-//! Generated-backed LLVM intrinsic lookup used by current parser/verifier code.
+//! LLVM intrinsics, backed by tables `llvmkit-tablegen` generates from the
+//! vendored `Intrinsics*.td` files at build time.
 //!
-//! Full IIT signature decoding is intentionally deferred. This module exposes
-//! stable generated IDs/descriptors now while preserving the old semantic subset
-//! needed by existing analysis and verifier paths.
+//! The generated tables give every intrinsic's ID, name and IIT type-signature
+//! descriptors. This module decodes those descriptors into function types and
+//! matches a signature against them, as `llvm/lib/IR/Intrinsics.cpp`'s
+//! `getIntrinsicInfoTableEntries`, `DecodeFixedType` and `matchIntrinsicType`
+//! do, and keeps the smaller semantic subset (`IntrinsicSemantic`) the analyses
+//! and the verifier read.
 use core::num::NonZeroU32;
 
 use crate::Branded;
