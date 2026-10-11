@@ -878,6 +878,64 @@ PROBE control verify: Ok(())
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
 
+### 145. `LLParser::parseParameterList`'s `isValidArgumentType` guard is unported, so a call site takes a `label` argument
+
+**Severity:** accepts-invalid (probed), and the same defect anchors a matching
+message at the wrong token when a later declaration happens to reject the type
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — the inline
+call-argument loops of `Parser::parse_call`, `Parser::parse_invoke` and
+`Parser::parse_callbr`, the three places llvmkit spells
+`LLParser::parseParameterList`.
+
+- **LLVM:** `LLParser::parseParameterList` runs
+  `if (!FunctionType::isValidArgumentType(ArgTy)) return error(ArgLoc, "invalid type for function argument");`
+  straight after `parseType(ArgTy, ArgLoc)`, before the argument's attributes
+  or value are read. `parseCall`, `parseInvoke` and `parseCallBr` all reach it,
+  so a `label` (or `void`, or function-typed) call argument is refused at the
+  argument, whatever the callee.
+- **llvmkit:** none of the three loops checks the argument type. Each reads
+  `parse_type(false)`, then the parameter attributes, then the value, so
+  `call void (...) @foo(label %1)`, `invoke void (...) @foo(label %bb) …` and
+  `callbr void asm "", "r,!i"(label %bb) …` all parse and print. Two fixtures
+  show the consequence:
+  `test/Verifier/invalid-label-param.ll` is rejected with upstream's exact
+  text, but from llvmkit's port of `LLParser::parseArgumentList` at the
+  `label` of the later `declare void @foo(label)` rather than at the call's
+  argument; and `test/Assembler/invalid-label-call-arg.ll` (a `label`
+  argument to inline asm) reaches the inline-asm constraint check instead and
+  reports `number of input constraints does not match number of parameters`.
+  `docs/fixture-coverage.md` classes the second under **G17** (wording); its
+  cause is this guard, not wording.
+- **Also in this routine, derived by reading and not probed:** upstream reads
+  `parseOptionalParamAttrs` only on the non-`metadata` branch, where llvmkit
+  reads the attributes before branching on `metadata`. The fix's arm table
+  should settle it.
+- **Found:** 2026-10-11, porting `test/Verifier/invalid-label-param.ll` for
+  the type-constructor-validity plan (Task 1). Its `CHECK` pins only the text,
+  and the first draft of
+  `crates/llvmkit-asmparser/tests/type_validity.rs::upstream_label_parameter_is_rejected`
+  compared only the text, so it passed. That test now also asserts the
+  `(line, column)` anchor, pinned to llvmkit's current one, so closing this
+  entry fails it.
+  `rg -n "invalid type for function argument" crates/llvmkit-asmparser/src/`
+  finds the message once, in `parse_argument_list`; the call path has no site.
+  Probes run through the `parse_file` example at `ab2e5a9`:
+  `invalid-label-param.ll` reports its anchor at the `declare`, and the
+  `call`, `invoke` and `callbr` probes above exit 0. Whether llvmkit's
+  verifier later refuses such a module was not probed.
+- **Why not in the same change:** the change that found it was scoped to
+  tests (no `src/` edits). The routine also exists three times, inline in
+  three instruction parsers. One shared `parse_parameter_list`, ported arm by
+  arm, is the fix. Adding the guard to three copies would leave the
+  duplication in place.
+- **Fix:** port `LLParser::parseParameterList` once, arm by arm (the
+  `expected '(' in call` token, the ellipsis arms, the guard, the
+  `metadata` / attribute branch), and call it from the `call`, `invoke` and
+  `callbr` parsers. Then re-point
+  `type_validity.rs::upstream_label_parameter_is_rejected` at the upstream
+  anchor and reclassify `invalid-label-call-arg.ll` in
+  `docs/fixture-coverage.md`.
+
 ### 141. `Verifier::visitGlobalValue` and `visitGlobalAlias` are unported, and so is the `visitMDNode` call in `visitGlobalIFunc`'s attachment loop
 
 **Severity:** accepts-invalid (derived by reading; no fixture exhibits it — a
