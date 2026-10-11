@@ -37,13 +37,16 @@ and the answer recorded:
    upstream's `RUN` lines run `llvm-as` over each part on its own. Parsing such
    a container whole measures nothing. They were split the way
    `llvm/utils/split-file` splits them (honouring `--leading-lines`), giving
-   **624 units** — 479 whole fixtures plus 145 parts.
+   **624 units** — 479 whole fixtures plus 145 parts. (Derived at `7d0540c`
+   over the vendored `test/Assembler`: 500 is `ls *.ll | wc -l`, 21 is
+   `grep -l '^;--- ' *.ll | wc -l`, and 145 is `grep -c '^;--- '` summed over
+   those 21 files.)
 2. **Positive or negative** comes from the `RUN` lines: a unit is negative when
    `not` guards the `llvm-as` or `opt` invocation for it, positive otherwise.
-   263 of the 500 fixtures have at least one negative unit and 259 are negative
-   throughout; at unit granularity 380 of the 624 are negatives. (Counting only
-   `not llvm-as` and ignoring `not opt` gives 257 — the figure the stage brief
-   used.)
+   263 of the 500 fixtures have at least one negative unit
+   (`grep -lE 'RUN:.*\bnot\b[^|]*\b(llvm-as|opt)\b' *.ll | wc -l`, at `7d0540c`).
+   (Counting only `not llvm-as` and ignoring `not opt` gives 257 — the figure
+   the stage brief used; `grep -lE 'RUN:.*not llvm-as' *.ll | wc -l`.)
 3. **Every unit was parsed**, then verified, then printed, re-parsed and
    re-printed. Errors were recorded with their rendered message *and* the
    1-based line/column of the reported span.
@@ -125,13 +128,21 @@ The reason `N/A` is one row and not fifty: `test/Assembler` is overwhelmingly
 | `-mtriple=`, target intrinsics | 5 | gap **G2**, not a tooling limit |
 | bitcode (`%t.bc`), `llvm-dis --print-addrspace-name` | 3 | out of scope (bitcode) / gap **G6** |
 
+(Derived at `7d0540c` over the vendored `test/Assembler`, each as `grep -l … *.ll | wc -l`:
+`opt` is `'RUN:.*\bopt\b'` → 43; `-allow-incomplete-ir` is `'allow-incomplete-ir'` → 3;
+`-non-global-value-max-name-size` is `'non-global-value-max-name-size'` → 2. The
+`-mtriple=` row's 5 is the **G2** list below, not a grep, and the bitcode row's 3
+is the two fixtures whose `RUN` lines name a `.bc` file (`'RUN:.*\.bc'`) plus
+`symbolic-addrspace-datalayout.ll`.)
+
 ## Gap catalogue
 
 Each `blocked-model` row names one of these. The per-gap fixture counts are the
 lists under *Which fixture sits on which gap* — a separate tally column stood
 here and drifted from those lists, so it is gone. A letter missing from this
-table carries no meaning: one closed gap was retained as a `Closed.` row and
-another was deleted outright, so the letters are not a stable namespace.
+table carries no meaning: closed gaps are retained as `Closed.` rows (G4, G7,
+G12, G13 and G23) and one letter, G5, was deleted outright, so the letters are
+not a stable namespace.
 
 | Gap | What is missing |
 |---|---|
@@ -237,20 +248,33 @@ These came out of the measurement and are recorded here rather than buried:
    datalayout = "P2"` printed IR that re-parsed into a different address space —
    caught by the new round-trip law on an *existing* corpus fixture,
    `upstream/blockaddress-addrspace/return_self_good.ll`.
-4. **`LLParser::parseStandaloneMetadata` checks the id for reuse *after*
-   parsing the node body; llvmkit checks it first.**
-   `invalid-disubrange-count-negative.ll` therefore reports `Metadata id is
-   already used` where upstream reports `value for 'count' too small, limit is
-   -1`. Gap **G17**.
-5. **Diagnostic location agrees with upstream in 52 of the 54 places both pin
-   one.** 59 whole fixtures carry a `<stdin>:LINE:COL:` `CHECK`; five of them
-   llvmkit does not reject at all (**G18**), leaving 54 comparable. The two
-   disagreements are `invalid-dilocalvariable-arg-negative.ll` (llvmkit points
-   at 7:42, past the consumed `-1`; upstream at 7:40, its start) and
-   `invalid-disubrange-count-negative.ll` (finding 4 above). All 52 agreements
-   are locked by `loc=` rows. Eight `split-file` parts also pin a location and
-   none is locked: `[[@LINE+1]]` there resolves against the *container's*
-   numbering, which is not the part's, so the pin would mean something else.
+4. **`DISubrange`'s `count` has no range check, so a reused id is what
+   `invalid-disubrange-count-negative.ll` trips.** `LLParser::parseStandaloneMetadata`
+   parses the node body first and checks the id for reuse after, and
+   `parse_standalone_metadata` does the same (it calls `parse_md_node_after_bang`
+   and then `define_md_slot`) — an earlier version of this finding said llvmkit
+   checks the id first, which is not what the code does. What differs is the
+   body: `check_metadata_field_value` has an `Ok(())` arm for
+   `MetadataFieldKind::SignedOrMetadata`, the kind `count` is declared with, so
+   `count: -2` parses and the second `!0 =` reports `Metadata id is already used`
+   where upstream reports `value for 'count' too small, limit is -1`. Gap
+   **G17**.
+5. **Diagnostic location agrees with upstream wherever both pin one, and every
+   pin that has a row is locked.** 59 whole fixtures carry a
+   `<stdin>:LINE:COL:` `CHECK`; 57 of them are `ported` rows whose `loc=` is
+   upstream's position, asserted by `parser_corpus.rs`. The other two are
+   `invalid-disubrange-count-large.ll` (**G18**: llvmkit accepts it) and
+   `invalid-disubrange-count-negative.ll` (finding 4 above).
+   `invalid-dilocalvariable-arg-negative.ll` used to be a third (llvmkit pointed
+   at 7:42, past the consumed `-1`; upstream at 7:40, its start) until
+   `check_metadata_field_value` anchored the `expected unsigned integer` at the
+   value token; its row pins 7:40. `split-file` parts are locked the same way:
+   `split-file --leading-lines` keeps each part at its container's line
+   numbers, so a `[[@LINE+1]]` pin resolves in the part exactly as in the
+   container, and 29 split-file rows carry `loc=`. Derived at `7d0540c` over the
+   vendored `test/Assembler`: the 59 is
+   `grep -lE '<stdin>:(\[\[#?@LINE([+-][0-9]+)?\]\]|[0-9]+):[0-9]+' *.ll | xargs grep -L '^;--- ' | wc -l`;
+   the 29 is `grep -E '^upstream/assembler-corpus/[^ /]+/' <manifest> | grep -c 'loc='`.
 6. **llvmkit's Verifier does not exempt unreachable blocks.**
    `Verifier::verifyDominatesUse` returns early on
    `!DT.isReachableFromEntry(...)`, which is the whole point of
@@ -279,7 +303,7 @@ holds `2002-05-02-InvalidForwardRef.ll`, loaded by
 `parser_forward_refs.rs::upstream_forward_global_reference_fixture_parses`), and
 on a case-insensitive filesystem `assembler` and `Assembler` are the same
 directory — creating one silently renames the other, and the rename then breaks
-that `include_bytes!` on a case-sensitive CI runner. Do not reintroduce the
+that `include_str!` on a case-sensitive CI runner. Do not reintroduce the
 collision.
 
 ## Per-fixture classification

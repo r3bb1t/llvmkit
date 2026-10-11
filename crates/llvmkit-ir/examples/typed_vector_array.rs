@@ -49,8 +49,9 @@ fn build() -> Result<(), IrError> {
 
     // Narrow the erased `<4 x i32>` params into the statically typed handle.
     // `try_into` checks BOTH element (i32) and lane count (4) at run time,
-    // then stamps the markers — a `<2 x i32>` or `<4 x i64>` value fails
-    // here with `OperandWidthMismatch` / `TypeMismatch`.
+    // then stamps the markers — a `<4 x i64>` value fails here with
+    // `TypeIdentityMismatch`, a `<2 x i32>` with `OperandWidthMismatch`, and
+    // a value that is not a fixed vector with `TypeMismatch`.
     let a: VectorValue<'_, i32, Len<4>, _> = m
         .view(vadd)
         .param(0)
@@ -67,8 +68,8 @@ fn build() -> Result<(), IrError> {
         .expect("narrow param 1 to <4 x i32>");
 
     // Both operands are `VectorValue<i32, Len<4>>`. `vector_int_add` pins
-    // both to the SAME `E` and `L`, so a length or element mismatch has no
-    // matching impl — a compile error, not a verifier diagnostic. E.g.:
+    // both to the SAME `E` and `L`, so a length or element mismatch is a type
+    // mismatch — a compile error, not a verifier diagnostic. E.g.:
     //   let half: VectorValue<'_, i32, Len<2>> = /* ... */;
     //   b.vector_int_add(a, half, "bad")?;   // E0308: Len<4> vs Len<2>
     let sum = b.vector_int_add(a, c, "sum")?;

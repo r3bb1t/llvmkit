@@ -20,8 +20,9 @@
 #
 # The two xfail statuses have no rows: `grep 'status=xfail' ` over this file
 # matches only the two option lines above. A fixture llvmkit cannot handle is
-# classified `blocked-model` in docs/fixture-coverage.md and gets no row here
-# at all, so an xfail row is a state the driver can express and the corpus does
+# classified `blocked-model` in docs/fixture-coverage.md, and the unit it cannot
+# handle gets no row here at all (a split-file container's other parts keep
+# theirs), so an xfail row is a state the driver can express and the corpus does
 # not currently occupy. The three rows that used to carry `xfail-parse` were
 # upstream *negatives*, not llvmkit gaps, and are `reject` rows now with their
 # diagnostic pinned.

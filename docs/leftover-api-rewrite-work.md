@@ -12,9 +12,11 @@ is the residue of one program, and every entry here exists because that
 program's own changes created or exposed it. Entries graduate out of this file
 when they are closed, not when they are re-filed.
 
-Measured at **`02ae334`** — the tree that was `4da9711` plus the placement-witness
-slice, which landed as `02ae334` while this file was being written. Every count
-below names the command that produced it; the table at the end collects them.
+First measured at **`02ae334`** — the tree that was `4da9711` plus the
+placement-witness slice, which landed as `02ae334` while this file was being
+written — and re-derived at **`7d0540c`** on 2026-10-11, after the capability
+program (D1, D8) landed; §1, §5, §6, §9 and §10 moved then. Every count below
+names the command that produced it; the table at the end collects them.
 Re-derive before quoting — the repo's docs are not checked by CI, and these
 numbers move with the code.
 
@@ -65,8 +67,8 @@ The program is the SDD plan `docs/superpowers/plans/2026-09-06-error-surface-cle
 instruction with the block it was in *at the moment the witness was minted*:
 
 ```rust
-pub struct PlacedInstruction<'ctx, B: ModuleBrand> {
-    view:  InstructionView<'ctx, B>,
+pub struct PlacedInstruction<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    view:  InstructionView<'ctx, B, C>,
     block: BlockId<Dyn, B>,
 }
 ```
@@ -148,7 +150,8 @@ cannot join a function, because `BasicBlock::insertInto` is not ported.
 
 ## 5. A mutation token does not have to belong to the module it unlocks
 
-**The largest open item, and it needs a design ruling before any code.**
+**Narrowed by the capability program; the vestigial token and its ruling are
+what is left.**
 
 Methods that require mutation capability take the token and then ignore it:
 
@@ -161,46 +164,59 @@ The token proves *a* module is unverified. It does not prove it is *this* module
 Under two distinct brands the types differ, so D7 closes it — but every
 `Module::dynamic` is `DynBrand`, and there the type check cannot apply.
 
-The program's own statement of the consequence, **relayed, not re-derived here**:
-another `DynBrand` module's token unlocks a verified module, and nothing refuses
-it. Reproducing it would mean constructing a throwaway
-`Module<DynBrand, Unverified>` and passing its token to a mutator reached from a
-different module's handle. **Write that reproduction first** — the fix's shape
-depends on whether the hole is reachable through a public path or only through a
-crate-internal one.
+The consequence this section was first written around — another `DynBrand`
+module's token unlocking a *verified* module — is closed for the routes the
+capability program reached. The mutators on a handle now need `C: CanMutate`,
+and a handle reached from a verified module is `ReadOnly`, so
+`a.view(g).set_linkage(&b, …)` on a verified `a` no longer compiles
+(`CHANGELOG.md` `[Unreleased]`, *Fixed, for the routes that reach a global or
+function without passing through a block or instruction*). The foreign-token
+reproduction this section used to ask for is now a compile-fail fixture,
+`compile_fail/verified_value_cannot_be_renamed.rs`, beside
+`compile_fail/verified_global_cannot_be_mutated.rs`.
 
-Nothing pins it today:
+What is left is that the parameter is still demanded and still discarded, so by
+signature a mutable handle of one unverified module accepts the token of
+another module of the same brand. Nothing pins that residue:
 `rg -n 'throwaway|foreign token|other module.*token|another module.*token' crates/*/tests/`
-returns one hit, a doc comment in `return_marker_mismatch_diagnostic.rs` about an
-unrelated throwaway module. So the 49 cross-module tests in
-`cross_module_handles.rs` cover foreign *handles* and not the foreign *token*.
+returns two hits at `7d0540c`, a doc comment in
+`return_marker_mismatch_diagnostic.rs` about an unrelated throwaway module and
+the header of the fixture above, which pins the verified case only. The 52
+tests in `cross_module_handles.rs`
+(`rg -c '#\[test\]' crates/llvmkit-ir/tests/cross_module_handles.rs`) cover
+foreign *handles* and not the foreign *token*.
 
-The family is larger than the program's ledger recorded. At `02ae334`:
+The family is larger than the program's ledger recorded, and it is spelled more
+than one way. At `7d0540c`:
 
 ```
 rg -o '_module\w*\s*:\s*&[^,)]*' crates/ --no-filename | sort | uniq -c | sort -rn
-     65 _module: &'ctx Module<B…
-      8 _module_token: &'ctx Module<B…
+     78 _module: &'ctx Module<B…
       1 _module_token: &Module<B…
+rg -c 'let _ = module_token;' crates/ | awk -F: '{s+=$2} END {print s}'
+     6
 ```
 
-**74 sites, not 65.** The plan's Task 25 names 65, which is the `_module:`
-spelling alone; the nine `_module_token:` sites are the same defect under a
-different parameter name and must not be missed by a search written from the
-smaller figure.
+**79 sites in the first two spellings, plus 6 that name the parameter
+`module_token` and discard it** (it was 74 at `02ae334`, the plan's Task 25
+having named 65 — the `_module:` spelling alone). A search written from one
+spelling misses the others, so no figure here claims the family is complete.
 
-The ruling owed: whether the token becomes a checked argument (compare
-`ModuleId`, return `ForeignValueId`), or whether the capability is restructured
-so an unrelated token is unspellable. Task 25 stops at step 1 pending that
-answer.
+The ruling owed, unchanged by the capability program: whether the token becomes
+a checked argument (compare `ModuleId`, return `ForeignValueId`), or whether the
+capability is restructured so an unrelated token is unspellable — which the
+capability program did for verified modules, leaving the parameter in place.
+Task 25 stops at step 1 pending that answer.
 
 ---
 
-## 6. Twenty-seven infallible boundary sites still admit a foreign slot unchecked
+## 6. Twenty-two infallible boundary sites still admit a foreign slot unchecked
 
 ```
-rg -c 'boundary \(F1\)' crates/ | awk -F: '{s+=$2} END {print s}'   →  27
+rg -c 'boundary \(F1\)' crates/ | awk -F: '{s+=$2} END {print s}'   →  22
 ```
+
+(27 at `02ae334`.)
 
 F1 marks an infallible entry or a value-producing builder that reads a caller's
 slot without comparing modules, because its signature has no error channel to
@@ -266,7 +282,7 @@ Small, independent, each found while doing something else:
 - **`FnReshape::split_block_before` is missing.** `BasicBlock::split_before`
   exists (`basic_block.rs`) and `FnReshape::split_block` exists
   (`pass_context.rs`), but there is no `split_block_before` wrapper, so a pass
-  cannot reach the primitive: `rg -n 'fn split_' crates/llvmkit-ir/src/pass_context.rs`
+  cannot reach the primitive: `rg -n 'pub fn split_' crates/llvmkit-ir/src/pass_context.rs`
   returns `split_block` only.
 
 - **`value_from_slot` has seven copies, not two.** The program's handoff records
@@ -293,16 +309,16 @@ Small, independent, each found while doing something else:
 
 ## 10. The rewrite's design rationale is untracked
 
-`docs/superpowers/` is gitignored (`.gitignore:6`), and the specs that argued
-these designs live there:
+`docs/superpowers/` is gitignored (the `/docs/superpowers/` entry in
+`.gitignore`), and the specs that argued these designs live there:
 
 ```
-ls docs/superpowers/specs/ | wc -l   →  15
+ls docs/superpowers/specs/ | wc -l   →  17
 ls docs/design/                      →  5 files
 ```
 
-Fifteen design specs — including `2026-09-20-placement-witness-design.md`, which
-is the argument for §1 — exist only on the machine that wrote them. Five
+Seventeen design specs — including `2026-09-20-placement-witness-design.md`,
+which is the argument for §1 — exist only on the machine that wrote them. Five
 tracked design docs sit in `docs/design/`.
 
 That asymmetry is itself a leftover. A design that a future session must
@@ -328,18 +344,21 @@ of why §1 is written out in full above rather than pointing at the spec.
 
 ## How every number here was derived
 
-All at `02ae334`. None of these is checked by CI; re-run rather than quote.
+All at `7d0540c` (re-derived 2026-10-11; first measured at `02ae334`, where
+`git grep -c` over that tree gave 27, 66 and 74 for the first three rows). None
+of these is checked by CI; re-run rather than quote.
 
 | Figure | Command |
 |---|---|
-| F1 boundary markers = **27** (§6) | `rg -c 'boundary \(F1\)' crates/ \| awk -F: '{s+=$2} END {print s}'` |
+| F1 boundary markers = **22** (§6) | `rg -c 'boundary \(F1\)' crates/ \| awk -F: '{s+=$2} END {print s}'` |
 | F2 boundary markers = **66** (§7) | `rg -c 'boundary \(F2\)' crates/ \| awk -F: '{s+=$2} END {print s}'` |
-| Unused module tokens = **74** in three spellings (§5) | `rg -o '_module\w*\s*:\s*&[^,)]*' crates/ --no-filename \| sort \| uniq -c \| sort -rn` |
-| No test pins the foreign token (§5) | `rg -n 'throwaway\|foreign token\|other module.*token\|another module.*token' crates/*/tests/` → 1 unrelated doc-comment hit |
+| Unused module tokens = **79** in two spellings, plus **6** `module_token` discards (§5) | `rg -o '_module\w*\s*:\s*&[^,)]*' crates/ --no-filename \| sort \| uniq -c \| sort -rn`; `rg -c 'let _ = module_token;' crates/ \| awk -F: '{s+=$2} END {print s}'` |
+| No test pins the foreign token beside a mutable handle (§5) | `rg -n 'throwaway\|foreign token\|other module.*token\|another module.*token' crates/*/tests/` → 2 hits: one unrelated doc comment, one fixture header that pins the verified case |
+| `cross_module_handles.rs` has **52** tests (§5) | `rg -c '#\[test\]' crates/llvmkit-ir/tests/cross_module_handles.rs` |
 | `PlacedInstruction` is `Copy` (§1) | default `#[derive(Branded)]` set is `Clone, Copy, Debug, PartialEq, Eq, Hash` — `crates/llvmkit-macros/src/lib.rs`, `derive_branded` rustdoc |
-| `FnReshape::split_block_before` is absent (§9) | `rg -n 'fn split_' crates/llvmkit-ir/src/pass_context.rs` → `split_block` only |
+| `FnReshape::split_block_before` is absent (§9) | `rg -n 'pub fn split_' crates/llvmkit-ir/src/pass_context.rs` → `split_block` only |
 | `value_from_slot` has **7** copies (§9) | `rg -n 'fn value_from_slot' crates/llvmkit-ir/src/` |
-| Untracked specs = **15**, tracked design docs = **5** (§10) | `ls docs/superpowers/specs/ \| wc -l`; `ls docs/design/` |
+| Untracked specs = **17**, tracked design docs = **5** (§10) | `ls docs/superpowers/specs/ \| wc -l`; `git ls-files docs/design \| wc -l` |
 | `docs/superpowers/` is gitignored (§10) | `git check-ignore -v docs/superpowers/specs/2026-09-20-placement-witness-design.md` |
 
 Every row above was run with `rg` and direct file reads. **No LSP was available in the session
@@ -351,11 +370,15 @@ marked where it appears.
 Two things in this document come from the program's own `HANDOFF.md` rather
 than from a command run here, and each is marked where it appears:
 
-- the 21-commit span of Task 24 (§ frame) — re-derivable from `git log`;
+- the 21-commit span of Task 24 (§ frame) — re-derivable from `git log`
+  (`git log --oneline 17b293e^..4da9711 | wc -l` → 21 at `7d0540c`);
 - the statement that a foreign `DynBrand` token unlocks a verified module (§5) —
-  **not** re-derivable by reading alone; it needs the reproduction §5 asks for.
+  no longer a premise: `CHANGELOG.md` `[Unreleased]` records it as having
+  compiled before the capability program, and
+  `compile_fail/verified_value_cannot_be_renamed.rs` is the reproduction, now
+  refused.
 
-Neither was re-derived for this document. The mutation check quoted in §1
+The mutation check quoted in §1
 likewise comes from the program's task reports rather than from a run here; it
 describes work that was done, so it is history rather than a premise. (A third
 item, the detached-creation body sketch, left with §2 when it closed — and the

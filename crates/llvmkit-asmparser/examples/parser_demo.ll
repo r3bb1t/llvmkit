@@ -1,6 +1,5 @@
-; Module-level slice the Session-2 parser handles end-to-end:
-; target directives, named + numbered struct types, plain globals,
-; a declaration, and a tiny function body.
+; Module-level slice: target directives, a named struct type, plain
+; globals (named and numbered), a declaration, and a tiny function body.
 
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"

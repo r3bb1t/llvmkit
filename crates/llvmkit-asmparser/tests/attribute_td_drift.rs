@@ -10,7 +10,7 @@
 //!
 //! Full generation is the wrong shape here: llvmkit deliberately models a
 //! subset of LLVM's attributes, and generating the table would force modeling
-//! all of them (and would mean generating part of the 700-variant `Keyword`
+//! all of them (and would mean generating part of the lexer's `Keyword`
 //! enum). This test gives the same guarantee without that cost — it parses the
 //! vendored `Attributes.td` and asserts every attribute is either **accepted**
 //! by the parser in a position `Attributes.td` declares for it, or **listed

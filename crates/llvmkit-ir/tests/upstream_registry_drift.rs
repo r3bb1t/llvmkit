@@ -279,25 +279,7 @@ fn no_live_doc_page_cites_a_line_number() {
         let Ok(text) = std::fs::read_to_string(root.join(&relative)) else {
             continue;
         };
-        let frozen_changelog = relative == "CHANGELOG.md";
-        let mut in_evidence = 0usize;
-        let mut past_unreleased = false;
-        for (at, line) in text.lines().enumerate() {
-            let lower = line.to_ascii_lowercase();
-            if lower.contains("<details") {
-                in_evidence += 1;
-            }
-            // Everything below the first released heading is history.
-            if frozen_changelog && line.starts_with("## [") && !line.starts_with("## [Unreleased") {
-                past_unreleased = true;
-            }
-            if in_evidence == 0 && !past_unreleased && cites_a_line(line) {
-                offenders.push(format!("  {relative}:{}: {}", at + 1, line.trim()));
-            }
-            if lower.contains("</details") {
-                in_evidence = in_evidence.saturating_sub(1);
-            }
-        }
+        offenders.extend(doc_page_line_citations(&relative, &text));
     }
 
     assert!(
@@ -310,6 +292,82 @@ fn no_live_doc_page_cites_a_line_number() {
          belongs in one of the exempt places this test already knows about:\n{}",
         offenders.len(),
         offenders.join("\n")
+    );
+}
+
+/// The lines of one live doc page that cite a line number, as
+/// `  path:N: text`, after the exemptions [`no_live_doc_page_cites_a_line_number`]
+/// documents.
+///
+/// An evidence block opens on a real `<details>` tag — one that starts its
+/// line — and closes on `</details>`. A line that merely *mentions* the tag
+/// opens nothing: `docs/divergences.md`'s preamble names `<details>` blocks in
+/// prose, and counting that mention opened a block no tag ever closed, so the
+/// rest of the page went unchecked. A `Correction from verification` paragraph
+/// is one bullet line starting `- **Correction from verification` (some carry a
+/// date before the colon), and is exempt by its own rule rather than by
+/// sitting inside such an accident.
+fn doc_page_line_citations(relative: &str, text: &str) -> Vec<String> {
+    let frozen_changelog = relative == "CHANGELOG.md";
+    let mut offenders = Vec::new();
+    let mut in_evidence = 0usize;
+    let mut past_unreleased = false;
+    for (at, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("<details") {
+            in_evidence += 1;
+        }
+        // Everything below the first released heading is history.
+        if frozen_changelog && line.starts_with("## [") && !line.starts_with("## [Unreleased") {
+            past_unreleased = true;
+        }
+        let correction = trimmed.starts_with("- **Correction from verification");
+        if in_evidence == 0 && !past_unreleased && !correction && cites_a_line(line) {
+            offenders.push(format!("  {relative}:{}: {}", at + 1, line.trim()));
+        }
+        if in_evidence > 0 && lower.contains("</details") {
+            in_evidence -= 1;
+        }
+    }
+    offenders
+}
+
+/// **No upstream counterpart** — a guard on
+/// [`no_live_doc_page_cites_a_line_number`] itself.
+///
+/// The page scanner counted any line *containing* `<details` as opening an
+/// evidence block. `docs/divergences.md`'s preamble mentions `<details>` blocks
+/// in prose, which opened a block nothing closed, and every later line of the
+/// page went unchecked — the guard read the preamble and passed. This
+/// pins the three rules on a page built to hit each: a prose mention silences
+/// nothing, a real `<details>` block is exempt until its `</details>`, and a
+/// `Correction from verification` bullet is exempt on its own line. The
+/// positive control is the last line, a plain citation after all three, which
+/// must still be reported.
+#[test]
+fn a_prose_mention_of_details_does_not_silence_the_rest_of_a_page() {
+    let page = [
+        "A `<details>` block keeps its numbers; see `foo.rs:1`.",
+        "Cited after the mention: `bar.rs:2`.",
+        "<details><summary>Evidence</summary>",
+        "`kept.rs:3` is a dated record.",
+        "</details>",
+        "- **Correction from verification (2026-01-01):** `kept.cpp:4` was re-read.",
+        "Cited after everything: `baz.rs:5`.",
+    ]
+    .join("\n");
+    let reported: Vec<String> = doc_page_line_citations("docs/page.md", &page)
+        .into_iter()
+        .map(|line| line.trim().to_owned())
+        .collect();
+    assert_eq!(
+        reported,
+        [
+            "docs/page.md:1: A `<details>` block keeps its numbers; see `foo.rs:1`.",
+            "docs/page.md:2: Cited after the mention: `bar.rs:2`.",
+            "docs/page.md:7: Cited after everything: `baz.rs:5`.",
+        ]
     );
 }
 

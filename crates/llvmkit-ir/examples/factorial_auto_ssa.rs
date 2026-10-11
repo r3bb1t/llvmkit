@@ -1,6 +1,7 @@
 //! Auto-SSA twin of `examples/factorial.rs`: the SAME factorial loop,
 //! built through [`SsaBuilder`]'s Braun on-the-fly SSA layer instead of
-//! hand-rolled `int_phi` + `add_incoming` calls. Byte-parity locked
+//! the block-parameter head-phis and `cond_br_with_args` block arguments
+//! the manual example authors by hand. Byte-parity locked
 //! against the manual example by `tests/factorial_auto_ssa_example.rs`
 //! (see that file for why this is the flagship D11 example-lock).
 //!
@@ -35,16 +36,16 @@
 //! - `def_int_var`/`use_int_var` reading and writing typed variables as
 //!   if they were mutable locals -- no explicit phi construction.
 //! - The phi RESULT names (`acc`, `i`) come from the declared variable
-//!   names, matching the manual example's `int_phi::<i32, _>("acc")`
-//!   naming exactly.
+//!   names, matching the names the manual example gives its `loop`
+//!   block's parameters (`append_block_with_named_params`) exactly.
 //! - Reading `acc`/`i` in `loop` BEFORE that block's own back-edge is
 //!   recorded creates Braun's "incomplete" operandless phis; sealing
 //!   `loop` AFTER its own `cond_br` back-edge completes both phis with
-//!   the SAME incoming order the manual example hand-wired
-//!   (`[ 1, %entry ], [ %next_acc, %loop ]`) -- entry-edge first because
-//!   `entry`'s `cond_br(is_zero, base, loop)` records the loop-edge
-//!   before `loop`'s own `cond_br(done, exit, loop)` records its
-//!   self-edge.
+//!   the SAME incoming order the manual example's block arguments
+//!   produce (`[ 1, %entry ], [ %next_acc, %loop ]`) -- entry-edge
+//!   first because `entry`'s `cond_br(is_zero, base, loop)` records the
+//!   loop-edge before `loop`'s own `cond_br(done, exit, loop)` records
+//!   its self-edge.
 //! - The `exit` block's `use_int_var(acc)` resolves through a SINGLE
 //!   sealed predecessor (`loop`) straight to `%next_acc` -- no phi at
 //!   all, Braun's no-redundant-phi property in action, matching the
@@ -111,8 +112,8 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // `entry`), so each read creates an operandless phi named after the
     // variable, head-inserted in creation order (each new phi lands after
     // the block's existing leading phis). Reading `acc` THEN `i` therefore
-    // prints `acc` first, matching the manual example's phi creation order
-    // (`int_phi("acc")` before `int_phi("i")`). `next_acc`/
+    // prints `acc` first, matching the manual example's parameter order for
+    // `loop` (`acc` before `i`). `next_acc`/
     // `next_i`/`done` reuse the manual example's exact instruction names.
     b.switch_to_block(loop_bb)?;
     let acc = b.use_int_var(acc_var)?;
@@ -128,8 +129,8 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // `loop`'s predecessor set (entry, loop-self) is now fully known:
     // sealing AFTER the back-edge completes both incomplete phis with
     // the entry-edge first, back-edge second -- matching the manual
-    // example's `add_incoming(1, entry).add_incoming(next_acc, loop)`
-    // chain order.
+    // example's incoming order (the `entry` edge's block arguments, then
+    // the `loop` back-edge's).
     b.seal_block(loop_bb)?;
 
     // exit: `acc`'s single sealed predecessor is `loop`, so this read

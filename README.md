@@ -119,18 +119,18 @@ Shipped today:
   not yet consulted, and an unconsulted arm only ever weakens an answer.
   Each gap carries its reason in its own ledger row, and the wider
   not-yet-modeled picture is in [`docs/future-work.md`](docs/future-work.md).
-- **Represented intrinsic signatures and facts** — shipped for the modeled
-  `llvm.*` signature families listed in `ROADMAP.md`: `assume`; integer or
-  fixed-vector overloads of `abs`, bit permutations, counts, funnel shifts,
-  min/max, and saturating arithmetic; fixed-vector `vector.reduce.add`;
-  `ptrmask`; `vscale`; and the represented lifetime, memory, trap,
-  cycle-counter, and register helpers. KnownBits/DemandedBits facts are limited
-  to the shipped subset (for example constant-amount funnel shifts, bit
-  permutations, counts, saturation arithmetic, min/max, vector-reduce add, and
-  `ptrmask`). Range metadata, range attributes on function/call returns, and
-  `returned` call/invoke arguments feed known-bits queries. Unsupported ordinary
-  calls stay unknown, and unsupported `llvm.*` intrinsics are rejected unless
-  their IDs, signatures, and verifier rules are represented.
+- **Intrinsic signatures and facts** — every intrinsic ID and name in the
+  vendored `Intrinsics*.td` files is generated at build time
+  (`llvmkit-tablegen`), and a recognized `llvm.*` name is checked against the
+  signature its TableGen IIT entry decodes to
+  (`Module::intrinsic_descriptor_from_signature`; the verifier runs the same
+  check). A name the vendored data does not define is refused
+  (`IrError::UnknownIntrinsic`). KnownBits/DemandedBits facts cover a smaller,
+  shipped subset (for example constant-amount funnel shifts, bit permutations,
+  counts, saturation arithmetic, min/max, vector-reduce add, `ptrmask` and
+  `vscale`; `ROADMAP.md` lists it). Range metadata, range attributes on
+  function/call returns, and `returned` call/invoke arguments feed known-bits
+  queries. Calls with no modeled fact stay unknown.
 - **Demanded-bits and initial scalar cleanup transforms** — shipped for the
   modeled scalar-integer slice. `DemandedBitsAnalysis` covers the represented
   operator and intrinsic operand-mask subset; `SimplifyDemandedBitsPass`
@@ -158,9 +158,10 @@ Not shipped yet:
   points `VALUE_TRACKING_GAPS` names, some `ValueTracking.cpp` operator arms
   (notably `computeKnownFPClass`'s dispatch), demanded-bit rules, and
   `InstCombineSimplifyDemanded` transforms.
-- **Additional or currently unrepresented `llvm.*` intrinsic IDs, signatures,
-  and facts** — new IDs and verifier signatures must land before analysis facts
-  are added.
+- **Intrinsic facts beyond the shipped subset, and intrinsic AutoUpgrade** —
+  an intrinsic outside the fact subset answers unknown, and an old intrinsic
+  name or signature upstream's `AutoUpgrade` would rewrite is refused instead
+  (gap G1 in [`docs/fixture-coverage.md`](docs/fixture-coverage.md)).
 - **Full built-in optimization transform library and pipeline builders**
   (`PassBuilder`, loop PM, CGSCC PM, legacy PM, *runnable* textual pipelines —
   `pass_pipeline.rs` parses a pipeline string into typed, data-only recipe
@@ -254,7 +255,8 @@ fn build_typed_call() -> Result<(), IrError> {
 A callee whose signature is only known at runtime (parsed IR, an `extern`
 declaration built from user input) keeps using the `_dyn` counterparts —
 `call_dyn`, `indirect_call_dyn`, `invoke_dyn` — which take a
-plain `FunctionValue` and an iterable of pre-widened `Value`s, and reject a
+plain `FunctionValue` (`indirect_call_dyn` takes a `FunctionType` and a pointer
+instead) and an iterable of pre-widened `Value`s, and reject a
 wrong argument count or type with `IrError::CallArgumentCountMismatch` /
 `CallArgumentTypeMismatch` at build time rather than deferring to the verifier.
 `indirect_call::<Sig>` derives the callee's function type from a Rust
@@ -398,7 +400,7 @@ and no label plumbing to get wrong. Compare the loop body of
 // forgets an argument, or carries the wrong type or arity, does not compile.
 let (loop_bb, params) = bwp.append_block_with_named_params(
     m.view(f).as_function(),
-    &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
+    [(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
     "loop",
 )?;
 let loop_label = loop_bb.id();       // storable `BlockId` — the branch currency
@@ -463,15 +465,13 @@ where invalid usage is caught. inkwell wraps `libLLVM` through
 runtime: calling `into_float_value()` on a value that isn't actually a
 float panics rather than failing to compile (see
 [wasmer#962](https://github.com/wasmerio/wasmer/issues/962) for a
-production crate hitting exactly this), and inkwell's own
-[README](https://github.com/TheDan64/inkwell) documents panics on
-interior-NUL strings and the lack of a safe multithreaded mode.
+production crate hitting exactly this).
 
 `llvmkit` makes the corresponding class of bugs a compile error instead:
 conversions between typed handles go through `TryFrom`/lift traits that
 either resolve at the call site or fail to compile, module identifiers are
-plain owned `String`s (there is no C-string boundary to panic on interior
-NULs), and every workspace crate ships `#![forbid(unsafe_code)]` -- there is
+plain owned `String`s (there is no C-string boundary for a name to cross),
+and every workspace crate ships `#![forbid(unsafe_code)]` -- there is
 no FFI boundary into `libLLVM` to begin with, because `llvmkit` is a
 from-scratch reimplementation, not a binding. The tradeoff is real: `llvmkit`
 does not generate code, link, or do anything past IR construction and
@@ -501,16 +501,20 @@ module, but each one also has an `id()` — `IntValueId<W, B>`, `BlockId<..>`,
 *without* the borrow. That is what lets a binary lifter keep its own
 `HashMap<u64, BlockId<..>>` from guest address to block, suspend in the middle
 of a function, move to a worker thread, and resume there
-(`crates/llvmkit-ir/examples/lifter_session.rs` does exactly this).
+(`crates/llvmkit-ir/examples/lifter_session.rs` does exactly this, with
+`SsaBlock<..>` — a `BlockId` plus its builder's identity — as the map's value).
 
 Upstream's equivalent of a stored id is a raw `Value *` / `BasicBlock *`, and
 keeping it valid is the client's job. LLVM ships `WeakVH`, `AssertingVH`, and
-`CallbackVH` (`llvm/include/llvm/IR/ValueHandle.h`) specifically for
-"catching dangling pointer bugs", and the Programmers Manual warns that the
-weak form can still leave a dangling pointer. An llvmkit id is not a pointer:
-resolving it re-checks the module tag and the arena slot, so a stale or foreign
-id becomes `IrError::ForeignValueId`, `None`, or a panic — never a read of freed
-memory. With `#![forbid(unsafe_code)]` on every workspace crate there is no
+`CallbackVH` (`llvm/include/llvm/IR/ValueHandle.h`) to react to a `Value *`
+being deleted, and its own comment on `AssertingVH` calls that useful for
+"catching dangling pointer bugs"; using one is the client's choice. An llvmkit
+id is not a pointer:
+resolving it re-checks the module tag and the arena range, so a foreign id
+becomes `IrError::ForeignValueId`, `None`, or a panic — never a read of freed
+memory. An id whose value was erased still names its tombstoned arena slot;
+telling that slot from a live one is not built (see the `Module::view`
+rustdoc). With `#![forbid(unsafe_code)]` on every workspace crate there is no
 unsafe path available for it to take.
 
 **2. Several error classes are unrepresentable rather than diagnosed.** An
@@ -528,7 +532,8 @@ and `trybuild` compile-fail fixtures lock them: each is a small program that
 *must not* compile, and its blessed `.stderr` pins the diagnostic a user would
 actually see. The type-safety ones live in `crates/llvmkit-ir/tests/compile_fail/`,
 registered in `tests/typestate_compile_fail.rs`; the parser crate keeps its own
-pair. In both, the registration list rather than the directory is what runs — an
+fixture, registered in `crates/llvmkit-asmparser/tests/parse_error_compile_fail.rs`.
+In both, the registration list rather than the directory is what runs — an
 unregistered fixture silently does not.
 
 **3. Verification is a typestate, not a function you must remember to call.**
@@ -576,8 +581,10 @@ having to be retrofitted:
   verdict — an error a wrapper can raise as an exception, not UB.
 - **Misuse of a *handle or id* is an `IrError` or a deterministic panic, never
   a dangling read.** `#![forbid(unsafe_code)]` holds across the workspace, so
-  the worst a forged or stale handle can do is get rejected. That holds without
-  exception, metadata included: a metadata node is named by a `MetadataId<B>`
+  the worst a forged or stale handle can do is get rejected, or name a
+  tombstoned arena slot (an erased value is not yet detected; see item 1 under
+  "Where llvmkit improves on upstream LLVM"). That holds without exception,
+  metadata included: a metadata node is named by a `MetadataId<B>`
   carrying the owning module's `ModuleId`, and a foreign one is
   `IrError::ForeignMetadataId` at the arena boundary.
 
@@ -630,8 +637,8 @@ the backstop for the two cases the type system cannot see: two `DynBrand`
 modules (the same type by construction), and a named brand re-issued to a fresh
 module after the previous one dropped. Neither can become a silent miscompile.
 Which form the rejection takes depends on the surface: the fallible id-taking
-APIs — builders, pass mutators, `try_from_id`-style resolvers — return
-`IrError::ForeignValueId`; `Module::try_view(id)` returns `None`; and
+APIs — builders, pass mutators, and the instruction insert and move entries —
+return `IrError::ForeignValueId`; `Module::try_view(id)` returns `None`; and
 `Module::view(id)` *panics*, treating a foreign id as a deterministic contract
 violation in the same way indexing a slice out of bounds is.
 
@@ -877,7 +884,10 @@ Misuse is caught at the offending token, not deep inside the expansion: a
 missing `name`/`access`, an unknown key, a trait impl instead of an inherent
 one, or a generic impl each produce a pinpointed `compile_error!`, and a
 function pass that declares a module-only rung fails with
-`RewriteModule: FnAccess` unsatisfied (all locked in the compile-fail suite).
+`RewriteModule: FnAccess` unsatisfied. The compile-fail suite locks two of
+these (`function_pass_missing_name` and `function_pass_wrong_level_access`);
+the other `compile_error!` sites in `llvmkit-macros` have no fixture of their
+own.
 The written `FnCx<Self>` / `FnReport` are readability sentinels the macro
 rewrites, so they are never imported.
 
@@ -955,11 +965,11 @@ section) for the scoped-out items.
 │   ├── type-safety-vs-llvm.md       #   current: the main technical reference
 │   ├── ir-struct-derive.md          #   current: IrStruct user guide
 │   ├── future-work.md               #   current: the live backlog
-│   └── design/                      #   dated records of shipped subsystems
+│   └── design/                      #   dated design records (one not yet built)
 └── crates/
     ├── llvmkit-support/             # Span, Spanned<T>, SourceMap
     ├── llvmkit-asmparser/           # Lexer + .ll parser
-    ├── llvmkit-macros/              # IrStruct derive, #[function_pass]/#[module_pass]
+    ├── llvmkit-macros/              # Branded/IrStruct derives, #[function_pass]/#[module_pass]
     ├── llvmkit-tablegen/            # TableGen front end + intrinsic emitter
     └── llvmkit-ir/                  # Typed IR model, builder, verifier, passes
 ```

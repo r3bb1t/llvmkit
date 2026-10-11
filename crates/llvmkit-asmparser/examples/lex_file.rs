@@ -5,8 +5,10 @@
 //! Usage:
 //!     cargo run -p llvmkit-asmparser --example lex_file -- path/to/file.ll
 //!
-//! On a lex error, the example prints a one-line diagnostic with `(line:col)`
-//! pulled from a [`SourceMap`] and exits with status 1.
+//! On a [`LexError`], the example prints a `path:line:col: message` diagnostic
+//! (line and column pulled from a [`SourceMap`]), then the offending source
+//! line with a caret underline, and exits with status 1. A `Token::Error` is
+//! an ordinary `Ok` item to the lexer, so it is printed like any other token.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

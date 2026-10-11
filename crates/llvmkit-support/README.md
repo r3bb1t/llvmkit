@@ -6,9 +6,9 @@
 
 Shared source-location utilities for the `llvmkit` family.
 
-The whole crate is three types: `Span` (a byte range), `Spanned<T>` (a value
-carrying one), and `SourceMap` (byte offset → line/column). It has no
-dependencies of its own. `llvmkit-asmparser` uses it for token spans and
+The whole crate is four types: `Span` (a byte range), `Spanned<T>` (a value
+carrying one), `SourceMap` (byte offset → line/column), and `LineCol` (the
+line/column pair `SourceMap` answers with). It has no dependencies of its own. `llvmkit-asmparser` uses it for token spans and
 diagnostics; the umbrella `llvmkit` crate re-exports it as `llvmkit::support`.
 
 Future cross-crate helpers belong here when more than one crate needs them.

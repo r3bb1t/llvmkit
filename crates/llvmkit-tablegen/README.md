@@ -30,8 +30,8 @@ Tracking **LLVM 22.1.4**.
 It began as `llvmkit-ir/tools/gen_intrinsics.rs`, pulled into `build.rs` with
 `#[path]`. That shape cost two things. A build script is not a test target, so
 its `#[test]` functions **never ran** under `cargo test` even though each
-carried an `UPSTREAM.md` provenance row. And a single 4,000-line file mirrored
-no upstream file, in a project whose organising rule is that it mirrors LLVM's.
+carried an `UPSTREAM.md` provenance row. And a single file mirrored no upstream
+file, in a project whose organising rule is that it mirrors LLVM's.
 
 ## Library API
 
@@ -70,7 +70,7 @@ llvmkit-tablegen [--check] <llvm-root> <generated-file>
 
 ## The vendored input
 
-`tablegen/llvm-22.1.4/` holds the 27 `.td` files this expands — `Intrinsics.td`,
+`tablegen/llvm-22.1.4/` holds the `.td` files this expands — `Intrinsics.td`,
 the per-target `IntrinsicsAArch64.td` / `IntrinsicsAMDGPU.td` / … set, and the
 `CodeGen` support tables they include. They live beside the generator that reads
 them.

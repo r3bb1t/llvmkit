@@ -8,9 +8,12 @@
 //!     cargo run -p llvmkit-asmparser --example parse_file -- path/to/file.ll
 //!
 //! On success: prints the parsed [`llvmkit_ir::Module`] via its `Display`
-//! impl (the AsmWriter), giving a textual round-trip of the input. On a
-//! lex/parse error, prints a one-line `(line:col)` diagnostic against a
-//! [`SourceMap`] over the original bytes and exits with status 1.
+//! impl (the AsmWriter), giving a textual round-trip of the module (a `^N`
+//! module summary index in the input is skipped, since `Parser::new` builds
+//! no `ModuleSummaryIndex`). On a lex/parse error, prints a
+//! `path:line:col: message` diagnostic, the offending source line and a caret
+//! underline, against a [`SourceMap`] over the original bytes, and exits with
+//! status 1.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -50,9 +53,10 @@ fn main() -> ExitCode {
 
     match parser.parse_module() {
         Ok(_parsed) => {
-            // `_parsed.slot_mapping` carries the numbered-global table for
-            // follow-on `parse_constant_value` / `parse_type` calls; this
-            // example just round-trips the module.
+            // `_parsed.slot_mapping` carries the numbered and named slot
+            // tables for follow-on `parse_type_with_slots` /
+            // `parse_constant_value_with_slots` calls; this example just
+            // round-trips the module.
             print!("{module}");
             ExitCode::SUCCESS
         }

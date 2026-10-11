@@ -1552,13 +1552,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PointerValue<'ctx, B, C> {
 // ArrayValue<'ctx, E, L> -- element + length-typed array value handle
 // --------------------------------------------------------------------------
 
-/// Value whose IR type is `[N x T]`. The `E: VecElem` marker (default
-/// [`ElemDyn`]) pins the element type and `L: ArrayLen` (default
-/// [`ArrLenDyn`]) pins the element count at the type level, mirroring
-/// [`VectorValue`] (arrays differ only in the `u64` length and the
-/// `ArrLen`/`ArrLenDyn` marker family). `ArrayValue<'ctx>` (both markers
-/// erased) is the dynamic handle; `ArrayValue<'ctx, i32, ArrLen<4>>` is a
-/// statically typed `[4 x i32]`.
+/// Value whose IR type is `[N x T]`. The `E: VecElem` marker pins the
+/// element type and `L: ArrayLen` pins the element count at the type level,
+/// mirroring [`VectorValue`] (arrays differ only in the `u64` length and the
+/// `ArrLen`/`ArrLenDyn` marker family). Neither marker has a default:
+/// `ArrayValue<'ctx, ElemDyn, ArrLenDyn, B>` (both markers erased) is the
+/// dynamic handle; `ArrayValue<'ctx, i32, ArrLen<4>, B>` is a statically typed
+/// `[4 x i32]`.
 pub struct ArrayValue<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B, C>,
@@ -1839,10 +1839,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
 /// Typed narrowing: a `Value` accepts into `ArrayValue<'ctx, E, ArrLen<N>>`
 /// only if it is an array whose element type is exactly `E`'s projection and
 /// whose element count is exactly `N`. Element mismatch reports
-/// [`IrError::TypeMismatch`] (the element kinds); length mismatch reports
-/// [`IrError::ArrayLengthMismatch`] — a `u64`-shaped variant, since array
-/// lengths do not fit the `u32` `OperandWidthMismatch` the sibling
-/// `VectorValue` narrowing uses for its lane count.
+/// [`IrError::TypeIdentityMismatch`] (the two element types, rendered);
+/// length mismatch reports [`IrError::ArrayLengthMismatch`] — a `u64`-shaped
+/// variant, since array lengths do not fit the `u32` `OperandWidthMismatch`
+/// the sibling `VectorValue` narrowing uses for its lane count; a value that
+/// is not an array reports [`IrError::TypeMismatch`].
 impl<'ctx, E, const N: u64, B, C> TryFrom<Value<'ctx, B, C>>
     for ArrayValue<'ctx, E, ArrLen<N>, B, C>
 where
@@ -2109,10 +2110,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
 // --------------------------------------------------------------------------
 
 /// Value whose IR type is a fixed or scalable vector. The `E: VecElem`
-/// marker (default [`ElemDyn`]) pins the element type and `L: VecLen`
-/// (default [`LenDyn`]) pins the lane count at the type level, mirroring
-/// [`IntValue`]'s width marker. `VectorValue<'ctx>` (both markers erased)
-/// is the dynamic handle; `VectorValue<'ctx, i32, Len<4>>` is a statically
+/// marker pins the element type and `L: VecLen` pins the lane count at the
+/// type level, mirroring [`IntValue`]'s width marker. Neither marker has a
+/// default: `VectorValue<'ctx, ElemDyn, LenDyn, B>` (both markers erased) is
+/// the dynamic handle; `VectorValue<'ctx, i32, Len<4>, B>` is a statically
 /// typed `<4 x i32>`.
 pub struct VectorValue<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
@@ -2398,10 +2399,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
 /// Typed narrowing: a `Value` accepts into `VectorValue<'ctx, E, Len<N>>`
 /// only if it is a **fixed** vector whose element type is exactly `E`'s
 /// projection and whose lane count is exactly `N`. Element mismatch reports
-/// [`IrError::TypeMismatch`] (the element kinds); lane-count mismatch
-/// reports [`IrError::OperandWidthMismatch`] (the "vector length" arm of
-/// that variant's doc). Scalable vectors — whose lane count is a runtime
-/// multiple, not a fixed `N` — never narrow to `Len<N>`.
+/// [`IrError::TypeIdentityMismatch`] (the two element types, rendered);
+/// lane-count mismatch reports [`IrError::OperandWidthMismatch`] (the "vector
+/// length" arm of that variant's doc); a value that is not a fixed vector
+/// reports [`IrError::TypeMismatch`]. Scalable vectors — whose lane count is
+/// a runtime multiple, not a fixed `N` — never narrow to `Len<N>`.
 impl<'ctx, E, const N: u32, B, C> TryFrom<Value<'ctx, B, C>> for VectorValue<'ctx, E, Len<N>, B, C>
 where
     E: StaticVecElem<'ctx, B>,

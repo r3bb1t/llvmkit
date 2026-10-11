@@ -2,7 +2,7 @@
 //!
 //! Each pass is written as a plain inherent `impl Pass { fn run(..) }` block; the
 //! attribute macro expands it to exactly the raw `FunctionPass`/`ModulePass`
-//! trait impl — the `impl<'ctx, B: ModuleBrand + 'ctx> … for` header, the
+//! trait impl — the `impl<B: ModuleBrand> … for` header, the
 //! `type Access`/`type Requires`/`const NAME` block, and the `run` lifetimes are
 //! all supplied by the macro. Note that `FnCx<Self>` / `ModCx<Self>` and the
 //! `-> IrResult<..>` return are readability sentinels: they are never imported

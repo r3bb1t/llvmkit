@@ -1,6 +1,6 @@
-//! Phase E victory lap. Builds a factorial function as a single loop
-//! whose accumulator and counter are carried as the loop header block's
-//! two parameters (head-phis), authored with the block-argument API.
+//! Builds a factorial function as a single loop whose accumulator and
+//! counter are carried as the loop header block's two parameters
+//! (head-phis), authored with the block-argument API.
 //!
 //! Target IR (the loop's accumulator and counter are the block's two *named*
 //! parameters, so they print as the named head-phis `%acc`/`%i`):
@@ -33,7 +33,7 @@
 //! - `i32` typed function builder.
 //! - `IntoIntValue<i32>` lifting Rust scalars (`0_i32`, `1_i32`) at
 //!   call sites without an intermediate constant binding.
-//! - `int_cmp::<i32, _, _, _>` returning `IntValue<bool>`.
+//! - `int_cmp::<i32, _, _, _>` returning an `IntValueId<bool, B>`.
 //! - `append_block_with_named_params` creating the `loop` header whose two
 //!   named parameters ARE the accumulator/counter head-phis: `params[0]` is
 //!   `%acc`, `params[1]` is `%i`.
