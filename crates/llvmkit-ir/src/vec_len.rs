@@ -12,7 +12,7 @@
 //! `FixedVectorType::get` asserts is not zero). A `Len<0>` can be named,
 //! but asking it for its count does not compile: both [`VecLen::static_len`]
 //! and [`StaticVecLen::STATIC_LEN`] go through
-//! [`lanes`](crate::lanes). The sibling [`array_len`](crate::array_len)
+//! [`lanes`]. The sibling [`array_len`](crate::array_len)
 //! marker uses `u64` because `ArrayType` lengths are 64-bit and may be zero;
 //! the two families are deliberately kept distinct so a single trait is not
 //! asked to be both.
@@ -76,7 +76,7 @@ pub trait StaticVecLen: VecLen {
     /// `const { ... }` assertions to enforce shape-equality at
     /// monomorphisation time. Analog of
     /// [`StaticIntWidth::STATIC_BITS`](crate::StaticIntWidth::STATIC_BITS).
-    /// `Len<0>`'s does not compile ([`lanes`](crate::lanes)'s message).
+    /// `Len<0>`'s does not compile ([`lanes`]'s message).
     const STATIC_LEN: NonZeroU32;
 }
 impl<const N: u32> StaticVecLen for Len<N> {
