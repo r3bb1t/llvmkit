@@ -64,16 +64,28 @@ follow.
   element (`llvm.vector.reduce.add.v4isVoid`) is
   `IrError::IntrinsicSignatureMismatch`; the demangler built `<4 x void>` and
   the intrinsic was declared over it. The intrinsic signature decoders check
-  each vector element they build, and carry each lane count as a
-  `NonZeroU32`.
-- `IrBuilder::shuffle_vector` and `ConstantFolder::fold_shuffle_vector_dyn`
-  refuse an empty mask (`IrError::InvalidOperation`,
-  `shufflevector mask is empty`), whose result would be a zero-lane vector;
-  `constant_fold_shuffle_vector_instruction` answers `None` (no fold) for
-  one. Each built a `<0 x …>` result type.
-- `IrBuilder::vector_splat_dyn` refuses a scalar whose type is not a vector
-  element (`IrError::InvalidTypeComponent`); it built `<2 x { i32 }>`. Its
-  count stays a `u32`, and zero stays its own refusal.
+  each vector element they build, refusing an invalid one as their usual
+  signature mismatch, and carry each lane count as a `NonZeroU32`.
+- **Breaking: new `IrError::InvalidShuffleMaskLength { len }` variant**, for
+  a `shufflevector` mask whose length is not a vector lane count (empty, or
+  longer than a `u32` holds); `IrError::blame` classes it as a usage error.
+  `IrBuilder::shuffle_vector` and `ConstantFolder::fold_shuffle_vector_dyn`
+  refuse an empty mask with it — each built a `<0 x …>` result type — and
+  a too-long mask with it too, which was `IrError::InvalidOperation`
+  (`shufflevector mask too large`). `constant_fold_shuffle_vector_instruction`
+  answers `None` (no fold) for an empty mask.
+- **Breaking: `IrBuilder::vector_splat_dyn` takes `count: NonZeroU32`**
+  (`lanes::<N>()` spells a literal one), as `IRBuilderBase::CreateVectorSplat`
+  asserts `EC.isNonZero()`; the run-time zero refusal
+  (`IrError::InvalidOperation`) is gone. It refuses a scalar whose type is not
+  a vector element (`IrError::InvalidTypeComponent`); it built
+  `<2 x { i32 }>`.
+- **Breaking: `Type::vector_element_count` returns `Option<NonZeroU32>`.**
+- **Breaking: `VecLen::static_len` and `VectorType::static_len` return
+  `Option<NonZeroU32>`, and `StaticVecLen::STATIC_LEN` is a `NonZeroU32`**,
+  each through `lanes::<N>()`, so `Len<0>`'s count does not compile
+  (trybuild fixture `len_zero_static_len.rs`). The array side (`ArrLen`,
+  `u64`) is unchanged: arrays may be empty.
 - The parser builds vector types and vector constants through the checked
   constructors after its own checks, so its diagnostics are unchanged; a
   `getelementptr` constant's vector result is built through `VectorType::of`.
@@ -105,7 +117,9 @@ Tests: `type_components.rs` (`a_typed_vector_keeps_its_element_marker`,
 `constant_folding_a_shuffle_with_an_empty_mask_does_not_fold`,
 `a_splat_of_a_non_vector_element_is_refused`),
 `cross_module_handles.rs::the_vector_constructors_reject_an_element_from_another_module`,
-and the trybuild fixtures `vector_of_void_element.rs` and `lanes_zero.rs`.
+`intrinsics.rs::tests::the_vector_helpers_refuse_an_invalid_element_as_a_mismatch`,
+and the trybuild fixtures `vector_of_void_element.rs`, `lanes_zero.rs` and
+`len_zero_static_len.rs`.
 `type_validity.rs`'s agreement law drops its 28 vector and scalable-vector
 known disagreements.
 

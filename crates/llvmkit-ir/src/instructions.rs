@@ -24,6 +24,7 @@
 use crate::Branded;
 use core::fmt;
 use core::iter::FusedIterator;
+use core::num::NonZeroU32;
 
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
@@ -4938,8 +4939,8 @@ pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
             }
             match (src_is_vector, dst_is_vector) {
                 (true, true) => counts_agree,
-                (true, false) => src_elements == Some(1),
-                (false, true) => dst_elements == Some(1),
+                (true, false) => src_elements == Some(NonZeroU32::MIN),
+                (false, true) => dst_elements == Some(NonZeroU32::MIN),
                 (false, false) => true,
             }
         }

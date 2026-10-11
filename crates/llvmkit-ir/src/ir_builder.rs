@@ -2352,16 +2352,6 @@ where
         }
     }
 
-    /// The element count and scalability of `ty`, or `None` when it is a
-    /// scalar. Two types agree in shape when this answers equal for both.
-    fn vector_shape(&self, ty: Type<'ctx, B>) -> Option<(NonZeroU32, bool)> {
-        match ty.data() {
-            TypeData::FixedVector { n, .. } => Some((*n, false)),
-            TypeData::ScalableVector { min, .. } => Some((*min, true)),
-            _ => None,
-        }
-    }
-
     /// `trunc` / `zext` / `sext` on an erased operand — a scalar `iN` or an
     /// integer vector — producing `dst_ty`.
     ///
@@ -2418,7 +2408,7 @@ where
                 message: "trunc/zext/sext operand is neither an integer nor an integer vector",
             });
         };
-        if self.vector_shape(src_ty) != self.vector_shape(dst_ty) {
+        if src_ty.data().element_count() != dst_ty.data().element_count() {
             return Err(IrError::InvalidOperation {
                 message: "trunc/zext/sext changes the vector element count",
             });
@@ -2569,7 +2559,7 @@ where
             });
         }
 
-        match self.vector_shape(cond.ty()) {
+        match cond.ty().data().element_count() {
             // Vector select.
             Some(condition_shape) => {
                 if self.integer_scalar_bit_width(cond.ty()) != Some(1) {
@@ -2579,7 +2569,7 @@ where
                 }
                 // "selected values for vector select must be vectors", and
                 // then the element counts must agree.
-                if self.vector_shape(true_v.ty()) != Some(condition_shape) {
+                if true_v.ty().data().element_count() != Some(condition_shape) {
                     return Err(IrError::InvalidOperation {
                         message: "vector select requires selected vectors to have the same vector \
                                   length as select condition",
@@ -4125,8 +4115,9 @@ where
     // Additive, distinctly-named siblings of the erased vector builders
     // above (`extract_element` / `insert_element` /
     // `vector_splat_dyn`) and the erased integer-vector binop family
-    // (`int_add_dyn` & friends). The erased forms take `Value`/`u32`
-    // operands and rely on the verifier for shape agreement; these carry the
+    // (`int_add_dyn` & friends). The erased forms take `Value` operands (and
+    // a run-time lane count) and rely on the verifier for shape agreement;
+    // these carry the
     // element marker `E` and the lane-count marker `L` in the type system,
     // so an element-width mismatch (`<4 x i32>` vs `<4 x i64>`) or a
     // lane-count mismatch (`Len<4>` vs `Len<2>`) is a compile error at the
@@ -7428,14 +7419,22 @@ where
 
     /// Broadcast `scalar` across a fixed-width vector of `count` lanes.
     /// Mirrors `IRBuilderBase::CreateVectorSplat(unsigned NumElts, Value*,
-    /// const Twine&)` (`lib/IR/IRBuilder.cpp`), which expands to
+    /// const Twine&)` (`lib/IR/IRBuilder.cpp`), which forwards to the
+    /// `ElementCount` overload; that one expands to
     /// `insertelement <count x T> poison, <T> %v, i64 0` followed by
     /// `shufflevector ..., <count x T> poison, <count x i32> zeroinitializer`.
     /// The result is named `<name>.splat`; the intermediate insertelement
     /// is `<name>.splatinsert`.
+    ///
+    /// `count` is a [`NonZeroU32`] (`lanes::<N>()` spells a literal one): the
+    /// `ElementCount` overload opens with
+    /// `assert(EC.isNonZero() && "Cannot splat to an empty vector!")`. Refuses
+    /// a `scalar` whose type is not a vector element
+    /// ([`IrError::InvalidTypeComponent`]), as its
+    /// `VectorType::get(V->getType(), EC)` asserts.
     pub fn vector_splat_dyn<V, Name>(
         &self,
-        count: u32,
+        count: NonZeroU32,
         scalar: V,
         name: Name,
     ) -> IrResult<VectorValue<'ctx, ElemDyn, LenDyn, B>>
@@ -7443,16 +7442,11 @@ where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
     {
-        let Some(lanes) = NonZeroU32::new(count) else {
-            return Err(IrError::InvalidOperation {
-                message: "vector_splat_dyn requires at least one lane",
-            });
-        };
         let scalar_value = scalar.into_erased_value(self.mutable_ref())?;
         let elem_ty = scalar_value.ty();
         // `VectorType::get(V->getType(), EC)`, whose element assert is the
         // checked constructor's refusal here.
-        let vec_ty = self.mutable_ref().vector_type(elem_ty, lanes)?;
+        let vec_ty = self.mutable_ref().vector_type(elem_ty, count)?;
         let poison = vec_ty.as_type().poison();
         let i64_ty = self.mutable_ref().i64_type();
         let zero_idx = i64_ty.const_int(0_u32);
@@ -7472,7 +7466,7 @@ where
                 zero_idx,
                 insert_name,
             )?;
-        let n = usize::try_from(count).map_err(|_| IrError::InvalidOperation {
+        let n = usize::try_from(count.get()).map_err(|_| IrError::InvalidOperation {
             message: "vector splat lane count exceeds the platform address range",
         })?;
         // A splat selects lane 0 of the inserted vector for every result lane.

@@ -23,10 +23,10 @@ fn a_typed_vector_keeps_its_element_marker() {
     assert_eq!(d.to_string(), "<3 x i7>");
 }
 
-/// The erased vector constructors refuse what `VectorType::isValidElementType`
-/// refuses, reporting the position and the kind. Mirrors the `assert` in
-/// `FixedVectorType::get` / `ScalableVectorType::get` (`lib/IR/Type.cpp`);
-/// llvmkit-specific (D10).
+/// The erased vector constructors — on `Module` and on `ModuleView` — refuse
+/// what `VectorType::isValidElementType` refuses, reporting the position and
+/// the kind. Mirrors the `assert` in `FixedVectorType::get` /
+/// `ScalableVectorType::get` (`lib/IR/Type.cpp`); llvmkit-specific (D10).
 #[test]
 fn an_erased_vector_refuses_an_invalid_element() {
     let m = Module::dynamic("components");
@@ -55,6 +55,33 @@ fn an_erased_vector_refuses_an_invalid_element() {
         })
     ));
     m.vector_type(m.i32_type(), lanes::<4>())
+        .expect("an integer is a vector element");
+
+    let view = m.as_view();
+    let view_array = view.array_type_n::<i32, 2>().as_type();
+    let refused = view.vector_type(view_array, lanes::<4>());
+    assert!(
+        matches!(
+            refused,
+            Err(IrError::InvalidTypeComponent {
+                position: TypePosition::VectorElement,
+                kind: TypeKindLabel::Array,
+            })
+        ),
+        "{refused:?}"
+    );
+    let refused = view.scalable_vector_type(view.void_type(), lanes::<4>());
+    assert!(
+        matches!(
+            refused,
+            Err(IrError::InvalidTypeComponent {
+                position: TypePosition::VectorElement,
+                kind: TypeKindLabel::Void,
+            })
+        ),
+        "{refused:?}"
+    );
+    view.scalable_vector_type(view.i32_type(), lanes::<4>())
         .expect("an integer is a vector element");
 }
 
@@ -104,8 +131,9 @@ fn an_intrinsic_name_cannot_spell_an_invalid_vector() {
 }
 
 /// The builder's `shuffle_vector` refuses an empty mask, whose result would be
-/// a zero-lane vector: the `ShuffleVectorInst` constructor computes its type
-/// as `VectorType::get(…, Mask.size(), …)`, which asserts a non-zero count.
+/// a zero-lane vector, with `IrError::InvalidShuffleMaskLength`: the
+/// `ShuffleVectorInst` constructor computes its type as
+/// `VectorType::get(…, Mask.size(), …)`, which asserts a non-zero count.
 /// llvmkit-specific regression (D10): the builder interned a `<0 x i32>`
 /// result type. A one-lane mask is the positive control.
 #[test]
@@ -118,12 +146,7 @@ fn the_builder_refuses_a_shuffle_with_an_empty_mask() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let refused = b.shuffle_vector(m.view(f).param(0)?, m.view(f).param(1)?, &[], "");
     assert!(
-        matches!(
-            refused,
-            Err(IrError::InvalidOperation {
-                message: "shufflevector mask is empty"
-            })
-        ),
+        matches!(refused, Err(IrError::InvalidShuffleMaskLength { len: 0 })),
         "{refused:?}"
     );
     b.shuffle_vector(
@@ -136,7 +159,8 @@ fn the_builder_refuses_a_shuffle_with_an_empty_mask() -> Result<(), IrError> {
 }
 
 /// The builder's `ConstantFolder` refuses an empty shuffle mask as the builder
-/// does: its fallback builds the constant expression's result type as
+/// does, with `IrError::InvalidShuffleMaskLength`: its fallback builds the
+/// constant expression's result type as
 /// `ConstantExpr::getShuffleVector` does, `VectorType::get(EltTy,
 /// Mask.size(), …)`, which asserts a non-zero count. llvmkit-specific
 /// regression (D10): the folder returned a `<0 x i32> poison`. A one-lane mask
@@ -150,12 +174,7 @@ fn the_constant_folder_refuses_a_shuffle_with_an_empty_mask() -> Result<(), IrEr
         .as_erased();
     let refused = ConstantFolder.fold_shuffle_vector_dyn(poison, poison, &[]);
     assert!(
-        matches!(
-            refused,
-            Err(IrError::InvalidOperation {
-                message: "shufflevector mask is empty"
-            })
-        ),
+        matches!(refused, Err(IrError::InvalidShuffleMaskLength { len: 0 })),
         "{refused:?}"
     );
     assert!(
@@ -199,7 +218,7 @@ fn a_splat_of_a_non_vector_element_is_refused() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let record = m.struct_type([m.i32_type().as_type()]).as_type().poison();
-    let refused = b.vector_splat_dyn(2, record, "v");
+    let refused = b.vector_splat_dyn(lanes::<2>(), record, "v");
     assert!(
         matches!(
             refused,
@@ -210,6 +229,6 @@ fn a_splat_of_a_non_vector_element_is_refused() -> Result<(), IrError> {
         ),
         "{refused:?}"
     );
-    b.vector_splat_dyn(2, m.i32_type().const_int(7_i32), "v")?;
+    b.vector_splat_dyn(lanes::<2>(), m.i32_type().const_int(7_i32), "v")?;
     Ok(())
 }

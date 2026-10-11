@@ -55,8 +55,8 @@ use super::module::{DynBrand, Module, ModuleBrand, ModuleCore, ModuleRef, Unveri
 // ported once, at the slot layer, in `type.rs`; these three names are imports,
 // not local definitions.
 use super::r#type::{
-    Type, TypeData, TypeSlot, TypeSlotAccess, is_int_or_int_vector, is_ptr_or_ptr_vector,
-    scalar_type_slot,
+    ElementCount, Type, TypeData, TypeSlot, TypeSlotAccess, is_int_or_int_vector,
+    is_ptr_or_ptr_vector, scalar_type_slot,
 };
 use super::value::{
     HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueKindData, ValueSlot,
@@ -67,7 +67,6 @@ use crate::Branded;
 use core::convert::Infallible;
 use core::fmt;
 use core::marker::PhantomData;
-use core::num::NonZeroU32;
 
 use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::IntoConstantInt;
@@ -1625,7 +1624,7 @@ fn canonicalize_gep_operands(module: &ModuleCore, data: &mut ConstantExprData) -
     let Some(source_ty) = data.source_ty else {
         return Ok(());
     };
-    let Some((lanes, scalable)) = vector_shape(module, data.result_ty) else {
+    let Some(result_count) = module.context().type_data(data.result_ty).element_count() else {
         return Ok(());
     };
     let mut current = source_ty;
@@ -1637,22 +1636,25 @@ fn canonicalize_gep_operands(module: &ModuleCore, data: &mut ConstantExprData) -
     for index in &mut operands[1..] {
         let is_struct_index =
             !first && matches!(module.context().type_data(current), TypeData::Struct(_));
-        let index_ty = module.context().value_data(*index).ty;
-        if let Some(index_shape) = vector_shape(module, index_ty)
-            && index_shape != (lanes, scalable)
+        let index_count = module
+            .context()
+            .type_data(module.context().value_data(*index).ty)
+            .element_count();
+        if let Some(index_count) = index_count
+            && index_count != result_count
         {
             return Err(IrError::InvalidOperation {
                 message: "invalid getelementptr constant expression",
             });
         }
         if is_struct_index {
-            if vector_shape(module, index_ty).is_some()
+            if index_count.is_some()
                 && let Some(splat) = vector_splat_value(module, *index)
             {
                 *index = splat;
             }
-        } else if vector_shape(module, index_ty).is_none() {
-            *index = vector_splat_constant(module, *index, lanes, scalable)?;
+        } else if index_count.is_none() {
+            *index = vector_splat_constant(module, *index, result_count)?;
         }
 
         if first {
@@ -1671,20 +1673,19 @@ fn canonicalize_gep_operands(module: &ModuleCore, data: &mut ConstantExprData) -
 fn vector_splat_constant(
     module: &ModuleCore,
     scalar: ValueSlot,
-    lanes: NonZeroU32,
-    scalable: bool,
+    count: ElementCount,
 ) -> IrResult<ValueSlot> {
-    let lane_count = usize::try_from(lanes.get()).map_err(|_| IrError::InvalidOperation {
+    let lane_count = usize::try_from(count.min.get()).map_err(|_| IrError::InvalidOperation {
         message: "invalid getelementptr constant expression",
     })?;
     let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
     let elem_ty = Type::new(module.context().value_data(scalar).ty, module_ref);
     // `ConstantVector::getSplat`'s `VectorType::get(V->getType(), EC)`: the
     // index's type is checked as a vector element, as that asserts.
-    let vector_ty = if scalable {
-        module_ref.scalable_vector_type(elem_ty, lanes)?
+    let vector_ty = if count.scalable {
+        module_ref.scalable_vector_type(elem_ty, count.min)?
     } else {
-        module_ref.vector_type(elem_ty, lanes)?
+        module_ref.vector_type(elem_ty, count.min)?
     }
     .as_type();
     Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
@@ -2518,9 +2519,10 @@ fn validate_gep_constant_expr(
             });
         }
     }
-    let mut gep_width = vector_shape(module, base_ty.slot_trusting_same_module());
+    let element_count = |ty: TypeSlot| module.context().type_data(ty).element_count();
+    let mut gep_width = element_count(base_ty.slot_trusting_same_module());
     for index_ty in index_tys {
-        if let Some(index_shape) = vector_shape(module, index_ty.slot_trusting_same_module()) {
+        if let Some(index_shape) = element_count(index_ty.slot_trusting_same_module()) {
             match gep_width {
                 Some(pointer_shape) if index_shape != pointer_shape => {
                     return Err(IrError::InvalidOperation {
@@ -2531,7 +2533,7 @@ fn validate_gep_constant_expr(
             }
         }
     }
-    if vector_shape(module, result_ty.slot_trusting_same_module()) != gep_width {
+    if element_count(result_ty.slot_trusting_same_module()) != gep_width {
         return Err(IrError::InvalidOperation {
             message: "invalid getelementptr constant expression",
         });
@@ -2550,24 +2552,19 @@ fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     }
 }
 
-fn vector_shape(module: &ModuleCore, id: TypeSlot) -> Option<(NonZeroU32, bool)> {
-    module
-        .context()
-        .type_data(id)
-        .as_vector()
-        .map(|(_, lanes, scalable)| (lanes, scalable))
-}
-
 fn lane_shape_matches(module: &ModuleCore, lhs: TypeSlot, rhs: TypeSlot) -> bool {
-    vector_shape(module, lhs) == vector_shape(module, rhs)
+    module.context().type_data(lhs).element_count()
+        == module.context().type_data(rhs).element_count()
 }
 
 fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> bool {
-    match (vector_shape(module, src), vector_shape(module, dst)) {
+    match (
+        module.context().type_data(src).element_count(),
+        module.context().type_data(dst).element_count(),
+    ) {
         (None, None) => true,
         (Some(src_shape), Some(dst_shape)) => src_shape == dst_shape,
-        (None, Some((lanes, false))) | (Some((lanes, false)), None) if lanes.get() == 1 => true,
-        _ => false,
+        (None, Some(count)) | (Some(count), None) => !count.scalable && count.min.get() == 1,
     }
 }
 

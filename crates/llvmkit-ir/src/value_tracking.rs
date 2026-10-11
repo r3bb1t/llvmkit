@@ -39,7 +39,7 @@ use crate::speculation::program_undefined_for_value;
 // `Type::getScalarType` is ported once, at the slot layer, in `type.rs`;
 // `scalar_type_slot` is an import, not a local definition.
 use crate::r#type::{
-    Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess, erase_type, scalar_type_slot,
+    ElementCount, Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess, erase_type, scalar_type_slot,
 };
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::vector_utils::splat_value;
@@ -1470,8 +1470,14 @@ pub fn analyze_known_bits_from_and_xor_or<'a, 'ctx, B: ModuleBrand + 'ctx, C: Ca
         _ => return Ok(None),
     };
 
-    let lanes = vector_shape(operation).filter(|(_, scalable)| !scalable);
-    let demanded = ApInt::all_ones(lanes.map_or(1, |(lanes, _)| lanes));
+    let lanes = match operation.ty().data().element_count() {
+        Some(ElementCount {
+            min,
+            scalable: false,
+        }) => min.get(),
+        _ => 1,
+    };
+    let demanded = ApInt::all_ones(lanes);
     let query = query.with_temporary_demanded_elements(&demanded);
 
     let mut stack = HashSet::new();
@@ -5753,11 +5759,16 @@ fn extract_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let vector = value_from_slot(value, data.vector.get());
-    let Some((lanes, false)) = vector_shape(vector) else {
+    let Some(ElementCount {
+        min: lanes,
+        scalable: false,
+    }) = vector.ty().data().element_count()
+    else {
         return Ok(KnownBits::unknown(
             value_bit_width(value, query.data_layout()).unwrap_or(0),
         ));
     };
+    let lanes = lanes.get();
     let index = value_from_slot(value, data.index.get());
     let demanded = argument_constant(Some(index))
         .and_then(|idx| idx.try_zext_u64())
@@ -5777,11 +5788,16 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let Some((lanes, false)) = vector_shape(value) else {
+    let Some(ElementCount {
+        min: lanes,
+        scalable: false,
+    }) = value.ty().data().element_count()
+    else {
         return Ok(KnownBits::unknown(
             value_bit_width(value, query.data_layout()).unwrap_or(0),
         ));
     };
+    let lanes = lanes.get();
     let demanded = demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(lanes));
     let mut demanded_vec = demanded.clone();
     let index = value_from_slot(value, data.index.get());
@@ -5863,8 +5879,8 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capabil
     // re-derives its own demanded set through `demanded_elements_for` /
     // `demanded_lanes`, and both answer `None` — or fall back — for a scalable
     // operand.
-    let (_, result_scalable) = vector_shape(value)?;
-    if result_scalable {
+    let result_count = value.ty().data().element_count()?;
+    if result_count.scalable {
         let demanded = ApInt::all_ones(1);
         return Some(ShuffleSourceDemands {
             lhs,
@@ -5881,10 +5897,18 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capabil
     // `false` patterns are `cast<FixedVectorType>(Shuf->getOperand(0)->getType())`
     // — upstream's unchecked cast, which the guard above has already made
     // sound, spelled as a refusal because the repo bans runtime panics.
-    let (source_width, false) = vector_shape(lhs)? else {
+    let ElementCount {
+        min: source_width,
+        scalable: false,
+    } = lhs.ty().data().element_count()?
+    else {
         return None;
     };
-    let (_, false) = vector_shape(rhs)? else {
+    let source_width = source_width.get();
+    let ElementCount {
+        scalable: false, ..
+    } = rhs.ty().data().element_count()?
+    else {
         return None;
     };
     let demand = crate::vector_utils::shuffle_demanded_elements(
@@ -5971,9 +5995,14 @@ fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    let Some((lanes, false)) = vector_shape(value) else {
+    let Some(ElementCount {
+        min: lanes,
+        scalable: false,
+    }) = value.ty().data().element_count()
+    else {
         return Ok(KnownBits::unknown(width));
     };
+    let lanes = lanes.get();
     let demanded = demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(lanes));
     let mut known = KnownBits::unknown(width);
     known.set_all_conflict();
@@ -6013,10 +6042,11 @@ pub(crate) fn demanded_elements_for<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capabili
     value: Value<'ctx, B, C>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> Option<ApInt> {
-    let (lanes, scalable) = vector_shape(value)?;
-    if scalable {
+    let count = value.ty().data().element_count()?;
+    if count.scalable {
         return None;
     }
+    let lanes = count.min.get();
     Some(
         query
             .demanded_elements()
@@ -6024,16 +6054,6 @@ pub(crate) fn demanded_elements_for<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capabili
             .cloned()
             .unwrap_or_else(|| ApInt::all_ones(lanes)),
     )
-}
-
-pub(crate) fn vector_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-) -> Option<(u32, bool)> {
-    value
-        .ty()
-        .data()
-        .as_vector()
-        .map(|(_, lanes, scalable)| (lanes.get(), scalable))
 }
 
 fn value_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

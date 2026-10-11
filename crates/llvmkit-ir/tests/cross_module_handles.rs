@@ -627,8 +627,11 @@ fn a_global_builder_rejects_a_value_type_from_another_module() {
     );
 }
 
-/// The vector constructors reject an element type from another module: its
-/// slot would name a different type in this module's arena.
+/// The vector constructors — on `Module` and on `ModuleView` — reject an
+/// element type from another module: its slot would name a different type in
+/// this module's arena. The second list hands each the other module's `void`,
+/// which is also no vector element, and still expects `ForeignType`: the
+/// module check runs before the element check.
 ///
 /// No upstream counterpart: `FixedVectorType::get` takes a `Type *`, uniqued
 /// per `LLVMContext`.
@@ -636,6 +639,7 @@ fn a_global_builder_rejects_a_value_type_from_another_module() {
 fn the_vector_constructors_reject_an_element_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
     let element = foreign.i32_type().as_type();
     let problems = not_refused(vec![
         (
@@ -648,7 +652,32 @@ fn the_vector_constructors_reject_an_element_from_another_module() {
         ),
         (
             "view.vector_type",
-            without_value(home.as_view().vector_type(element, lanes::<2>())),
+            without_value(view.vector_type(element, lanes::<2>())),
+        ),
+        (
+            "view.scalable_vector_type",
+            without_value(view.scalable_vector_type(element, lanes::<2>())),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let foreign_void = foreign.void_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "vector_type(void)",
+            without_value(home.vector_type(foreign_void, lanes::<2>())),
+        ),
+        (
+            "scalable_vector_type(void)",
+            without_value(home.scalable_vector_type(foreign_void, lanes::<2>())),
+        ),
+        (
+            "view.vector_type(void)",
+            without_value(view.vector_type(foreign_void, lanes::<2>())),
+        ),
+        (
+            "view.scalable_vector_type(void)",
+            without_value(view.scalable_vector_type(foreign_void, lanes::<2>())),
         ),
     ]);
     assert!(problems.is_empty(), "{problems:#?}");

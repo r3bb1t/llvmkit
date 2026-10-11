@@ -2165,21 +2165,23 @@ moves to `Constant::kind`.
   only).
 - Address-space-typed pointers (`PointerValue` currently erases address
   space; audit item from infra report).
-- **Infallible statically-sized aggregate constants.**
-  `ArrayType<E, ArrLen<N>>::const_array([C; N])` /
-  `VectorType<E, Len<N>>::const_vector([C; N])` could drop the `IrResult`
-  entirely — the length is known at compile time and the elements would be
-  materialized at the type-level element `E` — but this needs typed
-  `ArrayType<E, ArrLen<N>>` / `VectorType<E, Len<N>>` **type constructors**
-  first: `const_array`/`const_vector` callers build their receiver via
-  `m.array_type(...)` / `m.vector_type(...)` (both markers erased) or
-  `VectorType::of(...)` (element marker only, `LenDyn`), so an infallible
-  static constructor would be dead code (no statically-typed receiver exists
-  to call it on). The fallible `const_array`/`const_struct`/`const_vector` now accept
-  `impl IntoConstantValue` elements (literals work), but stay `IrResult` — the
-  element-vs-container type check still guards the erased receivers. Bundle the
-  infallible variants with a typed aggregate-**type**-constructor slice; the
-  same applies to a `StructSchema`-keyed tuple-struct constant.
+- **Infallible statically-sized aggregate constants** — open, and not
+  blocked for literal elements. The statically typed receivers exist:
+  `Module::vector_type_n::<E, N>()` / `array_type_n::<E, N>()` return
+  `VectorType<E, Len<N>>` / `ArrayType<E, ArrLen<N>>`. A constructor on them
+  taking `[E; N]` Rust scalar literals (the markers that are Rust scalars:
+  `bool`, `i8` … `i128`, `f32`, `f64`) could drop the `IrResult`: the length
+  is static, the element type is `E`'s, and a literal belongs to no module.
+  Handle elements stay fallible for two reasons. `IntoConstantValue::into_constant`
+  admits a handle against the receiver's module, and two `DynBrand` modules
+  share a brand, so another module's constant type-checks and is refused only
+  at run time (`IrError::ForeignValueId`). And `StaticVecElem` projects a
+  value handle (`E::Value`), not a constant one
+  (`git grep -n "type Constant" 0fe68a5 -- crates/llvmkit-ir/src/element.rs`
+  finds nothing), so a handle list cannot be typed as constants of `E`
+  without a new projection. The fallible `const_array` / `const_struct` /
+  `const_vector` already accept `impl IntoConstantValue` elements. The same
+  question applies to a `StructSchema`-keyed tuple-struct constant.
 
 ## Session follow-ups
 

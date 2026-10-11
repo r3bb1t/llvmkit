@@ -811,22 +811,15 @@ fn ptr_or_ptr_vector_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u3
 }
 
 fn lane_shape_matches<B: ModuleBrand>(lhs: Type<'_, B>, rhs: Type<'_, B>) -> bool {
-    vector_shape(lhs) == vector_shape(rhs)
+    lhs.data().element_count() == rhs.data().element_count()
 }
 
 fn pointer_bitcast_shape_matches<B: ModuleBrand>(lhs: Type<'_, B>, rhs: Type<'_, B>) -> bool {
-    match (vector_shape(lhs), vector_shape(rhs)) {
+    match (lhs.data().element_count(), rhs.data().element_count()) {
         (None, None) => true,
         (Some(lhs_shape), Some(rhs_shape)) => lhs_shape == rhs_shape,
-        (None, Some((1, false))) | (Some((1, false)), None) => true,
-        _ => false,
+        (None, Some(count)) | (Some(count), None) => !count.scalable && count.min.get() == 1,
     }
-}
-
-fn vector_shape<B: ModuleBrand>(ty: Type<'_, B>) -> Option<(u32, bool)> {
-    ty.data()
-        .as_vector()
-        .map(|(_, lanes, scalable)| (lanes.get(), scalable))
 }
 
 fn invalid_pointer_cast<T>() -> IrResult<T> {
@@ -858,18 +851,22 @@ fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// A shuffle mask's length as the result's lane count — the one copy, which
-/// [`IrBuilder::shuffle_vector`] calls too. `VectorType::get` asserts the
-/// count is not zero, and llvmkit has no zero-lane type to build, so an empty
-/// mask is refused.
+/// [`IrBuilder::shuffle_vector`] calls too. Upstream builds the result as
+/// `VectorType::get(…, Mask.size(), …)`, which asserts a non-zero `unsigned`
+/// count, and llvmkit has no zero-lane type to build, so a length that is not
+/// a lane count is [`IrError::InvalidShuffleMaskLength`].
+///
+/// Refused: a zero length, and a length above `u32::MAX`. The second needs a
+/// mask of more than `u32::MAX` elements, so no test exercises it; the arm
+/// exists because `mask.len()` is a `usize` and the lane count a `u32`.
 ///
 /// [`IrBuilder::shuffle_vector`]: crate::IrBuilder::shuffle_vector
 pub(super) fn shuffle_mask_lanes(mask: &[ShuffleMaskElem]) -> IrResult<NonZeroU32> {
-    let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
-        message: "shufflevector mask too large",
-    })?;
-    NonZeroU32::new(lanes).ok_or(IrError::InvalidOperation {
-        message: "shufflevector mask is empty",
-    })
+    let len = mask.len();
+    u32::try_from(len)
+        .ok()
+        .and_then(NonZeroU32::new)
+        .ok_or(IrError::InvalidShuffleMaskLength { len })
 }
 
 fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(

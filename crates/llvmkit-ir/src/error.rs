@@ -1409,6 +1409,20 @@ pub enum IrError {
         kind: TypeKindLabel,
     },
 
+    /// A `shufflevector` mask whose length is not a vector lane count: empty,
+    /// or longer than a `u32` holds.
+    ///
+    /// A shuffle's result has one lane per mask element, and upstream builds
+    /// that type as `VectorType::get(…, Mask.size(), …)` (the
+    /// `ShuffleVectorInst` constructor, `ConstantExpr::getShuffleVector`),
+    /// which asserts a non-zero `unsigned` count; llvmkit has no zero-lane
+    /// vector to build.
+    #[error("shufflevector mask of {len} elements is not a vector lane count")]
+    InvalidShuffleMaskLength {
+        /// The mask's length.
+        len: usize,
+    },
+
     /// A known-bits query was given a value whose type is neither an integer
     /// nor a pointer, nor a vector of either — so it has no bit pattern to
     /// reason about.
@@ -2088,6 +2102,7 @@ impl IrError {
             | Self::AddressSpaceMismatch { .. }
             | Self::UnsizedType { .. }
             | Self::InvalidTypeComponent { .. }
+            | Self::InvalidShuffleMaskLength { .. }
             | Self::NotIntOrPointerType { .. }
             | Self::ValueCategoryMismatch { .. }
             | Self::ReturnTypeMismatch { .. }

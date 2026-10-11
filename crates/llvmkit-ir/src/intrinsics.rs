@@ -11,10 +11,10 @@ use crate::attributes::{
 };
 use crate::capability::{Capability, CapabilityOf, ModuleState, Mutable};
 use crate::derived_types::FunctionType;
-use crate::error::{IrError, IrResult, TypePosition};
+use crate::error::{IrError, IrResult};
 use crate::module::{Module, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
-use crate::type_components::{lanes, require_component};
+use crate::type_components::lanes;
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
 
@@ -2322,8 +2322,10 @@ where
     Ok(FunctionType::new(id, module))
 }
 
-/// `ScalableVectorType::get`, for the decoders here, checked as
-/// [`fixed_vector_type`] is.
+/// `ScalableVectorType::get`, for the decoders and matchers here: its
+/// `MinNumElts > 0` assert is `min`'s type, and its `isValidElementType`
+/// assert is checked and refused as a mismatch, for the reasons
+/// [`fixed_vector_type`] gives.
 fn scalable_vector_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     elem: Type<'ctx, B, C>,
@@ -2333,7 +2335,9 @@ where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
-    require_component(TypePosition::VectorElement, elem)?;
+    if !elem.is_valid_vector_element() {
+        return Err(intrinsic_mismatch());
+    }
     Ok(Type::new(
         module
             .module()
@@ -2632,9 +2636,14 @@ fn intrinsic_mismatch() -> IrError {
     }
 }
 
-/// `FixedVectorType::get`, for the decoders here. Its `NumElts > 0` assert is
-/// `lanes`'s type; its `isValidElementType` assert is [`require_component`],
-/// because an element can arrive from an overload type or a demangled name.
+/// `FixedVectorType::get`, for the decoders and matchers here. Its
+/// `NumElts > 0` assert is `lanes`'s type. Its `isValidElementType` assert —
+/// `VectorType::isValidElementType` — is checked, because an element can
+/// arrive from an overload type or a demangled name, and a failure is this
+/// file's [`intrinsic_mismatch`]: every route here (by name, through
+/// `IntrinsicDescriptor::new`'s IIT decode, through the signature matcher) is
+/// asking whether a signature fits the intrinsic, and an overload that would
+/// need an invalid vector does not fit — upstream can only assert there.
 fn fixed_vector_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     elem: Type<'ctx, B, C>,
@@ -2644,7 +2653,9 @@ where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
-    require_component(TypePosition::VectorElement, elem)?;
+    if !elem.is_valid_vector_element() {
+        return Err(intrinsic_mismatch());
+    }
     let id = module
         .module()
         .context()
@@ -2717,6 +2728,33 @@ mod tests {
     fn preview_entries(entries: &[u8]) -> &[u8] {
         let preview_len = entries.len().min(32);
         &entries[..preview_len]
+    }
+
+    /// The decoders' vector helpers refuse an element
+    /// `VectorType::isValidElementType` refuses — the assert in
+    /// `FixedVectorType::get` / `ScalableVectorType::get`
+    /// (`llvm/lib/IR/Type.cpp`) — as this file's signature mismatch, the error
+    /// its other refusals are, not as `IrError::InvalidTypeComponent`. `i32` is
+    /// the positive control.
+    ///
+    /// llvmkit-specific (D10): upstream asserts.
+    #[test]
+    fn the_vector_helpers_refuse_an_invalid_element_as_a_mismatch() -> IrResult<()> {
+        let module = crate::module_new!("intrinsic-vector-helpers")?;
+        let module_ref = module.capability_ref();
+        let void = void_type(module_ref);
+        assert_eq!(
+            fixed_vector_type(module_ref, void, lanes::<4>()),
+            Err(intrinsic_mismatch())
+        );
+        assert_eq!(
+            scalable_vector_type(module_ref, void, lanes::<4>()),
+            Err(intrinsic_mismatch())
+        );
+        let i32_ty = module.i32_type().as_type();
+        fixed_vector_type(module_ref, i32_ty, lanes::<4>())?;
+        scalable_vector_type(module_ref, i32_ty, lanes::<4>())?;
+        Ok(())
     }
 
     /// Mirrors `llvm/lib/IR/Intrinsics.cpp::matchIntrinsicType`:

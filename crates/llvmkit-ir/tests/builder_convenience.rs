@@ -22,7 +22,7 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
     let scalar: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-    let splat = b.vector_splat_dyn(5, scalar, "v")?;
+    let splat = b.vector_splat_dyn(lanes::<5>(), scalar, "v")?;
     b.ret(splat.as_erased())?;
     let text = format!("{m}");
     // The two-step expansion that upstream emits, mirrored byte-for-byte:

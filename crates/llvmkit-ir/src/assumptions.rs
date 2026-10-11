@@ -25,7 +25,6 @@
 //!   has no counterpart; llvmkit models no target.
 
 use core::iter::FusedIterator;
-use core::num::NonZeroU32;
 
 use crate::attributes::AttrKind;
 use crate::basic_block::BasicBlockData;
@@ -1053,23 +1052,12 @@ fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Option<Value<'ctx, B, C>> {
     let source = cast_source_with_opcode(value, |kind| kind == CastOpcode::BitCast)?;
-    if vector_shape(source) != vector_shape(value) {
+    // `getElementCount()` on both sides: a fixed and a scalable vector of the
+    // same count differ, and a scalar has none.
+    if source.ty().data().element_count() != value.ty().data().element_count() {
         return None;
     }
     Some(source)
-}
-
-/// The lane count and scalability of a vector-typed value, or `None` for a
-/// scalar. A fixed and a scalable vector of the same count differ, which is the
-/// `getElementCount()` comparison upstream makes.
-fn vector_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-) -> Option<(NonZeroU32, bool)> {
-    value
-        .ty()
-        .data()
-        .as_vector()
-        .map(|(_, lanes, scalable)| (lanes, scalable))
 }
 
 /// The source of a cast whose opcode `accepts`.

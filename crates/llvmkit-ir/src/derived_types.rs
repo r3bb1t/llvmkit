@@ -1174,9 +1174,10 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
     /// Statically known lane count, if the length marker `L` pins one.
     /// `Some(N)` for `L = Len<N>`, `None` for the erased [`LenDyn`]. This is
     /// the type-level view; [`min_len`](Self::min_len) reads the runtime
-    /// lane count from the arena regardless of `L`.
+    /// lane count from the arena regardless of `L`. Never zero, like
+    /// [`min_len`](Self::min_len).
     #[inline]
-    pub fn static_len(self) -> Option<u32> {
+    pub fn static_len(self) -> Option<NonZeroU32> {
         L::static_len()
     }
 }

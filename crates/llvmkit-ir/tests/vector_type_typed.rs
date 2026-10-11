@@ -19,7 +19,7 @@ fn vector_type_n_constructor_prints_and_round_trips() {
     let m = module_new!("vt").expect("fresh module");
     let vt = m.vector_type_n::<i32, 4>();
     assert_eq!(format!("{}", vt.as_type()), "<4 x i32>");
-    assert_eq!(vt.static_len(), Some(4));
+    assert_eq!(vt.static_len(), Some(lanes::<4>()));
     assert_eq!(vt.min_len().get(), 4);
     assert!(!vt.is_scalable());
 
@@ -40,7 +40,7 @@ fn value_narrows_to_matching_typed_vector() {
 
     let typed: VectorValue<'_, i32, Len<4>, _> = v.try_into().expect("<4 x i32> narrows");
     assert_eq!(format!("{}", typed.ty().as_type()), "<4 x i32>");
-    assert_eq!(typed.ty().static_len(), Some(4));
+    assert_eq!(typed.ty().static_len(), Some(lanes::<4>()));
 
     // Static -> Dyn widening.
     let erased: VectorValue<'_, ElemDyn, LenDyn, _> = typed.into();

@@ -2793,8 +2793,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 };
                 let src_w = self.scalar_int_width_or_err(f, bb, src_ty, source_message)?;
                 let dst_w = self.scalar_int_width_or_err(f, bb, dst_ty, result_message)?;
-                let src_shape = vector_shape(self.module, src_ty);
-                let dst_shape = vector_shape(self.module, dst_ty);
+                let src_shape = self.module.context().type_data(src_ty).element_count();
+                let dst_shape = self.module.context().type_data(dst_ty).element_count();
                 if src_shape != dst_shape {
                     return Err(self.fail(
                         f,
@@ -3500,8 +3500,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             ));
         }
         // "Additional checks for vector GEPs."
-        if let Some(gep_width) = vector_shape(self.module, result_ty) {
-            if let Some(base_width) = vector_shape(self.module, base_ty)
+        let element_count = |ty: TypeSlot| self.module.context().type_data(ty).element_count();
+        if let Some(gep_width) = element_count(result_ty) {
+            if let Some(base_width) = element_count(base_ty)
                 && base_width != gep_width
             {
                 return Err(self.fail(
@@ -3515,7 +3516,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 // Upstream re-asks `IndexTy->isIntOrIntVectorTy()` inside this
                 // loop; the `GepNonIntegerIndex` loop above already answered it
                 // and returned on the first failure, so a second copy is dead.
-                if let Some(index_width) = vector_shape(self.module, self.value_type(idx_id))
+                if let Some(index_width) = element_count(self.value_type(idx_id))
                     && index_width != gep_width
                 {
                     return Err(self.fail(
@@ -7170,18 +7171,6 @@ fn type_contains_scalable(m: &ModuleCore, ty: TypeSlot) -> bool {
         },
         _ => false,
     }
-}
-
-/// The element count and scalability of `ty`, or `None` when it is a scalar.
-///
-/// Two types agree in shape when this answers equal for both, which is how
-/// `CastInst::castIsValid` phrases its vector rule: both operands vectors of
-/// the same element count, or neither a vector.
-fn vector_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, bool)> {
-    m.context()
-        .type_data(ty)
-        .as_vector()
-        .map(|(_, count, scalable)| (count.get(), scalable))
 }
 
 enum AggWalkErr {

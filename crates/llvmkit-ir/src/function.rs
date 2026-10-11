@@ -1324,7 +1324,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B, Mut
                 // the final comparison all answer `IntrinsicSignatureMismatch`
                 // here. `InvalidOperation` is the same answer from inside the
                 // generated tables — an `IIT` entry `iit_descriptors` cannot
-                // decode, or an overload `append_mangled_type` cannot spell.
+                // decode, an overload `append_mangled_type` cannot spell, or an
+                // overload that would put an element no vector may hold into a
+                // decoded vector (`intrinsics.rs`'s `fixed_vector_type` /
+                // `scalable_vector_type` refuse it as that mismatch).
                 // Upstream would still store the id (`docs/divergences.md`,
                 // the `updateAfterNameChange` entry).
                 Err(

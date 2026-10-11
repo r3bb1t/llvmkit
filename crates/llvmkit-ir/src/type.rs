@@ -217,6 +217,13 @@ impl TypeData {
             _ => None,
         }
     }
+    /// A vector's [`ElementCount`] (`VectorType::getElementCount`), or `None`
+    /// for a non-vector.
+    #[inline]
+    pub(crate) fn element_count(&self) -> Option<ElementCount> {
+        self.as_vector()
+            .map(|(_, min, scalable)| ElementCount { min, scalable })
+    }
     #[inline]
     pub(crate) fn as_function(&self) -> Option<(TypeSlot, &[TypeSlot], bool)> {
         if let Self::Function {
@@ -258,6 +265,25 @@ impl TypeData {
             None
         }
     }
+}
+
+/// A vector's lane count and whether it scales with `vscale`. Mirrors
+/// `ElementCount` (`llvm/include/llvm/Support/TypeSize.h`), as
+/// `VectorType::getElementCount` returns it: equality compares both the count
+/// and the scalability, as upstream's `getElementCount() == …` comparisons do.
+///
+/// Upstream's `ElementCount` can be zero (`ElementCount::getFixed(0)` stands
+/// for "not a vector" in `CastInst::castIsValid`); this one cannot, because no
+/// vector has zero lanes — "not a vector" is `None` from
+/// [`TypeData::element_count`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ElementCount {
+    /// The lane count: exact for a fixed vector, the known minimum for a
+    /// scalable one (`ElementCount::getKnownMinValue`).
+    pub(crate) min: NonZeroU32,
+    /// Whether the count is a multiple of `vscale`
+    /// (`ElementCount::isScalable`).
+    pub(crate) scalable: bool,
 }
 
 /// Payload for any struct type — literal or identified.
@@ -705,17 +731,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
         Type::new(scalar_type_slot(self.module.module(), self.id), self.module)
     }
 
-    /// Element count of a vector — the *minimum* count for a scalable one, as
-    /// `ElementCount` carries it. `None` for a non-vector.
+    /// Element count of a vector — the exact count of a fixed vector, the
+    /// *minimum* count of a scalable one (`ElementCount::getKnownMinValue`).
+    /// `None` for a non-vector. Never zero: a vector has at least one lane
+    /// (`FixedVectorType::get` and `ScalableVectorType::get` assert it).
     ///
-    /// Comparing two of these also settles scalar-versus-vector agreement,
-    /// which is how `CastInst::castIsValid` avoids a separate arm for it.
-    pub fn vector_element_count(self) -> Option<u32> {
-        match self.data() {
-            TypeData::FixedVector { n, .. } => Some(n.get()),
-            TypeData::ScalableVector { min, .. } => Some(min.get()),
-            _ => None,
-        }
+    /// The count alone does not say whether the vector is scalable, so two
+    /// equal counts are not two equal `ElementCount`s.
+    pub fn vector_element_count(self) -> Option<NonZeroU32> {
+        self.data().element_count().map(|count| count.min)
     }
 
     /// Bit width of this type's *scalar* type, or 0 where LLVM has no answer.

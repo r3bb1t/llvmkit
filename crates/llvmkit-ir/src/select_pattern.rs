@@ -1227,8 +1227,12 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         // Upstream's `ConstantDataVector` arm, plus its `ConstantAggregateZero`
         // arm: llvmkit stores both as an aggregate of element constants.
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            // `all` is never vacuous here, for the reason
-            // `is_known_non_zero_float` gives.
+            // Upstream reads a `ConstantDataVector`, which has at least one
+            // element. An llvmkit vector constant has at least one too: its
+            // lane count is a `NonZeroU32`, and `VectorType::const_vector`
+            // takes one element per lane. So `all` below never runs over an
+            // empty list, and no empty-list guard is needed to keep it from
+            // answering "no lane is NaN" for a vector with no lanes.
             if !value.ty().is_vector() {
                 return false;
             }
@@ -1265,10 +1269,12 @@ fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         // `Float` check, and its early `return false` on a zero element is the
         // `all` below.
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            // `all` is never vacuous here, as it is not upstream: a
-            // `ConstantDataVector` has at least one element, and so does an
-            // llvmkit vector constant — its lane count is a `NonZeroU32`, and
-            // `VectorType::const_vector` takes exactly one element per lane.
+            // Upstream reads a `ConstantDataVector`, which has at least one
+            // element. An llvmkit vector constant has at least one too: its
+            // lane count is a `NonZeroU32`, and `VectorType::const_vector`
+            // takes one element per lane. So `all` below never runs over an
+            // empty list, and no empty-list guard is needed to keep it from
+            // answering "every lane is non-zero" for a vector with no lanes.
             if !value.ty().is_vector() {
                 return false;
             }

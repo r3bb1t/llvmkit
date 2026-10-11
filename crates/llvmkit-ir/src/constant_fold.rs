@@ -38,7 +38,7 @@ use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode}
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleRef, ModuleView};
-use super::r#type::{IrType, Type, TypeData, TypeSlotAccess, erase_type};
+use super::r#type::{ElementCount, IrType, Type, TypeData, TypeSlotAccess, erase_type};
 use super::type_components::lanes;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
@@ -2105,27 +2105,25 @@ pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         });
     };
     let scalar_ptr_ty = pointer_ty.module.ptr_type(addr_space).as_type();
-    let Some((lanes, scalable)) = gep_operand_vector_shape(pointer_ty, indices)? else {
+    let Some(count) = gep_operand_element_count(pointer_ty, indices)? else {
         return Ok(scalar_ptr_ty);
     };
-    Ok(vector_type_with_scalability(pointer_ty.module, scalar_ptr_ty, lanes, scalable).as_type())
+    Ok(
+        vector_type_with_scalability(pointer_ty.module, scalar_ptr_ty, count.min, count.scalable)
+            .as_type(),
+    )
 }
 
-fn gep_operand_vector_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// The `ElementCount` the operands of a constant `getelementptr` agree on —
+/// the base's, else the first vector index's — or `None` when every operand
+/// is a scalar.
+fn gep_operand_element_count<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     pointer_ty: Type<'ctx, B, C>,
     indices: &[Constant<'ctx, B, C>],
-) -> IrResult<Option<(NonZeroU32, bool)>> {
-    let mut shape = pointer_ty
-        .data()
-        .as_vector()
-        .map(|(_, lanes, scalable)| (lanes, scalable));
+) -> IrResult<Option<ElementCount>> {
+    let mut shape = pointer_ty.data().element_count();
     for index in indices {
-        let Some(index_shape) = index
-            .ty()
-            .data()
-            .as_vector()
-            .map(|(_, lanes, scalable)| (lanes, scalable))
-        else {
+        let Some(index_shape) = index.ty().data().element_count() else {
             continue;
         };
         match shape {
